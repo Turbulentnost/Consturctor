@@ -10,17 +10,17 @@ class KpiPage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         title = QLabel("KPI")
-        title.setFont(app_font(26, QFont.Weight.Bold))
-        title.setStyleSheet("color: #121a17; background: transparent;")
+        title.setFont(app_font(34, QFont.Weight.DemiBold))
+        title.setStyleSheet("color: #101817; background: transparent;")
 
         body = QLabel("Метрики эффективности агентов появятся здесь.")
         body.setWordWrap(True)
-        body.setFont(app_font(14))
-        body.setStyleSheet("color: #5a6b63; background: transparent;")
+        body.setFont(app_font(18))
+        body.setStyleSheet("color: #6B7773; background: transparent;")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
         layout.addWidget(title)
         layout.addWidget(body)
         layout.addStretch(1)

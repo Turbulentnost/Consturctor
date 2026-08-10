@@ -20,7 +20,8 @@ class AppWindow(QMainWindow):
         logo = Path(__file__).resolve().parent / "temp" / "logo.png"
         if logo.exists():
             self.setWindowIcon(QIcon(str(logo)))
-        self.setFixedSize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.setMinimumSize(1024, 700)
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.WindowCloseButtonHint
@@ -41,6 +42,7 @@ class AppWindow(QMainWindow):
         self._stack.setCurrentWidget(self.login_page)
 
     def _on_logged_in(self, result: LoginResult) -> None:
+        self.login_page.fio_edit.hide_suggestions()
         self.main_shell.set_user(result.user)
         self._stack.setCurrentWidget(self.main_shell)
 

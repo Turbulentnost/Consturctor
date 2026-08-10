@@ -109,12 +109,17 @@ class FioSuggestEdit(QLineEdit):
         self._suggestions_ready.connect(self._apply_async_suggestions)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
-        if (
-            self._popup.isVisible()
-            and event.type() == QEvent.Type.Wheel
-            and obj in (self._popup, self._list, self._list.viewport())
+        try:
+            popup_visible = self._popup.isVisible()
+            list_viewport = self._list.viewport()
+        except RuntimeError:
+            return False
+        if popup_visible and event.type() == QEvent.Type.Wheel and obj in (
+            self._popup,
+            self._list,
+            list_viewport,
         ):
-            QApplication.sendEvent(self._list.viewport(), event)
+            QApplication.sendEvent(list_viewport, event)
             return True
         return super().eventFilter(obj, event)
 
@@ -151,8 +156,14 @@ class FioSuggestEdit(QLineEdit):
         super().keyPressEvent(event)
 
     def hideEvent(self, event) -> None:  # noqa: N802
-        self._hide_popup()
+        self.hide_suggestions()
         super().hideEvent(event)
+
+    def hide_suggestions(self) -> None:
+        """Force-close the overlay (login success, page switch, etc.)."""
+        self._timer.stop()
+        self._request_token = ""
+        self._hide_popup()
 
     def moveEvent(self, event) -> None:  # noqa: N802
         super().moveEvent(event)
@@ -176,7 +187,7 @@ class FioSuggestEdit(QLineEdit):
         self._reload_suggestions()
 
     def _reload_suggestions(self) -> None:
-        if self._suppress_fetch:
+        if self._suppress_fetch or not self.isVisible() or not self.isEnabled():
             return
         query = self.text().strip()
         if len(query) < 2:
@@ -206,6 +217,9 @@ class FioSuggestEdit(QLineEdit):
         items = [str(x) for x in (items_obj or [])]
         self._cache[key] = items
         if key != self._request_token:
+            return
+        if not self.isVisible() or not self.isEnabled():
+            self._hide_popup()
             return
         if not items:
             self._populate_message("Ничего не найдено")
@@ -270,7 +284,7 @@ class FioSuggestEdit(QLineEdit):
         self._popup.move(pos)
 
     def _show_popup(self) -> None:
-        if self._list.count() == 0:
+        if self._list.count() == 0 or not self.isVisible() or not self.isEnabled():
             self._hide_popup()
             return
         self._position_popup()

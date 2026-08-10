@@ -163,6 +163,7 @@ class LoginPage(QWidget):
         self._bg.lower()
 
     def reset_form(self) -> None:
+        self.fio_edit.hide_suggestions()
         self.password_edit.clear()
         self.error_label.setText("")
         self.login_btn.setEnabled(True)
@@ -183,6 +184,7 @@ class LoginPage(QWidget):
             return
 
         self.login_btn.setEnabled(False)
+        self.fio_edit.hide_suggestions()
         try:
             result: LoginResult = self._api.login(fio, password)
         except ApiError as exc:
@@ -193,4 +195,5 @@ class LoginPage(QWidget):
         finally:
             self.login_btn.setEnabled(True)
 
+        self.fio_edit.hide_suggestions()
         self.logged_in.emit(result)
