@@ -1,0 +1,125 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: constructor
+      POSTGRES_PASSWORD: constructor
+      POSTGRES_DB: constructor
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U constructor -d constructor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  platform-kpi:
+    profiles: ["full", "kpi"]
+    build:
+      context: ..
+      dockerfile: services/platform-kpi/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://constructor:constructor@postgres:5432/constructor
+      USE_STUBS: "true"
+      API_PORT: "7820"
+    ports:
+      - "7820:7820"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  platform-tool-imap:
+    profiles: ["full", "imap"]
+    build:
+      context: ..
+      dockerfile: services/platform-tool-imap/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://constructor:constructor@postgres:5432/constructor
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      USE_STUBS: "true"
+      API_PORT: "7821"
+    ports:
+      - "7821:7821"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  platform-tool-onec:
+    profiles: ["full", "onec"]
+    build:
+      context: ..
+      dockerfile: services/platform-tool-onec/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://constructor:constructor@postgres:5432/constructor
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      USE_STUBS: "true"
+      API_PORT: "7822"
+    ports:
+      - "7822:7822"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  platform-orchestrator-api:
+    profiles: ["full", "orchestrator"]
+    build:
+      context: ..
+      dockerfile: services/platform-orchestrator/Dockerfile
+    command: ["python", "-m", "platform_orchestrator.api_main"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://constructor:constructor@postgres:5432/constructor
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      TOOL_IMAP_URL: http://platform-tool-imap:7821
+      TOOL_ONEC_URL: http://platform-tool-onec:7822
+      TOOL_SHELL_URL: http://host.docker.internal:7823
+      TOOL_BROWSER_URL: http://host.docker.internal:7824
+      USE_STUBS: "true"
+      API_PORT: "7825"
+    ports:
+      - "7825:7825"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  platform-orchestrator-worker:
+    profiles: ["full", "orchestrator"]
+    build:
+      context: ..
+      dockerfile: services/platform-orchestrator/Dockerfile
+    command: ["celery", "-A", "platform_orchestrator.celery_app", "worker", "-Q", "default,imap,onec,shell,browser", "-l", "info"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://constructor:constructor@postgres:5432/constructor
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      TOOL_IMAP_URL: http://platform-tool-imap:7821
+      TOOL_ONEC_URL: http://platform-tool-onec:7822
+      TOOL_SHELL_URL: http://host.docker.internal:7823
+      TOOL_BROWSER_URL: http://host.docker.internal:7824
+      USE_STUBS: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  pgdata:

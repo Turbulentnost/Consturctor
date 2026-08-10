@@ -27,6 +27,25 @@ class HealthStatus:
     erp_reachable: bool
     erp_server: str
     llm_provider: str
+    platform_services: tuple[tuple[str, bool, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class KpiSummary:
+    total_runs: int
+    success_rate: float
+    error_rate: float
+    hitl_rate: float
+    operator_keep_rate: float | None
+    tool_failure_rate: float
+
+
+@dataclass(frozen=True, slots=True)
+class RunStatus:
+    run_id: str
+    agent_id: str
+    status: str
+    tool_events_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,11 +75,59 @@ class ApiClient:
 
     def health(self) -> HealthStatus:
         data = self._request("GET", "/health")
+        services = []
+        for item in data.get("platform_services") or []:
+            services.append(
+                (
+                    str(item.get("name", "")),
+                    bool(item.get("reachable")),
+                    str(item.get("status", "")),
+                )
+            )
         return HealthStatus(
             status=str(data.get("status", "")),
             erp_reachable=bool(data.get("erp_reachable")),
             erp_server=str(data.get("erp_server", "")),
             llm_provider=str(data.get("llm_provider", "")),
+            platform_services=tuple(services),
+        )
+
+    def kpi_summary(self) -> KpiSummary:
+        data = self._request("GET", "/api/v1/kpi/summary")
+        rate = data.get("operator_keep_rate")
+        return KpiSummary(
+            total_runs=int(data.get("total_runs") or 0),
+            success_rate=float(data.get("success_rate") or 0.0),
+            error_rate=float(data.get("error_rate") or 0.0),
+            hitl_rate=float(data.get("hitl_rate") or 0.0),
+            operator_keep_rate=float(rate) if rate is not None else None,
+            tool_failure_rate=float(data.get("tool_failure_rate") or 0.0),
+        )
+
+    def start_run(self, agent_id: str, tools: list[str] | None = None) -> RunStatus:
+        data = self._request(
+            "POST",
+            "/api/v1/runs",
+            json={
+                "agent_id": agent_id,
+                "tools": tools or ["imap.list_unread"],
+                "config": {},
+            },
+        )
+        return RunStatus(
+            run_id=str(data.get("run_id", "")),
+            agent_id=str(data.get("agent_id", "")),
+            status=str(data.get("status", "")),
+            tool_events_count=int(data.get("tool_events_count") or 0),
+        )
+
+    def get_run(self, run_id: str) -> RunStatus:
+        data = self._request("GET", f"/api/v1/runs/{run_id}")
+        return RunStatus(
+            run_id=str(data.get("run_id", "")),
+            agent_id=str(data.get("agent_id", "")),
+            status=str(data.get("status", "")),
+            tool_events_count=int(data.get("tool_events_count") or 0),
         )
 
     def search_users(self, search: str = "") -> list[str]:

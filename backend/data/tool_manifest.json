@@ -1,0 +1,10 @@
+{
+  "default": [
+    "imap.list_unread",
+    "imap.fetch_message",
+    "onec.sql_query",
+    "shell.run",
+    "browser.navigate"
+  ],
+  "by_department": {}
+}

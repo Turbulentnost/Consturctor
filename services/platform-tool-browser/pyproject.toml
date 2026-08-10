@@ -1,0 +1,26 @@
+[project]
+name = "platform-tool-browser"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic-settings>=2.6.0",
+    "playwright>=1.49.0",
+    "platform-contracts",
+    "platform-db",
+    "platform-service-common",
+]
+
+[project.scripts]
+platform-tool-browser = "platform_tool_browser.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["platform_tool_browser"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
