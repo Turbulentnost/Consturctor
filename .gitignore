@@ -39,3 +39,4 @@ backend/scripts/exports/*.txt
 # Local runtime
 *.log
 celerybeat-schedule*
+backend/storage/

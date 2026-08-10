@@ -14,9 +14,28 @@ from app.clients.erp_sql import (
 )
 from app.core.jwt import create_access_token
 from app.schemas.auth import LoginResponse, UserOut
+from app.services import app_users
 from tools.onec.password import verify_password
 
 logger = logging.getLogger(__name__)
+
+
+def _to_user_out(*, user_id: str, fio: str, department: str) -> UserOut:
+    try:
+        app_user = app_users.upsert_app_user(
+            user_id=user_id,
+            fio=fio,
+            department=department or "",
+        )
+    except Exception as exc:
+        logger.exception("Failed to upsert app user id=%s", user_id)
+        raise AuthError("Не удалось сохранить пользователя в базе", status_code=503) from exc
+    return UserOut(
+        id=app_user.id,
+        fio=app_user.fio,
+        department=app_user.department or "",
+        avatar_url=app_users.avatar_url_for(app_user),
+    )
 
 
 class AuthError(Exception):
@@ -58,15 +77,14 @@ async def login(fio: str, password: str) -> LoginResponse:
         fio=erp_user.fio,
         department=department or "",
     )
-    logger.info("User logged in: id=%s", erp_user.id)
-    return LoginResponse(
-        access_token=token,
-        user=UserOut(
-            id=erp_user.id,
-            fio=erp_user.fio,
-            department=department or "",
-        ),
+    user_out = await asyncio.to_thread(
+        _to_user_out,
+        user_id=erp_user.id,
+        fio=erp_user.fio,
+        department=department or "",
     )
+    logger.info("User logged in: id=%s", erp_user.id)
+    return LoginResponse(access_token=token, user=user_out)
 
 
 async def list_user_fios(search: str | None = None) -> list[str]:
@@ -95,8 +113,9 @@ async def get_current_user_profile(user_id: str, fio_hint: str | None = None) ->
         except ErpSqlError:
             logger.warning("Could not refresh department for user id=%s", user_id)
 
-    return UserOut(
-        id=erp_user.id,
+    return await asyncio.to_thread(
+        _to_user_out,
+        user_id=erp_user.id,
         fio=erp_user.fio,
         department=department or "",
     )

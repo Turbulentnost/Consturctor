@@ -12,6 +12,8 @@ dependencies = [
     "pyodbc>=5.2.0",
     "python-dotenv>=1.0.0",
     "httpx>=0.28.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg[binary]>=3.2.0",
 ]
 
 [project.optional-dependencies]

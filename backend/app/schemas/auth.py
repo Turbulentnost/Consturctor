@@ -10,6 +10,7 @@ class UserOut(BaseModel):
     id: str
     fio: str
     department: str = ""
+    avatar_url: str | None = None
 
 
 class LoginResponse(BaseModel):

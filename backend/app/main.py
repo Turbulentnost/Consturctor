@@ -18,12 +18,21 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    from app.db.session import init_db
+
     logger.info(
-        "Constructor backend starting (ERP=%s/%s, LLM=%s)",
+        "Constructor backend starting (ERP=%s/%s, LLM=%s, DB=%s)",
         settings.erp_sql_server,
         settings.erp_sql_database,
         settings.llm_provider,
+        settings.database_url.split("@")[-1] if "@" in settings.database_url else settings.database_url,
     )
+    try:
+        init_db()
+        logger.info("App Postgres schema ready")
+    except Exception:
+        logger.exception("Failed to initialize app Postgres")
+        raise
     yield
 
 

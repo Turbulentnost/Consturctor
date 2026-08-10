@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.schemas.auth import LoginRequest, LoginResponse, UserFioListResponse, UserOut
-from app.services import auth_service
+from app.services import app_users, auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -31,3 +32,11 @@ async def me(auth: AuthContext = Depends(get_current_user)) -> UserOut:
         return await auth_service.get_current_user_profile(auth.user_id, auth.fio)
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.get("/users/{user_id}/avatar")
+async def get_user_avatar(user_id: str) -> FileResponse:
+    path = app_users.resolve_avatar_file(user_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Аватар не найден")
+    return FileResponse(path)

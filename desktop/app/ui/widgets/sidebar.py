@@ -133,11 +133,16 @@ class NavigationItem(QWidget):
         if kind == "plus":
             p.drawLine(int(cx - 6), int(cy), int(cx + 6), int(cy))
             p.drawLine(int(cx), int(cy - 6), int(cx), int(cy + 6))
-        elif kind == "agents":
-            p.drawEllipse(QRectF(cx - 8, cy - 4, 8, 8))
-            p.drawEllipse(QRectF(cx + 2, cy - 3, 7, 7))
-            p.drawArc(int(cx - 10), int(cy + 1), 13, 9, 0, 180 * 16)
-            p.drawArc(int(cx), int(cy + 2), 12, 8, 0, 180 * 16)
+        elif kind == "home":
+            # Roof
+            p.drawLine(int(cx - 8), int(cy - 1), int(cx), int(cy - 8))
+            p.drawLine(int(cx), int(cy - 8), int(cx + 8), int(cy - 1))
+            # House body
+            p.drawRect(int(cx - 6), int(cy - 1), 12, 9)
+            # Door
+            p.drawLine(int(cx - 1.5), int(cy + 8), int(cx - 1.5), int(cy + 2))
+            p.drawLine(int(cx + 1.5), int(cy + 8), int(cx + 1.5), int(cy + 2))
+            p.drawLine(int(cx - 1.5), int(cy + 2), int(cx + 1.5), int(cy + 2))
         else:
             p.drawLine(int(cx - 7), int(cy + 7), int(cx - 7), int(cy - 1))
             p.drawLine(int(cx), int(cy + 7), int(cx), int(cy - 7))
@@ -152,7 +157,7 @@ class GlassSidebar(QWidget):
         super().__init__(parent)
         self._items = [
             NavItem("create", "Создать", "plus"),
-            NavItem("agents", "Мои агенты", "agents"),
+            NavItem("agents", "Мои агенты", "home"),
             NavItem("kpi", "KPI", "kpi"),
         ]
         self._active_key = "create"

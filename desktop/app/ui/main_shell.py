@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QPushButton,
+    QMessageBox,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -19,14 +19,12 @@ from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.my_agents_page import MyAgentsPage
 from app.ui.theme import (
     COLOR_CONTENT_BG,
-    COLOR_CONTENT_MUTED,
-    COLOR_CONTENT_TEXT,
     CONTENT_PADDING_TOP,
     CONTENT_PADDING_X,
-    MAIN_TEXT,
     app_font,
 )
 from app.ui.widgets.sidebar import GlassSidebar
+from app.ui.widgets.user_menu import UserMenuHeader
 
 
 class MainContentWidget(QFrame):
@@ -53,7 +51,6 @@ class MainContentWidget(QFrame):
         path.closeSubpath()
 
         p.fillPath(path, COLOR_CONTENT_BG)
-        # Very subtle internal depth, not a green frame.
         p.setPen(QPen(QColor(0, 0, 0, 12), 1))
         p.drawPath(path)
         p.end()
@@ -79,49 +76,20 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_kpi)
         self._page_index = {"create": 0, "agents": 1, "kpi": 2}
 
-        self._fio_label = QLabel("—")
-        self._fio_label.setFont(app_font(16, QFont.Weight.DemiBold))
-        self._fio_label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-
-        self._dept_label = QLabel("")
-        self._dept_label.setFont(app_font(13))
-        self._dept_label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-
         self._health_label = QLabel("")
         self._health_label.setFont(app_font(12, QFont.Weight.Medium))
         self._health_label.setStyleSheet("color: #2D7A5E; background: transparent;")
 
-        self.logout_btn = QPushButton("Выйти")
-        self.logout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.logout_btn.setFont(app_font(12, QFont.Weight.DemiBold))
-        self.logout_btn.setFixedHeight(34)
-        self.logout_btn.setStyleSheet(
-            """
-            QPushButton {
-                background: #06483D;
-                color: #F7FBFA;
-                border: none;
-                border-radius: 17px;
-                padding: 0 16px;
-            }
-            QPushButton:hover { background: #08745F; }
-            QPushButton:pressed { background: #04342C; }
-            """
-        )
-        self.logout_btn.clicked.connect(self.logout_requested.emit)
+        self.user_menu = UserMenuHeader(self)
+        self.user_menu.logout_requested.connect(self.logout_requested.emit)
+        self.user_menu.settings_requested.connect(self._on_settings)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(18)
-        user_col = QVBoxLayout()
-        user_col.setContentsMargins(0, 0, 0, 0)
-        user_col.setSpacing(2)
-        user_col.addWidget(self._fio_label)
-        user_col.addWidget(self._dept_label)
-        header.addLayout(user_col, 1)
         header.addWidget(self._health_label, 0, Qt.AlignmentFlag.AlignVCenter)
-        header.addSpacing(4)
-        header.addWidget(self.logout_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        header.addStretch(1)
+        header.addWidget(self.user_menu, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._content = MainContentWidget()
         content_layout = QVBoxLayout(self._content)
@@ -151,9 +119,23 @@ class MainShell(QWidget):
 
     def _apply_user(self, user: UserProfile) -> None:
         self._user = user
-        self._fio_label.setText(user.fio)
-        dept = user.department.strip() or "отдел не указан"
-        self._dept_label.setText(dept)
+        self.user_menu.set_user(fio=user.fio, department=user.department)
+        self._load_avatar(user)
+
+    def _load_avatar(self, user: UserProfile) -> None:
+        if not user.avatar_url:
+            self.user_menu.set_avatar_pixmap(None)
+            return
+        try:
+            data = self._api.fetch_bytes(user.avatar_url)
+        except ApiError:
+            self.user_menu.set_avatar_pixmap(None)
+            return
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(data):
+            self.user_menu.set_avatar_pixmap(None)
+            return
+        self.user_menu.set_avatar_pixmap(pixmap)
 
     def refresh_health(self) -> None:
         try:
@@ -171,6 +153,13 @@ class MainShell(QWidget):
             self._apply_user(profile)
         except ApiError:
             pass
+
+    def _on_settings(self) -> None:
+        QMessageBox.information(
+            self,
+            "Настройки",
+            "Раздел настроек профиля появится здесь.\nПока можно сменить аватар позже.",
+        )
 
     def _on_page_changed(self, key: str) -> None:
         idx = self._page_index.get(key, 0)

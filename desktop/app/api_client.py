@@ -19,6 +19,7 @@ class UserProfile:
     id: str
     fio: str
     department: str = ""
+    avatar_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,22 +76,44 @@ class ApiClient:
             "/api/v1/auth/login",
             json={"fio": fio, "password": password},
         )
-        user_data = data.get("user") or {}
-        user = UserProfile(
-            id=str(user_data.get("id", "")),
-            fio=str(user_data.get("fio", "")),
-            department=str(user_data.get("department", "")),
-        )
+        user = self._parse_user(data.get("user") or {})
         token = str(data.get("access_token", ""))
         self._token = token
         return LoginResult(access_token=token, user=user)
 
     def me(self) -> UserProfile:
         data = self._request("GET", "/api/v1/auth/me")
+        return self._parse_user(data)
+
+    def fetch_bytes(self, path_or_url: str) -> bytes:
+        if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
+            url = path_or_url
+        else:
+            url = f"{self.base_url}{path_or_url}"
+        try:
+            with httpx.Client(timeout=self._timeout) as client:
+                response = client.get(url, headers=self._headers())
+        except httpx.ConnectError as exc:
+            raise ApiError(
+                f"Не удалось подключиться к backend ({self.base_url})"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise ApiError("Превышено время ожидания ответа backend") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise ApiError(_extract_detail(response), status_code=response.status_code)
+        return response.content
+
+    @staticmethod
+    def _parse_user(data: dict) -> UserProfile:
+        avatar = data.get("avatar_url")
         return UserProfile(
             id=str(data.get("id", "")),
             fio=str(data.get("fio", "")),
             department=str(data.get("department", "")),
+            avatar_url=str(avatar) if avatar else None,
         )
 
     def _request(

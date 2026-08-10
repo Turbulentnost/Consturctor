@@ -31,5 +31,12 @@ class Settings(BaseSettings):
 
     llm_provider: str = "stub"
 
+    # App Postgres (users, avatars, future agent data). Not ERP.
+    database_url: str = (
+        "postgresql+psycopg://constructor:constructor@127.0.0.1:5435/constructor"
+    )
+    avatar_storage_dir: Path = BACKEND_ROOT / "storage" / "avatars"
+
 
 settings = Settings()
+settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
