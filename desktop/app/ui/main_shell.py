@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -23,17 +23,35 @@ from app.ui.widgets.sidebar import SIDEBAR_GREEN, GlassSidebar
 class _ShellBackground(QWidget):
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
-        p.fillRect(self.rect(), SIDEBAR_GREEN)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(14, 18, -14, -18)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 28, 28)
+
+        grad = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+        grad.setColorAt(0.0, QColor("#0f7a59"))
+        grad.setColorAt(0.38, SIDEBAR_GREEN)
+        grad.setColorAt(1.0, QColor("#01100d"))
+        p.fillPath(path, grad)
+
+        glow = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.top())
+        glow.setColorAt(0.0, QColor(145, 255, 213, 34))
+        glow.setColorAt(0.5, QColor(145, 255, 213, 8))
+        glow.setColorAt(1.0, QColor(255, 255, 255, 22))
+        p.fillPath(path, glow)
+
+        p.setPen(QPen(QColor(255, 255, 255, 35), 1))
+        p.drawPath(path)
         p.end()
 
 
 class ContentPane(QFrame):
-    """White content flush to sidebar, with only the outer right corners rounded."""
+    """White work area inside the dark rounded shell."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("contentPane")
-        self._radius = 28.0
+        self._radius = 24.0
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
@@ -42,14 +60,18 @@ class ContentPane(QFrame):
         r = self._radius
 
         path = QPainterPath()
-        path.moveTo(rect.left(), rect.top())
+        path.moveTo(rect.left() + r, rect.top())
         path.lineTo(rect.right() - r, rect.top())
         path.quadTo(rect.right(), rect.top(), rect.right(), rect.top() + r)
         path.lineTo(rect.right(), rect.bottom() - r)
         path.quadTo(rect.right(), rect.bottom(), rect.right() - r, rect.bottom())
         path.lineTo(rect.left(), rect.bottom())
+        path.lineTo(rect.left(), rect.top() + r)
+        path.quadTo(rect.left(), rect.top(), rect.left() + r, rect.top())
         path.closeSubpath()
         p.fillPath(path, QColor("#ffffff"))
+        p.setPen(QPen(QColor(0, 0, 0, 18), 1))
+        p.drawPath(path)
 
         p.end()
 
@@ -77,11 +99,11 @@ class MainShell(QWidget):
         self._page_index = {"create": 0, "agents": 1, "kpi": 2}
 
         self._fio_label = QLabel("—")
-        self._fio_label.setFont(app_font(14, QFont.Weight.DemiBold))
+        self._fio_label.setFont(app_font(13, QFont.Weight.DemiBold))
         self._fio_label.setStyleSheet("color: #121a17; background: transparent;")
 
         self._dept_label = QLabel("")
-        self._dept_label.setFont(app_font(12))
+        self._dept_label.setFont(app_font(11))
         self._dept_label.setStyleSheet("color: #5a6b63; background: transparent;")
 
         self._health_label = QLabel("")
@@ -90,16 +112,16 @@ class MainShell(QWidget):
 
         self.logout_btn = QPushButton("Выйти")
         self.logout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.logout_btn.setFont(app_font(12, QFont.Weight.DemiBold))
-        self.logout_btn.setFixedHeight(36)
+        self.logout_btn.setFont(app_font(11, QFont.Weight.DemiBold))
+        self.logout_btn.setFixedHeight(30)
         self.logout_btn.setStyleSheet(
             """
             QPushButton {
                 background: #0a4a38;
                 color: #f5f7f6;
                 border: none;
-                border-radius: 18px;
-                padding: 0 18px;
+                border-radius: 15px;
+                padding: 0 14px;
             }
             QPushButton:hover { background: #0d5c46; }
             QPushButton:pressed { background: #062e24; }
@@ -119,13 +141,13 @@ class MainShell(QWidget):
 
         self._content = ContentPane()
         content_layout = QVBoxLayout(self._content)
-        content_layout.setContentsMargins(32, 28, 32, 28)
-        content_layout.setSpacing(18)
+        content_layout.setContentsMargins(28, 22, 28, 26)
+        content_layout.setSpacing(16)
         content_layout.addLayout(header)
         content_layout.addWidget(self._pages, 1)
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(0, 0, 14, 0)
+        root.setContentsMargins(10, 22, 22, 22)
         root.setSpacing(0)
         root.addWidget(self.sidebar, 0)
         root.addWidget(self._content, 1)

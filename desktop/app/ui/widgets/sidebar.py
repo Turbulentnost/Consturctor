@@ -32,10 +32,10 @@ from app.ui.theme import (
 # Active tab is a white pill that flows directly into the white content pane.
 OVERLAP = 0.0
 SCOOP = 0.0
-ITEM_GAP = 10.0
-SIDEBAR_GREEN = QColor("#0a3d30")
-SIDEBAR_GREEN_DEEP = QColor("#072820")
-INACTIVE_PILL = QColor(255, 255, 255, 22)
+ITEM_GAP = 8.0
+SIDEBAR_GREEN = QColor("#073f31")
+SIDEBAR_GREEN_DEEP = QColor("#04231d")
+INACTIVE_PILL = QColor(255, 255, 255, 18)
 
 
 @dataclass(frozen=True)
@@ -53,17 +53,23 @@ def active_tab_path(
     left_radius: float,
     scoop: float,
 ) -> QPainterPath:
-    """White tab: rounded on the left and square on the right, flush to content."""
+    """White tab: rounded on the left, softly rounded into the content on the right."""
     r = min(left_radius, height / 2.0)
+    rr = min(18.0, height / 2.0)
+    bottom = top + height
 
-    body = QPainterPath()
-    # Main band to the content edge (square on the right)
-    body.addRect(QRectF(left + r, top, right - left - r, height))
-    # Fully rounded left capsule half
-    left_cap = QPainterPath()
-    left_cap.addRoundedRect(QRectF(left, top, r * 2, height), r, r)
-    body = body.united(left_cap)
-    return body
+    path = QPainterPath()
+    path.moveTo(left + r, top)
+    path.lineTo(right - rr, top)
+    path.quadTo(right, top, right, top + rr)
+    path.lineTo(right, bottom - rr)
+    path.quadTo(right, bottom, right - rr, bottom)
+    path.lineTo(left + r, bottom)
+    path.arcTo(QRectF(left, bottom - 2 * r, 2 * r, 2 * r), 270, -90)
+    path.lineTo(left, top + r)
+    path.arcTo(QRectF(left, top, 2 * r, 2 * r), 180, -90)
+    path.closeSubpath()
+    return path
 
 
 class GlassSidebar(QWidget):
@@ -109,7 +115,7 @@ class GlassSidebar(QWidget):
         return self._collapsed
 
     def _item_top(self, index: int) -> float:
-        return 100.0 + index * (NAV_ITEM_HEIGHT + ITEM_GAP)
+        return 104.0 + index * (NAV_ITEM_HEIGHT + ITEM_GAP)
 
     def _tab_top(self) -> float:
         return self._indicator_y - OVERLAP
@@ -171,7 +177,7 @@ class GlassSidebar(QWidget):
         return -1
 
     def _hit_collapse(self, pos: QPoint) -> bool:
-        cx, cy, r = self.width() - 22, 40, 14
+        cx, cy, r = self.width() - 18, 38, 11
         dx, dy = pos.x() - cx, pos.y() - cy
         return dx * dx + dy * dy <= r * r
 
@@ -204,12 +210,11 @@ class GlassSidebar(QWidget):
         w = float(self.width())
         h = float(self.height())
 
-        p.fillRect(QRectF(0, 0, w, h), SIDEBAR_GREEN)
-        p.fillRect(QRectF(0, 0, 8, h), QColor(0, 0, 0, 30))
+        p.fillRect(QRectF(0, 0, w, h), QColor(0, 0, 0, 0))
 
-        left = 10.0
+        left = 6.0
         # Inactive pills stay inside the sidebar; active tab reaches the white pane.
-        inactive_right = w - 16
+        inactive_right = w - 12
         inactive_w = max(80.0, inactive_right - left)
 
         for i, _item in enumerate(self._items):
@@ -249,7 +254,7 @@ class GlassSidebar(QWidget):
         p.end()
 
     def _draw_logo(self, p: QPainter) -> None:
-        cx, cy, r = 36, 40, 17
+        cx, cy, r = 26, 38, 14
         p.setPen(Qt.PenStyle.NoPen)
         if not self._logo.isNull():
             p.drawPixmap(
@@ -271,31 +276,32 @@ class GlassSidebar(QWidget):
         if not self._collapsed:
             p.setPen(COLOR_TEXT)
             p.setFont(app_font(15, QFont.Weight.DemiBold))
-            p.drawText(QRectF(60, 26, 130, 28), Qt.AlignmentFlag.AlignVCenter, "turbobot")
+            p.setFont(app_font(13, QFont.Weight.DemiBold))
+            p.drawText(QRectF(46, 25, 82, 26), Qt.AlignmentFlag.AlignVCenter, "turbobot")
 
     def _draw_collapse(self, p: QPainter) -> None:
-        cx, cy, r = self.width() - 22, 40, 13
+        cx, cy, r = self.width() - 18, 38, 10
         p.setPen(QPen(QColor(255, 255, 255, 50), 1))
         p.setBrush(QColor(255, 255, 255, 22))
         p.drawEllipse(QPoint(cx, cy), r, r)
         p.setPen(QPen(COLOR_TEXT, 2))
         if self._collapsed:
-            p.drawLine(cx - 3, cy - 5, cx + 3, cy)
-            p.drawLine(cx + 3, cy, cx - 3, cy + 5)
+            p.drawLine(cx - 2, cy - 4, cx + 2, cy)
+            p.drawLine(cx + 2, cy, cx - 2, cy + 4)
         else:
-            p.drawLine(cx + 3, cy - 5, cx - 3, cy)
-            p.drawLine(cx - 3, cy, cx + 3, cy + 5)
+            p.drawLine(cx + 2, cy - 4, cx - 2, cy)
+            p.drawLine(cx - 2, cy, cx + 2, cy + 4)
 
     def _draw_item(self, p: QPainter, item: NavItem, y: float, color: QColor, active: bool) -> None:
-        icon_x = 34
+        icon_x = 22
         icon_y = y + NAV_ITEM_HEIGHT / 2
         self._draw_icon(p, item.icon, icon_x, icon_y, color)
         if self._collapsed:
             return
         p.setPen(color)
         weight = QFont.Weight.DemiBold if active else QFont.Weight.Medium
-        p.setFont(app_font(13, weight))
-        text_rect = QRectF(56, y, self.width() - 70, NAV_ITEM_HEIGHT)
+        p.setFont(app_font(11, weight))
+        text_rect = QRectF(40, y, self.width() - 46, NAV_ITEM_HEIGHT)
         p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, item.label)
 
     def _draw_icon(self, p: QPainter, kind: str, cx: float, cy: float, color: QColor) -> None:
@@ -303,8 +309,8 @@ class GlassSidebar(QWidget):
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
         if kind == "plus":
-            p.drawLine(QPoint(int(cx - 6), int(cy)), QPoint(int(cx + 6), int(cy)))
-            p.drawLine(QPoint(int(cx), int(cy - 6)), QPoint(int(cx), int(cy + 6)))
+            p.drawLine(QPoint(int(cx - 5), int(cy)), QPoint(int(cx + 5), int(cy)))
+            p.drawLine(QPoint(int(cx), int(cy - 5)), QPoint(int(cx), int(cy + 5)))
         elif kind == "agents":
             p.drawEllipse(QPoint(int(cx - 4), int(cy - 3)), 4, 4)
             p.drawEllipse(QPoint(int(cx + 5), int(cy - 1)), 3, 3)
