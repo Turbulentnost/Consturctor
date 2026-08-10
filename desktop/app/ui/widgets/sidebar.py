@@ -93,7 +93,8 @@ class NavigationItem(QWidget):
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QPainterPath()
         path.addRoundedRect(rect.adjusted(0, 1, 0, -1), NAV_ITEM_RADIUS, NAV_ITEM_RADIUS)
@@ -113,11 +114,13 @@ class NavigationItem(QWidget):
 
         p.fillPath(path, fill)
         self._draw_icon(p, rect.left() + 18, rect.center().y(), text)
+        # Integer text box keeps glyphs on the pixel grid (less blur than QRectF).
         p.setPen(text)
         p.setFont(app_font(14, QFont.Weight.Medium if not self._active else QFont.Weight.DemiBold))
+        text_rect = self.rect().adjusted(44, 0, -12, 0)
         p.drawText(
-            QRectF(rect.left() + 44, rect.top(), rect.width() - 52, rect.height()),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            text_rect,
+            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
             self.item.label,
         )
         p.end()
@@ -195,8 +198,8 @@ class GlassSidebar(QWidget):
         root.setSpacing(0)
 
         header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 12, 0)
-        header.setSpacing(11)
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(12)
 
         logo = QLabel()
         logo.setFixedSize(36, 36)
@@ -216,6 +219,7 @@ class GlassSidebar(QWidget):
         title.setFont(app_font(18, QFont.Weight.DemiBold))
         title.setStyleSheet("color: #EAF7F3; background: transparent;")
         title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        title.setMinimumWidth(110)
         header.addWidget(title, 1)
 
         collapse = QPushButton("‹")

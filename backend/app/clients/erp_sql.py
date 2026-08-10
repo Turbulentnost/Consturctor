@@ -288,17 +288,22 @@ def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
         term = (search or "").strip()
 
         if term:
-            pattern = f"%{term}%"
+            # Prefix on whole FIO or any word — avoids "Ман" matching inside "Романовна".
+            starts = f"{term}%"
+            word_starts = f"% {term}%"
             cur.execute(
                 f"""
                 SELECT DISTINCT TOP (?) {_FIO_EXPR} AS Fio
                 FROM dbo.v8users v WITH (NOLOCK)
                 WHERE {_FIO_EXPR} LIKE ?
+                   OR {_FIO_EXPR} LIKE ?
                    OR LTRIM(RTRIM(v.Name)) LIKE ?
+                   OR LTRIM(RTRIM(v.Name)) LIKE ?
+                   OR LTRIM(RTRIM(v.Descr)) LIKE ?
                    OR LTRIM(RTRIM(v.Descr)) LIKE ?
                 ORDER BY Fio
                 """,
-                (limit, pattern, pattern, pattern),
+                (limit, starts, word_starts, starts, word_starts, starts, word_starts),
             )
         else:
             cur.execute(

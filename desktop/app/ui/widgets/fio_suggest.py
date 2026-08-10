@@ -16,8 +16,12 @@ from PySide6.QtWidgets import (
 
 from app.ui.theme import app_font
 
-_MAX_VISIBLE_ROWS = 8
-_MIN_LIST_HEIGHT = 200
+_ALL_KEY = ""
+_MAX_VISIBLE_ROWS = 5
+_ROW_HEIGHT = 40
+_POPUP_MARGINS = 8
+_MAX_ITEMS = 200
+_WINDOW_EDGE_PAD = 12
 
 
 class FioSuggestEdit(QLineEdit):
@@ -60,6 +64,7 @@ class FioSuggestEdit(QLineEdit):
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self._list.setUniformItemSizes(True)
         self._list.setStyleSheet(
             """
             QListWidget {
@@ -67,10 +72,11 @@ class FioSuggestEdit(QLineEdit):
                 color: #f5f7f6;
                 border: none;
                 outline: none;
-                padding: 4px;
+                padding: 2px;
             }
             QListWidget::item {
-                padding: 10px 14px;
+                height: 36px;
+                padding: 0 12px;
                 border-radius: 10px;
             }
             QListWidget::item:hover,
@@ -98,11 +104,12 @@ class FioSuggestEdit(QLineEdit):
 
         lay = QVBoxLayout(self._popup)
         lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(0)
         lay.addWidget(self._list)
 
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
-        self._timer.setInterval(250)
+        self._timer.setInterval(180)
         self._timer.timeout.connect(self._reload_suggestions)
 
         self.textEdited.connect(self._on_text_edited)
@@ -125,12 +132,12 @@ class FioSuggestEdit(QLineEdit):
 
     def focusInEvent(self, event) -> None:  # noqa: N802
         super().focusInEvent(event)
-        self._show_hint_or_cached()
+        self._open_suggestions()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         super().mousePressEvent(event)
         if not self._popup.isVisible():
-            self._show_hint_or_cached()
+            self._open_suggestions()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         key = event.key()
@@ -171,39 +178,45 @@ class FioSuggestEdit(QLineEdit):
             self._position_popup()
 
     def _on_text_edited(self, _text: str) -> None:
+        # Optimistic local filter (may be incomplete — catalog is only first N names).
+        if _ALL_KEY in self._cache:
+            self._apply_filtered_view(allow_empty=False)
+            self._show_popup()
         self._timer.start()
 
-    def _show_hint_or_cached(self) -> None:
+    def _open_suggestions(self) -> None:
         query = self.text().strip()
-        key = query.lower()
-        if len(query) < 2:
-            self._populate_message("Введите минимум 2 символа")
+        if not query and _ALL_KEY in self._cache:
+            self._populate(self._cache[_ALL_KEY])
             self._show_popup()
             return
-        if key in self._cache:
-            self._populate(self._cache[key])
+        if query and query.lower() in self._cache:
+            self._populate(self._cache[query.lower()])
             self._show_popup()
             return
+        if query and _ALL_KEY in self._cache:
+            self._apply_filtered_view(allow_empty=False)
+            self._show_popup()
         self._reload_suggestions()
 
     def _reload_suggestions(self) -> None:
         if self._suppress_fetch or not self.isVisible() or not self.isEnabled():
             return
-        query = self.text().strip()
-        if len(query) < 2:
-            self._populate_message("Введите минимум 2 символа")
-            self._show_popup()
-            return
 
+        query = self.text().strip()
         key = query.lower()
+
         if key in self._cache:
             self._populate(self._cache[key])
             self._show_popup()
             return
 
+        # Empty query → browse catalog; non-empty → server search (needed because
+        # the empty catalog is only TOP N alphabetically and may miss the target FIO).
         self._request_token = key
-        self._populate_message("Ищем совпадения…")
-        self._show_popup()
+        if not self._popup.isVisible() or self._list.count() == 0:
+            self._populate_message("Загружаем список…")
+            self._show_popup()
         Thread(target=self._fetch_in_background, args=(query, key), daemon=True).start()
 
     def _fetch_in_background(self, query: str, key: str) -> None:
@@ -215,6 +228,8 @@ class FioSuggestEdit(QLineEdit):
 
     def _apply_async_suggestions(self, key: str, items_obj: object) -> None:
         items = [str(x) for x in (items_obj or [])]
+        if key:
+            items = [name for name in items if self._matches_query(name, key)]
         self._cache[key] = items
         if key != self._request_token:
             return
@@ -227,6 +242,28 @@ class FioSuggestEdit(QLineEdit):
             self._populate(items)
         self._show_popup()
 
+    def _apply_filtered_view(self, *, allow_empty: bool = True) -> None:
+        catalog = self._cache.get(_ALL_KEY, [])
+        query = self.text().strip().lower()
+        if not query:
+            matched = catalog
+        else:
+            matched = [name for name in catalog if self._matches_query(name, query)]
+        if not matched:
+            if allow_empty:
+                self._populate_message("Ничего не найдено")
+            # else keep current list until server responds
+            return
+        self._populate(matched)
+
+    @staticmethod
+    def _matches_query(name: str, query: str) -> bool:
+        lowered = name.casefold()
+        q = query.casefold()
+        if lowered.startswith(q):
+            return True
+        return any(part.startswith(q) for part in lowered.split())
+
     def _populate_message(self, text: str) -> None:
         self._list.clear()
         item = QListWidgetItem(text)
@@ -236,16 +273,9 @@ class FioSuggestEdit(QLineEdit):
 
     def _populate(self, items: list[str]) -> None:
         self._list.clear()
-        for value in items[:40]:
+        for value in items[:_MAX_ITEMS]:
             self._list.addItem(QListWidgetItem(value))
         self._list.setCurrentRow(-1)
-
-    def _row_height(self) -> int:
-        if self._list.count() > 0:
-            hint = self._list.sizeHintForRow(0)
-            if hint > 0:
-                return max(hint, 44)
-        return 44
 
     def _is_message_list(self) -> bool:
         if self._list.count() != 1:
@@ -253,35 +283,45 @@ class FioSuggestEdit(QLineEdit):
         item = self._list.item(0)
         return item is not None and not (item.flags() & Qt.ItemFlag.ItemIsSelectable)
 
-    def _popup_size(self) -> tuple[int, int]:
-        width = max(self.width(), 320)
+    def _desired_height(self) -> int:
         count = self._list.count()
         if count == 0:
-            return width, 0
-
-        row_h = self._row_height()
-        margins = 8
-
+            return 0
         if self._is_message_list():
-            return width, margins + row_h
-
+            return _POPUP_MARGINS + _ROW_HEIGHT
         visible_rows = min(count, _MAX_VISIBLE_ROWS)
-        height = margins + visible_rows * row_h
-        if count >= 3:
-            height = max(height, _MIN_LIST_HEIGHT)
-        return width, height
+        return _POPUP_MARGINS + visible_rows * _ROW_HEIGHT
 
     def _position_popup(self) -> None:
-        width, height = self._popup_size()
+        width = max(self.width(), 320)
+        height = self._desired_height()
         if height <= 0:
             return
+
         top = self.window()
+        if top is None:
+            return
         if self._popup.parentWidget() is not top:
             self._popup.setParent(top)
             self._popup.setWindowFlags(Qt.WindowType.Widget)
+
+        below = self.mapTo(top, QPoint(0, self.height() + 6))
+        above = self.mapTo(top, QPoint(0, 0))
+        space_below = top.height() - below.y() - _WINDOW_EDGE_PAD
+        space_above = above.y() - _WINDOW_EDGE_PAD
+
+        if space_below >= min(height, _POPUP_MARGINS + _ROW_HEIGHT * 3) or space_below >= space_above:
+            height = min(height, max(_POPUP_MARGINS + _ROW_HEIGHT, space_below))
+            pos = below
+        else:
+            height = min(height, max(_POPUP_MARGINS + _ROW_HEIGHT, space_above))
+            pos = QPoint(above.x(), above.y() - height - 6)
+
         self._popup.setFixedSize(width, height)
-        pos = self.mapTo(top, QPoint(0, self.height() + 6))
         self._popup.move(pos)
+        self._list.setMinimumHeight(0)
+        self._list.setMaximumHeight(16777215)
+        self._list.setFixedHeight(max(_ROW_HEIGHT, height - _POPUP_MARGINS))
 
     def _show_popup(self) -> None:
         if self._list.count() == 0 or not self.isVisible() or not self.isEnabled():

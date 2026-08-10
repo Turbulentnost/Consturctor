@@ -32,11 +32,11 @@ COLOR_CONTENT_BG = QColor("#FAFCFB")
 COLOR_CONTENT_TEXT = MAIN_TEXT
 COLOR_CONTENT_MUTED = QColor("#6B7773")
 
-SIDEBAR_EXPANDED = 216
-SIDEBAR_COLLAPSED = 78
+SIDEBAR_EXPANDED = 268
+SIDEBAR_COLLAPSED = 84
 NAV_ITEM_HEIGHT = 44
 NAV_ITEM_RADIUS = 16
-SIDEBAR_PADDING_X = 16
+SIDEBAR_PADDING_X = 18
 CONTENT_PADDING_X = 36
 CONTENT_PADDING_TOP = 30
 
@@ -46,14 +46,16 @@ _ASSETS = Path(__file__).resolve().parents[2] / "assets" / "fonts"
 
 
 def load_fonts() -> str:
-    """Load bundled Manrope fonts; return family name to use."""
+    """Load bundled Manrope static faces; return family name to use."""
     global FONT_FAMILY
     preferred: list[str] = []
-    # Variable face first — clean family name "Manrope"
+    # Prefer complete static TTFs — variable/broken faces look soft on Windows.
     for name in (
-        "Manrope-Variable.ttf",
         "Manrope-Regular.ttf",
+        "Manrope-Medium.ttf",
         "Manrope-SemiBold.ttf",
+        "Manrope-Bold.ttf",
+        "Manrope-Variable.ttf",
     ):
         path = _ASSETS / name
         if not path.exists():
@@ -77,15 +79,25 @@ def load_fonts() -> str:
 
 
 def app_font(size: int = 14, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
-    font = QFont(FONT_FAMILY, size)
+    font = QFont(FONT_FAMILY)
+    font.setPixelSize(size)
     font.setWeight(weight)
-    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    # Full hinting keeps glyphs sharp under Windows ClearType / fractional DPI.
+    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+    font.setStyleStrategy(
+        QFont.StyleStrategy.PreferQuality
+        | QFont.StyleStrategy.PreferAntialias
+        | QFont.StyleStrategy.NoFontMerging
+    )
     return font
 
 
 def qss_global(family: str) -> str:
     return f"""
     * {{
+        font-family: "{family}";
+    }}
+    QLabel, QPushButton, QLineEdit, QListWidget, QToolTip {{
         font-family: "{family}";
     }}
     QToolTip {{

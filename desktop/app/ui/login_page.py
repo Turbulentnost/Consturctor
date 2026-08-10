@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -19,6 +18,7 @@ from app.api_client import ApiClient, ApiError, LoginResult
 from app.ui.theme import app_font
 from app.ui.widgets.fio_suggest import FioSuggestEdit
 from app.ui.widgets.gradient_bg import GlassPanel, GradientBackground
+from app.ui.widgets.password_edit import PasswordEdit
 
 
 class LoginPage(QWidget):
@@ -86,11 +86,7 @@ class LoginPage(QWidget):
         self.fio_edit.setStyleSheet(field_qss)
         self.fio_edit.returnPressed.connect(self._submit)
 
-        self.password_edit = QLineEdit()
-        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_edit.setPlaceholderText("Пароль 1С")
-        self.password_edit.setStyleSheet(field_qss)
-        self.password_edit.setFont(app_font(13))
+        self.password_edit = PasswordEdit()
         self.password_edit.returnPressed.connect(self._submit)
 
         fio_label = QLabel("ФИО")
