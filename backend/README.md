@@ -1,4 +1,4 @@
-# Constructor Backend
+# turbobot Backend
 
 FastAPI-сервис между desktop и внешними системами (1С `erp_pm`, LLM/VLM).
 
@@ -44,7 +44,7 @@ Backend остаётся единственной точкой для модел
 ## Запуск
 
 ```powershell
-cd c:\Users\testii\Downloads\projects_Mangasaryan\Constructor\backend
+cd c:\Users\testii\Downloads\projects_Mangasaryan\turbobot\backend
 python -m pip install -e .
 copy .env.example .env
 python -m app.main
