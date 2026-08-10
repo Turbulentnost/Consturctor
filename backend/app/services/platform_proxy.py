@@ -43,32 +43,27 @@ async def invoke_tool(
     *,
     authorization: str | None = None,
 ) -> ToolResult:
-    base_url = settings.tool_service_url(tool_name)
-    if not base_url:
-        raise PlatformProxyError(f"Unknown tool: {tool_name}", status_code=404)
-
-    run_id = str(request.run_id) if request.run_id else None
+    """Route tool execution through Agent Runtime (orchestrator), not directly to tools."""
+    url = f"{settings.orchestrator_url.rstrip('/')}/api/v1/tools/{tool_name}/invoke"
     headers = _forward_headers(
         authorization=authorization,
-        run_id=run_id,
+        run_id=str(request.run_id) if request.run_id else None,
         department=request.department,
         user_id=request.user_id,
     )
-    url = f"{base_url.rstrip('/')}/api/v1/tools/{tool_name}/invoke"
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(url, json=request.model_dump(mode="json"), headers=headers)
     except httpx.ConnectError as exc:
-        raise PlatformProxyError(f"Tool service unavailable: {tool_name}") from exc
+        raise PlatformProxyError("Agent runtime unavailable") from exc
     except httpx.TimeoutException as exc:
-        raise PlatformProxyError(f"Tool service timeout: {tool_name}") from exc
+        raise PlatformProxyError(f"Agent runtime timeout for tool: {tool_name}") from exc
 
     if response.status_code >= 400:
         detail = _extract_detail(response)
         raise PlatformProxyError(detail, status_code=response.status_code)
 
-    data = response.json()
-    return ToolResult.model_validate(data)
+    return ToolResult.model_validate(response.json())
 
 
 async def proxy_get(service_url: str, path: str, *, authorization: str | None = None) -> dict[str, Any]:

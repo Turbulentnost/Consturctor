@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     orchestrator_broker: str = "amqp://guest:guest@127.0.0.1:5672//"
 
     use_stubs: bool = True
+    auth_stub: bool = False
     tool_manifest_path: str = ""
 
     def tool_service_url(self, tool_name: str) -> str | None:

@@ -12,11 +12,41 @@ from app.clients.erp_sql import (
     get_user_profile_by_fio,
     search_user_fios,
 )
+from app.config import settings
 from app.core.jwt import create_access_token
 from app.schemas.auth import LoginResponse, UserOut
 from tools.onec.password import verify_password
 
 logger = logging.getLogger(__name__)
+
+
+def _erp_login_error_message(exc: ErpSqlError) -> str:
+    text = str(exc)
+    if "IM002" in text or "driver not found" in text.lower():
+        return (
+            "ODBC к базе 1С не настроен. Установите «ODBC Driver 18 for SQL Server» "
+            "или укажите ERP_SQL_DRIVER=SQL Server в backend\\.env и перезапустите gateway."
+        )
+    if "18456" in text:
+        return (
+            "Нет доступа к SQL Server erp_pm под вашей учётной записью Windows. "
+            "Откройте SSMS с тем же логином или задайте ERP_SQL_USER/ERP_SQL_PASSWORD "
+            "и ERP_SQL_TRUSTED_CONNECTION=no в backend\\.env."
+        )
+    return f"Сервис аутентификации 1С недоступен: {text}"
+
+
+def _stub_login(fio: str) -> LoginResponse:
+    token = create_access_token(
+        user_id="auth-stub",
+        fio=fio,
+        department="Demo (AUTH_STUB)",
+    )
+    logger.info("AUTH_STUB login: fio=%s", fio)
+    return LoginResponse(
+        access_token=token,
+        user=UserOut(id="auth-stub", fio=fio, department="Demo (AUTH_STUB)"),
+    )
 
 
 class AuthError(Exception):
@@ -38,8 +68,11 @@ async def login(fio: str, password: str) -> LoginResponse:
     except AmbiguousUserError as exc:
         raise AuthError("Найдено несколько пользователей с таким ФИО", status_code=409) from exc
     except ErpSqlError as exc:
+        if settings.auth_stub:
+            logger.warning("ERP SQL unavailable, using AUTH_STUB login for %s", fio)
+            return _stub_login(fio)
         logger.exception("ERP SQL error during login")
-        raise AuthError("Сервис аутентификации недоступен", status_code=503) from exc
+        raise AuthError(_erp_login_error_message(exc), status_code=503) from exc
 
     data = erp_user.data or b""
     if not data or not verify_password(data, password):

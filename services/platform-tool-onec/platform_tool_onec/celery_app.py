@@ -13,7 +13,7 @@ celery_app.conf.task_annotations = {"platform_tool_onec.invoke_async": {"rate_li
 
 @celery_app.task(name="platform_tool_onec.invoke_async", bind=True, max_retries=5)
 def invoke_async(self, tool_name: str, payload: dict) -> dict:
-    from platform_contracts.tools import ToolInvokeRequest
+    from platform_contracts.tools import ToolInvokeRequest, ToolResult
     from platform_tool_onec.main import REAL_HANDLERS, STUB_HANDLERS, settings
 
     req = ToolInvokeRequest.model_validate(payload)
@@ -22,6 +22,39 @@ def invoke_async(self, tool_name: str, payload: dict) -> dict:
     if handler is None:
         raise ValueError(f"Unknown tool: {tool_name}")
     try:
-        return handler(req)
+        data = handler(req)
+        return ToolResult(ok=True, tool_name=tool_name, data=data, duration_ms=0).model_dump(mode="json")
     except Exception as exc:
         raise self.retry(exc=exc, countdown=60) from exc
+
+
+@celery_app.task(name="platform_tool_onec.poll_events")
+def poll_events() -> dict:
+    """Periodic 1C OData change detection; enqueues tool tasks on new events."""
+    from platform_contracts.tools import ToolInvokeRequest
+    from platform_tool_onec.main import REAL_HANDLERS, STUB_HANDLERS, settings
+
+    if settings.use_stubs:
+        invoke_async.delay(
+            "onec.odata_get",
+            ToolInvokeRequest(payload={"source": "poll_events", "path": "/stub/changes"}).model_dump(
+                mode="json"
+            ),
+        )
+        return {"polled": True, "stub": True, "enqueued": "onec.odata_get"}
+
+    handler = REAL_HANDLERS.get("onec.odata_get")
+    if handler is None:
+        return {"polled": True, "changes": 0}
+    result = handler(
+        ToolInvokeRequest(payload={"source": "poll_events", "path": "/Document_Changes"})
+    )
+    changes = int(result.get("count", 0))
+    if changes > 0:
+        invoke_async.delay(
+            "onec.odata_get",
+            ToolInvokeRequest(
+                payload={"source": "poll_events", "path": "/Document_Changes", "trigger": "new_event"}
+            ).model_dump(mode="json"),
+        )
+    return {"polled": True, "changes": changes}

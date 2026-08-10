@@ -69,9 +69,34 @@ class UserNotFoundError(ErpSqlError):
     pass
 
 
+_PREFERRED_ODBC_DRIVERS = (
+    "ODBC Driver 18 for SQL Server",
+    "ODBC Driver 17 for SQL Server",
+    "SQL Server",
+)
+
+
+def resolve_odbc_driver(configured: str) -> str:
+    """Pick an installed ODBC driver; configured name wins if present."""
+    installed = pyodbc.drivers()
+    configured = (configured or "").strip()
+    if configured and configured in installed:
+        return configured
+    for name in _PREFERRED_ODBC_DRIVERS:
+        if name in installed:
+            return name
+    if configured:
+        return configured
+    available = ", ".join(installed) if installed else "нет установленных драйверов"
+    raise ErpSqlError(
+        f"ODBC driver not found ({configured or 'auto'}). Installed: {available}"
+    )
+
+
 def _build_connection_string() -> str:
+    driver = resolve_odbc_driver(settings.erp_sql_driver)
     parts = [
-        f"DRIVER={{{settings.erp_sql_driver}}}",
+        f"DRIVER={{{driver}}}",
         f"SERVER={settings.erp_sql_server}",
         f"DATABASE={settings.erp_sql_database}",
         f"Encrypt={settings.erp_sql_encrypt}",

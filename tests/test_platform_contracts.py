@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from platform_contracts.agent_card import AgentCard, AgentTaskSpec
 from platform_contracts.kpi import KpiSummary, ReviewEventCreate
 from platform_contracts.runs import RunStartRequest, RunStatus, RunStatusEnum
 from platform_contracts.tools import ToolInvokeRequest, ToolResult
@@ -40,6 +41,22 @@ def test_kpi_summary_defaults() -> None:
     summary = KpiSummary()
     assert summary.total_runs == 0
     assert summary.success_rate == 0.0
+
+
+def test_agent_card_tasks() -> None:
+    card = AgentCard(
+        agent_id="inbound-mail-v1",
+        title="Test",
+        tasks=[
+            AgentTaskSpec(
+                task_id="classify_incoming",
+                title="Классификация",
+                evaluation_criteria={"requires_category": True},
+            )
+        ],
+    )
+    assert card.tasks[0].task_id == "classify_incoming"
+    assert "allowed_tools" not in card.tasks[0].model_fields
 
 
 def test_review_event_create() -> None:

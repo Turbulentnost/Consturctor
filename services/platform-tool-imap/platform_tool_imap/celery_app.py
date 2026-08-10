@@ -12,7 +12,7 @@ celery_app.conf.task_routes = {"platform_tool_imap.*": {"queue": "imap"}}
 
 @celery_app.task(name="platform_tool_imap.invoke_async", bind=True, max_retries=3)
 def invoke_async(self, tool_name: str, payload: dict) -> dict:
-    from platform_contracts.tools import ToolInvokeRequest
+    from platform_contracts.tools import ToolInvokeRequest, ToolResult
     from platform_tool_imap.main import REAL_HANDLERS, STUB_HANDLERS, settings
 
     req = ToolInvokeRequest.model_validate(payload)
@@ -21,6 +21,36 @@ def invoke_async(self, tool_name: str, payload: dict) -> dict:
     if handler is None:
         raise ValueError(f"Unknown tool: {tool_name}")
     try:
-        return handler(req)
+        data = handler(req)
+        return ToolResult(ok=True, tool_name=tool_name, data=data, duration_ms=0).model_dump(mode="json")
     except Exception as exc:
         raise self.retry(exc=exc, countdown=5) from exc
+
+
+@celery_app.task(name="platform_tool_imap.poll_mailbox")
+def poll_mailbox() -> dict:
+    """Periodic IMAP check; enqueues fetch tasks when new mail is detected."""
+    from platform_contracts.tools import ToolInvokeRequest
+    from platform_tool_imap.main import REAL_HANDLERS, settings
+
+    if settings.use_stubs:
+        invoke_async.delay(
+            "imap.list_unread",
+            ToolInvokeRequest(payload={"source": "poll_mailbox"}).model_dump(mode="json"),
+        )
+        return {"polled": True, "stub": True, "enqueued": "imap.list_unread"}
+
+    table = REAL_HANDLERS
+    handler = table.get("imap.list_unread")
+    if handler is None:
+        return {"polled": True, "new_messages": 0}
+    result = handler(ToolInvokeRequest(payload={"source": "poll_mailbox"}))
+    count = int(result.get("count", 0))
+    if count > 0:
+        invoke_async.delay(
+            "imap.list_unread",
+            ToolInvokeRequest(payload={"source": "poll_mailbox", "trigger": "new_mail"}).model_dump(
+                mode="json"
+            ),
+        )
+    return {"polled": True, "new_messages": count}
