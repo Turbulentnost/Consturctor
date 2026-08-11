@@ -134,7 +134,7 @@ scripts\start_platform_all.cmd
 
 Подробнее: **[AGENT_BUILDER.md](AGENT_BUILDER.md)** (карта репо и tools), [PLATFORM.md](PLATFORM.md), [AGENT_INTERACTION.md](AGENT_INTERACTION.md).
 
-**Demo UI** для ручной проверки sandbox (вне этого репозитория): `platform-demo-ui/` рядом с `Consturctor/`, URL http://127.0.0.1:8790/
+**Demo UI** для ручной проверки sandbox: [`platform-demo-ui/`](platform-demo-ui/), URL http://127.0.0.1:8790/
 
 ---
 

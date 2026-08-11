@@ -1,0 +1,61 @@
+flowchart LR
+    subgraph client ["Client Layer"]
+        desktop["Desktop PySide6"]
+        demoUi["Demo UI"]
+        mcpClient["MCP Agents"]
+    end
+    subgraph gateway ["API Gateway"]
+        gwBackend["Backend :7812"]
+    end
+    subgraph service ["Platform Services"]
+        authSvc["Auth Service"]
+        agentRuntime["Agent Runtime :7825"]
+        celeryBeat["Celery Beat"]
+        kpiSvc["KPI :7820"]
+        imapWorker["IMAP Worker"]
+        onecWorker["1C Worker"]
+        shellWorker["Shell Worker"]
+        browserWorker["Browser Worker"]
+    end
+    subgraph taskQueues ["Task Queues"]
+        qDefault["default queue"]
+        qImap["imap queue"]
+        qOnec["onec queue"]
+        qShell["shell queue"]
+        qBrowser["browser queue"]
+    end
+    subgraph datastore ["Data Stores"]
+        postgres["PostgreSQL"]
+    end
+    subgraph external ["External Systems"]
+        erpSql["ERP SQL"]
+        imapSrv["IMAP Server"]
+        erpOdata["1C OData"]
+    end
+
+    desktop -->|"JWT login"| gwBackend
+    demoUi -->|"REST API"| gwBackend
+    mcpClient -->|"Agent API"| gwBackend
+    gwBackend -->|"Auth lookup"| authSvc
+    gwBackend -->|"Runs and tools"| agentRuntime
+    gwBackend -->|"Read KPI"| kpiSvc
+    authSvc -.->|"ERP SQL read"| erpSql
+    agentRuntime -->|"Schedules polls"| celeryBeat
+    agentRuntime -.->|"Enqueue run"| qDefault
+    agentRuntime -.->|"Enqueue imap"| qImap
+    agentRuntime -.->|"Enqueue onec"| qOnec
+    agentRuntime -.->|"Enqueue shell"| qShell
+    agentRuntime -.->|"Enqueue browser"| qBrowser
+    celeryBeat -.->|"Poll mailbox"| qImap
+    celeryBeat -.->|"Poll 1C events"| qOnec
+    qDefault -.->|"Consume run"| agentRuntime
+    qImap -.->|"Consume imap"| imapWorker
+    qOnec -.->|"Consume onec"| onecWorker
+    qShell -.->|"Consume shell"| shellWorker
+    qBrowser -.->|"Consume browser"| browserWorker
+    agentRuntime -->|"Runs audit"| postgres
+    kpiSvc -->|"KPI metrics"| postgres
+    imapWorker -->|"Tool audit"| postgres
+    onecWorker -->|"Tool audit"| postgres
+    imapWorker -.->|"IMAP fetch"| imapSrv
+    onecWorker -.->|"OData write"| erpOdata
