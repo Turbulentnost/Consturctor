@@ -1,41 +1,13 @@
 from __future__ import annotations
 
-import re
-
 from app.schemas.regulation import RegulationFragment, RegulationParseResult, RegulationTable
+from app.services.regulation.document_structure import (
+    normalize_text,
+    prepare_blocks,
+    section_nodes_to_dicts,
+)
 from app.services.regulation.quality import recognition_quality
-from app.services.regulation.types import ExtractedBlock, ExtractedDocument
-
-_SPACE_RE = re.compile(r"[ \t]+")
-
-
-def normalize_text(value: str) -> str:
-    lines = [_SPACE_RE.sub(" ", line).strip() for line in (value or "").splitlines()]
-    return "\n".join(line for line in lines if line)
-
-
-def looks_like_heading(text: str) -> bool:
-    t = normalize_text(text)
-    if not t or len(t) > 140:
-        return False
-    if t.endswith(".") and len(t.split()) > 4:
-        return False
-    lower = t.lower()
-    heading_words = (
-        "раздел",
-        "глава",
-        "общие положения",
-        "обязанности",
-        "ответственность",
-        "права",
-        "порядок",
-        "требования",
-    )
-    return (
-        any(lower.startswith(word) for word in heading_words)
-        or bool(re.match(r"^\d+(\.\d+)*[\).]?\s+\S+", t))
-        or (t.isupper() and len(t) > 3)
-    )
+from app.services.regulation.types import ExtractedDocument
 
 
 def build_result(
@@ -46,38 +18,56 @@ def build_result(
 ) -> RegulationParseResult:
     fragments: list[RegulationFragment] = []
     sections: list[str] = []
-    current_section = ""
     page_counts: dict[int, int] = {}
+    blocks, section_tree = prepare_blocks(extracted.blocks)
+    by_id = {block.block_id: block for block in blocks}
 
-    for block in extracted.blocks:
+    for block in blocks:
         block.text = normalize_text(block.text)
-        if block.section.strip():
-            current_section = normalize_text(block.section)
-        elif block.kind == "text" and looks_like_heading(block.text):
-            current_section = block.text
-
-        if current_section and current_section not in sections:
-            sections.append(current_section)
+        section_path = block.section_path or ([block.section] if block.section else [])
+        current_section = section_path[-1] if section_path else normalize_text(block.section)
+        for section in section_path or ([current_section] if current_section else []):
+            if section and section not in sections:
+                sections.append(section)
 
         page = max(1, int(block.page or 1))
         page_counts[page] = page_counts.get(page, 0) + 1
-        fragment_id = f"{regulation_id}-page-{page:02d}-block-{page_counts[page]:02d}"
+        fragment_id = f"{regulation_id}-{block.block_id or f'page-{page:02d}-block-{page_counts[page]:02d}'}"
         table = None
         if block.table is not None:
             table = RegulationTable(headers=block.table.headers, rows=block.table.rows)
+        previous_block = by_id.get(block.previous_fragment_id or "")
+        next_block = by_id.get(block.next_fragment_id or "")
         fragments.append(
             RegulationFragment(
                 fragmentId=fragment_id,
                 page=page,
                 section=current_section,
+                sectionPath=section_path,
                 kind=block.kind if block.kind in {"text", "table", "list"} else "text",
+                blockType=_public_block_type(block.block_type),
                 text=block.text,
                 table=table,
+                tableHeaders=block.table_headers,
+                cells=block.cells,
+                rowIndex=block.row_index,
+                bbox=list(block.bbox) if block.bbox is not None else None,
+                fontSize=block.font_size,
+                isBold=block.is_bold,
+                numbering=block.numbering,
+                context={
+                    "previousFragmentId": (
+                        f"{regulation_id}-{previous_block.block_id}" if previous_block else None
+                    ),
+                    "previousText": previous_block.text if previous_block else "",
+                    "nextFragmentId": f"{regulation_id}-{next_block.block_id}" if next_block else None,
+                    "nextText": next_block.text if next_block else "",
+                },
                 ocrConfidence=max(0.0, min(1.0, block.confidence)),
             )
         )
 
-    table_count = sum(1 for fragment in fragments if fragment.kind == "table")
+    table_count = sum(1 for block in blocks if block.block_type == "table")
     return RegulationParseResult(
         regulationId=regulation_id,
         fileName=filename,
@@ -87,5 +77,12 @@ def build_result(
         recognitionQuality=recognition_quality(extracted.blocks),
         isScan=extracted.is_scan,
         sections=sections,
+        sectionTree=section_nodes_to_dicts(section_tree),
         fragments=fragments,
     )
+
+
+def _public_block_type(value: str) -> str:
+    if value in {"paragraph", "heading", "list_item", "table", "table_row", "note"}:
+        return value
+    return "paragraph"

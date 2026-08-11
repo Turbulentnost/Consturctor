@@ -84,7 +84,9 @@ def _parse_blocks(raw: str) -> list[ExtractedBlock]:
                 section=str(item.get("section") or "").strip(),
                 text=str(item.get("text") or "").strip(),
                 kind=kind if kind in {"text", "table", "list"} else "text",
+                block_type="table" if kind == "table" else ("list_item" if kind == "list" else "paragraph"),
                 table=table,
+                table_headers=table.headers if table is not None else [],
                 confidence=float(item.get("ocrConfidence") or item.get("confidence") or 0.85),
             )
         )

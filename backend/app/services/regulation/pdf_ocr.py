@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.config import settings
-from app.services.regulation.types import ExtractedDocument
+from app.services.regulation.types import ExtractedBlock, ExtractedDocument
 from app.services.regulation.vlm_client import VlmError, recognize_pages
 
 

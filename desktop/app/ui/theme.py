@@ -116,6 +116,51 @@ def circular_pixmap(src: QPixmap, size: int) -> QPixmap:
     return out
 
 
+def scroll_bar_qss() -> str:
+    """Soft mint pill scrollbars used across content panes and tables."""
+    return """
+    QScrollBar:horizontal {
+        background: rgba(6, 72, 61, 0.10);
+        height: 10px;
+        margin: 4px 10px 3px 10px;
+        border: none;
+        border-radius: 5px;
+    }
+    QScrollBar:vertical {
+        background: rgba(6, 72, 61, 0.10);
+        width: 10px;
+        margin: 10px 3px 10px 4px;
+        border: none;
+        border-radius: 5px;
+    }
+    QScrollBar::handle:horizontal {
+        background: #7BB8A8;
+        border-radius: 5px;
+        min-width: 40px;
+    }
+    QScrollBar::handle:vertical {
+        background: #7BB8A8;
+        border-radius: 5px;
+        min-height: 40px;
+    }
+    QScrollBar::handle:horizontal:hover, QScrollBar::handle:vertical:hover {
+        background: #08745F;
+    }
+    QScrollBar::handle:horizontal:pressed, QScrollBar::handle:vertical:pressed {
+        background: #06483D;
+    }
+    QScrollBar::add-line, QScrollBar::sub-line {
+        width: 0px;
+        height: 0px;
+        border: none;
+        background: none;
+    }
+    QScrollBar::add-page, QScrollBar::sub-page {
+        background: none;
+    }
+    """
+
+
 def qss_global(family: str) -> str:
     return f"""
     * {{
@@ -131,4 +176,5 @@ def qss_global(family: str) -> str:
         padding: 6px 10px;
         border-radius: 8px;
     }}
+    {scroll_bar_qss()}
     """

@@ -22,7 +22,16 @@ def extract_docx(path: Path) -> ExtractedDocument:
             continue
         style = (paragraph.style.name or "").lower() if paragraph.style is not None else ""
         kind = "list" if "list" in style else "text"
-        if "heading" in style or "заголовок" in style:
+        is_heading = "heading" in style or "заголовок" in style
+        is_bold = any(run.bold for run in paragraph.runs)
+        font_sizes = [
+            run.font.size.pt
+            for run in paragraph.runs
+            if run.font is not None and run.font.size is not None
+        ]
+        font_size = max(font_sizes) if font_sizes else None
+        numbering = _leading_numbering(text)
+        if is_heading:
             current_section = text
         blocks.append(
             ExtractedBlock(
@@ -30,6 +39,10 @@ def extract_docx(path: Path) -> ExtractedDocument:
                 section=current_section,
                 text=text,
                 kind=kind,
+                block_type="heading" if is_heading else ("list_item" if kind == "list" else "paragraph"),
+                font_size=font_size,
+                is_bold=is_bold or is_heading,
+                numbering=numbering,
                 confidence=1.0,
             )
         )
@@ -49,6 +62,7 @@ def extract_docx(path: Path) -> ExtractedDocument:
                 section=current_section,
                 text=text,
                 kind="table",
+                block_type="table",
                 table=ExtractedTable(headers=headers, rows=body),
                 confidence=1.0,
             )
@@ -63,3 +77,13 @@ def _paragraph_has_page_break(paragraph) -> bool:
         if 'w:type="page"' in xml or "lastRenderedPageBreak" in xml:
             return True
     return False
+
+
+def _leading_numbering(text: str) -> str | None:
+    parts = text.strip().split(maxsplit=1)
+    if not parts:
+        return None
+    first = parts[0].rstrip(".)")
+    if first and all(piece.isdigit() for piece in first.split(".")):
+        return first
+    return None

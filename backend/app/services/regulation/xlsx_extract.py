@@ -33,6 +33,7 @@ def extract_xlsx(path: Path) -> ExtractedDocument:
                 section=sheet.title,
                 text=text,
                 kind="table",
+                block_type="table",
                 table=ExtractedTable(headers=headers, rows=body),
                 confidence=1.0,
             )

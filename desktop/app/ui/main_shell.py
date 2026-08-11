@@ -7,6 +7,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -15,11 +16,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import ApiClient, ApiError, RegulationParseResult, UserProfile
+from app.api_client import ApiClient, ApiError, RegulationParseResult, RoleMatchResult, UserProfile
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.my_agents_page import MyAgentsPage
 from app.ui.pages.regulation_review_page import RegulationReviewPage
+from app.ui.pages.role_match_page import RoleMatchPage
 from app.ui.pages.settings_page import SettingsPage
 from app.ui.theme import (
     COLOR_CONTENT_BG,
@@ -63,6 +65,8 @@ class MainShell(QWidget):
     logout_requested = Signal()
     _regulation_ready = Signal(object)
     _regulation_failed = Signal(str)
+    _role_match_ready = Signal(object)
+    _role_match_failed = Signal(str)
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -80,19 +84,38 @@ class MainShell(QWidget):
         self._page_kpi = KpiPage()
         self._page_settings = SettingsPage(self._api)
         self._page_review = RegulationReviewPage()
+        self._page_role_match = RoleMatchPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_kpi)
         self._pages.addWidget(self._page_settings)
         self._pages.addWidget(self._page_review)
-        self._page_index = {"create": 0, "agents": 1, "kpi": 2, "settings": 3, "review": 4}
+        self._pages.addWidget(self._page_role_match)
+        self._page_index = {
+            "create": 0,
+            "agents": 1,
+            "kpi": 2,
+            "settings": 3,
+            "review": 4,
+            "role_match": 5,
+        }
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_create.create_regulation_requested.connect(self._on_create_regulation)
         self._page_create.regulation_selected.connect(self._on_regulation_selected)
         self._page_review.back_requested.connect(self._back_to_create)
         self._page_review.continue_requested.connect(self._on_continue_after_review)
+        self._page_review.fullscreen_changed.connect(self._on_review_fullscreen)
+        self._page_role_match.back_requested.connect(self._back_to_review)
+        self._page_role_match.finish_requested.connect(self._on_finish_role_match)
+        self._page_role_match.decision_requested.connect(self._on_role_match_decision)
         self._regulation_ready.connect(self._show_regulation_result)
         self._regulation_failed.connect(self._show_regulation_error)
+        self._role_match_ready.connect(self._show_role_match_result)
+        self._role_match_failed.connect(self._show_role_match_error)
+        self._pages.currentChanged.connect(self._on_stack_changed)
+        self._review_fullscreen = False
+        self._current_regulation: RegulationParseResult | None = None
+        self._current_role_match: RoleMatchResult | None = None
 
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
@@ -109,8 +132,28 @@ class MainShell(QWidget):
         content_layout.setSpacing(0)
         content_layout.addWidget(self._pages, 1)
 
-        # Float profile menu at top-right so page titles can sit higher.
+        # Header chrome: expand (review only) + profile, top-right.
+        self._expand_btn = QPushButton("⛶", self._content)
+        self._expand_btn.setFixedSize(36, 36)
+        self._expand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._expand_btn.setToolTip("На весь экран")
+        self._expand_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: #EEF7F3;
+                color: #06483D;
+                border: none;
+                border-radius: 18px;
+                font-size: 16px;
+            }
+            QPushButton:hover { background: #DFF5EC; }
+            """
+        )
+        self._expand_btn.hide()
+        self._expand_btn.clicked.connect(self._page_review.toggle_fullscreen)
+
         self.user_menu.setParent(self._content)
+        self._expand_btn.raise_()
         self.user_menu.raise_()
 
         root = QHBoxLayout(self)
@@ -162,9 +205,15 @@ class MainShell(QWidget):
     def _position_user_menu(self) -> None:
         menu = self.user_menu
         menu.adjustSize()
-        x = self._content.width() - menu.width() - CONTENT_PADDING_X
+        right = self._content.width() - CONTENT_PADDING_X
         y = CONTENT_PADDING_TOP
-        menu.move(max(0, x), max(0, y))
+        menu_x = right - menu.width()
+        menu.move(max(0, menu_x), max(0, y))
+        if self._expand_btn.isVisible():
+            btn_y = y + max(0, (menu.height() - self._expand_btn.height()) // 2)
+            btn_x = menu_x - self._expand_btn.width() - 10
+            self._expand_btn.move(max(0, btn_x), max(0, btn_y))
+            self._expand_btn.raise_()
         menu.raise_()
 
     def _on_sidebar_collapse(self, collapsed: bool) -> None:
@@ -245,6 +294,8 @@ class MainShell(QWidget):
         self._page_create.set_processing(False)
         if not isinstance(result, RegulationParseResult):
             return
+        self._current_regulation = result
+        self._current_role_match = None
         self._page_review.set_result(result)
         self._pages.setCurrentIndex(self._page_index["review"])
 
@@ -253,16 +304,107 @@ class MainShell(QWidget):
         QMessageBox.warning(self, "Распознавание регламента", message)
 
     def _back_to_create(self) -> None:
+        self._page_review.set_fullscreen(False)
         self._pages.setCurrentIndex(self._page_index["create"])
 
     def _on_continue_after_review(self) -> None:
+        if self._current_regulation is None:
+            return
+        default_department = self._user.department if self._user is not None else ""
+        position, ok = QInputDialog.getText(
+            self,
+            "Выбор должности",
+            "Для какой должности найти фрагменты?",
+        )
+        position = position.strip()
+        if not ok or not position:
+            return
+
+        def run() -> None:
+            try:
+                result = self._api.create_role_matches(
+                    self._current_regulation.regulation_id,
+                    position=position,
+                    department=default_department,
+                )
+            except ApiError as exc:
+                self._role_match_failed.emit(exc.message)
+                return
+            self._role_match_ready.emit(result)
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_role_match_result(self, result: object) -> None:
+        if not isinstance(result, RoleMatchResult):
+            return
+        self._current_role_match = result
+        self._page_role_match.set_result(result)
+        self._pages.setCurrentIndex(self._page_index["role_match"])
+
+    def _show_role_match_error(self, message: str) -> None:
+        QMessageBox.warning(self, "Поиск фрагментов по должности", message)
+
+    def _back_to_review(self) -> None:
+        self._pages.setCurrentIndex(self._page_index["review"])
+
+    def _on_finish_role_match(self) -> None:
         QMessageBox.information(
             self,
-            "Создание агента",
-            "Следующий шаг создания агента появится здесь.",
+            "Связь с должностью",
+            "Подтверждённые фрагменты сохранены.",
         )
 
+    def _on_role_match_decision(self, match_id: str, status: str) -> None:
+        if self._current_regulation is None or self._current_role_match is None:
+            return
+
+        def run() -> None:
+            try:
+                result = self._api.decide_role_match(
+                    self._current_regulation.regulation_id,
+                    self._current_role_match.run_id,
+                    match_id,
+                    status,
+                )
+            except ApiError as exc:
+                self._role_match_failed.emit(exc.message)
+                return
+            self._role_match_ready.emit(result)
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_review_fullscreen(self, enabled: bool) -> None:
+        self._review_fullscreen = enabled
+        self.sidebar.setVisible(not enabled)
+        self._collapse_btn.setVisible(not enabled)
+        self._expand_btn.setText("⧉" if enabled else "⛶")
+        self._expand_btn.setToolTip("Свернуть" if enabled else "На весь экран")
+        content_layout = self._content.layout()
+        if isinstance(content_layout, QVBoxLayout):
+            if enabled:
+                content_layout.setContentsMargins(20, 20, 20, 20)
+            else:
+                content_layout.setContentsMargins(
+                    CONTENT_PADDING_X,
+                    CONTENT_PADDING_TOP,
+                    CONTENT_PADDING_X,
+                    30,
+                )
+        QTimer.singleShot(0, self._position_overlays)
+
+    def _set_expand_visible(self, visible: bool) -> None:
+        self._expand_btn.setVisible(visible)
+        QTimer.singleShot(0, self._position_overlays)
+
+    def _on_stack_changed(self, index: int) -> None:
+        on_review = index == self._page_index["review"]
+        if not on_review and self._review_fullscreen:
+            self._page_review.set_fullscreen(False)
+        self._set_expand_visible(on_review)
+
     def _on_page_changed(self, key: str) -> None:
+        if self._review_fullscreen:
+            self._page_review.set_fullscreen(False)
         idx = self._page_index.get(key)
         if idx is None:
             return

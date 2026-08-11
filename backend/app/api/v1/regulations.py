@@ -6,8 +6,19 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.db.session import get_db
-from app.schemas.regulation import RegulationParseResult
+from app.schemas.regulation import (
+    RegulationParseResult,
+    RoleMatchDecisionRequest,
+    RoleMatchRequest,
+    RoleMatchResult,
+)
 from app.services.regulation import RegulationError, get_result, parse_upload
+from app.services.role_matching import (
+    RoleMatchError,
+    create_role_match_run,
+    get_role_match_run,
+    update_match_status,
+)
 
 router = APIRouter(prefix="/regulations", tags=["regulations"])
 
@@ -40,4 +51,66 @@ async def get_regulation(
     try:
         return get_result(db, regulation_id=regulation_id, user_id=auth.user_id)
     except RegulationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/{regulation_id}/role-matches", response_model=RoleMatchResult)
+async def create_role_matches(
+    regulation_id: str,
+    request: RoleMatchRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RoleMatchResult:
+    try:
+        return create_role_match_run(
+            db,
+            user_id=auth.user_id,
+            regulation_id=regulation_id,
+            position=request.position,
+            department=request.department,
+        )
+    except RoleMatchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.get("/{regulation_id}/role-matches/{run_id}", response_model=RoleMatchResult)
+async def get_role_matches(
+    regulation_id: str,
+    run_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RoleMatchResult:
+    try:
+        return get_role_match_run(
+            db,
+            user_id=auth.user_id,
+            regulation_id=regulation_id,
+            run_id=run_id,
+        )
+    except RoleMatchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.patch(
+    "/{regulation_id}/role-matches/{run_id}/{match_id}",
+    response_model=RoleMatchResult,
+)
+async def decide_role_match(
+    regulation_id: str,
+    run_id: str,
+    match_id: str,
+    request: RoleMatchDecisionRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RoleMatchResult:
+    try:
+        return update_match_status(
+            db,
+            user_id=auth.user_id,
+            regulation_id=regulation_id,
+            run_id=run_id,
+            match_id=match_id,
+            status=request.status,
+        )
+    except RoleMatchError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc

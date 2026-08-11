@@ -55,6 +55,11 @@ class RegulationFragment:
     text: str
     table: RegulationTable | None
     ocr_confidence: float
+    section_path: list[str] | None = None
+    block_type: str = "paragraph"
+    table_headers: list[str] | None = None
+    cells: dict[str, str] | None = None
+    row_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +73,38 @@ class RegulationParseResult:
     is_scan: bool
     sections: list[str]
     fragments: list[RegulationFragment]
+
+
+@dataclass(frozen=True, slots=True)
+class MatchSignal:
+    match_type: str
+    confidence: float
+    quote: str
+    explanation: str
+
+
+@dataclass(frozen=True, slots=True)
+class RoleMatch:
+    match_id: str
+    fragment_id: str
+    relation: str
+    match_types: list[str]
+    confidence: float
+    model_confidence: float
+    explanation: str
+    requires_confirmation: bool
+    status: str
+    fragment: RegulationFragment
+    signals: list[MatchSignal]
+
+
+@dataclass(frozen=True, slots=True)
+class RoleMatchResult:
+    run_id: str
+    regulation_id: str
+    canonical_title: str
+    department: str
+    matches: list[RoleMatch]
 
 
 class ApiClient:
@@ -210,6 +247,36 @@ class ApiClient:
         data = self._request("GET", f"/api/v1/regulations/{regulation_id}")
         return self._parse_regulation(data)
 
+    def create_role_matches(
+        self,
+        regulation_id: str,
+        *,
+        position: str,
+        department: str = "",
+    ) -> RoleMatchResult:
+        data = self._request(
+            "POST",
+            f"/api/v1/regulations/{regulation_id}/role-matches",
+            json={"position": position, "department": department},
+            timeout=max(self._timeout, 300.0),
+        )
+        return self._parse_role_matches(data)
+
+    def decide_role_match(
+        self,
+        regulation_id: str,
+        run_id: str,
+        match_id: str,
+        status: str,
+    ) -> RoleMatchResult:
+        data = self._request(
+            "PATCH",
+            f"/api/v1/regulations/{regulation_id}/role-matches/{run_id}/{match_id}",
+            json={"status": status},
+            timeout=max(self._timeout, 60.0),
+        )
+        return self._parse_role_matches(data)
+
     def list_departments(self) -> list[str]:
         data = self._request("GET", "/api/v1/auth/departments")
         items = data.get("items") or []
@@ -249,10 +316,11 @@ class ApiClient:
         *,
         json: dict | None = None,
         params: dict | None = None,
+        timeout: float | None = None,
     ) -> dict:
         url = f"{self.base_url}{path}"
         try:
-            with httpx.Client(timeout=self._timeout) as client:
+            with httpx.Client(timeout=timeout or self._timeout) as client:
                 response = client.request(
                     method,
                     url,
@@ -301,6 +369,11 @@ class ApiClient:
                     text=str(item.get("text") or ""),
                     table=table,
                     ocr_confidence=float(item.get("ocrConfidence") or 0.0),
+                    section_path=[str(x) for x in item.get("sectionPath") or []],
+                    block_type=str(item.get("blockType") or "paragraph"),
+                    table_headers=[str(x) for x in item.get("tableHeaders") or []],
+                    cells={str(k): str(v) for k, v in (item.get("cells") or {}).items()},
+                    row_index=int(item["rowIndex"]) if item.get("rowIndex") is not None else None,
                 )
             )
         return RegulationParseResult(
@@ -313,6 +386,73 @@ class ApiClient:
             is_scan=bool(data.get("isScan")),
             sections=[str(x) for x in data.get("sections") or []],
             fragments=fragments,
+        )
+
+    @staticmethod
+    def _parse_fragment(item: dict) -> RegulationFragment:
+        table_data = item.get("table") if isinstance(item, dict) else None
+        table = None
+        if isinstance(table_data, dict):
+            table = RegulationTable(
+                headers=[str(x) for x in table_data.get("headers") or []],
+                rows=[
+                    [str(cell) for cell in row]
+                    for row in table_data.get("rows") or []
+                    if isinstance(row, list)
+                ],
+            )
+        return RegulationFragment(
+            fragment_id=str(item.get("fragmentId", "")),
+            page=int(item.get("page") or 1),
+            section=str(item.get("section") or ""),
+            kind=str(item.get("kind") or "text"),
+            text=str(item.get("text") or ""),
+            table=table,
+            ocr_confidence=float(item.get("ocrConfidence") or 0.0),
+            section_path=[str(x) for x in item.get("sectionPath") or []],
+            block_type=str(item.get("blockType") or "paragraph"),
+            table_headers=[str(x) for x in item.get("tableHeaders") or []],
+            cells={str(k): str(v) for k, v in (item.get("cells") or {}).items()},
+            row_index=int(item["rowIndex"]) if item.get("rowIndex") is not None else None,
+        )
+
+    @staticmethod
+    def _parse_role_matches(data: dict) -> RoleMatchResult:
+        matches: list[RoleMatch] = []
+        for item in data.get("matches") or []:
+            fragment = ApiClient._parse_fragment(item.get("fragment") or {})
+            signals = [
+                MatchSignal(
+                    match_type=str(signal.get("matchType") or ""),
+                    confidence=float(signal.get("confidence") or 0.0),
+                    quote=str(signal.get("quote") or ""),
+                    explanation=str(signal.get("explanation") or ""),
+                )
+                for signal in item.get("signals") or []
+                if isinstance(signal, dict)
+            ]
+            matches.append(
+                RoleMatch(
+                    match_id=str(item.get("matchId") or ""),
+                    fragment_id=str(item.get("fragmentId") or ""),
+                    relation=str(item.get("relation") or "none"),
+                    match_types=[str(x) for x in item.get("matchTypes") or []],
+                    confidence=float(item.get("confidence") or 0.0),
+                    model_confidence=float(item.get("modelConfidence") or 0.0),
+                    explanation=str(item.get("explanation") or ""),
+                    requires_confirmation=bool(item.get("requiresUserConfirmation")),
+                    status=str(item.get("status") or "pending"),
+                    fragment=fragment,
+                    signals=signals,
+                )
+            )
+        profile = data.get("profile") or {}
+        return RoleMatchResult(
+            run_id=str(data.get("runId") or ""),
+            regulation_id=str(data.get("regulationId") or ""),
+            canonical_title=str(profile.get("canonicalTitle") or ""),
+            department=str(profile.get("department") or ""),
+            matches=matches,
         )
 
 

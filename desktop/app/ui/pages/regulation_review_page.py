@@ -3,8 +3,10 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QScrollArea,
@@ -16,15 +18,23 @@ from PySide6.QtWidgets import (
 )
 
 from app.api_client import RegulationFragment, RegulationParseResult
-from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, SIDEBAR_MIDDLE, app_font
+from app.ui.theme import (
+    COLOR_CONTENT_MUTED,
+    MAIN_TEXT,
+    SIDEBAR_MIDDLE,
+    app_font,
+    scroll_bar_qss,
+)
 
 
 class RegulationReviewPage(QWidget):
     back_requested = Signal()
     continue_requested = Signal()
+    fullscreen_changed = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._fullscreen = False
         self._summary = QVBoxLayout()
         self._content = QVBoxLayout()
 
@@ -36,11 +46,11 @@ class RegulationReviewPage(QWidget):
         subtitle.setFont(app_font(14))
         subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
 
-        left = QFrame()
-        left.setObjectName("ReviewSide")
-        left.setFixedWidth(290)
-        left.setStyleSheet(_panel_qss())
-        left_layout = QVBoxLayout(left)
+        self._left = QFrame()
+        self._left.setObjectName("ReviewSide")
+        self._left.setFixedWidth(290)
+        self._left.setStyleSheet(_panel_qss())
+        left_layout = QVBoxLayout(self._left)
         left_layout.setContentsMargins(18, 18, 18, 18)
         left_layout.setSpacing(10)
         left_layout.addLayout(self._summary)
@@ -56,7 +66,12 @@ class RegulationReviewPage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(scroll_content)
-        scroll.setStyleSheet("background: transparent; border: none;")
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            + scroll_bar_qss()
+        )
+        scroll.verticalScrollBar().setStyleSheet(scroll_bar_qss())
+        scroll.horizontalScrollBar().setStyleSheet(scroll_bar_qss())
 
         right = QFrame()
         right.setObjectName("ReviewMain")
@@ -65,18 +80,18 @@ class RegulationReviewPage(QWidget):
         right_layout.setContentsMargins(18, 18, 18, 18)
         right_layout.addWidget(scroll)
 
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(18)
-        body.addWidget(left, 0)
-        body.addWidget(right, 1)
+        self._body = QHBoxLayout()
+        self._body.setContentsMargins(0, 0, 0, 0)
+        self._body.setSpacing(18)
+        self._body.addWidget(self._left, 0)
+        self._body.addWidget(right, 1)
 
         back = QPushButton("Назад")
         back.setFixedHeight(42)
         back.setCursor(Qt.CursorShape.PointingHandCursor)
         back.setFont(app_font(13, QFont.Weight.DemiBold))
         back.setStyleSheet(_secondary_button_qss())
-        back.clicked.connect(self.back_requested.emit)
+        back.clicked.connect(self._on_back)
 
         next_btn = QPushButton("Продолжить")
         next_btn.setFixedHeight(42)
@@ -96,10 +111,24 @@ class RegulationReviewPage(QWidget):
         root.addWidget(title)
         root.addWidget(subtitle)
         root.addSpacing(12)
-        root.addLayout(body, 1)
+        root.addLayout(self._body, 1)
         root.addLayout(actions)
 
+    def is_fullscreen(self) -> bool:
+        return self._fullscreen
+
+    def set_fullscreen(self, enabled: bool) -> None:
+        if self._fullscreen == enabled:
+            return
+        self._fullscreen = enabled
+        self._left.setVisible(not enabled)
+        self.fullscreen_changed.emit(enabled)
+
+    def toggle_fullscreen(self) -> None:
+        self.set_fullscreen(not self._fullscreen)
+
     def set_result(self, result: RegulationParseResult) -> None:
+        self.set_fullscreen(False)
         _clear_layout(self._summary)
         _clear_layout(self._content)
         self._summary.addWidget(_metric("Файл", result.file_name))
@@ -130,6 +159,11 @@ class RegulationReviewPage(QWidget):
         for fragment in result.fragments:
             self._content.addWidget(_fragment_widget(fragment))
         self._content.addStretch(1)
+
+    def _on_back(self) -> None:
+        if self._fullscreen:
+            self.set_fullscreen(False)
+        self.back_requested.emit()
 
 
 def _fragment_widget(fragment: RegulationFragment) -> QWidget:
@@ -169,40 +203,126 @@ def _fragment_widget(fragment: RegulationFragment) -> QWidget:
     return frame
 
 
+class _ReviewTable(QTableWidget):
+    """Table that fills card width when narrow and scrolls when wider/taller."""
+
+    _MAX_COL = 420
+    _MIN_COL = 72
+    _MAX_HEIGHT = 320
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.verticalHeader().hide()
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.setAlternatingRowColors(True)
+        self.setWordWrap(True)
+        self.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setShowGrid(True)
+        header = self.horizontalHeader()
+        header.setHighlightSections(False)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(False)
+        self.setStyleSheet(
+            """
+            QTableWidget {
+                background: #FFFFFF;
+                border: 1px solid rgba(16,24,23,0.08);
+                border-radius: 10px;
+                gridline-color: rgba(16,24,23,0.10);
+            }
+            QHeaderView::section {
+                background: #EEF7F3;
+                color: #101817;
+                border: none;
+                border-right: 1px solid rgba(16,24,23,0.08);
+                border-bottom: 1px solid rgba(16,24,23,0.10);
+                padding: 8px 10px;
+            }
+            QTableWidget::item {
+                padding: 8px 10px;
+            }
+            """
+            + scroll_bar_qss()
+        )
+        self.horizontalScrollBar().setStyleSheet(scroll_bar_qss())
+        self.verticalScrollBar().setStyleSheet(scroll_bar_qss())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.fit_columns()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.fit_columns()
+        self._update_height()
+
+    def fit_columns(self) -> None:
+        cols = self.columnCount()
+        if cols <= 0:
+            return
+        for i in range(cols):
+            self.resizeColumnToContents(i)
+            width = self.columnWidth(i)
+            self.setColumnWidth(i, max(self._MIN_COL, min(width + 8, self._MAX_COL)))
+
+        available = self.viewport().width()
+        if available <= 0:
+            return
+        total = sum(self.columnWidth(i) for i in range(cols))
+        if total >= available:
+            return
+
+        # Stretch columns to fill card width so short tables don't look clipped.
+        leftover = available - total
+        base = leftover // cols
+        rem = leftover - base * cols
+        for i in range(cols):
+            add = base + (1 if i >= cols - rem else 0)
+            self.setColumnWidth(i, self.columnWidth(i) + add)
+
+    def _update_height(self) -> None:
+        rows = max(self.rowCount(), 1)
+        header_h = self.horizontalHeader().height() if not self.horizontalHeader().isHidden() else 0
+        frame = self.frameWidth() * 2
+        row_h = max(self.verticalHeader().defaultSectionSize(), 34)
+        content_h = header_h + row_h * rows + frame + 2
+        self.setFixedHeight(min(self._MAX_HEIGHT, max(96, content_h)))
+
+
 def _table_widget(fragment: RegulationFragment) -> QTableWidget:
     table_data = fragment.table
     assert table_data is not None
     rows = table_data.rows
     headers = table_data.headers
-    column_count = max(len(headers), *(len(row) for row in rows), 1)
-    table = QTableWidget(max(len(rows), 1), column_count)
-    table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    table.setHorizontalHeaderLabels(headers + [""] * (column_count - len(headers)))
-    table.verticalHeader().hide()
-    table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-    table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-    table.setAlternatingRowColors(True)
-    table.setStyleSheet(
-        """
-        QTableWidget {
-            background: #FFFFFF;
-            border: 1px solid rgba(16,24,23,0.08);
-            gridline-color: rgba(16,24,23,0.10);
-        }
-        QHeaderView::section {
-            background: #EEF7F3;
-            color: #101817;
-            border: none;
-            padding: 6px;
-        }
-        """
-    )
+    column_count = max(len(headers), *(len(row) for row in rows), 1) if rows or headers else 1
+    table = _ReviewTable()
     source_rows = rows or [[""] * column_count]
+    table.setRowCount(len(source_rows))
+    table.setColumnCount(column_count)
+
+    has_headers = any(str(h).strip() for h in headers)
+    if has_headers:
+        labels = [str(h) for h in headers] + [""] * (column_count - len(headers))
+        table.setHorizontalHeaderLabels(labels)
+    else:
+        table.horizontalHeader().hide()
+
     for r, row in enumerate(source_rows):
         for c in range(column_count):
-            table.setItem(r, c, QTableWidgetItem(row[c] if c < len(row) else ""))
-    table.resizeColumnsToContents()
-    table.setFixedHeight(min(240, 34 + 32 * max(1, len(source_rows))))
+            item = QTableWidgetItem(row[c] if c < len(row) else "")
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            table.setItem(r, c, item)
+        table.setRowHeight(r, max(34, table.rowHeight(r)))
+
+    table.fit_columns()
+    table._update_height()
     return table
 
 

@@ -26,3 +26,27 @@ class RegulationDocument(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class RoleMatchRun(Base):
+    __tablename__ = "role_match_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    regulation_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("regulations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    position: Mapped[str] = mapped_column(String(256), nullable=False)
+    department: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    result_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
