@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 
@@ -166,6 +167,9 @@ def _table_rows(block: ExtractedBlock) -> list[ExtractedBlock]:
                 cells=cells,
                 row_index=idx,
                 section_path=list(block.section_path),
+                location={**block.location, "rowIndex": idx},
+                style=block.style,
+                content_hash="sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(),
             )
         )
     return out

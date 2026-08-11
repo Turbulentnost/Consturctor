@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import hashlib
+
+import pytest
+
 from app.schemas.regulation import (
     DocumentMap,
     DocumentRole,
+    FunctionActor,
+    ReadinessAnswer,
+    ReadinessQuestion,
     RegulationFragment,
     RegulationFragmentContext,
     RegulationParseResult,
+    RegulationChangeDraft,
+    RoleFunction,
 )
 from app.services.regulation.document_structure import prepare_blocks
 from app.services.regulation.pdf_text import _split_text_blocks
@@ -19,6 +28,9 @@ from app.services.role_matching import llm_classifier
 from app.services.role_matching.llm_classifier import classify_candidate
 from app.services.role_matching.normalize import contains_phrase
 from app.services.role_matching.profile import build_role_profile
+from app.services.readiness.analyzer import analyze_readiness
+from app.services.readiness.change_planner import change_from_answer
+from app.services.readiness.docx_editor import create_revision_files
 
 
 def test_actor_inheritance_context_and_fallback_function(monkeypatch) -> None:
@@ -260,6 +272,131 @@ def test_claudehub_map_coerces_named_systems_and_documents() -> None:
     assert coerced["systems"][0]["value"] == "Реестр решений"
     assert coerced["systems"][0]["status"] == "candidate"
     assert coerced["documents"][0]["value"] == "ТЗ"
+
+
+def test_readiness_analyzer_builds_blocking_questions() -> None:
+    result = RegulationParseResult(
+        regulationId="reg-ready",
+        fileName="ready.txt",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[
+            RegulationFragment(
+                fragmentId="B-001",
+                page=1,
+                section="5.3 Промпт-инженер",
+                text="Промпт-инженер оформляет техническую документацию.",
+            )
+        ],
+    )
+    function = RoleFunction(
+        functionId="F-001",
+        targetBlockId="B-001",
+        isFunction=True,
+        actor=FunctionActor(
+            text="Промпт-инженер",
+            canonicalPosition="Промпт-инженер",
+            sourceBlockId="B-001",
+        ),
+        action="оформляет",
+        object="техническую документацию",
+    )
+
+    readiness = analyze_readiness(
+        readiness_run_id="ready-run-test",
+        regulation_id=result.regulationId,
+        role_match_run_id="role-run-test",
+        functions=[function],
+        result=result,
+    )
+
+    assert readiness.score < 100
+    assert readiness.blocking
+    assert any(question.targetField == "trigger" for question in readiness.questions)
+    assert any(question.targetField == "permissions" for question in readiness.questions)
+
+
+def test_answer_creates_change_draft() -> None:
+    result = RegulationParseResult(
+        regulationId="reg-change",
+        fileName="change.txt",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[
+            RegulationFragment(
+                fragmentId="B-001",
+                page=1,
+                section="5.2 Проверка",
+                text="Менеджер проверяет поступившую заявку.",
+            )
+        ],
+    )
+    question = ReadinessQuestion(
+        questionId="Q-001",
+        functionId="F-001",
+        targetField="deadline",
+        severity="important",
+        question="За какое время проверить заявку?",
+        reason="Срок нужен для контроля просрочки",
+        affectedBlocks=["B-001"],
+    )
+    answer = ReadinessAnswer(answerId="ANSWER-001", questionId="Q-001", answer="в течение 1 рабочего дня")
+
+    change = change_from_answer(change_id="CH-001", question=question, answer=answer, result=result)
+
+    assert change.operation == "append_to_paragraph"
+    assert "Срок выполнения: в течение 1 рабочего дня." in change.after
+    assert change.requiresApproval is True
+
+
+def test_docx_editor_applies_accepted_append(tmp_path) -> None:
+    try:
+        from docx import Document
+    except ImportError:
+        pytest.skip("python-docx is not installed")
+
+    source = tmp_path / "source.docx"
+    doc = Document()
+    doc.add_paragraph("Менеджер проверяет поступившую заявку.")
+    doc.save(source)
+    text = "Менеджер проверяет поступившую заявку."
+    result = RegulationParseResult(
+        regulationId="reg-docx",
+        fileName="source.docx",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[
+            RegulationFragment(
+                fragmentId="B-001",
+                page=1,
+                section="5.2 Проверка",
+                text=text,
+                location={"paragraphIndex": 0},
+                contentHash="sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            )
+        ],
+    )
+    change = RegulationChangeDraft(
+        changeId="CH-001",
+        operation="append_to_paragraph",
+        targetBlockId="B-001",
+        before=text,
+        after=f"{text} Срок выполнения: в течение 1 рабочего дня.",
+        status="accepted",
+    )
+
+    document_path, protocol_path, message = create_revision_files(
+        source_path=source,
+        output_dir=tmp_path / "out",
+        result=result,
+        changes=[change],
+    )
+
+    assert document_path.is_file()
+    assert protocol_path.is_file()
+    assert "DOCX" in message
+    updated = Document(str(document_path))
+    assert "Срок выполнения" in updated.paragraphs[0].text
 
 
 def _sample_result() -> RegulationParseResult:

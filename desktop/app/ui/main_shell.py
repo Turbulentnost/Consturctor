@@ -18,11 +18,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import ApiClient, ApiError, RegulationParseResult, RoleMatchResult, UserProfile
+from app.api_client import (
+    AgentReadinessResult,
+    ApiClient,
+    ApiError,
+    RegulationParseResult,
+    RegulationRevisionResult,
+    RoleMatchResult,
+    AgentDraft,
+    QuestionChatSession,
+    UserProfile,
+)
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.my_agents_page import MyAgentsPage
 from app.ui.pages.regulation_review_page import RegulationReviewPage
+from app.ui.pages.readiness_page import ReadinessPage
+from app.ui.pages.revision_result_page import RevisionResultPage
 from app.ui.pages.role_match_page import RoleMatchPage
 from app.ui.pages.settings_page import SettingsPage
 from app.ui.theme import (
@@ -126,6 +138,12 @@ class MainShell(QWidget):
     _regulation_failed = Signal(str)
     _role_match_ready = Signal(object)
     _role_match_failed = Signal(str)
+    _readiness_ready = Signal(object)
+    _readiness_failed = Signal(str)
+    _revision_ready = Signal(object)
+    _draft_ready = Signal(object)
+    _drafts_ready = Signal(object)
+    _chat_ready = Signal(object)
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -144,6 +162,8 @@ class MainShell(QWidget):
         self._page_settings = SettingsPage(self._api)
         self._page_review = RegulationReviewPage()
         self._page_role_match = RoleMatchPage()
+        self._page_readiness = ReadinessPage()
+        self._page_revision = RevisionResultPage()
         self._page_loading = LoadingPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
@@ -151,6 +171,8 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_settings)
         self._pages.addWidget(self._page_review)
         self._pages.addWidget(self._page_role_match)
+        self._pages.addWidget(self._page_readiness)
+        self._pages.addWidget(self._page_revision)
         self._pages.addWidget(self._page_loading)
         self._page_index = {
             "create": 0,
@@ -159,9 +181,12 @@ class MainShell(QWidget):
             "settings": 3,
             "review": 4,
             "role_match": 5,
-            "loading": 6,
+            "readiness": 6,
+            "revision": 7,
+            "loading": 8,
         }
         self._page_settings.profile_updated.connect(self._on_profile_updated)
+        self._page_agents.continue_requested.connect(self._on_continue_agent_draft)
         self._page_create.create_regulation_requested.connect(self._on_create_regulation)
         self._page_create.regulation_selected.connect(self._on_regulation_selected)
         self._page_review.back_requested.connect(self._back_to_create)
@@ -170,14 +195,29 @@ class MainShell(QWidget):
         self._page_role_match.back_requested.connect(self._back_to_review)
         self._page_role_match.finish_requested.connect(self._on_finish_role_match)
         self._page_role_match.decision_requested.connect(self._on_role_match_decision)
+        self._page_readiness.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["role_match"]))
+        self._page_readiness.chat_requested.connect(self._on_open_question_chat)
+        self._page_readiness.chat_message_requested.connect(self._on_send_question_chat_message)
+        self._page_readiness.answer_requested.connect(self._on_readiness_answer)
+        self._page_readiness.change_decision_requested.connect(self._on_readiness_change_decision)
+        self._page_readiness.finalize_requested.connect(self._on_readiness_finalize)
         self._regulation_ready.connect(self._show_regulation_result)
         self._regulation_failed.connect(self._show_regulation_error)
         self._role_match_ready.connect(self._show_role_match_result)
         self._role_match_failed.connect(self._show_role_match_error)
+        self._readiness_ready.connect(self._show_readiness_result)
+        self._readiness_failed.connect(self._show_readiness_error)
+        self._revision_ready.connect(self._show_revision_result)
+        self._draft_ready.connect(self._show_draft_result)
+        self._drafts_ready.connect(self._show_drafts_result)
+        self._chat_ready.connect(self._show_chat_result)
         self._pages.currentChanged.connect(self._on_stack_changed)
         self._review_fullscreen = False
         self._current_regulation: RegulationParseResult | None = None
         self._current_role_match: RoleMatchResult | None = None
+        self._current_readiness: AgentReadinessResult | None = None
+        self._current_draft: AgentDraft | None = None
+        self._current_chat: QuestionChatSession | None = None
 
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
@@ -431,11 +471,181 @@ class MainShell(QWidget):
         self._pages.setCurrentIndex(self._page_index["review"])
 
     def _on_finish_role_match(self) -> None:
-        QMessageBox.information(
-            self,
-            "Связь с должностью",
-            "Подтверждённые фрагменты сохранены.",
+        if self._current_regulation is None or self._current_role_match is None:
+            return
+        self._page_loading.set_message(
+            "Создаём черновик ИИ-агента",
+            "Сохраняем подтверждённые функции и готовим чат-вопросы для уточнения регламента.",
         )
+        self._pages.setCurrentIndex(self._page_index["loading"])
+
+        def run() -> None:
+            try:
+                draft = self._api.create_agent_draft(
+                    self._current_regulation.regulation_id,
+                    self._current_role_match.run_id,
+                )
+                draft = self._api.ensure_draft_readiness(draft.draft_id)
+                chat = self._first_chat_for_draft(draft)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._draft_ready.emit((draft, chat))
+
+        Thread(target=run, daemon=True).start()
+
+    def _first_chat_for_draft(self, draft: AgentDraft) -> QuestionChatSession | None:
+        readiness = draft.readiness
+        if readiness is None:
+            return None
+        question = next((item for item in readiness.questions if not item.answered), None)
+        if question is None:
+            return None
+        return self._api.create_question_chat(draft.draft_id, question.question_id)
+
+    def _show_draft_result(self, payload: object) -> None:
+        if isinstance(payload, tuple):
+            draft, chat = payload
+        else:
+            draft, chat = payload, None
+        if not isinstance(draft, AgentDraft):
+            return
+        self._current_draft = draft
+        self._current_readiness = draft.readiness
+        self._current_chat = chat if isinstance(chat, QuestionChatSession) else None
+        if draft.readiness is not None:
+            self._page_readiness.set_result(draft.readiness)
+        self._page_readiness.set_chat(self._current_chat)
+        self._pages.setCurrentIndex(self._page_index["readiness"])
+
+    def _show_readiness_result(self, result: object) -> None:
+        if not isinstance(result, AgentReadinessResult):
+            return
+        self._current_readiness = result
+        self._page_readiness.set_result(result)
+        self._pages.setCurrentIndex(self._page_index["readiness"])
+
+    def _show_chat_result(self, result: object) -> None:
+        if not isinstance(result, QuestionChatSession):
+            return
+        self._current_chat = result
+        self._page_readiness.set_chat(result)
+
+    def _show_readiness_error(self, message: str) -> None:
+        self._pages.setCurrentIndex(self._page_index["role_match"])
+        QMessageBox.warning(self, "Готовность регламента", message)
+
+    def _on_readiness_answer(self, question_id: str, answer: str) -> None:
+        if self._current_regulation is None or self._current_readiness is None or not answer.strip():
+            return
+
+        def run() -> None:
+            try:
+                result = self._api.answer_readiness_question(
+                    self._current_regulation.regulation_id,
+                    self._current_readiness.readiness_run_id,
+                    question_id,
+                    answer,
+                )
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._readiness_ready.emit(result)
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_open_question_chat(self, question_id: str) -> None:
+        if self._current_draft is None:
+            return
+
+        def run() -> None:
+            try:
+                chat = self._api.create_question_chat(self._current_draft.draft_id, question_id)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._chat_ready.emit(chat)
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_send_question_chat_message(self, question_id: str, message: str) -> None:
+        if self._current_draft is None or not message.strip():
+            return
+
+        def run() -> None:
+            try:
+                chat = self._api.send_question_chat_message(
+                    self._current_draft.draft_id,
+                    question_id,
+                    message,
+                )
+                draft = self._api.get_agent_draft(self._current_draft.draft_id)
+                if chat.status == "answered":
+                    chat = self._first_chat_for_draft(draft) or chat
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._draft_ready.emit((draft, chat))
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_readiness_change_decision(self, change_id: str, status: str, after: str) -> None:
+        if self._current_readiness is None:
+            return
+        regulation_id = (
+            self._current_regulation.regulation_id
+            if self._current_regulation is not None
+            else self._current_readiness.regulation_id
+        )
+
+        def run() -> None:
+            try:
+                result = self._api.update_readiness_change(
+                    regulation_id,
+                    self._current_readiness.readiness_run_id,
+                    change_id,
+                    status,
+                    after,
+                )
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._readiness_ready.emit(result)
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_readiness_finalize(self) -> None:
+        if self._current_readiness is None:
+            return
+        regulation_id = (
+            self._current_regulation.regulation_id
+            if self._current_regulation is not None
+            else self._current_readiness.regulation_id
+        )
+        self._page_loading.set_message(
+            "Создаём копию регламента",
+            "Применяем подтверждённые изменения и формируем протокол.",
+        )
+        self._pages.setCurrentIndex(self._page_index["loading"])
+
+        def run() -> None:
+            try:
+                result = self._api.finalize_readiness(
+                    regulation_id,
+                    self._current_readiness.readiness_run_id,
+                )
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._revision_ready.emit(result)
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_revision_result(self, result: object) -> None:
+        if not isinstance(result, RegulationRevisionResult):
+            return
+        self._page_revision.set_result(result)
+        self._pages.setCurrentIndex(self._page_index["revision"])
 
     def _on_role_match_decision(self, match_id: str, status: str) -> None:
         if self._current_regulation is None or self._current_role_match is None:
@@ -492,3 +702,38 @@ class MainShell(QWidget):
         if idx is None:
             return
         self._pages.setCurrentIndex(idx)
+        if key == "agents":
+            self._load_agent_drafts()
+
+    def _load_agent_drafts(self) -> None:
+        def run() -> None:
+            try:
+                drafts = self._api.list_agent_drafts()
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._drafts_ready.emit(drafts)
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_drafts_result(self, result: object) -> None:
+        if isinstance(result, list):
+            self._page_agents.set_drafts([item for item in result if isinstance(item, AgentDraft)])
+
+    def _on_continue_agent_draft(self, draft_id: str) -> None:
+        self._page_loading.set_message(
+            "Открываем черновик ИИ-агента",
+            "Загружаем состояние готовности и текущий вопрос.",
+        )
+        self._pages.setCurrentIndex(self._page_index["loading"])
+
+        def run() -> None:
+            try:
+                draft = self._api.ensure_draft_readiness(draft_id)
+                chat = self._first_chat_for_draft(draft)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._draft_ready.emit((draft, chat))
+
+        Thread(target=run, daemon=True).start()

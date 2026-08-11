@@ -55,6 +55,9 @@ def build_result(
                 fontSize=block.font_size,
                 isBold=block.is_bold,
                 numbering=block.numbering,
+                location=block.location,
+                style=block.style,
+                contentHash=block.content_hash,
                 context={
                     "previousFragmentId": (
                         f"{regulation_id}-{previous_block.block_id}" if previous_block else None

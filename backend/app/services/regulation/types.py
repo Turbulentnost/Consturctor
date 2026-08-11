@@ -32,6 +32,9 @@ class ExtractedBlock:
     section_path: list[str] = field(default_factory=list)
     previous_fragment_id: str | None = None
     next_fragment_id: str | None = None
+    location: dict[str, object] = field(default_factory=dict)
+    style: str = ""
+    content_hash: str = ""
 
 
 @dataclass(slots=True)

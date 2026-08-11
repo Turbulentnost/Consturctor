@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from app.services.regulation.types import ExtractedBlock, ExtractedDocument, ExtractedTable
@@ -16,11 +17,12 @@ def extract_docx(path: Path) -> ExtractedDocument:
     current_section = ""
     page = 1
 
-    for paragraph in doc.paragraphs:
+    for paragraph_index, paragraph in enumerate(doc.paragraphs):
         text = paragraph.text.strip()
         if not text:
             continue
-        style = (paragraph.style.name or "").lower() if paragraph.style is not None else ""
+        style_name = paragraph.style.name or "" if paragraph.style is not None else ""
+        style = style_name.lower()
         kind = "list" if "list" in style else "text"
         is_heading = "heading" in style or "заголовок" in style
         is_bold = any(run.bold for run in paragraph.runs)
@@ -44,12 +46,20 @@ def extract_docx(path: Path) -> ExtractedDocument:
                 is_bold=is_bold or is_heading,
                 numbering=numbering,
                 confidence=1.0,
+                location={
+                    "documentPart": "word/document.xml",
+                    "paragraphIndex": paragraph_index,
+                    "paragraphXmlId": _paragraph_xml_id(paragraph),
+                    "sectionPath": [current_section] if current_section else [],
+                },
+                style=style_name,
+                content_hash=_content_hash(text),
             )
         )
         if _paragraph_has_page_break(paragraph):
             page += 1
 
-    for table in doc.tables:
+    for table_index, table in enumerate(doc.tables):
         rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
         if not rows:
             continue
@@ -65,6 +75,9 @@ def extract_docx(path: Path) -> ExtractedDocument:
                 block_type="table",
                 table=ExtractedTable(headers=headers, rows=body),
                 confidence=1.0,
+                location={"documentPart": "word/document.xml", "tableIndex": table_index},
+                style="table",
+                content_hash=_content_hash(text),
             )
         )
 
@@ -77,6 +90,19 @@ def _paragraph_has_page_break(paragraph) -> bool:
         if 'w:type="page"' in xml or "lastRenderedPageBreak" in xml:
             return True
     return False
+
+
+def _paragraph_xml_id(paragraph) -> str:
+    element = paragraph._element  # noqa: SLF001 - python-docx exposes XML ids only here.
+    for key in ("{http://schemas.microsoft.com/office/word/2010/wordml}paraId", "w14:paraId"):
+        value = element.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _content_hash(text: str) -> str:
+    return "sha256:" + hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
 def _leading_numbering(text: str) -> str | None:

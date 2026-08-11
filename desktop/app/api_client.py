@@ -61,6 +61,9 @@ class RegulationFragment:
     table_headers: list[str] | None = None
     cells: dict[str, str] | None = None
     row_index: int | None = None
+    location: dict | None = None
+    style: str = ""
+    content_hash: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +159,95 @@ class RoleMatchResult:
     department: str
     matches: list[RoleMatch]
     functions: list[RoleFunction] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessQuestion:
+    question_id: str
+    function_id: str
+    target_field: str
+    severity: str
+    question: str
+    reason: str
+    answer_type: str
+    options: list[str]
+    affected_blocks: list[str]
+    answered: bool = False
+    answer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessChange:
+    change_id: str
+    source: dict
+    operation: str
+    target_block_id: str
+    before: str
+    after: str
+    reason: str
+    affected_functions: list[str]
+    affected_blocks: list[str]
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class AgentReadinessResult:
+    readiness_run_id: str
+    regulation_id: str
+    role_match_run_id: str
+    score: int
+    blocking: list[str]
+    important: list[str]
+    optional: list[str]
+    questions: list[ReadinessQuestion]
+    changes: list[ReadinessChange]
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class RegulationRevisionResult:
+    revision_id: str
+    regulation_id: str
+    readiness_run_id: str
+    document_path: str
+    protocol_path: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class AgentDraft:
+    draft_id: str
+    regulation_id: str
+    role_match_run_id: str
+    readiness_run_id: str
+    title: str
+    position: str
+    department: str
+    status: str
+    progress: int
+    readiness: AgentReadinessResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionChatMessage:
+    message_id: str
+    session_id: str
+    role: str
+    content: str
+    structured: dict
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionChatSession:
+    session_id: str
+    draft_id: str
+    readiness_run_id: str
+    question_id: str
+    function_id: str
+    target_field: str
+    status: str
+    context: dict
+    messages: list[QuestionChatMessage]
 
 
 class ApiClient:
@@ -328,6 +420,110 @@ class ApiClient:
         )
         return self._parse_role_matches(data)
 
+    def create_readiness_run(self, regulation_id: str, role_match_run_id: str) -> AgentReadinessResult:
+        data = self._request(
+            "POST",
+            f"/api/v1/regulations/{regulation_id}/role-matches/{role_match_run_id}/readiness",
+            timeout=max(self._timeout, 180.0),
+        )
+        return self._parse_readiness(data)
+
+    def answer_readiness_question(
+        self,
+        regulation_id: str,
+        readiness_run_id: str,
+        question_id: str,
+        answer: str,
+    ) -> AgentReadinessResult:
+        data = self._request(
+            "POST",
+            f"/api/v1/regulations/{regulation_id}/readiness/{readiness_run_id}/answers",
+            json={"questionId": question_id, "answer": answer},
+            timeout=max(self._timeout, 120.0),
+        )
+        return self._parse_readiness(data)
+
+    def update_readiness_change(
+        self,
+        regulation_id: str,
+        readiness_run_id: str,
+        change_id: str,
+        status: str,
+        after: str = "",
+    ) -> AgentReadinessResult:
+        data = self._request(
+            "PATCH",
+            f"/api/v1/regulations/{regulation_id}/readiness/{readiness_run_id}/changes/{change_id}",
+            json={"status": status, "after": after},
+            timeout=max(self._timeout, 120.0),
+        )
+        return self._parse_readiness(data)
+
+    def finalize_readiness(
+        self,
+        regulation_id: str,
+        readiness_run_id: str,
+    ) -> RegulationRevisionResult:
+        data = self._request(
+            "POST",
+            f"/api/v1/regulations/{regulation_id}/readiness/{readiness_run_id}/finalize",
+            timeout=max(self._timeout, 180.0),
+        )
+        return RegulationRevisionResult(
+            revision_id=str(data.get("revisionId") or ""),
+            regulation_id=str(data.get("regulationId") or ""),
+            readiness_run_id=str(data.get("readinessRunId") or ""),
+            document_path=str(data.get("documentPath") or ""),
+            protocol_path=str(data.get("protocolPath") or ""),
+            message=str(data.get("message") or ""),
+        )
+
+    def create_agent_draft(self, regulation_id: str, role_match_run_id: str) -> AgentDraft:
+        data = self._request(
+            "POST",
+            f"/api/v1/regulations/{regulation_id}/role-matches/{role_match_run_id}/draft",
+            timeout=max(self._timeout, 120.0),
+        )
+        return self._parse_agent_draft(data)
+
+    def list_agent_drafts(self) -> list[AgentDraft]:
+        data = self._request("GET", "/api/v1/agents/drafts", timeout=max(self._timeout, 60.0))
+        return [self._parse_agent_draft(item) for item in data.get("items") or [] if isinstance(item, dict)]
+
+    def get_agent_draft(self, draft_id: str) -> AgentDraft:
+        data = self._request("GET", f"/api/v1/agents/drafts/{draft_id}", timeout=max(self._timeout, 60.0))
+        return self._parse_agent_draft(data)
+
+    def ensure_draft_readiness(self, draft_id: str) -> AgentDraft:
+        data = self._request(
+            "POST",
+            f"/api/v1/agents/drafts/{draft_id}/readiness",
+            timeout=max(self._timeout, 180.0),
+        )
+        return self._parse_agent_draft(data)
+
+    def create_question_chat(self, draft_id: str, question_id: str) -> QuestionChatSession:
+        data = self._request(
+            "POST",
+            f"/api/v1/agents/drafts/{draft_id}/questions/{question_id}/chat",
+            timeout=max(self._timeout, 120.0),
+        )
+        return self._parse_question_chat(data)
+
+    def send_question_chat_message(
+        self,
+        draft_id: str,
+        question_id: str,
+        message: str,
+    ) -> QuestionChatSession:
+        data = self._request(
+            "POST",
+            f"/api/v1/agents/drafts/{draft_id}/questions/{question_id}/chat/messages",
+            json={"message": message},
+            timeout=max(self._timeout, 180.0),
+        )
+        return self._parse_question_chat(data)
+
     def list_departments(self) -> list[str]:
         data = self._request("GET", "/api/v1/auth/departments")
         items = data.get("items") or []
@@ -426,6 +622,9 @@ class ApiClient:
                     table_headers=[str(x) for x in item.get("tableHeaders") or []],
                     cells={str(k): str(v) for k, v in (item.get("cells") or {}).items()},
                     row_index=int(item["rowIndex"]) if item.get("rowIndex") is not None else None,
+                    location=item.get("location") if isinstance(item.get("location"), dict) else {},
+                    style=str(item.get("style") or ""),
+                    content_hash=str(item.get("contentHash") or ""),
                 )
             )
         return RegulationParseResult(
@@ -466,6 +665,9 @@ class ApiClient:
             table_headers=[str(x) for x in item.get("tableHeaders") or []],
             cells={str(k): str(v) for k, v in (item.get("cells") or {}).items()},
             row_index=int(item["rowIndex"]) if item.get("rowIndex") is not None else None,
+            location=item.get("location") if isinstance(item.get("location"), dict) else {},
+            style=str(item.get("style") or ""),
+            content_hash=str(item.get("contentHash") or ""),
         )
 
     @staticmethod
@@ -568,6 +770,95 @@ class ApiClient:
             confidence=float(data.get("confidence") or 0.0),
             duplicate_group=str(data.get("duplicateGroup") or ""),
             requires_confirmation=bool(data.get("requiresUserConfirmation")),
+        )
+
+    @staticmethod
+    def _parse_readiness(data: dict) -> AgentReadinessResult:
+        questions = [
+            ReadinessQuestion(
+                question_id=str(item.get("questionId") or ""),
+                function_id=str(item.get("functionId") or ""),
+                target_field=str(item.get("targetField") or ""),
+                severity=str(item.get("severity") or ""),
+                question=str(item.get("question") or ""),
+                reason=str(item.get("reason") or ""),
+                answer_type=str(item.get("answerType") or "text"),
+                options=[str(x) for x in item.get("options") or []],
+                affected_blocks=[str(x) for x in item.get("affectedBlocks") or []],
+                answered=bool(item.get("answered")),
+                answer=str(item.get("answer") or ""),
+            )
+            for item in data.get("questions") or []
+            if isinstance(item, dict)
+        ]
+        changes = [
+            ReadinessChange(
+                change_id=str(item.get("changeId") or ""),
+                source=item.get("source") if isinstance(item.get("source"), dict) else {},
+                operation=str(item.get("operation") or ""),
+                target_block_id=str(item.get("targetBlockId") or ""),
+                before=str(item.get("before") or ""),
+                after=str(item.get("after") or ""),
+                reason=str(item.get("reason") or ""),
+                affected_functions=[str(x) for x in item.get("affectedFunctions") or []],
+                affected_blocks=[str(x) for x in item.get("affectedBlocks") or []],
+                status=str(item.get("status") or "pending"),
+            )
+            for item in data.get("changes") or []
+            if isinstance(item, dict)
+        ]
+        return AgentReadinessResult(
+            readiness_run_id=str(data.get("readinessRunId") or ""),
+            regulation_id=str(data.get("regulationId") or ""),
+            role_match_run_id=str(data.get("roleMatchRunId") or ""),
+            score=int(data.get("score") or 0),
+            blocking=[str(x) for x in data.get("blocking") or []],
+            important=[str(x) for x in data.get("important") or []],
+            optional=[str(x) for x in data.get("optional") or []],
+            questions=questions,
+            changes=changes,
+            status=str(data.get("status") or ""),
+        )
+
+    @staticmethod
+    def _parse_agent_draft(data: dict) -> AgentDraft:
+        readiness_raw = data.get("readiness")
+        return AgentDraft(
+            draft_id=str(data.get("draftId") or ""),
+            regulation_id=str(data.get("regulationId") or ""),
+            role_match_run_id=str(data.get("roleMatchRunId") or ""),
+            readiness_run_id=str(data.get("readinessRunId") or ""),
+            title=str(data.get("title") or ""),
+            position=str(data.get("position") or ""),
+            department=str(data.get("department") or ""),
+            status=str(data.get("status") or "draft"),
+            progress=int(data.get("progress") or 0),
+            readiness=ApiClient._parse_readiness(readiness_raw) if isinstance(readiness_raw, dict) else None,
+        )
+
+    @staticmethod
+    def _parse_question_chat(data: dict) -> QuestionChatSession:
+        messages = [
+            QuestionChatMessage(
+                message_id=str(item.get("messageId") or ""),
+                session_id=str(item.get("sessionId") or ""),
+                role=str(item.get("role") or ""),
+                content=str(item.get("content") or ""),
+                structured=item.get("structured") if isinstance(item.get("structured"), dict) else {},
+            )
+            for item in data.get("messages") or []
+            if isinstance(item, dict)
+        ]
+        return QuestionChatSession(
+            session_id=str(data.get("sessionId") or ""),
+            draft_id=str(data.get("draftId") or ""),
+            readiness_run_id=str(data.get("readinessRunId") or ""),
+            question_id=str(data.get("questionId") or ""),
+            function_id=str(data.get("functionId") or ""),
+            target_field=str(data.get("targetField") or ""),
+            status=str(data.get("status") or ""),
+            context=data.get("context") if isinstance(data.get("context"), dict) else {},
+            messages=messages,
         )
 
 

@@ -88,6 +88,9 @@ class RegulationFragment(BaseModel):
     fontSize: float | None = None
     isBold: bool = False
     numbering: str | None = None
+    location: dict = Field(default_factory=dict)
+    style: str = ""
+    contentHash: str = ""
     context: RegulationFragmentContext | None = None
     ocrConfidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
@@ -274,3 +277,217 @@ class RoleMatchResult(BaseModel):
     functions: list[RoleFunction] = Field(default_factory=list)
     audit: dict = Field(default_factory=dict)
     createdAt: datetime | None = None
+
+
+ReadinessField = Literal[
+    "actor",
+    "trigger",
+    "inputs",
+    "action",
+    "system",
+    "result",
+    "recipient",
+    "conditions",
+    "branches",
+    "deadline",
+    "errors",
+    "escalation",
+    "approval",
+    "permissions",
+    "restrictions",
+    "control",
+    "kpi",
+]
+ReadinessStatus = Literal[
+    "confirmed",
+    "inherited",
+    "inferred",
+    "missing",
+    "ambiguous",
+    "conflict",
+    "not_applicable",
+]
+ReadinessSeverity = Literal["blocking", "important", "optional"]
+ReadinessAnswerType = Literal["text", "choice", "duration", "role", "system", "boolean"]
+ReadinessChangeOperation = Literal[
+    "replace_text_range",
+    "append_to_paragraph",
+    "insert_paragraph_before",
+    "insert_paragraph_after",
+    "insert_list_item",
+    "create_subsection",
+    "update_table_cell",
+    "insert_table_row",
+    "update_heading",
+    "add_definition",
+    "add_cross_reference",
+    "delete_block",
+    "move_block",
+]
+ReadinessChangeStatus = Literal[
+    "pending",
+    "accepted",
+    "rejected",
+    "edited",
+    "unchanged",
+    "not_required",
+]
+
+
+class ReadinessSourceEvidence(BaseModel):
+    section: str = ""
+    quote: str = ""
+    blockId: str = ""
+
+
+class ReadinessFieldStatus(BaseModel):
+    field: ReadinessField
+    status: ReadinessStatus
+    required: bool = False
+    severity: ReadinessSeverity = "optional"
+    reason: str = ""
+    evidence: list[MatchEvidence] = Field(default_factory=list)
+
+
+class FunctionReadiness(BaseModel):
+    functionId: str
+    targetBlockId: str = ""
+    title: str = ""
+    fields: list[ReadinessFieldStatus] = Field(default_factory=list)
+    blockingReasons: list[str] = Field(default_factory=list)
+    score: int = Field(default=0, ge=0, le=100)
+
+
+class ReadinessQuestion(BaseModel):
+    questionId: str
+    functionId: str = ""
+    targetField: ReadinessField
+    severity: ReadinessSeverity = "important"
+    question: str
+    reason: str = ""
+    sourceEvidence: ReadinessSourceEvidence = Field(default_factory=ReadinessSourceEvidence)
+    answerType: ReadinessAnswerType = "text"
+    options: list[str] = Field(default_factory=list)
+    affectedBlocks: list[str] = Field(default_factory=list)
+    answered: bool = False
+    answer: str = ""
+
+
+class ReadinessAnswerRequest(BaseModel):
+    questionId: str
+    answer: str
+
+
+class ReadinessAnswer(BaseModel):
+    answerId: str
+    questionId: str
+    answer: str
+    createdAt: datetime | None = None
+
+
+class RegulationChangeDraft(BaseModel):
+    changeId: str
+    source: dict = Field(default_factory=dict)
+    operation: ReadinessChangeOperation = "append_to_paragraph"
+    targetBlockId: str
+    before: str = ""
+    after: str = ""
+    reason: str = ""
+    affectedFunctions: list[str] = Field(default_factory=list)
+    affectedBlocks: list[str] = Field(default_factory=list)
+    requiresApproval: bool = True
+    status: ReadinessChangeStatus = "pending"
+
+
+class ChangeDecisionRequest(BaseModel):
+    status: ReadinessChangeStatus
+    after: str = ""
+
+
+class ChangeTransaction(BaseModel):
+    transactionId: str
+    changes: list[RegulationChangeDraft] = Field(default_factory=list)
+    reason: str = ""
+
+
+class AgentReadinessResult(BaseModel):
+    readinessRunId: str
+    regulationId: str
+    roleMatchRunId: str
+    score: int = Field(default=0, ge=0, le=100)
+    blocking: list[str] = Field(default_factory=list)
+    important: list[str] = Field(default_factory=list)
+    optional: list[str] = Field(default_factory=list)
+    functions: list[FunctionReadiness] = Field(default_factory=list)
+    questions: list[ReadinessQuestion] = Field(default_factory=list)
+    answers: list[ReadinessAnswer] = Field(default_factory=list)
+    changes: list[RegulationChangeDraft] = Field(default_factory=list)
+    transactions: list[ChangeTransaction] = Field(default_factory=list)
+    status: Literal["needs_answers", "needs_approval", "ready", "finalized"] = "needs_answers"
+    createdAt: datetime | None = None
+
+
+class RegulationRevisionResult(BaseModel):
+    revisionId: str
+    regulationId: str
+    readinessRunId: str
+    documentPath: str = ""
+    protocolPath: str = ""
+    message: str = ""
+    createdAt: datetime | None = None
+
+
+AgentDraftStatus = Literal["draft", "interview", "changes_pending", "ready", "finalized"]
+QuestionChatStatus = Literal["active", "answered", "needs_clarification", "closed"]
+QuestionChatRole = Literal["assistant", "user", "system"]
+
+
+class AgentDraftSummary(BaseModel):
+    draftId: str
+    regulationId: str
+    roleMatchRunId: str
+    readinessRunId: str = ""
+    title: str = ""
+    position: str = ""
+    department: str = ""
+    status: AgentDraftStatus = "draft"
+    progress: int = Field(default=0, ge=0, le=100)
+    updatedAt: datetime | None = None
+    createdAt: datetime | None = None
+
+
+class AgentDraftDetail(AgentDraftSummary):
+    readiness: AgentReadinessResult | None = None
+
+
+class AgentDraftListResult(BaseModel):
+    items: list[AgentDraftSummary] = Field(default_factory=list)
+
+
+class AgentDraftStatusRequest(BaseModel):
+    status: AgentDraftStatus
+
+
+class QuestionChatMessageResult(BaseModel):
+    messageId: str
+    sessionId: str
+    role: QuestionChatRole
+    content: str = ""
+    structured: dict = Field(default_factory=dict)
+    createdAt: datetime | None = None
+
+
+class QuestionChatSessionResult(BaseModel):
+    sessionId: str
+    draftId: str
+    readinessRunId: str
+    questionId: str
+    functionId: str = ""
+    targetField: str = ""
+    status: QuestionChatStatus = "active"
+    context: dict = Field(default_factory=dict)
+    messages: list[QuestionChatMessageResult] = Field(default_factory=list)
+
+
+class QuestionChatSendRequest(BaseModel):
+    message: str

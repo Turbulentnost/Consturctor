@@ -1,17 +1,27 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.db.session import get_db
+from app.models.regulation import RegulationRevision
 from app.schemas.regulation import (
+    AgentDraftDetail,
     RegulationParseResult,
+    AgentReadinessResult,
+    ChangeDecisionRequest,
+    ReadinessAnswerRequest,
+    RegulationRevisionResult,
     RoleMatchDecisionRequest,
     RoleMatchRequest,
     RoleMatchResult,
 )
+from app.services.agents import AgentDraftError, create_or_get_draft
 from app.services.app_users import get_app_user
 from app.services.regulation import RegulationError, get_result, parse_upload
 from app.services.role_matching import (
@@ -19,6 +29,14 @@ from app.services.role_matching import (
     create_role_match_run,
     get_role_match_run,
     update_match_status,
+)
+from app.services.readiness import (
+    ReadinessError,
+    answer_readiness_question,
+    create_readiness_run,
+    finalize_readiness_run,
+    get_readiness_run,
+    update_change_status,
 )
 
 router = APIRouter(prefix="/regulations", tags=["regulations"])
@@ -95,6 +113,24 @@ async def get_role_matches(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
+@router.post("/{regulation_id}/role-matches/{run_id}/draft", response_model=AgentDraftDetail)
+async def create_role_match_draft(
+    regulation_id: str,
+    run_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentDraftDetail:
+    try:
+        return create_or_get_draft(
+            db,
+            user_id=auth.user_id,
+            regulation_id=regulation_id,
+            role_match_run_id=run_id,
+        )
+    except AgentDraftError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
 @router.patch(
     "/{regulation_id}/role-matches/{run_id}/{match_id}",
     response_model=RoleMatchResult,
@@ -118,3 +154,136 @@ async def decide_role_match(
         )
     except RoleMatchError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post(
+    "/{regulation_id}/role-matches/{run_id}/readiness",
+    response_model=AgentReadinessResult,
+)
+async def create_readiness(
+    regulation_id: str,
+    run_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentReadinessResult:
+    try:
+        return create_readiness_run(
+            db,
+            user_id=auth.user_id,
+            regulation_id=regulation_id,
+            role_match_run_id=run_id,
+        )
+    except ReadinessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.get("/{regulation_id}/readiness/{readiness_run_id}", response_model=AgentReadinessResult)
+async def get_readiness(
+    regulation_id: str,
+    readiness_run_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentReadinessResult:
+    try:
+        return get_readiness_run(
+            db,
+            user_id=auth.user_id,
+            regulation_id=regulation_id,
+            readiness_run_id=readiness_run_id,
+        )
+    except ReadinessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post(
+    "/{regulation_id}/readiness/{readiness_run_id}/answers",
+    response_model=AgentReadinessResult,
+)
+async def answer_readiness(
+    regulation_id: str,
+    readiness_run_id: str,
+    request: ReadinessAnswerRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentReadinessResult:
+    try:
+        return answer_readiness_question(
+            db,
+            user_id=auth.user_id,
+            regulation_id=regulation_id,
+            readiness_run_id=readiness_run_id,
+            request=request,
+        )
+    except ReadinessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.patch(
+    "/{regulation_id}/readiness/{readiness_run_id}/changes/{change_id}",
+    response_model=AgentReadinessResult,
+)
+async def decide_change(
+    regulation_id: str,
+    readiness_run_id: str,
+    change_id: str,
+    request: ChangeDecisionRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentReadinessResult:
+    try:
+        return update_change_status(
+            db,
+            user_id=auth.user_id,
+            regulation_id=regulation_id,
+            readiness_run_id=readiness_run_id,
+            change_id=change_id,
+            request=request,
+        )
+    except ReadinessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post(
+    "/{regulation_id}/readiness/{readiness_run_id}/finalize",
+    response_model=RegulationRevisionResult,
+)
+async def finalize_readiness(
+    regulation_id: str,
+    readiness_run_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RegulationRevisionResult:
+    try:
+        return finalize_readiness_run(
+            db,
+            user_id=auth.user_id,
+            regulation_id=regulation_id,
+            readiness_run_id=readiness_run_id,
+        )
+    except ReadinessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.get("/{regulation_id}/revisions/{revision_id}/download")
+async def download_revision(
+    regulation_id: str,
+    revision_id: str,
+    kind: str = "document",
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    revision = (
+        db.query(RegulationRevision)
+        .filter(
+            RegulationRevision.id == revision_id,
+            RegulationRevision.regulation_id == regulation_id,
+            RegulationRevision.user_id == auth.user_id,
+        )
+        .first()
+    )
+    if revision is None:
+        raise HTTPException(status_code=404, detail="Версия регламента не найдена")
+    path = Path(revision.protocol_path if kind == "protocol" else revision.document_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Файл версии не найден")
+    return FileResponse(str(path), filename=path.name)

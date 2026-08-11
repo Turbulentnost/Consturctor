@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -28,6 +29,9 @@ from app.ui.theme import (
 )
 
 _HIGH_CONFIDENCE = 0.85
+_TEMP = Path(__file__).resolve().parents[1] / "temp"
+_CHECK_ICON_PATH = _TEMP / "зеленаягалочка.png"
+_WARN_ICON_PATH = _TEMP / "внимание.png"
 
 _MATCH_TYPE_LABELS: dict[str, str] = {
     "direct_role_mention": "Должность указана в тексте или заголовке",
@@ -75,8 +79,18 @@ class RoleMatchPage(QWidget):
 
         status_row = QHBoxLayout()
         status_row.setSpacing(10)
-        self._found_badge = _status_badge("#E8F7F0", "#06483D", "Найдено 0 функций")
-        self._review_badge = _status_badge("#FFF4E5", "#9A5B00", "Нужно проверить 0")
+        self._found_badge = _icon_status_badge(
+            "#E8F7F0",
+            "#06483D",
+            "Найдено 0 функций",
+            _load_temp_icon(_CHECK_ICON_PATH, 16),
+        )
+        self._review_badge = _icon_status_badge(
+            "#FFF4E5",
+            "#9A5B00",
+            "Нужно проверить 0",
+            _load_temp_icon(_WARN_ICON_PATH, 16),
+        )
         status_row.addWidget(self._found_badge)
         status_row.addWidget(self._review_badge)
         status_row.addStretch(1)
@@ -218,8 +232,8 @@ class RoleMatchPage(QWidget):
             + (f" · {self._result.department}" if self._result.department else "")
         )
         needs_review = sum(1 for match in self._matches if _needs_user_review(match))
-        self._found_badge.setText(f"  ✓  Найдено {total} функций  ")
-        self._review_badge.setText(f"  ⏱  Нужно проверить {needs_review}  ")
+        _set_badge_text(self._found_badge, f"Найдено {total} функций")
+        _set_badge_text(self._review_badge, f"Нужно проверить {needs_review}")
         self._review_badge.setVisible(needs_review > 0)
 
         if total == 0:
@@ -289,19 +303,25 @@ class RoleMatchPage(QWidget):
         why_title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         layout.addWidget(why_title)
 
+        check_icon = _load_temp_icon(_CHECK_ICON_PATH, 16)
         for reason in _reason_lines(match):
             row = QHBoxLayout()
             row.setSpacing(8)
-            mark = QLabel("✓")
-            mark.setFont(app_font(13, QFont.Weight.DemiBold))
-            mark.setStyleSheet("color: #08745F; background: transparent;")
-            mark.setFixedWidth(16)
+            mark = QLabel()
+            mark.setFixedSize(16, 16)
+            mark.setStyleSheet("background: transparent;")
+            if not check_icon.isNull():
+                mark.setPixmap(check_icon)
+            else:
+                mark.setText("✓")
+                mark.setFont(app_font(13, QFont.Weight.DemiBold))
+                mark.setStyleSheet("color: #08745F; background: transparent;")
             label = QLabel(reason)
             label.setWordWrap(True)
             _keep_label_inside_width(label)
             label.setFont(app_font(13))
             label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-            row.addWidget(mark)
+            row.addWidget(mark, 0, Qt.AlignmentFlag.AlignTop)
             row.addWidget(label, 1)
             wrap = QWidget()
             wrap.setLayout(row)
@@ -1171,20 +1191,63 @@ def _confidence_label(confidence: float) -> tuple[str, str]:
     return "низкая", "#B44D4D"
 
 
-def _status_badge(bg: str, fg: str, text: str) -> QLabel:
-    label = QLabel(text)
-    label.setFont(app_font(12, QFont.Weight.DemiBold))
-    label.setStyleSheet(
+def _load_temp_icon(path: Path, size: int) -> QPixmap:
+    """Load PNG and punch out near-black background for light UI surfaces."""
+    if not path.exists():
+        return QPixmap()
+    src = QImage(str(path))
+    if src.isNull():
+        return QPixmap()
+    img = src.convertToFormat(QImage.Format.Format_ARGB32)
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = QColor.fromRgba(img.pixel(x, y))
+            if c.red() < 48 and c.green() < 48 and c.blue() < 48:
+                c.setAlpha(0)
+                img.setPixelColor(x, y, c)
+    return QPixmap.fromImage(img).scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+def _icon_status_badge(bg: str, fg: str, text: str, icon: QPixmap) -> QWidget:
+    badge = QFrame()
+    badge.setObjectName("StatusBadge")
+    badge.setStyleSheet(
         f"""
-        QLabel {{
-            color: {fg};
+        QFrame#StatusBadge {{
             background: {bg};
             border-radius: 14px;
-            padding: 6px 12px;
         }}
         """
     )
-    return label
+    layout = QHBoxLayout(badge)
+    layout.setContentsMargins(10, 6, 12, 6)
+    layout.setSpacing(6)
+
+    icon_label = QLabel()
+    icon_label.setObjectName("StatusBadgeIcon")
+    icon_label.setFixedSize(16, 16)
+    icon_label.setStyleSheet("background: transparent;")
+    if not icon.isNull():
+        icon_label.setPixmap(icon)
+    layout.addWidget(icon_label)
+
+    text_label = QLabel(text)
+    text_label.setObjectName("StatusBadgeText")
+    text_label.setFont(app_font(12, QFont.Weight.DemiBold))
+    text_label.setStyleSheet(f"color: {fg}; background: transparent;")
+    layout.addWidget(text_label)
+    return badge
+
+
+def _set_badge_text(badge: QWidget, text: str) -> None:
+    text_label = badge.findChild(QLabel, "StatusBadgeText")
+    if text_label is not None:
+        text_label.setText(text)
 
 
 def _empty_card() -> QWidget:
@@ -1234,7 +1297,7 @@ def _keep_label_inside_width(label: QLabel) -> None:
 def _soft_wrap_text(text: str) -> str:
     def wrap_token(match: re.Match[str]) -> str:
         token = match.group(0)
-        return re.sub(r"([\\/_:.-])", r"\1\u200b", token)
+        return re.sub(r"([\\/_:.-])", lambda sep: f"{sep.group(1)}\u200b", token)
 
     return re.sub(r"\S{28,}", wrap_token, text)
 
