@@ -25,15 +25,6 @@ def build_role_profile(
 ) -> RoleProfile:
     profile = RoleProfile(canonicalTitle=position.strip(), department=department.strip())
     _add_alias(profile.aliases, position, "verified", "Должность пользователя", [])
-    if department:
-        _add_alias(profile.aliases, department, "verified", "Подразделение пользователя", [])
-        _add_alias(
-            profile.aliases,
-            f"сотрудник {department}",
-            "candidate",
-            "Кандидат от подразделения пользователя",
-            [],
-        )
     for alias in _generic_position_aliases(position):
         _add_alias(profile.aliases, alias, "candidate", "Вариант названия должности", [])
 
@@ -73,11 +64,9 @@ def verified_aliases(profile: RoleProfile) -> list[str]:
 
 
 def all_candidate_terms(profile: RoleProfile) -> list[str]:
-    values = [profile.canonicalTitle, profile.department]
+    values = [profile.canonicalTitle]
     values.extend(alias.value for alias in profile.aliases)
     values.extend(alias.value for alias in profile.processRoles)
-    values.extend(alias.value for alias in profile.systems)
-    values.extend(alias.value for alias in profile.documents)
     return [value for value in _unique(values) if value]
 
 
@@ -102,7 +91,7 @@ def _collect_artifacts(profile: RoleProfile, text: str, fragment_ids: list[str])
 
 
 def _role_like(value: str, position: str, department: str) -> bool:
-    return contains_phrase(value, position) or bool(department and contains_phrase(value, department))
+    return contains_phrase(value, position)
 
 
 def _add_alias(items: list[RoleAlias], value: str, status: str, reason: str, source: list[str]) -> None:

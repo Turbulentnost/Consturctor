@@ -517,6 +517,10 @@ def _function_title(match: RoleMatch) -> str:
     if contextual_title:
         return contextual_title
 
+    role_title = _title_from_role_line(full_text, _role_terms(match))
+    if role_title:
+        return role_title
+
     fragment_lines = _meaningful_fragment_lines(match)
     for candidate in fragment_lines:
         if _looks_like_function_line(candidate):
@@ -546,14 +550,11 @@ def _role_terms(match: RoleMatch) -> list[str]:
                 continue
             if ":" in text:
                 text = text.rsplit(":", 1)[-1].strip()
-            if 4 <= len(text) <= 80 and not _is_service_line(text):
+            if 4 <= len(text) <= 80 and not _is_service_line(text) and not _is_context_term(text):
                 terms.append(text)
     fallback_terms = (
         "промпт-инженер",
         "промпт-инженеров",
-        "руководитель сектора",
-        "заказчик",
-        "ключевой пользователь",
     )
     terms.extend(fallback_terms)
     unique: list[str] = []
@@ -575,6 +576,21 @@ def _title_from_role_context(text: str, role_terms: list[str]) -> str:
         extracted = _extract_including_title(sentence)
         if extracted:
             return extracted
+    return ""
+
+
+def _title_from_role_line(text: str, role_terms: list[str]) -> str:
+    if not role_terms:
+        return ""
+    for line in _meaningful_lines_from_text(text):
+        if not _contains_any_term(line, role_terms):
+            continue
+        candidate = _text_after_role_term(line, role_terms) or _remove_role_terms(line, role_terms)
+        if not _looks_like_function_line(candidate):
+            continue
+        title = _as_title(candidate)
+        if title:
+            return title
     return ""
 
 
@@ -600,6 +616,32 @@ def _split_sentences(text: str) -> list[str]:
 def _contains_any_term(text: str, terms: list[str]) -> bool:
     normalized = _normalize_text(text)
     return any(_normalize_text(term) in normalized for term in terms if _normalize_text(term))
+
+
+def _remove_role_terms(text: str, role_terms: list[str]) -> str:
+    cleaned = text
+    for term in sorted(role_terms, key=len, reverse=True):
+        normalized_term = _normalize_text(term)
+        if not normalized_term:
+            continue
+        words = cleaned.split()
+        kept = [word for word in words if normalized_term not in _normalize_text(word)]
+        cleaned = " ".join(kept)
+    return _clean_line(cleaned.strip(" :—-–,;"))
+
+
+def _text_after_role_term(text: str, role_terms: list[str]) -> str:
+    normalized_text = _normalize_text(text)
+    for term in sorted(role_terms, key=len, reverse=True):
+        normalized_term = _normalize_text(term)
+        if not normalized_term:
+            continue
+        idx = normalized_text.find(normalized_term)
+        if idx < 0:
+            continue
+        # Use the original text length as an approximation; terms are short and mostly ASCII hyphen-safe.
+        return _clean_line(text[idx + len(term) :].strip(" :—-–,;"))
+    return ""
 
 
 def _extract_including_title(sentence: str) -> str:
@@ -641,6 +683,10 @@ def _normalize_function_noun(text: str) -> str:
 
 def _meaningful_fragment_lines(match: RoleMatch) -> list[str]:
     text = _fragment_preview_text(match, full=True)
+    return _meaningful_lines_from_text(text)
+
+
+def _meaningful_lines_from_text(text: str) -> list[str]:
     lines: list[str] = []
     for raw in text.replace(";", "\n").splitlines():
         line = _clean_line(raw)
@@ -731,6 +777,24 @@ def _is_service_line(text: str) -> bool:
     if letters and sum(ch.isupper() for ch in letters) / len(letters) > 0.85:
         return True
     return False
+
+
+def _is_context_term(text: str) -> bool:
+    normalized = _normalize_text(text)
+    context_terms = {
+        "1с",
+        "crm",
+        "erp",
+        "sap",
+        "акт",
+        "заявка",
+        "договор",
+        "счет",
+        "счёт",
+        "карточка сделки",
+        "коммерческое предложение",
+    }
+    return normalized in context_terms
 
 
 def _is_scope_line(text: str) -> bool:

@@ -14,6 +14,13 @@ from app.services.role_matching.profile import all_candidate_terms, verified_ali
 _RESPONSIBLE_COLUMNS = ("ответственный", "исполнитель", "роль", "raci", "ответств")
 _ACTION_COLUMNS = ("действие", "операция", "задача", "работа", "функция")
 _SYSTEM_COLUMNS = ("система", "ис", "информационная система")
+_ROLE_SIGNAL_TYPES = {
+    "direct_role_mention",
+    "inherited_from_section",
+    "assigned_action",
+    "process_role_alias",
+    "interaction",
+}
 _INTERACTION_WORDS = {
     "передает": "recipient",
     "передаёт": "recipient",
@@ -148,9 +155,13 @@ def collect_candidates(result: RegulationParseResult, profile: RoleProfile) -> l
                     "Токенная семантическая близость к профилю должности",
                 )
             )
-        if signals:
+        if signals and _has_role_signal(signals):
             candidates.append(Candidate(fragment=fragment, signals=signals, semantic_score=semantic_score))
     return candidates
+
+
+def _has_role_signal(signals: list[MatchSignal]) -> bool:
+    return any(signal.matchType in _ROLE_SIGNAL_TYPES for signal in signals)
 
 
 def _table_assignment_signal(

@@ -46,11 +46,11 @@ def _payload(candidate: Candidate, profile: RoleProfile) -> dict[str, Any]:
     context = fragment.context
     prompt = {
         "instruction": (
-            "Определи, связан ли фрагмент с должностью и подразделением пользователя "
-            "(roleProfile.canonicalTitle и roleProfile.department). "
-            "Учитывай оба признака: должность и подразделение. "
+            "Определи, связан ли фрагмент именно с должностью пользователя "
+            "(roleProfile.canonicalTitle). Подразделение roleProfile.department "
+            "используй только как дополнительный контекст для неоднозначных случаев. "
             "Не считай фрагмент относящимся к должности только из-за упоминания "
-            "подразделения, CRM или общего документа без связи с ролью. "
+            "подразделения, CRM, информационной системы или общего документа без связи с ролью. "
             "Используй только предоставленный текст. Верни только JSON без markdown."
         ),
         "roleProfile": profile.model_dump(mode="json"),
