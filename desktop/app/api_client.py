@@ -21,6 +21,7 @@ class UserProfile:
     id: str
     fio: str
     department: str = ""
+    position: str = ""
     avatar_url: str | None = None
     can_change_department: bool = True
     department_change_available_at: datetime | None = None
@@ -304,6 +305,7 @@ class ApiClient:
             id=str(data.get("id", "")),
             fio=str(data.get("fio", "")),
             department=str(data.get("department", "")),
+            position=str(data.get("position", "")),
             avatar_url=str(avatar) if avatar else None,
             can_change_department=bool(data.get("can_change_department", True)),
             department_change_available_at=available_at,

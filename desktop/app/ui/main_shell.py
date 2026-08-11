@@ -3,12 +3,14 @@ from __future__ import annotations
 from threading import Thread
 
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QInputDialog,
+    QLabel,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -24,9 +26,12 @@ from app.ui.pages.regulation_review_page import RegulationReviewPage
 from app.ui.pages.role_match_page import RoleMatchPage
 from app.ui.pages.settings_page import SettingsPage
 from app.ui.theme import (
+    COLOR_CONTENT_MUTED,
     COLOR_CONTENT_BG,
     CONTENT_PADDING_TOP,
     CONTENT_PADDING_X,
+    MAIN_TEXT,
+    app_font,
 )
 from app.ui.widgets.sidebar import GlassSidebar
 from app.ui.widgets.user_menu import UserMenuHeader
@@ -61,6 +66,60 @@ class MainContentWidget(QFrame):
         p.end()
 
 
+class LoadingPage(QWidget):
+    """Simple full-page progress state for long backend analysis steps."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._title = QLabel("Идёт анализ")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title.setFont(app_font(28, QFont.Weight.DemiBold))
+        self._title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+
+        self._subtitle = QLabel("")
+        self._subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._subtitle.setWordWrap(True)
+        self._subtitle.setFont(app_font(14))
+        self._subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+
+        progress = QProgressBar()
+        progress.setRange(0, 0)
+        progress.setTextVisible(False)
+        progress.setFixedSize(320, 8)
+        progress.setStyleSheet(
+            """
+            QProgressBar {
+                background: rgba(6,72,61,0.12);
+                border: none;
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background: #08745F;
+                border-radius: 4px;
+            }
+            """
+        )
+
+        progress_row = QHBoxLayout()
+        progress_row.addStretch(1)
+        progress_row.addWidget(progress)
+        progress_row.addStretch(1)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(48, 48, 48, 48)
+        layout.addStretch(1)
+        layout.addWidget(self._title)
+        layout.addSpacing(10)
+        layout.addWidget(self._subtitle)
+        layout.addSpacing(26)
+        layout.addLayout(progress_row)
+        layout.addStretch(1)
+
+    def set_message(self, title: str, subtitle: str) -> None:
+        self._title.setText(title)
+        self._subtitle.setText(subtitle)
+
+
 class MainShell(QWidget):
     logout_requested = Signal()
     _regulation_ready = Signal(object)
@@ -85,12 +144,14 @@ class MainShell(QWidget):
         self._page_settings = SettingsPage(self._api)
         self._page_review = RegulationReviewPage()
         self._page_role_match = RoleMatchPage()
+        self._page_loading = LoadingPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_kpi)
         self._pages.addWidget(self._page_settings)
         self._pages.addWidget(self._page_review)
         self._pages.addWidget(self._page_role_match)
+        self._pages.addWidget(self._page_loading)
         self._page_index = {
             "create": 0,
             "agents": 1,
@@ -98,6 +159,7 @@ class MainShell(QWidget):
             "settings": 3,
             "review": 4,
             "role_match": 5,
+            "loading": 6,
         }
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_create.create_regulation_requested.connect(self._on_create_regulation)
@@ -311,14 +373,24 @@ class MainShell(QWidget):
         if self._current_regulation is None:
             return
         default_department = self._user.department if self._user is not None else ""
-        position, ok = QInputDialog.getText(
-            self,
-            "Выбор должности",
-            "Для какой должности найти фрагменты?",
+        position = (self._user.position if self._user is not None else "").strip()
+        if not position:
+            position, ok = QInputDialog.getText(
+                self,
+                "Выбор должности",
+                "Должность не найдена в 1С. Укажите должность для поиска фрагментов:",
+            )
+            position = position.strip()
+            if not ok or not position:
+                return
+        self._page_loading.set_message(
+            "Анализируем функции должности",
+            (
+                f"Ищем фрагменты регламента для должности «{position}». "
+                "Это может занять несколько минут."
+            ),
         )
-        position = position.strip()
-        if not ok or not position:
-            return
+        self._pages.setCurrentIndex(self._page_index["loading"])
 
         def run() -> None:
             try:
@@ -338,10 +410,12 @@ class MainShell(QWidget):
         if not isinstance(result, RoleMatchResult):
             return
         self._current_role_match = result
-        self._page_role_match.set_result(result)
+        self._page_role_match.set_result(result, self._current_regulation)
         self._pages.setCurrentIndex(self._page_index["role_match"])
 
     def _show_role_match_error(self, message: str) -> None:
+        if self._pages.currentIndex() == self._page_index["loading"]:
+            self._pages.setCurrentIndex(self._page_index["review"])
         QMessageBox.warning(self, "Поиск фрагментов по должности", message)
 
     def _back_to_review(self) -> None:

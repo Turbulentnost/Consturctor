@@ -45,6 +45,13 @@ def _ensure_columns() -> None:
                     "ADD COLUMN department_changed_at TIMESTAMPTZ NULL"
                 )
             )
+        if "position" not in existing:
+            conn.execute(
+                text(
+                    "ALTER TABLE users "
+                    "ADD COLUMN position VARCHAR(512) NOT NULL DEFAULT ''"
+                )
+            )
 
 
 def get_db() -> Generator[Session, None, None]:

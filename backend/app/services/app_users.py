@@ -53,17 +53,29 @@ def to_user_out(user: AppUser) -> UserOut:
         id=user.id,
         fio=user.fio,
         department=user.department or "",
+        position=user.position or "",
         avatar_url=avatar_url_for(user),
         can_change_department=can_change,
         department_change_available_at=available_at,
     )
 
 
-def upsert_app_user(*, user_id: str, fio: str, department: str) -> AppUser:
+def upsert_app_user(
+    *,
+    user_id: str,
+    fio: str,
+    department: str,
+    position: str = "",
+) -> AppUser:
     with SessionLocal() as db:
         user = db.get(AppUser, user_id)
         if user is None:
-            user = AppUser(id=user_id, fio=fio, department=department or "")
+            user = AppUser(
+                id=user_id,
+                fio=fio,
+                department=department or "",
+                position=position or "",
+            )
             db.add(user)
             logger.info("Created app user id=%s", user_id)
         else:
@@ -71,6 +83,9 @@ def upsert_app_user(*, user_id: str, fio: str, department: str) -> AppUser:
             # Keep app department as source of truth after first login.
             if not (user.department or "").strip() and department:
                 user.department = department
+            # Position always refreshes from ERP when available.
+            if position:
+                user.position = position
             logger.info("Updated app user id=%s", user_id)
         db.commit()
         db.refresh(user)
