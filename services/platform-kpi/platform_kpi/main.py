@@ -10,13 +10,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 from sqlalchemy import func, select
 
+from platform_contracts.agent_card import AgentTaskReport
 from platform_contracts.kpi import KpiSummary, ReviewEvent, ReviewEventCreate
-from platform_db.models import AgentRunRow, ReviewEventRow, ToolEventRow
+from platform_db.models import AgentRunRow, AgentTaskReportRow, ReviewEventRow, ToolEventRow
 from platform_db.session import get_session_factory
 
 SUCCESS_STATUSES = ("done",)
 ERROR_STATUSES = ("error",)
 HITL_STATUSES = ("hitl",)
+TASK_SUCCESS_STATUSES = frozenset({"done", "success", "completed", "ok", "correct"})
+KPI_TASK_WINDOW = 100
 OPERATOR_APPROVE = "operator_approve"
 OPERATOR_CHANGE = "operator_change"
 
@@ -48,7 +51,22 @@ def operator_approval_rate(saved: int, changed: int) -> float | None:
     return round(saved / total, 4)
 
 
-def collect_summary(*, department: str = "", hours: int = 24) -> KpiSummary:
+def optional_uuid(value: str | None) -> uuid.UUID | None:
+    if not value:
+        return None
+    return uuid.UUID(str(value))
+
+
+def task_kpi_metrics(reports: list[AgentTaskReportRow]) -> tuple[int, int, int]:
+    """Return (correct, window_total, lifetime_total) for sliding window KPI."""
+    lifetime = len(reports)
+    window = reports[-KPI_TASK_WINDOW:] if lifetime > KPI_TASK_WINDOW else reports
+    window_total = len(window)
+    correct = sum(1 for row in window if row.status.lower() in TASK_SUCCESS_STATUSES)
+    return correct, window_total, lifetime
+
+
+def collect_summary(*, department: str = "", agent_id: str = "", hours: int = 24) -> KpiSummary:
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=hours)
     factory = get_session_factory()
@@ -90,6 +108,18 @@ def collect_summary(*, department: str = "", hours: int = 24) -> KpiSummary:
         tool_invocations = session.scalar(tool_inv_q) or 0
         tool_failures = session.scalar(tool_fail_q) or 0
 
+        tasks_correct = 0
+        tasks_total = 0
+        tasks_lifetime_total = 0
+        if agent_id:
+            reports_q = (
+                select(AgentTaskReportRow)
+                .where(AgentTaskReportRow.agent_id == agent_id)
+                .order_by(AgentTaskReportRow.created_at.asc())
+            )
+            reports = session.scalars(reports_q).all()
+            tasks_correct, tasks_total, tasks_lifetime_total = task_kpi_metrics(reports)
+
     def rate(n: int, d: int) -> float:
         return round(n / d, 4) if d else 0.0
 
@@ -106,6 +136,10 @@ def collect_summary(*, department: str = "", hours: int = 24) -> KpiSummary:
         operator_changed=int(changed),
         tool_invocations=int(tool_invocations),
         tool_failures=int(tool_failures),
+        tasks_correct=int(tasks_correct),
+        tasks_total=int(tasks_total),
+        tasks_lifetime_total=int(tasks_lifetime_total),
+        task_success_rate=rate(int(tasks_correct), int(tasks_total)),
     )
 
     GAUGE_SUCCESS_RATE.set(summary.success_rate)
@@ -128,8 +162,49 @@ def metrics() -> Response:
 
 
 @app.get("/api/v1/kpi/summary", response_model=KpiSummary)
-def kpi_summary(department: str = Query(default="")) -> KpiSummary:
-    return collect_summary(department=department.strip())
+def kpi_summary(
+    department: str = Query(default=""),
+    agent_id: str = Query(default=""),
+    hours: int = Query(default=24, ge=1, le=24 * 30),
+) -> KpiSummary:
+    return collect_summary(
+        department=department.strip(),
+        agent_id=agent_id.strip(),
+        hours=hours,
+    )
+
+
+@app.post("/api/v1/kpi/agent-tasks/report")
+def agent_task_report(body: AgentTaskReport) -> dict:
+    factory = get_session_factory()
+    now = datetime.now(timezone.utc)
+    row = AgentTaskReportRow(
+        id=uuid.uuid4(),
+        agent_id=body.agent_id,
+        session_id=optional_uuid(body.session_id),
+        run_id=optional_uuid(body.run_id),
+        task_id=body.task_id,
+        status=body.status,
+        quality_score=body.quality_score,
+        summary=body.summary,
+        outcome_json=json.dumps(body.outcome, ensure_ascii=False),
+        metadata_json=json.dumps(body.metadata, ensure_ascii=False),
+        created_at=now,
+    )
+    with factory() as session:
+        session.add(row)
+        try:
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "id": str(row.id),
+        "agent_id": row.agent_id,
+        "task_id": row.task_id,
+        "status": row.status,
+        "created_at": row.created_at.isoformat(),
+    }
 
 
 @app.post("/api/v1/kpi/review", response_model=ReviewEvent)

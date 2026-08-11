@@ -36,4 +36,8 @@ class KpiSummary(BaseModel):
     operator_changed: int = 0
     tool_invocations: int = 0
     tool_failures: int = 0
+    tasks_correct: int = 0
+    tasks_total: int = 0
+    tasks_lifetime_total: int = 0
+    task_success_rate: float = 0.0
     by_department: dict[str, Any] = Field(default_factory=dict)

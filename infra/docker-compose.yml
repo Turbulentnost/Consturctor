@@ -252,7 +252,7 @@ services:
 
   platform-demo-ui:
     build:
-      context: ../../platform-demo-ui
+      context: ../platform-demo-ui
       dockerfile: Dockerfile
     environment:
       BIND_HOST: 0.0.0.0
@@ -261,7 +261,7 @@ services:
     ports:
       - "8790:8790"
     volumes:
-      - ../../platform-demo-ui:/app:ro
+      - ../platform-demo-ui:/app:ro
     depends_on:
       constructor-gateway:
         condition: service_started

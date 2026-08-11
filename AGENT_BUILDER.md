@@ -15,7 +15,7 @@
 | [README.md](README.md) | Общий обзор | MVP desktop + backend, краткий каталог tools |
 | [backend/README.md](backend/README.md) | Backend-разработчик | Auth 1С, JWT, health, LLM stub |
 
-**Demo UI** (ручная проверка sandbox) — **вне репозитория**: `../platform-demo-ui/` (рядом с `Consturctor/`), URL http://127.0.0.1:8790/
+**Demo UI** (ручная проверка sandbox): [`platform-demo-ui/`](platform-demo-ui/) → http://127.0.0.1:8790/
 
 ---
 
@@ -323,5 +323,5 @@ scripts\run_agent_mocks.cmd --list
 
 | Артефакт | Путь / URL |
 |----------|------------|
-| Demo UI (sandbox forms) | `../platform-demo-ui/` → http://127.0.0.1:8790/ |
+| Demo UI (sandbox forms) | [`platform-demo-ui/`](platform-demo-ui/) → http://127.0.0.1:8790/ |
 | FigJam v2 | https://www.figma.com/board/d3SqK8NI5SejQtfy8yzpxF |
