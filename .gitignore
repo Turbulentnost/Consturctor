@@ -4,6 +4,9 @@
 !.env.example
 *.local.env
 
+# --- Desktop tool runtime data (local workspace) ---
+data/
+
 # --- infra (Docker) — keep compose + init SQL; ignore local runtime ---
 infra/.env
 infra/.env.local

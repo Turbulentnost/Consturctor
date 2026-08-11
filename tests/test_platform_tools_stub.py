@@ -39,7 +39,20 @@ def test_shell_stub_invoke(shell_client: TestClient) -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["ok"] is True
-    assert "stub" in data["data"]["stdout"].lower()
+    assert "hello" in data["data"]["stdout"]
+    assert data["data"]["exit_code"] == 0
+    assert "stub stdout" not in data["data"]["stdout"].lower()
+
+
+def test_shell_compound_command(shell_client: TestClient) -> None:
+    response = shell_client.post(
+        "/api/v1/tools/shell.run/invoke",
+        json={"payload": {"command": "cd incoming || ls"}},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert data["data"]["exit_code"] == 0
 
 
 def test_browser_stub_navigate(browser_client: TestClient) -> None:

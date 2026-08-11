@@ -129,6 +129,10 @@ def _row_department(row) -> str:
 
 def ping() -> bool:
     """Return True if ERP SQL is reachable."""
+    try:
+        resolve_odbc_driver(settings.erp_sql_driver)
+    except ErpSqlError as exc:
+        raise ErpSqlError(str(exc)) from exc
     conn = _connect()
     try:
         cur = conn.cursor()

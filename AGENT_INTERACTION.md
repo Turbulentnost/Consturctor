@@ -40,7 +40,9 @@
 
 Отдельный реестр: `platform_core.tool_registry` + ACL по отделу (`TOOL_MANIFEST` / gateway).
 
-- `imap.*`, `onec.*`, `shell.*`, `browser.*` — **что мы умеем выполнять**
+- `imap.*`, `onec.*`, `shell.*`, `browser.*`, `fs.*`, `com.*` — **что мы умеем выполнять**
+- Docker tools (:7821–7824) — в контейнерах; desktop tools (:7826–7828) — на Windows host, orchestrator ходит через `host.docker.internal`
+- `shell.run` payload: `{ "command": "...", "cwd": "...", "runtime": "native"|"sandbox" }`
 - Агент вызывает через `POST /api/v1/tools/{name}/invoke` **когда сам решит**
 - Audit: `tools_audit.tool_events` — операционный след, не определение задач
 

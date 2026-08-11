@@ -42,20 +42,21 @@ async def _check_platform_services() -> list[PlatformServiceHealth]:
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     erp_reachable = False
-    try:
-        erp_reachable = await asyncio.to_thread(ping)
-    except ErpSqlError:
-        logger.warning("ERP health check failed", exc_info=True)
-    except Exception:
-        logger.warning("Unexpected ERP health check error", exc_info=True)
+    if not settings.auth_stub:
+        try:
+            erp_reachable = await asyncio.to_thread(ping)
+        except ErpSqlError as exc:
+            logger.warning("ERP health check failed: %s", exc)
+        except Exception as exc:
+            logger.warning("Unexpected ERP health check error: %s", exc)
 
     platform_services = await _check_platform_services()
     platform_ok = all(s.reachable for s in platform_services) if platform_services else True
 
-    if erp_reachable and platform_ok:
+    if settings.auth_stub:
+        status = "ok" if platform_ok else "degraded"
+    elif erp_reachable and platform_ok:
         status = "ok"
-    elif erp_reachable or platform_ok:
-        status = "degraded"
     else:
         status = "degraded"
 

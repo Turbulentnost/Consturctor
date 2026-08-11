@@ -2,9 +2,28 @@
   "default": [
     "imap.list_unread",
     "imap.fetch_message",
+    "imap.fetch_attachments",
+    "imap.search",
+    "onec.odata_get",
+    "onec.odata_post",
+    "onec.odata_patch",
+    "onec.attach_file",
     "onec.sql_query",
+    "com.list_apps",
+    "com.connect",
+    "com.invoke",
+    "com.release",
+    "fs.list",
+    "fs.read",
+    "fs.write",
+    "fs.stat",
+    "fs.move",
+    "fs.copy",
     "shell.run",
-    "browser.navigate"
+    "browser.navigate",
+    "browser.screenshot",
+    "browser.click",
+    "browser.extract_text"
   ],
   "by_department": {}
 }

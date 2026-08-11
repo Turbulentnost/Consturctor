@@ -11,24 +11,23 @@ from pydantic_settings import SettingsConfigDict
 from platform_contracts.tools import ToolInvokeRequest
 from platform_service_common.app_factory import ServiceSettings, create_tool_app, run_app
 
-ALLOWED_COMMANDS = {
-    "python",
-    "pip",
-    "git",
+NATIVE_ALLOWED_COMMANDS = {
+    "cd",
     "dir",
     "type",
     "echo",
     "where",
+    "copy",
+    "move",
+    "mkdir",
+    "rd",
     "ls",
-    "cd",
     "pwd",
     "cat",
-    "head",
-    "tail",
     "find",
-    "test",
-    "true",
-    "false",
+    "python",
+    "pip",
+    "git",
 }
 SHELL_DENY_PATTERNS = (
     re.compile(r"(?i)\brm\b|\bdel\b|\brmdir\b|\bmkfs\b"),
@@ -38,48 +37,52 @@ SHELL_DENY_PATTERNS = (
     re.compile(r"[<>]"),
 )
 _SINGLE_PIPE = re.compile(r"(?<!\|)\|(?!|\|)")
-_SANDBOX_DIRS = ("incoming", "outgoing", "attachments")
 
 
-class ShellSettings(ServiceSettings):
+class NativeShellSettings(ServiceSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    service_name: str = "platform-tool-shell"
-    api_port: int = 7823
-    workspace_root: str = ""
-    max_timeout_sec: int = 60
-    max_output_bytes: int = 65536
+    service_name: str = "platform-tool-shell-native"
+    api_port: int = 7828
+    shell_cwd_roots: str = ""
+    max_timeout_sec: int = 120
+    max_output_bytes: int = 131072
 
 
-settings = ShellSettings()
+settings = NativeShellSettings()
 
 
-def _workspace_root() -> Path:
-    root = (settings.workspace_root or os.environ.get("CONSTRUCTOR_WORKSPACE") or "").strip()
-    if not root:
-        root = str(Path.cwd() / "data" / "workspace")
-    path = Path(root)
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+def _cwd_roots() -> list[Path]:
+    raw = (settings.shell_cwd_roots or os.environ.get("SHELL_CWD_ROOTS") or "").strip()
+    if not raw:
+        default = Path.cwd() / "data" / "shell-native"
+        default.mkdir(parents=True, exist_ok=True)
+        return [default.resolve()]
+    roots: list[Path] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        path = Path(part).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        roots.append(path)
+    return roots or [Path.cwd().resolve()]
 
 
-def _run_dir(run_id: str | None) -> Path:
-    base = _workspace_root()
-    if run_id:
-        path = base / str(run_id)
-    else:
-        path = base / "default"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def _ensure_sandbox_layout(cwd: Path) -> None:
-    cwd.mkdir(parents=True, exist_ok=True)
-    for name in _SANDBOX_DIRS:
-        (cwd / name).mkdir(exist_ok=True)
-    readme = cwd / "README.txt"
-    if not readme.exists():
-        readme.write_text("Constructor sandbox workspace\n", encoding="utf-8")
+def _resolve_cwd(cwd_str: str | None) -> Path:
+    if not cwd_str or not str(cwd_str).strip():
+        return _cwd_roots()[0]
+    candidate = Path(str(cwd_str).strip()).expanduser()
+    if not candidate.is_absolute():
+        candidate = _cwd_roots()[0] / candidate
+    resolved = candidate.resolve()
+    for root in _cwd_roots():
+        try:
+            resolved.relative_to(root)
+            return resolved
+        except ValueError:
+            continue
+    raise ValueError(f"cwd not allowed: {cwd_str}")
 
 
 def _validate_shell_command(command: str) -> str:
@@ -101,25 +104,16 @@ def _validate_shell_command(command: str) -> str:
         name = head.group(1).lower()
         if name.endswith(".exe"):
             name = name[:-4]
-        if name not in ALLOWED_COMMANDS:
+        if name not in NATIVE_ALLOWED_COMMANDS:
             raise ValueError(f"command not allowed: {head.group(1)}")
     return command
 
 
 def _execute(command: str, cwd: Path, timeout: int) -> subprocess.CompletedProcess[str]:
-    _ensure_sandbox_layout(cwd)
     validated = _validate_shell_command(command)
-    if os.name == "nt":
-        return subprocess.run(
-            ["cmd.exe", "/c", validated],
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            shell=False,
-        )
+    cwd.mkdir(parents=True, exist_ok=True)
     return subprocess.run(
-        ["/bin/sh", "-c", validated],
+        ["cmd.exe", "/c", validated],
         cwd=str(cwd),
         capture_output=True,
         text=True,
@@ -137,28 +131,42 @@ def _format_result(completed: subprocess.CompletedProcess[str], cwd: Path) -> di
         "stderr": stderr,
         "exit_code": completed.returncode,
         "cwd": str(cwd),
+        "runtime": "native",
+        "source": "shell-native",
     }
 
 
 def _run(req: ToolInvokeRequest) -> dict[str, Any]:
     command = str(req.payload.get("command", ""))
-    cwd = _run_dir(str(req.run_id) if req.run_id else None)
+    cwd = _resolve_cwd(req.payload.get("cwd"))
     timeout = min(int(req.payload.get("timeout", settings.max_timeout_sec)), settings.max_timeout_sec)
     completed = _execute(command, cwd, timeout)
     return _format_result(completed, cwd)
 
 
 def _stub_run(req: ToolInvokeRequest) -> dict[str, Any]:
+    if os.name != "nt":
+        command = str(req.payload.get("command", "echo stub"))
+        return {
+            "summary": "native shell requires Windows host",
+            "stdout": "",
+            "stderr": "native shell unavailable on non-Windows platform",
+            "exit_code": 1,
+            "cwd": str(_cwd_roots()[0]),
+            "runtime": "native",
+            "source": "stub",
+        }
     try:
         return _run(req)
     except Exception as exc:
-        command = str(req.payload.get("command", "echo stub"))
         return {
-            "summary": f"stub failed: {exc}",
+            "summary": f"native shell failed: {exc}",
             "stdout": "",
             "stderr": str(exc),
             "exit_code": 1,
-            "cwd": str(_run_dir(str(req.run_id) if req.run_id else None)),
+            "cwd": str(_resolve_cwd(req.payload.get("cwd"))),
+            "runtime": "native",
+            "source": "stub",
         }
 
 

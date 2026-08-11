@@ -27,39 +27,119 @@ class ImapSettings(ServiceSettings):
 settings = ImapSettings()
 
 
-def _stub_list_unread(_: ToolInvokeRequest) -> dict[str, Any]:
+_OMTO_MESSAGES = {
+    8801: {
+        "subject": "[omto] Заявка на согласование спецификации",
+        "from": "omto@turbo-don.ru",
+        "body_text": "Прошу согласовать спецификацию арматуры DN200 для объекта Ростов.",
+    },
+    8802: {
+        "subject": "Re: [omto] Коммерческое предложение",
+        "from": "omto@turbo-don.ru",
+        "body_text": "Направляю обновлённое КП с учётом замечаний от 08.08.",
+    },
+    8803: {
+        "subject": "[omto] Статус входящей корреспонденции ВК-000101",
+        "from": "omto@turbo-don.ru",
+        "body_text": "Документ зарегистрирован в 1С, ожидает ответа контрагента.",
+    },
+}
+
+
+def _imap_ready() -> bool:
+    return bool(settings.imap_username and settings.imap_password)
+
+
+def _user_key(user: str, query: str = "") -> str:
+    return (user or query or "mailbox").strip().lower()
+
+
+def _uid_base(user_key: str) -> int:
+    return 8800 + (sum(ord(ch) for ch in user_key) % 500)
+
+
+def _message_for_user(user_key: str, uid: int) -> dict[str, str]:
+    if user_key == "omto" and uid in _OMTO_MESSAGES:
+        return _OMTO_MESSAGES[uid]
+    label = user_key.split("@", 1)[0]
+    from_addr = user_key if "@" in user_key else f"{label}@turbo-don.ru"
     return {
-        "summary": "stub unread list",
-        "uids": [101, 102],
-        "count": 2,
+        "subject": f"[{label}] Служебное сообщение #{uid}",
+        "from": from_addr,
+        "body_text": f"Письмо uid={uid} для фильтра {user_key}.",
+    }
+
+
+def _search_result(user_key: str, query: str, limit: int) -> dict[str, Any]:
+    base = _uid_base(user_key)
+    uids = list(range(base + 1, base + 1 + limit))
+    messages = [
+        {
+            "uid": uid,
+            **{k: v for k, v in _message_for_user(user_key, uid).items() if k != "body_text"},
+        }
+        for uid in uids
+    ]
+    return {
+        "summary": f"found={len(uids)} for user {user_key}",
+        "query": query or user_key,
+        "user": user_key,
+        "uids": uids,
+        "messages": messages,
+    }
+
+
+def _stub_list_unread(req: ToolInvokeRequest) -> dict[str, Any]:
+    if _imap_ready():
+        return _list_unread(req)
+    limit = max(1, int(req.payload.get("limit", 2)))
+    user_key = _user_key(str(req.payload.get("user", "")), str(req.payload.get("query", "")))
+    base = _uid_base(user_key)
+    uids = list(range(base + 1, base + 1 + limit))
+    return {
+        "summary": f"unread={len(uids)}",
+        "uids": uids,
+        "count": len(uids),
     }
 
 
 def _stub_fetch_message(req: ToolInvokeRequest) -> dict[str, Any]:
-    uid = req.payload.get("uid", 101)
+    if _imap_ready():
+        return _fetch_message(req)
+    uid = int(req.payload.get("uid", 101))
+    user_key = _user_key(str(req.payload.get("user", "")), str(req.payload.get("query", "")))
+    msg = _message_for_user(user_key, uid)
     return {
-        "summary": f"stub message uid={uid}",
+        "summary": msg["subject"],
         "uid": uid,
-        "subject": "Stub subject",
-        "from": "stub@example.com",
-        "body_text": "Stub body",
+        "user": user_key,
+        "subject": msg["subject"],
+        "from": msg["from"],
+        "body_text": msg["body_text"],
     }
 
 
 def _stub_fetch_attachments(req: ToolInvokeRequest) -> dict[str, Any]:
+    if _imap_ready():
+        return _fetch_attachments(req)
+    uid = int(req.payload.get("uid", 101))
+    user_key = _user_key(str(req.payload.get("user", "")), str(req.payload.get("query", "")))
+    label = user_key.split("@", 1)[0]
     return {
-        "summary": "stub attachments",
-        "uid": req.payload.get("uid", 101),
-        "attachments": [{"filename": "stub.pdf", "size": 1234}],
+        "summary": f"attachments=1 for {label}",
+        "uid": uid,
+        "attachments": [{"filename": f"{label}_{uid}.pdf", "size": 1234}],
     }
 
 
 def _stub_search(req: ToolInvokeRequest) -> dict[str, Any]:
-    return {
-        "summary": "stub search",
-        "query": req.payload.get("query", ""),
-        "uids": [101],
-    }
+    if _imap_ready():
+        return _search(req)
+    query = str(req.payload.get("query", "")).strip()
+    user = str(req.payload.get("user", "")).strip()
+    limit = max(1, int(req.payload.get("limit", 50)))
+    user_key = _user_key(user, query)
+    return _search_result(user_key, query or user, limit)
 
 
 def _connect() -> IMAPClient:
@@ -128,14 +208,19 @@ def _fetch_attachments(req: ToolInvokeRequest) -> dict[str, Any]:
 
 def _search(req: ToolInvokeRequest) -> dict[str, Any]:
     query = str(req.payload.get("query", "")).strip()
+    user = str(req.payload.get("user", "")).strip()
+    limit = max(1, int(req.payload.get("limit", 50)))
     client = _connect()
     try:
         client.select_folder(settings.mailbox)
-        if query:
+        if user:
+            uids = client.search(["FROM", user])
+        elif query:
             uids = client.search(["OR", "SUBJECT", query, "FROM", query])
         else:
-            uids = client.search(["ALL"])[:50]
-        return {"summary": f"found={len(uids)}", "query": query, "uids": list(uids)}
+            uids = client.search(["ALL"])
+        uids = list(uids)[-limit:]
+        return {"summary": f"found={len(uids)}", "query": query, "user": user, "uids": uids}
     finally:
         client.logout()
 

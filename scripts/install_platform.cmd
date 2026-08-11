@@ -24,6 +24,8 @@ call :install "platform-tool-onec" "%ROOT%\services\platform-tool-onec"
 call :install "platform-orchestrator" "%ROOT%\services\platform-orchestrator"
 call :install "platform-tool-shell" "%ROOT%\services\platform-tool-shell"
 call :install "platform-tool-browser" "%ROOT%\services\platform-tool-browser"
+call :install "platform-tool-com" "%ROOT%\services\platform-tool-com"
+call :install "platform-tool-filesystem" "%ROOT%\services\platform-tool-filesystem"
 
 echo.
 echo Installing test dependencies...

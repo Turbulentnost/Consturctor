@@ -5,13 +5,16 @@ from uuid import UUID
 from fastapi import FastAPI, HTTPException
 
 from platform_orchestrator.agent_mocks import list_mock_scenarios
+from platform_orchestrator.tool_sandbox import list_sandbox_tests
 from platform_orchestrator.service import (
     create_run,
     get_run,
     get_run_events,
     invoke_tool_for_api,
     settings,
+    simulate_all_sandbox_tests,
     simulate_mock_scenario,
+    simulate_sandbox_test,
     start_mock_run,
 )
 from platform_contracts.runs import RunStartRequest, RunStatus
@@ -66,6 +69,31 @@ def simulate_agent_mock(scenario_id: str, body: RunStartRequest) -> dict:
     try:
         return simulate_mock_scenario(
             scenario_id,
+            department=body.department,
+            user_id=body.user_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/tools/sandbox")
+def tool_sandbox_list() -> dict:
+    return {"items": list_sandbox_tests(), "use_stubs": settings.use_stubs}
+
+
+@app.post("/api/v1/tools/sandbox/run-all")
+def tool_sandbox_run_all(body: RunStartRequest) -> dict:
+    return simulate_all_sandbox_tests(
+        department=body.department,
+        user_id=body.user_id,
+    )
+
+
+@app.post("/api/v1/tools/sandbox/{test_id}/run")
+def tool_sandbox_run(test_id: str, body: RunStartRequest) -> dict:
+    try:
+        return simulate_sandbox_test(
+            test_id,
             department=body.department,
             user_id=body.user_id,
         )

@@ -1,6 +1,8 @@
 @echo off
 setlocal EnableExtensions
 
-rem Legacy wrapper — full stack now runs in Docker Compose.
+rem Docker stack + Windows desktop tools (COM, filesystem, native shell)
 call "%~dp0docker_up.cmd"
-exit /b %ERRORLEVEL%
+if errorlevel 1 exit /b 1
+call "%~dp0start_desktop_tools.cmd"
+exit /b 0

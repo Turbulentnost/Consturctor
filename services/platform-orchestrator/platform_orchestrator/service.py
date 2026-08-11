@@ -10,7 +10,8 @@ from celery import Celery
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import select
 
-from platform_orchestrator.agent_mocks import get_mock_scenario, tool_names_from_scenario
+from platform_orchestrator.agent_mocks import MockScenario, get_mock_scenario, tool_names_from_scenario
+from platform_orchestrator.tool_sandbox import SANDBOX_ORDER, get_sandbox_test
 from platform_contracts.runs import RunStartRequest, RunStatus, RunStatusEnum
 from platform_contracts.tools import ToolInvokeRequest, ToolResult
 from platform_db.models import AgentRunRow, ToolEventRow
@@ -47,7 +48,10 @@ class OrchestratorSettings(BaseSettings):
     tool_imap_url: str = "http://127.0.0.1:7821"
     tool_onec_url: str = "http://127.0.0.1:7822"
     tool_shell_url: str = "http://127.0.0.1:7823"
+    tool_shell_native_url: str = ""
     tool_browser_url: str = "http://127.0.0.1:7824"
+    tool_com_url: str = "http://127.0.0.1:7826"
+    tool_fs_url: str = "http://127.0.0.1:7827"
     use_stubs: bool = True
     api_host: str = "0.0.0.0"
     api_port: int = 7825
@@ -56,12 +60,24 @@ class OrchestratorSettings(BaseSettings):
 settings = OrchestratorSettings()
 
 
-def _tool_url(tool_name: str) -> str:
+def _tool_url(tool_name: str, payload: dict | None = None) -> str:
     if tool_name.startswith("imap."):
         return settings.tool_imap_url
     if tool_name.startswith("onec."):
         return settings.tool_onec_url
+    if tool_name.startswith("com."):
+        return settings.tool_com_url
+    if tool_name.startswith("fs."):
+        return settings.tool_fs_url
     if tool_name.startswith("shell."):
+        runtime = ""
+        if payload:
+            runtime = str(payload.get("runtime", "")).strip().lower()
+        native_url = (settings.tool_shell_native_url or os.environ.get("TOOL_SHELL_NATIVE_URL") or "").strip()
+        if runtime == "native" and native_url:
+            return native_url
+        if runtime != "sandbox" and native_url and os.environ.get("SHELL_DEFAULT_RUNTIME", "").lower() == "native":
+            return native_url
         return settings.tool_shell_url
     if tool_name.startswith("browser."):
         return settings.tool_browser_url
@@ -165,14 +181,14 @@ def start_mock_run(scenario_id: str, body: RunStartRequest) -> RunStatus:
     return create_run(mock_body)
 
 
-def simulate_mock_scenario(
+def _simulate_scenario(
     scenario_id: str,
+    scenario: MockScenario,
     *,
     department: str = "",
     user_id: str = "",
 ) -> dict:
-    """Synchronous mock agent walkthrough for tool verification."""
-    scenario = get_mock_scenario(scenario_id)
+    """Synchronous tool walkthrough for mock/sandbox verification."""
     run_id = uuid.uuid4()
     steps: list[dict] = []
     errors: list[str] = []
@@ -233,11 +249,63 @@ def simulate_mock_scenario(
     }
 
 
+def simulate_mock_scenario(
+    scenario_id: str,
+    *,
+    department: str = "",
+    user_id: str = "",
+) -> dict:
+    scenario = get_mock_scenario(scenario_id)
+    return _simulate_scenario(
+        scenario_id,
+        scenario,
+        department=department,
+        user_id=user_id,
+    )
+
+
+def simulate_sandbox_test(
+    test_id: str,
+    *,
+    department: str = "",
+    user_id: str = "",
+) -> dict:
+    scenario = get_sandbox_test(test_id)
+    return _simulate_scenario(
+        test_id,
+        scenario,
+        department=department,
+        user_id=user_id,
+    )
+
+
+def simulate_all_sandbox_tests(
+    *,
+    department: str = "",
+    user_id: str = "",
+) -> dict:
+    results = [
+        simulate_sandbox_test(test_id, department=department, user_id=user_id)
+        for test_id in SANDBOX_ORDER
+    ]
+    failed = [item for item in results if item["status"] != "done"]
+    return {
+        "status": "error" if failed else "done",
+        "count": len(results),
+        "failed": len(failed),
+        "results": results,
+    }
+
+
 def _tool_queue(tool_name: str) -> str | None:
     if tool_name.startswith("imap."):
         return "imap"
     if tool_name.startswith("onec."):
         return "onec"
+    if tool_name.startswith("com."):
+        return "com"
+    if tool_name.startswith("fs."):
+        return "fs"
     if tool_name.startswith("shell."):
         return "shell"
     if tool_name.startswith("browser."):
@@ -296,7 +364,8 @@ def invoke_tool_queued(
 
 
 def invoke_tool_http(run_id: uuid.UUID, tool_name: str, payload: dict) -> ToolResult:
-    url = f"{_tool_url(tool_name).rstrip('/')}/api/v1/tools/{tool_name}/invoke"
+    inner_payload = payload.get("payload") or {}
+    url = f"{_tool_url(tool_name, inner_payload).rstrip('/')}/api/v1/tools/{tool_name}/invoke"
     req = ToolInvokeRequest(
         run_id=run_id,
         department=payload.get("department", ""),

@@ -48,6 +48,7 @@ scripts\docker_down.cmd
 
 - `postgres`, `rabbitmq`
 - `platform-kpi`, `platform-tool-imap`, `platform-tool-onec`, `platform-tool-shell`, `platform-tool-browser`
+- **Desktop (Windows host):** `platform-tool-com` (:7826), `platform-tool-filesystem` (:7827), `platform-tool-shell` native (:7828)
 - `platform-orchestrator-api`, `platform-orchestrator-worker`, `platform-orchestrator-beat`
 - `platform-tool-imap-worker`, `platform-tool-onec-worker`
 - `constructor-gateway` (backend)
@@ -64,6 +65,28 @@ RabbitMQ на хосте: **5673** (AMQP), **15673** (UI) — если 5672 за
 ## Локальный запуск (без Docker)
 
 Только для разработки отдельных сервисов на Windows (shell/browser native). Полный стек — через Docker выше.
+
+### Desktop tools (Windows, тот же ПК)
+
+Запуск после Docker stack:
+
+```cmd
+scripts\start_desktop_tools.cmd
+```
+
+| Порт | Сервис | Tools |
+|------|--------|-------|
+| 7826 | platform-tool-com | `com.list_apps`, `com.connect`, `com.invoke`, `com.release` |
+| 7827 | platform-tool-filesystem | `fs.list`, `fs.read`, `fs.write`, `fs.stat`, `fs.move`, `fs.copy` |
+| 7828 | platform-tool-shell-native | `shell.run` с `runtime=native` |
+
+Orchestrator в Docker обращается через `host.docker.internal`. Настройки в `infra/.env`:
+
+- `FS_ROOT_ALLOWLIST` — локальные папки для fs.*
+- `SHELL_CWD_ROOTS` — рабочие каталоги native shell
+- `COM_APPS` — JSON `{ "onec": "V83.Application", ... }`
+
+`shell.run` payload: `{ "command": "...", "cwd": "...", "runtime": "native"|"sandbox" }`.
 
 ## API Gateway
 
@@ -102,5 +125,18 @@ scripts\run_agent_mocks.cmd --all
 ## Тесты
 
 ```cmd
-py -3.12 -m pytest tests\test_platform_contracts.py tests\test_platform_tools_stub.py tests\test_agent_mocks.py -q
+py -3.12 -m pytest tests\ -q
 ```
+
+Основные модули: `test_platform_contracts.py`, `test_platform_tools_stub.py`, `test_desktop_tools_stub.py`, `test_imap_sandbox.py`, `test_agent_mocks.py`, `test_platform_kpi.py`.
+
+## Каталог tools (кратко)
+
+| Префикс | Tools |
+|---------|-------|
+| `imap.*` | list_unread, fetch_message, fetch_attachments, search |
+| `onec.*` | odata_get, odata_post, odata_patch, attach_file, sql_query |
+| `browser.*` | navigate, screenshot, click, extract_text |
+| `shell.*` | run (sandbox :7823 или native :7828) |
+| `fs.*` | list, read, write, stat, move, copy |
+| `com.*` | list_apps, connect, invoke, release |

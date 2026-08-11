@@ -23,6 +23,7 @@ class OnecSettings(ServiceSettings):
     odata_username: str = ""
     odata_password: str = ""
     odata_timeout_sec: float = 60.0
+    odata_incoming_doc_entity: str = "Document_ТД_ВходящаяКорреспонденция"
     erp_sql_server: str = "ii1"
     erp_sql_database: str = "erp_pm"
     erp_sql_driver: str = "ODBC Driver 18 for SQL Server"
@@ -35,6 +36,12 @@ class OnecSettings(ServiceSettings):
 settings = OnecSettings()
 _stub_counter = 0
 
+_INCOMING_DOC_MARKERS = (
+    "Document_ТД_ВходящаяКорреспонденция",
+    "Document_ВходящаяКорреспонденция",
+)
+_TOP_RE = re.compile(r"\$top=(\d+)", re.IGNORECASE)
+
 
 def _next_stub_id() -> int:
     global _stub_counter
@@ -42,10 +49,129 @@ def _next_stub_id() -> int:
     return _stub_counter
 
 
+def _is_incoming_correspondence_path(path: str) -> bool:
+    return any(marker in path for marker in _INCOMING_DOC_MARKERS)
+
+
+def _parse_top_limit(path: str, payload: dict[str, Any]) -> int:
+    match = _TOP_RE.search(path)
+    if match:
+        return max(1, min(100, int(match.group(1))))
+    raw_top = payload.get("top")
+    if raw_top is not None:
+        return max(1, min(100, int(raw_top)))
+    return 3
+
+
+def _entity_from_request(req: ToolInvokeRequest) -> str:
+    entity = str(req.payload.get("entity", "")).strip()
+    if entity:
+        return entity.lstrip("/")
+    path = str(req.payload.get("path", "")).strip().lstrip("/")
+    if not path:
+        return ""
+    head = path.split("?", 1)[0]
+    if _is_incoming_correspondence_path(head):
+        return (settings.odata_incoming_doc_entity or "Document_ТД_ВходящаяКорреспонденция").strip()
+    return head
+
+
+def _looks_like_odata_entity(entity: str) -> bool:
+    return entity.startswith(
+        ("Document_", "Catalog_", "BusinessProcess_", "InformationRegister_", "Task_")
+    )
+
+
+def _build_list_path(entity: str, top: int) -> str:
+    entity = entity.strip().lstrip("/")
+    if entity.startswith("Catalog_") or entity.startswith("InformationRegister_"):
+        return f"{entity}?$format=json&$top={top}"
+    return f"{entity}?$format=json&$orderby=Date desc&$top={top}"
+
+
+def _normalize_odata_rows(data: Any) -> list[dict[str, Any]]:
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("value")
+    if not isinstance(rows, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        normalized.append(
+            {
+                "Ref_Key": row.get("Ref_Key"),
+                "Number": row.get("Number") or row.get("Code"),
+                "Date": row.get("Date") or row.get("Дата"),
+                "Description": row.get("Description")
+                or row.get("Комментарий")
+                or row.get("Наименование")
+                or row.get("Description"),
+                "Subject": row.get("Тема") or row.get("Subject"),
+                "Posted": row.get("Posted"),
+            }
+        )
+    return normalized
+
+
+def _fetch_odata_list(req: ToolInvokeRequest) -> dict[str, Any]:
+    """Read a list slice from real 1C OData (documents/catalogs)."""
+    path = str(req.payload.get("path", "")).strip()
+    entity = _entity_from_request(req)
+    if not entity:
+        raise ValueError("entity or path required")
+    top = _parse_top_limit(path, req.payload)
+    odata_path = _build_list_path(entity, top)
+    if not settings.odata_base_url:
+        raise RuntimeError(
+            "ODATA_BASE_URL не настроен. Добавьте параметры OData в infra/.env "
+            "(ODATA_BASE_URL, ODATA_USERNAME, ODATA_PASSWORD)."
+        )
+
+    inner = ToolInvokeRequest(
+        run_id=req.run_id,
+        department=req.department,
+        user_id=req.user_id,
+        payload={"path": odata_path},
+    )
+    raw = _odata_get(inner)
+    payload = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+    value = _normalize_odata_rows(payload)
+    numbers = [str(item.get("Number") or "") for item in value if item.get("Number")]
+    summary = f"получено {len(value)} записей из 1С OData ({entity})"
+    if numbers:
+        summary += f": {', '.join(numbers)}"
+    return {
+        "summary": summary,
+        "path": odata_path,
+        "entity": entity,
+        "count": len(value),
+        "value": value,
+        "source": "odata",
+    }
+
+
+def _fetch_latest_incoming_correspondence(req: ToolInvokeRequest) -> dict[str, Any]:
+    return _fetch_odata_list(req)
+
+
+def _odata_get_dispatch(req: ToolInvokeRequest) -> dict[str, Any]:
+    entity = _entity_from_request(req)
+    path = str(req.payload.get("path", ""))
+    if _is_incoming_correspondence_path(path) or _looks_like_odata_entity(entity):
+        return _fetch_odata_list(req)
+    return _odata_get(req)
+
+
 def _stub_odata_get(req: ToolInvokeRequest) -> dict[str, Any]:
+    entity = _entity_from_request(req)
+    path = str(req.payload.get("path", ""))
+    if _is_incoming_correspondence_path(path) or _looks_like_odata_entity(entity):
+        return _fetch_odata_list(req)
     return {
         "summary": "stub odata get",
-        "path": req.payload.get("path", ""),
+        "path": path,
         "value": [{"Ref_Key": "00000000-0000-0000-0000-000000000001"}],
     }
 
@@ -180,7 +306,7 @@ STUB_HANDLERS = {
 }
 
 REAL_HANDLERS = {
-    "onec.odata_get": _odata_get,
+    "onec.odata_get": _odata_get_dispatch,
     "onec.odata_post": _odata_post,
     "onec.odata_patch": _odata_patch,
     "onec.attach_file": _attach_file,

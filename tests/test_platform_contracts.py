@@ -56,9 +56,21 @@ def test_agent_card_tasks() -> None:
         ],
     )
     assert card.tasks[0].task_id == "classify_incoming"
-    assert "allowed_tools" not in card.tasks[0].model_fields
+    assert "allowed_tools" not in AgentTaskSpec.model_fields
 
 
 def test_review_event_create() -> None:
     event = ReviewEventCreate(event_type="operator_approve", category="department")
     assert event.actor == "operator"
+
+
+def test_access_level_specs() -> None:
+    from platform_contracts.access import (
+        AccessLevelTransitionPolicy,
+        DEFAULT_ACCESS_LEVELS,
+    )
+
+    assert len(DEFAULT_ACCESS_LEVELS) == 4
+    assert DEFAULT_ACCESS_LEVELS[0].level == 1
+    policy = AccessLevelTransitionPolicy(promote_threshold=80, demote_threshold=60)
+    assert policy.evaluation_window_days == 7

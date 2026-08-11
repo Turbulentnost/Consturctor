@@ -39,7 +39,10 @@ class Settings(BaseSettings):
     tool_imap_url: str = "http://127.0.0.1:7821"
     tool_onec_url: str = "http://127.0.0.1:7822"
     tool_shell_url: str = "http://127.0.0.1:7823"
+    tool_shell_native_url: str = "http://127.0.0.1:7828"
     tool_browser_url: str = "http://127.0.0.1:7824"
+    tool_com_url: str = "http://127.0.0.1:7826"
+    tool_fs_url: str = "http://127.0.0.1:7827"
     kpi_service_url: str = "http://127.0.0.1:7820"
     orchestrator_url: str = "http://127.0.0.1:7825"
     orchestrator_broker: str = "amqp://guest:guest@127.0.0.1:5672//"
@@ -48,12 +51,19 @@ class Settings(BaseSettings):
     auth_stub: bool = False
     tool_manifest_path: str = ""
 
-    def tool_service_url(self, tool_name: str) -> str | None:
+    def tool_service_url(self, tool_name: str, payload: dict | None = None) -> str | None:
         if tool_name.startswith("imap."):
             return self.tool_imap_url
         if tool_name.startswith("onec."):
             return self.tool_onec_url
+        if tool_name.startswith("com."):
+            return self.tool_com_url
+        if tool_name.startswith("fs."):
+            return self.tool_fs_url
         if tool_name.startswith("shell."):
+            runtime = str((payload or {}).get("runtime", "")).strip().lower()
+            if runtime == "native" and self.tool_shell_native_url:
+                return self.tool_shell_native_url
             return self.tool_shell_url
         if tool_name.startswith("browser."):
             return self.tool_browser_url
