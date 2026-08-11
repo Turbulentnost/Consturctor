@@ -41,6 +41,9 @@ INACTIVE_HOVER = QColor(112, 190, 169, 96)
 INACTIVE_PRESSED = QColor(55, 120, 103, 120)
 ITEM_GAP = 8
 ICON_SIZE = 20
+# Extra right inset so the white active pill does not visually bleed into content.
+SIDEBAR_PAD_LEFT = SIDEBAR_PADDING_X
+SIDEBAR_PAD_RIGHT = 28
 _TEMP = Path(__file__).resolve().parents[1] / "temp"
 
 # Filename prefixes: серый* = active/pressed, белый* = inactive.
@@ -257,8 +260,7 @@ class GlassSidebar(QWidget):
         self._collapsed = collapsed
         width = SIDEBAR_COLLAPSED if collapsed else SIDEBAR_EXPANDED
         self.setFixedWidth(width)
-        pad = 12 if collapsed else SIDEBAR_PADDING_X
-        self._root.setContentsMargins(pad, 22, pad, 22)
+        self._sync_margins()
 
         self._title.setVisible(not collapsed)
         # Center logo when title is hidden; keep left-aligned brand row when expanded.
@@ -271,9 +273,15 @@ class GlassSidebar(QWidget):
         self.collapse_toggled.emit(collapsed)
         self.update()
 
+    def _sync_margins(self) -> None:
+        if self._collapsed:
+            self._root.setContentsMargins(12, 22, 12, 22)
+        else:
+            self._root.setContentsMargins(SIDEBAR_PAD_LEFT, 22, SIDEBAR_PAD_RIGHT, 22)
+
     def _build_layout(self) -> None:
         self._root = QVBoxLayout(self)
-        self._root.setContentsMargins(SIDEBAR_PADDING_X, 22, SIDEBAR_PADDING_X, 22)
+        self._sync_margins()
         self._root.setSpacing(0)
 
         self._header = QHBoxLayout()
@@ -293,7 +301,7 @@ class GlassSidebar(QWidget):
         self._title.setFont(app_font(18, QFont.Weight.DemiBold))
         self._title.setStyleSheet("color: #EAF7F3; background: transparent;")
         self._title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self._title.setMinimumWidth(110)
+        self._title.setMinimumWidth(0)
         self._header.addWidget(self._title, 1)
         self._header.addStretch(0)
 

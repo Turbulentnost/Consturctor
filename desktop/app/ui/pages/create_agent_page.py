@@ -268,7 +268,7 @@ class CreateAgentPage(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.addWidget(title)
         layout.addWidget(subtitle)
-        layout.addSpacing(20)
+        layout.addSpacing(36)
         layout.addLayout(cards, 0)
         layout.addStretch(1)
         layout.addWidget(footer)

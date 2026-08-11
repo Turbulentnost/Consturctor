@@ -138,8 +138,11 @@ class MainShell(QWidget):
 
     def _position_collapse_btn(self) -> None:
         btn = self._collapse_btn
-        # Bottom-right of the left menu, on its right edge.
-        x = self.sidebar.width() - btn.width() // 2
+        if self.sidebar.is_collapsed():
+            x = (self.sidebar.width() - btn.width()) // 2
+        else:
+            # Bottom-right inside the left menu, not crossing into the content pane.
+            x = self.sidebar.width() - btn.width() - 12
         y = self.height() - btn.height() - 22
         btn.move(max(0, x), max(0, y))
         btn.raise_()
