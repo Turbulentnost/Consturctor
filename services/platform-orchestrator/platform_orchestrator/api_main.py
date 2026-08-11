@@ -17,6 +17,7 @@ from platform_orchestrator.service import (
     simulate_sandbox_test,
     start_mock_run,
 )
+from platform_orchestrator.tool_acl import ToolNotAllowedError
 from platform_contracts.runs import RunStartRequest, RunStatus
 from platform_contracts.tools import ToolInvokeRequest, ToolResult
 
@@ -48,7 +49,10 @@ def run_events(run_id: UUID) -> dict:
 
 @app.post("/api/v1/tools/{tool_name}/invoke", response_model=ToolResult)
 def invoke_tool(tool_name: str, body: ToolInvokeRequest) -> ToolResult:
-    return invoke_tool_for_api(body, tool_name)
+    try:
+        return invoke_tool_for_api(body, tool_name)
+    except ToolNotAllowedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/agent/mocks")

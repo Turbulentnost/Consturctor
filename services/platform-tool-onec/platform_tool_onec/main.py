@@ -9,9 +9,14 @@ from pydantic_settings import SettingsConfigDict
 
 from platform_contracts.tools import ToolInvokeRequest
 from platform_service_common.app_factory import ServiceSettings, create_tool_app, run_app
-
-_SELECT_ONLY = re.compile(r"^\s*SELECT\b", re.IGNORECASE | re.DOTALL)
-_FORBIDDEN = re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|EXEC|MERGE)\b", re.IGNORECASE)
+from platform_tool_onec.security import (
+    odata_entity_allowlist,
+    sql_table_allowlist,
+    stub_odata_rows,
+    validate_odata_entity,
+    validate_odata_path,
+    validate_sql_query,
+)
 
 
 class OnecSettings(ServiceSettings):
@@ -31,6 +36,8 @@ class OnecSettings(ServiceSettings):
     erp_sql_user: str = ""
     erp_sql_password: str = ""
     erp_retry_max: int = 5
+    onec_sql_allowlist: str = ""
+    onec_odata_entity_allowlist: str = ""
 
 
 settings = OnecSettings()
@@ -82,11 +89,19 @@ def _looks_like_odata_entity(entity: str) -> bool:
     )
 
 
+def _odata_allowlist() -> set[str]:
+    return odata_entity_allowlist(settings.onec_odata_entity_allowlist)
+
+
+def _sql_allowlist() -> set[str]:
+    return sql_table_allowlist(settings.onec_sql_allowlist)
+
+
 def _build_list_path(entity: str, top: int) -> str:
     entity = entity.strip().lstrip("/")
-    if entity.startswith("Catalog_") or entity.startswith("InformationRegister_"):
-        return f"{entity}?$format=json&$top={top}"
-    return f"{entity}?$format=json&$orderby=Date desc&$top={top}"
+    if entity.startswith(("Document_", "BusinessProcess_")):
+        return f"{entity}?$format=json&$orderby=Date desc&$top={top}"
+    return f"{entity}?$format=json&$top={top}"
 
 
 def _normalize_odata_rows(data: Any) -> list[dict[str, Any]]:
@@ -121,6 +136,7 @@ def _fetch_odata_list(req: ToolInvokeRequest) -> dict[str, Any]:
     entity = _entity_from_request(req)
     if not entity:
         raise ValueError("entity or path required")
+    entity = validate_odata_entity(entity, allowlist=_odata_allowlist())
     top = _parse_top_limit(path, req.payload)
     odata_path = _build_list_path(entity, top)
     if not settings.odata_base_url:
@@ -168,11 +184,19 @@ def _stub_odata_get(req: ToolInvokeRequest) -> dict[str, Any]:
     entity = _entity_from_request(req)
     path = str(req.payload.get("path", ""))
     if _is_incoming_correspondence_path(path) or _looks_like_odata_entity(entity):
-        return _fetch_odata_list(req)
+        if not entity:
+            raise ValueError("entity or path required")
+        entity = validate_odata_entity(entity, allowlist=_odata_allowlist())
+        top = _parse_top_limit(path, req.payload)
+        return stub_odata_rows(entity, top)
+    path_clean = path.strip().lstrip("/")
+    if path_clean:
+        validate_odata_path(path_clean, allowlist=_odata_allowlist())
     return {
         "summary": "stub odata get",
         "path": path,
         "value": [{"Ref_Key": "00000000-0000-0000-0000-000000000001"}],
+        "source": "stub",
     }
 
 
@@ -198,7 +222,13 @@ def _stub_attach_file(req: ToolInvokeRequest) -> dict[str, Any]:
 
 
 def _stub_sql_query(req: ToolInvokeRequest) -> dict[str, Any]:
-    return {"summary": "stub sql", "rows": [{"id": 1, "name": "stub"}]}
+    sql = validate_sql_query(str(req.payload.get("sql", "")), allowlist=_sql_allowlist())
+    return {
+        "summary": "stub sql",
+        "sql": sql,
+        "rows": [{"id": 1, "name": "stub"}],
+        "source": "stub",
+    }
 
 
 def _odata_auth() -> tuple[str, str] | None:
@@ -208,9 +238,7 @@ def _odata_auth() -> tuple[str, str] | None:
 
 
 def _odata_get(req: ToolInvokeRequest) -> dict[str, Any]:
-    path = str(req.payload.get("path", "")).strip().lstrip("/")
-    if not path:
-        raise ValueError("path required")
+    path = validate_odata_path(str(req.payload.get("path", "")), allowlist=_odata_allowlist())
     if not settings.odata_base_url:
         raise RuntimeError("ODATA_BASE_URL not configured")
     url = f"{settings.odata_base_url.rstrip('/')}/{path}"
@@ -222,10 +250,8 @@ def _odata_get(req: ToolInvokeRequest) -> dict[str, Any]:
 
 
 def _odata_post(req: ToolInvokeRequest) -> dict[str, Any]:
-    entity = str(req.payload.get("entity", "")).strip()
+    entity = validate_odata_entity(str(req.payload.get("entity", "")), allowlist=_odata_allowlist())
     body = req.payload.get("body") or {}
-    if not entity:
-        raise ValueError("entity required")
     if not settings.odata_base_url:
         raise RuntimeError("ODATA_BASE_URL not configured")
     url = f"{settings.odata_base_url.rstrip('/')}/{entity}"
@@ -241,11 +267,11 @@ def _odata_post(req: ToolInvokeRequest) -> dict[str, Any]:
 
 
 def _odata_patch(req: ToolInvokeRequest) -> dict[str, Any]:
-    entity = str(req.payload.get("entity", "")).strip()
+    entity = validate_odata_entity(str(req.payload.get("entity", "")), allowlist=_odata_allowlist())
     ref_key = str(req.payload.get("ref_key", "")).strip()
     body = req.payload.get("body") or {}
-    if not entity or not ref_key:
-        raise ValueError("entity and ref_key required")
+    if not ref_key:
+        raise ValueError("ref_key required")
     url = f"{settings.odata_base_url.rstrip('/')}/{entity}(guid'{ref_key}')"
     with httpx.Client(timeout=settings.odata_timeout_sec, auth=_odata_auth()) as client:
         response = client.patch(url, json=body)
@@ -279,11 +305,7 @@ def _build_connection_string() -> str:
 
 
 def _sql_query(req: ToolInvokeRequest) -> dict[str, Any]:
-    sql = str(req.payload.get("sql", "")).strip()
-    if not sql:
-        raise ValueError("sql required")
-    if not _SELECT_ONLY.match(sql) or _FORBIDDEN.search(sql):
-        raise ValueError("Only SELECT queries are allowed")
+    sql = validate_sql_query(str(req.payload.get("sql", "")), allowlist=_sql_allowlist())
     conn = pyodbc.connect(_build_connection_string(), autocommit=True)
     try:
         cur = conn.cursor()

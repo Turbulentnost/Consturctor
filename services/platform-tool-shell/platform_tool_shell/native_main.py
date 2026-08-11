@@ -33,6 +33,7 @@ SHELL_DENY_PATTERNS = (
     re.compile(r"(?i)\brm\b|\bdel\b|\brmdir\b|\bmkfs\b"),
     re.compile(r"(?i)\bcurl\b|\bwget\b|\bnc\b|\bssh\b|\bsudo\b|\bchmod\b|\bchown\b"),
     re.compile(r"(?i)invoke-webrequest"),
+    re.compile(r"(?i)\bpowershell\b|\bpwsh\b|\.ps1\b"),
     re.compile(r"\$\("),
     re.compile(r"[<>]"),
 )
@@ -158,6 +159,8 @@ def _stub_run(req: ToolInvokeRequest) -> dict[str, Any]:
         }
     try:
         return _run(req)
+    except ValueError:
+        raise
     except Exception as exc:
         return {
             "summary": f"native shell failed: {exc}",

@@ -17,6 +17,8 @@ SANDBOX_TESTS: dict[str, MockScenario] = {
                 "tool_name": "onec.odata_get",
                 "payload": {
                     "path": "/Document_ТД_ВходящаяКорреспонденция?$top=3",
+                    "entity": "Document_ТД_ВходящаяКорреспонденция",
+                    "top": 3,
                     "subsystem": "document_flow",
                 },
             },

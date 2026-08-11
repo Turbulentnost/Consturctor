@@ -11,9 +11,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import select
 
 from platform_orchestrator.agent_mocks import MockScenario, get_mock_scenario, tool_names_from_scenario
+from platform_orchestrator.tool_acl import ToolNotAllowedError, ensure_sandbox_tool_allowed, ensure_tool_allowed
 from platform_orchestrator.tool_sandbox import SANDBOX_ORDER, get_sandbox_test
 from platform_contracts.runs import RunStartRequest, RunStatus, RunStatusEnum
 from platform_contracts.tools import ToolInvokeRequest, ToolResult
+from platform_db.audit import log_tool_event
 from platform_db.models import AgentRunRow, ToolEventRow
 from platform_db.session import get_session_factory
 
@@ -55,6 +57,7 @@ class OrchestratorSettings(BaseSettings):
     use_stubs: bool = True
     api_host: str = "0.0.0.0"
     api_port: int = 7825
+    tool_manifest_path: str = ""
 
 
 settings = OrchestratorSettings()
@@ -181,6 +184,36 @@ def start_mock_run(scenario_id: str, body: RunStartRequest) -> RunStatus:
     return create_run(mock_body)
 
 
+def _audit_orchestrator_event(
+    *,
+    tool_name: str,
+    run_id: uuid.UUID | None,
+    department: str,
+    user_id: str,
+    payload: dict,
+    output_summary: str,
+    status: str = "ok",
+    error_message: str | None = None,
+) -> None:
+    try:
+        factory = get_session_factory()
+        with factory() as session:
+            log_tool_event(
+                session,
+                tool_name=tool_name,
+                run_id=run_id,
+                department=department,
+                user_id=user_id,
+                payload=payload,
+                output_summary=output_summary,
+                status=status,
+                error_message=error_message,
+            )
+            session.commit()
+    except Exception:
+        return
+
+
 def _simulate_scenario(
     scenario_id: str,
     scenario: MockScenario,
@@ -192,9 +225,32 @@ def _simulate_scenario(
     run_id = uuid.uuid4()
     steps: list[dict] = []
     errors: list[str] = []
+    is_sandbox = scenario_id in SANDBOX_ORDER
 
     for index, call in enumerate(scenario["tool_calls"], start=1):
         thought = call.get("thought") or f"Invoke {call['tool_name']}"
+        tool_name = call["tool_name"]
+        try:
+            if is_sandbox:
+                ensure_sandbox_tool_allowed(
+                    tool_name,
+                    department,
+                    settings.tool_manifest_path,
+                )
+            else:
+                ensure_tool_allowed(tool_name, department, settings.tool_manifest_path)
+        except ToolNotAllowedError as exc:
+            errors.append(str(exc))
+            steps.append(
+                {
+                    "step": index,
+                    "phase": "error",
+                    "tool_name": tool_name,
+                    "message": str(exc),
+                }
+            )
+            break
+
         steps.append(
             {
                 "step": index,
@@ -284,15 +340,36 @@ def simulate_all_sandbox_tests(
     department: str = "",
     user_id: str = "",
 ) -> dict:
+    batch_run_id = uuid.uuid4()
+    _audit_orchestrator_event(
+        tool_name="sandbox.run_all",
+        run_id=batch_run_id,
+        department=department,
+        user_id=user_id,
+        payload={"tests": list(SANDBOX_ORDER)},
+        output_summary=f"start batch ({len(SANDBOX_ORDER)} tests)",
+    )
     results = [
         simulate_sandbox_test(test_id, department=department, user_id=user_id)
         for test_id in SANDBOX_ORDER
     ]
     failed = [item for item in results if item["status"] != "done"]
+    status = "error" if failed else "done"
+    _audit_orchestrator_event(
+        tool_name="sandbox.run_all",
+        run_id=batch_run_id,
+        department=department,
+        user_id=user_id,
+        payload={"tests": list(SANDBOX_ORDER), "failed": [item["scenario_id"] for item in failed]},
+        output_summary=f"batch {status}: {len(results) - len(failed)}/{len(results)} passed",
+        status=status,
+        error_message="; ".join(item["errors"][0] for item in failed if item.get("errors")) or None,
+    )
     return {
-        "status": "error" if failed else "done",
+        "status": status,
         "count": len(results),
         "failed": len(failed),
+        "run_id": str(batch_run_id),
         "results": results,
     }
 
@@ -387,6 +464,7 @@ def invoke_tool_http(run_id: uuid.UUID, tool_name: str, payload: dict) -> ToolRe
 
 
 def invoke_tool_for_api(body: ToolInvokeRequest, tool_name: str) -> ToolResult:
+    ensure_tool_allowed(tool_name, body.department, settings.tool_manifest_path)
     run_id = body.run_id or uuid.uuid4()
     return invoke_tool_queued(
         run_id,
