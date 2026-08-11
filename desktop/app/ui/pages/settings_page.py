@@ -9,12 +9,14 @@ from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -116,39 +118,91 @@ class ProfileAvatar(QWidget):
         p.drawRoundedRect(QRectF(cx - 6, cy - 13, 12, 6), 2, 2)
 
 
+class _PencilButton(QToolButton):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedSize(44, 44)
+        self.setAutoRaise(True)
+        self.setToolTip("Изменить отдел")
+        self.setStyleSheet(
+            """
+            QToolButton {
+                background: #FFFFFF;
+                border: 1px solid rgba(16,24,23,0.16);
+                border-radius: 12px;
+            }
+            QToolButton:hover {
+                border: 1px solid rgba(6,72,61,0.40);
+                background: #F3F8F6;
+            }
+            QToolButton:disabled {
+                background: #F4F7F6;
+                border: 1px solid rgba(16,24,23,0.10);
+            }
+            """
+        )
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        enabled = self.isEnabled()
+        color = QColor("#06483D" if enabled else "#9AA6A1")
+        if enabled and self.underMouse():
+            color = QColor("#08745F")
+        pen = QPen(color, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        # Pencil body
+        p.drawLine(14, 28, 26, 16)
+        p.drawLine(26, 16, 30, 20)
+        p.drawLine(30, 20, 18, 32)
+        p.drawLine(14, 28, 12, 32)
+        p.drawLine(12, 32, 16, 30)
+        # Tip eraser
+        p.drawLine(27, 15, 31, 19)
+        p.end()
+
+
 class DepartmentSuggestEdit(QLineEdit):
-    """Always-visible department input with a height-capped suggestion list."""
+    """Department field with suggestion list; editable only after pencil unlock."""
 
     department_chosen = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._items: list[str] = []
-        self._can_edit = True
+        self._can_edit = False
         self._committed = ""
 
         self.setFont(app_font(14))
         self.setMinimumWidth(360)
         self.setMaximumWidth(560)
         self.setFixedHeight(44)
-        self.setPlaceholderText("Выберите или начните вводить отдел…")
+        self.setPlaceholderText("Отдел не выбран")
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.setReadOnly(True)
         self.setStyleSheet(
             """
             QLineEdit {
-                background: #FFFFFF;
+                background: #F7FAF9;
                 color: #101817;
-                border: 1px solid rgba(16,24,23,0.16);
+                border: 1px solid rgba(16,24,23,0.12);
                 border-radius: 12px;
                 padding: 8px 14px;
             }
-            QLineEdit:hover { border: 1px solid rgba(6,72,61,0.40); }
-            QLineEdit:focus { border: 1px solid rgba(6,72,61,0.55); }
-            QLineEdit:disabled {
-                background: #F4F7F6;
-                color: #6B7773;
-                border: 1px solid rgba(16,24,23,0.10);
+            QLineEdit:focus {
+                border: 1px solid rgba(6,72,61,0.55);
+                background: #FFFFFF;
             }
+            QLineEdit[editing="true"] {
+                background: #FFFFFF;
+                border: 1px solid rgba(16,24,23,0.16);
+            }
+            QLineEdit[editing="true"]:hover { border: 1px solid rgba(6,72,61,0.40); }
             """
         )
 
@@ -235,22 +289,48 @@ class DepartmentSuggestEdit(QLineEdit):
     def set_editable(self, enabled: bool) -> None:
         self._can_edit = enabled
         self.setReadOnly(not enabled)
-        self.setEnabled(True)
+        self.setCursor(
+            Qt.CursorShape.IBeamCursor if enabled else Qt.CursorShape.ArrowCursor
+        )
+        self.setProperty("editing", "true" if enabled else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.setPlaceholderText(
+            "Выберите или начните вводить отдел…" if enabled else "Отдел не выбран"
+        )
         if not enabled:
             self.hide_popup()
+            self.clearFocus()
+        else:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+            self._open_popup()
+
+    def is_editing(self) -> bool:
+        return self._can_edit
+
+    def cancel_edit(self) -> None:
+        self.blockSignals(True)
+        self.setText(self._committed)
+        self.blockSignals(False)
+        self.set_editable(False)
 
     def hide_popup(self) -> None:
         self._popup.hide()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        if not self._can_edit:
+            event.ignore()
+            return
         super().mousePressEvent(event)
-        if self._can_edit and event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             self._open_popup()
 
     def focusInEvent(self, event) -> None:  # noqa: N802
+        if not self._can_edit:
+            event.ignore()
+            return
         super().focusInEvent(event)
-        if self._can_edit:
-            self._open_popup()
+        self._open_popup()
 
     def focusOutEvent(self, event) -> None:  # noqa: N802
         super().focusOutEvent(event)
@@ -272,11 +352,14 @@ class DepartmentSuggestEdit(QLineEdit):
         return super().eventFilter(obj, event)
 
     def _maybe_close_popup(self) -> None:
+        if not self._can_edit:
+            return
         focus = QApplication.focusWidget()
         if focus is self or self._popup.isAncestorOf(focus):
             return
         self.hide_popup()
         self._revert_if_incomplete()
+        self.set_editable(False)
 
     def _on_text_edited(self, text: str) -> None:
         if not self._can_edit:
@@ -339,8 +422,11 @@ class DepartmentSuggestEdit(QLineEdit):
         self.setText(value)
         self.blockSignals(False)
         self.hide_popup()
-        if value != self._committed:
+        changed = value != self._committed
+        if changed:
             self._committed = value
+        self.set_editable(False)
+        if changed:
             self.department_chosen.emit(value)
 
     def _revert_if_incomplete(self) -> None:
@@ -368,8 +454,31 @@ class SettingsPage(QWidget):
         self._fio.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         self._fio.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
+        self._position = QLabel("Должность: —")
+        self._position.setFont(app_font(14, QFont.Weight.DemiBold))
+        self._position.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        self._position.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._position.setWordWrap(True)
+
+        self._dept_label = QLabel("Отдел")
+        self._dept_label.setFont(app_font(12, QFont.Weight.DemiBold))
+        self._dept_label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        self._dept_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
         self._dept_edit = DepartmentSuggestEdit(self)
         self._dept_edit.department_chosen.connect(self._on_department_chosen)
+
+        self._dept_pencil = _PencilButton(self)
+        self._dept_pencil.clicked.connect(self._on_edit_department_clicked)
+
+        dept_row = QWidget(self)
+        dept_row_layout = QHBoxLayout(dept_row)
+        dept_row_layout.setContentsMargins(0, 0, 0, 0)
+        dept_row_layout.setSpacing(8)
+        dept_row_layout.addStretch(1)
+        dept_row_layout.addWidget(self._dept_edit)
+        dept_row_layout.addWidget(self._dept_pencil)
+        dept_row_layout.addStretch(1)
 
         self._dept_hint = QLabel("")
         self._dept_hint.setFont(app_font(12))
@@ -390,7 +499,10 @@ class SettingsPage(QWidget):
         layout.addSpacing(18)
         layout.addWidget(self._fio)
         layout.addSpacing(4)
-        layout.addWidget(self._dept_edit, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self._position)
+        layout.addSpacing(10)
+        layout.addWidget(self._dept_label)
+        layout.addWidget(dept_row, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self._dept_hint)
         layout.addSpacing(8)
         layout.addWidget(hint)
@@ -399,6 +511,7 @@ class SettingsPage(QWidget):
     def set_user(self, user: UserProfile, pixmap: QPixmap | None = None) -> None:
         self._user = user
         self._fio.setText(user.fio or "—")
+        self._position.setText(f"Должность: {user.position.strip() or 'не указана'}")
         self._ensure_departments()
         self._dept_edit.set_items(self._departments)
         self._dept_edit.set_department(user.department.strip() or "")
@@ -411,20 +524,43 @@ class SettingsPage(QWidget):
             self.avatar.set_default_logo()
 
     def hideEvent(self, event) -> None:  # noqa: N802
-        self._dept_edit.hide_popup()
+        if self._dept_edit.is_editing():
+            self._dept_edit.cancel_edit()
+        else:
+            self._dept_edit.hide_popup()
         super().hideEvent(event)
 
     def _sync_department_hint(self, user: UserProfile) -> None:
-        if user.can_change_department:
-            self._dept_edit.set_editable(True)
-            self._dept_hint.setText("Отдел можно менять не чаще одного раза в 2 недели")
-            return
         self._dept_edit.set_editable(False)
+        self._dept_pencil.setEnabled(user.can_change_department)
+        if user.can_change_department:
+            self._dept_hint.setText(
+                "Нажмите на карандаш, чтобы изменить отдел. "
+                "Менять можно не чаще одного раза в 2 недели"
+            )
+            return
         if user.department_change_available_at is not None:
             local = user.department_change_available_at.astimezone().strftime("%d.%m.%Y")
             self._dept_hint.setText(f"Следующая смена отдела доступна с {local}")
         else:
             self._dept_hint.setText("Отдел можно менять не чаще одного раза в 2 недели")
+
+    def _on_edit_department_clicked(self) -> None:
+        if self._user is None:
+            return
+        if not self._user.can_change_department:
+            QMessageBox.information(
+                self,
+                "Отдел",
+                self._dept_hint.text() or "Отдел можно менять раз в 2 недели",
+            )
+            return
+        if self._dept_edit.is_editing():
+            self._dept_edit.cancel_edit()
+            return
+        self._ensure_departments()
+        self._dept_edit.set_items(self._departments)
+        self._dept_edit.set_editable(True)
 
     def _ensure_departments(self) -> None:
         if self._departments:

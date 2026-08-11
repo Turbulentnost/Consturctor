@@ -253,12 +253,12 @@ class ApiClient:
         regulation_id: str,
         *,
         position: str,
-        department: str = "",
+        department: str,
     ) -> RoleMatchResult:
         data = self._request(
             "POST",
             f"/api/v1/regulations/{regulation_id}/role-matches",
-            json={"position": position, "department": department},
+            json={"position": position.strip(), "department": department.strip()},
             timeout=max(self._timeout, 300.0),
         )
         return self._parse_role_matches(data)

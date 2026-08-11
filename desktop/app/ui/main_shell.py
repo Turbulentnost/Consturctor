@@ -291,7 +291,7 @@ class MainShell(QWidget):
 
     def _apply_user(self, user: UserProfile) -> None:
         self._user = user
-        self.user_menu.set_user(fio=user.fio, department=user.department)
+        self.user_menu.set_user(fio=user.fio, position=user.position)
         self._load_avatar(user)
         pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap
         self._page_settings.set_user(user, pixmap)
@@ -372,22 +372,31 @@ class MainShell(QWidget):
     def _on_continue_after_review(self) -> None:
         if self._current_regulation is None:
             return
-        default_department = self._user.department if self._user is not None else ""
         position = (self._user.position if self._user is not None else "").strip()
+        department = (self._user.department if self._user is not None else "").strip()
         if not position:
             position, ok = QInputDialog.getText(
                 self,
                 "Выбор должности",
-                "Должность не найдена в 1С. Укажите должность для поиска фрагментов:",
+                "Должность не найдена в профиле. Укажите должность для поиска фрагментов:",
             )
             position = position.strip()
             if not ok or not position:
                 return
+        if not department:
+            department, ok = QInputDialog.getText(
+                self,
+                "Выбор подразделения",
+                "Подразделение не найдено в профиле. Укажите подразделение для поиска фрагментов:",
+            )
+            department = department.strip()
+            if not ok or not department:
+                return
         self._page_loading.set_message(
             "Анализируем функции должности",
             (
-                f"Ищем фрагменты регламента для должности «{position}». "
-                "Это может занять несколько минут."
+                f"Ищем фрагменты регламента для должности «{position}» "
+                f"и подразделения «{department}». Это может занять несколько минут."
             ),
         )
         self._pages.setCurrentIndex(self._page_index["loading"])
@@ -397,7 +406,7 @@ class MainShell(QWidget):
                 result = self._api.create_role_matches(
                     self._current_regulation.regulation_id,
                     position=position,
-                    department=default_department,
+                    department=department,
                 )
             except ApiError as exc:
                 self._role_match_failed.emit(exc.message)

@@ -12,6 +12,7 @@ from app.schemas.regulation import (
     RoleMatchRequest,
     RoleMatchResult,
 )
+from app.services.app_users import get_app_user
 from app.services.regulation import RegulationError, get_result, parse_upload
 from app.services.role_matching import (
     RoleMatchError,
@@ -61,13 +62,16 @@ async def create_role_matches(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> RoleMatchResult:
+    user = get_app_user(auth.user_id)
+    position = (request.position or "").strip() or ((user.position if user else "") or "").strip()
+    department = (request.department or "").strip() or ((user.department if user else "") or "").strip()
     try:
         return create_role_match_run(
             db,
             user_id=auth.user_id,
             regulation_id=regulation_id,
-            position=request.position,
-            department=request.department,
+            position=position,
+            department=department,
         )
     except RoleMatchError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc

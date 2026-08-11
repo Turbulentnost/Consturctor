@@ -119,16 +119,16 @@ class UserMenuHeader(QWidget):
         self._fio.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         self._fio.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        self._dept = QLabel("")
-        self._dept.setFont(app_font(12))
-        self._dept.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        self._dept.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._position = QLabel("")
+        self._position.setFont(app_font(12))
+        self._position.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        self._position.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
         text_col.setSpacing(1)
         text_col.addWidget(self._fio)
-        text_col.addWidget(self._dept)
+        text_col.addWidget(self._position)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -137,10 +137,9 @@ class UserMenuHeader(QWidget):
         root.addLayout(text_col, 0)
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
 
-    def set_user(self, *, fio: str, department: str = "") -> None:
+    def set_user(self, *, fio: str, position: str = "") -> None:
         self._fio.setText(fio or "—")
-        dept = department.strip() or "отдел не указан"
-        self._dept.setText(dept)
+        self._position.setText(position.strip() or "должность не указана")
 
     def set_avatar_pixmap(self, pixmap: QPixmap | None) -> None:
         if pixmap is None or pixmap.isNull():

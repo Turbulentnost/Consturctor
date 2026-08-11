@@ -28,8 +28,12 @@ def create_role_match_run(
     position: str,
     department: str,
 ) -> RoleMatchResult:
-    if not position.strip():
+    position = position.strip()
+    department = department.strip()
+    if not position:
         raise RoleMatchError("Укажите должность")
+    if not department:
+        raise RoleMatchError("Укажите подразделение")
     doc = get_document(db, regulation_id=regulation_id, user_id=user_id)
     if doc is None:
         raise RoleMatchError("Регламент не найден", status_code=404)

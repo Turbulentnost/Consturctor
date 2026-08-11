@@ -24,8 +24,9 @@ def build_role_profile(
     result: RegulationParseResult,
 ) -> RoleProfile:
     profile = RoleProfile(canonicalTitle=position.strip(), department=department.strip())
-    _add_alias(profile.aliases, position, "verified", "Выбранная пользователем должность", [])
+    _add_alias(profile.aliases, position, "verified", "Должность пользователя", [])
     if department:
+        _add_alias(profile.aliases, department, "verified", "Подразделение пользователя", [])
         _add_alias(
             profile.aliases,
             f"сотрудник {department}",

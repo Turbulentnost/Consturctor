@@ -133,7 +133,7 @@ class FragmentRoleMatch(BaseModel):
 
 
 class RoleMatchRequest(BaseModel):
-    position: str
+    position: str = ""
     department: str = ""
 
 
