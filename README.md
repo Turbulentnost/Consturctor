@@ -1,5 +1,7 @@
 # Constructor — конструктор ИИ-агентов
 
+> **Для агента-разработчика (карта репо, tools, API):** см. **[AGENT_BUILDER.md](AGENT_BUILDER.md)** — начните с этого файла.
+
 Платформа из двух частей:
 
 | Часть | Папка | Назначение |
@@ -130,7 +132,7 @@ scripts\start_desktop_tools.cmd
 scripts\start_platform_all.cmd
 ```
 
-Подробнее: [`PLATFORM.md`](PLATFORM.md), [`AGENT_INTERACTION.md`](AGENT_INTERACTION.md).
+Подробнее: **[AGENT_BUILDER.md](AGENT_BUILDER.md)** (карта репо и tools), [PLATFORM.md](PLATFORM.md), [AGENT_INTERACTION.md](AGENT_INTERACTION.md).
 
 **Demo UI** для ручной проверки sandbox (вне этого репозитория): `platform-demo-ui/` рядом с `Consturctor/`, URL http://127.0.0.1:8790/
 

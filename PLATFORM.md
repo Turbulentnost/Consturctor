@@ -1,5 +1,7 @@
 # Constructor Platform — Tools & KPI
 
+> **Главный документ для агента-разработчика:** [AGENT_BUILDER.md](AGENT_BUILDER.md)
+
 Модульная платформа инструментов для ИИ-агентов и KPI.
 
 ## Структура
