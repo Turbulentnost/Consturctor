@@ -14,7 +14,7 @@ from PySide6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from app.ui.theme import (
     COLOR_ACTIVE_BG,
@@ -119,14 +119,22 @@ class NavigationItem(QWidget):
         self._active = False
         self._hover = False
         self._pressed = False
+        self._collapsed = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(NAV_ITEM_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setToolTip(item.label)
 
     def set_active(self, active: bool) -> None:
         if self._active == active:
             return
         self._active = active
+        self.update()
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        if self._collapsed == collapsed:
+            return
+        self._collapsed = collapsed
         self.update()
 
     def enterEvent(self, event) -> None:  # noqa: N802
@@ -175,16 +183,18 @@ class NavigationItem(QWidget):
             text = TEXT_MUTED
 
         p.fillPath(path, fill)
-        self._draw_icon(p, rect.left() + 18, rect.center().y())
-        # Integer text box keeps glyphs on the pixel grid (less blur than QRectF).
-        p.setPen(text)
-        p.setFont(app_font(14, QFont.Weight.Medium if not self._active else QFont.Weight.DemiBold))
-        text_rect = self.rect().adjusted(44, 0, -12, 0)
-        p.drawText(
-            text_rect,
-            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
-            self.item.label,
-        )
+        icon_x = rect.center().x() if self._collapsed else rect.left() + 18
+        self._draw_icon(p, icon_x, rect.center().y())
+        if not self._collapsed:
+            # Integer text box keeps glyphs on the pixel grid (less blur than QRectF).
+            p.setPen(text)
+            p.setFont(app_font(14, QFont.Weight.Medium if not self._active else QFont.Weight.DemiBold))
+            text_rect = self.rect().adjusted(44, 0, -12, 0)
+            p.drawText(
+                text_rect,
+                int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                self.item.label,
+            )
         p.end()
 
     def _draw_icon(self, p: QPainter, cx: float, cy: float) -> None:
@@ -214,7 +224,6 @@ class GlassSidebar(QWidget):
         self._collapsed = False
         self._buttons: dict[str, NavigationItem] = {}
         self.setFixedWidth(SIDEBAR_EXPANDED)
-        self.setMinimumWidth(200)
         self.setMinimumHeight(400)
         logo_path = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
         self._logo = QPixmap(str(logo_path)) if logo_path.exists() else QPixmap()
@@ -241,56 +250,55 @@ class GlassSidebar(QWidget):
     def sizeHint(self) -> QSize:  # noqa: N802
         return QSize(SIDEBAR_EXPANDED if not self._collapsed else SIDEBAR_COLLAPSED, 600)
 
-    def _toggle_collapse(self) -> None:
-        self._collapsed = not self._collapsed
-        self.setFixedWidth(SIDEBAR_COLLAPSED if self._collapsed else SIDEBAR_EXPANDED)
-        self.collapse_toggled.emit(self._collapsed)
+    def toggle_collapsed(self) -> None:
+        self._apply_collapsed(not self._collapsed)
+
+    def _apply_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = collapsed
+        width = SIDEBAR_COLLAPSED if collapsed else SIDEBAR_EXPANDED
+        self.setFixedWidth(width)
+        pad = 12 if collapsed else SIDEBAR_PADDING_X
+        self._root.setContentsMargins(pad, 22, pad, 22)
+
+        self._title.setVisible(not collapsed)
+        # Center logo when title is hidden; keep left-aligned brand row when expanded.
+        self._header.setStretch(0, 1 if collapsed else 0)
+        self._header.setStretch(3, 1 if collapsed else 0)
+
+        for button in self._buttons.values():
+            button.set_collapsed(collapsed)
+
+        self.collapse_toggled.emit(collapsed)
         self.update()
 
     def _build_layout(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(SIDEBAR_PADDING_X, 22, SIDEBAR_PADDING_X, 22)
-        root.setSpacing(0)
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(SIDEBAR_PADDING_X, 22, SIDEBAR_PADDING_X, 22)
+        self._root.setSpacing(0)
 
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(12)
+        self._header = QHBoxLayout()
+        self._header.setContentsMargins(0, 0, 0, 0)
+        self._header.setSpacing(12)
+        self._header.addStretch(0)
 
-        logo = QLabel()
-        logo.setFixedSize(36, 36)
-        logo.setScaledContents(False)
-        logo.setStyleSheet("background: transparent; border-radius: 18px;")
+        self._logo_label = QLabel()
+        self._logo_label.setFixedSize(36, 36)
+        self._logo_label.setScaledContents(False)
+        self._logo_label.setStyleSheet("background: transparent; border-radius: 18px;")
         if not self._logo.isNull():
-            logo.setPixmap(circular_pixmap(self._logo, 36))
-        header.addWidget(logo)
+            self._logo_label.setPixmap(circular_pixmap(self._logo, 36))
+        self._header.addWidget(self._logo_label)
 
-        title = QLabel("turbobot")
-        title.setFont(app_font(18, QFont.Weight.DemiBold))
-        title.setStyleSheet("color: #EAF7F3; background: transparent;")
-        title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        title.setMinimumWidth(110)
-        header.addWidget(title, 1)
+        self._title = QLabel("turbobot")
+        self._title.setFont(app_font(18, QFont.Weight.DemiBold))
+        self._title.setStyleSheet("color: #EAF7F3; background: transparent;")
+        self._title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._title.setMinimumWidth(110)
+        self._header.addWidget(self._title, 1)
+        self._header.addStretch(0)
 
-        collapse = QPushButton("‹")
-        collapse.setFixedSize(28, 28)
-        collapse.setCursor(Qt.CursorShape.PointingHandCursor)
-        collapse.setStyleSheet(
-            """
-            QPushButton {
-                color: #EAF7F3;
-                background: rgba(255,255,255,0.10);
-                border: 1px solid rgba(255,255,255,0.14);
-                border-radius: 14px;
-                font-size: 18px;
-            }
-            QPushButton:hover { background: rgba(255,255,255,0.16); }
-            """
-        )
-        collapse.clicked.connect(self._toggle_collapse)
-        header.addWidget(collapse)
-
-        root.addLayout(header)
-        root.addSpacing(22)
+        self._root.addLayout(self._header)
+        self._root.addSpacing(22)
 
         nav = QVBoxLayout()
         nav.setContentsMargins(0, 0, 0, 0)
@@ -305,8 +313,8 @@ class GlassSidebar(QWidget):
             button.clicked.connect(self.set_active_key)
             nav.addWidget(button)
             self._buttons[item.key] = button
-        root.addLayout(nav)
-        root.addStretch(1)
+        self._root.addLayout(nav)
+        self._root.addStretch(1)
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)

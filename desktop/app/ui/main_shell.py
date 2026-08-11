@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
-    QLabel,
     QMessageBox,
+    QPushButton,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -22,7 +22,6 @@ from app.ui.theme import (
     COLOR_CONTENT_BG,
     CONTENT_PADDING_TOP,
     CONTENT_PADDING_X,
-    app_font,
 )
 from app.ui.widgets.sidebar import GlassSidebar
 from app.ui.widgets.user_menu import UserMenuHeader
@@ -68,6 +67,7 @@ class MainShell(QWidget):
 
         self.sidebar = GlassSidebar(self)
         self.sidebar.page_changed.connect(self._on_page_changed)
+        self.sidebar.collapse_toggled.connect(self._on_sidebar_collapse)
 
         self._pages = QStackedWidget()
         self._page_create = CreateAgentPage()
@@ -82,20 +82,9 @@ class MainShell(QWidget):
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_create.create_regulation_requested.connect(self._on_create_regulation)
 
-        self._health_label = QLabel("")
-        self._health_label.setFont(app_font(12, QFont.Weight.Medium))
-        self._health_label.setStyleSheet("color: #2D7A5E; background: transparent;")
-
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
         self.user_menu.settings_requested.connect(self._open_settings)
-
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(18)
-        header.addWidget(self._health_label, 0, Qt.AlignmentFlag.AlignVCenter)
-        header.addStretch(1)
-        header.addWidget(self.user_menu, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._content = MainContentWidget()
         content_layout = QVBoxLayout(self._content)
@@ -105,9 +94,12 @@ class MainShell(QWidget):
             CONTENT_PADDING_X,
             30,
         )
-        content_layout.setSpacing(24)
-        content_layout.addLayout(header)
+        content_layout.setSpacing(0)
         content_layout.addWidget(self._pages, 1)
+
+        # Float profile menu at top-right so page titles can sit higher.
+        self.user_menu.setParent(self._content)
+        self.user_menu.raise_()
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -115,13 +107,61 @@ class MainShell(QWidget):
         root.addWidget(self.sidebar, 0)
         root.addWidget(self._content, 1)
 
+        self._collapse_btn = QPushButton("‹", self)
+        self._collapse_btn.setFixedSize(28, 28)
+        self._collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._collapse_btn.setToolTip("Свернуть меню")
+        self._collapse_btn.setStyleSheet(
+            """
+            QPushButton {
+                color: #EAF7F3;
+                background: rgba(6, 40, 34, 0.94);
+                border: 1px solid rgba(255,255,255,0.18);
+                border-radius: 14px;
+                font-size: 18px;
+            }
+            QPushButton:hover { background: rgba(8, 70, 58, 0.98); }
+            """
+        )
+        self._collapse_btn.clicked.connect(self.sidebar.toggle_collapsed)
+
         self.sidebar.set_active_key("create", animate=False)
+        QTimer.singleShot(0, self._position_overlays)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._position_overlays()
+
+    def _position_overlays(self) -> None:
+        self._position_collapse_btn()
+        self._position_user_menu()
+
+    def _position_collapse_btn(self) -> None:
+        btn = self._collapse_btn
+        # Bottom-right of the left menu, on its right edge.
+        x = self.sidebar.width() - btn.width() // 2
+        y = self.height() - btn.height() - 22
+        btn.move(max(0, x), max(0, y))
+        btn.raise_()
+
+    def _position_user_menu(self) -> None:
+        menu = self.user_menu
+        menu.adjustSize()
+        x = self._content.width() - menu.width() - CONTENT_PADDING_X
+        y = CONTENT_PADDING_TOP
+        menu.move(max(0, x), max(0, y))
+        menu.raise_()
+
+    def _on_sidebar_collapse(self, collapsed: bool) -> None:
+        self._collapse_btn.setText("›" if collapsed else "‹")
+        self._collapse_btn.setToolTip("Развернуть меню" if collapsed else "Свернуть меню")
+        QTimer.singleShot(0, self._position_overlays)
 
     def set_user(self, user: UserProfile) -> None:
         self._apply_user(user)
         self.sidebar.set_active_key("create", animate=False)
         self._pages.setCurrentIndex(0)
-        QTimer.singleShot(0, self.refresh_health)
+        QTimer.singleShot(0, self._refresh_profile)
 
     def _apply_user(self, user: UserProfile) -> None:
         self._user = user
@@ -149,17 +189,7 @@ class MainShell(QWidget):
         self._avatar_pixmap = pixmap
         self.user_menu.set_avatar_pixmap(pixmap)
 
-    def refresh_health(self) -> None:
-        try:
-            health = self._api.health()
-            erp = "ERP ok" if health.erp_reachable else "ERP offline"
-            self._health_label.setText(f"{health.status} · {erp} · {health.llm_provider}")
-            color = "#2D7A5E" if health.erp_reachable else "#A86D22"
-            self._health_label.setStyleSheet(f"color: {color}; background: transparent;")
-        except ApiError as exc:
-            self._health_label.setText(exc.message)
-            self._health_label.setStyleSheet("color: #B00020; background: transparent;")
-
+    def _refresh_profile(self) -> None:
         try:
             profile = self._api.me()
             self._apply_user(profile)

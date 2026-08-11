@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QPixmap
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
@@ -15,10 +16,30 @@ from PySide6.QtWidgets import (
 )
 
 from app.api_client import ApiClient, ApiError, LoginResult
+from app.session_store import clear_session, remember_preference, save_session, saved_fio
 from app.ui.theme import app_font, circular_pixmap
 from app.ui.widgets.fio_suggest import FioSuggestEdit
 from app.ui.widgets.gradient_bg import GlassPanel, GradientBackground
 from app.ui.widgets.password_edit import PasswordEdit
+
+_CHECK_ICON = Path(__file__).resolve().parent / "temp" / "check_white.png"
+
+
+def _ensure_check_icon() -> Path:
+    if _CHECK_ICON.exists() and _CHECK_ICON.stat().st_size > 0:
+        return _CHECK_ICON
+    _CHECK_ICON.parent.mkdir(parents=True, exist_ok=True)
+    pm = QPixmap(18, 18)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor("#FFFFFF"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.drawLine(4, 9, 8, 13)
+    p.drawLine(8, 13, 14, 5)
+    p.end()
+    pm.save(str(_CHECK_ICON), "PNG")
+    return _CHECK_ICON
 
 
 class LoginPage(QWidget):
@@ -89,6 +110,40 @@ class LoginPage(QWidget):
         pwd_label.setStyleSheet("color: rgba(255,255,255,0.65); background: transparent;")
         pwd_label.setFont(app_font(11, QFont.Weight.DemiBold))
 
+        self.remember_check = QCheckBox("Запомнить пользователя")
+        self.remember_check.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remember_check.setFont(app_font(12))
+        self.remember_check.setChecked(remember_preference())
+        check_icon = _ensure_check_icon().resolve().as_posix()
+        self.remember_check.setStyleSheet(
+            f"""
+            QCheckBox {{
+                color: rgba(255,255,255,0.72);
+                background: transparent;
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border-radius: 5px;
+                border: 1px solid rgba(255,255,255,0.28);
+                background: rgba(0, 0, 0, 0.28);
+            }}
+            QCheckBox::indicator:hover {{
+                border: 1px solid rgba(255,255,255,0.45);
+            }}
+            QCheckBox::indicator:checked {{
+                background: #62E0BE;
+                border: 1px solid #62E0BE;
+                image: url("{check_icon}");
+            }}
+            """
+        )
+
+        saved = saved_fio()
+        if saved:
+            self.fio_edit.setText(saved)
+
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
         self.error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -129,6 +184,8 @@ class LoginPage(QWidget):
         card_layout.addSpacing(6)
         card_layout.addWidget(pwd_label)
         card_layout.addWidget(self.password_edit)
+        card_layout.addSpacing(4)
+        card_layout.addWidget(self.remember_check)
         card_layout.addSpacing(8)
         card_layout.addWidget(self.error_label)
         card_layout.addSpacing(8)
@@ -156,6 +213,10 @@ class LoginPage(QWidget):
         self.password_edit.clear()
         self.error_label.setText("")
         self.login_btn.setEnabled(True)
+        self.remember_check.setChecked(remember_preference())
+        fio = saved_fio()
+        if fio:
+            self.fio_edit.setText(fio)
 
     def _search_fios(self, query: str) -> list[str]:
         try:
@@ -183,6 +244,11 @@ class LoginPage(QWidget):
             return
         finally:
             self.login_btn.setEnabled(True)
+
+        if self.remember_check.isChecked():
+            save_session(access_token=result.access_token, fio=result.user.fio)
+        else:
+            clear_session()
 
         self.fio_edit.hide_suggestions()
         self.logged_in.emit(result)

@@ -6,7 +6,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMainWindow, QStackedWidget
 
-from app.api_client import ApiClient, LoginResult
+from app.api_client import ApiClient, ApiError, LoginResult
+from app.session_store import clear_session, load_session
 from app.ui.login_page import LoginPage
 from app.ui.main_shell import MainShell
 from app.ui.theme import WINDOW_HEIGHT, WINDOW_WIDTH
@@ -39,7 +40,23 @@ class AppWindow(QMainWindow):
         self.login_page.logged_in.connect(self._on_logged_in)
         self.main_shell.logout_requested.connect(self._on_logout)
 
-        self._stack.setCurrentWidget(self.login_page)
+        if not self._try_restore_session():
+            self._stack.setCurrentWidget(self.login_page)
+
+    def _try_restore_session(self) -> bool:
+        stored = load_session()
+        if stored is None:
+            return False
+        self.api.set_token(stored.access_token)
+        try:
+            user = self.api.me()
+        except ApiError:
+            clear_session(keep_fio=True)
+            self.api.set_token(None)
+            return False
+        self.main_shell.set_user(user)
+        self._stack.setCurrentWidget(self.main_shell)
+        return True
 
     def _on_logged_in(self, result: LoginResult) -> None:
         self.login_page.fio_edit.hide_suggestions()
@@ -47,6 +64,7 @@ class AppWindow(QMainWindow):
         self._stack.setCurrentWidget(self.main_shell)
 
     def _on_logout(self) -> None:
+        clear_session(keep_fio=True)
         self.api.set_token(None)
         self.login_page.reset_form()
         self._stack.setCurrentWidget(self.login_page)

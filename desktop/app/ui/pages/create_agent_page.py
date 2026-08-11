@@ -258,14 +258,19 @@ class CreateAgentPage(QWidget):
         footer.setStyleSheet("color: #9AA6A1; background: transparent;")
         footer.setWordWrap(True)
 
+        # Leave room on the right for the floating user menu in the shell header.
+        title.setContentsMargins(0, 0, 280, 0)
+        subtitle.setContentsMargins(0, 0, 280, 0)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.addWidget(title)
         layout.addWidget(subtitle)
-        layout.addStretch(1)
+        layout.addSpacing(20)
         layout.addLayout(cards, 0)
-        layout.addStretch(2)
+        layout.addStretch(1)
         layout.addWidget(footer)
 
     def selected_regulation_path(self) -> str | None:
@@ -297,13 +302,18 @@ class CreateAgentPage(QWidget):
         self._drop_zone = RegulationDropZone(card)
         self._drop_zone.file_selected.connect(self.regulation_selected.emit)
 
+        # Match the right card's badge row so icon/title align across both cards.
+        badge_spacer = QWidget()
+        badge_spacer.setFixedHeight(28)
+
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(26, 24, 26, 24)
+        lay.setContentsMargins(26, 20, 26, 24)
         lay.setSpacing(10)
+        lay.addWidget(badge_spacer)
         lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignHCenter)
         lay.addWidget(heading)
         lay.addWidget(desc)
-        lay.addSpacing(4)
+        lay.addSpacing(8)
         lay.addWidget(self._drop_zone, 0)
         return card
 

@@ -2,16 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QEvent, QPoint, QRectF, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox,
+    QAbstractItemView,
+    QApplication,
     QFileDialog,
-    QHBoxLayout,
+    QFrame,
     QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QSizePolicy,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -21,6 +24,9 @@ from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 
 _AVATAR_SIZE = 128
 _DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
+_MAX_VISIBLE_ROWS = 6
+_ROW_HEIGHT = 36
+_POPUP_PAD = 8
 
 
 class ProfileAvatar(QWidget):
@@ -110,41 +116,239 @@ class ProfileAvatar(QWidget):
         p.drawRoundedRect(QRectF(cx - 6, cy - 13, 12, 6), 2, 2)
 
 
-class _PencilButton(QToolButton):
+class DepartmentSuggestEdit(QLineEdit):
+    """Always-visible department input with a height-capped suggestion list."""
+
+    department_chosen = Signal(str)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(28, 28)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Изменить отдел")
+        self._items: list[str] = []
+        self._can_edit = True
+        self._committed = ""
+
+        self.setFont(app_font(14))
+        self.setMinimumWidth(360)
+        self.setMaximumWidth(560)
+        self.setFixedHeight(44)
+        self.setPlaceholderText("Выберите или начните вводить отдел…")
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.setStyleSheet(
             """
-            QToolButton {
-                background: transparent;
-                border: none;
-                border-radius: 14px;
+            QLineEdit {
+                background: #FFFFFF;
+                color: #101817;
+                border: 1px solid rgba(16,24,23,0.16);
+                border-radius: 12px;
+                padding: 8px 14px;
             }
-            QToolButton:hover { background: rgba(6,72,61,0.10); }
-            QToolButton:disabled { background: transparent; }
+            QLineEdit:hover { border: 1px solid rgba(6,72,61,0.40); }
+            QLineEdit:focus { border: 1px solid rgba(6,72,61,0.55); }
+            QLineEdit:disabled {
+                background: #F4F7F6;
+                color: #6B7773;
+                border: 1px solid rgba(16,24,23,0.10);
+            }
             """
         )
 
-    def paintEvent(self, event) -> None:  # noqa: N802
-        super().paintEvent(event)
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        color = QColor("#6B7773") if self.isEnabled() else QColor("#B7C0BC")
-        pen = QPen(color, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        # Pencil body
-        p.drawLine(8, 18, 18, 8)
-        p.drawLine(18, 8, 20, 10)
-        p.drawLine(20, 10, 10, 20)
-        p.drawLine(8, 18, 10, 20)
-        # Tip
-        p.drawLine(8, 18, 7, 21)
-        p.drawLine(10, 20, 7, 21)
-        p.end()
+        self._popup = QFrame(None)
+        self._popup.hide()
+        self._popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self._popup.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._popup.setStyleSheet(
+            """
+            QFrame {
+                background: #FFFFFF;
+                border: 1px solid rgba(16,24,23,0.12);
+                border-radius: 12px;
+            }
+            """
+        )
+
+        self._list = QListWidget(self._popup)
+        self._list.setFont(app_font(13))
+        self._list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self._list.setUniformItemSizes(True)
+        self._list.setStyleSheet(
+            """
+            QListWidget {
+                background: transparent;
+                color: #101817;
+                border: none;
+                outline: none;
+                padding: 2px;
+            }
+            QListWidget::item {
+                height: 34px;
+                padding: 0 12px;
+                border-radius: 8px;
+            }
+            QListWidget::item:hover,
+            QListWidget::item:selected {
+                background: #E7F3EE;
+            }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 8px;
+                margin: 4px 2px 4px 0;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(16,24,23,0.18);
+                border-radius: 4px;
+                min-height: 24px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+            """
+        )
+        self._list.itemClicked.connect(self._on_item_clicked)
+
+        lay = QVBoxLayout(self._popup)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(0)
+        lay.addWidget(self._list)
+
+        self.textEdited.connect(self._on_text_edited)
+        self.returnPressed.connect(self._commit_from_text)
+
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
+    def set_items(self, items: list[str]) -> None:
+        self._items = [x.strip() for x in items if x and x.strip()]
+        self._refresh_list(self.text().strip())
+
+    def set_department(self, value: str) -> None:
+        text = value.strip()
+        self._committed = text
+        self.blockSignals(True)
+        self.setText(text)
+        self.blockSignals(False)
+        self.hide_popup()
+
+    def set_editable(self, enabled: bool) -> None:
+        self._can_edit = enabled
+        self.setReadOnly(not enabled)
+        self.setEnabled(True)
+        if not enabled:
+            self.hide_popup()
+
+    def hide_popup(self) -> None:
+        self._popup.hide()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        super().mousePressEvent(event)
+        if self._can_edit and event.button() == Qt.MouseButton.LeftButton:
+            self._open_popup()
+
+    def focusInEvent(self, event) -> None:  # noqa: N802
+        super().focusInEvent(event)
+        if self._can_edit:
+            self._open_popup()
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802
+        super().focusOutEvent(event)
+        # Defer hide so list item click can fire first.
+        QTimer.singleShot(0, self._maybe_close_popup)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if (
+            self._popup.isVisible()
+            and event.type() == QEvent.Type.MouseButtonPress
+            and isinstance(event, QMouseEvent)
+        ):
+            global_pos = event.globalPosition().toPoint()
+            in_popup = self._popup.geometry().contains(global_pos)
+            in_field = self.rect().contains(self.mapFromGlobal(global_pos))
+            if not in_popup and not in_field:
+                self.hide_popup()
+                self._revert_if_incomplete()
+        return super().eventFilter(obj, event)
+
+    def _maybe_close_popup(self) -> None:
+        focus = QApplication.focusWidget()
+        if focus is self or self._popup.isAncestorOf(focus):
+            return
+        self.hide_popup()
+        self._revert_if_incomplete()
+
+    def _on_text_edited(self, text: str) -> None:
+        if not self._can_edit:
+            return
+        self._refresh_list(text.strip())
+        self._open_popup()
+
+    def _open_popup(self) -> None:
+        if not self._can_edit or not self._items:
+            return
+        self._refresh_list(self.text().strip())
+        if self._list.count() == 0:
+            self.hide_popup()
+            return
+
+        rows = min(self._list.count(), _MAX_VISIBLE_ROWS)
+        height = rows * _ROW_HEIGHT + _POPUP_PAD
+        width = max(self.width(), 360)
+        self._popup.setFixedSize(width, height)
+
+        pos = self.mapToGlobal(QPoint(0, self.height() + 4))
+        screen = self.screen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            if pos.y() + height > geo.bottom() - 8:
+                pos.setY(self.mapToGlobal(QPoint(0, 0)).y() - height - 4)
+            if pos.x() + width > geo.right() - 8:
+                pos.setX(geo.right() - width - 8)
+            if pos.x() < geo.left() + 8:
+                pos.setX(geo.left() + 8)
+        self._popup.move(pos)
+        self._popup.show()
+        self._popup.raise_()
+
+    def _refresh_list(self, query: str) -> None:
+        q = query.casefold()
+        self._list.clear()
+        for name in self._items:
+            if not q or q in name.casefold():
+                self._list.addItem(QListWidgetItem(name))
+
+    def _on_item_clicked(self, item: QListWidgetItem) -> None:
+        value = item.text().strip()
+        if not value:
+            return
+        self._apply_choice(value)
+
+    def _commit_from_text(self) -> None:
+        text = self.text().strip()
+        if not text:
+            return
+        match = next((x for x in self._items if x.casefold() == text.casefold()), None)
+        if match is None and self._list.count() == 1:
+            match = self._list.item(0).text().strip()
+        if match:
+            self._apply_choice(match)
+
+    def _apply_choice(self, value: str) -> None:
+        self.blockSignals(True)
+        self.setText(value)
+        self.blockSignals(False)
+        self.hide_popup()
+        if value != self._committed:
+            self._committed = value
+            self.department_chosen.emit(value)
+
+    def _revert_if_incomplete(self) -> None:
+        current = self.text().strip()
+        if current != self._committed and current not in self._items:
+            self.blockSignals(True)
+            self.setText(self._committed)
+            self.blockSignals(False)
 
 
 class SettingsPage(QWidget):
@@ -155,7 +359,6 @@ class SettingsPage(QWidget):
         self._api = api
         self._user: UserProfile | None = None
         self._departments: list[str] = []
-        self._editing_dept = False
 
         self.avatar = ProfileAvatar(self)
         self.avatar.change_requested.connect(self._pick_avatar)
@@ -165,63 +368,14 @@ class SettingsPage(QWidget):
         self._fio.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         self._fio.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
-        self._dept = QLabel("")
-        self._dept.setFont(app_font(15))
-        self._dept.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        self._dept.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._dept.setWordWrap(True)
-        self._dept.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-
-        self._pencil = _PencilButton(self)
-        self._pencil.clicked.connect(self._start_edit_department)
-
-        self._dept_combo = QComboBox(self)
-        self._dept_combo.setFont(app_font(14))
-        self._dept_combo.setMinimumWidth(360)
-        self._dept_combo.setMaximumWidth(520)
-        self._dept_combo.setVisible(False)
-        self._dept_combo.setStyleSheet(
-            """
-            QComboBox {
-                background: #FFFFFF;
-                color: #101817;
-                border: 1px solid rgba(16,24,23,0.16);
-                border-radius: 12px;
-                padding: 8px 14px;
-                min-height: 22px;
-            }
-            QComboBox:hover { border: 1px solid rgba(6,72,61,0.45); }
-            QComboBox::drop-down { border: none; width: 28px; }
-            QComboBox QAbstractItemView {
-                background: #FFFFFF;
-                color: #101817;
-                border: 1px solid rgba(16,24,23,0.12);
-                selection-background-color: #E7F3EE;
-                outline: none;
-            }
-            """
-        )
-        self._dept_combo.activated.connect(self._on_department_chosen)
+        self._dept_edit = DepartmentSuggestEdit(self)
+        self._dept_edit.department_chosen.connect(self._on_department_chosen)
 
         self._dept_hint = QLabel("")
         self._dept_hint.setFont(app_font(12))
-        self._dept_hint.setStyleSheet("color: #9AA6A1; background: transparent;")
+        self._dept_hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         self._dept_hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self._dept_hint.setWordWrap(True)
-
-        dept_row = QHBoxLayout()
-        dept_row.setContentsMargins(0, 0, 0, 0)
-        dept_row.setSpacing(8)
-        dept_row.addStretch(1)
-        dept_row.addWidget(self._dept, 0, Qt.AlignmentFlag.AlignVCenter)
-        dept_row.addWidget(self._pencil, 0, Qt.AlignmentFlag.AlignVCenter)
-        dept_row.addStretch(1)
-
-        combo_row = QHBoxLayout()
-        combo_row.setContentsMargins(0, 0, 0, 0)
-        combo_row.addStretch(1)
-        combo_row.addWidget(self._dept_combo, 0)
-        combo_row.addStretch(1)
 
         hint = QLabel("Наведите на фото и нажмите, чтобы сменить аватар")
         hint.setFont(app_font(12))
@@ -235,8 +389,8 @@ class SettingsPage(QWidget):
         layout.addWidget(self.avatar, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addSpacing(18)
         layout.addWidget(self._fio)
-        layout.addLayout(dept_row)
-        layout.addLayout(combo_row)
+        layout.addSpacing(4)
+        layout.addWidget(self._dept_edit, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self._dept_hint)
         layout.addSpacing(8)
         layout.addWidget(hint)
@@ -244,12 +398,10 @@ class SettingsPage(QWidget):
 
     def set_user(self, user: UserProfile, pixmap: QPixmap | None = None) -> None:
         self._user = user
-        self._editing_dept = False
         self._fio.setText(user.fio or "—")
-        self._dept.setText(user.department.strip() or "отдел не указан")
-        self._dept.setVisible(True)
-        self._pencil.setVisible(True)
-        self._dept_combo.setVisible(False)
+        self._ensure_departments()
+        self._dept_edit.set_items(self._departments)
+        self._dept_edit.set_department(user.department.strip() or "")
         self._sync_department_hint(user)
         if pixmap is not None and not pixmap.isNull():
             self.avatar.set_pixmap(pixmap)
@@ -258,19 +410,29 @@ class SettingsPage(QWidget):
         else:
             self.avatar.set_default_logo()
 
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._dept_edit.hide_popup()
+        super().hideEvent(event)
+
     def _sync_department_hint(self, user: UserProfile) -> None:
         if user.can_change_department:
-            self._pencil.setEnabled(True)
-            self._pencil.setToolTip("Изменить отдел")
+            self._dept_edit.set_editable(True)
             self._dept_hint.setText("Отдел можно менять не чаще одного раза в 2 недели")
             return
-        self._pencil.setEnabled(True)  # still clickable to show cooldown message
-        self._pencil.setToolTip("Смена отдела недоступна")
+        self._dept_edit.set_editable(False)
         if user.department_change_available_at is not None:
             local = user.department_change_available_at.astimezone().strftime("%d.%m.%Y")
             self._dept_hint.setText(f"Следующая смена отдела доступна с {local}")
         else:
             self._dept_hint.setText("Отдел можно менять не чаще одного раза в 2 недели")
+
+    def _ensure_departments(self) -> None:
+        if self._departments:
+            return
+        try:
+            self._departments = self._api.list_departments()
+        except ApiError:
+            self._departments = []
 
     def _load_avatar(self, url: str) -> None:
         try:
@@ -301,53 +463,25 @@ class SettingsPage(QWidget):
         self.set_user(user)
         self.profile_updated.emit(user)
 
-    def _start_edit_department(self) -> None:
-        if self._user is None:
+    def _on_department_chosen(self, department: str) -> None:
+        department = department.strip()
+        if not department or self._user is None:
             return
         if not self._user.can_change_department:
-            msg = self._dept_hint.text() or "Отдел можно менять раз в 2 недели"
-            QMessageBox.information(self, "Отдел", msg)
+            QMessageBox.information(
+                self,
+                "Отдел",
+                self._dept_hint.text() or "Отдел можно менять раз в 2 недели",
+            )
+            self._dept_edit.set_department(self._user.department.strip())
             return
-
-        if not self._departments:
-            try:
-                self._departments = self._api.list_departments()
-            except ApiError as exc:
-                QMessageBox.warning(self, "Отдел", exc.message)
-                return
-            if not self._departments:
-                QMessageBox.warning(self, "Отдел", "Список отделов пуст")
-                return
-
-        self._editing_dept = True
-        self._dept.setVisible(False)
-        self._pencil.setVisible(False)
-        self._dept_combo.blockSignals(True)
-        self._dept_combo.clear()
-        self._dept_combo.addItems(self._departments)
-        current = (self._user.department or "").strip()
-        idx = self._dept_combo.findText(current)
-        if idx >= 0:
-            self._dept_combo.setCurrentIndex(idx)
-        self._dept_combo.blockSignals(False)
-        self._dept_combo.setVisible(True)
-        self._dept_combo.showPopup()
-
-    def _on_department_chosen(self, index: int) -> None:
-        if not self._editing_dept or index < 0:
-            return
-        department = self._dept_combo.itemText(index).strip()
-        if not department:
-            return
-        if self._user and department == (self._user.department or "").strip():
-            self.set_user(self._user)
+        if department == (self._user.department or "").strip():
             return
         try:
             user = self._api.update_department(department)
         except ApiError as exc:
             QMessageBox.warning(self, "Отдел", exc.message)
-            if self._user is not None:
-                self.set_user(self._user)
+            self._dept_edit.set_department(self._user.department.strip())
             return
         self.set_user(user)
         self.profile_updated.emit(user)
