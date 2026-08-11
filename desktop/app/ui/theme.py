@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtGui import QColor, QFont, QFontDatabase
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPainterPath, QPixmap
 
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 800
@@ -85,11 +86,34 @@ def app_font(size: int = 14, weight: QFont.Weight = QFont.Weight.Normal) -> QFon
     # Full hinting keeps glyphs sharp under Windows ClearType / fractional DPI.
     font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
     font.setStyleStrategy(
-        QFont.StyleStrategy.PreferQuality
-        | QFont.StyleStrategy.PreferAntialias
-        | QFont.StyleStrategy.NoFontMerging
+        QFont.StyleStrategy.PreferQuality | QFont.StyleStrategy.PreferAntialias
     )
     return font
+
+
+def circular_pixmap(src: QPixmap, size: int) -> QPixmap:
+    """Crop/scale pixmap into a circle of the given diameter."""
+    if src.isNull() or size <= 0:
+        return QPixmap()
+    out = QPixmap(size, size)
+    out.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(out)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    path = QPainterPath()
+    path.addEllipse(0, 0, size, size)
+    painter.setClipPath(path)
+    scaled = src.scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    x = (size - scaled.width()) // 2
+    y = (size - scaled.height()) // 2
+    painter.drawPixmap(x, y, scaled)
+    painter.end()
+    return out
 
 
 def qss_global(family: str) -> str:

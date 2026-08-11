@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.api_client import ApiClient, ApiError, LoginResult
-from app.ui.theme import app_font
+from app.ui.theme import app_font, circular_pixmap
 from app.ui.widgets.fio_suggest import FioSuggestEdit
 from app.ui.widgets.gradient_bg import GlassPanel, GradientBackground
 from app.ui.widgets.password_edit import PasswordEdit
@@ -39,18 +39,11 @@ class LoginPage(QWidget):
 
         logo_path = Path(__file__).resolve().parent / "temp" / "logo.png"
         logo = QLabel()
+        logo.setFixedSize(54, 54)
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo.setStyleSheet("background: transparent;")
+        logo.setStyleSheet("background: transparent; border-radius: 27px;")
         if logo_path.exists():
-            pixmap = QPixmap(str(logo_path))
-            logo.setPixmap(
-                pixmap.scaled(
-                    54,
-                    54,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
+            logo.setPixmap(circular_pixmap(QPixmap(str(logo_path)), 54))
 
         brand = QLabel("turbobot")
         brand.setFont(app_font(28, QFont.Weight.Bold))

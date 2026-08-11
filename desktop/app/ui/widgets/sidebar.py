@@ -32,6 +32,7 @@ from app.ui.theme import (
     TEXT_LIGHT,
     TEXT_MUTED,
     app_font,
+    circular_pixmap,
 )
 
 SIDEBAR_GREEN = SIDEBAR_MIDDLE
@@ -209,15 +210,9 @@ class GlassSidebar(QWidget):
         logo = QLabel()
         logo.setFixedSize(36, 36)
         logo.setScaledContents(False)
+        logo.setStyleSheet("background: transparent; border-radius: 18px;")
         if not self._logo.isNull():
-            logo.setPixmap(
-                self._logo.scaled(
-                    36,
-                    36,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
+            logo.setPixmap(circular_pixmap(self._logo, 36))
         header.addWidget(logo)
 
         title = QLabel("turbobot")

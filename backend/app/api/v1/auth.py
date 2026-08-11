@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.api.deps import get_current_user
@@ -40,3 +40,25 @@ async def get_user_avatar(user_id: str) -> FileResponse:
     if path is None:
         raise HTTPException(status_code=404, detail="Аватар не найден")
     return FileResponse(path)
+
+
+@router.post("/me/avatar", response_model=UserOut)
+async def upload_my_avatar(
+    auth: AuthContext = Depends(get_current_user),
+    file: UploadFile = File(...),
+) -> UserOut:
+    data = await file.read()
+    try:
+        app_user = app_users.save_user_avatar(
+            user_id=auth.user_id,
+            data=data,
+            filename=file.filename or "avatar.png",
+        )
+    except app_users.AvatarError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    return UserOut(
+        id=app_user.id,
+        fio=app_user.fio,
+        department=app_user.department or "",
+        avatar_url=app_users.avatar_url_for(app_user),
+    )

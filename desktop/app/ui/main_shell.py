@@ -6,7 +6,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -17,6 +16,7 @@ from app.api_client import ApiClient, ApiError, UserProfile
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.my_agents_page import MyAgentsPage
+from app.ui.pages.settings_page import SettingsPage
 from app.ui.theme import (
     COLOR_CONTENT_BG,
     CONTENT_PADDING_TOP,
@@ -63,6 +63,7 @@ class MainShell(QWidget):
         super().__init__(parent)
         self._api = api
         self._user: UserProfile | None = None
+        self._avatar_pixmap = QPixmap()
 
         self.sidebar = GlassSidebar(self)
         self.sidebar.page_changed.connect(self._on_page_changed)
@@ -71,10 +72,13 @@ class MainShell(QWidget):
         self._page_create = CreateAgentPage()
         self._page_agents = MyAgentsPage()
         self._page_kpi = KpiPage()
+        self._page_settings = SettingsPage(self._api)
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_kpi)
-        self._page_index = {"create": 0, "agents": 1, "kpi": 2}
+        self._pages.addWidget(self._page_settings)
+        self._page_index = {"create": 0, "agents": 1, "kpi": 2, "settings": 3}
+        self._page_settings.profile_updated.connect(self._on_profile_updated)
 
         self._health_label = QLabel("")
         self._health_label.setFont(app_font(12, QFont.Weight.Medium))
@@ -82,7 +86,7 @@ class MainShell(QWidget):
 
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
-        self.user_menu.settings_requested.connect(self._on_settings)
+        self.user_menu.settings_requested.connect(self._open_settings)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -121,20 +125,26 @@ class MainShell(QWidget):
         self._user = user
         self.user_menu.set_user(fio=user.fio, department=user.department)
         self._load_avatar(user)
+        pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap
+        self._page_settings.set_user(user, pixmap)
 
     def _load_avatar(self, user: UserProfile) -> None:
         if not user.avatar_url:
+            self._avatar_pixmap = QPixmap()
             self.user_menu.set_avatar_pixmap(None)
             return
         try:
             data = self._api.fetch_bytes(user.avatar_url)
         except ApiError:
+            self._avatar_pixmap = QPixmap()
             self.user_menu.set_avatar_pixmap(None)
             return
         pixmap = QPixmap()
         if not pixmap.loadFromData(data):
+            self._avatar_pixmap = QPixmap()
             self.user_menu.set_avatar_pixmap(None)
             return
+        self._avatar_pixmap = pixmap
         self.user_menu.set_avatar_pixmap(pixmap)
 
     def refresh_health(self) -> None:
@@ -154,13 +164,18 @@ class MainShell(QWidget):
         except ApiError:
             pass
 
-    def _on_settings(self) -> None:
-        QMessageBox.information(
-            self,
-            "Настройки",
-            "Раздел настроек профиля появится здесь.\nПока можно сменить аватар позже.",
-        )
+    def _open_settings(self) -> None:
+        if self._user is not None:
+            pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap
+            self._page_settings.set_user(self._user, pixmap)
+        self._pages.setCurrentIndex(self._page_index["settings"])
+
+    def _on_profile_updated(self, user: object) -> None:
+        if isinstance(user, UserProfile):
+            self._apply_user(user)
 
     def _on_page_changed(self, key: str) -> None:
-        idx = self._page_index.get(key, 0)
+        idx = self._page_index.get(key)
+        if idx is None:
+            return
         self._pages.setCurrentIndex(idx)

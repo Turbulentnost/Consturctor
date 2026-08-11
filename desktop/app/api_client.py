@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -105,6 +106,39 @@ class ApiClient:
         if response.status_code >= 400:
             raise ApiError(_extract_detail(response), status_code=response.status_code)
         return response.content
+
+    def upload_avatar(self, file_path: str | Path) -> UserProfile:
+        path = Path(file_path)
+        if not path.is_file():
+            raise ApiError("Файл не найден")
+        url = f"{self.base_url}/api/v1/auth/me/avatar"
+        mime = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+        }.get(path.suffix.lower(), "application/octet-stream")
+        try:
+            with httpx.Client(timeout=self._timeout) as client:
+                with path.open("rb") as fh:
+                    response = client.post(
+                        url,
+                        headers=self._headers(),
+                        files={"file": (path.name, fh, mime)},
+                    )
+        except httpx.ConnectError as exc:
+            raise ApiError(
+                f"Не удалось подключиться к backend ({self.base_url})"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise ApiError("Превышено время ожидания ответа backend") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise ApiError(_extract_detail(response), status_code=response.status_code)
+        return self._parse_user(response.json())
 
     @staticmethod
     def _parse_user(data: dict) -> UserProfile:

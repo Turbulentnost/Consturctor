@@ -2,27 +2,9 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import (
-    QHBoxLayout,
-    QLineEdit,
-    QProxyStyle,
-    QStyle,
-    QToolButton,
-    QWidget,
-)
+from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QToolButton, QWidget
 
 from app.ui.theme import app_font
-
-
-class _StarPasswordStyle(QProxyStyle):
-    """Force classic asterisk mask instead of the platform password glyph."""
-
-    def styleHint(self, hint, option=None, widget=None, returnData=None):  # noqa: N802
-        if hint == QStyle.StyleHint.SH_LineEdit_PasswordCharacter:
-            return ord("*")
-        if hint == QStyle.StyleHint.SH_LineEdit_PasswordMaskDelay:
-            return 0
-        return super().styleHint(hint, option, widget, returnData)
 
 
 class _EyeButton(QToolButton):
@@ -57,6 +39,71 @@ class _EyeButton(QToolButton):
         p.end()
 
 
+class _StarPasswordEdit(QLineEdit):
+    """Password field that displays '*' without QProxyStyle (avoids style ownership crashes)."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._secret = ""
+        self._revealed = False
+        self._syncing = False
+        self.setEchoMode(QLineEdit.EchoMode.Normal)
+        self.textEdited.connect(self._on_text_edited)
+
+    def secret(self) -> str:
+        return self._secret
+
+    def clear_secret(self) -> None:
+        self._secret = ""
+        self._syncing = True
+        super().clear()
+        self._syncing = False
+
+    def set_revealed(self, revealed: bool) -> None:
+        self._revealed = revealed
+        cursor = self.cursorPosition()
+        self._refresh(cursor)
+
+    def _on_text_edited(self, text: str) -> None:
+        if self._syncing:
+            return
+        if self._revealed:
+            self._secret = text
+            return
+
+        old = self._secret
+        old_len = len(old)
+        new_len = len(text)
+        cursor = self.cursorPosition()
+
+        if new_len < old_len:
+            deleted = old_len - new_len
+            self._secret = old[:cursor] + old[cursor + deleted :]
+        elif new_len > old_len:
+            inserted = new_len - old_len
+            start = max(0, cursor - inserted)
+            typed = text[start:cursor]
+            # Prefer real typed chars; strip mask asterisks from paste of display.
+            if typed and set(typed) <= {"*"} and inserted == typed.count("*"):
+                # Cannot recover password from asterisks alone — ignore.
+                typed = ""
+            self._secret = old[:start] + typed + old[start:]
+        else:
+            if 0 < cursor <= new_len:
+                ch = text[cursor - 1]
+                if ch != "*":
+                    self._secret = old[: cursor - 1] + ch + old[cursor:]
+
+        self._refresh(cursor)
+
+    def _refresh(self, cursor: int) -> None:
+        shown = self._secret if self._revealed else ("*" * len(self._secret))
+        self._syncing = True
+        self.setText(shown)
+        self._syncing = False
+        self.setCursorPosition(min(max(cursor, 0), len(shown)))
+
+
 class PasswordEdit(QWidget):
     """Password field with asterisk mask and show/hide eye toggle."""
 
@@ -66,9 +113,7 @@ class PasswordEdit(QWidget):
         super().__init__(parent)
         self._visible = False
 
-        self._edit = QLineEdit(self)
-        self._edit.setStyle(_StarPasswordStyle(self._edit.style()))
-        self._edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._edit = _StarPasswordEdit(self)
         self._edit.setPlaceholderText("Пароль 1С")
         self._edit.setFont(app_font(13, QFont.Weight.Medium))
         self._edit.setAlignment(Qt.AlignmentFlag.AlignVCenter)
@@ -115,23 +160,20 @@ class PasswordEdit(QWidget):
         self._sync_eye()
 
     def text(self) -> str:
-        return self._edit.text()
+        return self._edit.secret()
 
     def clear(self) -> None:
-        self._edit.clear()
-        if self._visible:
-            self._visible = False
-            self._edit.setEchoMode(QLineEdit.EchoMode.Password)
-            self._sync_eye()
+        self._visible = False
+        self._edit.set_revealed(False)
+        self._edit.clear_secret()
+        self._sync_eye()
 
     def setFocus(self, reason: Qt.FocusReason = Qt.FocusReason.OtherFocusReason) -> None:  # noqa: N802
         self._edit.setFocus(reason)
 
     def _toggle_visibility(self) -> None:
         self._visible = not self._visible
-        self._edit.setEchoMode(
-            QLineEdit.EchoMode.Normal if self._visible else QLineEdit.EchoMode.Password
-        )
+        self._edit.set_revealed(self._visible)
         self._sync_eye()
         self._edit.setFocus(Qt.FocusReason.OtherFocusReason)
 
