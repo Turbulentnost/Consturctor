@@ -10,6 +10,7 @@ from app.clients.erp_sql import (
     find_user_by_fio,
     find_user_by_id,
     get_user_profile_by_fio,
+    list_departments,
     search_user_fios,
 )
 from app.core.jwt import create_access_token
@@ -30,12 +31,7 @@ def _to_user_out(*, user_id: str, fio: str, department: str) -> UserOut:
     except Exception as exc:
         logger.exception("Failed to upsert app user id=%s", user_id)
         raise AuthError("Не удалось сохранить пользователя в базе", status_code=503) from exc
-    return UserOut(
-        id=app_user.id,
-        fio=app_user.fio,
-        department=app_user.department or "",
-        avatar_url=app_users.avatar_url_for(app_user),
-    )
+    return app_users.to_user_out(app_user)
 
 
 class AuthError(Exception):
@@ -93,6 +89,14 @@ async def list_user_fios(search: str | None = None) -> list[str]:
     except ErpSqlError as exc:
         logger.exception("ERP SQL error listing users")
         raise AuthError("Не удалось загрузить список пользователей", status_code=503) from exc
+
+
+async def list_department_names() -> list[str]:
+    try:
+        return await asyncio.to_thread(list_departments)
+    except ErpSqlError as exc:
+        logger.exception("ERP SQL error listing departments")
+        raise AuthError("Не удалось загрузить список отделов", status_code=503) from exc
 
 
 async def get_current_user_profile(user_id: str, fio_hint: str | None = None) -> UserOut:

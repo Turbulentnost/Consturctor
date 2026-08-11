@@ -3,7 +3,14 @@ from fastapi.responses import FileResponse
 
 from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
-from app.schemas.auth import LoginRequest, LoginResponse, UserFioListResponse, UserOut
+from app.schemas.auth import (
+    DepartmentListResponse,
+    LoginRequest,
+    LoginResponse,
+    UpdateDepartmentRequest,
+    UserFioListResponse,
+    UserOut,
+)
 from app.services import app_users, auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -16,6 +23,15 @@ async def list_users(search: str | None = None) -> UserFioListResponse:
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return UserFioListResponse(items=items)
+
+
+@router.get("/departments", response_model=DepartmentListResponse)
+async def departments(_: AuthContext = Depends(get_current_user)) -> DepartmentListResponse:
+    try:
+        items = await auth_service.list_department_names()
+    except auth_service.AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return DepartmentListResponse(items=items)
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -32,6 +48,21 @@ async def me(auth: AuthContext = Depends(get_current_user)) -> UserOut:
         return await auth_service.get_current_user_profile(auth.user_id, auth.fio)
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.patch("/me/department", response_model=UserOut)
+async def update_my_department(
+    body: UpdateDepartmentRequest,
+    auth: AuthContext = Depends(get_current_user),
+) -> UserOut:
+    try:
+        app_user = app_users.update_user_department(
+            user_id=auth.user_id,
+            department=body.department,
+        )
+    except app_users.DepartmentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return app_users.to_user_out(app_user)
 
 
 @router.get("/users/{user_id}/avatar")
@@ -56,9 +87,4 @@ async def upload_my_avatar(
         )
     except app_users.AvatarError as exc:
         raise HTTPException(status_code=400, detail=exc.message) from exc
-    return UserOut(
-        id=app_user.id,
-        fio=app_user.fio,
-        department=app_user.department or "",
-        avatar_url=app_users.avatar_url_for(app_user),
-    )
+    return app_users.to_user_out(app_user)

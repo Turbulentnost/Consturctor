@@ -8,13 +8,18 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
     QFont,
+    QImage,
     QPainter,
     QPen,
+    QPixmap,
 )
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
+    QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -22,12 +27,39 @@ from PySide6.QtWidgets import (
 
 from app.ui.theme import MINT, SIDEBAR_MIDDLE, app_font
 
+_TEMP = Path(__file__).resolve().parents[1] / "temp"
+_UPLOAD_ICON = _TEMP / "Редактировать.png"
+_CREATE_ICON = _TEMP / "Создать.png"
+
 _ALLOWED_EXTENSIONS = {".docx", ".doc", ".pdf", ".md", ".txt"}
 _FILTER = "Документы (*.docx *.doc *.pdf *.md *.txt)"
 
 
+def _load_icon(path: Path, size: int = 72) -> QPixmap:
+    """Load PNG and punch out near-black background for use on light cards."""
+    if not path.exists():
+        return QPixmap()
+    src = QImage(str(path))
+    if src.isNull():
+        return QPixmap()
+    img = src.convertToFormat(QImage.Format.Format_ARGB32)
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = QColor.fromRgba(img.pixel(x, y))
+            if c.red() < 48 and c.green() < 48 and c.blue() < 48:
+                c.setAlpha(0)
+                img.setPixelColor(x, y, c)
+    pm = QPixmap.fromImage(img)
+    return pm.scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
 class RegulationDropZone(QWidget):
-    """Центральная область drag-and-drop для регламента."""
+    """Compact dashed drop area for a regulation file."""
 
     file_selected = Signal(str)
 
@@ -35,37 +67,44 @@ class RegulationDropZone(QWidget):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(240)
-        self.setMinimumWidth(420)
-        self.setMaximumWidth(640)
+        self.setMinimumHeight(132)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._hover = False
         self._file_path: str | None = None
 
-        title = QLabel("Перетащите файл сюда")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setFont(app_font(18, QFont.Weight.DemiBold))
-        title.setStyleSheet("color: #101817; background: transparent;")
+        self._title = QLabel("Перетащите файл сюда")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title.setFont(app_font(14, QFont.Weight.DemiBold))
+        self._title.setStyleSheet("color: #101817; background: transparent;")
 
-        hint = QLabel("или нажмите, чтобы выбрать · DOC, DOCX, PDF, MD, TXT")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint.setFont(app_font(13))
-        hint.setStyleSheet("color: #6B7773; background: transparent;")
-        hint.setWordWrap(True)
+        self._hint = QLabel('или <a href="pick" style="color:#2B6CB0;">выберите на компьютере</a>')
+        self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._hint.setFont(app_font(12))
+        self._hint.setStyleSheet("color: #6B7773; background: transparent;")
+        self._hint.setTextFormat(Qt.TextFormat.RichText)
+        self._hint.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        self._hint.setOpenExternalLinks(False)
+        self._hint.linkActivated.connect(lambda _href: self._pick_file())
+
+        formats = QLabel("DOC, DOCX, PDF, MD, TXT")
+        formats.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        formats.setFont(app_font(11))
+        formats.setStyleSheet("color: #9AA6A1; background: transparent;")
 
         self._file_label = QLabel("")
         self._file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._file_label.setFont(app_font(13, QFont.Weight.Medium))
+        self._file_label.setFont(app_font(12, QFont.Weight.Medium))
         self._file_label.setStyleSheet("color: #06483D; background: transparent;")
         self._file_label.setWordWrap(True)
         self._file_label.hide()
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 36, 32, 36)
-        layout.setSpacing(10)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(6)
         layout.addStretch(1)
-        layout.addWidget(title)
-        layout.addWidget(hint)
+        layout.addWidget(self._title)
+        layout.addWidget(self._hint)
+        layout.addWidget(formats)
         layout.addWidget(self._file_label)
         layout.addStretch(1)
 
@@ -115,28 +154,23 @@ class RegulationDropZone(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = self.rect().adjusted(1, 1, -1, -1)
 
-        bg = QColor("#EAF7F3" if self._hover else "#F3FAF7")
+        bg = QColor("#EAF7F3" if self._hover else "#F4F7F6")
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(bg)
-        painter.drawRoundedRect(rect, 18, 18)
+        painter.drawRoundedRect(rect, 14, 14)
 
         border = QColor(MINT if self._hover else SIDEBAR_MIDDLE)
         if not self._hover:
-            border.setAlpha(90)
-        pen = QPen(border, 2, Qt.PenStyle.DashLine)
-        pen.setDashPattern([5, 4])
+            border.setAlpha(70)
+        pen = QPen(border, 1.8, Qt.PenStyle.DashLine)
+        pen.setDashPattern([4, 3])
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(rect.adjusted(4, 4, -4, -4), 14, 14)
+        painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 11, 11)
         painter.end()
 
     def _pick_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Выберите регламент",
-            "",
-            _FILTER,
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Выберите регламент", "", _FILTER)
         if path:
             self._apply_file(path)
 
@@ -152,6 +186,7 @@ class RegulationDropZone(QWidget):
         self._file_path = path
         self._file_label.setText(Path(path).name)
         self._file_label.show()
+        self._title.setText("Файл выбран")
         self.file_selected.emit(path)
         self.update()
 
@@ -172,49 +207,178 @@ class RegulationDropZone(QWidget):
         return bool(self._paths_from_mime(event.mimeData()))
 
 
+class OptionCard(QFrame):
+    """White rounded card for one creation path."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("OptionCard")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumWidth(280)
+        self.setMinimumHeight(340)
+        self.setStyleSheet(
+            """
+            QFrame#OptionCard {
+                background: #FFFFFF;
+                border: 1px solid rgba(16, 24, 23, 0.10);
+                border-radius: 22px;
+            }
+            """
+        )
+
+
 class CreateAgentPage(QWidget):
     create_regulation_requested = Signal()
+    regulation_selected = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
-        title = QLabel("Создать агента")
-        title.setFont(app_font(34, QFont.Weight.DemiBold))
+        title = QLabel("Создать ИИ-агента")
+        title.setFont(app_font(32, QFont.Weight.DemiBold))
         title.setStyleSheet("color: #101817; background: transparent;")
 
-        self._drop_zone = RegulationDropZone()
+        subtitle = QLabel("Начните с готового регламента или создайте его вместе с ИИ")
+        subtitle.setFont(app_font(15))
+        subtitle.setStyleSheet("color: #6B7773; background: transparent;")
+        subtitle.setWordWrap(True)
 
-        caption = QLabel("Прикрепите регламент, чтобы создать ИИ-агента")
-        caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        caption.setFont(app_font(16))
-        caption.setStyleSheet("color: #6B7773; background: transparent;")
-        caption.setWordWrap(True)
+        self._upload_card = self._build_upload_card()
+        self._create_card = self._build_create_card()
 
-        no_reg = QLabel(
-            'Нет регламента, <a href="create-regulation" style="color:#06483D; text-decoration: underline;">создать</a>'
-        )
-        no_reg.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        no_reg.setFont(app_font(14))
-        no_reg.setStyleSheet("color: #6B7773; background: transparent;")
-        no_reg.setTextFormat(Qt.TextFormat.RichText)
-        no_reg.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        no_reg.setOpenExternalLinks(False)
-        no_reg.linkActivated.connect(lambda _href: self.create_regulation_requested.emit())
+        cards = QHBoxLayout()
+        cards.setContentsMargins(0, 0, 0, 0)
+        cards.setSpacing(22)
+        cards.addWidget(self._upload_card, 1)
+        cards.addWidget(self._create_card, 1)
 
-        center = QVBoxLayout()
-        center.setSpacing(18)
-        center.setContentsMargins(0, 0, 0, 0)
-        center.addWidget(self._drop_zone, 0, Qt.AlignmentFlag.AlignHCenter)
-        center.addWidget(caption)
+        footer = QLabel("Регламент можно будет проверить и отредактировать перед созданием агента")
+        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        footer.setFont(app_font(12))
+        footer.setStyleSheet("color: #9AA6A1; background: transparent;")
+        footer.setWordWrap(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(10)
         layout.addWidget(title)
-        layout.addStretch(1)
-        layout.addLayout(center)
-        layout.addStretch(2)
-        layout.addWidget(no_reg)
+        layout.addWidget(subtitle)
+        layout.addSpacing(18)
+        layout.addLayout(cards, 1)
+        layout.addSpacing(10)
+        layout.addWidget(footer)
 
     def selected_regulation_path(self) -> str | None:
         return self._drop_zone.selected_path()
+
+    def _build_upload_card(self) -> OptionCard:
+        card = OptionCard(self)
+        icon = QLabel()
+        icon.setFixedSize(84, 84)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet(
+            "background: #EEF7F3; border-radius: 42px; border: 1px solid rgba(6,72,61,0.08);"
+        )
+        pm = _load_icon(_UPLOAD_ICON, 56)
+        if not pm.isNull():
+            icon.setPixmap(pm)
+
+        heading = QLabel("Загрузить регламент")
+        heading.setFont(app_font(18, QFont.Weight.DemiBold))
+        heading.setStyleSheet("color: #101817; background: transparent;")
+        heading.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        desc = QLabel("Прикрепите готовый документ — мы проанализируем его и спланируем работу агента")
+        desc.setFont(app_font(13))
+        desc.setStyleSheet("color: #6B7773; background: transparent;")
+        desc.setWordWrap(True)
+        desc.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        self._drop_zone = RegulationDropZone(card)
+        self._drop_zone.file_selected.connect(self.regulation_selected.emit)
+
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(28, 28, 28, 28)
+        lay.setSpacing(12)
+        lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(heading)
+        lay.addWidget(desc)
+        lay.addSpacing(6)
+        lay.addWidget(self._drop_zone, 1)
+        return card
+
+    def _build_create_card(self) -> OptionCard:
+        card = OptionCard(self)
+
+        badge = QLabel("Нет регламента?")
+        badge.setFont(app_font(11, QFont.Weight.DemiBold))
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setFixedHeight(28)
+        badge.setStyleSheet(
+            """
+            QLabel {
+                background: #DFF5EC;
+                color: #0A5C48;
+                border-radius: 14px;
+                padding: 0 12px;
+            }
+            """
+        )
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.addStretch(1)
+        top.addWidget(badge)
+
+        icon = QLabel()
+        icon.setFixedSize(84, 84)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet(
+            "background: #EEF7F3; border-radius: 42px; border: 1px solid rgba(6,72,61,0.08);"
+        )
+        pm = _load_icon(_CREATE_ICON, 56)
+        if not pm.isNull():
+            icon.setPixmap(pm)
+
+        heading = QLabel("Создать с помощью ИИ")
+        heading.setFont(app_font(18, QFont.Weight.DemiBold))
+        heading.setStyleSheet("color: #101817; background: transparent;")
+        heading.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        desc = QLabel(
+            "Ответьте на несколько вопросов — ИИ поможет оформить регламент и подготовить агента"
+        )
+        desc.setFont(app_font(13))
+        desc.setStyleSheet("color: #6B7773; background: transparent;")
+        desc.setWordWrap(True)
+        desc.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        button = QPushButton("Создать регламент")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedHeight(48)
+        button.setFont(app_font(14, QFont.Weight.DemiBold))
+        button.setStyleSheet(
+            """
+            QPushButton {
+                background: #06483D;
+                color: #F7FBFA;
+                border: none;
+                border-radius: 24px;
+                padding: 0 22px;
+            }
+            QPushButton:hover { background: #08745F; }
+            QPushButton:pressed { background: #04342C; }
+            """
+        )
+        button.clicked.connect(self.create_regulation_requested.emit)
+
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(28, 22, 28, 28)
+        lay.setSpacing(12)
+        lay.addLayout(top)
+        lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(heading)
+        lay.addWidget(desc)
+        lay.addStretch(1)
+        lay.addWidget(button)
+        return card

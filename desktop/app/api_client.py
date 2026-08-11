@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -21,6 +22,8 @@ class UserProfile:
     fio: str
     department: str = ""
     avatar_url: str | None = None
+    can_change_department: bool = True
+    department_change_available_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,14 +143,36 @@ class ApiClient:
             raise ApiError(_extract_detail(response), status_code=response.status_code)
         return self._parse_user(response.json())
 
+    def list_departments(self) -> list[str]:
+        data = self._request("GET", "/api/v1/auth/departments")
+        items = data.get("items") or []
+        return [str(x) for x in items]
+
+    def update_department(self, department: str) -> UserProfile:
+        data = self._request(
+            "PATCH",
+            "/api/v1/auth/me/department",
+            json={"department": department},
+        )
+        return self._parse_user(data)
+
     @staticmethod
     def _parse_user(data: dict) -> UserProfile:
         avatar = data.get("avatar_url")
+        available_raw = data.get("department_change_available_at")
+        available_at: datetime | None = None
+        if isinstance(available_raw, str) and available_raw.strip():
+            try:
+                available_at = datetime.fromisoformat(available_raw.replace("Z", "+00:00"))
+            except ValueError:
+                available_at = None
         return UserProfile(
             id=str(data.get("id", "")),
             fio=str(data.get("fio", "")),
             department=str(data.get("department", "")),
             avatar_url=str(avatar) if avatar else None,
+            can_change_department=bool(data.get("can_change_department", True)),
+            department_change_available_at=available_at,
         )
 
     def _request(

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.config import settings
 from app.db.session import SessionLocal
 from app.models.user import AppUser
+from app.schemas.auth import UserOut
 
 logger = logging.getLogger(__name__)
+
+DEPARTMENT_CHANGE_COOLDOWN = timedelta(days=14)
 
 
 def avatar_url_for(user: AppUser | None) -> str | None:
@@ -24,6 +28,37 @@ def avatar_url_for(user: AppUser | None) -> str | None:
     return f"/api/v1/auth/users/{user.id}/avatar{version}"
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def department_change_state(user: AppUser) -> tuple[bool, datetime | None]:
+    changed = _as_utc(user.department_changed_at)
+    if changed is None:
+        return True, None
+    available = changed + DEPARTMENT_CHANGE_COOLDOWN
+    now = datetime.now(timezone.utc)
+    if now >= available:
+        return True, None
+    return False, available
+
+
+def to_user_out(user: AppUser) -> UserOut:
+    can_change, available_at = department_change_state(user)
+    return UserOut(
+        id=user.id,
+        fio=user.fio,
+        department=user.department or "",
+        avatar_url=avatar_url_for(user),
+        can_change_department=can_change,
+        department_change_available_at=available_at,
+    )
+
+
 def upsert_app_user(*, user_id: str, fio: str, department: str) -> AppUser:
     with SessionLocal() as db:
         user = db.get(AppUser, user_id)
@@ -33,11 +68,12 @@ def upsert_app_user(*, user_id: str, fio: str, department: str) -> AppUser:
             logger.info("Created app user id=%s", user_id)
         else:
             user.fio = fio
-            user.department = department or ""
+            # Keep app department as source of truth after first login.
+            if not (user.department or "").strip() and department:
+                user.department = department
             logger.info("Updated app user id=%s", user_id)
         db.commit()
         db.refresh(user)
-        # Detach fields we need after session closes.
         db.expunge(user)
         return user
 
@@ -70,6 +106,13 @@ class AvatarError(Exception):
         self.message = message
 
 
+class DepartmentError(Exception):
+    def __init__(self, message: str, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
 def save_user_avatar(*, user_id: str, data: bytes, filename: str) -> AppUser:
     if not data:
         raise AvatarError("Пустой файл")
@@ -96,4 +139,35 @@ def save_user_avatar(*, user_id: str, data: bytes, filename: str) -> AppUser:
         db.refresh(user)
         db.expunge(user)
         logger.info("Saved avatar for user id=%s path=%s", user_id, dest)
+        return user
+
+
+def update_user_department(*, user_id: str, department: str) -> AppUser:
+    dept = department.strip()
+    if not dept:
+        raise DepartmentError("Укажите отдел")
+
+    with SessionLocal() as db:
+        user = db.get(AppUser, user_id)
+        if user is None:
+            raise DepartmentError("Пользователь не найден", status_code=404)
+
+        can_change, available_at = department_change_state(user)
+        if not can_change and available_at is not None:
+            local = available_at.astimezone().strftime("%d.%m.%Y")
+            raise DepartmentError(
+                f"Отдел можно менять раз в 2 недели. Следующая смена с {local}",
+                status_code=429,
+            )
+
+        if user.department.strip() == dept:
+            db.expunge(user)
+            return user
+
+        user.department = dept
+        user.department_changed_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(user)
+        db.expunge(user)
+        logger.info("Updated department for user id=%s -> %s", user_id, dept)
         return user

@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -79,6 +80,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_settings)
         self._page_index = {"create": 0, "agents": 1, "kpi": 2, "settings": 3}
         self._page_settings.profile_updated.connect(self._on_profile_updated)
+        self._page_create.create_regulation_requested.connect(self._on_create_regulation)
 
         self._health_label = QLabel("")
         self._health_label.setFont(app_font(12, QFont.Weight.Medium))
@@ -173,6 +175,13 @@ class MainShell(QWidget):
     def _on_profile_updated(self, user: object) -> None:
         if isinstance(user, UserProfile):
             self._apply_user(user)
+
+    def _on_create_regulation(self) -> None:
+        QMessageBox.information(
+            self,
+            "Создать регламент",
+            "Мастер создания регламента с ИИ появится здесь.",
+        )
 
     def _on_page_changed(self, key: str) -> None:
         idx = self._page_index.get(key)

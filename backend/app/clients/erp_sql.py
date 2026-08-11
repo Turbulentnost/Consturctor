@@ -321,3 +321,26 @@ def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
         raise ErpSqlError(f"Failed to search v8users: {exc}") from exc
     finally:
         conn.close()
+
+
+def list_departments(limit: int = 500) -> list[str]:
+    """Distinct department names from 1C catalog _Reference513."""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        cur.execute(
+            """
+            SELECT DISTINCT TOP (?)
+                LTRIM(RTRIM(d._Description)) AS Dept
+            FROM dbo._Reference513 d WITH (NOLOCK)
+            WHERE LTRIM(RTRIM(d._Description)) <> N''
+            ORDER BY Dept
+            """,
+            (limit,),
+        )
+        return [(row.Dept or "").strip() for row in cur.fetchall() if (row.Dept or "").strip()]
+    except pyodbc.Error as exc:
+        raise ErpSqlError(f"Failed to list departments: {exc}") from exc
+    finally:
+        conn.close()
