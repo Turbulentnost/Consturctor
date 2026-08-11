@@ -67,7 +67,7 @@ class RegulationDropZone(QWidget):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(132)
+        self.setFixedHeight(120)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._hover = False
         self._file_path: str | None = None
@@ -99,8 +99,8 @@ class RegulationDropZone(QWidget):
         self._file_label.hide()
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(6)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(5)
         layout.addStretch(1)
         layout.addWidget(self._title)
         layout.addWidget(self._hint)
@@ -213,9 +213,9 @@ class OptionCard(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("OptionCard")
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setMinimumWidth(280)
-        self.setMinimumHeight(340)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        self.setMinimumWidth(300)
+        self.setMaximumHeight(360)
         self.setStyleSheet(
             """
             QFrame#OptionCard {
@@ -260,12 +260,12 @@ class CreateAgentPage(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
         layout.addWidget(title)
         layout.addWidget(subtitle)
-        layout.addSpacing(18)
-        layout.addLayout(cards, 1)
-        layout.addSpacing(10)
+        layout.addStretch(1)
+        layout.addLayout(cards, 0)
+        layout.addStretch(2)
         layout.addWidget(footer)
 
     def selected_regulation_path(self) -> str | None:
@@ -274,12 +274,12 @@ class CreateAgentPage(QWidget):
     def _build_upload_card(self) -> OptionCard:
         card = OptionCard(self)
         icon = QLabel()
-        icon.setFixedSize(84, 84)
+        icon.setFixedSize(72, 72)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setStyleSheet(
-            "background: #EEF7F3; border-radius: 42px; border: 1px solid rgba(6,72,61,0.08);"
+            "background: #EEF7F3; border-radius: 36px; border: 1px solid rgba(6,72,61,0.08);"
         )
-        pm = _load_icon(_UPLOAD_ICON, 56)
+        pm = _load_icon(_UPLOAD_ICON, 48)
         if not pm.isNull():
             icon.setPixmap(pm)
 
@@ -298,13 +298,13 @@ class CreateAgentPage(QWidget):
         self._drop_zone.file_selected.connect(self.regulation_selected.emit)
 
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(28, 28, 28, 28)
-        lay.setSpacing(12)
+        lay.setContentsMargins(26, 24, 26, 24)
+        lay.setSpacing(10)
         lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignHCenter)
         lay.addWidget(heading)
         lay.addWidget(desc)
-        lay.addSpacing(6)
-        lay.addWidget(self._drop_zone, 1)
+        lay.addSpacing(4)
+        lay.addWidget(self._drop_zone, 0)
         return card
 
     def _build_create_card(self) -> OptionCard:
@@ -331,12 +331,12 @@ class CreateAgentPage(QWidget):
         top.addWidget(badge)
 
         icon = QLabel()
-        icon.setFixedSize(84, 84)
+        icon.setFixedSize(72, 72)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setStyleSheet(
-            "background: #EEF7F3; border-radius: 42px; border: 1px solid rgba(6,72,61,0.08);"
+            "background: #EEF7F3; border-radius: 36px; border: 1px solid rgba(6,72,61,0.08);"
         )
-        pm = _load_icon(_CREATE_ICON, 56)
+        pm = _load_icon(_CREATE_ICON, 48)
         if not pm.isNull():
             icon.setPixmap(pm)
 
@@ -355,7 +355,7 @@ class CreateAgentPage(QWidget):
 
         button = QPushButton("Создать регламент")
         button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setFixedHeight(48)
+        button.setFixedHeight(46)
         button.setFont(app_font(14, QFont.Weight.DemiBold))
         button.setStyleSheet(
             """
@@ -363,7 +363,7 @@ class CreateAgentPage(QWidget):
                 background: #06483D;
                 color: #F7FBFA;
                 border: none;
-                border-radius: 24px;
+                border-radius: 23px;
                 padding: 0 22px;
             }
             QPushButton:hover { background: #08745F; }
@@ -373,12 +373,12 @@ class CreateAgentPage(QWidget):
         button.clicked.connect(self.create_regulation_requested.emit)
 
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(28, 22, 28, 28)
-        lay.setSpacing(12)
+        lay.setContentsMargins(26, 20, 26, 24)
+        lay.setSpacing(10)
         lay.addLayout(top)
         lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignHCenter)
         lay.addWidget(heading)
         lay.addWidget(desc)
-        lay.addStretch(1)
+        lay.addSpacing(8)
         lay.addWidget(button)
         return card

@@ -40,6 +40,58 @@ INACTIVE_PILL = QColor(91, 160, 143, 72)
 INACTIVE_HOVER = QColor(112, 190, 169, 96)
 INACTIVE_PRESSED = QColor(55, 120, 103, 120)
 ITEM_GAP = 8
+ICON_SIZE = 20
+_TEMP = Path(__file__).resolve().parents[1] / "temp"
+
+# Filename prefixes: серый* = active/pressed, белый* = inactive.
+_ICON_STEMS = {
+    "plus": "плюс",
+    "home": "главная",
+    "kpi": "кпи",
+}
+
+
+def _tint_pixmap(src: QPixmap, color: QColor) -> QPixmap:
+    if src.isNull():
+        return QPixmap()
+    out = QPixmap(src.size())
+    out.fill(Qt.GlobalColor.transparent)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    p.drawPixmap(0, 0, src)
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    p.fillRect(out.rect(), color)
+    p.end()
+    return out
+
+
+def _load_nav_icon(filename: str) -> QPixmap:
+    path = _TEMP / filename
+    if not path.exists() or path.stat().st_size <= 0:
+        return QPixmap()
+    pm = QPixmap(str(path))
+    if pm.isNull():
+        return QPixmap()
+    return pm.scaled(
+        ICON_SIZE,
+        ICON_SIZE,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+def _load_icon_pair(kind: str) -> tuple[QPixmap, QPixmap]:
+    """Return (inactive/белый*, active/серый*)."""
+    stem = _ICON_STEMS[kind]
+    white_name = f"белый{stem}.png"
+    grey_name = f"серый{stem}.png"
+    # Active / pressed → серый*
+    active = _load_nav_icon(grey_name)
+    # Inactive → белый* (tint to pure white: source assets are mid-grey)
+    white_src = _load_nav_icon(white_name)
+    shape = white_src if not white_src.isNull() else active
+    inactive = _tint_pixmap(shape, QColor("#FFFFFF")) if not shape.isNull() else QPixmap()
+    return inactive, active
 
 
 @dataclass(frozen=True)
@@ -52,9 +104,18 @@ class NavItem:
 class NavigationItem(QWidget):
     clicked = Signal(str)
 
-    def __init__(self, item: NavItem, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        item: NavItem,
+        *,
+        icon_inactive: QPixmap,
+        icon_active: QPixmap,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.item = item
+        self._icon_inactive = icon_inactive
+        self._icon_active = icon_active
         self._active = False
         self._hover = False
         self._pressed = False
@@ -114,7 +175,7 @@ class NavigationItem(QWidget):
             text = TEXT_MUTED
 
         p.fillPath(path, fill)
-        self._draw_icon(p, rect.left() + 18, rect.center().y(), text)
+        self._draw_icon(p, rect.left() + 18, rect.center().y())
         # Integer text box keeps glyphs on the pixel grid (less blur than QRectF).
         p.setPen(text)
         p.setFont(app_font(14, QFont.Weight.Medium if not self._active else QFont.Weight.DemiBold))
@@ -126,28 +187,16 @@ class NavigationItem(QWidget):
         )
         p.end()
 
-    def _draw_icon(self, p: QPainter, cx: float, cy: float, color: QColor) -> None:
-        pen = QPen(color, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        kind = self.item.icon
-        if kind == "plus":
-            p.drawLine(int(cx - 6), int(cy), int(cx + 6), int(cy))
-            p.drawLine(int(cx), int(cy - 6), int(cx), int(cy + 6))
-        elif kind == "home":
-            # Roof
-            p.drawLine(int(cx - 8), int(cy - 1), int(cx), int(cy - 8))
-            p.drawLine(int(cx), int(cy - 8), int(cx + 8), int(cy - 1))
-            # House body
-            p.drawRect(int(cx - 6), int(cy - 1), 12, 9)
-            # Door
-            p.drawLine(int(cx - 1.5), int(cy + 8), int(cx - 1.5), int(cy + 2))
-            p.drawLine(int(cx + 1.5), int(cy + 8), int(cx + 1.5), int(cy + 2))
-            p.drawLine(int(cx - 1.5), int(cy + 2), int(cx + 1.5), int(cy + 2))
-        else:
-            p.drawLine(int(cx - 7), int(cy + 7), int(cx - 7), int(cy - 1))
-            p.drawLine(int(cx), int(cy + 7), int(cx), int(cy - 7))
-            p.drawLine(int(cx + 7), int(cy + 7), int(cx + 7), int(cy + 2))
+    def _draw_icon(self, p: QPainter, cx: float, cy: float) -> None:
+        # Pressed or selected → серый*; otherwise → белый*
+        use_active = self._active or self._pressed
+        icon = self._icon_active if use_active else self._icon_inactive
+        if icon.isNull():
+            return
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        x = int(cx - icon.width() / 2)
+        y = int(cy - icon.height() / 2)
+        p.drawPixmap(x, y, icon)
 
 
 class GlassSidebar(QWidget):
@@ -247,7 +296,12 @@ class GlassSidebar(QWidget):
         nav.setContentsMargins(0, 0, 0, 0)
         nav.setSpacing(ITEM_GAP)
         for item in self._items:
-            button = NavigationItem(item)
+            inactive_icon, active_icon = _load_icon_pair(item.icon)
+            button = NavigationItem(
+                item,
+                icon_inactive=inactive_icon,
+                icon_active=active_icon,
+            )
             button.clicked.connect(self.set_active_key)
             nav.addWidget(button)
             self._buttons[item.key] = button
