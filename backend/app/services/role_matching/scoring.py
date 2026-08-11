@@ -11,6 +11,9 @@ _WEIGHTS = {
     "related_artifact_or_system": 0.05,
     "interaction": 0.25,
     "semantic_candidate": 0.15,
+    "graph_relation": 0.30,
+    "definition_link": 0.32,
+    "actor_inheritance": 0.38,
 }
 
 
@@ -30,6 +33,10 @@ def final_confidence(candidate: Candidate, classifier: dict) -> float:
         signal_score = max(signal_score, 0.88)
     if "inherited_from_section" in types and max_by_type.get("inherited_from_section", 0.0) >= 0.9:
         signal_score = max(signal_score, 0.82)
+    if "actor_inheritance" in types and max_by_type.get("actor_inheritance", 0.0) >= 0.8:
+        signal_score = max(signal_score, 0.78)
+    if "definition_link" in types and max_by_type.get("definition_link", 0.0) >= 0.8:
+        signal_score = max(signal_score, 0.74)
     if types == {"department_relation"}:
         signal_score = max(signal_score, 0.55)
     if types == {"related_artifact_or_system"}:

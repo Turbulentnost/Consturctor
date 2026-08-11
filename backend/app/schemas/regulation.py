@@ -28,8 +28,28 @@ MatchType = Literal[
     "interaction",
     "related_artifact_or_system",
     "semantic_candidate",
+    "graph_relation",
+    "definition_link",
+    "actor_inheritance",
 ]
 MatchStatus = Literal["accepted", "probable", "pending", "rejected"]
+RelationType = Literal[
+    "parent_section",
+    "previous_block",
+    "next_block",
+    "same_list",
+    "same_table",
+    "table_header",
+    "explicit_reference",
+    "actor_inheritance",
+    "condition_for",
+    "exception_for",
+    "definition_of",
+    "continuation_of",
+    "input_for",
+    "same_process",
+    "contradicts",
+]
 
 
 class RegulationTable(BaseModel):
@@ -102,6 +122,90 @@ class RoleProfile(BaseModel):
     documents: list[RoleAlias] = Field(default_factory=list)
 
 
+class DocumentRole(BaseModel):
+    canonicalTitle: str
+    aliases: list[str] = Field(default_factory=list)
+    sourceBlockIds: list[str] = Field(default_factory=list)
+    status: Literal["verified", "candidate", "unverified"] = "candidate"
+
+
+class DocumentProcess(BaseModel):
+    name: str
+    sections: list[str] = Field(default_factory=list)
+    sourceBlockIds: list[str] = Field(default_factory=list)
+    status: Literal["verified", "candidate", "unverified"] = "candidate"
+
+
+class DocumentDefinition(BaseModel):
+    term: str
+    meaning: str
+    scope: str = ""
+    sourceBlockId: str = ""
+    status: Literal["verified", "candidate", "unverified"] = "candidate"
+
+
+class DocumentReference(BaseModel):
+    fromBlockId: str
+    toBlockId: str = ""
+    referenceText: str = ""
+    relation: RelationType = "explicit_reference"
+    status: Literal["verified", "candidate", "unverified"] = "candidate"
+
+
+class DocumentMap(BaseModel):
+    roles: list[DocumentRole] = Field(default_factory=list)
+    processes: list[DocumentProcess] = Field(default_factory=list)
+    definitions: list[DocumentDefinition] = Field(default_factory=list)
+    references: list[DocumentReference] = Field(default_factory=list)
+    systems: list[RoleAlias] = Field(default_factory=list)
+    documents: list[RoleAlias] = Field(default_factory=list)
+    source: Literal["claudehub", "heuristic", "mixed"] = "heuristic"
+    warnings: list[str] = Field(default_factory=list)
+
+
+class BlockRelation(BaseModel):
+    fromBlockId: str
+    toBlockId: str
+    relation: RelationType
+    evidence: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    status: Literal["verified", "candidate", "unverified"] = "candidate"
+
+
+class ContextLinkedBlock(BaseModel):
+    blockId: str
+    relation: RelationType | str = ""
+    text: str = ""
+    evidence: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class ContextPackage(BaseModel):
+    targetBlockId: str
+    targetText: str = ""
+    sectionTitle: str = ""
+    parentSections: list[str] = Field(default_factory=list)
+    previousBlockId: str | None = None
+    previousText: str = ""
+    nextBlockId: str | None = None
+    nextText: str = ""
+    linkedBlocks: list[ContextLinkedBlock] = Field(default_factory=list)
+    knownEntities: dict[str, str] = Field(default_factory=dict)
+    processSummary: str = ""
+
+
+class FunctionActor(BaseModel):
+    text: str = ""
+    canonicalPosition: str = ""
+    sourceBlockId: str = ""
+
+
+class FunctionDependency(BaseModel):
+    type: str = ""
+    blockId: str = ""
+    description: str = ""
+
+
 class MatchSignal(BaseModel):
     matchType: MatchType
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -113,6 +217,24 @@ class MatchSignal(BaseModel):
 class MatchEvidence(BaseModel):
     fragmentId: str
     quote: str
+
+
+class RoleFunction(BaseModel):
+    functionId: str = ""
+    targetBlockId: str = ""
+    isFunction: bool = False
+    actor: FunctionActor = Field(default_factory=FunctionActor)
+    action: str = ""
+    object: str = ""
+    recipient: str = ""
+    conditions: list[str] = Field(default_factory=list)
+    dependencies: list[FunctionDependency] = Field(default_factory=list)
+    evidence: list[MatchEvidence] = Field(default_factory=list)
+    proofChain: list[ContextLinkedBlock] = Field(default_factory=list)
+    explanation: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    duplicateGroup: str = ""
+    requiresUserConfirmation: bool = False
 
 
 class FragmentRoleMatch(BaseModel):
@@ -130,6 +252,7 @@ class FragmentRoleMatch(BaseModel):
     requiresUserConfirmation: bool = False
     status: MatchStatus = "pending"
     fragment: RegulationFragment
+    function: RoleFunction | None = None
 
 
 class RoleMatchRequest(BaseModel):
@@ -146,4 +269,8 @@ class RoleMatchResult(BaseModel):
     regulationId: str
     profile: RoleProfile
     matches: list[FragmentRoleMatch] = Field(default_factory=list)
+    documentMap: DocumentMap | None = None
+    relations: list[BlockRelation] = Field(default_factory=list)
+    functions: list[RoleFunction] = Field(default_factory=list)
+    audit: dict = Field(default_factory=dict)
     createdAt: datetime | None = None

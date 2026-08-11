@@ -85,6 +85,54 @@ class MatchSignal:
 
 
 @dataclass(frozen=True, slots=True)
+class MatchEvidence:
+    fragment_id: str
+    quote: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContextLinkedBlock:
+    block_id: str
+    relation: str
+    text: str
+    evidence: str
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class FunctionActor:
+    text: str
+    canonical_position: str
+    source_block_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class FunctionDependency:
+    type: str
+    block_id: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class RoleFunction:
+    function_id: str
+    target_block_id: str
+    is_function: bool
+    actor: FunctionActor
+    action: str
+    object: str
+    recipient: str
+    conditions: list[str]
+    dependencies: list[FunctionDependency]
+    evidence: list[MatchEvidence]
+    proof_chain: list[ContextLinkedBlock]
+    explanation: str
+    confidence: float
+    duplicate_group: str
+    requires_confirmation: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RoleMatch:
     match_id: str
     fragment_id: str
@@ -97,6 +145,7 @@ class RoleMatch:
     status: str
     fragment: RegulationFragment
     signals: list[MatchSignal]
+    function: RoleFunction | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +155,7 @@ class RoleMatchResult:
     canonical_title: str
     department: str
     matches: list[RoleMatch]
+    functions: list[RoleFunction] | None = None
 
 
 class ApiClient:
@@ -433,6 +483,7 @@ class ApiClient:
                 for signal in item.get("signals") or []
                 if isinstance(signal, dict)
             ]
+            function = ApiClient._parse_role_function(item.get("function"))
             matches.append(
                 RoleMatch(
                     match_id=str(item.get("matchId") or ""),
@@ -446,6 +497,7 @@ class ApiClient:
                     status=str(item.get("status") or "pending"),
                     fragment=fragment,
                     signals=signals,
+                    function=function,
                 )
             )
         profile = data.get("profile") or {}
@@ -455,6 +507,67 @@ class ApiClient:
             canonical_title=str(profile.get("canonicalTitle") or ""),
             department=str(profile.get("department") or ""),
             matches=matches,
+            functions=[
+                parsed
+                for parsed in (ApiClient._parse_role_function(item) for item in data.get("functions") or [])
+                if parsed is not None
+            ],
+        )
+
+    @staticmethod
+    def _parse_role_function(data: object) -> RoleFunction | None:
+        if not isinstance(data, dict):
+            return None
+        actor_data = data.get("actor") if isinstance(data.get("actor"), dict) else {}
+        actor = FunctionActor(
+            text=str(actor_data.get("text") or ""),
+            canonical_position=str(actor_data.get("canonicalPosition") or ""),
+            source_block_id=str(actor_data.get("sourceBlockId") or ""),
+        )
+        dependencies = [
+            FunctionDependency(
+                type=str(item.get("type") or ""),
+                block_id=str(item.get("blockId") or ""),
+                description=str(item.get("description") or ""),
+            )
+            for item in data.get("dependencies") or []
+            if isinstance(item, dict)
+        ]
+        evidence = [
+            MatchEvidence(
+                fragment_id=str(item.get("fragmentId") or item.get("blockId") or ""),
+                quote=str(item.get("quote") or ""),
+            )
+            for item in data.get("evidence") or []
+            if isinstance(item, dict)
+        ]
+        proof_chain = [
+            ContextLinkedBlock(
+                block_id=str(item.get("blockId") or ""),
+                relation=str(item.get("relation") or ""),
+                text=str(item.get("text") or ""),
+                evidence=str(item.get("evidence") or ""),
+                confidence=float(item.get("confidence") or 0.0),
+            )
+            for item in data.get("proofChain") or []
+            if isinstance(item, dict)
+        ]
+        return RoleFunction(
+            function_id=str(data.get("functionId") or ""),
+            target_block_id=str(data.get("targetBlockId") or ""),
+            is_function=bool(data.get("isFunction")),
+            actor=actor,
+            action=str(data.get("action") or ""),
+            object=str(data.get("object") or ""),
+            recipient=str(data.get("recipient") or ""),
+            conditions=[str(x) for x in data.get("conditions") or []],
+            dependencies=dependencies,
+            evidence=evidence,
+            proof_chain=proof_chain,
+            explanation=str(data.get("explanation") or ""),
+            confidence=float(data.get("confidence") or 0.0),
+            duplicate_group=str(data.get("duplicateGroup") or ""),
+            requires_confirmation=bool(data.get("requiresUserConfirmation")),
         )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.schemas.regulation import (
+    BlockRelation,
     MatchSignal,
     RegulationFragment,
     RegulationParseResult,
@@ -20,6 +21,9 @@ _ROLE_SIGNAL_TYPES = {
     "assigned_action",
     "process_role_alias",
     "interaction",
+    "graph_relation",
+    "definition_link",
+    "actor_inheritance",
 }
 _INTERACTION_WORDS = {
     "передает": "recipient",
@@ -41,12 +45,18 @@ class Candidate:
     semantic_score: float = 0.0
 
 
-def collect_candidates(result: RegulationParseResult, profile: RoleProfile) -> list[Candidate]:
+def collect_candidates(
+    result: RegulationParseResult,
+    profile: RoleProfile,
+    relations: list[BlockRelation] | None = None,
+) -> list[Candidate]:
     candidates: list[Candidate] = []
     terms = all_candidate_terms(profile)
     verified = verified_aliases(profile)
     candidate_terms = [term for term in terms if term not in verified]
     query = " ".join(terms)
+    by_id = {fragment.fragmentId: fragment for fragment in result.fragments}
+    relations_by_from = _relations_by_from(relations or [])
     for fragment in result.fragments:
         signals: list[MatchSignal] = []
         text = _fragment_search_text(fragment)
@@ -155,6 +165,15 @@ def collect_candidates(result: RegulationParseResult, profile: RoleProfile) -> l
                     "Токенная семантическая близость к профилю должности",
                 )
             )
+        signals.extend(
+            _graph_signals(
+                fragment,
+                relations_by_from.get(fragment.fragmentId, []),
+                by_id,
+                verified,
+                candidate_terms,
+            )
+        )
         if signals and _has_role_signal(signals):
             candidates.append(Candidate(fragment=fragment, signals=signals, semantic_score=semantic_score))
     return candidates
@@ -205,6 +224,50 @@ def _artifact_hit(fragment: RegulationFragment, profile: RoleProfile) -> bool:
     text = _fragment_search_text(fragment)
     artifacts = [item.value for item in profile.systems + profile.documents]
     return any(contains_phrase(text, value) for value in artifacts)
+
+
+def _graph_signals(
+    fragment: RegulationFragment,
+    relations: list[BlockRelation],
+    by_id: dict[str, RegulationFragment],
+    verified_terms: list[str],
+    candidate_terms: list[str],
+) -> list[MatchSignal]:
+    out: list[MatchSignal] = []
+    for relation in relations:
+        target = by_id.get(relation.toBlockId)
+        if target is None:
+            continue
+        target_text = _fragment_search_text(target)
+        if any(contains_phrase(target_text, term) for term in verified_terms):
+            out.append(
+                _signal(
+                    "actor_inheritance" if relation.relation == "actor_inheritance" else "graph_relation",
+                    max(0.55, relation.confidence),
+                    fragment,
+                    relation.evidence or target.text[:180],
+                    f"Связь с блоком {target.fragmentId}: {relation.relation}",
+                )
+            )
+            continue
+        if any(contains_phrase(target_text, term) for term in candidate_terms):
+            out.append(
+                _signal(
+                    "definition_link" if relation.relation == "definition_of" else "graph_relation",
+                    max(0.45, relation.confidence * 0.85),
+                    fragment,
+                    relation.evidence or target.text[:180],
+                    f"Кандидатная связь с блоком {target.fragmentId}: {relation.relation}",
+                )
+            )
+    return out[:4]
+
+
+def _relations_by_from(relations: list[BlockRelation]) -> dict[str, list[BlockRelation]]:
+    out: dict[str, list[BlockRelation]] = {}
+    for relation in relations:
+        out.setdefault(relation.fromBlockId, []).append(relation)
+    return out
 
 
 def _action_from_cells(cells: dict[str, str]) -> str:

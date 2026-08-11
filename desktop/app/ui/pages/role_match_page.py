@@ -34,6 +34,9 @@ _MATCH_TYPE_LABELS: dict[str, str] = {
     "interaction": "Взаимодействие с другой ролью",
     "related_artifact_or_system": "Упоминание артефакта или системы",
     "semantic_candidate": "Семантическое совпадение с должностью",
+    "graph_relation": "Связь найдена через граф документа",
+    "definition_link": "Термин связан с определением в документе",
+    "actor_inheritance": "Исполнитель наследуется из связанного блока",
 }
 
 
@@ -261,6 +264,19 @@ class RoleMatchPage(QWidget):
         text.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         layout.addWidget(text)
 
+        detail_lines = _function_detail_lines(match)
+        if detail_lines:
+            detail_title = QLabel("Детали функции")
+            detail_title.setFont(app_font(14, QFont.Weight.DemiBold))
+            detail_title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+            layout.addWidget(detail_title)
+            for line in detail_lines:
+                label = QLabel(line)
+                label.setWordWrap(True)
+                label.setFont(app_font(13))
+                label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+                layout.addWidget(label)
+
         why_title = QLabel("Почему найдено")
         why_title.setFont(app_font(14, QFont.Weight.DemiBold))
         why_title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
@@ -282,6 +298,20 @@ class RoleMatchPage(QWidget):
             wrap = QWidget()
             wrap.setLayout(row)
             layout.addWidget(wrap)
+
+        evidence_lines = _evidence_lines(match)
+        if evidence_lines:
+            evidence_title = QLabel("Доказательства")
+            evidence_title.setFont(app_font(14, QFont.Weight.DemiBold))
+            evidence_title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+            layout.addWidget(evidence_title)
+            for line in evidence_lines:
+                label = QLabel(line)
+                label.setWordWrap(True)
+                label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                label.setFont(app_font(12))
+                label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+                layout.addWidget(label)
 
         confidence_label, confidence_color = _confidence_label(match.confidence)
         conf = QLabel(f"Уверенность: {confidence_label} · {match.confidence * 100:.0f}%")
@@ -512,6 +542,18 @@ def _fragment_preview_text(match: RoleMatch, *, full: bool = False) -> str:
 
 
 def _function_title(match: RoleMatch) -> str:
+    function = match.function
+    if function is not None:
+        title_parts = []
+        if function.action:
+            title_parts.append(function.action[:1].upper() + function.action[1:])
+        if function.object:
+            title_parts.append(function.object)
+        if function.recipient:
+            title_parts.append(f"→ {function.recipient}")
+        title = " ".join(part for part in title_parts if part).strip()
+        if title:
+            return title[:220]
     full_text = _fragment_preview_text(match, full=True)
     contextual_title = _title_from_role_context(full_text, _role_terms(match))
     if contextual_title:
@@ -807,6 +849,53 @@ def _is_scope_line(text: str) -> bool:
         "назначение и область применения",
     )
     return any(marker in normalized for marker in scope_markers)
+
+
+def _function_detail_lines(match: RoleMatch) -> list[str]:
+    function = match.function
+    if function is None:
+        return []
+    lines: list[str] = []
+    actor = function.actor.canonical_position or function.actor.text
+    if actor:
+        source = f" (из блока {function.actor.source_block_id})" if function.actor.source_block_id else ""
+        lines.append(f"Исполнитель: {actor}{source}")
+    if function.conditions:
+        lines.append("Условия: " + "; ".join(function.conditions[:2]))
+    if function.dependencies:
+        deps = [
+            dep.description or dep.block_id
+            for dep in function.dependencies[:2]
+            if dep.description or dep.block_id
+        ]
+        if deps:
+            lines.append("Зависимости: " + "; ".join(deps))
+    if function.explanation:
+        lines.append(function.explanation)
+    return lines[:5]
+
+
+def _evidence_lines(match: RoleMatch) -> list[str]:
+    function = match.function
+    lines: list[str] = []
+    if function is not None:
+        for evidence in function.evidence[:4]:
+            quote = _clean_line(evidence.quote)
+            if quote:
+                lines.append(f"{evidence.fragment_id}: «{quote}»")
+        for block in function.proof_chain[:3]:
+            if block.evidence:
+                lines.append(f"{block.block_id}: {block.evidence}")
+    if not lines:
+        for signal in match.signals[:3]:
+            quote = _clean_line(signal.quote)
+            if quote:
+                lines.append(f"{match.fragment_id}: «{quote}»")
+    unique: list[str] = []
+    for line in lines:
+        if line not in unique:
+            unique.append(line)
+    return unique[:5]
 
 
 def _reason_lines(match: RoleMatch) -> list[str]:

@@ -8,6 +8,10 @@ from app.models.regulation import RoleMatchRun
 from app.schemas.regulation import FragmentRoleMatch, RegulationParseResult, RoleMatchResult
 from app.services.regulation.storage import get_document
 from app.services.role_matching.candidates import collect_candidates
+from app.services.role_matching.claudehub_client import build_document_map, final_audit
+from app.services.role_matching.context import build_context_package
+from app.services.role_matching.dedupe import dedupe_matches, functions_from_matches
+from app.services.role_matching.graph import build_block_graph
 from app.services.role_matching.llm_classifier import classify_candidate
 from app.services.role_matching.profile import build_role_profile
 from app.services.role_matching.scoring import final_confidence, status_for_confidence
@@ -32,17 +36,35 @@ def create_role_match_run(
     department = department.strip()
     if not position:
         raise RoleMatchError("Укажите должность")
+    if not department:
+        raise RoleMatchError("Укажите подразделение")
     doc = get_document(db, regulation_id=regulation_id, user_id=user_id)
     if doc is None:
         raise RoleMatchError("Регламент не найден", status_code=404)
 
     result = RegulationParseResult.model_validate(doc.result_json)
+    document_map = build_document_map(result)
+    relations = build_block_graph(result, document_map)
     profile = build_role_profile(position=position, department=department, result=result)
     matches: list[FragmentRoleMatch] = []
-    for idx, candidate in enumerate(collect_candidates(result, profile), start=1):
-        classifier = classify_candidate(candidate, profile)
+    for idx, candidate in enumerate(collect_candidates(result, profile, relations), start=1):
+        context = build_context_package(
+            candidate,
+            result=result,
+            profile=profile,
+            relations=relations,
+            document_map=document_map,
+        )
+        classifier = classify_candidate(candidate, profile, context)
         confidence = final_confidence(candidate, classifier)
+        role_function = classifier.get("function")
+        if role_function is not None:
+            role_function.functionId = f"F-{idx:04d}"
+            role_function.confidence = max(role_function.confidence, confidence)
         requires_confirmation = bool(classifier.get("requiresUserConfirmation")) or confidence < 0.85
+        if role_function is not None:
+            requires_confirmation = requires_confirmation or role_function.requiresUserConfirmation
+            role_function.requiresUserConfirmation = requires_confirmation
         status = status_for_confidence(confidence, requires_confirmation)
         if status == "rejected" and confidence < 0.40:
             # Keep the search strict for UI; low confidence can be logged later if needed.
@@ -62,14 +84,27 @@ def create_role_match_run(
             requiresUserConfirmation=requires_confirmation,
             status=status,
             fragment=candidate.fragment,
+            function=role_function,
         )
         matches.append(match)
+
+    matches = dedupe_matches(matches)
+    for idx, match in enumerate(matches, start=1):
+        match.matchId = f"M-{idx:04d}"
+        if match.function is not None:
+            match.function.functionId = f"F-{idx:04d}"
+    functions = functions_from_matches(matches)
+    audit = final_audit(functions, result)
 
     role_result = RoleMatchResult(
         runId=f"role-run-{uuid4().hex[:12]}",
         regulationId=regulation_id,
         profile=profile,
         matches=matches,
+        documentMap=document_map,
+        relations=relations,
+        functions=functions,
+        audit=audit,
     )
     run = RoleMatchRun(
         id=role_result.runId,
@@ -114,10 +149,19 @@ def update_match_status(
         if item.get("matchId") == match_id:
             item["status"] = status
             item["requiresUserConfirmation"] = False
+            function = item.get("function")
+            function_id = ""
+            if isinstance(function, dict):
+                function["requiresUserConfirmation"] = False
+                function_id = str(function.get("functionId") or "")
             found = True
             break
     if not found:
         raise RoleMatchError("Соответствие не найдено", status_code=404)
+    for function in data.get("functions") or []:
+        if isinstance(function, dict) and function_id and function.get("functionId") == function_id:
+            function["requiresUserConfirmation"] = False
+            break
     run.result_json = data
     db.add(run)
     db.commit()

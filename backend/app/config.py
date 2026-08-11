@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     lm_studio_base_url: str = "http://192.168.1.157:1234"
     lm_studio_model: str = "ministral-3-14b-instruct-2512"
     ocr_pages_per_batch: int = 3
+    claude_api_key: str = ""
+    claudehub_base_url: str = "https://api.claudehub.fun"
+    claudehub_model: str = "claude-3-5-sonnet-latest"
+    claudehub_max_blocks_per_chunk: int = 120
 
     # App Postgres (users, avatars, future agent data). Not ERP.
     database_url: str = (
