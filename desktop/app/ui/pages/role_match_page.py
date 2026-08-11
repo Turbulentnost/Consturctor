@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -9,7 +11,9 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -110,6 +114,7 @@ class RoleMatchPage(QWidget):
         self._card_scroll = QScrollArea()
         self._card_scroll.setWidgetResizable(True)
         self._card_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._card_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._card_scroll.setWidget(card_scroll_content)
         self._card_scroll.setStyleSheet(
             "QScrollArea { background: transparent; border: none; }" + scroll_bar_qss()
@@ -259,6 +264,7 @@ class RoleMatchPage(QWidget):
 
         text = QLabel(_function_title(match))
         text.setWordWrap(True)
+        _keep_label_inside_width(text)
         text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         text.setFont(app_font(24, QFont.Weight.DemiBold))
         text.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
@@ -273,6 +279,7 @@ class RoleMatchPage(QWidget):
             for line in detail_lines:
                 label = QLabel(line)
                 label.setWordWrap(True)
+                _keep_label_inside_width(label)
                 label.setFont(app_font(13))
                 label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
                 layout.addWidget(label)
@@ -291,6 +298,7 @@ class RoleMatchPage(QWidget):
             mark.setFixedWidth(16)
             label = QLabel(reason)
             label.setWordWrap(True)
+            _keep_label_inside_width(label)
             label.setFont(app_font(13))
             label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
             row.addWidget(mark)
@@ -299,19 +307,7 @@ class RoleMatchPage(QWidget):
             wrap.setLayout(row)
             layout.addWidget(wrap)
 
-        evidence_lines = _evidence_lines(match)
-        if evidence_lines:
-            evidence_title = QLabel("Доказательства")
-            evidence_title.setFont(app_font(14, QFont.Weight.DemiBold))
-            evidence_title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-            layout.addWidget(evidence_title)
-            for line in evidence_lines:
-                label = QLabel(line)
-                label.setWordWrap(True)
-                label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                label.setFont(app_font(12))
-                label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-                layout.addWidget(label)
+        self._add_evidence_cards(layout, match)
 
         confidence_label, confidence_color = _confidence_label(match.confidence)
         conf = QLabel(f"Уверенность: {confidence_label} · {match.confidence * 100:.0f}%")
@@ -465,6 +461,87 @@ class RoleMatchPage(QWidget):
         self._stack.setCurrentWidget(self._document)
         self._highlight_fragment(match.fragment_id)
         QTimer.singleShot(0, lambda: self._scroll_to_fragment(match.fragment_id))
+
+    def _show_document_fragment(self, fragment_id: str) -> None:
+        if not fragment_id or self._regulation is None:
+            return
+        self._stack.setCurrentWidget(self._document)
+        self._highlight_fragment(fragment_id)
+        QTimer.singleShot(0, lambda: self._scroll_to_fragment(fragment_id))
+
+    def _add_evidence_cards(self, layout: QVBoxLayout, match: RoleMatch) -> None:
+        items = _proof_items(match, self._regulation)
+        if not items:
+            return
+        evidence_title = QLabel("Доказательства из документа")
+        evidence_title.setFont(app_font(16, QFont.Weight.DemiBold))
+        evidence_title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        layout.addWidget(evidence_title)
+
+        for item in items:
+            card = QFrame()
+            card.setObjectName("EvidenceCard")
+            card.setStyleSheet(
+                """
+                QFrame#EvidenceCard {
+                    background: #FFFFFF;
+                    border: 1px solid rgba(16,24,23,0.10);
+                    border-radius: 14px;
+                }
+                """
+            )
+            row = QHBoxLayout(card)
+            row.setContentsMargins(14, 12, 14, 12)
+            row.setSpacing(12)
+
+            icon = _document_icon_label()
+            row.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+
+            body = QVBoxLayout()
+            body.setSpacing(5)
+            source = QLabel(item["source"])
+            source.setWordWrap(True)
+            _keep_label_inside_width(source)
+            source.setFont(app_font(12, QFont.Weight.DemiBold))
+            source.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+            body.addWidget(source)
+
+            quote = QLabel(f"«{item['quote']}»")
+            quote.setWordWrap(True)
+            _keep_label_inside_width(quote)
+            quote.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            quote.setFont(app_font(13))
+            quote.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+            body.addWidget(quote)
+
+            if item.get("note"):
+                note = QLabel(item["note"])
+                note.setWordWrap(True)
+                _keep_label_inside_width(note)
+                note.setFont(app_font(11))
+                note.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+                body.addWidget(note)
+            row.addLayout(body, 1)
+
+            side = QVBoxLayout()
+            side.setSpacing(8)
+            badge = QLabel(item["badge"])
+            badge.setFont(app_font(11, QFont.Weight.DemiBold))
+            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            badge.setStyleSheet(_evidence_badge_qss(item["kind"]))
+            side.addWidget(badge)
+
+            button = QPushButton("Открыть фрагмент")
+            button.setFixedHeight(32)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFont(app_font(11, QFont.Weight.DemiBold))
+            button.setStyleSheet(_small_outline_button_qss())
+            fragment_id = item["fragment_id"]
+            button.clicked.connect(lambda _checked=False, fid=fragment_id: self._show_document_fragment(fid))
+            side.addWidget(button)
+            side.addStretch(1)
+            row.addLayout(side)
+            layout.addWidget(card)
 
     def _show_wizard(self) -> None:
         self._clear_highlights()
@@ -851,6 +928,181 @@ def _is_scope_line(text: str) -> bool:
     return any(marker in normalized for marker in scope_markers)
 
 
+def _proof_items(
+    match: RoleMatch,
+    regulation: RegulationParseResult | None,
+) -> list[dict[str, str]]:
+    by_id = {fragment.fragment_id: fragment for fragment in (regulation.fragments if regulation else [])}
+    items: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    function = match.function
+
+    if function is not None:
+        for evidence in function.evidence:
+            quote = _clean_line(evidence.quote)
+            if not quote or _is_weak_evidence_quote(quote):
+                continue
+            item = _proof_item(
+                fragment_id=evidence.fragment_id or match.fragment_id,
+                quote=quote,
+                relation="direct_role_mention",
+                note="Цитата из исходного документа",
+                by_id=by_id,
+            )
+            key = (item["fragment_id"], item["quote"])
+            if key not in seen:
+                items.append(item)
+                seen.add(key)
+
+        for block in function.proof_chain:
+            fragment_id = block.block_id or match.fragment_id
+            quote = _clean_line(block.text or block.evidence)
+            if not quote or _is_weak_evidence_quote(quote):
+                quote = _fragment_text_by_id(fragment_id, by_id)
+            if not quote:
+                continue
+            item = _proof_item(
+                fragment_id=fragment_id,
+                quote=quote,
+                relation=block.relation,
+                note=block.evidence,
+                by_id=by_id,
+            )
+            key = (item["fragment_id"], item["quote"])
+            if key not in seen:
+                items.append(item)
+                seen.add(key)
+
+    if not items:
+        for signal in match.signals:
+            quote = _clean_line(signal.quote)
+            if not quote or _is_weak_evidence_quote(quote):
+                continue
+            item = _proof_item(
+                fragment_id=signal.fragment_id if hasattr(signal, "fragment_id") else match.fragment_id,
+                quote=quote,
+                relation=signal.match_type,
+                note=signal.explanation,
+                by_id=by_id,
+            )
+            key = (item["fragment_id"], item["quote"])
+            if key not in seen:
+                items.append(item)
+                seen.add(key)
+
+    if not items:
+        quote = _fragment_preview_text(match, full=True)
+        items.append(
+            _proof_item(
+                fragment_id=match.fragment_id,
+                quote=quote,
+                relation="graph_relation",
+                note=match.explanation,
+                by_id=by_id,
+            )
+        )
+
+    return items[:5]
+
+
+def _proof_item(
+    *,
+    fragment_id: str,
+    quote: str,
+    relation: str,
+    note: str,
+    by_id: dict[str, object],
+) -> dict[str, str]:
+    fragment = by_id.get(fragment_id)
+    page = getattr(fragment, "page", None)
+    section = getattr(fragment, "section", "") if fragment is not None else ""
+    source_parts = []
+    if section:
+        source_parts.append(str(section))
+    if page:
+        source_parts.append(f"стр. {page}")
+    source = " · ".join(source_parts) if source_parts else fragment_id
+    badge, kind = _evidence_badge(relation)
+    return {
+        "fragment_id": fragment_id,
+        "source": source,
+        "quote": quote[:700],
+        "badge": badge,
+        "kind": kind,
+        "note": _clean_line(note)[:300],
+    }
+
+
+def _fragment_text_by_id(fragment_id: str, by_id: dict[str, object]) -> str:
+    fragment = by_id.get(fragment_id)
+    if fragment is None:
+        return ""
+    cells = getattr(fragment, "cells", None) or {}
+    if cells:
+        return ". ".join(f"{key}: {value}" for key, value in cells.items() if value)
+    return _clean_line(str(getattr(fragment, "text", "") or ""))
+
+
+def _is_weak_evidence_quote(quote: str) -> bool:
+    normalized = quote.casefold()
+    weak = (
+        "предыдущий смысловой блок",
+        "следующий смысловой блок",
+        "previous_block",
+        "next_block",
+        "parent_section",
+    )
+    return any(marker in normalized for marker in weak)
+
+
+def _evidence_badge(relation: str) -> tuple[str, str]:
+    relation = (relation or "").strip()
+    if relation in {"direct_role_mention", "assigned_action"}:
+        return "Прямое указание", "direct"
+    if relation in {"actor_inheritance", "definition_of", "definition_link"}:
+        return "Связь исполнителя", "actor"
+    if relation in {"condition_for", "exception_for"}:
+        return "Условие работы", "condition"
+    if relation in {"previous_block", "next_block", "input_for", "same_process"}:
+        return "Зависимость", "dependency"
+    return "Связь графа", "graph"
+
+
+def _evidence_badge_qss(kind: str) -> str:
+    colors = {
+        "direct": ("#E8F7F0", "#08745F"),
+        "actor": ("#EEF4FF", "#2459A8"),
+        "condition": ("#FFF4E5", "#B26A00"),
+        "dependency": ("#EEF4FF", "#2459A8"),
+        "graph": ("#F3F5F4", "#50605B"),
+    }
+    bg, fg = colors.get(kind, colors["graph"])
+    return f"""
+        QLabel {{
+            color: {fg};
+            background: {bg};
+            border-radius: 10px;
+            padding: 6px 10px;
+        }}
+    """
+
+
+def _small_outline_button_qss() -> str:
+    return """
+        QPushButton {
+            color: #06483D;
+            background: #FFFFFF;
+            border: 1px solid rgba(6,72,61,0.20);
+            border-radius: 9px;
+            padding: 0 10px;
+        }
+        QPushButton:hover {
+            background: #F1F8F5;
+            border-color: rgba(6,72,61,0.35);
+        }
+    """
+
+
 def _function_detail_lines(match: RoleMatch) -> list[str]:
     function = match.function
     if function is None:
@@ -954,6 +1206,37 @@ def _empty_card() -> QWidget:
     label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
     layout.addWidget(label)
     return card
+
+
+def _document_icon_label() -> QLabel:
+    icon = QLabel()
+    icon.setFixedSize(42, 42)
+    icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    icon.setStyleSheet(
+        """
+        QLabel {
+            color: #06483D;
+            background: #EEF8F4;
+            border-radius: 10px;
+        }
+        """
+    )
+    pixmap = icon.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon).pixmap(22, 22)
+    icon.setPixmap(pixmap)
+    return icon
+
+
+def _keep_label_inside_width(label: QLabel) -> None:
+    label.setText(_soft_wrap_text(label.text()))
+    label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+
+def _soft_wrap_text(text: str) -> str:
+    def wrap_token(match: re.Match[str]) -> str:
+        token = match.group(0)
+        return re.sub(r"([\\/_:.-])", r"\1\u200b", token)
+
+    return re.sub(r"\S{28,}", wrap_token, text)
 
 
 def _primary_button_qss() -> str:

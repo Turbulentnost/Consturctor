@@ -84,6 +84,8 @@ def detect_heading(block: ExtractedBlock) -> tuple[str, int] | None:
     text = normalize_text(block.section or block.text)
     if not text or len(text) > 160:
         return None
+    if text.startswith(("- ", "• ", "– ")):
+        return None
     numbering = block.numbering or _extract_numbering(text)
     lower = text.lower()
     heading_words = (

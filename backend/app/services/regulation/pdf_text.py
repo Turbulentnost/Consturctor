@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from app.services.regulation.types import ExtractedBlock, ExtractedDocument, ExtractedTable
@@ -33,12 +34,20 @@ def extract_pdf_text(path: Path) -> ExtractedDocument:
             text = (page.extract_text(x_tolerance=1, y_tolerance=3) or "").strip()
             if text:
                 for piece in _split_text_blocks(text):
+                    is_list_item = _is_bullet(piece)
                     font_size = _guess_font_size(piece, baseline)
                     blocks.append(
                         ExtractedBlock(
                             page=idx,
                             text=piece,
-                            block_type="heading" if font_size > baseline + 1.5 else "paragraph",
+                            kind="list" if is_list_item else "text",
+                            block_type=(
+                                "list_item"
+                                if is_list_item
+                                else "heading"
+                                if font_size > baseline + 1.5
+                                else "paragraph"
+                            ),
                             font_size=font_size,
                             is_bold=piece.isupper() and len(piece) < 140,
                             numbering=_leading_numbering(piece),
@@ -71,8 +80,34 @@ def extract_pdf_text(path: Path) -> ExtractedDocument:
 
 
 def _split_text_blocks(text: str) -> list[str]:
-    parts = [part.strip() for part in text.split("\n\n") if part.strip()]
-    return parts or [text.strip()]
+    paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
+    if len(paragraphs) > 1:
+        return [piece for paragraph in paragraphs for piece in _split_lines_into_blocks(paragraph)]
+    return _split_lines_into_blocks(text)
+
+
+def _split_lines_into_blocks(text: str) -> list[str]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        starts_new = bool(current) and (_is_numbered_heading(line) or _is_bullet(line))
+        if starts_new:
+            blocks.append(" ".join(current).strip())
+            current = [line]
+            continue
+        current.append(line)
+    if current:
+        blocks.append(" ".join(current).strip())
+    return [block for block in blocks if block]
+
+
+def _is_numbered_heading(line: str) -> bool:
+    return bool(re.match(r"^\d+(?:\.\d+)*\s+\S", line))
+
+
+def _is_bullet(line: str) -> bool:
+    return line.startswith(("- ", "• ", "– "))
 
 
 def _median(values: list[float]) -> float | None:

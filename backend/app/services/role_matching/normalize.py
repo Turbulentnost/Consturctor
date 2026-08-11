@@ -48,9 +48,12 @@ def normalized(value: str) -> str:
 
 
 def contains_phrase(text: str, phrase: str) -> bool:
-    haystack = normalized(text)
-    needle = normalized(phrase)
-    return bool(needle) and needle in haystack
+    haystack = tokens(text)
+    needle = tokens(phrase)
+    if not needle or len(needle) > len(haystack):
+        return False
+    width = len(needle)
+    return any(haystack[idx : idx + width] == needle for idx in range(len(haystack) - width + 1))
 
 
 def token_similarity(left: str, right: str) -> float:

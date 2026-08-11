@@ -32,30 +32,52 @@ _MATCH_TYPES = {
     "actor_inheritance",
 }
 
+_ACTION_PATTERN = re.compile(
+    r"\b("
+    r"разрабатывает|оптимизирует|тестирует|документирует|обучает|внедряет|"
+    r"подготавливает|готовит|проверяет|формирует|направляет|переда[её]т|"
+    r"регистрирует|согласовывает|утверждает|вносит|получает|контролирует|"
+    r"вед[её]т|выполняет|устраняет|оформляет|проводит|фиксирует|"
+    r"составляет|настраивает|обеспечивает|организует|анализирует"
+    r")\b",
+    flags=re.I,
+)
+
 
 def classify_candidate(
     candidate: Candidate,
     profile: RoleProfile,
     context: ContextPackage | None = None,
 ) -> dict[str, Any]:
+    if settings.llm_provider.strip().casefold() in {"stub", "none", "disabled"}:
+        return _fallback_response(candidate, profile, context, reason="LLM provider is disabled")
     payload = _payload(candidate, profile, context)
     try:
         raw = _post(payload)
         data = _load_json(raw)
         return _validated(data, candidate, profile, context)
     except Exception as exc:  # noqa: BLE001 - keep role matching usable if LLM is offline.
-        fallback = _fallback_function(candidate, profile, context)
-        return {
-            "isRelevant": True,
-            "relation": _default_relation(candidate),
-            "matchTypes": [signal.matchType for signal in candidate.signals],
-            "evidence": _rule_evidence(candidate),
-            "explanation": f"Классификация выполнена по правилам; LM Studio недоступен: {exc}",
-            "modelConfidence": 0.0,
-            "contradictions": [],
-            "requiresUserConfirmation": True,
-            "function": fallback,
-        }
+        return _fallback_response(candidate, profile, context, reason=f"LM Studio недоступен: {exc}")
+
+
+def _fallback_response(
+    candidate: Candidate,
+    profile: RoleProfile,
+    context: ContextPackage | None,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "isRelevant": True,
+        "relation": _default_relation(candidate),
+        "matchTypes": [signal.matchType for signal in candidate.signals],
+        "evidence": _rule_evidence(candidate),
+        "explanation": f"Классификация выполнена по правилам; {reason}",
+        "modelConfidence": 0.0,
+        "contradictions": [],
+        "requiresUserConfirmation": True,
+        "function": _fallback_function(candidate, profile, context),
+    }
 
 
 def _payload(
@@ -375,20 +397,11 @@ def _actor_source_block(context: ContextPackage | None) -> str:
 
 def _has_action(text: str, cells: dict[str, str]) -> bool:
     combined = " ".join([text, *cells.values()]).lower()
-    return bool(
-        re.search(
-            r"\b(проверяет|формирует|направляет|переда[её]т|регистрирует|согласовывает|утверждает|вносит|получает|контролирует)\b",
-            combined,
-        )
-    )
+    return bool(_ACTION_PATTERN.search(combined))
 
 
 def _guess_action(text: str) -> str:
-    match = re.search(
-        r"\b(проверяет|формирует|направляет|переда[её]т|регистрирует|согласовывает|утверждает|вносит|получает|контролирует)\b",
-        text or "",
-        flags=re.I,
-    )
+    match = _ACTION_PATTERN.search(text or "")
     return match.group(1).lower() if match else ""
 
 

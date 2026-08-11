@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 
 _AVATAR_SIZE = 42
+_HEADER_WIDTH = 300
 _DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
 
 
@@ -118,11 +119,15 @@ class UserMenuHeader(QWidget):
         self._fio.setFont(app_font(15, QFont.Weight.DemiBold))
         self._fio.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         self._fio.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._fio.setMinimumWidth(0)
+        self._fio.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         self._position = QLabel("")
         self._position.setFont(app_font(12))
         self._position.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         self._position.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._position.setMinimumWidth(0)
+        self._position.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
@@ -134,8 +139,9 @@ class UserMenuHeader(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(12)
         root.addWidget(self.avatar, 0, Qt.AlignmentFlag.AlignVCenter)
-        root.addLayout(text_col, 0)
-        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        root.addLayout(text_col, 1)
+        self.setFixedWidth(_HEADER_WIDTH)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
 
     def set_user(self, *, fio: str, position: str = "") -> None:
         self._fio.setText(fio or "—")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -18,6 +19,8 @@ from app.schemas.regulation import (
     RoleFunction,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class ClaudeHubError(RuntimeError):
     pass
@@ -26,14 +29,29 @@ class ClaudeHubError(RuntimeError):
 def build_document_map(result: RegulationParseResult) -> DocumentMap:
     """Build the global document map with ClaudeHub, falling back to local heuristics."""
     try:
-        maps = [_map_chunk(chunk) for chunk in _chunks(result)]
+        chunks = _chunks(result)
+        logger.info(
+            "ClaudeHub global map start model=%s chunks=%s blocks=%s",
+            settings.claudehub_model,
+            len(chunks),
+            len(result.fragments),
+        )
+        maps = [_map_chunk(chunk) for chunk in chunks]
         merged = _merge_maps(maps)
         merged.source = "claudehub"
-        return _verify_map(merged, result)
+        verified = _verify_map(merged, result)
+        logger.info(
+            "ClaudeHub global map complete roles=%s definitions=%s references=%s",
+            len(verified.roles),
+            len(verified.definitions),
+            len(verified.references),
+        )
+        return verified
     except Exception as exc:  # noqa: BLE001 - global map should not stop role analysis.
         fallback = heuristic_document_map(result)
         fallback.source = "heuristic"
         fallback.warnings.append(f"ClaudeHub global map unavailable: {_safe_error(exc)}")
+        logger.warning("ClaudeHub global map fallback: %s", _safe_error(exc))
         return fallback
 
 
@@ -178,6 +196,7 @@ def _map_chunk(fragments: list[dict[str, Any]]) -> DocumentMap:
     }
     raw = _post_json(prompt, timeout=180.0)
     data = _load_json(raw)
+    data = _coerce_document_map_data(data)
     return DocumentMap.model_validate(data)
 
 
@@ -268,6 +287,87 @@ def _load_json(raw: str) -> dict[str, Any]:
         if match:
             return json.loads(match.group(0))
         raise
+
+
+def _coerce_document_map_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Keep ClaudeHub output useful even when it uses richer relation/status names."""
+    if not isinstance(data, dict):
+        return {}
+    allowed_relations = {
+        "parent_section",
+        "previous_block",
+        "next_block",
+        "same_list",
+        "same_table",
+        "table_header",
+        "explicit_reference",
+        "actor_inheritance",
+        "condition_for",
+        "exception_for",
+        "definition_of",
+        "continuation_of",
+        "input_for",
+        "same_process",
+        "contradicts",
+    }
+    allowed_statuses = {"verified", "candidate", "unverified"}
+    for collection_name in ("roles", "processes", "definitions", "references"):
+        items = data.get(collection_name)
+        if not isinstance(items, list):
+            data[collection_name] = []
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("status") not in allowed_statuses:
+                item["status"] = "candidate"
+            relation = item.get("relation")
+            if relation and relation not in allowed_relations:
+                item["relation"] = _relation_from_text(str(relation))
+            if collection_name == "references":
+                for key in ("fromBlockId", "toBlockId", "referenceText"):
+                    if item.get(key) is None:
+                        item[key] = ""
+    for collection_name in ("systems", "documents"):
+        items = data.get(collection_name)
+        if not isinstance(items, list):
+            data[collection_name] = []
+            continue
+        normalized: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, str):
+                value = item.strip()
+                if value:
+                    normalized.append({"value": value, "status": "candidate"})
+                continue
+            if not isinstance(item, dict):
+                continue
+            value = str(
+                item.get("value") or item.get("name") or item.get("title") or item.get("text") or ""
+            ).strip()
+            if not value:
+                continue
+            item["value"] = value
+            if item.get("status") not in allowed_statuses:
+                item["status"] = "candidate"
+            normalized.append(item)
+        data[collection_name] = normalized
+    return data
+
+
+def _relation_from_text(value: str) -> str:
+    text = value.casefold()
+    if "actor" in text or "исполн" in text or "role" in text:
+        return "actor_inheritance"
+    if "condition" in text or "услов" in text:
+        return "condition_for"
+    if "exception" in text or "исключ" in text:
+        return "exception_for"
+    if "definition" in text or "term" in text or "определ" in text:
+        return "definition_of"
+    if "process" in text or "процесс" in text:
+        return "same_process"
+    return "explicit_reference"
 
 
 def _responsible_role(text: str) -> str:

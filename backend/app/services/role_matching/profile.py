@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from app.schemas.regulation import RegulationParseResult, RoleAlias, RoleProfile
+from app.schemas.regulation import DocumentMap, RegulationParseResult, RoleAlias, RoleProfile
 from app.services.role_matching.normalize import contains_phrase
 
 _ABBR_RE = re.compile(r"(?P<full>[А-Яа-яЁёA-Za-z][^()\n]{3,80})\((?P<abbr>[А-ЯA-ZЁ]{2,8})\)")
@@ -61,7 +61,23 @@ def build_role_profile(
                     f"Процессная роль связана с должностью во фрагменте {fragment.fragmentId}",
                     fragment_ids,
                 )
-        _collect_artifacts(profile, text, fragment_ids)
+    return profile
+
+
+def enrich_role_profile(profile: RoleProfile, document_map: DocumentMap) -> RoleProfile:
+    terms = [profile.canonicalTitle, profile.department, *[item.value for item in profile.aliases]]
+    for role in document_map.roles:
+        role_values = [role.canonicalTitle, *role.aliases]
+        if not any(_any_role_like(value, terms) for value in role_values):
+            continue
+        for value in role_values:
+            _add_alias(
+                profile.aliases,
+                value,
+                role.status,
+                "Алиас из глобальной карты документа ClaudeHub",
+                role.sourceBlockIds,
+            )
     return profile
 
 
@@ -76,33 +92,43 @@ def all_candidate_terms(profile: RoleProfile) -> list[str]:
     values = [profile.canonicalTitle, profile.department]
     values.extend(alias.value for alias in profile.aliases)
     values.extend(alias.value for alias in profile.processRoles)
-    values.extend(alias.value for alias in profile.systems)
-    values.extend(alias.value for alias in profile.documents)
     return [value for value in _unique(values) if value]
 
 
 def _generic_position_aliases(position: str) -> list[str]:
-    lower = position.lower()
     aliases: list[str] = []
-    if "менеджер" in lower:
-        aliases.append("менеджер")
-    if "продаж" in lower:
-        aliases.extend(["менеджер отдела продаж", "менеджер ОП", "МОП", "сотрудник отдела продаж"])
+    without_qualifier = _strip_position_qualifier(position)
+    if without_qualifier and without_qualifier.casefold() != position.casefold():
+        aliases.append(without_qualifier)
+    normalized_hyphen = without_qualifier.replace("-", " ") if without_qualifier else ""
+    if normalized_hyphen and normalized_hyphen.casefold() != without_qualifier.casefold():
+        aliases.append(normalized_hyphen)
     return aliases
 
 
-def _collect_artifacts(profile: RoleProfile, text: str, fragment_ids: list[str]) -> None:
-    lower = text.lower()
-    for system in ("crm", "erp", "1с", "битрикс", "sap"):
-        if system in lower:
-            _add_alias(profile.systems, system.upper() if system.isalpha() else system, "candidate", "Информационная система из документа", fragment_ids)
-    for document in ("заявка", "коммерческое предложение", "карточка сделки", "договор", "счет", "акт"):
-        if document in lower:
-            _add_alias(profile.documents, document, "candidate", "Документ или артефакт процесса", fragment_ids)
+def _strip_position_qualifier(position: str) -> str:
+    value = position.strip()
+    value = re.sub(
+        r"\s+\d+\s*(?:-?й|-?я|-?ой)?\s+категори[ия]\b.*$",
+        "",
+        value,
+        flags=re.I,
+    ).strip()
+    value = re.sub(
+        r"\s+\d+\s*(?:-?го|-?его|-?й|-?ой)?\s+разряд[а-я]*\b.*$",
+        "",
+        value,
+        flags=re.I,
+    ).strip()
+    return value
 
 
 def _role_like(value: str, position: str, department: str) -> bool:
     return contains_phrase(value, position) or bool(department and contains_phrase(value, department))
+
+
+def _any_role_like(value: str, terms: list[str]) -> bool:
+    return any(contains_phrase(value, term) or contains_phrase(term, value) for term in terms if term)
 
 
 def _add_alias(items: list[RoleAlias], value: str, status: str, reason: str, source: list[str]) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import re
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -13,8 +15,10 @@ from app.services.role_matching.context import build_context_package
 from app.services.role_matching.dedupe import dedupe_matches, functions_from_matches
 from app.services.role_matching.graph import build_block_graph
 from app.services.role_matching.llm_classifier import classify_candidate
-from app.services.role_matching.profile import build_role_profile
+from app.services.role_matching.profile import build_role_profile, enrich_role_profile
 from app.services.role_matching.scoring import final_confidence, status_for_confidence
+
+logger = logging.getLogger(__name__)
 
 
 class RoleMatchError(Exception):
@@ -44,8 +48,16 @@ def create_role_match_run(
 
     result = RegulationParseResult.model_validate(doc.result_json)
     document_map = build_document_map(result)
+    logger.info(
+        "Role match document map source=%s warnings=%s",
+        document_map.source,
+        len(document_map.warnings),
+    )
     relations = build_block_graph(result, document_map)
-    profile = build_role_profile(position=position, department=department, result=result)
+    profile = enrich_role_profile(
+        build_role_profile(position=position, department=department, result=result),
+        document_map,
+    )
     matches: list[FragmentRoleMatch] = []
     for idx, candidate in enumerate(collect_candidates(result, profile, relations), start=1):
         context = build_context_package(
@@ -61,6 +73,8 @@ def create_role_match_run(
         if role_function is not None:
             role_function.functionId = f"F-{idx:04d}"
             role_function.confidence = max(role_function.confidence, confidence)
+        if not _is_real_function(role_function):
+            continue
         requires_confirmation = bool(classifier.get("requiresUserConfirmation")) or confidence < 0.85
         if role_function is not None:
             requires_confirmation = requires_confirmation or role_function.requiresUserConfirmation
@@ -118,6 +132,16 @@ def create_role_match_run(
     db.commit()
     db.refresh(run)
     return RoleMatchResult.model_validate(run.result_json)
+
+
+def _is_real_function(role_function) -> bool:
+    if role_function is None or not role_function.isFunction:
+        return False
+    action = (role_function.action or "").strip()
+    if not action:
+        return False
+    combined = f"{role_function.action} {role_function.object}".strip().casefold()
+    return re.match(r"^этап\s+\d+(?:\D|$)", combined) is None
 
 
 def get_role_match_run(

@@ -53,8 +53,22 @@ class RegulationReviewPage(QWidget):
         left_layout = QVBoxLayout(self._left)
         left_layout.setContentsMargins(18, 18, 18, 18)
         left_layout.setSpacing(10)
-        left_layout.addLayout(self._summary)
-        left_layout.addStretch(1)
+
+        summary_content = QWidget()
+        summary_content.setStyleSheet("background: transparent;")
+        summary_content.setLayout(self._summary)
+
+        summary_scroll = QScrollArea()
+        summary_scroll.setWidgetResizable(True)
+        summary_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        summary_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        summary_scroll.setWidget(summary_content)
+        summary_scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            + scroll_bar_qss()
+        )
+        summary_scroll.verticalScrollBar().setStyleSheet(scroll_bar_qss())
+        left_layout.addWidget(summary_scroll, 1)
 
         scroll_content = QWidget()
         scroll_content.setStyleSheet("background: transparent;")
