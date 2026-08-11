@@ -31,8 +31,8 @@ _TEMP = Path(__file__).resolve().parents[1] / "temp"
 _UPLOAD_ICON = _TEMP / "Редактировать.png"
 _CREATE_ICON = _TEMP / "Создать.png"
 
-_ALLOWED_EXTENSIONS = {".docx", ".doc", ".pdf", ".md", ".txt"}
-_FILTER = "Документы (*.docx *.doc *.pdf *.md *.txt)"
+_ALLOWED_EXTENSIONS = {".docx", ".doc", ".pdf", ".xlsx", ".md", ".txt"}
+_FILTER = "Документы (*.docx *.doc *.pdf *.xlsx *.md *.txt)"
 
 
 def _load_icon(path: Path, size: int = 72) -> QPixmap:
@@ -86,7 +86,7 @@ class RegulationDropZone(QWidget):
         self._hint.setOpenExternalLinks(False)
         self._hint.linkActivated.connect(lambda _href: self._pick_file())
 
-        formats = QLabel("DOC, DOCX, PDF, MD, TXT")
+        formats = QLabel("DOC, DOCX, PDF, XLSX, MD, TXT")
         formats.setAlignment(Qt.AlignmentFlag.AlignCenter)
         formats.setFont(app_font(11))
         formats.setStyleSheet("color: #9AA6A1; background: transparent;")
@@ -180,7 +180,7 @@ class RegulationDropZone(QWidget):
             QMessageBox.warning(
                 self,
                 "Неверный формат",
-                "Допустимы только файлы: DOC, DOCX, PDF, MD, TXT.",
+                "Допустимы только файлы: DOC, DOCX, PDF, XLSX, MD, TXT.",
             )
             return
         self._file_path = path
@@ -258,6 +258,12 @@ class CreateAgentPage(QWidget):
         footer.setStyleSheet("color: #9AA6A1; background: transparent;")
         footer.setWordWrap(True)
 
+        self._status = QLabel("")
+        self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status.setFont(app_font(13, QFont.Weight.DemiBold))
+        self._status.setStyleSheet("color: #06483D; background: transparent;")
+        self._status.hide()
+
         # Leave room on the right for the floating user menu in the shell header.
         title.setContentsMargins(0, 0, 280, 0)
         subtitle.setContentsMargins(0, 0, 280, 0)
@@ -271,10 +277,17 @@ class CreateAgentPage(QWidget):
         layout.addSpacing(36)
         layout.addLayout(cards, 0)
         layout.addStretch(1)
+        layout.addWidget(self._status)
         layout.addWidget(footer)
 
     def selected_regulation_path(self) -> str | None:
         return self._drop_zone.selected_path()
+
+    def set_processing(self, active: bool) -> None:
+        self._status.setText("Распознаём документ..." if active else "")
+        self._status.setVisible(active)
+        self._upload_card.setEnabled(not active)
+        self._create_card.setEnabled(not active)
 
     def _build_upload_card(self) -> OptionCard:
         card = OptionCard(self)

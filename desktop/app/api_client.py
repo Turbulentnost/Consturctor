@@ -40,6 +40,36 @@ class LoginResult:
     user: UserProfile
 
 
+@dataclass(frozen=True, slots=True)
+class RegulationTable:
+    headers: list[str]
+    rows: list[list[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class RegulationFragment:
+    fragment_id: str
+    page: int
+    section: str
+    kind: str
+    text: str
+    table: RegulationTable | None
+    ocr_confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class RegulationParseResult:
+    regulation_id: str
+    file_name: str
+    page_count: int
+    table_count: int
+    section_count: int
+    recognition_quality: float
+    is_scan: bool
+    sections: list[str]
+    fragments: list[RegulationFragment]
+
+
 class ApiClient:
     def __init__(self, base_url: str | None = None, timeout: float = 20.0) -> None:
         self.base_url = (base_url or backend_url()).rstrip("/")
@@ -143,6 +173,43 @@ class ApiClient:
             raise ApiError(_extract_detail(response), status_code=response.status_code)
         return self._parse_user(response.json())
 
+    def upload_regulation(self, file_path: str | Path) -> RegulationParseResult:
+        path = Path(file_path)
+        if not path.is_file():
+            raise ApiError("Файл не найден")
+        url = f"{self.base_url}/api/v1/regulations/upload"
+        mime = {
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".pdf": "application/pdf",
+            ".md": "text/markdown",
+            ".txt": "text/plain",
+        }.get(path.suffix.lower(), "application/octet-stream")
+        try:
+            with httpx.Client(timeout=max(self._timeout, 240.0)) as client:
+                with path.open("rb") as fh:
+                    response = client.post(
+                        url,
+                        headers=self._headers(),
+                        files={"file": (path.name, fh, mime)},
+                    )
+        except httpx.ConnectError as exc:
+            raise ApiError(
+                f"Не удалось подключиться к backend ({self.base_url})"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise ApiError("Превышено время распознавания регламента") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise ApiError(_extract_detail(response), status_code=response.status_code)
+        return self._parse_regulation(response.json())
+
+    def get_regulation(self, regulation_id: str) -> RegulationParseResult:
+        data = self._request("GET", f"/api/v1/regulations/{regulation_id}")
+        return self._parse_regulation(data)
+
     def list_departments(self) -> list[str]:
         data = self._request("GET", "/api/v1/auth/departments")
         items = data.get("items") or []
@@ -210,6 +277,44 @@ class ApiClient:
             return {}
         return response.json()
 
+    @staticmethod
+    def _parse_regulation(data: dict) -> RegulationParseResult:
+        fragments: list[RegulationFragment] = []
+        for item in data.get("fragments") or []:
+            table_data = item.get("table") if isinstance(item, dict) else None
+            table = None
+            if isinstance(table_data, dict):
+                table = RegulationTable(
+                    headers=[str(x) for x in table_data.get("headers") or []],
+                    rows=[
+                        [str(cell) for cell in row]
+                        for row in table_data.get("rows") or []
+                        if isinstance(row, list)
+                    ],
+                )
+            fragments.append(
+                RegulationFragment(
+                    fragment_id=str(item.get("fragmentId", "")),
+                    page=int(item.get("page") or 1),
+                    section=str(item.get("section") or ""),
+                    kind=str(item.get("kind") or "text"),
+                    text=str(item.get("text") or ""),
+                    table=table,
+                    ocr_confidence=float(item.get("ocrConfidence") or 0.0),
+                )
+            )
+        return RegulationParseResult(
+            regulation_id=str(data.get("regulationId", "")),
+            file_name=str(data.get("fileName", "")),
+            page_count=int(data.get("pageCount") or 0),
+            table_count=int(data.get("tableCount") or 0),
+            section_count=int(data.get("sectionCount") or 0),
+            recognition_quality=float(data.get("recognitionQuality") or 0.0),
+            is_scan=bool(data.get("isScan")),
+            sections=[str(x) for x in data.get("sections") or []],
+            fragments=fragments,
+        )
+
 
 def _extract_detail(response: httpx.Response) -> str:
     try:
@@ -218,7 +323,16 @@ def _extract_detail(response: httpx.Response) -> str:
         if isinstance(detail, str) and detail.strip():
             return detail
         if isinstance(detail, list) and detail:
-            return str(detail[0])
+            first = detail[0]
+            if isinstance(first, dict):
+                msg = first.get("msg") or first.get("message")
+                if msg:
+                    return str(msg)
+            return str(first)
+        if isinstance(detail, dict):
+            msg = detail.get("msg") or detail.get("message")
+            if msg:
+                return str(msg)
     except Exception:
         pass
     if response.status_code == 401:

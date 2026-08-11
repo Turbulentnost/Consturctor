@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from threading import Thread
+
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
@@ -13,10 +15,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import ApiClient, ApiError, UserProfile
+from app.api_client import ApiClient, ApiError, RegulationParseResult, UserProfile
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.my_agents_page import MyAgentsPage
+from app.ui.pages.regulation_review_page import RegulationReviewPage
 from app.ui.pages.settings_page import SettingsPage
 from app.ui.theme import (
     COLOR_CONTENT_BG,
@@ -58,6 +61,8 @@ class MainContentWidget(QFrame):
 
 class MainShell(QWidget):
     logout_requested = Signal()
+    _regulation_ready = Signal(object)
+    _regulation_failed = Signal(str)
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -74,13 +79,20 @@ class MainShell(QWidget):
         self._page_agents = MyAgentsPage()
         self._page_kpi = KpiPage()
         self._page_settings = SettingsPage(self._api)
+        self._page_review = RegulationReviewPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_kpi)
         self._pages.addWidget(self._page_settings)
-        self._page_index = {"create": 0, "agents": 1, "kpi": 2, "settings": 3}
+        self._pages.addWidget(self._page_review)
+        self._page_index = {"create": 0, "agents": 1, "kpi": 2, "settings": 3, "review": 4}
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_create.create_regulation_requested.connect(self._on_create_regulation)
+        self._page_create.regulation_selected.connect(self._on_regulation_selected)
+        self._page_review.back_requested.connect(self._back_to_create)
+        self._page_review.continue_requested.connect(self._on_continue_after_review)
+        self._regulation_ready.connect(self._show_regulation_result)
+        self._regulation_failed.connect(self._show_regulation_error)
 
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
@@ -214,6 +226,40 @@ class MainShell(QWidget):
             self,
             "Создать регламент",
             "Мастер создания регламента с ИИ появится здесь.",
+        )
+
+    def _on_regulation_selected(self, path: str) -> None:
+        self._page_create.set_processing(True)
+
+        def run() -> None:
+            try:
+                result = self._api.upload_regulation(path)
+            except ApiError as exc:
+                self._regulation_failed.emit(exc.message)
+                return
+            self._regulation_ready.emit(result)
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_regulation_result(self, result: object) -> None:
+        self._page_create.set_processing(False)
+        if not isinstance(result, RegulationParseResult):
+            return
+        self._page_review.set_result(result)
+        self._pages.setCurrentIndex(self._page_index["review"])
+
+    def _show_regulation_error(self, message: str) -> None:
+        self._page_create.set_processing(False)
+        QMessageBox.warning(self, "Распознавание регламента", message)
+
+    def _back_to_create(self) -> None:
+        self._pages.setCurrentIndex(self._page_index["create"])
+
+    def _on_continue_after_review(self) -> None:
+        QMessageBox.information(
+            self,
+            "Создание агента",
+            "Следующий шаг создания агента появится здесь.",
         )
 
     def _on_page_changed(self, key: str) -> None:

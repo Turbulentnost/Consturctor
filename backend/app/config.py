@@ -30,13 +30,18 @@ class Settings(BaseSettings):
     api_port: int = 7812
 
     llm_provider: str = "stub"
+    lm_studio_base_url: str = "http://192.168.1.157:1234"
+    lm_studio_model: str = "ministral-3-14b-instruct-2512"
+    ocr_pages_per_batch: int = 3
 
     # App Postgres (users, avatars, future agent data). Not ERP.
     database_url: str = (
         "postgresql+psycopg://constructor:constructor@127.0.0.1:5435/constructor"
     )
     avatar_storage_dir: Path = BACKEND_ROOT / "storage" / "avatars"
+    regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
 
 
 settings = Settings()
 settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
