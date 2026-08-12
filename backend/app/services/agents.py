@@ -9,6 +9,8 @@ from app.models.regulation import AgentDraft, ReadinessRun, RegulationDocument, 
 from app.schemas.regulation import (
     AgentDraftDetail,
     AgentDraftListResult,
+    AgentSuggestion,
+    AgentSuggestionListResult,
     AgentDraftStatusRequest,
     AgentDraftSummary,
     AgentReadinessResult,
@@ -120,7 +122,7 @@ def update_draft_status(
     return _draft_detail(db, draft)
 
 
-def reanalyze_revision_document(db: Session, *, user_id: str, draft_id: str) -> AgentDraftDetail:
+def reanalyze_revision_document(db: Session, *, user_id: str, draft_id: str) -> AgentSuggestionListResult:
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     data = draft.result_json or {}
     source_path = data.get("pdfPath") or data.get("documentPath")
@@ -149,19 +151,18 @@ def reanalyze_revision_document(db: Session, *, user_id: str, draft_id: str) -> 
             position=draft.position,
             department=draft.department,
         )
-        next_draft = create_or_get_draft(
-            db,
-            user_id=user_id,
-            regulation_id=result.regulationId,
-            role_match_run_id=role_result.runId,
-        )
-        stored = _get_draft(db, user_id=user_id, draft_id=next_draft.draftId)
-        stored.status = "ready"
-        stored.progress = 100
-        db.add(stored)
+        suggestions = _agent_suggestions_from_role_result(role_result)
+        draft.status = "ready"
+        draft.progress = 100
+        draft.result_json = {
+            **(draft.result_json or {}),
+            "agentSuggestions": [item.model_dump(mode="json") for item in suggestions],
+            "suggestionRegulationId": result.regulationId,
+            "suggestionRoleMatchRunId": role_result.runId,
+        }
+        db.add(draft)
         db.commit()
-        db.refresh(stored)
-        return _draft_detail(db, stored)
+        return AgentSuggestionListResult(items=suggestions)
     except AgentDraftError:
         raise
     except (RegulationError, RoleMatchError) as exc:
@@ -170,6 +171,59 @@ def reanalyze_revision_document(db: Session, *, user_id: str, draft_id: str) -> 
         raise AgentDraftError(message, status_code=status_code) from exc
     except Exception as exc:  # noqa: BLE001
         raise AgentDraftError(f"Не удалось повторно проанализировать документ: {exc}") from exc
+
+
+def _agent_suggestions_from_role_result(role_result: RoleMatchResult) -> list[AgentSuggestion]:
+    functions = role_result.functions or [
+        match.function
+        for match in role_result.matches
+        if match.function is not None and match.status != "rejected"
+    ]
+    suggestions: list[AgentSuggestion] = []
+    seen: set[str] = set()
+    for index, function in enumerate(functions, start=1):
+        if function is None or not function.isFunction:
+            continue
+        key = function.duplicateGroup or function.functionId or f"{function.action}:{function.object}"
+        if key in seen:
+            continue
+        seen.add(key)
+        title = _agent_title_from_function(function, index)
+        suggestions.append(
+            AgentSuggestion(
+                agentId=f"agent-suggestion-{index:03d}",
+                title=title,
+                description=_agent_description_from_function(function),
+                regulationId=role_result.regulationId,
+                roleMatchRunId=role_result.runId,
+                functionId=function.functionId,
+                sourceBlockId=function.targetBlockId,
+            )
+        )
+    return suggestions
+
+
+def _agent_title_from_function(function, index: int) -> str:
+    action = (function.action or "").strip()
+    obj = (function.object or "").strip()
+    if action and obj:
+        return f"ИИ-агент: {action} {obj}"[:180]
+    if action:
+        return f"ИИ-агент: {action}"[:180]
+    return f"ИИ-агент для бизнес-процесса {index}"
+
+
+def _agent_description_from_function(function) -> str:
+    parts = []
+    if function.actor and function.actor.canonicalPosition:
+        parts.append(f"Роль: {function.actor.canonicalPosition}")
+    if function.conditions:
+        parts.append("Условия: " + "; ".join(function.conditions[:2]))
+    if function.recipient:
+        parts.append(f"Получатель/участник: {function.recipient}")
+    if function.explanation:
+        parts.append(function.explanation)
+    return "\n".join(part for part in parts if part).strip()
 
 
 def sync_draft_progress(db: Session, *, draft_id: str, readiness: AgentReadinessResult) -> None:
@@ -193,6 +247,12 @@ def _draft_detail(db: Session, draft: AgentDraft) -> AgentDraftDetail:
 
 
 def _draft_summary(draft: AgentDraft) -> AgentDraftSummary:
+    suggestions_raw = (draft.result_json or {}).get("agentSuggestions") or []
+    suggestions = [
+        AgentSuggestion.model_validate(item)
+        for item in suggestions_raw
+        if isinstance(item, dict)
+    ]
     return AgentDraftSummary(
         draftId=draft.id,
         regulationId=draft.regulation_id,
@@ -203,6 +263,7 @@ def _draft_summary(draft: AgentDraft) -> AgentDraftSummary:
         department=draft.department,
         status=draft.status,
         progress=draft.progress,
+        agentSuggestions=suggestions,
         updatedAt=draft.updated_at,
         createdAt=draft.created_at,
     )

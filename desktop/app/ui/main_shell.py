@@ -27,6 +27,7 @@ from app.api_client import (
     RegulationRevisionResult,
     RoleMatchResult,
     AgentDraft,
+    AgentSuggestion,
     QuestionChatMessage,
     QuestionChatSession,
     UserProfile,
@@ -807,13 +808,12 @@ class MainShell(QWidget):
 
         def run() -> None:
             try:
-                self._api.reanalyze_revision_document(draft_id)
-                drafts = self._api.list_agent_drafts()
+                suggestions = self._api.reanalyze_revision_document(draft_id)
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
             self._supplement_in_progress = False
-            self._agents_table_ready.emit(drafts)
+            self._agents_table_ready.emit(suggestions)
 
         Thread(target=run, daemon=True).start()
 
@@ -926,7 +926,9 @@ class MainShell(QWidget):
             self._page_agents.set_drafts([item for item in result if isinstance(item, AgentDraft)])
 
     def _show_agents_table_result(self, result: object) -> None:
-        if isinstance(result, list):
+        if isinstance(result, list) and all(isinstance(item, AgentSuggestion) for item in result):
+            self._page_agents.set_agent_suggestions(result)
+        elif isinstance(result, list):
             self._page_agents.set_drafts([item for item in result if isinstance(item, AgentDraft)])
         self._pages.setCurrentIndex(self._page_index["agents"])
 

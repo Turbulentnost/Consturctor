@@ -254,8 +254,20 @@ class AgentDraft:
     status: str
     progress: int
     readiness: AgentReadinessResult | None = None
+    agent_suggestions: list[AgentSuggestion] | None = None
     updated_at: datetime | None = None
     created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSuggestion:
+    agent_id: str
+    title: str
+    description: str
+    regulation_id: str
+    role_match_run_id: str
+    function_id: str
+    source_block_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -581,13 +593,29 @@ class ApiClient:
         )
         return self._parse_agent_draft(data)
 
-    def reanalyze_revision_document(self, draft_id: str) -> AgentDraft:
+    def reanalyze_revision_document(self, draft_id: str) -> list[AgentSuggestion]:
         data = self._request(
             "POST",
             f"/api/v1/agents/drafts/{draft_id}/reanalyze-revision",
             timeout=max(self._timeout, 420.0),
         )
-        return self._parse_agent_draft(data)
+        return [
+            self._parse_agent_suggestion(item)
+            for item in data.get("items") or []
+            if isinstance(item, dict)
+        ]
+
+    @staticmethod
+    def _parse_agent_suggestion(data: dict) -> AgentSuggestion:
+        return AgentSuggestion(
+            agent_id=str(data.get("agentId") or ""),
+            title=str(data.get("title") or ""),
+            description=str(data.get("description") or ""),
+            regulation_id=str(data.get("regulationId") or ""),
+            role_match_run_id=str(data.get("roleMatchRunId") or ""),
+            function_id=str(data.get("functionId") or ""),
+            source_block_id=str(data.get("sourceBlockId") or ""),
+        )
 
     def create_question_chat(self, draft_id: str, question_id: str) -> QuestionChatSession:
         data = self._request(
@@ -923,6 +951,11 @@ class ApiClient:
         readiness_raw = data.get("readiness")
         updated_at = _parse_datetime(data.get("updatedAt"))
         created_at = _parse_datetime(data.get("createdAt"))
+        suggestions = [
+            ApiClient._parse_agent_suggestion(item)
+            for item in data.get("agentSuggestions") or []
+            if isinstance(item, dict)
+        ]
         return AgentDraft(
             draft_id=str(data.get("draftId") or ""),
             regulation_id=str(data.get("regulationId") or ""),
@@ -934,6 +967,7 @@ class ApiClient:
             status=str(data.get("status") or "draft"),
             progress=int(data.get("progress") or 0),
             readiness=ApiClient._parse_readiness(readiness_raw) if isinstance(readiness_raw, dict) else None,
+            agent_suggestions=suggestions,
             updated_at=updated_at,
             created_at=created_at,
         )

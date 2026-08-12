@@ -9,6 +9,7 @@ from app.db.session import get_db
 from app.schemas.regulation import (
     AgentDraftDetail,
     AgentDraftListResult,
+    AgentSuggestionListResult,
     AgentDraftStatusRequest,
     QuestionChatSendRequest,
     QuestionChatSessionResult,
@@ -92,12 +93,12 @@ async def update_agent_draft_status(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
-@router.post("/drafts/{draft_id}/reanalyze-revision", response_model=AgentDraftDetail)
+@router.post("/drafts/{draft_id}/reanalyze-revision", response_model=AgentSuggestionListResult)
 async def reanalyze_agent_draft_revision(
     draft_id: str,
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> AgentDraftDetail:
+) -> AgentSuggestionListResult:
     try:
         return reanalyze_revision_document(db, user_id=auth.user_id, draft_id=draft_id)
     except (AgentDraftError, ReadinessError) as exc:

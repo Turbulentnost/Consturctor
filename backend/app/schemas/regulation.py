@@ -469,6 +469,20 @@ QuestionChatStatus = Literal["active", "answered", "needs_clarification", "close
 QuestionChatRole = Literal["assistant", "user", "system"]
 
 
+class AgentSuggestion(BaseModel):
+    agentId: str
+    title: str
+    description: str = ""
+    regulationId: str = ""
+    roleMatchRunId: str = ""
+    functionId: str = ""
+    sourceBlockId: str = ""
+
+
+class AgentSuggestionListResult(BaseModel):
+    items: list[AgentSuggestion] = Field(default_factory=list)
+
+
 class AgentDraftSummary(BaseModel):
     draftId: str
     regulationId: str
@@ -479,6 +493,7 @@ class AgentDraftSummary(BaseModel):
     department: str = ""
     status: AgentDraftStatus = "draft"
     progress: int = Field(default=0, ge=0, le=100)
+    agentSuggestions: list[AgentSuggestion] = Field(default_factory=list)
     updatedAt: datetime | None = None
     createdAt: datetime | None = None
 
