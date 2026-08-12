@@ -572,6 +572,23 @@ class ApiClient:
         )
         return self._parse_agent_draft(data)
 
+    def update_agent_draft_status(self, draft_id: str, status: str) -> AgentDraft:
+        data = self._request(
+            "PATCH",
+            f"/api/v1/agents/drafts/{draft_id}/status",
+            json={"status": status},
+            timeout=max(self._timeout, 60.0),
+        )
+        return self._parse_agent_draft(data)
+
+    def reanalyze_revision_document(self, draft_id: str) -> AgentDraft:
+        data = self._request(
+            "POST",
+            f"/api/v1/agents/drafts/{draft_id}/reanalyze-revision",
+            timeout=max(self._timeout, 420.0),
+        )
+        return self._parse_agent_draft(data)
+
     def create_question_chat(self, draft_id: str, question_id: str) -> QuestionChatSession:
         data = self._request(
             "POST",

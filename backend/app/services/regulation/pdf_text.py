@@ -118,14 +118,16 @@ def _span_style_run(span: dict) -> dict[str, object]:
     font_name = str(span.get("font") or "")
     flags = int(span.get("flags") or 0)
     bbox = [float(value) for value in span.get("bbox") or (0, 0, 0, 0)]
+    font_marker = font_name.casefold()
     return {
         "text": str(span.get("text") or ""),
         "bbox": bbox,
         "origin": [float(value) for value in span.get("origin") or (bbox[0], bbox[1])],
         "fontName": font_name,
         "fontSize": float(span.get("size") or 0),
-        "isBold": "bold" in font_name.casefold(),
-        "isItalic": "italic" in font_name.casefold() or "oblique" in font_name.casefold() or bool(flags & 2),
+        "isBold": any(marker in font_marker for marker in ("bold", "black", "demi", "semibold", "-bd"))
+        or bool(flags & 16),
+        "isItalic": "italic" in font_marker or "oblique" in font_marker or bool(flags & 2),
         "color": int(span.get("color") or 0),
     }
 

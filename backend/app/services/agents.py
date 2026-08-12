@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -14,6 +15,8 @@ from app.schemas.regulation import (
     RoleMatchResult,
 )
 from app.services.readiness.service import create_readiness_run
+from app.services.regulation import RegulationError, parse_upload
+from app.services.role_matching import RoleMatchError, create_role_match_run
 
 
 class AgentDraftError(Exception):
@@ -115,6 +118,58 @@ def update_draft_status(
     db.commit()
     db.refresh(draft)
     return _draft_detail(db, draft)
+
+
+def reanalyze_revision_document(db: Session, *, user_id: str, draft_id: str) -> AgentDraftDetail:
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    data = draft.result_json or {}
+    source_path = data.get("pdfPath") or data.get("documentPath")
+    if not source_path:
+        raise AgentDraftError("Сформированный документ для повторного анализа не найден", status_code=404)
+    path = Path(str(source_path))
+    if not path.is_file():
+        raise AgentDraftError("Файл сформированного документа не найден", status_code=404)
+    content_type = "application/pdf" if path.suffix.casefold() == ".pdf" else (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if path.suffix.casefold() == ".docx"
+        else "application/octet-stream"
+    )
+    try:
+        result = parse_upload(
+            db,
+            user_id=user_id,
+            filename=path.name,
+            content_type=content_type,
+            data=path.read_bytes(),
+        )
+        role_result = create_role_match_run(
+            db,
+            user_id=user_id,
+            regulation_id=result.regulationId,
+            position=draft.position,
+            department=draft.department,
+        )
+        next_draft = create_or_get_draft(
+            db,
+            user_id=user_id,
+            regulation_id=result.regulationId,
+            role_match_run_id=role_result.runId,
+        )
+        stored = _get_draft(db, user_id=user_id, draft_id=next_draft.draftId)
+        stored.status = "ready"
+        stored.progress = 100
+        db.add(stored)
+        db.commit()
+        db.refresh(stored)
+        return _draft_detail(db, stored)
+    except AgentDraftError:
+        raise
+    except (RegulationError, RoleMatchError) as exc:
+        status_code = getattr(exc, "status_code", 400)
+        message = getattr(exc, "message", str(exc))
+        raise AgentDraftError(message, status_code=status_code) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise AgentDraftError(f"Не удалось повторно проанализировать документ: {exc}") from exc
 
 
 def sync_draft_progress(db: Session, *, draft_id: str, readiness: AgentReadinessResult) -> None:

@@ -20,6 +20,7 @@ from app.services.agents import (
     ensure_draft_readiness,
     get_draft,
     list_drafts,
+    reanalyze_revision_document,
     update_draft_status,
 )
 from app.services.readiness.chat import (
@@ -88,6 +89,18 @@ async def update_agent_draft_status(
     try:
         return update_draft_status(db, user_id=auth.user_id, draft_id=draft_id, request=request)
     except AgentDraftError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/drafts/{draft_id}/reanalyze-revision", response_model=AgentDraftDetail)
+async def reanalyze_agent_draft_revision(
+    draft_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentDraftDetail:
+    try:
+        return reanalyze_revision_document(db, user_id=auth.user_id, draft_id=draft_id)
+    except (AgentDraftError, ReadinessError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 

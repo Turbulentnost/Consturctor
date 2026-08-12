@@ -34,6 +34,7 @@ class PageImageLabel(QLabel):
 
 class RevisionResultPage(QWidget):
     download_requested = Signal(str)
+    next_requested = Signal()
 
     def __init__(self, api: ApiClient | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -79,23 +80,18 @@ class RevisionResultPage(QWidget):
         self._summary.setFont(app_font(12))
         self._summary.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
 
-        download = QPushButton("Скачать DOCX")
-        download.setCursor(Qt.CursorShape.PointingHandCursor)
-        download.setStyleSheet(_primary_button_qss())
-        download.clicked.connect(lambda: self.download_requested.emit("document"))
-        self._pdf_download = QPushButton("Скачать PDF")
-        self._pdf_download.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._pdf_download.setStyleSheet(_primary_button_qss())
-        self._pdf_download.clicked.connect(lambda: self.download_requested.emit("pdf"))
-        protocol = QPushButton("Скачать протокол")
-        protocol.setCursor(Qt.CursorShape.PointingHandCursor)
-        protocol.setStyleSheet(_secondary_button_qss())
-        protocol.clicked.connect(lambda: self.download_requested.emit("protocol"))
+        self._download_document = QPushButton("Скачать сформированный документ")
+        self._download_document.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._download_document.setStyleSheet(_primary_button_qss())
+        self._download_document.clicked.connect(self._download_generated_document)
+        next_step = QPushButton("Далее")
+        next_step.setCursor(Qt.CursorShape.PointingHandCursor)
+        next_step.setStyleSheet(_primary_button_qss())
+        next_step.clicked.connect(self.next_requested.emit)
 
         actions = QHBoxLayout()
-        actions.addWidget(self._pdf_download)
-        actions.addWidget(download)
-        actions.addWidget(protocol)
+        actions.addWidget(self._download_document)
+        actions.addWidget(next_step)
         actions.addStretch(1)
 
         self._changes_wrap = QWidget()
@@ -126,7 +122,7 @@ class RevisionResultPage(QWidget):
 
     def set_result(self, result: RegulationRevisionResult) -> None:
         self._result = result
-        self._pdf_download.setVisible(bool(result.pdf_download_url))
+        self._summary.setVisible(False)
         changed_pages = {item.page for item in result.diff_blocks if item.page}
         self._render_change_nav()
         if result.source_preview_pages and result.revised_preview_pages and self._api is not None:
@@ -147,10 +143,14 @@ class RevisionResultPage(QWidget):
         else:
             self._render_html_fallback(self._source_pages, result.source_preview_html, "Исходный preview недоступен.")
             self._render_html_fallback(self._revised_pages, result.revised_preview_html, "Исправленный preview недоступен.")
-        changed = len([item for item in result.diff_blocks if item.status == "changed"])
-        self._summary.setText(f"{result.message}\nИзменённых блоков: {changed}")
         if changed_pages:
             QTimer.singleShot(0, lambda page=min(changed_pages): self._scroll_to_page(page))
+
+    def _download_generated_document(self) -> None:
+        if self._result is None:
+            return
+        kind = "pdf" if self._result.pdf_download_url else "document"
+        self.download_requested.emit(kind)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)

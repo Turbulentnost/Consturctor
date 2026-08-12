@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import html
 import json
+import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,9 @@ from app.config import settings
 from app.schemas.regulation import AgentReadinessResult, RegulationParseResult, RevisionDiffBlock
 from app.services.regulation.pdf_text import extract_pdf_text
 from app.services.role_matching.claudehub_client import _load_json, _post_json_with_model
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_llm_revision_files(
@@ -245,6 +250,7 @@ def _write_pdf_revision_assets(
             out.save(str(pdf_path), garbage=4, deflate=True)
             out.close()
     except Exception:
+        logger.exception("Failed to create PDF revision assets for source=%s output=%s", source_path, pdf_path)
         return None, [], []
 
     source_pages = _render_pdf_preview_pages(source_path, output_dir / "preview" / "source")
@@ -350,12 +356,23 @@ def _replace_fragment_text(doc, fragment, text: str) -> None:
     rect = fitz.Rect(*[float(value) for value in fragment.bbox[:4]])
     page.add_redact_annot(rect, fill=(1, 1, 1))
     page.apply_redactions()
-    fontsize = max(7.0, min(float(fragment.fontSize or 10.0), 12.0))
-    page.insert_textbox(rect, text, fontsize=fontsize, color=(0, 0, 0), align=0, **_pdf_font_kwargs())
+    style = _line_style(_fragment_style(fragment), text)
+    fontsize = max(7.0, min(float(style["fontSize"] or fragment.fontSize or 10.0), 12.0))
+    page.insert_textbox(
+        rect,
+        text,
+        fontsize=fontsize,
+        color=_pdf_color_tuple(style["color"]),
+        align=0,
+        **_pdf_font_kwargs(style),
+    )
 
 
 def _text_fits_bbox(fragment, text: str) -> bool:
     if not fragment.bbox or len(fragment.bbox) < 4:
+        return False
+    lines = _meaningful_lines(text)
+    if len(lines) > 1 and any(_is_regulation_heading_line(line) for line in lines):
         return False
     x0, y0, x1, y1 = [float(value) for value in fragment.bbox[:4]]
     width = max(1.0, x1 - x0)
@@ -363,7 +380,7 @@ def _text_fits_bbox(fragment, text: str) -> bool:
     fontsize = max(7.0, min(float(fragment.fontSize or 10.0), 12.0))
     chars_per_line = max(12, int(width / (fontsize * 0.48)))
     required_lines = 0
-    for line in _meaningful_lines(text):
+    for line in lines:
         required_lines += max(1, (len(line) + chars_per_line - 1) // chars_per_line)
     available_lines = max(1, int(height / (fontsize * 1.25)))
     return required_lines <= available_lines
@@ -398,18 +415,21 @@ def _write_styled_page_reconstruction(doc, source_rect, fragments, revised_block
         x = style["x"]
         y = y_cursor + fontsize if was_flowing else max(y_cursor + fontsize, style["y"] + y_shift)
         width = max(80.0, source_rect.width - x - margin)
-        for line in _wrap_pdf_text(text, width, fontsize):
-            if y > page_bottom:
-                page = doc.new_page(width=source_rect.width, height=source_rect.height)
-                y = margin + fontsize
-            page.insert_text(
-                (x, y),
-                line,
-                fontsize=fontsize,
-                color=_pdf_color_tuple(style["color"]),
-                **_pdf_font_kwargs(style),
-            )
-            y += line_height
+        for paragraph in _meaningful_lines(text):
+            paragraph_style = _line_style(style, paragraph)
+            paragraph_fontsize = float(paragraph_style["fontSize"])
+            for line in _wrap_pdf_text(paragraph, width, paragraph_fontsize):
+                if y > page_bottom:
+                    page = doc.new_page(width=source_rect.width, height=source_rect.height)
+                    y = margin + paragraph_fontsize
+                page.insert_text(
+                    (x, y),
+                    line,
+                    fontsize=paragraph_style["fontSize"],
+                    color=_pdf_color_tuple(paragraph_style["color"]),
+                    **_pdf_font_kwargs(paragraph_style),
+                )
+                y += max(line_height, paragraph_fontsize * 1.35)
         original_bottom = _fragment_bottom(fragment) + y_shift
         if y > original_bottom:
             y_shift += y - original_bottom
@@ -428,7 +448,7 @@ def _write_style_runs_in_flow(doc, page, source_rect, runs: list[dict], y_cursor
             current_page = doc.new_page(width=source_rect.width, height=source_rect.height)
             y = margin + line_style["fontSize"]
         for run in line_runs:
-            style = _run_style(run)
+            style = _style_for_text(_run_style(run), str(run.get("text") or ""))
             current_page.insert_text(
                 (style["x"], y),
                 str(run.get("text") or ""),
@@ -487,7 +507,7 @@ def _run_style(run: dict) -> dict[str, object]:
     origin = run.get("origin") or []
     bbox = run.get("bbox") or []
     font_size = float(run.get("fontSize") or 10.0)
-    return {
+    style = {
         "x": float(origin[0] if len(origin) >= 2 else bbox[0] if len(bbox) >= 2 else 42.0),
         "y": float(origin[1] if len(origin) >= 2 else bbox[1] + font_size if len(bbox) >= 2 else 42.0),
         "fontSize": max(7.0, min(font_size, 18.0)),
@@ -496,6 +516,7 @@ def _run_style(run: dict) -> dict[str, object]:
         "isItalic": bool(run.get("isItalic")),
         "color": int(run.get("color") or 0),
     }
+    return _style_for_text(style, str(run.get("text") or ""))
 
 
 def _run_bottom(run: dict) -> float:
@@ -518,7 +539,7 @@ def _fragment_style(fragment) -> dict[str, object]:
     bbox = fragment.bbox or run.get("bbox") or [42, 42, 0, 0]
     origin = run.get("origin") or []
     font_size = float(run.get("fontSize") or fragment.fontSize or 10.0)
-    return {
+    style = {
         "x": float(origin[0] if len(origin) >= 2 else bbox[0] if len(bbox) >= 2 else 42.0),
         "y": float(origin[1] if len(origin) >= 2 else bbox[1] + font_size if len(bbox) >= 2 else 42.0),
         "fontSize": max(7.0, min(font_size, 18.0)),
@@ -527,6 +548,23 @@ def _fragment_style(fragment) -> dict[str, object]:
         "isItalic": bool(run.get("isItalic")),
         "color": int(run.get("color") or 0),
     }
+    return _style_for_text(style, str(fragment.text or ""))
+
+
+def _line_style(base: dict[str, object], line: str) -> dict[str, object]:
+    return _style_for_text(base, line)
+
+
+def _style_for_text(base: dict[str, object], text: str) -> dict[str, object]:
+    style = dict(base)
+    if _is_regulation_heading_line(text):
+        style["isBold"] = True
+        style["fontSize"] = max(float(style.get("fontSize") or 0), 12.0)
+    return style
+
+
+def _is_regulation_heading_line(line: str) -> bool:
+    return bool(re.match(r"^\s*\d+(?:\.\d+)*\s+\S", line))
 
 
 def _pdf_color_tuple(value: int) -> tuple[float, float, float]:
@@ -592,8 +630,19 @@ def _pdf_font_kwargs(style: dict[str, object] | None = None) -> dict[str, str]:
     )
     for font_path in (path for path in windows_fonts if path is not None):
         if font_path.is_file():
-            return {"fontname": "revision-font", "fontfile": str(font_path)}
+            return {"fontname": _pdf_font_alias(font_path), "fontfile": str(font_path)}
+    if bold and italic:
+        return {"fontname": "hebi"}
+    if bold:
+        return {"fontname": "hebo"}
+    if italic:
+        return {"fontname": "heit"}
     return {"fontname": "helv"}
+
+
+def _pdf_font_alias(font_path: Path) -> str:
+    name = re.sub(r"[^a-z0-9]+", "-", font_path.stem.casefold()).strip("-")
+    return f"revision-{name or 'font'}"
 
 
 def _page_text_from_fragments(fragments, revised_blocks: dict[str, str]) -> str:

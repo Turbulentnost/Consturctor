@@ -40,6 +40,10 @@ class ChatInput(QTextEdit):
                 padding: 12px 54px 12px 14px;
                 color: #101817;
             }
+            QTextEdit:disabled {
+                background: #F4F7F6;
+                color: #8B9692;
+            }
             """
         )
 
@@ -60,6 +64,8 @@ class ReadinessPage(QWidget):
     chat_message_requested = Signal(str, str)
     change_decision_requested = Signal(str, str, str)
     finalize_requested = Signal()
+    skip_to_agents_requested = Signal()
+    supplement_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -69,6 +75,7 @@ class ReadinessPage(QWidget):
         self._size_bucket: tuple[int, int] = (-1, -1)
         self._chat_session_id = ""
         self._chat_stick_to_bottom = True
+        self._show_supplement_choice = False
 
         self._content = QVBoxLayout()
         self._content.setContentsMargins(0, 0, 0, 0)
@@ -100,6 +107,10 @@ class ReadinessPage(QWidget):
         self._result = result
         self._render()
 
+    def set_supplement_choice(self, enabled: bool) -> None:
+        self._show_supplement_choice = enabled
+        self._render()
+
     def set_chat(self, chat: QuestionChatSession | None) -> None:
         session_id = chat.session_id if chat is not None else ""
         if session_id != self._chat_session_id:
@@ -120,6 +131,11 @@ class ReadinessPage(QWidget):
 
         self._content.addWidget(self._header())
         self._content.addWidget(self._progress_card(self._result.score, answered_count))
+
+        if self._show_supplement_choice:
+            self._content.addWidget(self._supplement_choice_card())
+            self._content.addStretch(1)
+            return
 
         body = QHBoxLayout()
         body.setSpacing(24)
@@ -149,6 +165,40 @@ class ReadinessPage(QWidget):
         body_wrap.setLayout(body)
         self._content.addWidget(body_wrap, 1)
         self._content.addStretch(1)
+
+    def _supplement_choice_card(self) -> QWidget:
+        card = _soft_card()
+        card.setMaximumWidth(760)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(14)
+
+        title = QLabel("Система выявила неполноту регламента")
+        title.setFont(app_font(20, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        title.setWordWrap(True)
+        message = QLabel("Хотите дополнить регламент перед созданием ИИ-агента?")
+        message.setFont(app_font(14))
+        message.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        message.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(message)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        skip = QPushButton("Нет, к ИИ-агентам")
+        skip.setCursor(Qt.CursorShape.PointingHandCursor)
+        skip.setStyleSheet(_secondary_button_qss())
+        skip.clicked.connect(self.skip_to_agents_requested.emit)
+        supplement = QPushButton("Дописать")
+        supplement.setCursor(Qt.CursorShape.PointingHandCursor)
+        supplement.setStyleSheet(_primary_button_qss())
+        supplement.clicked.connect(self.supplement_requested.emit)
+        actions.addWidget(skip)
+        actions.addWidget(supplement)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        return card
 
     def _header(self) -> QWidget:
         wrap = QWidget()
@@ -426,6 +476,9 @@ class ReadinessPage(QWidget):
 
         left = _hint_scroll_button("<")
         right = _hint_scroll_button(">")
+        disabled = self._is_generating_question(question)
+        left.setEnabled(not disabled)
+        right.setEnabled(not disabled)
 
         content = QWidget()
         content.setStyleSheet("background: transparent;")
@@ -439,6 +492,7 @@ class ReadinessPage(QWidget):
         ]
         for option in options:
             btn = _quick_answer_button(option, primary=True)
+            btn.setEnabled(not disabled)
             btn.clicked.connect(
                 lambda _checked=False, qid=self._chat_target_question_id(question), value=option: self.chat_message_requested.emit(
                     qid,
@@ -480,9 +534,14 @@ class ReadinessPage(QWidget):
         row = QHBoxLayout(wrap)
         row.setContentsMargins(0, 0, 0, 0)
         self._input = ChatInput()
+        disabled = self._is_generating_question(question)
+        self._input.setEnabled(not disabled)
+        if disabled:
+            self._input.setPlaceholderText("Дождитесь, пока ИИ сформирует вопрос...")
         send = QPushButton("➤")
         send.setFixedSize(46, 46)
         send.setCursor(Qt.CursorShape.PointingHandCursor)
+        send.setEnabled(not disabled)
         send.setStyleSheet(
             """
             QPushButton {
@@ -493,11 +552,17 @@ class ReadinessPage(QWidget):
                 font-size: 18px;
             }
             QPushButton:hover { background: #0A806A; }
+            QPushButton:disabled {
+                background: #C8D6D2;
+                color: #FFFFFF;
+            }
             """
         )
 
         def submit() -> None:
             if self._input is None:
+                return
+            if self._is_generating_question(question):
                 return
             text = self._input.toPlainText().strip()
             if text:
@@ -516,6 +581,9 @@ class ReadinessPage(QWidget):
         return self._chat.question_id == question.question_id or (
             bool(self._chat.function_id) and self._chat.function_id == question.function_id
         )
+
+    def _is_generating_question(self, question: ReadinessQuestion) -> bool:
+        return self._chat_matches(question) and self._chat is not None and self._chat.status == "generating"
 
     def _chat_target_question_id(self, question: ReadinessQuestion) -> str:
         if self._chat_matches(question) and self._chat is not None:
@@ -750,6 +818,11 @@ def _hint_scroll_button(text: str) -> QPushButton:
             border-radius: 12px;
         }
         QPushButton:hover { background: rgba(8,116,95,0.06); }
+        QPushButton:disabled {
+            background: #F4F7F6;
+            color: #8B9692;
+            border: 1px solid rgba(16,24,23,0.08);
+        }
         """
     )
     return btn
@@ -877,6 +950,11 @@ def _chip_qss(*, primary: bool) -> str:
         padding: 8px 10px;
     }}
     QPushButton:hover {{ background: rgba(8,116,95,0.10); }}
+    QPushButton:disabled {{
+        background: #F4F7F6;
+        color: #8B9692;
+        border: 1px solid rgba(16,24,23,0.08);
+    }}
     """
 
 

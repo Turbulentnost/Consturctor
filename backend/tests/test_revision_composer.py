@@ -444,8 +444,16 @@ def test_revision_composer_reconstructs_styled_page(monkeypatch, tmp_path) -> No
             for line in block.get("lines") or []
             for span in line.get("spans") or []
         ]
+        heading_fonts = [
+            str(span.get("font") or "")
+            for block in doc[0].get_text("dict").get("blocks") or []
+            for line in block.get("lines") or []
+            for span in line.get("spans") or []
+            if "Styled heading" in str(span.get("text") or "").replace("\xa0", " ")
+        ]
         assert 16 in sizes
         assert 10 in sizes
+        assert any("Bold" in font for font in heading_fonts)
 
 
 def test_revision_composer_enriches_old_fragments_from_source_pdf(monkeypatch, tmp_path) -> None:
@@ -525,6 +533,83 @@ def test_revision_composer_enriches_old_fragments_from_source_pdf(monkeypatch, t
             for span in line.get("spans") or []
         ]
         assert 16 in sizes
+
+
+def test_revision_composer_keeps_heading_bold_inside_changed_text(monkeypatch, tmp_path) -> None:
+    pytest.importorskip("docx")
+    fitz = pytest.importorskip("fitz")
+
+    source = tmp_path / "heading-bold.pdf"
+    _write_sample_pdf(fitz, source, ["5.2 Original heading\n- original item"])
+    result = RegulationParseResult(
+        regulationId="reg-revision",
+        fileName="heading-bold.pdf",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[
+            RegulationFragment(
+                fragmentId="B-001",
+                page=1,
+                section="5.2",
+                text="5.2 Original heading\n- original item",
+                bbox=[50, 45, 260, 80],
+                fontSize=12,
+                styleRuns=[
+                    {
+                        "text": "5.2 Original heading",
+                        "bbox": [50, 45, 220, 65],
+                        "origin": [50, 60],
+                        "fontName": "TimesNewRomanPSMT",
+                        "fontSize": 12,
+                        "isBold": False,
+                        "isItalic": False,
+                        "color": 0,
+                    }
+                ],
+            )
+        ],
+    )
+    readiness = AgentReadinessResult(
+        readinessRunId="ready-run",
+        regulationId="reg-revision",
+        roleMatchRunId="role-run",
+        changes=[
+            RegulationChangeDraft(
+                changeId="CH-001",
+                targetBlockId="B-001",
+                before="5.2 Original heading\n- original item",
+                after="5.2 Revised heading\n- original item\n- added item",
+                status="pending",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        revision_composer,
+        "_post_json_with_model",
+        lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    _docx, _protocol, pdf_path, _message, _source_html, _revised_html, _diff, _source_pages, _revised_pages = (
+        revision_composer.create_llm_revision_files(
+            source_path=source,
+            output_dir=tmp_path / "revision",
+            result=result,
+            readiness=readiness,
+        )
+    )
+
+    assert pdf_path is not None
+    with fitz.open(str(pdf_path)) as revised:
+        spans = [
+            span
+            for block in revised[0].get_text("dict").get("blocks") or []
+            for line in block.get("lines") or []
+            for span in line.get("spans") or []
+        ]
+        heading_span = next(
+            span for span in spans if "Revised heading" in str(span.get("text") or "").replace("\xa0", " ")
+        )
+        assert "Bold" in str(heading_span.get("font") or "")
 
 
 def test_revision_composer_scan_fallback_replaces_only_changed_page(monkeypatch, tmp_path) -> None:
