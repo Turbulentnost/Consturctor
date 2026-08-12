@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -10,6 +12,10 @@ class UserOut(BaseModel):
     id: str
     fio: str
     department: str = ""
+    position: str = ""
+    avatar_url: str | None = None
+    can_change_department: bool = True
+    department_change_available_at: datetime | None = None
 
 
 class LoginResponse(BaseModel):
@@ -20,3 +26,11 @@ class LoginResponse(BaseModel):
 
 class UserFioListResponse(BaseModel):
     items: list[str]
+
+
+class DepartmentListResponse(BaseModel):
+    items: list[str]
+
+
+class UpdateDepartmentRequest(BaseModel):
+    department: str = Field(..., min_length=1, max_length=512)

@@ -62,3 +62,6 @@ celerybeat.pid
 # --- ERP export dumps (may contain password hashes) ---
 backend/scripts/exports/*
 !backend/scripts/exports/.gitkeep
+
+# --- App uploads (regulations, avatars) ---
+backend/storage/

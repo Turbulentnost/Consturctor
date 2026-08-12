@@ -1,4 +1,4 @@
-# Constructor — конструктор ИИ-агентов
+# turbobot — конструктор ИИ-агентов
 
 > **Для агента-разработчика (карта репо, tools, API):** см. **[AGENT_BUILDER.md](AGENT_BUILDER.md)** — начните с этого файла.
 
@@ -9,7 +9,7 @@
 | Desktop | [`desktop/`](desktop/) | Программа для пользователя (PySide6): вход и рабочий экран |
 | Backend | [`backend/`](backend/) | API: аутентификация через 1С, health, доступ к LLM/VLM |
 
-Данные пользователей и пароли **не хранятся** в Constructor — источник истины база 1С **`erp_pm`** на SQL Server.
+Данные пользователей и пароли **не хранятся** в turbobot — источник истины база 1С **`erp_pm`** на SQL Server.
 
 ---
 
@@ -143,7 +143,7 @@ scripts\start_platform_all.cmd
 ### Backend
 
 ```powershell
-cd c:\Users\testii\Downloads\projects_Mangasaryan\Constructor\backend
+cd c:\Users\testii\Downloads\projects_Mangasaryan\turbobot\backend
 python -m pip install -e .
 copy .env.example .env
 python -m app.main
@@ -154,7 +154,7 @@ python -m app.main
 ### Desktop
 
 ```powershell
-cd c:\Users\testii\Downloads\projects_Mangasaryan\Constructor\desktop
+cd c:\Users\testii\Downloads\projects_Mangasaryan\turbobot\desktop
 python -m pip install -r requirements.txt
 copy .env.example .env
 python main.py

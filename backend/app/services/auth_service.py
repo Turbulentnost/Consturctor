@@ -10,11 +10,13 @@ from app.clients.erp_sql import (
     find_user_by_fio,
     find_user_by_id,
     get_user_profile_by_fio,
+    list_departments,
     search_user_fios,
 )
 from app.config import settings
 from app.core.jwt import create_access_token
 from app.schemas.auth import LoginResponse, UserOut
+from app.services import app_users
 from tools.onec.password import verify_password
 
 logger = logging.getLogger(__name__)
@@ -41,12 +43,32 @@ def _stub_login(fio: str) -> LoginResponse:
         user_id="auth-stub",
         fio=fio,
         department="Demo (AUTH_STUB)",
+        position="",
     )
     logger.info("AUTH_STUB login: fio=%s", fio)
     return LoginResponse(
         access_token=token,
-        user=UserOut(id="auth-stub", fio=fio, department="Demo (AUTH_STUB)"),
+        user=UserOut(
+            id="auth-stub",
+            fio=fio,
+            department="Demo (AUTH_STUB)",
+            position="",
+        ),
     )
+
+
+def _to_user_out(*, user_id: str, fio: str, department: str, position: str = "") -> UserOut:
+    try:
+        app_user = app_users.upsert_app_user(
+            user_id=user_id,
+            fio=fio,
+            department=department or "",
+            position=position or "",
+        )
+    except Exception as exc:
+        logger.exception("Failed to upsert app user id=%s", user_id)
+        raise AuthError("Не удалось сохранить пользователя в базе", status_code=503) from exc
+    return app_users.to_user_out(app_user)
 
 
 class AuthError(Exception):
@@ -79,27 +101,30 @@ async def login(fio: str, password: str) -> LoginResponse:
         raise AuthError("Неверный логин или пароль", status_code=401)
 
     department = erp_user.department
-    if not department:
+    position = erp_user.position
+    if not department or not position:
         try:
             profile = await asyncio.to_thread(get_user_profile_by_fio, erp_user.fio)
-            department = profile.department
+            department = department or profile.department
+            position = position or profile.position
         except ErpSqlError:
-            logger.warning("Could not load department for user id=%s", erp_user.id)
+            logger.warning("Could not load department/position for user id=%s", erp_user.id)
 
     token = create_access_token(
         user_id=erp_user.id,
         fio=erp_user.fio,
         department=department or "",
+        position=position or "",
+    )
+    user_out = await asyncio.to_thread(
+        _to_user_out,
+        user_id=erp_user.id,
+        fio=erp_user.fio,
+        department=department or "",
+        position=position or "",
     )
     logger.info("User logged in: id=%s", erp_user.id)
-    return LoginResponse(
-        access_token=token,
-        user=UserOut(
-            id=erp_user.id,
-            fio=erp_user.fio,
-            department=department or "",
-        ),
-    )
+    return LoginResponse(access_token=token, user=user_out)
 
 
 async def list_user_fios(search: str | None = None) -> list[str]:
@@ -108,6 +133,14 @@ async def list_user_fios(search: str | None = None) -> list[str]:
     except ErpSqlError as exc:
         logger.exception("ERP SQL error listing users")
         raise AuthError("Не удалось загрузить список пользователей", status_code=503) from exc
+
+
+async def list_department_names() -> list[str]:
+    try:
+        return await asyncio.to_thread(list_departments)
+    except ErpSqlError as exc:
+        logger.exception("ERP SQL error listing departments")
+        raise AuthError("Не удалось загрузить список отделов", status_code=503) from exc
 
 
 async def get_current_user_profile(user_id: str, fio_hint: str | None = None) -> UserOut:
@@ -121,15 +154,22 @@ async def get_current_user_profile(user_id: str, fio_hint: str | None = None) ->
         raise AuthError("Пользователь не найден", status_code=404)
 
     department = erp_user.department
-    if not department:
+    position = erp_user.position
+    if not department or not position:
         try:
-            profile = await asyncio.to_thread(get_user_profile_by_fio, erp_user.fio or (fio_hint or ""))
-            department = profile.department
+            profile = await asyncio.to_thread(
+                get_user_profile_by_fio,
+                erp_user.fio or (fio_hint or ""),
+            )
+            department = department or profile.department
+            position = position or profile.position
         except ErpSqlError:
-            logger.warning("Could not refresh department for user id=%s", user_id)
+            logger.warning("Could not refresh department/position for user id=%s", user_id)
 
-    return UserOut(
-        id=erp_user.id,
+    return await asyncio.to_thread(
+        _to_user_out,
+        user_id=erp_user.id,
         fio=erp_user.fio,
         department=department or "",
+        position=position or "",
     )

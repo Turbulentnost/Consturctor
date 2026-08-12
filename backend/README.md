@@ -1,4 +1,4 @@
-# Constructor Backend
+# turbobot Backend
 
 FastAPI-сервис между desktop и внешними системами (1С `erp_pm`, LLM/VLM).
 
@@ -14,6 +14,7 @@ FastAPI-сервис между desktop и внешними системами (
 2. Поиск пользователя в `dbo.v8users` (точное совпадение `Name` или `Descr`).
 3. Проверка пароля по полю `Data` — модуль [`tools/onec/password.py`](tools/onec/password.py).
 4. Отдел: join сотрудника `_Reference366` и подразделений `_Reference513` (несколько полей FK, берётся первое непустое).
+5. Должность: актуальная запись регистра `_InfoRg43757` по физлицу `_Reference596` → справочник `_Reference164`.
 5. Выдаётся JWT; отдельная БД приложения на MVP не используется.
 
 Список ФИО для автодополнения: `GET /api/v1/auth/users?search=`.
@@ -46,7 +47,7 @@ Backend остаётся единственной точкой для модел
 ## Запуск
 
 ```powershell
-cd c:\Users\testii\Downloads\projects_Mangasaryan\Constructor\backend
+cd c:\Users\testii\Downloads\projects_Mangasaryan\turbobot\backend
 python -m pip install -e .
 copy .env.example .env
 python -m app.main

@@ -1,4 +1,4 @@
-"""Read-only client for 1C SQL Server database erp_pm (v8users + departments)."""
+"""Read-only client for 1C SQL Server database erp_pm (v8users + departments + positions)."""
 
 from __future__ import annotations
 
@@ -34,6 +34,35 @@ _DEPARTMENT_EXPR = """
     )
 """
 
+# Current staff assignment: person (_Reference596) -> InfoRg43757 -> position (_Reference164).
+# Open-ended assignments use DateTo near year 5999 (1C empty/infinite date).
+_POSITION_BY_FIO_SQL = """
+    SELECT TOP 1
+        CAST(pos._Description AS nvarchar(256)) AS Position
+    FROM dbo._Reference596 person WITH (NOLOCK)
+    INNER JOIN dbo._InfoRg43757 t WITH (NOLOCK)
+        ON t._Fld43761RRef = person._IDRRef
+    INNER JOIN dbo._Reference164 pos WITH (NOLOCK)
+        ON t._Fld43766RRef = pos._IDRRef
+    WHERE LTRIM(RTRIM(person._Description)) = ?
+      AND LTRIM(RTRIM(pos._Description)) <> N''
+      AND t._Fld43775 >= '5999-01-01'
+    ORDER BY t._Fld43774 DESC
+"""
+
+_POSITION_BY_FIO_FALLBACK_SQL = """
+    SELECT TOP 1
+        CAST(pos._Description AS nvarchar(256)) AS Position
+    FROM dbo._Reference596 person WITH (NOLOCK)
+    INNER JOIN dbo._InfoRg43757 t WITH (NOLOCK)
+        ON t._Fld43761RRef = person._IDRRef
+    INNER JOIN dbo._Reference164 pos WITH (NOLOCK)
+        ON t._Fld43766RRef = pos._IDRRef
+    WHERE LTRIM(RTRIM(person._Description)) = ?
+      AND LTRIM(RTRIM(pos._Description)) <> N''
+    ORDER BY t._Fld43774 DESC
+"""
+
 _FIO_EXPR = "LTRIM(RTRIM(COALESCE(NULLIF(v.Descr, N''), v.Name)))"
 
 
@@ -44,6 +73,7 @@ class ErpUserRow:
     descr: str
     data: bytes | None = None
     department: str = ""
+    position: str = ""
 
     @property
     def fio(self) -> str:
@@ -55,6 +85,7 @@ class ErpUserRow:
 class ErpUserProfile:
     fio: str
     department: str = ""
+    position: str = ""
 
 
 class ErpSqlError(Exception):
@@ -127,6 +158,35 @@ def _row_department(row) -> str:
     return (dept or "").strip()
 
 
+def _row_position(row) -> str:
+    if row is None:
+        return ""
+    position = getattr(row, "Position", None)
+    return (position or "").strip()
+
+
+def get_position_by_fio(fio: str) -> str:
+    """Current job title from HR register (_InfoRg43757 + _Reference164)."""
+    fio = fio.strip()
+    if not fio:
+        return ""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        cur.execute(_POSITION_BY_FIO_SQL, (fio,))
+        row = cur.fetchone()
+        if row and _row_position(row):
+            return _row_position(row)
+        cur.execute(_POSITION_BY_FIO_FALLBACK_SQL, (fio,))
+        row = cur.fetchone()
+        return _row_position(row)
+    except pyodbc.Error as exc:
+        raise ErpSqlError(f"Failed to load position: {exc}") from exc
+    finally:
+        conn.close()
+
+
 def ping() -> bool:
     """Return True if ERP SQL is reachable."""
     try:
@@ -144,7 +204,7 @@ def ping() -> bool:
 
 
 def get_user_profile_by_fio(fio: str) -> ErpUserProfile:
-    """FIO and department from 1C catalogs (_Reference366 + _Reference513)."""
+    """FIO, department and position from 1C catalogs / HR registers."""
     fio = fio.strip()
     if not fio:
         return ErpUserProfile(fio="")
@@ -153,6 +213,8 @@ def get_user_profile_by_fio(fio: str) -> ErpUserProfile:
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        department = ""
+        resolved_fio = fio
         cur.execute(
             f"""
             SELECT
@@ -166,26 +228,37 @@ def get_user_profile_by_fio(fio: str) -> ErpUserProfile:
         )
         row = cur.fetchone()
         if row:
-            return ErpUserProfile(fio=(row.Fio or fio).strip(), department=_row_department(row))
+            resolved_fio = (row.Fio or fio).strip()
+            department = _row_department(row)
+        else:
+            cur.execute(
+                f"""
+                SELECT TOP 1
+                    CAST(p._Description AS nvarchar(256)) AS Fio,
+                    {_DEPARTMENT_EXPR} AS Department
+                FROM dbo._Reference366 u WITH (NOLOCK)
+                INNER JOIN dbo._Reference596 p WITH (NOLOCK)
+                    ON u._Fld10997RRef = p._IDRRef
+                {_DEPARTMENT_JOIN_SQL}
+                WHERE LTRIM(RTRIM(p._Description)) = ?
+                """,
+                (fio,),
+            )
+            row = cur.fetchone()
+            if row:
+                resolved_fio = (row.Fio or fio).strip()
+                department = _row_department(row)
 
-        cur.execute(
-            f"""
-            SELECT TOP 1
-                CAST(p._Description AS nvarchar(256)) AS Fio,
-                {_DEPARTMENT_EXPR} AS Department
-            FROM dbo._Reference366 u WITH (NOLOCK)
-            INNER JOIN dbo._Reference596 p WITH (NOLOCK)
-                ON u._Fld10997RRef = p._IDRRef
-            {_DEPARTMENT_JOIN_SQL}
-            WHERE LTRIM(RTRIM(p._Description)) = ?
-            """,
-            (fio,),
-        )
-        row = cur.fetchone()
-        if row:
-            return ErpUserProfile(fio=(row.Fio or fio).strip(), department=_row_department(row))
-
-        return ErpUserProfile(fio=fio)
+        position = ""
+        cur.execute(_POSITION_BY_FIO_SQL, (resolved_fio,))
+        pos_row = cur.fetchone()
+        if pos_row and _row_position(pos_row):
+            position = _row_position(pos_row)
+        else:
+            cur.execute(_POSITION_BY_FIO_FALLBACK_SQL, (resolved_fio,))
+            pos_row = cur.fetchone()
+            position = _row_position(pos_row)
+        return ErpUserProfile(fio=resolved_fio, department=department, position=position)
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to load user profile: {exc}") from exc
     finally:
@@ -244,16 +317,16 @@ def find_user_by_fio(fio: str) -> ErpUserRow:
     if len(unique) > 1:
         raise AmbiguousUserError("Multiple users match this FIO")
     user = next(iter(unique.values()))
-    if not user.department:
+    if not user.department or not user.position:
         profile = get_user_profile_by_fio(user.fio)
-        if profile.department:
-            return ErpUserRow(
-                id=user.id,
-                name=user.name,
-                descr=user.descr,
-                data=user.data,
-                department=profile.department,
-            )
+        return ErpUserRow(
+            id=user.id,
+            name=user.name,
+            descr=user.descr,
+            data=user.data,
+            department=user.department or profile.department,
+            position=user.position or profile.position,
+        )
     return user
 
 
@@ -291,16 +364,16 @@ def find_user_by_id(user_id: str) -> ErpUserRow | None:
             data=None,
             department=_row_department(row),
         )
-        if not user.department:
+        if not user.department or not user.position:
             profile = get_user_profile_by_fio(user.fio)
-            if profile.department:
-                return ErpUserRow(
-                    id=user.id,
-                    name=user.name,
-                    descr=user.descr,
-                    data=None,
-                    department=profile.department,
-                )
+            return ErpUserRow(
+                id=user.id,
+                name=user.name,
+                descr=user.descr,
+                data=None,
+                department=user.department or profile.department,
+                position=user.position or profile.position,
+            )
         return user
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to query v8users by id: {exc}") from exc
@@ -317,17 +390,22 @@ def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
         term = (search or "").strip()
 
         if term:
-            pattern = f"%{term}%"
+            # Prefix on whole FIO or any word — avoids "Ман" matching inside "Романовна".
+            starts = f"{term}%"
+            word_starts = f"% {term}%"
             cur.execute(
                 f"""
                 SELECT DISTINCT TOP (?) {_FIO_EXPR} AS Fio
                 FROM dbo.v8users v WITH (NOLOCK)
                 WHERE {_FIO_EXPR} LIKE ?
+                   OR {_FIO_EXPR} LIKE ?
                    OR LTRIM(RTRIM(v.Name)) LIKE ?
+                   OR LTRIM(RTRIM(v.Name)) LIKE ?
+                   OR LTRIM(RTRIM(v.Descr)) LIKE ?
                    OR LTRIM(RTRIM(v.Descr)) LIKE ?
                 ORDER BY Fio
                 """,
-                (limit, pattern, pattern, pattern),
+                (limit, starts, word_starts, starts, word_starts, starts, word_starts),
             )
         else:
             cur.execute(
@@ -343,5 +421,28 @@ def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
         return [(row.Fio or "").strip() for row in cur.fetchall() if (row.Fio or "").strip()]
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to search v8users: {exc}") from exc
+    finally:
+        conn.close()
+
+
+def list_departments(limit: int = 500) -> list[str]:
+    """Distinct department names from 1C catalog _Reference513."""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        cur.execute(
+            """
+            SELECT DISTINCT TOP (?)
+                LTRIM(RTRIM(d._Description)) AS Dept
+            FROM dbo._Reference513 d WITH (NOLOCK)
+            WHERE LTRIM(RTRIM(d._Description)) <> N''
+            ORDER BY Dept
+            """,
+            (limit,),
+        )
+        return [(row.Dept or "").strip() for row in cur.fetchall() if (row.Dept or "").strip()]
+    except pyodbc.Error as exc:
+        raise ErpSqlError(f"Failed to list departments: {exc}") from exc
     finally:
         conn.close()

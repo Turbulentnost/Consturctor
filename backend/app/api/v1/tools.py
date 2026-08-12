@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import get_current_user
 from app.config import settings
+from app.services.agent_platform import list_allowed_tools
 from app.core.jwt import AuthContext
 from app.services import platform_proxy
 from platform_contracts.tools import ToolInvokeRequest, ToolResult
@@ -19,33 +20,7 @@ def _ensure_tool_allowed(tool_name: str, auth: AuthContext) -> None:
 
 @router.get("")
 async def list_tools(auth: AuthContext = Depends(get_current_user)) -> dict:
-    allowed = settings.allowed_tools_for_department(auth.department)
-    tools = sorted(allowed) if allowed is not None else [
-        "imap.list_unread",
-        "imap.fetch_message",
-        "imap.fetch_attachments",
-        "imap.search",
-        "onec.odata_get",
-        "onec.odata_post",
-        "onec.odata_patch",
-        "onec.attach_file",
-        "onec.sql_query",
-        "com.list_apps",
-        "com.connect",
-        "com.invoke",
-        "com.release",
-        "fs.list",
-        "fs.read",
-        "fs.write",
-        "fs.stat",
-        "fs.move",
-        "fs.copy",
-        "shell.run",
-        "browser.navigate",
-        "browser.screenshot",
-        "browser.click",
-        "browser.extract_text",
-    ]
+    tools = list_allowed_tools(auth.department or "")
     return {"items": tools, "department": auth.department}
 
 
