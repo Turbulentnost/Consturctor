@@ -27,6 +27,7 @@ from app.api_client import (
     RegulationRevisionResult,
     RoleMatchResult,
     AgentDraft,
+    QuestionChatMessage,
     QuestionChatSession,
     UserProfile,
 )
@@ -503,6 +504,15 @@ class MainShell(QWidget):
         if readiness is None:
             return None
         question = next((item for item in readiness.questions if not item.answered), None)
+        try:
+            latest = self._api.latest_question_chat(draft.draft_id)
+        except ApiError:
+            latest = None
+        if latest is not None:
+            if latest.status != "answered":
+                return latest
+            if question is None:
+                return latest
         if question is None:
             return None
         return self._api.create_question_chat(draft.draft_id, question.question_id)
@@ -575,6 +585,7 @@ class MainShell(QWidget):
     def _on_send_question_chat_message(self, question_id: str, message: str) -> None:
         if self._current_draft is None or not message.strip():
             return
+        self._show_pending_chat_message(question_id, message.strip())
 
         def run() -> None:
             try:
@@ -592,6 +603,41 @@ class MainShell(QWidget):
             self._draft_ready.emit((draft, chat))
 
         Thread(target=run, daemon=True).start()
+
+    def _show_pending_chat_message(self, question_id: str, message: str) -> None:
+        if self._current_chat is None:
+            return
+        if question_id != self._current_chat.question_id:
+            return
+        pending = QuestionChatSession(
+            session_id=self._current_chat.session_id,
+            draft_id=self._current_chat.draft_id,
+            readiness_run_id=self._current_chat.readiness_run_id,
+            question_id=self._current_chat.question_id,
+            function_id=self._current_chat.function_id,
+            target_field=self._current_chat.target_field,
+            status="generating",
+            context=self._current_chat.context,
+            messages=[
+                *self._current_chat.messages,
+                QuestionChatMessage(
+                    message_id="local-user-pending",
+                    session_id=self._current_chat.session_id,
+                    role="user",
+                    content=message,
+                    structured={},
+                ),
+                QuestionChatMessage(
+                    message_id="local-assistant-generating",
+                    session_id=self._current_chat.session_id,
+                    role="assistant",
+                    content="Задаю вопрос ...",
+                    structured={"isGenerating": True, "quickAnswers": []},
+                ),
+            ],
+        )
+        self._current_chat = pending
+        self._page_readiness.set_chat(pending)
 
     def _on_readiness_change_decision(self, change_id: str, status: str, after: str) -> None:
         if self._current_readiness is None:

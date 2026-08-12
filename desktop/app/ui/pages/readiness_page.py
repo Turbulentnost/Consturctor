@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -102,11 +102,9 @@ class ReadinessPage(QWidget):
         unanswered = [question for question in self._result.questions if not question.answered]
         current = unanswered[0] if unanswered else None
         answered_count = len(self._result.questions) - len(unanswered)
-        total_count = len(self._result.questions)
-        current_number = min(answered_count + 1, total_count) if total_count else 0
 
         self._content.addWidget(self._header())
-        self._content.addWidget(self._progress_card(self._result.score, current_number, total_count))
+        self._content.addWidget(self._progress_card(self._result.score, answered_count))
 
         body = QHBoxLayout()
         body.setSpacing(24)
@@ -151,7 +149,7 @@ class ReadinessPage(QWidget):
         layout.addWidget(subtitle)
         return wrap
 
-    def _progress_card(self, score: int, current_number: int, total_count: int) -> QWidget:
+    def _progress_card(self, score: int, answered_count: int) -> QWidget:
         card = _soft_card()
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 12, 16, 12)
@@ -162,7 +160,7 @@ class ReadinessPage(QWidget):
         label.setStyleSheet("color: #06483D; background: transparent;")
         row.addWidget(label)
         row.addStretch(1)
-        count = QLabel(f"Вопрос {current_number} из {total_count}")
+        count = QLabel(f"Уточнено параметров: {answered_count}")
         count.setFont(app_font(12, QFont.Weight.DemiBold))
         count.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         row.addWidget(count)
@@ -215,7 +213,7 @@ class ReadinessPage(QWidget):
             layout.addWidget(self._assistant_bubble("Все вопросы уточнены. Можно перейти к согласованию изменений."))
             return card
 
-        if self._chat is None or self._chat.question_id != question.question_id:
+        if not self._chat_matches(question):
             open_chat = QPushButton("Начать уточнение")
             open_chat.setCursor(Qt.CursorShape.PointingHandCursor)
             open_chat.clicked.connect(lambda _checked=False, qid=question.question_id: self.chat_requested.emit(qid))
@@ -236,8 +234,7 @@ class ReadinessPage(QWidget):
         messages_layout.setContentsMargins(0, 0, 0, 0)
         messages_layout.setSpacing(12)
         messages = self._chat.messages if self._chat is not None else []
-        messages_layout.addWidget(self._first_assistant_bubble(question))
-        for message in messages[1:]:
+        for message in messages:
             messages_layout.addWidget(self._message_bubble(message, question))
         change = self._change_for_question(question)
         if change is not None and change.status == "pending":
@@ -267,10 +264,7 @@ class ReadinessPage(QWidget):
     def _message_bubble(self, message: QuestionChatMessage, question: ReadinessQuestion) -> QWidget:
         if message.role == "user":
             return self._user_bubble(message.content)
-        structured = message.structured or {}
-        if structured.get("isComplete"):
-            return self._assistant_bubble("Понял. Я предлагаю дополнить пункт регламента так:", question=question)
-        return self._assistant_bubble(message.content, question=question)
+        return self._assistant_bubble(message.content)
 
     def _assistant_bubble(
         self,
@@ -380,22 +374,20 @@ class ReadinessPage(QWidget):
         layout = QVBoxLayout(wrap)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        for row_options in _chunks(_primary_options(question), 2):
-            primary = QHBoxLayout()
-            primary.setSpacing(8)
-            for option in row_options:
-                btn = QPushButton(option)
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setStyleSheet(_chip_qss(primary=True))
-                btn.clicked.connect(
-                    lambda _checked=False, qid=question.question_id, value=option: self.chat_message_requested.emit(
-                        qid,
-                        value,
-                    )
+        max_chip_width = _CHAT_WIDTH - 72
+        for option in self._quick_answer_options(question):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            btn = _quick_answer_button(option, max_chip_width=max_chip_width, primary=True)
+            btn.clicked.connect(
+                lambda _checked=False, qid=self._chat_target_question_id(question), value=option: self.chat_message_requested.emit(
+                    qid,
+                    value,
                 )
-                primary.addWidget(btn)
-            primary.addStretch(1)
-            layout.addLayout(primary)
+            )
+            row.addWidget(btn)
+            row.addStretch(1)
+            layout.addLayout(row)
 
         secondary = QHBoxLayout()
         for option in ("Пока неизвестно", "Для этой функции не требуется"):
@@ -404,7 +396,7 @@ class ReadinessPage(QWidget):
             btn.setFlat(True)
             btn.setStyleSheet("QPushButton { color: #6B7773; background: transparent; text-align: left; }")
             btn.clicked.connect(
-                lambda _checked=False, qid=question.question_id, value=option: self.chat_message_requested.emit(
+                lambda _checked=False, qid=self._chat_target_question_id(question), value=option: self.chat_message_requested.emit(
                     qid,
                     value,
                 )
@@ -413,6 +405,18 @@ class ReadinessPage(QWidget):
         secondary.addStretch(1)
         layout.addLayout(secondary)
         return wrap
+
+    def _quick_answer_options(self, question: ReadinessQuestion) -> list[str]:
+        if self._chat is not None:
+            for message in reversed(self._chat.messages):
+                if message.role != "assistant":
+                    continue
+                quick = message.structured.get("quickAnswers") if isinstance(message.structured, dict) else None
+                if isinstance(quick, list):
+                    values = [str(item).strip() for item in quick if str(item).strip()]
+                    if values:
+                        return values[:5]
+        return _primary_options(question)
 
     def _input_bar(self, question: ReadinessQuestion) -> QWidget:
         wrap = QWidget()
@@ -442,7 +446,7 @@ class ReadinessPage(QWidget):
                 return
             text = self._input.toPlainText().strip()
             if text:
-                self.chat_message_requested.emit(question.question_id, text)
+                self.chat_message_requested.emit(self._chat_target_question_id(question), text)
                 self._input.clear()
 
         self._input.send_requested.connect(submit)
@@ -450,6 +454,18 @@ class ReadinessPage(QWidget):
         row.addWidget(self._input, 1)
         row.addWidget(send)
         return wrap
+
+    def _chat_matches(self, question: ReadinessQuestion) -> bool:
+        if self._chat is None:
+            return False
+        return self._chat.question_id == question.question_id or (
+            bool(self._chat.function_id) and self._chat.function_id == question.function_id
+        )
+
+    def _chat_target_question_id(self, question: ReadinessQuestion) -> str:
+        if self._chat_matches(question) and self._chat is not None:
+            return self._chat.question_id
+        return question.question_id
 
     def _change_proposal(self, change: ReadinessChange) -> QWidget:
         card = QFrame()
@@ -536,13 +552,12 @@ class ReadinessPage(QWidget):
         title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         layout.addWidget(title)
         done = [question for question in questions if question.answered]
-        total = len(questions)
-        count = QLabel(f"Уточнено {len(done)} из {total} вопросов")
+        count = QLabel(f"Уточнено параметров: {len(done)}")
         count.setFont(app_font(12))
         count.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         layout.addWidget(count)
         progress = QProgressBar()
-        progress.setRange(0, max(total, 1))
+        progress.setRange(0, max(len(questions), 1))
         progress.setValue(len(done))
         progress.setTextVisible(False)
         progress.setFixedHeight(5)
@@ -559,7 +574,9 @@ class ReadinessPage(QWidget):
             layout.addWidget(_group_label("Далее"))
             for question in upcoming:
                 layout.addWidget(_topic_row(_field_title(question.target_field)))
-        hint = QLabel("Ответы можно изменить до формирования итогового документа.")
+        hint = QLabel(
+            "LLM задаёт следующий вопрос по мере необходимости; внутренний список параметров не является фиксированным сценарием."
+        )
         hint.setWordWrap(True)
         hint.setFont(app_font(11))
         hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
@@ -639,6 +656,39 @@ def _topic_row(text: str, *, done: bool = False, active: bool = False) -> QLabel
     color = "#08745F" if done or active else "#6B7773"
     label.setStyleSheet(f"color: {color}; background: transparent;")
     return label
+
+
+def _quick_answer_button(text: str, *, max_chip_width: int, primary: bool) -> QPushButton:
+    btn = QPushButton()
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setStyleSheet(_chip_qss(primary=primary))
+    btn.setFont(app_font(12))
+    metrics = QFontMetrics(btn.font())
+    wrapped = _wrap_button_text(text, metrics, max_chip_width - 28)
+    lines = max(1, wrapped.count("\n") + 1)
+    width = min(max_chip_width, max(metrics.horizontalAdvance(line) for line in wrapped.splitlines()) + 28)
+    btn.setText(wrapped)
+    btn.setFixedWidth(max(120, width))
+    btn.setFixedHeight(34 + (lines - 1) * 18)
+    return btn
+
+
+def _wrap_button_text(text: str, metrics: QFontMetrics, max_text_width: int) -> str:
+    words = text.split()
+    if not words or metrics.horizontalAdvance(text) <= max_text_width:
+        return text
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if current and metrics.horizontalAdvance(candidate) > max_text_width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
 
 
 def _primary_options(question: ReadinessQuestion) -> list[str]:

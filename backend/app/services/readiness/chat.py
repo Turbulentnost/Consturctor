@@ -10,6 +10,7 @@ from app.models.regulation import (
     QuestionChatSession,
     ReadinessRun,
     RegulationDocument,
+    RoleMatchRun,
 )
 from app.schemas.regulation import (
     AgentReadinessResult,
@@ -18,9 +19,12 @@ from app.schemas.regulation import (
     QuestionChatSessionResult,
     ReadinessAnswerRequest,
     ReadinessQuestion,
+    ReadinessSourceEvidence,
     RegulationParseResult,
+    RoleMatchResult,
 )
 from app.services.agents import sync_draft_progress
+from app.services.readiness.llm_interview import adapt_after_answer, generate_initial_question
 from app.services.readiness.service import ReadinessError, answer_readiness_question
 
 
@@ -43,6 +47,7 @@ def create_or_get_question_chat(
     )
     if session is None:
         context = _context(db, draft, readiness, question_id)
+        initial = generate_initial_question(context, _pending_questions(readiness, question.functionId))
         session = QuestionChatSession(
             id=f"qchat-{uuid4().hex[:12]}",
             draft_id=draft_id,
@@ -60,8 +65,8 @@ def create_or_get_question_chat(
                 id=f"qmsg-{uuid4().hex[:12]}",
                 session_id=session.id,
                 role="assistant",
-                content=_initial_prompt(context),
-                structured_json={},
+                content=str(initial.get("assistantMessage") or _initial_prompt(context)),
+                structured_json=initial,
             )
         )
         db.commit()
@@ -87,6 +92,24 @@ def get_question_chat(
     )
     if session is None:
         return create_or_get_question_chat(db, user_id=user_id, draft_id=draft_id, question_id=question_id)
+    return _session_result(db, session)
+
+
+def get_latest_question_chat(
+    db: Session,
+    *,
+    user_id: str,
+    draft_id: str,
+) -> QuestionChatSessionResult:
+    _get_draft(db, user_id=user_id, draft_id=draft_id)
+    session = (
+        db.query(QuestionChatSession)
+        .filter(QuestionChatSession.draft_id == draft_id)
+        .order_by(QuestionChatSession.updated_at.desc(), QuestionChatSession.created_at.desc())
+        .first()
+    )
+    if session is None:
+        raise ReadinessError("История уточнения для черновика пока не создана", status_code=404)
     return _session_result(db, session)
 
 
@@ -121,7 +144,33 @@ def send_question_chat_message(
         )
     )
     readiness = _get_readiness(db, draft)
-    structured = _extract_structured_answer(user_text, session.context_json, readiness)
+    pending = _pending_questions(readiness, session.function_id)
+    structured = adapt_after_answer(
+        session.context_json,
+        pending,
+        answer=user_text,
+        history=_message_history(db, session.id),
+        turn_count=_user_turn_count(db, session.id),
+    )
+    fallback_structured = _extract_structured_answer(user_text, session.context_json, readiness)
+    if not fallback_structured["isComplete"]:
+        structured["answeredQuestionIds"] = []
+        structured["remainingQuestionIds"] = [str(item.get("questionId") or "") for item in pending]
+        structured["stopInterview"] = False
+    if not structured.get("answeredQuestionIds") and fallback_structured["isComplete"]:
+        structured["answeredQuestionIds"] = [item["questionId"] for item in fallback_structured["relatedAnswers"]]
+        structured["remainingQuestionIds"] = [
+            str(item.get("questionId") or "")
+            for item in pending
+            if str(item.get("questionId") or "") not in set(structured["answeredQuestionIds"])
+        ]
+    structured["isComplete"] = bool(structured.get("answeredQuestionIds"))
+    structured["targetField"] = session.target_field
+    structured["answer"] = user_text
+    structured["relatedAnswers"] = [
+        {"questionId": qid, "answer": user_text}
+        for qid in structured.get("answeredQuestionIds", [])
+    ]
     if structured["isComplete"]:
         applied = []
         for item in structured["relatedAnswers"]:
@@ -136,16 +185,18 @@ def send_question_chat_message(
                 ),
             )
             applied.append(item)
-        readiness = _reprioritize_questions(
+        readiness = _apply_adaptive_question_state(
             db,
             user_id=user_id,
             regulation_id=draft.regulation_id,
             readiness_run_id=draft.readiness_run_id,
-            answer=user_text,
+            function_id=session.function_id,
+            structured=structured,
+            context=session.context_json,
         )
         sync_draft_progress(db, draft_id=draft.id, readiness=readiness)
-        session.status = "answered"
-        assistant_text = _accepted_answer_text(applied)
+        session.status = "answered" if _function_interview_done(readiness, session.function_id, structured) else "active"
+        assistant_text = str(structured.get("assistantMessage") or _accepted_answer_text(applied))
     else:
         session.status = "needs_clarification"
         assistant_text = str(structured.get("followUpQuestion") or _follow_up_prompt(session.context_json))
@@ -186,22 +237,83 @@ def _context(db: Session, draft: AgentDraft, readiness: AgentReadinessResult, qu
     question = next(item for item in readiness.questions if item.questionId == question_id)
     function = next((item for item in readiness.functions if item.functionId == question.functionId), None)
     fragments = {fragment.fragmentId: fragment for fragment in (result.fragments if result else [])}
-    blocks = []
-    for block_id in question.affectedBlocks:
-        fragment = fragments.get(block_id)
-        if fragment is not None:
-            blocks.append({"blockId": fragment.fragmentId, "section": fragment.section, "text": fragment.text})
+    blocks = _context_blocks(db, draft, readiness, question, fragments)
     return {
         "question": question.model_dump(mode="json"),
         "function": function.model_dump(mode="json") if function is not None else {},
+        "blocks": blocks,
         "affectedBlocks": blocks,
         "draft": {"title": draft.title, "position": draft.position, "department": draft.department},
     }
 
 
+def _context_blocks(
+    db: Session,
+    draft: AgentDraft,
+    readiness: AgentReadinessResult,
+    question: ReadinessQuestion,
+    fragments: dict,
+) -> list[dict]:
+    function = next((item for item in readiness.functions if item.functionId == question.functionId), None)
+    role_run = db.query(RoleMatchRun).filter(RoleMatchRun.id == draft.role_match_run_id).first()
+    role_result = RoleMatchResult.model_validate(role_run.result_json) if role_run is not None else None
+    source_ids = [
+        question.sourceEvidence.blockId,
+        function.targetBlockId if function is not None else "",
+        *question.affectedBlocks,
+    ]
+    if function is not None:
+        for field in function.fields:
+            source_ids.extend(item.fragmentId for item in field.evidence)
+    if role_result is not None:
+        for match in role_result.matches:
+            if match.function is not None and match.function.functionId == question.functionId:
+                source_ids.append(match.fragmentId)
+                source_ids.extend(item.fragmentId for item in match.evidence)
+    blocks: list[dict] = []
+    seen: set[str] = set()
+    for block_id in source_ids:
+        _append_block(blocks, seen, fragments.get(block_id), relation="source", reason="Функциональный блок")
+    for block in list(blocks):
+        fragment = fragments.get(block["blockId"])
+        if fragment is None or fragment.context is None:
+            continue
+        _append_block(
+            blocks,
+            seen,
+            fragments.get(fragment.context.previousFragmentId or ""),
+            relation="related",
+            reason="Предыдущий смысловой блок",
+        )
+        _append_block(
+            blocks,
+            seen,
+            fragments.get(fragment.context.nextFragmentId or ""),
+            relation="related",
+            reason="Следующий смысловой блок",
+        )
+    return blocks[:8]
+
+
+def _append_block(blocks: list[dict], seen: set[str], fragment, *, relation: str, reason: str) -> None:
+    if fragment is None or fragment.fragmentId in seen:
+        return
+    seen.add(fragment.fragmentId)
+    blocks.append(
+        {
+            "blockId": fragment.fragmentId,
+            "relation": relation,
+            "reason": reason,
+            "page": fragment.page,
+            "section": fragment.section,
+            "text": fragment.text,
+        }
+    )
+
+
 def _initial_prompt(context: dict) -> str:
     question = context.get("question") or {}
-    blocks = context.get("affectedBlocks") or []
+    blocks = context.get("blocks") or context.get("affectedBlocks") or []
     quote = blocks[0]["text"] if blocks else question.get("sourceEvidence", {}).get("quote", "")
     return (
         f"{question.get('question', 'Нужно уточнение по регламенту')}\n\n"
@@ -209,6 +321,131 @@ def _initial_prompt(context: dict) -> str:
         f"Связанный фрагмент регламента: «{quote[:700]}»\n\n"
         "Ответьте своими словами. Если информации пока нет, так и напишите."
     )
+
+
+def _pending_questions(readiness: AgentReadinessResult, function_id: str) -> list[dict]:
+    questions = [
+        item
+        for item in readiness.questions
+        if not item.answered and (not function_id or item.functionId == function_id)
+    ]
+    return [item.model_dump(mode="json") for item in sorted(questions, key=lambda item: (_severity_rank(item.severity), item.questionId))]
+
+
+def _message_history(db: Session, session_id: str) -> list[dict]:
+    messages = (
+        db.query(QuestionChatMessage)
+        .filter(QuestionChatMessage.session_id == session_id)
+        .order_by(QuestionChatMessage.created_at.asc())
+        .all()
+    )
+    return [
+        {"role": message.role, "content": message.content, "structured": message.structured_json}
+        for message in messages
+    ]
+
+
+def _user_turn_count(db: Session, session_id: str) -> int:
+    return (
+        db.query(QuestionChatMessage)
+        .filter(QuestionChatMessage.session_id == session_id, QuestionChatMessage.role == "user")
+        .count()
+    )
+
+
+def _apply_adaptive_question_state(
+    db: Session,
+    *,
+    user_id: str,
+    regulation_id: str,
+    readiness_run_id: str,
+    function_id: str,
+    structured: dict,
+    context: dict,
+) -> AgentReadinessResult:
+    run = db.query(ReadinessRun).filter(
+        ReadinessRun.id == readiness_run_id,
+        ReadinessRun.user_id == user_id,
+        ReadinessRun.regulation_id == regulation_id,
+    ).first()
+    if run is None:
+        raise ReadinessError("Проверка готовности не найдена", status_code=404)
+    readiness = AgentReadinessResult.model_validate(run.result_json)
+    _append_new_questions(readiness, function_id=function_id, structured=structured, context=context)
+    readiness.questions = _reorder_questions(readiness.questions, function_id, structured)
+    run.result_json = readiness.model_dump(mode="json")
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return AgentReadinessResult.model_validate(run.result_json)
+
+
+def _append_new_questions(
+    readiness: AgentReadinessResult,
+    *,
+    function_id: str,
+    structured: dict,
+    context: dict,
+) -> None:
+    existing_text = {_normalize_question(item.question) for item in readiness.questions if item.functionId == function_id}
+    for item in structured.get("newQuestions") or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("question") or item.get("assistantMessage") or "").strip()
+        if not text or _normalize_question(text) in existing_text:
+            continue
+        current = context.get("question") or {}
+        try:
+            readiness.questions.append(
+                ReadinessQuestion(
+                    questionId=f"Q-{len(readiness.questions) + 1:03d}",
+                    functionId=function_id,
+                    targetField=str(item.get("targetField") or current.get("targetField") or "conditions"),
+                    severity=str(item.get("severity") or current.get("severity") or "important"),
+                    question=text,
+                    reason=str(item.get("reason") or "Уточняющий вопрос LLM по связанному блоку"),
+                    sourceEvidence=ReadinessSourceEvidence.model_validate(
+                        current.get("sourceEvidence") or {}
+                    ),
+                    answerType=str(item.get("answerType") or current.get("answerType") or "text"),
+                    options=[str(x) for x in item.get("quickAnswers") or []],
+                    affectedBlocks=[str(x) for x in current.get("affectedBlocks") or []],
+                )
+            )
+            existing_text.add(_normalize_question(text))
+        except Exception:
+            continue
+
+
+def _reorder_questions(
+    questions: list[ReadinessQuestion],
+    function_id: str,
+    structured: dict,
+) -> list[ReadinessQuestion]:
+    remaining_order = {
+        str(qid): index
+        for index, qid in enumerate(structured.get("remainingQuestionIds") or [])
+    }
+    return sorted(
+        questions,
+        key=lambda item: (
+            1 if item.answered else 0,
+            0 if item.functionId == function_id else 1,
+            remaining_order.get(item.questionId, 100),
+            _severity_rank(item.severity),
+            item.questionId,
+        ),
+    )
+
+
+def _function_interview_done(readiness: AgentReadinessResult, function_id: str, structured: dict) -> bool:
+    if structured.get("stopInterview"):
+        return True
+    return not any(not item.answered and item.functionId == function_id for item in readiness.questions)
+
+
+def _normalize_question(text: str) -> str:
+    return " ".join(text.casefold().split())
 
 
 def _follow_up_prompt(context: dict) -> str:

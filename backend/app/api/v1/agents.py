@@ -24,6 +24,7 @@ from app.services.agents import (
 )
 from app.services.readiness.chat import (
     create_or_get_question_chat,
+    get_latest_question_chat,
     get_question_chat,
     send_question_chat_message,
 )
@@ -87,6 +88,21 @@ async def update_agent_draft_status(
     try:
         return update_draft_status(db, user_id=auth.user_id, draft_id=draft_id, request=request)
     except AgentDraftError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.get(
+    "/drafts/{draft_id}/chat/latest",
+    response_model=QuestionChatSessionResult,
+)
+async def read_latest_question_chat(
+    draft_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> QuestionChatSessionResult:
+    try:
+        return get_latest_question_chat(db, user_id=auth.user_id, draft_id=draft_id)
+    except ReadinessError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 

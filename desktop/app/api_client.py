@@ -546,6 +546,14 @@ class ApiClient:
         )
         return self._parse_question_chat(data)
 
+    def latest_question_chat(self, draft_id: str) -> QuestionChatSession:
+        data = self._request(
+            "GET",
+            f"/api/v1/agents/drafts/{draft_id}/chat/latest",
+            timeout=max(self._timeout, 60.0),
+        )
+        return self._parse_question_chat(data)
+
     def send_question_chat_message(
         self,
         draft_id: str,
