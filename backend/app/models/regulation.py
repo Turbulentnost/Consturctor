@@ -202,3 +202,56 @@ class QuestionChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class RegulationCreationDraft(Base):
+    __tablename__ = "regulation_creation_drafts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    cursor_agent_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    latest_run_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(64), nullable=False, default="collecting_positions")
+    positions_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    style_profile_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    draft_document_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    result_document_path: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    result_regulation_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class RegulationCreationMessage(Base):
+    __tablename__ = "regulation_creation_messages"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    draft_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("regulation_creation_drafts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str] = mapped_column(String(8000), nullable=False, default="")
+    structured_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

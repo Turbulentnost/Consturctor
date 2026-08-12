@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Callable
 
 import httpx
 
@@ -271,6 +273,27 @@ class AgentSuggestion:
 
 
 @dataclass(frozen=True, slots=True)
+class RegulationCreationMessage:
+    message_id: str
+    draft_id: str
+    role: str
+    content: str
+    structured: dict
+
+
+@dataclass(frozen=True, slots=True)
+class RegulationCreationSession:
+    draft_id: str
+    status: str
+    cursor_agent_id: str
+    latest_run_id: str
+    positions: list[str]
+    messages: list[RegulationCreationMessage]
+    result_regulation: RegulationParseResult | None
+    result_document_path: str
+
+
+@dataclass(frozen=True, slots=True)
 class QuestionChatMessage:
     message_id: str
     session_id: str
@@ -427,6 +450,79 @@ class ApiClient:
         if response.status_code >= 400:
             raise ApiError(_extract_detail(response), status_code=response.status_code)
         return self._parse_regulation(response.json())
+
+    def start_regulation_creation(self) -> RegulationCreationSession:
+        data = self._request(
+            "POST",
+            "/api/v1/regulation-creation/sessions",
+            timeout=max(self._timeout, 120.0),
+        )
+        return self._parse_creation_session(data)
+
+    def send_regulation_creation_message(self, draft_id: str, message: str) -> RegulationCreationSession:
+        data = self._request(
+            "POST",
+            f"/api/v1/regulation-creation/sessions/{draft_id}/messages",
+            json={"message": message},
+            timeout=max(self._timeout, 420.0),
+        )
+        return self._parse_creation_session(data)
+
+    def stream_regulation_creation_message(
+        self,
+        draft_id: str,
+        message: str,
+        on_event: Callable[[str, str], None],
+    ) -> RegulationCreationSession:
+        url = f"{self.base_url}/api/v1/regulation-creation/sessions/{draft_id}/messages/stream"
+        final_session: RegulationCreationSession | None = None
+        try:
+            with httpx.Client(timeout=None) as client:
+                with client.stream(
+                    "POST",
+                    url,
+                    headers={**self._headers(), "Accept": "text/event-stream"},
+                    json={"message": message},
+                ) as response:
+                    if response.status_code >= 400:
+                        body = response.read().decode("utf-8", errors="replace")
+                        raise ApiError(body or "Ошибка создания регламента", status_code=response.status_code)
+                    event_name = "message"
+                    data_lines: list[str] = []
+                    for line in response.iter_lines():
+                        if line == "":
+                            if data_lines:
+                                payload = _parse_sse_payload("\n".join(data_lines))
+                                payload_type = str(payload.get("type") or event_name)
+                                if payload_type in {"thinking", "assistant"}:
+                                    on_event(payload_type, str(payload.get("text") or ""))
+                                elif payload_type == "error":
+                                    raise ApiError(str(payload.get("message") or "Ошибка Cursor Agent"))
+                                elif payload_type == "session" and isinstance(payload.get("session"), dict):
+                                    final_session = self._parse_creation_session(payload["session"])
+                            event_name = "message"
+                            data_lines = []
+                            continue
+                        if line.startswith("event:"):
+                            event_name = line.split(":", 1)[1].strip()
+                        elif line.startswith("data:"):
+                            data_lines.append(line.split(":", 1)[1].strip())
+        except httpx.ConnectError as exc:
+            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+        if final_session is None:
+            raise ApiError("Backend не вернул итоговую сессию создания регламента")
+        return final_session
+
+    def terminate_regulation_creation_sessions(self) -> None:
+        if not self._token:
+            return
+        self._request(
+            "POST",
+            "/api/v1/regulation-creation/sessions/terminate-active",
+            timeout=max(self._timeout, 30.0),
+        )
 
     def get_regulation(self, regulation_id: str) -> RegulationParseResult:
         data = self._request("GET", f"/api/v1/regulations/{regulation_id}")
@@ -764,6 +860,30 @@ class ApiClient:
         )
 
     @staticmethod
+    def _parse_creation_session(data: dict) -> RegulationCreationSession:
+        result_raw = data.get("resultRegulation")
+        return RegulationCreationSession(
+            draft_id=str(data.get("draftId") or ""),
+            status=str(data.get("status") or ""),
+            cursor_agent_id=str(data.get("cursorAgentId") or ""),
+            latest_run_id=str(data.get("latestRunId") or ""),
+            positions=[str(item) for item in data.get("positions") or []],
+            messages=[
+                RegulationCreationMessage(
+                    message_id=str(item.get("messageId") or ""),
+                    draft_id=str(item.get("draftId") or ""),
+                    role=str(item.get("role") or ""),
+                    content=str(item.get("content") or ""),
+                    structured=item.get("structured") if isinstance(item.get("structured"), dict) else {},
+                )
+                for item in data.get("messages") or []
+                if isinstance(item, dict)
+            ],
+            result_regulation=ApiClient._parse_regulation(result_raw) if isinstance(result_raw, dict) else None,
+            result_document_path=str(data.get("resultDocumentPath") or ""),
+        )
+
+    @staticmethod
     def _parse_fragment(item: dict) -> RegulationFragment:
         table_data = item.get("table") if isinstance(item, dict) else None
         table = None
@@ -1020,6 +1140,14 @@ def _extract_detail(response: httpx.Response) -> str:
     if response.status_code == 401:
         return "Неверный логин или пароль"
     return f"Ошибка сервера ({response.status_code})"
+
+
+def _parse_sse_payload(raw: str) -> dict:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"type": "message", "text": raw}
+    return payload if isinstance(payload, dict) else {"type": "message", "text": raw}
 
 
 def _parse_datetime(value: object) -> datetime | None:

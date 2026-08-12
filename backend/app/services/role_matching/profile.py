@@ -103,6 +103,10 @@ def _generic_position_aliases(position: str) -> list[str]:
     normalized_hyphen = without_qualifier.replace("-", " ") if without_qualifier else ""
     if normalized_hyphen and normalized_hyphen.casefold() != without_qualifier.casefold():
         aliases.append(normalized_hyphen)
+    lowered = normalized_hyphen.casefold() if normalized_hyphen else position.casefold()
+    for generic in ("руководитель", "начальник", "директор", "менеджер", "инженер", "специалист"):
+        if generic in lowered and generic not in {item.casefold() for item in aliases}:
+            aliases.append(generic)
     return aliases
 
 

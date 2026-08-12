@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     chad_api_key: str = Field(default="", validation_alias="CHAD_AI")
     chad_base_url: str = "https://ask.chadgpt.ru/api"
     chad_model: str = "grok-4.1-fast-with-web-search"
+    cursor_api_key: str = Field(default="", validation_alias="CURSOR_API_KEY")
+    cursor_api_base_url: str = "https://api.cursor.com"
+    cursor_regulation_model: str = "composer-2.5"
 
     # App Postgres (users, avatars, future agent data). Not ERP.
     database_url: str = (

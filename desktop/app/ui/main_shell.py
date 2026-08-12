@@ -30,12 +30,15 @@ from app.api_client import (
     AgentSuggestion,
     QuestionChatMessage,
     QuestionChatSession,
+    RegulationCreationMessage,
+    RegulationCreationSession,
     UserProfile,
 )
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.my_agents_page import MyAgentsPage
 from app.ui.pages.regulation_review_page import RegulationReviewPage
+from app.ui.pages.regulation_creation_page import RegulationCreationPage
 from app.ui.pages.readiness_page import ReadinessPage
 from app.ui.pages.revision_result_page import RevisionResultPage
 from app.ui.pages.role_match_page import RoleMatchPage
@@ -148,6 +151,8 @@ class MainShell(QWidget):
     _drafts_ready = Signal(object)
     _agents_table_ready = Signal(object)
     _chat_ready = Signal(object)
+    _creation_session_ready = Signal(object)
+    _creation_stream_event = Signal(str, str)
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -168,6 +173,7 @@ class MainShell(QWidget):
         self._page_role_match = RoleMatchPage()
         self._page_readiness = ReadinessPage()
         self._page_revision = RevisionResultPage(self._api)
+        self._page_creation_chat = RegulationCreationPage()
         self._page_loading = LoadingPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
@@ -177,6 +183,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_role_match)
         self._pages.addWidget(self._page_readiness)
         self._pages.addWidget(self._page_revision)
+        self._pages.addWidget(self._page_creation_chat)
         self._pages.addWidget(self._page_loading)
         self._page_index = {
             "create": 0,
@@ -187,7 +194,8 @@ class MainShell(QWidget):
             "role_match": 5,
             "readiness": 6,
             "revision": 7,
-            "loading": 8,
+            "creation_chat": 8,
+            "loading": 9,
         }
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_agents.continue_requested.connect(self._on_continue_agent_draft)
@@ -210,6 +218,8 @@ class MainShell(QWidget):
         self._page_readiness.supplement_requested.connect(self._on_start_readiness_supplement)
         self._page_revision.download_requested.connect(self._on_revision_download)
         self._page_revision.next_requested.connect(self._on_revision_next)
+        self._page_creation_chat.message_requested.connect(self._on_regulation_creation_message)
+        self._page_creation_chat.finished_requested.connect(self._show_regulation_result)
         self._regulation_ready.connect(self._show_regulation_result)
         self._regulation_failed.connect(self._show_regulation_error)
         self._role_match_ready.connect(self._show_role_match_result)
@@ -221,6 +231,8 @@ class MainShell(QWidget):
         self._drafts_ready.connect(self._show_drafts_result)
         self._agents_table_ready.connect(self._show_agents_table_result)
         self._chat_ready.connect(self._show_chat_result)
+        self._creation_session_ready.connect(self._show_creation_session)
+        self._creation_stream_event.connect(self._page_creation_chat.append_stream_event)
         self._pages.currentChanged.connect(self._on_stack_changed)
         self._review_fullscreen = False
         self._current_regulation: RegulationParseResult | None = None
@@ -228,6 +240,7 @@ class MainShell(QWidget):
         self._current_readiness: AgentReadinessResult | None = None
         self._current_draft: AgentDraft | None = None
         self._current_chat: QuestionChatSession | None = None
+        self._current_creation_session: RegulationCreationSession | None = None
         self._current_revision: RegulationRevisionResult | None = None
         self._auto_finalize_running = False
         self._supplement_in_progress = False
@@ -386,11 +399,61 @@ class MainShell(QWidget):
             self._apply_user(user)
 
     def _on_create_regulation(self) -> None:
-        QMessageBox.information(
-            self,
-            "Создать регламент",
-            "Мастер создания регламента с ИИ появится здесь.",
+        self._page_loading.set_message(
+            "Создаём чат регламента",
+            "Готовим профиль стиля и первый вопрос.",
         )
+        self._pages.setCurrentIndex(self._page_index["loading"])
+
+        def run() -> None:
+            try:
+                session = self._api.start_regulation_creation()
+            except ApiError as exc:
+                self._regulation_failed.emit(exc.message)
+                return
+            self._creation_session_ready.emit(session)
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_regulation_creation_message(self, draft_id: str, message: str) -> None:
+        if self._current_creation_session is not None:
+            from dataclasses import replace
+
+            pending = RegulationCreationMessage(
+                message_id="local-pending",
+                draft_id=draft_id,
+                role="user",
+                content=message,
+                structured={},
+            )
+            self._page_creation_chat.set_session(
+                replace(
+                    self._current_creation_session,
+                    status="generating",
+                    messages=[*self._current_creation_session.messages, pending],
+                )
+            )
+
+        def run() -> None:
+            try:
+                session = self._api.stream_regulation_creation_message(
+                    draft_id,
+                    message,
+                    lambda event_type, text: self._creation_stream_event.emit(event_type, text),
+                )
+            except ApiError as exc:
+                self._regulation_failed.emit(exc.message)
+                return
+            self._creation_session_ready.emit(session)
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_creation_session(self, session: object) -> None:
+        if not isinstance(session, RegulationCreationSession):
+            return
+        self._current_creation_session = session
+        self._page_creation_chat.set_session(session)
+        self._pages.setCurrentIndex(self._page_index["creation_chat"])
 
     def _on_regulation_selected(self, path: str) -> None:
         self._page_create.set_processing(True)

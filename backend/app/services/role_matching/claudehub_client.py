@@ -196,7 +196,7 @@ def _map_chunk(fragments: list[dict[str, Any]]) -> DocumentMap:
     }
     raw = _post_json(prompt, timeout=180.0)
     data = _load_json(raw)
-    data = _coerce_document_map_data(data)
+    data = _coerce_document_map_data(data, fragments)
     return DocumentMap.model_validate(data)
 
 
@@ -246,6 +246,45 @@ def _post_json_once(prompt: dict[str, Any], *, timeout: float, model: str) -> st
 def _post_chad_json(prompt: dict[str, Any], *, timeout: float) -> str:
     if not settings.chad_api_key.strip():
         raise ClaudeHubError("CHAD_AI is not configured")
+    errors: list[str] = []
+    for url in _chad_openai_urls():
+        try:
+            return _post_chad_openai_json(url, prompt, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - try next known Chad API shape.
+            errors.append(f"{url}: {_safe_error(exc)}")
+    try:
+        return _post_chad_public_json(prompt, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"public: {_safe_error(exc)}")
+    raise ClaudeHubError("All Chad API endpoints failed: " + " | ".join(errors))
+
+
+def _post_chad_openai_json(url: str, prompt: dict[str, Any], *, timeout: float) -> str:
+    payload = {
+        "model": settings.chad_model,
+        "messages": [{"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}],
+        "temperature": 0,
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.chad_api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(url, json=payload, headers=headers)
+    if response.status_code != 200:
+        raise ClaudeHubError(f"HTTP {response.status_code} for Chad OpenAI endpoint: {response.text[:1000]}")
+    content_type = response.headers.get("content-type", "")
+    if "json" not in content_type.lower():
+        raise ClaudeHubError(f"Chad OpenAI endpoint returned non-JSON response: {response.text[:300]}")
+    data = response.json()
+    content = _openai_content(data)
+    if not content:
+        raise ClaudeHubError(f"Chad OpenAI endpoint returned no assistant content: {response.text[:1000]}")
+    return content
+
+
+def _post_chad_public_json(prompt: dict[str, Any], *, timeout: float) -> str:
     url = f"{settings.chad_base_url.rstrip('/')}/public/{settings.chad_model}"
     payload = {
         "message": json.dumps(prompt, ensure_ascii=False),
@@ -262,6 +301,39 @@ def _post_chad_json(prompt: dict[str, Any], *, timeout: float) -> str:
             f"{data.get('error_code') or ''}: {data.get('error_message') or data}"
         )
     return str(data.get("response") or "")
+
+
+def _chad_openai_urls() -> list[str]:
+    base = settings.chad_base_url.rstrip("/")
+    urls = []
+    if "ask.chadgpt.ru" in base:
+        urls.append("https://api.chadgpt.ru/v1/chat/completions")
+    urls.append(f"{base}/v1/chat/completions")
+    if base.endswith("/api"):
+        urls.append(f"{base[:-4]}/v1/chat/completions")
+    out: list[str] = []
+    for item in urls:
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _openai_content(data: dict[str, Any]) -> str:
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get("message") if isinstance(first.get("message"), dict) else {}
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+        text = first.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+    for key in ("response", "answer", "content", "message"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
 
 
 def _model_chain(model: str | None) -> list[str]:
@@ -352,7 +424,7 @@ def _load_json(raw: str) -> dict[str, Any]:
         raise
 
 
-def _coerce_document_map_data(data: dict[str, Any]) -> dict[str, Any]:
+def _coerce_document_map_data(data: dict[str, Any], fragments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Keep ClaudeHub output useful even when it uses richer relation/status names."""
     if not isinstance(data, dict):
         return {}
@@ -379,11 +451,73 @@ def _coerce_document_map_data(data: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(items, list):
             data[collection_name] = []
             continue
+        normalized_items: list[dict[str, Any]] = []
         for item in items:
-            if not isinstance(item, dict):
+            if isinstance(item, str):
+                value = item.strip()
+                if not value:
+                    continue
+                if collection_name == "references":
+                    ids = _infer_source_blocks([value], fragments or [])
+                    normalized_items.append(
+                        {
+                            "fromBlockId": ids[0] if ids else "",
+                            "referenceText": value,
+                            "relation": "explicit_reference",
+                            "status": "candidate",
+                        }
+                    )
+                elif collection_name == "roles":
+                    ids = _infer_source_blocks([value], fragments or [])
+                    normalized_items.append(
+                        {
+                            "canonicalTitle": value,
+                            "aliases": [value],
+                            "sourceBlockIds": ids,
+                            "status": "candidate",
+                        }
+                    )
+                elif collection_name == "processes":
+                    ids = _infer_source_blocks([value], fragments or [])
+                    normalized_items.append(
+                        {
+                            "name": value,
+                            "sections": [],
+                            "sourceBlockIds": ids,
+                            "status": "candidate",
+                        }
+                    )
                 continue
+            if isinstance(item, dict):
+                normalized_items.append(item)
+        data[collection_name] = normalized_items
+        for item in normalized_items:
             if item.get("status") not in allowed_statuses:
                 item["status"] = "candidate"
+            if collection_name == "roles":
+                title = str(
+                    item.get("canonicalTitle") or item.get("role") or item.get("title") or item.get("name") or ""
+                ).strip()
+                item["canonicalTitle"] = title
+                aliases = item.get("aliases")
+                if not isinstance(aliases, list):
+                    item["aliases"] = [title] if title else []
+                item["sourceBlockIds"] = _coerce_source_block_ids(item, fragments, title)
+            elif collection_name == "processes":
+                name = str(item.get("name") or item.get("process") or item.get("title") or "").strip()
+                item["name"] = name
+                sections = item.get("sections")
+                if not isinstance(sections, list):
+                    item["sections"] = []
+                item["sourceBlockIds"] = _coerce_source_block_ids(item, fragments, name)
+            elif collection_name == "definitions":
+                item["term"] = str(item.get("term") or item.get("name") or item.get("title") or "").strip()
+                item["meaning"] = str(
+                    item.get("meaning") or item.get("definition") or item.get("description") or ""
+                ).strip()
+                if not item.get("sourceBlockId"):
+                    ids = _coerce_source_block_ids(item, fragments, item["term"])
+                    item["sourceBlockId"] = ids[0] if ids else ""
             relation = item.get("relation")
             if relation and relation not in allowed_relations:
                 item["relation"] = _relation_from_text(str(relation))
@@ -416,6 +550,49 @@ def _coerce_document_map_data(data: dict[str, Any]) -> dict[str, Any]:
             normalized.append(item)
         data[collection_name] = normalized
     return data
+
+
+def _coerce_source_block_ids(
+    item: dict[str, Any],
+    fragments: list[dict[str, Any]] | None,
+    needle: str,
+) -> list[str]:
+    raw = item.get("sourceBlockIds") or item.get("sourceBlocks") or item.get("blockIds")
+    if isinstance(raw, list):
+        values = [str(value) for value in raw if str(value).strip()]
+        if values:
+            return values
+    raw_one = item.get("sourceBlockId") or item.get("blockId")
+    if isinstance(raw_one, str) and raw_one.strip():
+        return [raw_one.strip()]
+    if not fragments:
+        return []
+    search_values = [needle, str(item.get("responsibilities") or ""), str(item.get("description") or "")]
+    return _infer_source_blocks(search_values, fragments)
+
+
+def _infer_source_blocks(values: list[str], fragments: list[dict[str, Any]]) -> list[str]:
+    terms: list[str] = []
+    for value in values:
+        text = value.strip()
+        if not text:
+            continue
+        terms.append(text.casefold())
+        for part in re.split(r"[/,;()]+", text):
+            part = part.strip()
+            if len(part) >= 4:
+                terms.append(part.casefold())
+    out: list[str] = []
+    for fragment in fragments:
+        block_id = str(fragment.get("blockId") or "")
+        text = str(fragment.get("text") or "").casefold()
+        if not block_id or not text:
+            continue
+        if any(term and term in text for term in terms):
+            out.append(block_id)
+        if len(out) >= 8:
+            break
+    return out
 
 
 def _relation_from_text(value: str) -> str:

@@ -533,3 +533,39 @@ class QuestionChatSessionResult(BaseModel):
 
 class QuestionChatSendRequest(BaseModel):
     message: str
+
+
+RegulationCreationStatus = Literal[
+    "collecting_positions",
+    "interview",
+    "generating",
+    "finalized",
+    "error",
+    "closed",
+]
+
+
+class RegulationCreationMessage(BaseModel):
+    messageId: str
+    draftId: str
+    role: Literal["assistant", "user", "system"]
+    content: str = ""
+    structured: dict = Field(default_factory=dict)
+    createdAt: datetime | None = None
+
+
+class RegulationCreationSession(BaseModel):
+    draftId: str
+    status: RegulationCreationStatus = "collecting_positions"
+    cursorAgentId: str = ""
+    latestRunId: str = ""
+    positions: list[str] = Field(default_factory=list)
+    messages: list[RegulationCreationMessage] = Field(default_factory=list)
+    resultRegulation: RegulationParseResult | None = None
+    resultDocumentPath: str = ""
+    createdAt: datetime | None = None
+    updatedAt: datetime | None = None
+
+
+class RegulationCreationSendRequest(BaseModel):
+    message: str

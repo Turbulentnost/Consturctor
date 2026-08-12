@@ -295,9 +295,9 @@ def _validated_function(
         object=str(raw.get("object") or _guess_object(fragment.text)),
         recipient=str(raw.get("recipient") or ""),
         conditions=[str(x)[:500] for x in raw.get("conditions") or []],
-        dependencies=dependencies,
-        evidence=evidence[:6],
-        proofChain=proof_chain[:8],
+        dependencies=_dedupe_dependencies(dependencies),
+        evidence=_dedupe_evidence(evidence)[:6],
+        proofChain=_dedupe_proof_chain(proof_chain)[:8],
         explanation=str(raw.get("explanation") or "")[:1000],
         confidence=_clamp(float(raw.get("confidence") or raw.get("modelConfidence") or 0.0)),
         requiresUserConfirmation=bool(raw.get("requiresUserConfirmation", False)),
@@ -308,10 +308,13 @@ def _rule_evidence(candidate: Candidate, *, quote_override: str = "") -> list[Ma
     if quote_override.strip():
         return [MatchEvidence(fragmentId=candidate.fragment.fragmentId, quote=quote_override.strip()[:500])]
     out: list[MatchEvidence] = []
+    seen: set[str] = set()
     for signal in candidate.signals:
         quote = signal.quote or candidate.fragment.text[:220]
-        if quote:
+        key = _dedupe_text_key(quote)
+        if quote and key not in seen:
             out.append(MatchEvidence(fragmentId=candidate.fragment.fragmentId, quote=quote))
+            seen.add(key)
     return out[:3]
 
 
@@ -350,7 +353,7 @@ def _fallback_function(
         if fallback_evidence
         else _rule_evidence(candidate, quote_override=text_override)
     )
-    proof_chain = context.linkedBlocks[:4] if context else []
+    proof_chain = _dedupe_proof_chain(context.linkedBlocks if context else [])[:4]
     source_block = _actor_source_block(context) or fragment.fragmentId
     return RoleFunction(
         targetBlockId=fragment.fragmentId,
@@ -365,7 +368,7 @@ def _fallback_function(
         recipient=_guess_recipient(text),
         conditions=_conditions(context),
         dependencies=_dependencies(context),
-        evidence=evidence[:6],
+        evidence=_dedupe_evidence(evidence)[:6],
         proofChain=proof_chain,
         explanation="Функция извлечена по правилам и связям графа",
         confidence=0.0,
@@ -484,4 +487,44 @@ def _dependencies(context: ContextPackage | None) -> list[FunctionDependency]:
                     description=block.text[:500],
                 )
             )
-    return out[:5]
+    return _dedupe_dependencies(out)[:5]
+
+
+def _dedupe_evidence(items: list[MatchEvidence]) -> list[MatchEvidence]:
+    out: list[MatchEvidence] = []
+    seen: set[str] = set()
+    for item in items:
+        key = _dedupe_text_key(item.quote)
+        if not key or key in seen:
+            continue
+        out.append(item)
+        seen.add(key)
+    return out
+
+
+def _dedupe_proof_chain(items: list[ContextLinkedBlock]) -> list[ContextLinkedBlock]:
+    out: list[ContextLinkedBlock] = []
+    seen: set[str] = set()
+    for item in items:
+        key = _dedupe_text_key(item.evidence or item.text or item.blockId)
+        if not key or key in seen:
+            continue
+        out.append(item)
+        seen.add(key)
+    return out
+
+
+def _dedupe_dependencies(items: list[FunctionDependency]) -> list[FunctionDependency]:
+    out: list[FunctionDependency] = []
+    seen: set[str] = set()
+    for item in items:
+        key = f"{item.type}:{item.blockId}:{_dedupe_text_key(item.description)}"
+        if key in seen:
+            continue
+        out.append(item)
+        seen.add(key)
+    return out
+
+
+def _dedupe_text_key(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").casefold()).strip()
