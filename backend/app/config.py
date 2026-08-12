@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     claude_api_key: str = ""
     claudehub_base_url: str = "https://api.claudehub.fun"
     claudehub_model: str = "claude-sonnet-4.6"
+    claudehub_fallback_model: str = "claude-haiku-4-5-20251001"
     claudehub_max_blocks_per_chunk: int = 120
 
     # App Postgres (users, avatars, future agent data). Not ERP.

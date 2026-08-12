@@ -17,7 +17,7 @@ from app.schemas.regulation import (
     RoleProfile,
     QuestionChatSendRequest,
 )
-from app.services.agents import create_or_get_draft, ensure_draft_readiness, list_drafts
+from app.services.agents import create_or_get_draft, delete_draft, ensure_draft_readiness, list_drafts
 from app.services.readiness.chat import create_or_get_question_chat, send_question_chat_message
 
 
@@ -32,6 +32,9 @@ def test_agent_draft_created_once_and_user_scoped() -> None:
     assert first.draftId == second.draftId
     assert [item.draftId for item in list_drafts(db, user_id="user-1").items] == [first.draftId]
     assert list_drafts(db, user_id="user-2").items == []
+
+    delete_draft(db, user_id="user-1", draft_id=first.draftId)
+    assert list_drafts(db, user_id="user-1").items == []
 
 
 def test_question_chat_incomplete_then_complete_answer_creates_change() -> None:

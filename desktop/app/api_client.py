@@ -205,12 +205,26 @@ class AgentReadinessResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RevisionDiffBlock:
+    block_id: str
+    section: str
+    before: str
+    after: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
 class RegulationRevisionResult:
     revision_id: str
     regulation_id: str
     readiness_run_id: str
     document_path: str
     protocol_path: str
+    source_preview_html: str
+    revised_preview_html: str
+    diff_blocks: list[RevisionDiffBlock]
+    download_url: str
+    protocol_url: str
     message: str
 
 
@@ -226,6 +240,8 @@ class AgentDraft:
     status: str
     progress: int
     readiness: AgentReadinessResult | None = None
+    updated_at: datetime | None = None
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,6 +491,21 @@ class ApiClient:
             readiness_run_id=str(data.get("readinessRunId") or ""),
             document_path=str(data.get("documentPath") or ""),
             protocol_path=str(data.get("protocolPath") or ""),
+            source_preview_html=str(data.get("sourcePreviewHtml") or ""),
+            revised_preview_html=str(data.get("revisedPreviewHtml") or ""),
+            diff_blocks=[
+                RevisionDiffBlock(
+                    block_id=str(item.get("blockId") or ""),
+                    section=str(item.get("section") or ""),
+                    before=str(item.get("before") or ""),
+                    after=str(item.get("after") or ""),
+                    status=str(item.get("status") or ""),
+                )
+                for item in data.get("diffBlocks") or []
+                if isinstance(item, dict)
+            ],
+            download_url=str(data.get("downloadUrl") or ""),
+            protocol_url=str(data.get("protocolUrl") or ""),
             message=str(data.get("message") or ""),
         )
 
@@ -493,6 +524,9 @@ class ApiClient:
     def get_agent_draft(self, draft_id: str) -> AgentDraft:
         data = self._request("GET", f"/api/v1/agents/drafts/{draft_id}", timeout=max(self._timeout, 60.0))
         return self._parse_agent_draft(data)
+
+    def delete_agent_draft(self, draft_id: str) -> None:
+        self._request("DELETE", f"/api/v1/agents/drafts/{draft_id}", timeout=max(self._timeout, 60.0))
 
     def ensure_draft_readiness(self, draft_id: str) -> AgentDraft:
         data = self._request(
@@ -823,6 +857,8 @@ class ApiClient:
     @staticmethod
     def _parse_agent_draft(data: dict) -> AgentDraft:
         readiness_raw = data.get("readiness")
+        updated_at = _parse_datetime(data.get("updatedAt"))
+        created_at = _parse_datetime(data.get("createdAt"))
         return AgentDraft(
             draft_id=str(data.get("draftId") or ""),
             regulation_id=str(data.get("regulationId") or ""),
@@ -834,6 +870,8 @@ class ApiClient:
             status=str(data.get("status") or "draft"),
             progress=int(data.get("progress") or 0),
             readiness=ApiClient._parse_readiness(readiness_raw) if isinstance(readiness_raw, dict) else None,
+            updated_at=updated_at,
+            created_at=created_at,
         )
 
     @staticmethod
@@ -884,3 +922,12 @@ def _extract_detail(response: httpx.Response) -> str:
     if response.status_code == 401:
         return "Неверный логин или пароль"
     return f"Ошибка сервера ({response.status_code})"
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None

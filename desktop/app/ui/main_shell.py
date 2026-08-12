@@ -6,6 +6,7 @@ from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
+    QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -187,6 +188,7 @@ class MainShell(QWidget):
         }
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_agents.continue_requested.connect(self._on_continue_agent_draft)
+        self._page_agents.delete_requested.connect(self._on_delete_agent_draft)
         self._page_create.create_regulation_requested.connect(self._on_create_regulation)
         self._page_create.regulation_selected.connect(self._on_regulation_selected)
         self._page_review.back_requested.connect(self._back_to_create)
@@ -201,6 +203,7 @@ class MainShell(QWidget):
         self._page_readiness.answer_requested.connect(self._on_readiness_answer)
         self._page_readiness.change_decision_requested.connect(self._on_readiness_change_decision)
         self._page_readiness.finalize_requested.connect(self._on_readiness_finalize)
+        self._page_revision.download_requested.connect(self._on_revision_download)
         self._regulation_ready.connect(self._show_regulation_result)
         self._regulation_failed.connect(self._show_regulation_error)
         self._role_match_ready.connect(self._show_role_match_result)
@@ -218,6 +221,7 @@ class MainShell(QWidget):
         self._current_readiness: AgentReadinessResult | None = None
         self._current_draft: AgentDraft | None = None
         self._current_chat: QuestionChatSession | None = None
+        self._current_revision: RegulationRevisionResult | None = None
 
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
@@ -644,8 +648,28 @@ class MainShell(QWidget):
     def _show_revision_result(self, result: object) -> None:
         if not isinstance(result, RegulationRevisionResult):
             return
+        self._current_revision = result
         self._page_revision.set_result(result)
         self._pages.setCurrentIndex(self._page_index["revision"])
+
+    def _on_revision_download(self, kind: str) -> None:
+        if self._current_revision is None:
+            return
+        url = self._current_revision.download_url if kind == "document" else self._current_revision.protocol_url
+        default_name = "ai-ready-regulation.docx" if kind == "document" else "change_protocol.txt"
+        target, _filter = QFileDialog.getSaveFileName(self, "Сохранить файл", default_name)
+        if not target:
+            return
+
+        def run() -> None:
+            try:
+                data = self._api.fetch_bytes(url)
+                with open(target, "wb") as fh:
+                    fh.write(data)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+
+        Thread(target=run, daemon=True).start()
 
     def _on_role_match_decision(self, match_id: str, status: str) -> None:
         if self._current_regulation is None or self._current_role_match is None:
@@ -735,5 +759,25 @@ class MainShell(QWidget):
                 self._readiness_failed.emit(exc.message)
                 return
             self._draft_ready.emit((draft, chat))
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_delete_agent_draft(self, draft_id: str) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Удалить черновик",
+            "Удалить этот черновик ИИ-агента? Это действие нельзя отменить.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def run() -> None:
+            try:
+                self._api.delete_agent_draft(draft_id)
+                drafts = self._api.list_agent_drafts()
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._drafts_ready.emit(drafts)
 
         Thread(target=run, daemon=True).start()

@@ -17,6 +17,7 @@ from app.schemas.regulation import (
     QuestionChatSendRequest,
     QuestionChatSessionResult,
     ReadinessAnswerRequest,
+    ReadinessQuestion,
     RegulationParseResult,
 )
 from app.services.agents import sync_draft_progress
@@ -119,21 +120,35 @@ def send_question_chat_message(
             structured_json={},
         )
     )
-    structured = _extract_structured_answer(user_text, session.context_json)
+    readiness = _get_readiness(db, draft)
+    structured = _extract_structured_answer(user_text, session.context_json, readiness)
     if structured["isComplete"]:
-        readiness = answer_readiness_question(
+        applied = []
+        for item in structured["relatedAnswers"]:
+            readiness = answer_readiness_question(
+                db,
+                user_id=user_id,
+                regulation_id=draft.regulation_id,
+                readiness_run_id=draft.readiness_run_id,
+                request=ReadinessAnswerRequest(
+                    questionId=str(item["questionId"]),
+                    answer=str(item["answer"]),
+                ),
+            )
+            applied.append(item)
+        readiness = _reprioritize_questions(
             db,
             user_id=user_id,
             regulation_id=draft.regulation_id,
             readiness_run_id=draft.readiness_run_id,
-            request=ReadinessAnswerRequest(questionId=question_id, answer=str(structured["answer"])),
+            answer=user_text,
         )
         sync_draft_progress(db, draft_id=draft.id, readiness=readiness)
         session.status = "answered"
-        assistant_text = "Ответ принят. Я подготовил проект изменения регламента для согласования."
+        assistant_text = _accepted_answer_text(applied)
     else:
         session.status = "needs_clarification"
-        assistant_text = _follow_up_prompt(session.context_json)
+        assistant_text = str(structured.get("followUpQuestion") or _follow_up_prompt(session.context_json))
     db.add(
         QuestionChatMessage(
             id=f"qmsg-{uuid4().hex[:12]}",
@@ -204,17 +219,145 @@ def _follow_up_prompt(context: dict) -> str:
     )
 
 
-def _extract_structured_answer(text: str, context: dict) -> dict:
+def _extract_structured_answer(text: str, context: dict, readiness: AgentReadinessResult) -> dict:
     clean = text.strip()
-    incomplete = not clean or clean.casefold() in {"не знаю", "пока неизвестно", "позже", "уточню позже"}
+    current = context.get("question") or {}
+    incomplete = _needs_clarification(clean)
+    related_answers = []
+    if not incomplete:
+        related_answers.append(
+            {
+                "questionId": current.get("questionId", ""),
+                "targetField": current.get("targetField", ""),
+                "answer": clean,
+            }
+        )
+        related_answers.extend(_related_answers(clean, current, readiness))
     return {
         "isComplete": not incomplete,
         "targetField": (context.get("question") or {}).get("targetField", ""),
         "answer": clean,
+        "relatedAnswers": related_answers,
         "confidence": 0.9 if not incomplete else 0.2,
         "needsFollowUp": incomplete,
+        "followUpQuestion": _follow_up_from_answer(clean, context) if incomplete else "",
         "proposedChangeHint": "Добавить уточнение к связанному блоку регламента" if not incomplete else "",
     }
+
+
+def _needs_clarification(text: str) -> bool:
+    clean = text.strip().casefold()
+    if not clean or clean in {"не знаю", "пока неизвестно", "позже", "уточню позже"}:
+        return True
+    vague = {"по ситуации", "как обычно", "на усмотрение", "пока непонятно"}
+    return clean in vague or (len(clean) < 6 and clean not in {"да", "нет"})
+
+
+def _related_answers(text: str, current: dict, readiness: AgentReadinessResult) -> list[dict]:
+    current_question_id = str(current.get("questionId") or "")
+    current_function_id = str(current.get("functionId") or "")
+    out = []
+    for question in readiness.questions:
+        if question.answered or question.questionId == current_question_id:
+            continue
+        if current_function_id and question.functionId != current_function_id:
+            continue
+        if _answer_mentions_field(text, question.targetField):
+            out.append(
+                {
+                    "questionId": question.questionId,
+                    "targetField": question.targetField,
+                    "answer": text.strip(),
+                }
+            )
+    return out
+
+
+def _answer_mentions_field(text: str, field: str) -> bool:
+    clean = text.casefold()
+    signals = {
+        "trigger": ("когда", "после", "при ", "по поручению", "график", "появлен"),
+        "deadline": ("срок", "день", "час", "минут", "недел", "рабоч"),
+        "errors": ("ошиб", "сбой", "невозмож", "не получится", "отказ"),
+        "escalation": ("эскал", "переда", "руковод", "начальник"),
+        "recipient": ("переда", "кому", "получател", "руковод"),
+        "approval": ("подтверд", "соглас", "утвержд", "одобр"),
+        "inputs": ("данн", "документ", "файл", "заявк", "информац", "вход"),
+        "system": ("систем", "crm", "erp", "битрикс", "1с"),
+        "result": ("результ", "отчет", "отчёт", "сформир", "готов"),
+        "control": ("контрол", "провер", "монитор"),
+        "conditions": ("если", "услов", "случа"),
+        "branches": ("если", "иначе", "вариант", "или"),
+        "permissions": ("доступ", "прав", "учетн", "учётн"),
+        "restrictions": ("нельзя", "запрет", "огранич"),
+        "kpi": ("kpi", "метрик", "показател"),
+    }
+    return any(signal in clean for signal in signals.get(field, ()))
+
+
+def _reprioritize_questions(
+    db: Session,
+    *,
+    user_id: str,
+    regulation_id: str,
+    readiness_run_id: str,
+    answer: str,
+) -> AgentReadinessResult:
+    run = db.query(ReadinessRun).filter(
+        ReadinessRun.id == readiness_run_id,
+        ReadinessRun.user_id == user_id,
+        ReadinessRun.regulation_id == regulation_id,
+    ).first()
+    if run is None:
+        raise ReadinessError("Проверка готовности не найдена", status_code=404)
+    readiness = AgentReadinessResult.model_validate(run.result_json)
+    priorities = _field_priorities_from_answer(answer)
+    readiness.questions = sorted(
+        readiness.questions,
+        key=lambda item: (
+            1 if item.answered else 0,
+            priorities.get(item.targetField, 10),
+            _severity_rank(item.severity),
+            item.questionId,
+        ),
+    )
+    run.result_json = readiness.model_dump(mode="json")
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return AgentReadinessResult.model_validate(run.result_json)
+
+
+def _field_priorities_from_answer(answer: str) -> dict[str, int]:
+    clean = answer.casefold()
+    priorities: dict[str, int] = {}
+    if any(token in clean for token in ("если", "иначе", "ошиб", "сбой", "невозможно")):
+        priorities.update({"errors": 0, "branches": 1, "conditions": 2})
+    if any(token in clean for token in ("руковод", "соглас", "подтверд", "переда")):
+        priorities.update({"approval": 0, "escalation": 1, "recipient": 2})
+    if any(token in clean for token in ("срок", "день", "час", "минут")):
+        priorities["deadline"] = 0
+    return priorities
+
+
+def _severity_rank(severity: str) -> int:
+    return {"blocking": 0, "important": 1, "optional": 2}.get(severity, 3)
+
+
+def _accepted_answer_text(applied: list[dict]) -> str:
+    if len(applied) <= 1:
+        return "Понял. Я предлагаю дополнить пункт регламента так:"
+    return f"Понял. Этот ответ закрывает сразу {len(applied)} уточнения. Я подготовил проекты изменений регламента."
+
+
+def _follow_up_from_answer(text: str, context: dict) -> str:
+    question = context.get("question") or {}
+    if text.strip().casefold() == "пока неизвестно":
+        return "Понял. Тогда уточните, кто сможет определить это правило и когда к нему можно вернуться?"
+    return (
+        "Пока не хватает конкретики. Опишите правило так, как оно должно попасть в регламент: "
+        "когда начинается действие, кто отвечает, какой результат ожидается или что делать при исключении."
+    )
 
 
 def _session_result(db: Session, session: QuestionChatSession) -> QuestionChatSessionResult:

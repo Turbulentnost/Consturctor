@@ -16,6 +16,7 @@ from app.schemas.regulation import (
 from app.services.agents import (
     AgentDraftError,
     create_or_get_draft,
+    delete_draft,
     ensure_draft_readiness,
     get_draft,
     list_drafts,
@@ -49,6 +50,19 @@ async def get_agent_draft(
         return get_draft(db, user_id=auth.user_id, draft_id=draft_id)
     except AgentDraftError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.delete("/drafts/{draft_id}")
+async def delete_agent_draft(
+    draft_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    try:
+        delete_draft(db, user_id=auth.user_id, draft_id=draft_id)
+    except AgentDraftError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return {"deleted": True}
 
 
 @router.post("/drafts/{draft_id}/readiness", response_model=AgentDraftDetail)

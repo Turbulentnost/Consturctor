@@ -427,12 +427,25 @@ class AgentReadinessResult(BaseModel):
     createdAt: datetime | None = None
 
 
+class RevisionDiffBlock(BaseModel):
+    blockId: str = ""
+    section: str = ""
+    before: str = ""
+    after: str = ""
+    status: Literal["changed", "unchanged", "added"] = "changed"
+
+
 class RegulationRevisionResult(BaseModel):
     revisionId: str
     regulationId: str
     readinessRunId: str
     documentPath: str = ""
     protocolPath: str = ""
+    sourcePreviewHtml: str = ""
+    revisedPreviewHtml: str = ""
+    diffBlocks: list[RevisionDiffBlock] = Field(default_factory=list)
+    downloadUrl: str = ""
+    protocolUrl: str = ""
     message: str = ""
     createdAt: datetime | None = None
 

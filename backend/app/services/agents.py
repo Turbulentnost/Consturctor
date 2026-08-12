@@ -77,6 +77,12 @@ def get_draft(db: Session, *, user_id: str, draft_id: str) -> AgentDraftDetail:
     return _draft_detail(db, _get_draft(db, user_id=user_id, draft_id=draft_id))
 
 
+def delete_draft(db: Session, *, user_id: str, draft_id: str) -> None:
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    db.delete(draft)
+    db.commit()
+
+
 def ensure_draft_readiness(db: Session, *, user_id: str, draft_id: str) -> AgentDraftDetail:
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     if not draft.readiness_run_id:

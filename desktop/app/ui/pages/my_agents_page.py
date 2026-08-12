@@ -10,6 +10,7 @@ from app.ui.theme import app_font
 
 class MyAgentsPage(QWidget):
     continue_requested = Signal(str)
+    delete_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -76,7 +77,11 @@ class MyAgentsPage(QWidget):
         title.setFont(app_font(16, QFont.Weight.DemiBold))
         title.setStyleSheet("color: #101817; background: transparent;")
         title.setWordWrap(True)
-        meta = QLabel(f"{draft.position} · {draft.department} · готовность {draft.progress}% · {draft.status}")
+        updated = _format_dt(draft.updated_at)
+        meta = QLabel(
+            f"{draft.position} · {draft.department} · готовность {draft.progress}% · {draft.status}"
+            + (f" · изменён {updated}" if updated else "")
+        )
         meta.setFont(app_font(12))
         meta.setStyleSheet("color: #6B7773; background: transparent;")
         meta.setWordWrap(True)
@@ -86,5 +91,15 @@ class MyAgentsPage(QWidget):
         button = QPushButton("Продолжить")
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.clicked.connect(lambda _checked=False, draft_id=draft.draft_id: self.continue_requested.emit(draft_id))
+        delete = QPushButton("Удалить")
+        delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete.clicked.connect(lambda _checked=False, draft_id=draft.draft_id: self.delete_requested.emit(draft_id))
         layout.addWidget(button)
+        layout.addWidget(delete)
         return card
+
+
+def _format_dt(value) -> str:
+    if value is None:
+        return ""
+    return value.strftime("%d.%m.%Y %H:%M")

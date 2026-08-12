@@ -200,12 +200,12 @@ def _map_chunk(fragments: list[dict[str, Any]]) -> DocumentMap:
     return DocumentMap.model_validate(data)
 
 
-def _post_json(prompt: dict[str, Any], *, timeout: float) -> str:
+def _post_json(prompt: dict[str, Any], *, timeout: float, model: str | None = None) -> str:
     if not settings.claude_api_key.strip():
         raise ClaudeHubError("CLAUDE_API_KEY is not configured")
     url = f"{settings.claudehub_base_url.rstrip('/')}/v1/chat/completions"
     payload = {
-        "model": settings.claudehub_model,
+        "model": model or settings.claudehub_model,
         "messages": [{"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}],
         "temperature": 0,
     }

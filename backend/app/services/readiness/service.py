@@ -18,8 +18,8 @@ from app.schemas.regulation import (
 )
 from app.services.readiness.analyzer import analyze_readiness
 from app.services.readiness.change_planner import change_from_answer
-from app.services.readiness.docx_editor import create_revision_files
 from app.services.readiness.impact import transaction_for_change
+from app.services.readiness.revision_composer import create_llm_revision_files
 
 
 class ReadinessError(Exception):
@@ -161,11 +161,11 @@ def finalize_readiness_run(
     readiness = AgentReadinessResult.model_validate(run.result_json)
     revision_id = f"rev-{uuid4().hex[:12]}"
     output_dir = Path(doc.storage_path).parent / "revisions" / revision_id
-    document_path, protocol_path, message = create_revision_files(
+    document_path, protocol_path, message, source_html, revised_html, diff_blocks = create_llm_revision_files(
         source_path=Path(doc.storage_path),
         output_dir=output_dir,
         result=RegulationParseResult.model_validate(doc.result_json),
-        changes=readiness.changes,
+        readiness=readiness,
     )
     readiness.status = "finalized"
     run.result_json = readiness.model_dump(mode="json")
@@ -175,6 +175,11 @@ def finalize_readiness_run(
         readinessRunId=readiness_run_id,
         documentPath=str(document_path),
         protocolPath=str(protocol_path),
+        sourcePreviewHtml=source_html,
+        revisedPreviewHtml=revised_html,
+        diffBlocks=diff_blocks,
+        downloadUrl=f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/download?kind=document",
+        protocolUrl=f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/download?kind=protocol",
         message=message,
     )
     db.add(run)
