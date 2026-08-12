@@ -34,6 +34,7 @@ class ExtractedBlock:
     next_fragment_id: str | None = None
     location: dict[str, object] = field(default_factory=dict)
     style: str = ""
+    style_runs: list[dict[str, object]] = field(default_factory=list)
     content_hash: str = ""
 
 

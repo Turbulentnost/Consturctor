@@ -7,7 +7,8 @@ from typing import Any
 
 from app.config import settings
 from app.schemas.regulation import AgentReadinessResult, RegulationParseResult, RevisionDiffBlock
-from app.services.role_matching.claudehub_client import _load_json, _post_json
+from app.services.regulation.pdf_text import extract_pdf_text
+from app.services.role_matching.claudehub_client import _load_json, _post_json_with_model
 
 
 def create_llm_revision_files(
@@ -74,20 +75,21 @@ def _compose_revised_blocks(result: RegulationParseResult, readiness: AgentReadi
         return baseline, "Нет применяемых изменений; создана DOCX-копия исходного текста"
     payload = _revision_prompt(result, readiness, changes)
     try:
-        raw = _post_json(payload, timeout=240.0)
-        return _revised_blocks_from_raw(raw, baseline, fallback), "ClaudeHub Sonnet сформировал новую редакцию регламента"
-    except Exception as sonnet_exc:  # noqa: BLE001 - retry with cheaper/faster fallback model.
-        try:
-            raw = _post_json(payload, timeout=240.0, model=settings.claudehub_fallback_model)
-            return (
-                _revised_blocks_from_raw(raw, baseline, fallback),
-                f"ClaudeHub Haiku 4.5 ({settings.claudehub_fallback_model}) сформировал новую редакцию регламента",
-            )
-        except Exception as haiku_exc:  # noqa: BLE001 - keep document generation available offline.
-            return _fallback_revision(baseline, fallback), (
-                "ClaudeHub недоступен, применена редакция из ответов пользователя. "
-                f"Sonnet error: {sonnet_exc}; Haiku error: {haiku_exc}"
-            )
+        raw, model = _post_json_with_model(payload, timeout=240.0)
+        return _revised_blocks_from_raw(raw, baseline, fallback), _revision_model_message(model)
+    except Exception as exc:  # noqa: BLE001 - keep document generation available offline.
+        return _fallback_revision(baseline, fallback), (
+            "ClaudeHub недоступен, применена редакция из ответов пользователя. "
+            f"Ошибка моделей: {exc}"
+        )
+
+
+def _revision_model_message(model: str) -> str:
+    if model.startswith("chad:"):
+        return f"Chad API ({model.removeprefix('chad:')}) сформировал новую редакцию регламента"
+    if model == settings.claudehub_external_fallback_model:
+        return f"ClaudeHub GPT-5.6 Sol ({model}) сформировал новую редакцию регламента"
+    return f"ClaudeHub ({model}) сформировал новую редакцию регламента"
 
 
 def _revised_blocks_from_raw(raw: str, baseline: dict[str, str], fallback: dict[str, str]) -> dict[str, str]:
@@ -213,8 +215,9 @@ def _write_pdf_revision_assets(
     except ImportError:
         return None, [], []
 
+    styled_fragments = _fragments_with_runtime_pdf_styles(source_path, result.fragments)
     changed_ids = {item.blockId for item in diff_blocks}
-    fragments_by_id = {fragment.fragmentId: fragment for fragment in result.fragments}
+    fragments_by_id = {fragment.fragmentId: fragment for fragment in styled_fragments}
     changed_fragments = [
         fragment for block_id in changed_ids if (fragment := fragments_by_id.get(block_id)) is not None
     ]
@@ -227,7 +230,12 @@ def _write_pdf_revision_assets(
                 page_no = index + 1
                 if page_no in replace_pages:
                     page = source[index]
-                    _write_text_pages(out, page.rect, _page_text(result, revised_blocks, page_no))
+                    _write_styled_page_reconstruction(
+                        out,
+                        page.rect,
+                        [fragment for fragment in styled_fragments if fragment.page == page_no],
+                        revised_blocks,
+                    )
                 else:
                     out.insert_pdf(source, from_page=index, to_page=index)
             for fragment in changed_fragments:
@@ -242,6 +250,65 @@ def _write_pdf_revision_assets(
     source_pages = _render_pdf_preview_pages(source_path, output_dir / "preview" / "source")
     revised_pages = _render_pdf_preview_pages(pdf_path, output_dir / "preview" / "revised")
     return pdf_path, source_pages, revised_pages
+
+
+def _fragments_with_runtime_pdf_styles(source_path: Path, fragments) -> list:
+    if any(fragment.styleRuns for fragment in fragments):
+        return list(fragments)
+    try:
+        extracted = extract_pdf_text(source_path)
+    except Exception:
+        return list(fragments)
+    styled_by_page: dict[int, list] = {}
+    for block in extracted.blocks:
+        if block.style_runs:
+            styled_by_page.setdefault(block.page, []).append(block)
+    if not styled_by_page:
+        return list(fragments)
+    enriched = []
+    for fragment in fragments:
+        match = _best_style_block(fragment, styled_by_page.get(fragment.page, []))
+        if match is None:
+            enriched.append(fragment)
+            continue
+        enriched.append(
+            fragment.model_copy(
+                update={
+                    "styleRuns": match.style_runs,
+                    "bbox": list(match.bbox) if match.bbox is not None else fragment.bbox,
+                    "fontSize": match.font_size or fragment.fontSize,
+                    "isBold": match.is_bold or fragment.isBold,
+                }
+            )
+        )
+    return enriched
+
+
+def _best_style_block(fragment, candidates) -> object | None:
+    if not candidates:
+        return None
+    target = _style_match_text(fragment.text)
+    if not target:
+        return None
+    scored = [(_style_match_score(target, _style_match_text(candidate.text)), candidate) for candidate in candidates]
+    score, candidate = max(scored, key=lambda item: item[0])
+    return candidate if score >= 0.45 else None
+
+
+def _style_match_text(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+def _style_match_score(left: str, right: str) -> float:
+    if not left or not right:
+        return 0.0
+    if left in right or right in left:
+        return min(len(left), len(right)) / max(len(left), len(right))
+    left_tokens = set(left.split())
+    right_tokens = set(right.split())
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
 
 
 def _pages_requiring_text_replacement(source, fragments, revised_blocks: dict[str, str], is_scan: bool) -> set[int]:
@@ -302,6 +369,173 @@ def _text_fits_bbox(fragment, text: str) -> bool:
     return required_lines <= available_lines
 
 
+def _write_styled_page_reconstruction(doc, source_rect, fragments, revised_blocks: dict[str, str]) -> None:
+    if not any(fragment.styleRuns for fragment in fragments):
+        _write_text_pages(doc, source_rect, _page_text_from_fragments(fragments, revised_blocks))
+        return
+    margin = 42
+    page_bottom = source_rect.height - margin
+    page = doc.new_page(width=source_rect.width, height=source_rect.height)
+    y_cursor = margin
+    y_shift = 0.0
+    flow_mode = False
+    for fragment in fragments:
+        text = revised_blocks.get(fragment.fragmentId, fragment.text).strip()
+        if not text:
+            continue
+        if text == fragment.text.strip() and fragment.styleRuns:
+            if flow_mode:
+                page, y_cursor = _write_style_runs_in_flow(doc, page, source_rect, fragment.styleRuns, y_cursor)
+            else:
+                page, fragment_bottom = _write_original_style_runs(doc, page, source_rect, fragment.styleRuns, y_shift)
+                y_cursor = max(y_cursor, fragment_bottom)
+            continue
+        was_flowing = flow_mode
+        flow_mode = True
+        style = _fragment_style(fragment)
+        fontsize = style["fontSize"]
+        line_height = fontsize * 1.35
+        x = style["x"]
+        y = y_cursor + fontsize if was_flowing else max(y_cursor + fontsize, style["y"] + y_shift)
+        width = max(80.0, source_rect.width - x - margin)
+        for line in _wrap_pdf_text(text, width, fontsize):
+            if y > page_bottom:
+                page = doc.new_page(width=source_rect.width, height=source_rect.height)
+                y = margin + fontsize
+            page.insert_text(
+                (x, y),
+                line,
+                fontsize=fontsize,
+                color=_pdf_color_tuple(style["color"]),
+                **_pdf_font_kwargs(style),
+            )
+            y += line_height
+        original_bottom = _fragment_bottom(fragment) + y_shift
+        if y > original_bottom:
+            y_shift += y - original_bottom
+        y_cursor = y + max(4.0, line_height * 0.25)
+
+
+def _write_style_runs_in_flow(doc, page, source_rect, runs: list[dict], y_cursor: float) -> tuple[object, float]:
+    margin = 42
+    page_bottom = source_rect.height - margin
+    current_page = page
+    for line_runs in _group_runs_by_line(runs):
+        line_style = _run_style(line_runs[0])
+        line_height = line_style["fontSize"] * 1.35
+        y = y_cursor + line_style["fontSize"]
+        if y > page_bottom:
+            current_page = doc.new_page(width=source_rect.width, height=source_rect.height)
+            y = margin + line_style["fontSize"]
+        for run in line_runs:
+            style = _run_style(run)
+            current_page.insert_text(
+                (style["x"], y),
+                str(run.get("text") or ""),
+                fontsize=style["fontSize"],
+                color=_pdf_color_tuple(style["color"]),
+                **_pdf_font_kwargs(style),
+            )
+            line_height = max(line_height, style["fontSize"] * 1.35)
+        y_cursor = y + line_height * 0.15
+    return current_page, y_cursor
+
+
+def _group_runs_by_line(runs: list[dict]) -> list[list[dict]]:
+    lines: list[list[dict]] = []
+    for run in runs:
+        style = _run_style(run)
+        if not lines:
+            lines.append([run])
+            continue
+        previous_y = _run_style(lines[-1][0])["y"]
+        if abs(float(style["y"]) - float(previous_y)) <= 2:
+            lines[-1].append(run)
+        else:
+            lines.append([run])
+    return lines
+
+
+def _write_original_style_runs(doc, page, source_rect, runs: list[dict], y_shift: float) -> tuple[object, float]:
+    margin = 42
+    bottom_margin = source_rect.height - margin
+    max_bottom = margin
+    current_page = page
+    for run in runs:
+        text = str(run.get("text") or "")
+        if not text.strip():
+            continue
+        style = _run_style(run)
+        x = style["x"]
+        y = style["y"] + y_shift
+        if y > bottom_margin:
+            current_page = doc.new_page(width=source_rect.width, height=source_rect.height)
+            y_shift = margin + style["fontSize"] - style["y"]
+            y = style["y"] + y_shift
+        current_page.insert_text(
+            (x, y),
+            text,
+            fontsize=style["fontSize"],
+            color=_pdf_color_tuple(style["color"]),
+            **_pdf_font_kwargs(style),
+        )
+        max_bottom = max(max_bottom, _run_bottom(run) + y_shift)
+    return current_page, max_bottom
+
+
+def _run_style(run: dict) -> dict[str, object]:
+    origin = run.get("origin") or []
+    bbox = run.get("bbox") or []
+    font_size = float(run.get("fontSize") or 10.0)
+    return {
+        "x": float(origin[0] if len(origin) >= 2 else bbox[0] if len(bbox) >= 2 else 42.0),
+        "y": float(origin[1] if len(origin) >= 2 else bbox[1] + font_size if len(bbox) >= 2 else 42.0),
+        "fontSize": max(7.0, min(font_size, 18.0)),
+        "fontName": str(run.get("fontName") or ""),
+        "isBold": bool(run.get("isBold")),
+        "isItalic": bool(run.get("isItalic")),
+        "color": int(run.get("color") or 0),
+    }
+
+
+def _run_bottom(run: dict) -> float:
+    bbox = run.get("bbox") or []
+    if len(bbox) >= 4:
+        return float(bbox[3])
+    return float((run.get("origin") or [0, 42])[1]) + float(run.get("fontSize") or 10)
+
+
+def _fragment_bottom(fragment) -> float:
+    if fragment.bbox and len(fragment.bbox) >= 4:
+        return float(fragment.bbox[3])
+    bottoms = [_run_bottom(run) for run in fragment.styleRuns or []]
+    return max(bottoms, default=42.0)
+
+
+def _fragment_style(fragment) -> dict[str, object]:
+    runs = fragment.styleRuns or []
+    run = runs[0] if runs else {}
+    bbox = fragment.bbox or run.get("bbox") or [42, 42, 0, 0]
+    origin = run.get("origin") or []
+    font_size = float(run.get("fontSize") or fragment.fontSize or 10.0)
+    return {
+        "x": float(origin[0] if len(origin) >= 2 else bbox[0] if len(bbox) >= 2 else 42.0),
+        "y": float(origin[1] if len(origin) >= 2 else bbox[1] + font_size if len(bbox) >= 2 else 42.0),
+        "fontSize": max(7.0, min(font_size, 18.0)),
+        "fontName": str(run.get("fontName") or ""),
+        "isBold": bool(run.get("isBold") or fragment.isBold),
+        "isItalic": bool(run.get("isItalic")),
+        "color": int(run.get("color") or 0),
+    }
+
+
+def _pdf_color_tuple(value: int) -> tuple[float, float, float]:
+    red = ((value >> 16) & 255) / 255
+    green = ((value >> 8) & 255) / 255
+    blue = (value & 255) / 255
+    return (red, green, blue)
+
+
 def _write_text_pages(doc, source_rect, text: str) -> None:
     margin = 42
     fontsize = 10
@@ -337,22 +571,36 @@ def _wrap_pdf_text(text: str, width: float, fontsize: float) -> list[str]:
     return lines
 
 
-def _pdf_font_kwargs() -> dict[str, str]:
-    for font_path in (
+def _pdf_font_kwargs(style: dict[str, object] | None = None) -> dict[str, str]:
+    bold = bool((style or {}).get("isBold"))
+    italic = bool((style or {}).get("isItalic"))
+    font_name = str((style or {}).get("fontName") or "").casefold()
+    prefers_times = "times" in font_name
+    windows_fonts = (
+        Path("C:/Windows/Fonts/timesbi.ttf") if prefers_times and bold and italic else None,
+        Path("C:/Windows/Fonts/timesbd.ttf") if prefers_times and bold else None,
+        Path("C:/Windows/Fonts/timesi.ttf") if prefers_times and italic else None,
+        Path("C:/Windows/Fonts/times.ttf") if prefers_times else None,
+        Path("C:/Windows/Fonts/arialbi.ttf") if bold and italic else None,
+        Path("C:/Windows/Fonts/arialbd.ttf") if bold else None,
+        Path("C:/Windows/Fonts/ariali.ttf") if italic else None,
         Path("C:/Windows/Fonts/arial.ttf"),
         Path("C:/Windows/Fonts/calibri.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf") if bold else None,
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf") if italic else None,
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-    ):
+    )
+    for font_path in (path for path in windows_fonts if path is not None):
         if font_path.is_file():
             return {"fontname": "revision-font", "fontfile": str(font_path)}
     return {"fontname": "helv"}
 
 
-def _page_text(result: RegulationParseResult, revised_blocks: dict[str, str], page_no: int) -> str:
+def _page_text_from_fragments(fragments, revised_blocks: dict[str, str]) -> str:
     lines = [
         revised_blocks.get(fragment.fragmentId, fragment.text)
-        for fragment in result.fragments
-        if fragment.page == page_no and (fragment.text or "").strip()
+        for fragment in fragments
+        if (fragment.text or "").strip()
     ]
     return "\n\n".join(lines)
 

@@ -109,6 +109,10 @@ class RevisionResultPage(QWidget):
         self._previews_layout = QHBoxLayout(self._previews_wrap)
         self._previews_layout.setContentsMargins(0, 0, 0, 0)
         self._previews_layout.setSpacing(16)
+        self._source_card = self._preview_card("Исходный документ", self._source_scroll)
+        self._revised_card = self._preview_card("Исправленный документ", self._revised_scroll)
+        self._previews_layout.addWidget(self._source_card, 1)
+        self._previews_layout.addWidget(self._revised_card, 1)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -145,7 +149,6 @@ class RevisionResultPage(QWidget):
             self._render_html_fallback(self._revised_pages, result.revised_preview_html, "Исправленный preview недоступен.")
         changed = len([item for item in result.diff_blocks if item.status == "changed"])
         self._summary.setText(f"{result.message}\nИзменённых блоков: {changed}")
-        self._rebuild_preview_layout(force=True)
         if changed_pages:
             QTimer.singleShot(0, lambda page=min(changed_pages): self._scroll_to_page(page))
 
@@ -182,9 +185,9 @@ class RevisionResultPage(QWidget):
             return
         if not force and self._previews_layout.count():
             return
-        _detach_layout(self._previews_layout)
-        self._previews_layout.addWidget(self._preview_card("Исходный документ", self._source_scroll), 1)
-        self._previews_layout.addWidget(self._preview_card("Исправленный документ", self._revised_scroll), 1)
+        if not self._previews_layout.count():
+            self._previews_layout.addWidget(self._source_card, 1)
+            self._previews_layout.addWidget(self._revised_card, 1)
 
     @staticmethod
     def _page_scroll_area() -> QScrollArea:

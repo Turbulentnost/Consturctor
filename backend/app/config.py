@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +38,11 @@ class Settings(BaseSettings):
     claudehub_base_url: str = "https://api.claudehub.fun"
     claudehub_model: str = "claude-sonnet-4.6"
     claudehub_fallback_model: str = "claude-haiku-4-5-20251001"
+    claudehub_external_fallback_model: str = "gpt-5.6-sol"
     claudehub_max_blocks_per_chunk: int = 120
+    chad_api_key: str = Field(default="", validation_alias="CHAD_AI")
+    chad_base_url: str = "https://ask.chadgpt.ru/api"
+    chad_model: str = "grok-4.1-fast-with-web-search"
 
     # App Postgres (users, avatars, future agent data). Not ERP.
     database_url: str = (

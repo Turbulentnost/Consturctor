@@ -91,6 +91,7 @@ class RegulationFragment(BaseModel):
     numbering: str | None = None
     location: dict = Field(default_factory=dict)
     style: str = ""
+    styleRuns: list[dict] = Field(default_factory=list)
     contentHash: str = ""
     context: RegulationFragmentContext | None = None
     ocrConfidence: float = Field(default=1.0, ge=0.0, le=1.0)

@@ -201,20 +201,83 @@ def _map_chunk(fragments: list[dict[str, Any]]) -> DocumentMap:
 
 
 def _post_json(prompt: dict[str, Any], *, timeout: float, model: str | None = None) -> str:
+    raw, _model = _post_json_with_model(prompt, timeout=timeout, model=model)
+    return raw
+
+
+def _post_json_with_model(prompt: dict[str, Any], *, timeout: float, model: str | None = None) -> tuple[str, str]:
     if not settings.claude_api_key.strip():
         raise ClaudeHubError("CLAUDE_API_KEY is not configured")
+    errors: list[str] = []
+    for candidate in _model_chain(model):
+        try:
+            return _post_json_once(prompt, timeout=timeout, model=candidate), candidate
+        except Exception as exc:  # noqa: BLE001 - try the next configured provider fallback.
+            errors.append(f"{candidate}: {_safe_error(exc)}")
+            logger.warning("ClaudeHub model fallback failed model=%s error=%s", candidate, _safe_error(exc))
+    if model is None:
+        try:
+            return _post_chad_json(prompt, timeout=timeout), f"chad:{settings.chad_model}"
+        except Exception as exc:  # noqa: BLE001 - expose Chad fallback errors with ClaudeHub errors.
+            errors.append(f"chad:{settings.chad_model}: {_safe_error(exc)}")
+            logger.warning("Chad API fallback failed model=%s error=%s", settings.chad_model, _safe_error(exc))
+    raise ClaudeHubError("All ClaudeHub models failed: " + " | ".join(errors))
+
+
+def _post_json_once(prompt: dict[str, Any], *, timeout: float, model: str) -> str:
     url = f"{settings.claudehub_base_url.rstrip('/')}/v1/chat/completions"
     payload = {
-        "model": model or settings.claudehub_model,
+        "model": model,
         "messages": [{"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}],
         "temperature": 0,
     }
     headers = {"Authorization": f"Bearer {settings.claude_api_key}", "Accept": "application/json"}
     with httpx.Client(timeout=timeout) as client:
         response = client.post(url, json=payload, headers=headers)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body = response.text[:1000]
+        raise ClaudeHubError(f"HTTP {response.status_code} for model {model}: {body}") from exc
     data = response.json()
     return str(data["choices"][0]["message"]["content"])
+
+
+def _post_chad_json(prompt: dict[str, Any], *, timeout: float) -> str:
+    if not settings.chad_api_key.strip():
+        raise ClaudeHubError("CHAD_AI is not configured")
+    url = f"{settings.chad_base_url.rstrip('/')}/public/{settings.chad_model}"
+    payload = {
+        "message": json.dumps(prompt, ensure_ascii=False),
+        "api_key": settings.chad_api_key,
+    }
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(url, json=payload)
+    if response.status_code != 200:
+        raise ClaudeHubError(f"HTTP {response.status_code} for Chad model {settings.chad_model}: {response.text[:1000]}")
+    data = response.json()
+    if not data.get("is_success"):
+        raise ClaudeHubError(
+            f"Chad model {settings.chad_model} error "
+            f"{data.get('error_code') or ''}: {data.get('error_message') or data}"
+        )
+    return str(data.get("response") or "")
+
+
+def _model_chain(model: str | None) -> list[str]:
+    if model:
+        return [model]
+    models = [
+        settings.claudehub_model,
+        settings.claudehub_fallback_model,
+        settings.claudehub_external_fallback_model,
+    ]
+    out: list[str] = []
+    for item in models:
+        value = (item or "").strip()
+        if value and value not in out:
+            out.append(value)
+    return out
 
 
 def _chunks(result: RegulationParseResult) -> list[list[dict[str, Any]]]:

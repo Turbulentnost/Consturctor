@@ -11,6 +11,7 @@ from app.schemas.regulation import (
     RegulationFragment,
     RegulationParseResult,
 )
+from app.services.regulation.pdf_text import extract_pdf_text
 from app.services.readiness import revision_composer
 
 
@@ -53,18 +54,21 @@ def test_revision_composer_uses_claudehub_revised_blocks(monkeypatch, tmp_path) 
 
     monkeypatch.setattr(
         revision_composer,
-        "_post_json",
-        lambda _payload, timeout: json.dumps(
-            {
-                "revisedBlocks": [
-                    {
-                        "blockId": "B-001",
-                        "section": "5.2 Руководитель сектора",
-                        "text": "Руководитель утверждает правила работы сектора по поручению руководителя.",
-                    }
-                ]
-            },
-            ensure_ascii=False,
+        "_post_json_with_model",
+        lambda _payload, timeout: (
+            json.dumps(
+                {
+                    "revisedBlocks": [
+                        {
+                            "blockId": "B-001",
+                            "section": "5.2 Руководитель сектора",
+                            "text": "Руководитель утверждает правила работы сектора по поручению руководителя.",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            "claude-sonnet-4.6",
         ),
     )
 
@@ -123,7 +127,11 @@ def test_revision_composer_merges_pending_changes_for_same_block(monkeypatch, tm
         ],
     )
 
-    monkeypatch.setattr(revision_composer, "_post_json", lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(
+        revision_composer,
+        "_post_json_with_model",
+        lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
 
     _document_path, _protocol_path, _pdf_path, _message, _source_html, _revised_html, diff_blocks, _source_pages, _revised_pages = (
         revision_composer.create_llm_revision_files(
@@ -175,9 +183,12 @@ def test_revision_composer_rejects_partial_llm_block(monkeypatch, tmp_path) -> N
     )
     monkeypatch.setattr(
         revision_composer,
-        "_post_json",
-        lambda _payload, timeout: json.dumps(
-            {"revisedBlocks": [{"blockId": "B-001", "section": "5.2", "text": "- escalates missed milestones."}]}
+        "_post_json_with_model",
+        lambda _payload, timeout: (
+            json.dumps(
+                {"revisedBlocks": [{"blockId": "B-001", "section": "5.2", "text": "- escalates missed milestones."}]}
+            ),
+            "claude-sonnet-4.6",
         ),
     )
 
@@ -232,7 +243,11 @@ def test_revision_composer_creates_pdf_preview_and_preserves_unchanged_page(monk
             )
         ],
     )
-    monkeypatch.setattr(revision_composer, "_post_json", lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(
+        revision_composer,
+        "_post_json_with_model",
+        lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
 
     _docx, _protocol, pdf_path, _message, _source_html, _revised_html, _diff, source_pages, revised_pages = (
         revision_composer.create_llm_revision_files(
@@ -290,7 +305,11 @@ def test_revision_composer_uses_page_fallback_when_text_does_not_fit_bbox(monkey
             )
         ],
     )
-    monkeypatch.setattr(revision_composer, "_post_json", lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(
+        revision_composer,
+        "_post_json_with_model",
+        lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
 
     _docx, _protocol, pdf_path, _message, _source_html, _revised_html, _diff, _source_pages, _revised_pages = (
         revision_composer.create_llm_revision_files(
@@ -305,6 +324,207 @@ def test_revision_composer_uses_page_fallback_when_text_does_not_fit_bbox(monkey
     with fitz.open(str(pdf_path)) as doc:
         assert "Additional regulation sentence" in doc[0].get_text().replace("\xa0", " ")
         assert "Second page intact" in doc[1].get_text()
+
+
+def test_pdf_extraction_keeps_style_runs(tmp_path) -> None:
+    fitz = pytest.importorskip("fitz")
+
+    source = tmp_path / "styled.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=360, height=240)
+    page.insert_text((50, 60), "Styled heading", fontsize=16, fontname="hebo")
+    page.insert_text((72, 90), "- regular item", fontsize=10, fontname="helv")
+    doc.save(str(source))
+    doc.close()
+
+    extracted = extract_pdf_text(source)
+    heading = next(block for block in extracted.blocks if "Styled heading" in block.text)
+
+    assert heading.style_runs
+    assert heading.font_size and heading.font_size >= 15
+    assert heading.is_bold
+    assert heading.style_runs[0]["fontSize"] >= 15
+
+
+def test_revision_composer_reconstructs_styled_page(monkeypatch, tmp_path) -> None:
+    pytest.importorskip("docx")
+    fitz = pytest.importorskip("fitz")
+
+    source = tmp_path / "styled-source.pdf"
+    _write_sample_pdf(fitz, source, ["Styled heading\n- original item", "Second page intact"])
+    result = RegulationParseResult(
+        regulationId="reg-revision",
+        fileName="styled-source.pdf",
+        pageCount=2,
+        recognitionQuality=1,
+        fragments=[
+            RegulationFragment(
+                fragmentId="B-H",
+                page=1,
+                section="1",
+                text="Styled heading",
+                bbox=[50, 45, 220, 65],
+                fontSize=16,
+                isBold=True,
+                styleRuns=[
+                    {
+                        "text": "Styled heading",
+                        "bbox": [50, 45, 220, 65],
+                        "origin": [50, 60],
+                        "fontName": "Helvetica-Bold",
+                        "fontSize": 16,
+                        "isBold": True,
+                        "isItalic": False,
+                        "color": 0,
+                    }
+                ],
+            ),
+            RegulationFragment(
+                fragmentId="B-001",
+                page=1,
+                section="1",
+                text="- original item",
+                bbox=[72, 75, 150, 88],
+                fontSize=10,
+                styleRuns=[
+                    {
+                        "text": "- original item",
+                        "bbox": [72, 75, 150, 88],
+                        "origin": [72, 90],
+                        "fontName": "Helvetica",
+                        "fontSize": 10,
+                        "isBold": False,
+                        "isItalic": False,
+                        "color": 0,
+                    }
+                ],
+            ),
+            RegulationFragment(fragmentId="B-002", page=2, section="2", text="Second page intact"),
+        ],
+    )
+    after = "- original item\n- added item with preserved style"
+    readiness = AgentReadinessResult(
+        readinessRunId="ready-run",
+        regulationId="reg-revision",
+        roleMatchRunId="role-run",
+        changes=[
+            RegulationChangeDraft(
+                changeId="CH-001",
+                targetBlockId="B-001",
+                before="- original item",
+                after=after,
+                status="pending",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        revision_composer,
+        "_post_json_with_model",
+        lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    _docx, _protocol, pdf_path, _message, _source_html, _revised_html, _diff, _source_pages, _revised_pages = (
+        revision_composer.create_llm_revision_files(
+            source_path=source,
+            output_dir=tmp_path / "revision",
+            result=result,
+            readiness=readiness,
+        )
+    )
+
+    assert pdf_path is not None and pdf_path.is_file()
+    with fitz.open(str(pdf_path)) as doc:
+        first_page_text = " ".join(doc[0].get_text().replace("\xa0", " ").split())
+        assert "Styled heading" in first_page_text
+        assert "added item with preserved style" in first_page_text
+        assert "Second page intact" in doc[-1].get_text()
+        sizes = [
+            round(float(span.get("size") or 0))
+            for block in doc[0].get_text("dict").get("blocks") or []
+            for line in block.get("lines") or []
+            for span in line.get("spans") or []
+        ]
+        assert 16 in sizes
+        assert 10 in sizes
+
+
+def test_revision_composer_enriches_old_fragments_from_source_pdf(monkeypatch, tmp_path) -> None:
+    pytest.importorskip("docx")
+    fitz = pytest.importorskip("fitz")
+
+    source = tmp_path / "old-fragments.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=360, height=240)
+    page.insert_text((50, 60), "Styled heading", fontsize=16, fontname="hebo")
+    page.insert_text((72, 90), "- original item", fontsize=10, fontname="helv")
+    doc.save(str(source))
+    doc.close()
+
+    result = RegulationParseResult(
+        regulationId="reg-revision",
+        fileName="old-fragments.pdf",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[
+            RegulationFragment(
+                fragmentId="B-H",
+                page=1,
+                section="1",
+                text="Styled heading",
+                bbox=[50, 45, 220, 65],
+                fontSize=12,
+            ),
+            RegulationFragment(
+                fragmentId="B-001",
+                page=1,
+                section="1",
+                text="- original item",
+                bbox=[72, 75, 150, 88],
+                fontSize=10,
+            ),
+        ],
+    )
+    readiness = AgentReadinessResult(
+        readinessRunId="ready-run",
+        regulationId="reg-revision",
+        roleMatchRunId="role-run",
+        changes=[
+            RegulationChangeDraft(
+                changeId="CH-001",
+                targetBlockId="B-001",
+                before="- original item",
+                after="- original item\n- added item",
+                status="pending",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        revision_composer,
+        "_post_json_with_model",
+        lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    _docx, _protocol, pdf_path, _message, _source_html, _revised_html, _diff, _source_pages, _revised_pages = (
+        revision_composer.create_llm_revision_files(
+            source_path=source,
+            output_dir=tmp_path / "revision",
+            result=result,
+            readiness=readiness,
+        )
+    )
+
+    assert pdf_path is not None and pdf_path.is_file()
+    with fitz.open(str(pdf_path)) as revised:
+        text = " ".join(revised[0].get_text().split())
+        assert "Styled heading" in text
+        assert "added item" in text
+        sizes = [
+            round(float(span.get("size") or 0))
+            for block in revised[0].get_text("dict").get("blocks") or []
+            for line in block.get("lines") or []
+            for span in line.get("spans") or []
+        ]
+        assert 16 in sizes
 
 
 def test_revision_composer_scan_fallback_replaces_only_changed_page(monkeypatch, tmp_path) -> None:
@@ -338,7 +558,11 @@ def test_revision_composer_scan_fallback_replaces_only_changed_page(monkeypatch,
             )
         ],
     )
-    monkeypatch.setattr(revision_composer, "_post_json", lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(
+        revision_composer,
+        "_post_json_with_model",
+        lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
 
     _docx, _protocol, pdf_path, _message, _source_html, _revised_html, _diff, _source_pages, _revised_pages = (
         revision_composer.create_llm_revision_files(
