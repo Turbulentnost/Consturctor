@@ -75,12 +75,12 @@ def _compose_revised_blocks(result: RegulationParseResult, readiness: AgentReadi
     payload = _revision_prompt(result, readiness, changes)
     try:
         raw = _post_json(payload, timeout=240.0)
-        return _revised_blocks_from_raw(raw, baseline), "ClaudeHub Sonnet сформировал новую редакцию регламента"
+        return _revised_blocks_from_raw(raw, baseline, fallback), "ClaudeHub Sonnet сформировал новую редакцию регламента"
     except Exception as sonnet_exc:  # noqa: BLE001 - retry with cheaper/faster fallback model.
         try:
             raw = _post_json(payload, timeout=240.0, model=settings.claudehub_fallback_model)
             return (
-                _revised_blocks_from_raw(raw, baseline),
+                _revised_blocks_from_raw(raw, baseline, fallback),
                 f"ClaudeHub Haiku 4.5 ({settings.claudehub_fallback_model}) сформировал новую редакцию регламента",
             )
         except Exception as haiku_exc:  # noqa: BLE001 - keep document generation available offline.
@@ -90,7 +90,7 @@ def _compose_revised_blocks(result: RegulationParseResult, readiness: AgentReadi
             )
 
 
-def _revised_blocks_from_raw(raw: str, baseline: dict[str, str]) -> dict[str, str]:
+def _revised_blocks_from_raw(raw: str, baseline: dict[str, str], fallback: dict[str, str]) -> dict[str, str]:
     data = _load_json(raw)
     revised = data.get("revisedBlocks") if isinstance(data, dict) else None
     if not isinstance(revised, list):
@@ -102,8 +102,27 @@ def _revised_blocks_from_raw(raw: str, baseline: dict[str, str]) -> dict[str, st
         block_id = str(item.get("blockId") or "")
         text = str(item.get("text") or "").strip()
         if block_id in baseline and text:
-            out[block_id] = text
+            original = baseline[block_id]
+            out[block_id] = fallback.get(block_id, original) if _drops_existing_content(original, text) else text
     return out
+
+
+def _drops_existing_content(original: str, revised: str) -> bool:
+    original_lines = _meaningful_lines(original)
+    revised_lines = _meaningful_lines(revised)
+    if len(original_lines) >= 3 and len(revised_lines) < max(2, int(len(original_lines) * 0.6)):
+        return True
+    original_bullets = [line for line in original_lines if line.startswith(("-", "•"))]
+    revised_bullets = [line for line in revised_lines if line.startswith(("-", "•"))]
+    if len(original_bullets) >= 2 and len(revised_bullets) < max(1, len(original_bullets) - 1):
+        return True
+    if len(revised) < len(original) * 0.55:
+        return True
+    return False
+
+
+def _meaningful_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 def _fallback_revision(baseline: dict[str, str], fallback: dict[str, str]) -> dict[str, str]:
@@ -138,6 +157,8 @@ def _revision_prompt(result: RegulationParseResult, readiness: AgentReadinessRes
         "instruction": (
             "Сформируй новую редакцию только указанных блоков регламента. "
             "Используй исключительно подтверждённые ответы пользователя и текст исходного блока. "
+            "Возвращай полный текст каждого изменяемого блока: все неизменённые пункты и подпункты должны сохраниться. "
+            "Нельзя возвращать только добавленную фразу или только один подпункт многострочного блока. "
             "Не добавляй новые правила от себя, не меняй смысл незатронутых блоков. "
             "Верни только JSON с массивом revisedBlocks: [{blockId, section, text, explanation}]."
         ),
@@ -201,13 +222,12 @@ def _write_pdf_revision_assets(
     try:
         with fitz.open(str(source_path)) as source:
             out = fitz.open()
-            replace_pages = _pages_requiring_text_replacement(source, changed_fragments, result.isScan)
+            replace_pages = _pages_requiring_text_replacement(source, changed_fragments, revised_blocks, result.isScan)
             for index in range(source.page_count):
                 page_no = index + 1
                 if page_no in replace_pages:
                     page = source[index]
-                    new_page = out.new_page(width=page.rect.width, height=page.rect.height)
-                    _write_text_page(new_page, _page_text(result, revised_blocks, page_no))
+                    _write_text_pages(out, page.rect, _page_text(result, revised_blocks, page_no))
                 else:
                     out.insert_pdf(source, from_page=index, to_page=index)
             for fragment in changed_fragments:
@@ -224,7 +244,7 @@ def _write_pdf_revision_assets(
     return pdf_path, source_pages, revised_pages
 
 
-def _pages_requiring_text_replacement(source, fragments, is_scan: bool) -> set[int]:
+def _pages_requiring_text_replacement(source, fragments, revised_blocks: dict[str, str], is_scan: bool) -> set[int]:
     pages: set[int] = set()
     for fragment in fragments:
         if is_scan:
@@ -235,6 +255,10 @@ def _pages_requiring_text_replacement(source, fragments, is_scan: bool) -> set[i
             continue
         page = source[fragment.page - 1]
         if not _usable_bbox(fragment.bbox, page.rect):
+            pages.add(fragment.page)
+            continue
+        revised_text = revised_blocks.get(fragment.fragmentId, fragment.text)
+        if not _text_fits_bbox(fragment, revised_text):
             pages.add(fragment.page)
     return pages
 
@@ -263,19 +287,54 @@ def _replace_fragment_text(doc, fragment, text: str) -> None:
     page.insert_textbox(rect, text, fontsize=fontsize, color=(0, 0, 0), align=0, **_pdf_font_kwargs())
 
 
-def _write_text_page(page, text: str) -> None:
-    import fitz
+def _text_fits_bbox(fragment, text: str) -> bool:
+    if not fragment.bbox or len(fragment.bbox) < 4:
+        return False
+    x0, y0, x1, y1 = [float(value) for value in fragment.bbox[:4]]
+    width = max(1.0, x1 - x0)
+    height = max(1.0, y1 - y0)
+    fontsize = max(7.0, min(float(fragment.fontSize or 10.0), 12.0))
+    chars_per_line = max(12, int(width / (fontsize * 0.48)))
+    required_lines = 0
+    for line in _meaningful_lines(text):
+        required_lines += max(1, (len(line) + chars_per_line - 1) // chars_per_line)
+    available_lines = max(1, int(height / (fontsize * 1.25)))
+    return required_lines <= available_lines
 
+
+def _write_text_pages(doc, source_rect, text: str) -> None:
     margin = 42
-    rect = fitz.Rect(margin, margin, page.rect.width - margin, page.rect.height - margin)
-    page.insert_textbox(
-        rect,
-        text or "Текст страницы недоступен.",
-        fontsize=10,
-        color=(0, 0, 0),
-        align=0,
-        **_pdf_font_kwargs(),
-    )
+    fontsize = 10
+    line_height = fontsize * 1.35
+    width = source_rect.width - margin * 2
+    bottom = source_rect.height - margin
+    lines = _wrap_pdf_text(text or "Текст страницы недоступен.", width, fontsize)
+    page = doc.new_page(width=source_rect.width, height=source_rect.height)
+    y = margin + fontsize
+    for line in lines:
+        if y > bottom:
+            page = doc.new_page(width=source_rect.width, height=source_rect.height)
+            y = margin + fontsize
+        page.insert_text((margin, y), line, fontsize=fontsize, color=(0, 0, 0), **_pdf_font_kwargs())
+        y += line_height
+
+
+def _wrap_pdf_text(text: str, width: float, fontsize: float) -> list[str]:
+    lines: list[str] = []
+    max_chars = max(24, int(width / (fontsize * 0.52)))
+    for paragraph in text.splitlines():
+        paragraph = paragraph.strip()
+        if not paragraph:
+            lines.append("")
+            continue
+        while len(paragraph) > max_chars:
+            split_at = paragraph.rfind(" ", 0, max_chars)
+            if split_at <= 0:
+                split_at = max_chars
+            lines.append(paragraph[:split_at].rstrip())
+            paragraph = paragraph[split_at:].lstrip()
+        lines.append(paragraph)
+    return lines
 
 
 def _pdf_font_kwargs() -> dict[str, str]:
@@ -352,6 +411,8 @@ def _diff_blocks(result: RegulationParseResult, revised_blocks: dict[str, str], 
                 section=fragment.section if fragment is not None else "",
                 before=before,
                 after=after,
+                page=fragment.page if fragment is not None else 0,
+                bbox=fragment.bbox if fragment is not None else None,
                 status="changed",
             )
         )

@@ -30,6 +30,7 @@ def test_revision_composer_uses_claudehub_revised_blocks(monkeypatch, tmp_path) 
                 page=1,
                 section="5.2 Руководитель сектора",
                 text="Руководитель утверждает правила работы сектора.",
+                bbox=[10, 20, 100, 40],
             )
         ],
     )
@@ -83,6 +84,8 @@ def test_revision_composer_uses_claudehub_revised_blocks(monkeypatch, tmp_path) 
     assert "changed" in revised_html
     assert source_html
     assert diff_blocks[0].blockId == "B-001"
+    assert diff_blocks[0].page == 1
+    assert diff_blocks[0].bbox == [10, 20, 100, 40]
 
 
 def test_revision_composer_merges_pending_changes_for_same_block(monkeypatch, tmp_path) -> None:
@@ -134,6 +137,62 @@ def test_revision_composer_merges_pending_changes_for_same_block(monkeypatch, tm
     assert len(diff_blocks) == 1
     assert "Выполнение начинается" in diff_blocks[0].after
     assert "Контроль выполнения" in diff_blocks[0].after
+
+
+def test_revision_composer_rejects_partial_llm_block(monkeypatch, tmp_path) -> None:
+    pytest.importorskip("docx")
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF-1.4")
+    before = "\n".join(
+        [
+            "- plans work;",
+            "- assigns executors;",
+            "- controls deadlines;",
+            "- prepares reports;",
+        ]
+    )
+    result = RegulationParseResult(
+        regulationId="reg-revision",
+        fileName="source.pdf",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[RegulationFragment(fragmentId="B-001", page=1, section="5.2", text=before)],
+    )
+    readiness = AgentReadinessResult(
+        readinessRunId="ready-run",
+        regulationId="reg-revision",
+        roleMatchRunId="role-run",
+        changes=[
+            RegulationChangeDraft(
+                changeId="CH-001",
+                targetBlockId="B-001",
+                before=before,
+                after=f"{before}\n- escalates missed milestones.",
+                status="pending",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        revision_composer,
+        "_post_json",
+        lambda _payload, timeout: json.dumps(
+            {"revisedBlocks": [{"blockId": "B-001", "section": "5.2", "text": "- escalates missed milestones."}]}
+        ),
+    )
+
+    _document_path, _protocol_path, _pdf_path, _message, _source_html, _revised_html, diff_blocks, _source_pages, _revised_pages = (
+        revision_composer.create_llm_revision_files(
+            source_path=source,
+            output_dir=tmp_path / "revision",
+            result=result,
+            readiness=readiness,
+        )
+    )
+
+    assert "- plans work;" in diff_blocks[0].after
+    assert "- controls deadlines;" in diff_blocks[0].after
+    assert "- escalates missed milestones." in diff_blocks[0].after
 
 
 def test_revision_composer_creates_pdf_preview_and_preserves_unchanged_page(monkeypatch, tmp_path) -> None:
@@ -191,6 +250,61 @@ def test_revision_composer_creates_pdf_preview_and_preserves_unchanged_page(monk
     with fitz.open(str(pdf_path)) as doc:
         assert doc.page_count == 2
         assert "Unchanged second page" in doc[1].get_text()
+
+
+def test_revision_composer_uses_page_fallback_when_text_does_not_fit_bbox(monkeypatch, tmp_path) -> None:
+    pytest.importorskip("docx")
+    fitz = pytest.importorskip("fitz")
+
+    source = tmp_path / "source.pdf"
+    _write_sample_pdf(fitz, source, ["Short source", "Second page intact"])
+    result = RegulationParseResult(
+        regulationId="reg-revision",
+        fileName="source.pdf",
+        pageCount=2,
+        recognitionQuality=1,
+        fragments=[
+            RegulationFragment(
+                fragmentId="B-001",
+                page=1,
+                section="1",
+                text="Short source",
+                bbox=[48, 45, 120, 58],
+                fontSize=11,
+            ),
+            RegulationFragment(fragmentId="B-002", page=2, section="2", text="Second page intact"),
+        ],
+    )
+    long_after = "Short source. " + "Additional regulation sentence. " * 12
+    readiness = AgentReadinessResult(
+        readinessRunId="ready-run",
+        regulationId="reg-revision",
+        roleMatchRunId="role-run",
+        changes=[
+            RegulationChangeDraft(
+                changeId="CH-001",
+                targetBlockId="B-001",
+                before="Short source",
+                after=long_after,
+                status="pending",
+            )
+        ],
+    )
+    monkeypatch.setattr(revision_composer, "_post_json", lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")))
+
+    _docx, _protocol, pdf_path, _message, _source_html, _revised_html, _diff, _source_pages, _revised_pages = (
+        revision_composer.create_llm_revision_files(
+            source_path=source,
+            output_dir=tmp_path / "revision",
+            result=result,
+            readiness=readiness,
+        )
+    )
+
+    assert pdf_path is not None and pdf_path.is_file()
+    with fitz.open(str(pdf_path)) as doc:
+        assert "Additional regulation sentence" in doc[0].get_text().replace("\xa0", " ")
+        assert "Second page intact" in doc[1].get_text()
 
 
 def test_revision_composer_scan_fallback_replaces_only_changed_page(monkeypatch, tmp_path) -> None:

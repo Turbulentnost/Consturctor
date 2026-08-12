@@ -212,6 +212,8 @@ class RevisionDiffBlock:
     section: str
     before: str
     after: str
+    page: int
+    bbox: list[float] | None
     status: str
 
 
@@ -528,6 +530,10 @@ class ApiClient:
                     section=str(item.get("section") or ""),
                     before=str(item.get("before") or ""),
                     after=str(item.get("after") or ""),
+                    page=int(item.get("page") or 0),
+                    bbox=[float(value) for value in item.get("bbox") or []]
+                    if isinstance(item.get("bbox"), list)
+                    else None,
                     status=str(item.get("status") or ""),
                 )
                 for item in data.get("diffBlocks") or []

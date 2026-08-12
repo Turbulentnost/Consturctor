@@ -434,6 +434,8 @@ class RevisionDiffBlock(BaseModel):
     section: str = ""
     before: str = ""
     after: str = ""
+    page: int = 0
+    bbox: list[float] | None = None
     status: Literal["changed", "unchanged", "added"] = "changed"
 
 

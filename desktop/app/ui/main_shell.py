@@ -553,13 +553,13 @@ class MainShell(QWidget):
         QMessageBox.warning(self, "Готовность регламента", message)
 
     def _on_readiness_answer(self, question_id: str, answer: str) -> None:
-        if self._current_regulation is None or self._current_readiness is None or not answer.strip():
+        if self._current_readiness is None or not answer.strip():
             return
 
         def run() -> None:
             try:
                 result = self._api.answer_readiness_question(
-                    self._current_regulation.regulation_id,
+                    self._active_readiness_regulation_id(),
                     self._current_readiness.readiness_run_id,
                     question_id,
                     answer,
@@ -645,11 +645,7 @@ class MainShell(QWidget):
     def _on_readiness_change_decision(self, change_id: str, status: str, after: str) -> None:
         if self._current_readiness is None:
             return
-        regulation_id = (
-            self._current_regulation.regulation_id
-            if self._current_regulation is not None
-            else self._current_readiness.regulation_id
-        )
+        regulation_id = self._active_readiness_regulation_id()
 
         def run() -> None:
             try:
@@ -670,11 +666,7 @@ class MainShell(QWidget):
     def _on_readiness_finalize(self) -> None:
         if self._current_readiness is None:
             return
-        regulation_id = (
-            self._current_regulation.regulation_id
-            if self._current_regulation is not None
-            else self._current_readiness.regulation_id
-        )
+        regulation_id = self._active_readiness_regulation_id()
         self._page_loading.set_message(
             "Создаём копию регламента",
             "Применяем подтверждённые изменения и формируем протокол.",
@@ -695,6 +687,15 @@ class MainShell(QWidget):
             self._revision_ready.emit(result)
 
         Thread(target=run, daemon=True).start()
+
+    def _active_readiness_regulation_id(self) -> str:
+        if self._current_readiness is not None and self._current_readiness.regulation_id:
+            return self._current_readiness.regulation_id
+        if self._current_draft is not None and self._current_draft.regulation_id:
+            return self._current_draft.regulation_id
+        if self._current_regulation is not None:
+            return self._current_regulation.regulation_id
+        return ""
 
     def _maybe_auto_finalize_readiness(self) -> None:
         readiness = self._current_readiness
