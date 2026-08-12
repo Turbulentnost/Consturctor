@@ -77,6 +77,7 @@ def _fallback_response(
         "contradictions": [],
         "requiresUserConfirmation": True,
         "function": _fallback_function(candidate, profile, context),
+        "functions": _fallback_functions(candidate, profile, context),
     }
 
 
@@ -120,39 +121,25 @@ def _payload(
             "modelConfidence": 0.0,
             "contradictions": [],
             "requiresUserConfirmation": False,
-            "function": {
-                "isFunction": True,
-                "actor": {
-                    "text": "он",
-                    "canonicalPosition": profile.canonicalTitle,
-                    "sourceBlockId": "blockId with actor evidence",
-                },
-                "action": "направить",
-                "object": "заявку",
-                "recipient": "руководитель",
-                "conditions": [],
-                "dependencies": [
-                    {
-                        "type": "after",
-                        "blockId": "previous blockId",
-                        "description": "После проверки заявки",
-                    }
-                ],
-                "evidence": [
-                    {"fragmentId": fragment.fragmentId, "quote": "точная цитата действия"}
-                ],
-                "proofChain": [
-                    {
-                        "blockId": "source blockId",
-                        "relation": "actor_inheritance",
-                        "text": "текст доказательства",
-                        "evidence": "почему связан",
-                        "confidence": 0.9,
-                    }
-                ],
-                "explanation": "кратко",
-                "confidence": 0.0,
-            },
+            "functions": [
+                {
+                    "isFunction": True,
+                    "actor": {
+                        "text": "он",
+                        "canonicalPosition": profile.canonicalTitle,
+                        "sourceBlockId": "blockId with actor evidence",
+                    },
+                    "action": "направить",
+                    "object": "заявку",
+                    "recipient": "руководитель",
+                    "conditions": [],
+                    "dependencies": [],
+                    "evidence": [{"fragmentId": fragment.fragmentId, "quote": "точная цитата действия"}],
+                    "explanation": "кратко",
+                    "confidence": 0.0,
+                }
+            ],
+            "function": {},
         },
     }
     return {
@@ -225,7 +212,25 @@ def _validated(
         "contradictions": [str(x) for x in data.get("contradictions") or []],
         "requiresUserConfirmation": bool(data.get("requiresUserConfirmation", False)),
         "function": _validated_function(data.get("function"), candidate, profile, context, evidence),
+        "functions": _validated_functions(data.get("functions"), candidate, profile, context, evidence),
     }
+
+
+def _validated_functions(
+    raw: Any,
+    candidate: Candidate,
+    profile: RoleProfile,
+    context: ContextPackage | None,
+    fallback_evidence: list[dict],
+) -> list[RoleFunction]:
+    if not isinstance(raw, list):
+        return []
+    functions = [
+        _validated_function(item, candidate, profile, context, fallback_evidence)
+        for item in raw
+        if isinstance(item, dict)
+    ]
+    return [item for item in functions if item.isFunction]
 
 
 def _validated_function(
@@ -299,13 +304,26 @@ def _validated_function(
     )
 
 
-def _rule_evidence(candidate: Candidate) -> list[MatchEvidence]:
+def _rule_evidence(candidate: Candidate, *, quote_override: str = "") -> list[MatchEvidence]:
+    if quote_override.strip():
+        return [MatchEvidence(fragmentId=candidate.fragment.fragmentId, quote=quote_override.strip()[:500])]
     out: list[MatchEvidence] = []
     for signal in candidate.signals:
         quote = signal.quote or candidate.fragment.text[:220]
         if quote:
             out.append(MatchEvidence(fragmentId=candidate.fragment.fragmentId, quote=quote))
     return out[:3]
+
+
+def _function_parts(text: str) -> list[str]:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+    lines = [line.strip(" -•\t") for line in cleaned.splitlines() if line.strip(" -•\t")]
+    if len(lines) > 1:
+        return [line for line in lines if _has_action(line, {})]
+    parts = [part.strip(" -•\t") for part in re.split(r";|\n", cleaned) if part.strip(" -•\t")]
+    return [part for part in parts if _has_action(part, {})] or [cleaned]
 
 
 def _match_types(values: list) -> list[str]:
@@ -323,26 +341,28 @@ def _fallback_function(
     context: ContextPackage | None,
     *,
     fallback_evidence: list[dict] | None = None,
+    text_override: str = "",
 ) -> RoleFunction:
     fragment = candidate.fragment
+    text = text_override or fragment.text
     evidence = (
         [MatchEvidence.model_validate(item) for item in fallback_evidence]
         if fallback_evidence
-        else _rule_evidence(candidate)
+        else _rule_evidence(candidate, quote_override=text_override)
     )
     proof_chain = context.linkedBlocks[:4] if context else []
     source_block = _actor_source_block(context) or fragment.fragmentId
     return RoleFunction(
         targetBlockId=fragment.fragmentId,
-        isFunction=_has_action(fragment.text, fragment.cells),
+        isFunction=_has_action(text, fragment.cells),
         actor=FunctionActor(
             text=profile.canonicalTitle,
             canonicalPosition=profile.canonicalTitle,
             sourceBlockId=source_block,
         ),
-        action=_guess_action(fragment.text),
-        object=_guess_object(fragment.text),
-        recipient=_guess_recipient(fragment.text),
+        action=_guess_action(text),
+        object=_guess_object(text),
+        recipient=_guess_recipient(text),
         conditions=_conditions(context),
         dependencies=_dependencies(context),
         evidence=evidence[:6],
@@ -351,6 +371,21 @@ def _fallback_function(
         confidence=0.0,
         requiresUserConfirmation=True,
     )
+
+
+def _fallback_functions(
+    candidate: Candidate,
+    profile: RoleProfile,
+    context: ContextPackage | None,
+) -> list[RoleFunction]:
+    parts = _function_parts(candidate.fragment.text)
+    if len(parts) <= 1:
+        return []
+    return [
+        _fallback_function(candidate, profile, context, text_override=part)
+        for part in parts[:8]
+        if _has_action(part, {})
+    ]
 
 
 def _default_relation(candidate: Candidate) -> str:

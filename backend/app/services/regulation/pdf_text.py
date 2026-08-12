@@ -31,9 +31,9 @@ def extract_pdf_text(path: Path) -> ExtractedDocument:
         for idx, page in enumerate(pdf.pages, start=1):
             char_sizes = [float(ch.get("size") or 0) for ch in page.chars or []]
             baseline = _median(char_sizes) or 12.0
-            text = (page.extract_text(x_tolerance=1, y_tolerance=3) or "").strip()
-            if text:
-                for piece in _split_text_blocks(text):
+            text_blocks = _extract_text_blocks(page)
+            if text_blocks:
+                for piece, bbox in text_blocks:
                     is_list_item = _is_bullet(piece)
                     font_size = _guess_font_size(piece, baseline)
                     blocks.append(
@@ -51,7 +51,7 @@ def extract_pdf_text(path: Path) -> ExtractedDocument:
                             font_size=font_size,
                             is_bold=piece.isupper() and len(piece) < 140,
                             numbering=_leading_numbering(piece),
-                            bbox=(0.0, 0.0, float(page.width), float(page.height)),
+                            bbox=bbox,
                             confidence=1.0,
                         )
                     )
@@ -77,6 +77,86 @@ def extract_pdf_text(path: Path) -> ExtractedDocument:
                 )
 
         return ExtractedDocument(page_count=len(pdf.pages), blocks=blocks)
+
+
+def _extract_text_blocks(page) -> list[tuple[str, tuple[float, float, float, float]]]:
+    line_items = _extract_lines(page)
+    if not line_items:
+        text = (page.extract_text(x_tolerance=1, y_tolerance=3) or "").strip()
+        return [
+            (piece, (0.0, 0.0, float(page.width), float(page.height)))
+            for piece in _split_text_blocks(text)
+        ]
+    paragraphs = _split_line_items_into_blocks(line_items)
+    return [(text, bbox) for text, bbox in paragraphs if text]
+
+
+def _extract_lines(page) -> list[tuple[str, tuple[float, float, float, float]]]:
+    words = page.extract_words(x_tolerance=1, y_tolerance=3, use_text_flow=True) or []
+    if not words:
+        return []
+    rows: list[list[dict]] = []
+    for word in sorted(words, key=lambda item: (float(item.get("top") or 0), float(item.get("x0") or 0))):
+        top = float(word.get("top") or 0)
+        if not rows:
+            rows.append([word])
+            continue
+        last_top = _row_top(rows[-1])
+        if abs(top - last_top) <= 3:
+            rows[-1].append(word)
+        else:
+            rows.append([word])
+    lines: list[tuple[str, tuple[float, float, float, float]]] = []
+    for row in rows:
+        ordered = sorted(row, key=lambda item: float(item.get("x0") or 0))
+        text = " ".join(str(item.get("text") or "").strip() for item in ordered).strip()
+        if not text:
+            continue
+        lines.append((text, _words_bbox(ordered)))
+    return lines
+
+
+def _split_line_items_into_blocks(
+    lines: list[tuple[str, tuple[float, float, float, float]]],
+) -> list[tuple[str, tuple[float, float, float, float]]]:
+    blocks: list[tuple[str, tuple[float, float, float, float]]] = []
+    current_text: list[str] = []
+    current_boxes: list[tuple[float, float, float, float]] = []
+    for line, bbox in lines:
+        starts_new = bool(current_text) and (_is_numbered_heading(line) or _is_bullet(line))
+        if starts_new:
+            blocks.append((" ".join(current_text).strip(), _merge_bboxes(current_boxes)))
+            current_text = [line]
+            current_boxes = [bbox]
+            continue
+        current_text.append(line)
+        current_boxes.append(bbox)
+    if current_text:
+        blocks.append((" ".join(current_text).strip(), _merge_bboxes(current_boxes)))
+    return blocks
+
+
+def _row_top(row: list[dict]) -> float:
+    values = [float(item.get("top") or 0) for item in row]
+    return sum(values) / len(values) if values else 0.0
+
+
+def _words_bbox(words: list[dict]) -> tuple[float, float, float, float]:
+    return (
+        min(float(item.get("x0") or 0) for item in words),
+        min(float(item.get("top") or 0) for item in words),
+        max(float(item.get("x1") or 0) for item in words),
+        max(float(item.get("bottom") or 0) for item in words),
+    )
+
+
+def _merge_bboxes(boxes: list[tuple[float, float, float, float]]) -> tuple[float, float, float, float]:
+    return (
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    )
 
 
 def _split_text_blocks(text: str) -> list[str]:

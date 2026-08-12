@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import RegulationParseResult, RoleMatch, RoleMatchResult
-from app.ui.pages.regulation_review_page import _fragment_widget
+from app.api_client import RegulationFragment, RegulationParseResult, RoleMatch, RoleMatchResult
+from app.ui.pages.regulation_review_page import _table_widget
 from app.ui.theme import (
     COLOR_CONTENT_MUTED,
     MAIN_TEXT,
@@ -227,10 +227,18 @@ class RoleMatchPage(QWidget):
             return
 
         total = len(self._matches)
-        self._subtitle.setText(
-            f"{self._result.canonical_title}"
-            + (f" · {self._result.department}" if self._result.department else "")
+        subtitle = f"{self._result.canonical_title}" + (
+            f" · {self._result.department}" if self._result.department else ""
         )
+        diagnostics = (self._result.audit or {}).get("diagnostics") if self._result.audit else None
+        if isinstance(diagnostics, dict):
+            sections = diagnostics.get("candidateSections") if isinstance(diagnostics.get("candidateSections"), dict) else {}
+            subtitle += (
+                f" · проверено фрагментов {diagnostics.get('fragmentsTotal', 0)}"
+                f" · кандидатов {diagnostics.get('candidatesTotal', 0)}"
+                f" · разделов {len(sections)}"
+            )
+        self._subtitle.setText(subtitle)
         needs_review = sum(1 for match in self._matches if _needs_user_review(match))
         _set_badge_text(self._found_badge, f"Найдено {total} функций")
         _set_badge_text(self._review_badge, f"Нужно проверить {needs_review}")
@@ -467,11 +475,13 @@ class RoleMatchPage(QWidget):
             return
 
         self._doc_title.setText(self._regulation.file_name)
+        pages: dict[int, list] = {}
         for fragment in self._regulation.fragments:
-            widget = _fragment_widget(fragment)
-            widget.setProperty("fragment_id", fragment.fragment_id)
-            self._fragment_widgets[fragment.fragment_id] = widget
-            self._doc_content.addWidget(widget)
+            pages.setdefault(fragment.page, []).append(fragment)
+        for page in sorted(pages):
+            page_widget, page_fragments = _document_page_widget(page, pages[page])
+            self._fragment_widgets.update(page_fragments)
+            self._doc_content.addWidget(page_widget)
         self._doc_content.addStretch(1)
 
     def _show_document_for_current(self) -> None:
@@ -580,10 +590,10 @@ class RoleMatchPage(QWidget):
             return
         widget.setStyleSheet(
             """
-            QFrame#Fragment {
-                background: #FFFFFF;
+            QFrame#DocumentFragment {
+                background: rgba(8,116,95,0.12);
                 border: 2px solid #08745F;
-                border-radius: 14px;
+                border-radius: 10px;
             }
             """
         )
@@ -592,10 +602,10 @@ class RoleMatchPage(QWidget):
         for widget in self._fragment_widgets.values():
             widget.setStyleSheet(
                 """
-                QFrame#Fragment {
-                    background: #FFFFFF;
-                    border: 1px solid rgba(16,24,23,0.10);
-                    border-radius: 14px;
+                QFrame#DocumentFragment {
+                    background: transparent;
+                    border: 1px solid transparent;
+                    border-radius: 10px;
                 }
                 """
             )
@@ -613,12 +623,67 @@ def _ordered_matches(matches: list[RoleMatch]) -> list[RoleMatch]:
     return sorted(visible, key=lambda item: (item.fragment.page, -item.confidence, item.match_id))
 
 
+def _document_page_widget(page: int, fragments: list[RegulationFragment]) -> tuple[QWidget, dict[str, QWidget]]:
+    card = QFrame()
+    card.setObjectName("DocumentPage")
+    card.setStyleSheet(
+        """
+        QFrame#DocumentPage {
+            background: #FFFFFF;
+            border: 1px solid rgba(16,24,23,0.10);
+            border-radius: 18px;
+        }
+        """
+    )
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(28, 24, 28, 28)
+    layout.setSpacing(8)
+    title = QLabel(f"Страница {page}")
+    title.setFont(app_font(13, QFont.Weight.DemiBold))
+    title.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+    layout.addWidget(title)
+    widgets: dict[str, QWidget] = {}
+    for fragment in fragments:
+        widget = _document_fragment_widget(fragment)
+        widgets[fragment.fragment_id] = widget
+        layout.addWidget(widget)
+    return card, widgets
+
+
+def _document_fragment_widget(fragment: RegulationFragment) -> QWidget:
+    frame = QFrame()
+    frame.setObjectName("DocumentFragment")
+    frame.setProperty("fragment_id", fragment.fragment_id)
+    frame.setStyleSheet(
+        """
+        QFrame#DocumentFragment {
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 10px;
+        }
+        """
+    )
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(10, 6, 10, 6)
+    layout.setSpacing(4)
+    if fragment.kind == "table" and fragment.table is not None:
+        layout.addWidget(_table_widget(fragment))
+    else:
+        text = QLabel(fragment.text or "")
+        text.setWordWrap(True)
+        text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        text.setFont(app_font(13))
+        text.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        layout.addWidget(text)
+    return frame
+
+
 def _needs_user_review(match: RoleMatch) -> bool:
     return match.requires_confirmation or match.status in {"pending", "probable"}
 
 
 def _is_high_confidence(match: RoleMatch) -> bool:
-    return match.confidence >= _HIGH_CONFIDENCE and not match.requires_confirmation
+    return match.confidence >= _HIGH_CONFIDENCE
 
 
 def _should_persist_accept(match: RoleMatch) -> bool:

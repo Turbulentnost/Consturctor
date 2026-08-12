@@ -31,6 +31,7 @@ MatchType = Literal[
     "graph_relation",
     "definition_link",
     "actor_inheritance",
+    "role_context",
 ]
 MatchStatus = Literal["accepted", "probable", "pending", "rejected"]
 RelationType = Literal[

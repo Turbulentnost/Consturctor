@@ -24,7 +24,40 @@ _ROLE_SIGNAL_TYPES = {
     "graph_relation",
     "definition_link",
     "actor_inheritance",
+    "role_context",
 }
+_WORK_VERBS = (
+    "разрабатывает",
+    "оптимизирует",
+    "тестирует",
+    "документирует",
+    "обучает",
+    "внедряет",
+    "подготавливает",
+    "готовит",
+    "проверяет",
+    "формирует",
+    "направляет",
+    "передает",
+    "передаёт",
+    "регистрирует",
+    "согласовывает",
+    "утверждает",
+    "вносит",
+    "получает",
+    "контролирует",
+    "ведет",
+    "ведёт",
+    "выполняет",
+    "оформляет",
+    "проводит",
+    "фиксирует",
+    "составляет",
+    "настраивает",
+    "обеспечивает",
+    "организует",
+    "анализирует",
+)
 _INTERACTION_WORDS = {
     "передает": "recipient",
     "передаёт": "recipient",
@@ -174,6 +207,9 @@ def collect_candidates(
                 candidate_terms,
             )
         )
+        context_signal = _role_context_signal(fragment, verified, candidate_terms, relations_by_from, by_id)
+        if context_signal is not None:
+            signals.append(context_signal)
         if signals and _has_role_signal(signals):
             candidates.append(Candidate(fragment=fragment, signals=signals, semantic_score=semantic_score))
     return candidates
@@ -181,6 +217,53 @@ def collect_candidates(
 
 def _has_role_signal(signals: list[MatchSignal]) -> bool:
     return any(signal.matchType in _ROLE_SIGNAL_TYPES for signal in signals)
+
+
+def _role_context_signal(
+    fragment: RegulationFragment,
+    verified_terms: list[str],
+    candidate_terms: list[str],
+    relations_by_from: dict[str, list[BlockRelation]],
+    by_id: dict[str, RegulationFragment],
+) -> MatchSignal | None:
+    if not _looks_like_work(fragment):
+        return None
+    terms = [*verified_terms, *candidate_terms]
+    fragment_context = fragment.context
+    neighbor_text = " ".join(
+        value
+        for value in [
+            fragment_context.previousText if fragment_context else "",
+            fragment_context.nextText if fragment_context else "",
+        ]
+        if value
+    )
+    if any(contains_phrase(neighbor_text, term) for term in terms):
+        return _signal(
+            "role_context",
+            0.68,
+            fragment,
+            neighbor_text[:220],
+            "Рабочий фрагмент связан с должностью через соседний контекст",
+        )
+    for relation in relations_by_from.get(fragment.fragmentId, []):
+        target = by_id.get(relation.toBlockId)
+        if target is not None and any(contains_phrase(_fragment_search_text(target), term) for term in terms):
+            return _signal(
+                "role_context",
+                max(0.60, relation.confidence * 0.9),
+                fragment,
+                relation.evidence or target.text[:220],
+                f"Рабочий фрагмент связан с ролью через граф: {relation.relation}",
+            )
+    return None
+
+
+def _looks_like_work(fragment: RegulationFragment) -> bool:
+    text = _fragment_search_text(fragment)
+    if fragment.blockType in {"list_item", "table_row"}:
+        return any(verb in text for verb in _WORK_VERBS) or bool(fragment.cells)
+    return any(verb in text for verb in _WORK_VERBS)
 
 
 def _table_assignment_signal(

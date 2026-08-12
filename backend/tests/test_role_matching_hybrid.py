@@ -147,9 +147,8 @@ def test_dedupe_merges_same_function_evidence(monkeypatch) -> None:
 
     deduped = dedupe_matches(matches)
 
-    assert len(deduped) == 1
-    assert len(deduped[0].function.evidence) >= 1
-    assert deduped[0].function.duplicateGroup
+    assert len(deduped) == 2
+    assert all(item.function.duplicateGroup for item in deduped if item.function is not None)
 
 
 def test_process_stage_with_contacts_is_not_role_function_candidate() -> None:
@@ -184,6 +183,70 @@ def test_process_stage_with_contacts_is_not_role_function_candidate() -> None:
     )
 
     assert collect_candidates(result, profile, []) == []
+
+
+def test_neighbor_role_context_collects_adjacent_work(monkeypatch) -> None:
+    monkeypatch.setattr(llm_classifier, "_post", lambda _payload: (_ for _ in ()).throw(RuntimeError("offline")))
+    role = RegulationFragment(
+        fragmentId="B-001",
+        page=1,
+        section="5 Функции",
+        sectionPath=["5 Функции"],
+        text="Ответственный исполнитель: Промпт-инженер.",
+        context=RegulationFragmentContext(nextFragmentId="B-002", nextText="Разрабатывает промпты и тестирует сценарии."),
+    )
+    work = RegulationFragment(
+        fragmentId="B-002",
+        page=1,
+        section="5 Функции",
+        sectionPath=["5 Функции"],
+        text="Разрабатывает промпты и тестирует сценарии.",
+        context=RegulationFragmentContext(previousFragmentId="B-001", previousText=role.text),
+    )
+    result = RegulationParseResult(
+        regulationId="reg-neighbor",
+        fileName="neighbor.txt",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[role, work],
+    )
+    profile = build_role_profile(
+        position="Промпт-инженер",
+        department="Сектор по внедрению искусственного интеллекта",
+        result=result,
+    )
+
+    candidates = collect_candidates(result, profile, [])
+
+    assert any(candidate.fragment.fragmentId == "B-002" for candidate in candidates)
+
+
+def test_classifier_returns_multiple_functions_for_multi_action_fragment(monkeypatch) -> None:
+    monkeypatch.setattr(llm_classifier, "_post", lambda _payload: (_ for _ in ()).throw(RuntimeError("offline")))
+    fragment = RegulationFragment(
+        fragmentId="B-001",
+        page=1,
+        section="5.3 Промпт-инженер",
+        sectionPath=["5.3 Промпт-инженер"],
+        text="Разрабатывает промпты; тестирует сценарии; документирует результаты.",
+    )
+    result = RegulationParseResult(
+        regulationId="reg-multi",
+        fileName="multi.txt",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[fragment],
+    )
+    profile = build_role_profile(
+        position="Промпт-инженер",
+        department="Сектор по внедрению искусственного интеллекта",
+        result=result,
+    )
+    candidate = collect_candidates(result, profile, [])[0]
+    classified = classify_candidate(candidate, profile, None)
+
+    assert len(classified["functions"]) == 3
+    assert [item.action for item in classified["functions"]] == ["разрабатывает", "тестирует", "документирует"]
 
 
 def test_position_category_uses_base_title_alias() -> None:

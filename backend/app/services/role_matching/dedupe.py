@@ -76,6 +76,7 @@ def _key(function: RoleFunction | None) -> str:
     if function is None or not function.isFunction:
         return ""
     parts = [
+        function.targetBlockId,
         function.actor.canonicalPosition,
         function.action,
         function.object,

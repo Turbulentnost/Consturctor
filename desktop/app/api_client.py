@@ -61,6 +61,7 @@ class RegulationFragment:
     table_headers: list[str] | None = None
     cells: dict[str, str] | None = None
     row_index: int | None = None
+    bbox: list[float] | None = None
     location: dict | None = None
     style: str = ""
     content_hash: str = ""
@@ -159,6 +160,7 @@ class RoleMatchResult:
     department: str
     matches: list[RoleMatch]
     functions: list[RoleFunction] | None = None
+    audit: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -656,6 +658,7 @@ class ApiClient:
                     table_headers=[str(x) for x in item.get("tableHeaders") or []],
                     cells={str(k): str(v) for k, v in (item.get("cells") or {}).items()},
                     row_index=int(item["rowIndex"]) if item.get("rowIndex") is not None else None,
+                    bbox=[float(x) for x in item.get("bbox") or []] or None,
                     location=item.get("location") if isinstance(item.get("location"), dict) else {},
                     style=str(item.get("style") or ""),
                     content_hash=str(item.get("contentHash") or ""),
@@ -699,6 +702,7 @@ class ApiClient:
             table_headers=[str(x) for x in item.get("tableHeaders") or []],
             cells={str(k): str(v) for k, v in (item.get("cells") or {}).items()},
             row_index=int(item["rowIndex"]) if item.get("rowIndex") is not None else None,
+            bbox=[float(x) for x in item.get("bbox") or []] or None,
             location=item.get("location") if isinstance(item.get("location"), dict) else {},
             style=str(item.get("style") or ""),
             content_hash=str(item.get("contentHash") or ""),
@@ -748,6 +752,7 @@ class ApiClient:
                 for parsed in (ApiClient._parse_role_function(item) for item in data.get("functions") or [])
                 if parsed is not None
             ],
+            audit=data.get("audit") if isinstance(data.get("audit"), dict) else {},
         )
 
     @staticmethod
