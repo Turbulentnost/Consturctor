@@ -47,6 +47,7 @@ class ComSettings(ServiceSettings):
 settings = ComSettings()
 _lock = threading.Lock()
 _sessions: dict[str, dict[str, Any]] = {}
+_bridge_session_ids: set[str] = set()
 _stub_sessions: dict[str, dict[str, Any]] = {}
 
 
@@ -92,14 +93,38 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _onec_status() -> dict[str, Any]:
+    from platform_tool_com.onec_com import (
+        build_connection_string,
+        com_bitness_hint,
+        find_python32,
+        is_64bit_python,
+        python_bitness,
+    )
+    from platform_tool_com.onec_bridge import should_use_bridge
+
+    conn = build_connection_string()
+    return {
+        "python_bitness": python_bitness(),
+        "bridge": should_use_bridge(),
+        "python32": find_python32(),
+        "hint": com_bitness_hint(),
+        "connection_configured": bool(conn.strip()),
+        "needs_32bit_python": is_64bit_python() and find_python32() is None,
+    }
+
+
 def _list_apps(_: ToolInvokeRequest) -> dict[str, Any]:
     apps = _parse_apps()
-    return {
+    payload: dict[str, Any] = {
         "summary": f"apps={len(apps)}",
         "apps": [{"id": key, "progid": value} for key, value in sorted(apps.items())],
         "platform": sys.platform,
         "com_available": _is_windows(),
     }
+    if _is_windows():
+        payload["onec"] = _onec_status()
+    return payload
 
 
 def _connect_real(app_id: str, progid: str) -> tuple[str, Any]:
@@ -112,6 +137,54 @@ def _connect_real(app_id: str, progid: str) -> tuple[str, Any]:
     return session_id, obj
 
 
+def _connect_onec(progid: str) -> dict[str, Any]:
+    from platform_tool_com.onec_bridge import bridge_connect, should_use_bridge
+    from platform_tool_com.onec_com import (
+        com_bitness_hint,
+        connect_session,
+        find_python32,
+        is_64bit_python,
+    )
+
+    if should_use_bridge():
+        data = bridge_connect(progid=progid)
+        with _lock:
+            _bridge_session_ids.add(data["session_id"])
+        return {
+            "summary": "connected onec (32-bit bridge)",
+            "session_id": data["session_id"],
+            "app": "onec",
+            "progid": data.get("progid") or progid,
+            "mode": data.get("mode"),
+            "bridge": True,
+            "source": "com",
+        }
+
+    if is_64bit_python() and not find_python32():
+        raise RuntimeError(
+            "ONEC_COM_32BIT_PYTHON_REQUIRED: 1C client is 32-bit, host Python is 64-bit. "
+            f"{com_bitness_hint()}. Run scripts\\ensure_com_python.cmd and restart desktop host."
+        )
+
+    session = connect_session(progid=progid)
+
+    def _store() -> str:
+        with _lock:
+            _sessions[session["session_id"]] = session
+        return session["session_id"]
+
+    session_id = com_call(_store, timeout=90.0)
+    return {
+        "summary": f"connected onec ({session.get('mode')})",
+        "session_id": session_id,
+        "app": "onec",
+        "progid": session.get("progid") or progid,
+        "mode": session.get("mode"),
+        "bridge": False,
+        "source": "com",
+    }
+
+
 def _connect(req: ToolInvokeRequest) -> dict[str, Any]:
     app_id = str(req.payload.get("app", "")).strip().lower()
     apps = _parse_apps()
@@ -120,6 +193,9 @@ def _connect(req: ToolInvokeRequest) -> dict[str, Any]:
     progid = str(req.payload.get("progid", "")).strip() or apps[app_id]
     if not _is_windows():
         raise RuntimeError("COM is only available on Windows host")
+
+    if app_id == "onec":
+        return _connect_onec(progid)
 
     def _do_connect() -> str:
         session_id, _obj = _connect_real(app_id, progid)
@@ -133,6 +209,11 @@ def _connect(req: ToolInvokeRequest) -> dict[str, Any]:
         "progid": progid,
         "source": "com",
     }
+
+
+def _onec_connect(req: ToolInvokeRequest) -> dict[str, Any]:
+    req.payload.setdefault("app", "onec")
+    return _connect_onec(str(req.payload.get("progid", "")).strip() or _parse_apps()["onec"])
 
 
 def _invoke_real(session_id: str, method: str, args: list[Any], kwargs: dict[str, Any]) -> Any:
@@ -161,14 +242,23 @@ def _invoke(req: ToolInvokeRequest) -> dict[str, Any]:
         raise ValueError("args must be a list")
     if not isinstance(kwargs, dict):
         raise ValueError("kwargs must be an object")
-    result_repr = com_call(
-        _invoke_real,
-        session_id,
-        method,
-        args,
-        kwargs,
-        timeout=120.0,
-    )
+
+    with _lock:
+        is_bridge = session_id in _bridge_session_ids
+
+    if is_bridge:
+        from platform_tool_com.onec_bridge import bridge_invoke
+
+        result_repr = bridge_invoke(session_id, method, args, kwargs)
+    else:
+        result_repr = com_call(
+            _invoke_real,
+            session_id,
+            method,
+            args,
+            kwargs,
+            timeout=120.0,
+        )
     return {
         "summary": f"invoke {method}",
         "session_id": session_id,
@@ -183,22 +273,33 @@ def _release(req: ToolInvokeRequest) -> dict[str, Any]:
     if not session_id:
         raise ValueError("session_id required")
 
-    def _release_real() -> None:
-        with _lock:
-            session = _sessions.pop(session_id, None)
-            if not session:
-                raise ValueError("session not found")
-            obj = session.get("object")
-        if obj is not None and hasattr(obj, "Quit"):
-            try:
-                obj.Quit()
-            except Exception:
-                pass
+    with _lock:
+        is_bridge = session_id in _bridge_session_ids
 
-    if _is_windows():
-        com_call(_release_real, timeout=30.0)
+    if is_bridge:
+        from platform_tool_com.onec_bridge import bridge_release
+
+        bridge_release(session_id)
+        with _lock:
+            _bridge_session_ids.discard(session_id)
     else:
-        _release_real()
+
+        def _release_real() -> None:
+            with _lock:
+                session = _sessions.pop(session_id, None)
+                if not session:
+                    raise ValueError("session not found")
+                obj = session.get("object")
+            if obj is not None and hasattr(obj, "Quit"):
+                try:
+                    obj.Quit()
+                except Exception:
+                    pass
+
+        if _is_windows():
+            com_call(_release_real, timeout=30.0)
+        else:
+            _release_real()
     return {"summary": "released", "session_id": session_id, "source": "com"}
 
 
@@ -289,9 +390,15 @@ def _outlook_calendar_get(req: ToolInvokeRequest) -> dict[str, Any]:
     )
 
 
+def _onec_status_handler(_: ToolInvokeRequest) -> dict[str, Any]:
+    return {"summary": "onec com status", "onec": _onec_status(), "source": "com"}
+
+
 REAL_HANDLERS = {
     "com.list_apps": _list_apps,
     "com.connect": _connect,
+    "com.onec.connect": _onec_connect,
+    "com.onec.status": _onec_status_handler,
     "com.invoke": _invoke,
     "com.release": _release,
     "com.outlook.launch": _outlook_launch,

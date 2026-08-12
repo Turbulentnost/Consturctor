@@ -11,6 +11,7 @@ from pathlib import Path
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 DESKTOP_HOST_PORT = 7830
+ONEC_COM_PORT = 7831
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class DesktopServiceSpec:
     port: int
     module: str
     extra_env: dict[str, str]
+    python_args: tuple[str, ...] = ()
 
 
 def repo_root() -> Path:
@@ -41,6 +43,13 @@ def load_specs(root: Path) -> dict[int, DesktopServiceSpec]:
                 "SHELL_CWD_ROOTS": shell_roots,
             },
         ),
+        ONEC_COM_PORT: DesktopServiceSpec(
+            "onec-com",
+            ONEC_COM_PORT,
+            "platform_tool_onec_com.main",
+            {},
+            python_args=("-3.12-32",),
+        ),
     }
 
 
@@ -58,11 +67,15 @@ def resolve_port(*, port: int | None, tool_name: str | None, specs: dict[int, De
             return DESKTOP_HOST_PORT
         raise ValueError(f"Unknown desktop port: {port}")
     name = (tool_name or "").strip()
-    if name.startswith(("com.", "fs.", "desktop.")):
+    if name.startswith("onec.com."):
+        return ONEC_COM_PORT
+    if name.startswith(("com.", "fs.", "desktop.", "imap.", "browser.")):
         return DESKTOP_HOST_PORT
     if name.startswith("shell."):
         return DESKTOP_HOST_PORT
-    raise ValueError("Provide port or a desktop tool_name (com.*, fs.*, shell.*, desktop.*)")
+    raise ValueError(
+        "Provide port or tool_name (onec.com.*, com.*, fs.*, shell.*, desktop.*, imap.*, browser.*)"
+    )
 
 
 def ensure_desktop_service(
@@ -73,36 +86,51 @@ def ensure_desktop_service(
 ) -> dict[str, object]:
     root = repo_root()
     specs = load_specs(root)
-    target_port = DESKTOP_HOST_PORT if port in {7826, 7827, 7828, DESKTOP_HOST_PORT} else port
-    spec = specs[DESKTOP_HOST_PORT]
+    if port in {7826, 7827, 7828, DESKTOP_HOST_PORT}:
+        target_port = DESKTOP_HOST_PORT
+    else:
+        target_port = port
+    if target_port not in specs:
+        return {
+            "ok": False,
+            "port": target_port,
+            "service": "unknown",
+            "started": False,
+            "message": f"unknown desktop service port {target_port}",
+        }
+    spec = specs[target_port]
     if port_open(spec.port):
         return {
             "ok": True,
             "port": spec.port,
             "service": spec.tag,
             "started": False,
-            "message": f"desktop host already listening on {spec.port}",
+            "message": f"{spec.tag} already listening on {spec.port}",
         }
 
     logs = root / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    (root / "data" / "filesystem").mkdir(parents=True, exist_ok=True)
-    (root / "data" / "shell-native").mkdir(parents=True, exist_ok=True)
+    if spec.port == DESKTOP_HOST_PORT:
+        (root / "data" / "filesystem").mkdir(parents=True, exist_ok=True)
+        (root / "data" / "shell-native").mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
     env["API_PORT"] = str(spec.port)
-    # Honor platform USE_STUBS (infra/.env) so sandbox/demo does not hang on real Outlook COM.
     env["USE_STUBS"] = (os.environ.get("USE_STUBS") or "false").strip().lower() or "false"
     env["CONSTRUCTOR_ROOT"] = str(root)
     env.update(spec.extra_env)
 
-    out_path = logs / "desktop-host.out.log"
-    err_path = logs / "desktop-host.err.log"
+    log_stem = "desktop-host" if spec.port == DESKTOP_HOST_PORT else spec.tag
+    out_path = logs / f"{log_stem}.out.log"
+    err_path = logs / f"{log_stem}.err.log"
     out_fh = open(out_path, "a", encoding="utf-8")
     err_fh = open(err_path, "a", encoding="utf-8")
+    cmd = [sys.executable, *spec.python_args, "-m", spec.module] if spec.python_args else [sys.executable, "-m", spec.module]
+    if spec.python_args:
+        cmd = ["py", *spec.python_args, "-m", spec.module]
     try:
         subprocess.Popen(
-            [sys.executable, "-m", spec.module],
+            cmd,
             cwd=str(root),
             env=env,
             stdout=out_fh,
@@ -124,7 +152,7 @@ def ensure_desktop_service(
                 "port": spec.port,
                 "service": spec.tag,
                 "started": True,
-                "message": f"started unified desktop host on port {spec.port}",
+                "message": f"started {spec.tag} on port {spec.port}",
             }
         time.sleep(poll_seconds)
 
@@ -133,5 +161,5 @@ def ensure_desktop_service(
         "port": spec.port,
         "service": spec.tag,
         "started": False,
-        "message": f"timeout waiting for desktop host :{spec.port}; see logs/desktop-host.err.log",
+        "message": f"timeout waiting for {spec.tag} :{spec.port}; see logs/{log_stem}.err.log",
     }

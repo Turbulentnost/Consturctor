@@ -6,7 +6,7 @@ echo === Unified desktop host (:7830) - tools outside Docker ===
 if not exist "logs" mkdir "logs" >nul 2>&1
 
 if exist "infra\.env" (
-  for /f "usebackq tokens=1,* delims==" %%A in (`findstr /B /I "USE_STUBS= IMAP_HOST= IMAP_PORT= IMAP_USERNAME= IMAP_PASSWORD= IMAP_MAILBOX= IMAP_CONNECT_TIMEOUT_SEC=" "infra\.env"`) do (
+  for /f "usebackq tokens=1,* delims==" %%A in (`findstr /B /I "USE_STUBS= IMAP_HOST= IMAP_PORT= IMAP_USERNAME= IMAP_PASSWORD= IMAP_MAILBOX= IMAP_CONNECT_TIMEOUT_SEC= ERP_LOGIN= ERP_PASSWORD= ODATA_BASE_URL= ONEC_COM_SERVER= ONEC_COM_REF= ONEC_COM_USER= ONEC_COM_PASSWORD= ONEC_COM_CONNECTION_STRING= ONEC_COM_PYTHON=" "infra\.env"`) do (
     set "%%A=%%B"
   )
 )
@@ -40,6 +40,12 @@ powershell -NoProfile -Command ^
   "if('%IMAP_PORT%'){$cmd+='&& set IMAP_PORT=%IMAP_PORT%'};" ^
   "if('%IMAP_USERNAME%'){$cmd+='&& set IMAP_USERNAME=%IMAP_USERNAME%'};" ^
   "if('%IMAP_PASSWORD%'){$cmd+='&& set IMAP_PASSWORD=%IMAP_PASSWORD%'};" ^
+  "if('%ERP_LOGIN%'){$cmd+='&& set ERP_LOGIN=%ERP_LOGIN%'};" ^
+  "if('%ERP_PASSWORD%'){$cmd+='&& set ERP_PASSWORD=%ERP_PASSWORD%'};" ^
+  "if('%ODATA_BASE_URL%'){$cmd+='&& set ODATA_BASE_URL=%ODATA_BASE_URL%'};" ^
+  "if('%ONEC_COM_SERVER%'){$cmd+='&& set ONEC_COM_SERVER=%ONEC_COM_SERVER%'};" ^
+  "if('%ONEC_COM_REF%'){$cmd+='&& set ONEC_COM_REF=%ONEC_COM_REF%'};" ^
+  "if('%ONEC_COM_PYTHON%'){$cmd+='&& set ONEC_COM_PYTHON=%ONEC_COM_PYTHON%'};" ^
   "$cmd+='&& set IMAP_MAILBOX=%IMAP_MAILBOX%&& set IMAP_CONNECT_TIMEOUT_SEC=%IMAP_CONNECT_TIMEOUT_SEC%&& py -3.12 -m platform_desktop_host.main';" ^
   "Start-Process cmd.exe -ArgumentList @('/c',$cmd) -WorkingDirectory $wd -WindowStyle Hidden -RedirectStandardOutput (Join-Path $wd 'logs\desktop-host.out.log') -RedirectStandardError (Join-Path $wd 'logs\desktop-host.err.log') | Out-Null"
 
@@ -64,6 +70,12 @@ exit /b 1
 
 :host_ready
 echo OK desktop host :7830
+
+echo [3b] Start 1C COM microservice :7831 ...
+call "%~dp0start_onec_com_service.cmd"
+if errorlevel 1 (
+  echo WARN: onec-com :7831 not started — install 32-bit Python: scripts\ensure_com_python.cmd
+)
 
 echo [5] Recreate gateway/orchestrator (route tools to host.docker.internal:7830) ...
 pushd infra

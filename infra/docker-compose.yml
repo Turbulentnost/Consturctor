@@ -16,6 +16,7 @@ x-tool-urls: &tool-urls
   #   TOOL_BROWSER_URL=http://host.docker.internal:7824
   TOOL_IMAP_URL: ${TOOL_IMAP_URL:-http://platform-tool-imap:7821}
   TOOL_ONEC_URL: ${TOOL_ONEC_URL:-http://platform-tool-onec:7822}
+  TOOL_ONEC_COM_URL: ${TOOL_ONEC_COM_URL:-http://host.docker.internal:7831}
   TOOL_SHELL_URL: ${TOOL_SHELL_URL:-http://platform-tool-shell:7823}
   TOOL_SHELL_NATIVE_URL: ${TOOL_SHELL_NATIVE_URL:-http://host.docker.internal:7828}
   TOOL_BROWSER_URL: ${TOOL_BROWSER_URL:-http://platform-tool-browser:7824}

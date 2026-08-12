@@ -100,7 +100,7 @@ def _sql_allowlist() -> set[str]:
 def _build_list_path(entity: str, top: int) -> str:
     entity = entity.strip().lstrip("/")
     if entity.startswith(("Document_", "BusinessProcess_")):
-        return f"{entity}?$format=json&$orderby=Date desc&$top={top}"
+        return f"{entity}?$format=json&$top={top}"
     return f"{entity}?$format=json&$top={top}"
 
 
@@ -138,7 +138,11 @@ def _fetch_odata_list(req: ToolInvokeRequest) -> dict[str, Any]:
         raise ValueError("entity or path required")
     entity = validate_odata_entity(entity, allowlist=_odata_allowlist())
     top = _parse_top_limit(path, req.payload)
-    odata_path = _build_list_path(entity, top)
+    cleaned_path = path.strip().lstrip("/")
+    if cleaned_path and cleaned_path.split("?", 1)[0] == entity:
+        odata_path = cleaned_path
+    else:
+        odata_path = _build_list_path(entity, top)
     if not settings.odata_base_url:
         raise RuntimeError(
             "ODATA_BASE_URL не настроен. Добавьте параметры OData в infra/.env "

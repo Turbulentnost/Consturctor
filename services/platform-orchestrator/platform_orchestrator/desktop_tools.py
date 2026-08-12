@@ -11,6 +11,7 @@ DESKTOP_HOST_PORT = 7830
 LEGACY_DESKTOP_PORTS = {"7826", "7827", "7828"}
 DESKTOP_TOOL_HINTS: dict[str, str] = {
     str(DESKTOP_HOST_PORT): "Desktop host (com.*, fs.*, imap.*, browser.*, shell native, desktop.*)",
+    "7831": "1C thin client COM (onec.com.*, 32-bit Python)",
     "7826": "COM (legacy)",
     "7827": "Filesystem (legacy)",
     "7828": "Native shell (legacy)",
@@ -19,6 +20,8 @@ DESKTOP_TOOL_HINTS: dict[str, str] = {
 
 def is_host_tool(tool_name: str, *, shell_runtime: str = "") -> bool:
     name = (tool_name or "").strip()
+    if name.startswith("onec.com."):
+        return False
     if name.startswith(("com.", "fs.", "desktop.", "imap.", "browser.")):
         return True
     if name.startswith("shell."):
@@ -51,26 +54,28 @@ def ensure_desktop_tool_via_launcher(
     shell_runtime: str = "",
     timeout: float = 45.0,
 ) -> str | None:
-    """Start unified desktop host (:7830) when agent invokes a host tool."""
+    """Start Windows host tool services via desktop launcher (:7829)."""
     url = (launcher_url or "").strip().rstrip("/")
     if not url:
         return None
-    if not is_host_tool(tool_name, shell_runtime=shell_runtime):
+    is_onec_com = tool_name.startswith("onec.com.")
+    if not is_host_tool(tool_name, shell_runtime=shell_runtime) and not is_onec_com:
         if not is_desktop_tool_url(base_url):
             return None
     try:
         with httpx.Client(timeout=timeout) as client:
             response = client.post(
                 f"{url}/api/v1/ensure",
-                json={"port": DESKTOP_HOST_PORT, "tool_name": tool_name},
+                json={"tool_name": tool_name, "wait_seconds": 45.0},
             )
             response.raise_for_status()
     except httpx.HTTPError as exc:
-        return (
-            f"Desktop host launcher unavailable ({url}): {exc}. "
-            "Запустите turbobot desktop app или scripts\\start_desktop_host.cmd "
-            f"(единый порт {DESKTOP_HOST_PORT})."
+        hint = (
+            "scripts\\start_onec_com_service.cmd (порт 7831, Python 32-bit)"
+            if is_onec_com
+            else f"scripts\\start_host_network_tools.cmd (порт {DESKTOP_HOST_PORT})"
         )
+        return f"Desktop launcher unavailable ({url}): {exc}. Запустите {hint}."
     return None
 
 

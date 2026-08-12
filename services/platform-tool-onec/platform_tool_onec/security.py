@@ -22,6 +22,7 @@ _DEFAULT_ODATA_ENTITIES = (
     "Catalog_ПодразделенияForMail",
     "Catalog_ТомаХраненияФайлов",
     "BusinessProcess_Задание",
+    "Task_ЗадачаИсполнителя",
     "InformationRegister_СведенияОФайлах",
 )
 

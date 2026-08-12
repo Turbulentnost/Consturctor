@@ -125,6 +125,49 @@ async def proxy_post(
     return response.json()
 
 
+async def proxy_patch(
+    service_url: str,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    authorization: str | None = None,
+) -> dict[str, Any]:
+    url = f"{service_url.rstrip('/')}{path}"
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if authorization:
+        headers["Authorization"] = authorization
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.patch(url, json=payload, headers=headers)
+    except httpx.HTTPError as exc:
+        raise PlatformProxyError(f"Service unavailable: {path}") from exc
+    if response.status_code >= 400:
+        raise PlatformProxyError(_extract_detail(response), status_code=response.status_code)
+    return response.json()
+
+
+async def proxy_delete(
+    service_url: str,
+    path: str,
+    *,
+    authorization: str | None = None,
+) -> dict[str, Any]:
+    url = f"{service_url.rstrip('/')}{path}"
+    headers = {"Accept": "application/json"}
+    if authorization:
+        headers["Authorization"] = authorization
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.delete(url, headers=headers)
+    except httpx.HTTPError as exc:
+        raise PlatformProxyError(f"Service unavailable: {path}") from exc
+    if response.status_code >= 400:
+        raise PlatformProxyError(_extract_detail(response), status_code=response.status_code)
+    if not response.content:
+        return {"deleted": True}
+    return response.json()
+
+
 async def check_service_health(service_url: str) -> dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:

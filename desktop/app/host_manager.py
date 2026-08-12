@@ -28,7 +28,13 @@ def _apply_infra_env(env: dict[str, str]) -> None:
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
-        if key.startswith("IMAP_") or key in ("USE_STUBS", "URL_WHITELIST", "DATABASE_URL"):
+        if (
+            key.startswith("IMAP_")
+            or key.startswith("ERP_")
+            or key.startswith("ONEC_COM_")
+            or key.startswith("ODATA_")
+            or key in ("USE_STUBS", "URL_WHITELIST", "DATABASE_URL")
+        ):
             env.setdefault(key, value)
 
 

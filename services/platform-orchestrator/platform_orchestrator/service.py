@@ -29,6 +29,7 @@ celery_app.conf.task_routes = {
     "platform_orchestrator.start_agent_run": {"queue": "default"},
     "platform_orchestrator.invoke_tool_async": {"queue": "default"},
     "platform_orchestrator.retry_failed_tool": {"queue": "default"},
+    "platform_orchestrator.dispatch_cron_jobs": {"queue": "default"},
 }
 celery_app.conf.result_backend = result_backend
 celery_app.conf.task_ignore_result = False
@@ -43,6 +44,10 @@ celery_app.conf.beat_schedule = {
         "schedule": float(os.environ.get("ONEC_POLL_SECONDS", "120")),
         "options": {"queue": "onec"},
     },
+    "dispatch-cron-jobs": {
+        "task": "platform_orchestrator.dispatch_cron_jobs",
+        "schedule": float(os.environ.get("CRON_DISPATCH_SECONDS", "60")),
+    },
 }
 
 
@@ -54,6 +59,7 @@ class OrchestratorSettings(BaseSettings):
     )
     tool_imap_url: str = "http://127.0.0.1:7821"
     tool_onec_url: str = "http://127.0.0.1:7822"
+    tool_onec_com_url: str = "http://127.0.0.1:7831"
     tool_shell_url: str = "http://127.0.0.1:7823"
     tool_shell_native_url: str = ""
     tool_browser_url: str = "http://127.0.0.1:7824"
@@ -81,6 +87,12 @@ def _tool_url(tool_name: str, payload: dict | None = None) -> str:
             return host_url
     if tool_name.startswith("imap."):
         return settings.tool_imap_url
+    if tool_name.startswith("onec.com."):
+        return (
+            settings.tool_onec_com_url
+            or os.environ.get("TOOL_ONEC_COM_URL")
+            or "http://127.0.0.1:7831"
+        )
     if tool_name.startswith("onec."):
         return settings.tool_onec_url
     if tool_name.startswith("com."):
@@ -502,6 +514,8 @@ def _tool_http_timeout(tool_name: str) -> float:
     name = (tool_name or "").strip().lower()
     if name.startswith("imap."):
         return 180.0
+    if name.startswith("onec.com."):
+        return 120.0
     if name.startswith("onec."):
         return 120.0
     if name.startswith("com."):
@@ -654,3 +668,10 @@ def start_agent_run(run_id: str) -> None:
         row.finished_at = datetime.now(timezone.utc)
         row.updated_at = datetime.now(timezone.utc)
         session.commit()
+
+
+@celery_app.task(name="platform_orchestrator.dispatch_cron_jobs")
+def dispatch_cron_jobs() -> dict:
+    from platform_orchestrator.cron_jobs import dispatch_due_cron_jobs
+
+    return dispatch_due_cron_jobs(create_run_fn=create_run)

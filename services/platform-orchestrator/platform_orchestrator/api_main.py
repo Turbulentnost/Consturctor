@@ -17,7 +17,18 @@ from platform_orchestrator.service import (
     simulate_sandbox_test,
     start_mock_run,
 )
+from platform_orchestrator.cron_jobs import (
+    create_cron_job,
+    delete_cron_job,
+    dispatch_due_cron_jobs,
+    get_cron_job,
+    list_cron_jobs,
+    list_templates,
+    trigger_cron_job,
+    update_cron_job,
+)
 from platform_orchestrator.tool_acl import ToolNotAllowedError
+from platform_contracts.cron import CronJobCreate, CronJobOut, CronJobUpdate
 from platform_contracts.runs import RunStartRequest, RunStatus
 from platform_contracts.tools import ToolInvokeRequest, ToolResult
 
@@ -103,6 +114,63 @@ def tool_sandbox_run(test_id: str, body: RunStartRequest) -> dict:
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/cron/templates")
+def cron_templates() -> dict:
+    return {"items": [item.model_dump(mode="json") for item in list_templates()]}
+
+
+@app.get("/api/v1/cron/jobs")
+def cron_jobs_list(user_id: str = "", enabled_only: bool = False) -> dict:
+    items = list_cron_jobs(user_id=user_id.strip(), enabled_only=enabled_only)
+    return {"items": [item.model_dump(mode="json") for item in items]}
+
+
+@app.post("/api/v1/cron/jobs", response_model=CronJobOut)
+def cron_jobs_create(body: CronJobCreate) -> CronJobOut:
+    try:
+        return create_cron_job(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/cron/jobs/{job_id}", response_model=CronJobOut)
+def cron_jobs_get(job_id: UUID) -> CronJobOut:
+    job = get_cron_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Cron job not found")
+    return job
+
+
+@app.patch("/api/v1/cron/jobs/{job_id}", response_model=CronJobOut)
+def cron_jobs_update(job_id: UUID, body: CronJobUpdate) -> CronJobOut:
+    job = update_cron_job(job_id, body)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Cron job not found")
+    return job
+
+
+@app.delete("/api/v1/cron/jobs/{job_id}")
+def cron_jobs_delete(job_id: UUID) -> dict:
+    if not delete_cron_job(job_id):
+        raise HTTPException(status_code=404, detail="Cron job not found")
+    return {"deleted": True, "id": str(job_id)}
+
+
+@app.post("/api/v1/cron/jobs/{job_id}/run", response_model=RunStatus)
+def cron_jobs_run_now(job_id: UUID) -> RunStatus:
+    try:
+        return trigger_cron_job(job_id, create_run_fn=create_run)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/cron/dispatch")
+def cron_jobs_dispatch_now() -> dict:
+    return dispatch_due_cron_jobs(create_run_fn=create_run)
 
 
 def main() -> None:
