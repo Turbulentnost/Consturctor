@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -442,25 +443,46 @@ def invoke_tool_queued(
 
 def invoke_tool_http(run_id: uuid.UUID, tool_name: str, payload: dict) -> ToolResult:
     inner_payload = payload.get("payload") or {}
-    url = f"{_tool_url(tool_name, inner_payload).rstrip('/')}/api/v1/tools/{tool_name}/invoke"
+    try:
+        base_url = _tool_url(tool_name, inner_payload)
+    except ValueError as exc:
+        return ToolResult(
+            ok=False,
+            tool_name=tool_name,
+            data={},
+            error=str(exc),
+            duration_ms=0,
+        )
+    url = f"{base_url.rstrip('/')}/api/v1/tools/{tool_name}/invoke"
     req = ToolInvokeRequest(
         run_id=run_id,
         department=payload.get("department", ""),
         user_id=payload.get("user_id", ""),
         payload=payload.get("payload") or {},
     )
-    with httpx.Client(timeout=120.0) as client:
-        response = client.post(
-            url,
-            json=req.model_dump(mode="json"),
-            headers={
-                "X-Run-Id": str(run_id),
-                "X-Department": req.department,
-                "X-User-Id": req.user_id,
-            },
+    started = time.perf_counter()
+    try:
+        with httpx.Client(timeout=120.0) as client:
+            response = client.post(
+                url,
+                json=req.model_dump(mode="json"),
+                headers={
+                    "X-Run-Id": str(run_id),
+                    "X-Department": req.department,
+                    "X-User-Id": req.user_id,
+                },
+            )
+            response.raise_for_status()
+            return ToolResult.model_validate(response.json())
+    except httpx.HTTPError as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return ToolResult(
+            ok=False,
+            tool_name=tool_name,
+            data={"url": url},
+            error=f"Tool service unavailable ({base_url}): {exc}",
+            duration_ms=duration_ms,
         )
-        response.raise_for_status()
-        return ToolResult.model_validate(response.json())
 
 
 def invoke_tool_for_api(body: ToolInvokeRequest, tool_name: str) -> ToolResult:

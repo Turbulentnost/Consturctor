@@ -63,3 +63,40 @@ def test_fs_path_traversal_blocked(fs_client: TestClient) -> None:
     module = importlib.import_module("platform_tool_filesystem.main")
     with pytest.raises(ValueError, match="not allowed"):
         module._resolve_allowed("../../etc/passwd")
+
+
+@pytest.fixture
+def fs_real_client(monkeypatch, tmp_path):
+    allow_root = tmp_path / "workspace"
+    allow_root.mkdir()
+    monkeypatch.setenv("USE_STUBS", "false")
+    monkeypatch.setenv("FS_ROOT_ALLOWLIST", str(allow_root))
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+    module = importlib.import_module("platform_tool_filesystem.main")
+    importlib.reload(module)
+    return TestClient(module.app), allow_root
+
+
+def test_fs_list_rejects_path_outside_allowlist(fs_real_client) -> None:
+    client, _allow_root = fs_real_client
+    response = client.post(
+        "/api/v1/tools/fs.list/invoke",
+        json={"payload": {"path": "C:\\outside\\secret"}},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is False
+    assert "not allowed" in (data.get("error") or "")
+
+
+def test_fs_list_allowed_root(fs_real_client) -> None:
+    client, allow_root = fs_real_client
+    (allow_root / "note.txt").write_text("ok", encoding="utf-8")
+    response = client.post(
+        "/api/v1/tools/fs.list/invoke",
+        json={"payload": {"path": str(allow_root)}},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert any(entry["path"].endswith("note.txt") for entry in data["data"]["entries"])

@@ -103,3 +103,16 @@ def test_simulate_unknown_scenario(orchestrator_module):
 def test_simulate_unknown_sandbox(orchestrator_module):
     with pytest.raises(KeyError):
         orchestrator_module.simulate_sandbox_test("missing-test")
+
+
+def test_invoke_tool_http_reports_unreachable_service(orchestrator_module, monkeypatch):
+    import uuid
+
+    monkeypatch.setattr(orchestrator_module.settings, "tool_fs_url", "http://127.0.0.1:1")
+    result = orchestrator_module.invoke_tool_http(
+        uuid.uuid4(),
+        "fs.list",
+        {"department": "td_ceh", "user_id": "demo", "payload": {"path": "."}},
+    )
+    assert result.ok is False
+    assert "Tool service unavailable" in (result.error or "")

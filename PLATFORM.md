@@ -78,7 +78,7 @@ scripts\start_desktop_tools.cmd
 
 | Порт | Сервис | Tools |
 |------|--------|-------|
-| 7826 | platform-tool-com | `com.list_apps`, `com.connect`, `com.invoke`, `com.release` |
+| 7826 | platform-tool-com | `com.list_apps`, `com.connect`, `com.invoke`, `com.release`, `com.outlook.*` |
 | 7827 | platform-tool-filesystem | `fs.list`, `fs.read`, `fs.write`, `fs.stat`, `fs.move`, `fs.copy` |
 | 7828 | platform-tool-shell-native | `shell.run` с `runtime=native` |
 
@@ -121,7 +121,7 @@ scripts\run_agent_mocks.cmd --all
 | `mail_inbound` | imap.list_unread → fetch_message → fetch_attachments |
 | `onec_register` | onec.odata_get → odata_post → attach_file |
 | `shell_probe` | shell.run |
-| `browser_research` | browser.navigate → screenshot → extract_text |
+| `browser_research` | browser.open_session → navigate → snapshot → screenshot → extract_text → close_session |
 | `full_correspondence` | imap + onec + shell + browser |
 
 ## Тесты
@@ -138,7 +138,7 @@ py -3.12 -m pytest tests\ -q
 |---------|-------|
 | `imap.*` | list_unread, fetch_message, fetch_attachments, search |
 | `onec.*` | odata_get, odata_post, odata_patch, attach_file, sql_query |
-| `browser.*` | navigate, screenshot, click, extract_text |
+| `browser.*` | open_session, close_session, navigate, snapshot, click, type, fill, wait, tabs, screenshot, extract_text |
 | `shell.*` | run (sandbox :7823 или native :7828) |
 | `fs.*` | list, read, write, stat, move, copy |
 | `com.*` | list_apps, connect, invoke, release |

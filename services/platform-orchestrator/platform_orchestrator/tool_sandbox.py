@@ -57,6 +57,11 @@ SANDBOX_TESTS: dict[str, MockScenario] = {
         "agent_id": "sandbox-browser",
         "tool_calls": [
             {
+                "thought": "Открываю ephemeral browser session",
+                "tool_name": "browser.open_session",
+                "payload": {},
+            },
+            {
                 "thought": "Открываю ленту новостей Ростова-на-Дону",
                 "tool_name": "browser.navigate",
                 "payload": {"url": "https://161.ru/text/", "topic": "rostov_news"},
@@ -69,6 +74,11 @@ SANDBOX_TESTS: dict[str, MockScenario] = {
                     "selector": "body",
                     "topic": "rostov_news",
                 },
+            },
+            {
+                "thought": "Закрываю browser session",
+                "tool_name": "browser.close_session",
+                "payload": {},
             },
         ],
     },
@@ -120,6 +130,28 @@ SANDBOX_TESTS: dict[str, MockScenario] = {
             },
         ],
     },
+    "com_outlook_calendar": {
+        "title": "COM Outlook: календарь",
+        "description": "Запуск Outlook и список встреч на 7 дней (:7826)",
+        "agent_id": "sandbox-com-outlook",
+        "tool_calls": [
+            {
+                "thought": "Запускаю Outlook через COM",
+                "tool_name": "com.outlook.launch",
+                "payload": {"visible": False},
+            },
+            {
+                "thought": "Читаю календарь на ближайшую неделю",
+                "tool_name": "com.outlook.calendar_list",
+                "payload": {"days": 7, "limit": 20},
+            },
+            {
+                "thought": "Закрываю COM-сессию Outlook",
+                "tool_name": "com.outlook.close",
+                "payload": {"quit": False},
+            },
+        ],
+    },
 }
 
 SANDBOX_ORDER = (
@@ -130,6 +162,7 @@ SANDBOX_ORDER = (
     "shell_native_dir",
     "fs_list",
     "com_list_apps",
+    "com_outlook_calendar",
 )
 
 

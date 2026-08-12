@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Constructor Platform — Demo Pipeline v2</title>
-  <link rel="stylesheet" href="style.css?v=22" />
+  <link rel="stylesheet" href="style.css?v=24" />
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 </head>
 <body>
@@ -201,7 +201,7 @@
           <span class="sandbox-badge sandbox-badge-desktop">FS</span>
           <div>
             <strong>Файловая система</strong>
-            <div class="hint">fs.* — локальные папки на Windows host (:7827)</div>
+            <div class="hint">fs.* — Windows host :7827. Путь должен быть внутри FS_ROOT_ALLOWLIST (см. scripts\start_desktop_tools.cmd). Запустите desktop tools и Health (кнопка 2).</div>
           </div>
         </header>
         <div class="sandbox-fields">
@@ -264,10 +264,19 @@
             Args JSON
             <input id="sbComArgs" value="[]" spellcheck="false" />
           </label>
+          <label>
+            Calendar days
+            <input id="sbComCalDays" type="number" min="1" max="90" value="7" />
+          </label>
+          <label class="sandbox-field-wide">
+            Calendar query
+            <input id="sbComCalQuery" value="" placeholder="планерка / совещание" />
+          </label>
         </div>
         <div class="sandbox-row-actions">
           <button id="btnSbComList" type="button" class="secondary">List apps</button>
           <button id="btnSbCom" type="button">Connect + Invoke</button>
+          <button id="btnSbComOutlookCal" type="button" class="secondary">Outlook calendar</button>
           <span id="sbComStatus" class="sandbox-status"></span>
         </div>
         <label class="sandbox-out-label">
@@ -276,6 +285,30 @@
         </label>
       </article>
     </div>
+  </section>
+
+  <section class="panel" id="agentToolsPanel">
+    <h2>Agent Tools — демо</h2>
+    <p class="hint">
+      Анимированные сценарии всех инструментов агента: локальные coding-tools (<code>agent/</code>)
+      и платформенные интеграции (1С OData, IMAP, Browser, Shell, FS, COM).
+      Работает без backend — нажмите «▶ Демо» или «▶ Повторить» на карточке.
+      Для реального вызова используйте секцию Sandbox выше.
+    </p>
+    <div class="agent-tools-toolbar">
+      <button id="btnAgentDemoAll" type="button">▶ Запустить все</button>
+      <button id="btnAgentDemoCoding" type="button" class="secondary">▶ Coding tools</button>
+      <button id="btnAgentDemoPlatform" type="button" class="secondary">▶ Platform tools</button>
+      <button id="btnAgentDemoStop" type="button" class="secondary">Стоп</button>
+    </div>
+
+    <h3 class="agent-tools-section-title">Coding tools</h3>
+    <p class="hint agent-tools-section-hint">9 инструментов локального coding-agent</p>
+    <div id="agentToolsCodingGrid" class="agent-tools-grid" aria-live="polite"></div>
+
+    <h3 class="agent-tools-section-title agent-tools-section-platform">Platform tools: 1C → Почта → …</h3>
+    <p class="hint agent-tools-section-hint">Интеграции через Tool Runtime и workers (Docker / Windows host)</p>
+    <div id="agentToolsPlatformGrid" class="agent-tools-grid agent-tools-grid-platform" aria-live="polite"></div>
   </section>
 
   <section class="panel" id="accessPanel">
@@ -356,6 +389,6 @@
     <pre class="mermaid" id="diagramSource"></pre>
   </section>
 
-  <script src="app.js?v=25"></script>
+  <script src="app.js?v=27"></script>
 </body>
 </html>

@@ -778,6 +778,57 @@ async function runSandboxCom() {
   }
 }
 
+async function runSandboxComOutlookCalendar() {
+  if (!sandboxRequireLogin()) return;
+  const days = Number($("sbComCalDays")?.value || 7);
+  const query = ($("sbComCalQuery")?.value || "").trim();
+  setSandboxFormState("com", "running", "Outlook calendar...");
+  writeSandboxOut("sbComOut", "com.outlook.launch...\n");
+  let sessionId = "";
+  try {
+    const launch = await invokeSandboxTool("com.outlook.launch", { visible: false });
+    if (!launch.ok) throw new Error(launch.error || "launch failed");
+    sessionId = launch.data?.session_id || "";
+    writeSandboxOut(
+      "sbComOut",
+      `session: ${sessionId}\ncom.outlook.calendar_list(days=${days})...\n`,
+    );
+    const list = await invokeSandboxTool("com.outlook.calendar_list", {
+      session_id: sessionId,
+      days,
+      limit: 20,
+      query,
+    });
+    const firstId = list.data?.events?.[0]?.entry_id;
+    let detail = null;
+    if (firstId) {
+      detail = await invokeSandboxTool("com.outlook.calendar_get", {
+        session_id: sessionId,
+        entry_id: firstId,
+        include_body: true,
+      });
+    }
+    if (sessionId) {
+      await invokeSandboxTool("com.outlook.close", { session_id: sessionId, quit: false }).catch(() => {});
+    }
+    const lines = [
+      `session: ${sessionId}`,
+      `events: ${list.data?.count ?? 0}`,
+      formatToolResult(list),
+      detail ? `\n--- calendar_get ---\n${formatToolResult(detail)}` : "",
+    ];
+    writeSandboxOut("sbComOut", lines.join("\n"));
+    setSandboxFormState("com", list.ok ? "done" : "fail", list.ok ? "OK" : list.error || "Ошибка");
+    log(`Sandbox COM Outlook calendar: ${list.data?.count ?? 0} events`);
+  } catch (e) {
+    if (sessionId) {
+      await invokeSandboxTool("com.outlook.close", { session_id: sessionId, quit: false }).catch(() => {});
+    }
+    writeSandboxOut("sbComOut", `FAILED: ${e.message}`);
+    setSandboxFormState("com", "fail", e.message);
+  }
+}
+
 function clearSandboxOutput() {
   for (const id of ["sbOnecOut", "sbImapOut", "sbBrowserOut", "sbShellOut", "sbFsOut", "sbComOut"]) {
     writeSandboxOut(id, "—");
@@ -818,6 +869,7 @@ function initSandboxPanel() {
     ["btnSbFs", runSandboxFs],
     ["btnSbComList", runSandboxComList],
     ["btnSbCom", runSandboxCom],
+    ["btnSbComOutlookCal", runSandboxComOutlookCalendar],
   ];
   for (const [id, fn] of bindings) {
     const btn = $(id);
@@ -1226,6 +1278,754 @@ function initAccessPanel() {
   $("btnPromote").addEventListener("click", promoteAccessLevel);
 }
 
+function prefersReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function toolDemoDelay(ms, reduced) {
+  if (reduced) return Promise.resolve();
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function toolDemoTypeText(el, text, reduced, charMs = 28) {
+  el.textContent = "";
+  if (reduced) {
+    el.textContent = text;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let i = 0;
+    const tick = () => {
+      if (i >= text.length) {
+        resolve();
+        return;
+      }
+      el.textContent += text[i];
+      i += 1;
+      setTimeout(tick, charMs);
+    };
+    tick();
+  });
+}
+
+const AGENT_TOOL_DEMOS = [
+  {
+    id: "read_file",
+    name: "read_file",
+    desc: "Чтение содержимого файла по пути",
+    steps: [
+      { type: "call", fn: "read_file", args: '{ path: "src/config.py" }' },
+      { type: "path", label: "path", value: "src/config.py" },
+      {
+        type: "fileLines",
+        lines: ["# config", "DEBUG = False", "MAX_RETRIES = 3", 'API_URL = "http://127.0.0.1:7825"'],
+      },
+      { type: "status", text: "ok — 4 lines, 68 bytes", ok: true },
+    ],
+  },
+  {
+    id: "write_file",
+    name: "write_file",
+    desc: "Создание или перезапись файла",
+    steps: [
+      { type: "call", fn: "write_file", args: '{ path: "out/report.txt", contents: "..." }' },
+      { type: "path", label: "path", value: "out/report.txt" },
+      {
+        type: "typeContent",
+        prefix: "contents: ",
+        text: "Demo run completed.\nTasks: 12 OK, 0 FAIL",
+      },
+      { type: "status", text: "ok — wrote 42 bytes", ok: true },
+    ],
+  },
+  {
+    id: "str_replace",
+    name: "str_replace",
+    desc: "Точечная замена фрагмента в файле",
+    steps: [
+      { type: "call", fn: "str_replace", args: '{ path: "app.py", old_string, new_string }' },
+      {
+        type: "replace",
+        before: ['def greet():', '    return "hello"'],
+        old: '"hello"',
+        after: '"hello, world!"',
+      },
+      { type: "status", text: "ok — 1 replacement", ok: true },
+    ],
+  },
+  {
+    id: "delete_file",
+    name: "delete_file",
+    desc: "Удаление файла по пути",
+    steps: [
+      { type: "call", fn: "delete_file", args: '{ path: "tmp/draft.md" }' },
+      { type: "path", label: "path", value: "tmp/draft.md" },
+      { type: "delete", items: ["tmp/draft.md", "tmp/notes.txt", "tmp/.gitkeep"] },
+      { type: "status", text: "ok — deleted tmp/draft.md", ok: true },
+    ],
+  },
+  {
+    id: "glob",
+    name: "glob",
+    desc: "Поиск файлов по glob-шаблону",
+    steps: [
+      { type: "call", fn: "glob", args: '{ glob_pattern: "**/*.py" }' },
+      { type: "search", text: 'glob: "**/*.py"' },
+      {
+        type: "globResults",
+        items: ["agent/runtime.py", "agent/tools/fs.py", "services/gateway/main.py", "tests/test_agent.py"],
+      },
+      { type: "status", text: "ok — 4 matches", ok: true },
+    ],
+  },
+  {
+    id: "grep",
+    name: "grep",
+    desc: "Поиск текста в файлах (regex)",
+    steps: [
+      { type: "call", fn: "grep", args: '{ pattern: "def main", type: "py" }' },
+      {
+        type: "grepOut",
+        lines: [
+          "agent/runtime.py:142:def main():",
+          "services/gateway/main.py:88:def main():",
+          "scripts/run_demo.py:12:def main():",
+        ],
+        match: "def main",
+      },
+      { type: "status", text: "ok — 3 matches in 3 files", ok: true },
+    ],
+  },
+  {
+    id: "run_terminal",
+    name: "run_terminal",
+    desc: "Выполнение shell-команды",
+    steps: [
+      { type: "call", fn: "run_terminal", args: '{ command: "python -m pytest -q" }' },
+      { type: "terminal", cmd: "python -m pytest -q", out: [".......", "7 passed in 1.2s"] },
+      { type: "status", text: "ok — exit_code=0", ok: true },
+    ],
+  },
+  {
+    id: "read_lints",
+    name: "read_lints",
+    desc: "Диагностика линтера по файлам",
+    steps: [
+      { type: "call", fn: "read_lints", args: '{ paths: ["app.js"] }' },
+      { type: "scan", text: "scanning app.js..." },
+      {
+        type: "lints",
+        items: [
+          { kind: "warn", text: "L42: unused variable 'tmp'" },
+          { kind: "err", text: "L108: missing await on Promise" },
+        ],
+      },
+      { type: "status", text: "ok — 1 error, 1 warning", ok: true },
+    ],
+  },
+  {
+    id: "todo_write",
+    name: "todo_write",
+    desc: "Обновление списка задач агента",
+    steps: [
+      { type: "call", fn: "todo_write", args: "{ merge: true, todos: [...] }" },
+      {
+        type: "todos",
+        items: [
+          { text: "Read gateway config", status: "done" },
+          { text: "Patch agent runtime", status: "in_progress" },
+          { text: "Run integration tests", status: "pending" },
+        ],
+      },
+      { type: "status", text: "ok — 3 todos updated", ok: true },
+    ],
+  },
+];
+
+const PLATFORM_TOOL_DEMOS = [
+  {
+    id: "onec_odata_get",
+    name: "onec.odata_get",
+    badge: "1С",
+    desc: "OData-запрос: последние входящие документы из 1С ERP",
+    steps: [
+      {
+        type: "call",
+        fn: "onec.odata_get",
+        args: '{ entity: "Document_ТД_ВходящаяКорреспонденция", top: 3 }',
+      },
+      { type: "search", text: "GET /Document_ТД_ВходящаяКорреспонденция?$top=3" },
+      {
+        type: "globResults",
+        items: [
+          "00001234 | 2026-08-10 | Запрос спецификации — ООО «РостТех»",
+          "00001233 | 2026-08-09 | Согласование договора поставки",
+          "00001231 | 2026-08-08 | Входящее письмо omto@corp.local",
+        ],
+      },
+      { type: "status", text: "ok — 3 документа, source=1c_erp", ok: true },
+    ],
+  },
+  {
+    id: "imap_search",
+    name: "imap.search",
+    badge: "IMAP",
+    desc: "Поиск писем в почтовом ящике по пользователю omto",
+    steps: [
+      { type: "call", fn: "imap.search", args: '{ query: "omto", user: "omto", limit: 3 }' },
+      { type: "meta", lines: ["user: omto", "query: omto", "limit: 3"] },
+      { type: "search", text: "поиск в INBOX..." },
+      {
+        type: "globResults",
+        items: [
+          "uid=8801 | Re: Спецификация №1247",
+          "uid=8802 | Согласование договора",
+          "uid=8803 | FW: Входящая корреспонденция",
+        ],
+      },
+      { type: "status", text: "ok — найдено 3 uid", ok: true },
+    ],
+  },
+  {
+    id: "imap_fetch_message",
+    name: "imap.fetch_message",
+    badge: "IMAP",
+    desc: "Загрузка письма по UID для анализа агентом",
+    steps: [
+      { type: "call", fn: "imap.fetch_message", args: '{ uid: 8801, user: "omto" }' },
+      { type: "meta", lines: ["uid: 8801", "user: omto"] },
+      {
+        type: "fileLines",
+        lines: [
+          "From: client@rosttech.ru",
+          "Subject: Re: Спецификация №1247",
+          "Date: Mon, 10 Aug 2026 09:14:00 +0300",
+          "",
+          "Добрый день! Направляем уточнённую спецификацию",
+          "во вложении. Просим согласовать до 15.08.",
+        ],
+      },
+      { type: "status", text: "ok — 1 message, 2.4 KB", ok: true },
+    ],
+  },
+  {
+    id: "browser_extract_text",
+    name: "browser.extract_text",
+    badge: "Browser",
+    desc: "Поиск или открытие URL и извлечение текста страницы",
+    steps: [
+      { type: "call", fn: "browser.extract_text", args: '{ query: "новости Ростова-на-Дону" }' },
+      { type: "search", text: "DuckDuckGo → 161.ru/text/..." },
+      {
+        type: "fileLines",
+        lines: [
+          "URL: https://161.ru/text/",
+          "Заголовок: Новости Ростова-на-Дону",
+          "",
+          "• Город запускает программу поддержки МСП",
+          "• Обновление расписания общественного транспорта",
+          "• Открытие нового торгового центра на ул. Будённовской",
+        ],
+      },
+      { type: "status", text: "ok — 1842 символа извлечено", ok: true },
+    ],
+  },
+  {
+    id: "shell_run",
+    name: "shell.run",
+    badge: "Shell",
+    desc: "Выполнение команды в sandbox (Docker) или native (Windows)",
+    steps: [
+      { type: "call", fn: "shell.run", args: '{ command: "dir", runtime: "native" }' },
+      { type: "meta", lines: ["runtime: native (:7828)", "cwd: allowlist root"] },
+      {
+        type: "terminal",
+        cmd: "dir",
+        out: [
+          " Volume in drive C has no label.",
+          " Directory of C:\\workspace\\incoming",
+          "",
+          "08/10/2026  09:00    <DIR>          .",
+          "spec_1247.pdf",
+          "contract_draft.docx",
+          "               2 File(s)",
+        ],
+      },
+      { type: "status", text: "ok — exit_code=0", ok: true },
+    ],
+  },
+  {
+    id: "fs_list",
+    name: "fs.list",
+    badge: "FS",
+    desc: "Список файлов в allowlist-каталоге Windows host",
+    steps: [
+      { type: "call", fn: "fs.list", args: '{ path: "." }' },
+      { type: "path", label: "path", value: "." },
+      {
+        type: "globResults",
+        items: [
+          "[dir] incoming/",
+          "[dir] outgoing/",
+          "[file] spec_1247.pdf (48 KB)",
+          "[file] notes.txt (128 B)",
+        ],
+      },
+      { type: "status", text: "ok — 4 entries", ok: true },
+    ],
+  },
+  {
+    id: "fs_read",
+    name: "fs.read",
+    badge: "FS",
+    desc: "Чтение содержимого файла с Windows host (:7827)",
+    steps: [
+      { type: "call", fn: "fs.read", args: '{ path: "incoming/spec_1247.pdf.meta" }' },
+      { type: "path", label: "path", value: "incoming/spec_1247.pdf.meta" },
+      {
+        type: "fileLines",
+        lines: [
+          "doc_number: 00001234",
+          "source: imap uid=8801",
+          "linked_1c: Document_ТД_ВходящаяКорреспонденция",
+          "status: pending_review",
+        ],
+      },
+      { type: "status", text: "ok — 96 bytes", ok: true },
+    ],
+  },
+  {
+    id: "com_list_apps",
+    name: "com.list_apps",
+    badge: "COM",
+    desc: "Список зарегистрированных COM-приложений на Windows",
+    steps: [
+      { type: "call", fn: "com.list_apps", args: "{}" },
+      { type: "search", text: "сканирование ProgID..." },
+      {
+        type: "globResults",
+        items: ["onec: V83.Application", "outlook: Outlook.Application", "excel: Excel.Application"],
+      },
+      { type: "status", text: "ok — 3 apps, com_available=true", ok: true },
+    ],
+  },
+  {
+    id: "com_connect",
+    name: "com.connect",
+    badge: "COM",
+    desc: "Подключение к 1С / Outlook / Excel через COM",
+    steps: [
+      { type: "call", fn: "com.connect", args: '{ app: "onec" }' },
+      { type: "meta", lines: ["app: onec", "progid: V83.Application", "visible: false"] },
+      { type: "search", text: "CoCreateInstance(V83.Application)..." },
+      { type: "path", label: "session_id", value: "sess-a7f3c2e1" },
+      { type: "status", text: "ok — COM session opened", ok: true },
+    ],
+  },
+  {
+    id: "com_invoke",
+    name: "com.invoke",
+    badge: "COM",
+    desc: "Вызов метода COM-объекта (Connect, GetInfo и др.)",
+    steps: [
+      {
+        type: "call",
+        fn: "com.invoke",
+        args: '{ session_id: "sess-a7f3", method: "Connect", args: [] }',
+      },
+      { type: "meta", lines: ["session: sess-a7f3c2e1", "method: Connect"] },
+      {
+        type: "terminal",
+        cmd: "com.invoke",
+        out: ["result: true", "info_base: ERP_Production", "user: Администратор"],
+      },
+      { type: "status", text: "ok — Connect succeeded", ok: true },
+    ],
+  },
+];
+
+class ToolDemoPlayer {
+  constructor(cardEl, spec) {
+    this.card = cardEl;
+    this.spec = spec;
+    this.stage = cardEl.querySelector(".tool-demo-stage");
+    this.statusEl = cardEl.querySelector(".tool-demo-status");
+    this.dots = cardEl.querySelectorAll(".tool-demo-step-dot");
+    this.playBtn = cardEl.querySelector(".tool-demo-replay");
+    this.running = false;
+    this.abort = false;
+    this.playBtn.addEventListener("click", () => this.replay());
+  }
+
+  stop() {
+    this.abort = true;
+  }
+
+  setStepIndex(index) {
+    this.dots.forEach((dot, i) => {
+      dot.classList.remove("active", "done");
+      if (i < index) dot.classList.add("done");
+      if (i === index) dot.classList.add("active");
+    });
+  }
+
+  async replay() {
+    if (this.running) return;
+    this.abort = false;
+    this.running = true;
+    this.card.classList.remove("done");
+    this.card.classList.add("playing");
+    this.playBtn.disabled = true;
+    this.playBtn.textContent = "▶ Воспроизведение…";
+    this.stage.innerHTML = "";
+    this.statusEl.textContent = "";
+    this.statusEl.className = "tool-demo-status";
+
+    const reduced = prefersReducedMotion();
+
+    for (let i = 0; i < this.spec.steps.length; i += 1) {
+      if (this.abort) break;
+      this.setStepIndex(i);
+      await this.runStep(this.spec.steps[i], reduced);
+      await toolDemoDelay(reduced ? 0 : 350, reduced);
+    }
+
+    if (!this.abort) {
+      this.setStepIndex(this.spec.steps.length);
+      this.dots.forEach((d) => d.classList.add("done"));
+      this.card.classList.add("done");
+    }
+
+    this.running = false;
+    this.playBtn.disabled = false;
+    this.playBtn.textContent = "▶ Повторить";
+    this.card.classList.remove("playing");
+  }
+
+  async runStep(step, reduced) {
+    switch (step.type) {
+      case "call": {
+        const el = document.createElement("div");
+        el.className = "tool-demo-call";
+        el.innerHTML = `${step.fn}(<span class="arg">${step.args}</span>)`;
+        this.stage.appendChild(el);
+        if (reduced) el.style.opacity = "1";
+        await toolDemoDelay(reduced ? 0 : 450, reduced);
+        break;
+      }
+      case "path": {
+        const el = document.createElement("div");
+        el.className = "tool-demo-path";
+        el.innerHTML = `${step.label}: <span class="path-val"></span>`;
+        this.stage.appendChild(el);
+        await toolDemoTypeText(el.querySelector(".path-val"), step.value, reduced);
+        break;
+      }
+      case "fileLines": {
+        const body = document.createElement("div");
+        body.className = "tool-demo-file-body";
+        this.stage.appendChild(body);
+        for (const line of step.lines) {
+          const row = document.createElement("span");
+          row.className = "line";
+          row.textContent = line;
+          body.appendChild(row);
+          if (reduced) row.classList.add("visible");
+          else {
+            await toolDemoDelay(120, reduced);
+            row.classList.add("visible");
+          }
+        }
+        break;
+      }
+      case "typeContent": {
+        const el = document.createElement("div");
+        el.className = "tool-demo-file-body";
+        const prefix = document.createElement("span");
+        prefix.textContent = step.prefix || "";
+        const typed = document.createElement("span");
+        el.appendChild(prefix);
+        el.appendChild(typed);
+        this.stage.appendChild(el);
+        await toolDemoTypeText(typed, step.text, reduced, 22);
+        break;
+      }
+      case "replace": {
+        const body = document.createElement("div");
+        body.className = "tool-demo-file-body";
+        for (const line of step.before) {
+          const row = document.createElement("span");
+          row.className = "line visible";
+          if (line.includes(step.old)) {
+            row.innerHTML = line.replace(
+              step.old,
+              `<span class="tool-demo-highlight">${step.old}</span>`,
+            );
+          } else {
+            row.textContent = line;
+          }
+          body.appendChild(row);
+        }
+        this.stage.appendChild(body);
+        await toolDemoDelay(reduced ? 0 : 700, reduced);
+        const hi = body.querySelector(".tool-demo-highlight");
+        if (hi) {
+          hi.classList.remove("tool-demo-highlight");
+          hi.classList.add("tool-demo-replaced");
+          hi.textContent = step.after;
+        }
+        break;
+      }
+      case "delete": {
+        const list = document.createElement("ul");
+        list.className = "tool-demo-glob-list";
+        for (const item of step.items) {
+          const li = document.createElement("li");
+          li.textContent = item;
+          list.appendChild(li);
+        }
+        this.stage.appendChild(list);
+        for (const li of list.children) {
+          li.classList.add("visible");
+          await toolDemoDelay(reduced ? 0 : 180, reduced);
+        }
+        await toolDemoDelay(reduced ? 0 : 400, reduced);
+        const target = [...list.children].find((li) => li.textContent === step.items[0]);
+        if (target) target.classList.add("tool-demo-deleted");
+        break;
+      }
+      case "search": {
+        const el = document.createElement("div");
+        el.className = "tool-demo-search";
+        el.innerHTML = '<span class="tool-demo-spinner" aria-hidden="true"></span><span></span>';
+        this.stage.appendChild(el);
+        await toolDemoTypeText(el.querySelector("span:last-child"), step.text, reduced);
+        await toolDemoDelay(reduced ? 0 : 600, reduced);
+        el.querySelector(".tool-demo-spinner")?.remove();
+        break;
+      }
+      case "globResults": {
+        const list = document.createElement("ul");
+        list.className = "tool-demo-glob-list";
+        for (const item of step.items) {
+          const li = document.createElement("li");
+          li.textContent = item;
+          list.appendChild(li);
+        }
+        this.stage.appendChild(list);
+        for (const li of list.children) {
+          li.classList.add("visible");
+          await toolDemoDelay(reduced ? 0 : 160, reduced);
+        }
+        break;
+      }
+      case "grepOut": {
+        const term = document.createElement("div");
+        term.className = "tool-demo-terminal";
+        term.innerHTML = `<span class="prompt">$</span> rg <span class="cmd">${step.match}</span>`;
+        this.stage.appendChild(term);
+        await toolDemoDelay(reduced ? 0 : 350, reduced);
+        for (const line of step.lines) {
+          const row = document.createElement("span");
+          row.className = "out-line";
+          const idx = line.indexOf(step.match);
+          if (idx >= 0) {
+            row.innerHTML =
+              line.slice(0, idx) +
+              `<span class="match">${step.match}</span>` +
+              line.slice(idx + step.match.length);
+          } else {
+            row.textContent = line;
+          }
+          term.appendChild(row);
+          row.classList.add("visible");
+          await toolDemoDelay(reduced ? 0 : 200, reduced);
+        }
+        break;
+      }
+      case "terminal": {
+        const term = document.createElement("div");
+        term.className = "tool-demo-terminal";
+        const prompt = document.createElement("div");
+        prompt.innerHTML = '<span class="prompt">$</span> <span class="cmd"></span>';
+        term.appendChild(prompt);
+        this.stage.appendChild(term);
+        await toolDemoTypeText(prompt.querySelector(".cmd"), step.cmd, reduced, 32);
+        await toolDemoDelay(reduced ? 0 : 300, reduced);
+        for (const line of step.out) {
+          const row = document.createElement("span");
+          row.className = "out-line";
+          row.textContent = line;
+          term.appendChild(row);
+          row.classList.add("visible");
+          await toolDemoDelay(reduced ? 0 : 280, reduced);
+        }
+        break;
+      }
+      case "scan": {
+        const el = document.createElement("div");
+        el.className = "tool-demo-search";
+        el.innerHTML = '<span class="tool-demo-spinner" aria-hidden="true"></span><span></span>';
+        this.stage.appendChild(el);
+        await toolDemoTypeText(el.querySelector("span:last-child"), step.text, reduced);
+        await toolDemoDelay(reduced ? 0 : 550, reduced);
+        el.querySelector(".tool-demo-spinner")?.remove();
+        break;
+      }
+      case "lints": {
+        const list = document.createElement("ul");
+        list.className = "tool-demo-lint-list";
+        for (const item of step.items) {
+          const li = document.createElement("li");
+          li.className = item.kind;
+          li.textContent = item.text;
+          list.appendChild(li);
+        }
+        this.stage.appendChild(list);
+        for (const li of list.children) {
+          li.classList.add("visible");
+          await toolDemoDelay(reduced ? 0 : 320, reduced);
+        }
+        break;
+      }
+      case "todos": {
+        const list = document.createElement("ul");
+        list.className = "tool-demo-todo-list";
+        for (const item of step.items) {
+          const li = document.createElement("li");
+          li.className = item.status === "done" ? "done" : item.status === "in_progress" ? "in_progress" : "";
+          li.innerHTML = `<span class="box">${item.status === "done" ? "✓" : ""}</span><span>${item.text}</span>`;
+          list.appendChild(li);
+        }
+        this.stage.appendChild(list);
+        for (const li of list.children) {
+          li.classList.add("visible");
+          await toolDemoDelay(reduced ? 0 : 280, reduced);
+        }
+        break;
+      }
+      case "meta": {
+        const el = document.createElement("div");
+        el.className = "tool-demo-meta";
+        for (const line of step.lines) {
+          const row = document.createElement("div");
+          row.className = "line";
+          row.textContent = line;
+          el.appendChild(row);
+          if (reduced) row.classList.add("visible");
+          else {
+            await toolDemoDelay(100, reduced);
+            row.classList.add("visible");
+          }
+        }
+        this.stage.appendChild(el);
+        break;
+      }
+      case "status": {
+        this.statusEl.textContent = step.text;
+        if (step.ok) this.statusEl.classList.add("ok");
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
+
+const agentDemoPlayers = [];
+const codingDemoPlayers = [];
+const platformDemoPlayers = [];
+
+function renderAgentToolDemoCard(spec, options = {}) {
+  const isPlatform = options.platform || Boolean(spec.badge);
+  const card = document.createElement("article");
+  card.className = "tool-demo-card" + (isPlatform ? " platform" : "");
+  card.dataset.tool = spec.id;
+  const dots = spec.steps
+    .map((_, i) => `<span class="tool-demo-step-dot" aria-hidden="true" title="Шаг ${i + 1}"></span>`)
+    .join("");
+  const badgeHtml = spec.badge ? `<span class="tool-demo-badge">${spec.badge}</span>` : "";
+  card.innerHTML = `
+    <header class="tool-demo-head">
+      <div class="tool-demo-title-wrap">
+        <div class="tool-demo-name-row">
+          ${badgeHtml}
+          <div class="tool-demo-name">${spec.name}</div>
+        </div>
+        <div class="tool-demo-desc">${spec.desc}</div>
+      </div>
+      <div class="tool-demo-steps" aria-label="Шаги демо">${dots}</div>
+    </header>
+    <div class="tool-demo-stage" aria-label="Демо ${spec.name}"></div>
+    <div class="tool-demo-status"></div>
+    <footer class="tool-demo-footer">
+      <button type="button" class="tool-demo-replay">▶ Демо</button>
+    </footer>`;
+  return card;
+}
+
+async function runDemoGroup(players) {
+  for (const player of players) {
+    await player.replay();
+  }
+}
+
+function initAgentToolDemos() {
+  const codingGrid = $("agentToolsCodingGrid");
+  const platformGrid = $("agentToolsPlatformGrid");
+  if (!codingGrid || !platformGrid) return;
+
+  codingGrid.innerHTML = "";
+  platformGrid.innerHTML = "";
+  agentDemoPlayers.length = 0;
+  codingDemoPlayers.length = 0;
+  platformDemoPlayers.length = 0;
+
+  for (const spec of AGENT_TOOL_DEMOS) {
+    const card = renderAgentToolDemoCard(spec);
+    codingGrid.appendChild(card);
+    const player = new ToolDemoPlayer(card, spec);
+    codingDemoPlayers.push(player);
+    agentDemoPlayers.push(player);
+  }
+
+  for (const spec of PLATFORM_TOOL_DEMOS) {
+    const card = renderAgentToolDemoCard(spec, { platform: true });
+    platformGrid.appendChild(card);
+    const player = new ToolDemoPlayer(card, spec);
+    platformDemoPlayers.push(player);
+    agentDemoPlayers.push(player);
+  }
+
+  const btnAll = $("btnAgentDemoAll");
+  if (btnAll) {
+    btnAll.addEventListener("click", () => runDemoGroup(agentDemoPlayers));
+  }
+
+  const btnCoding = $("btnAgentDemoCoding");
+  if (btnCoding) {
+    btnCoding.addEventListener("click", () => runDemoGroup(codingDemoPlayers));
+  }
+
+  const btnPlatform = $("btnAgentDemoPlatform");
+  if (btnPlatform) {
+    btnPlatform.addEventListener("click", () => runDemoGroup(platformDemoPlayers));
+  }
+
+  const btnStop = $("btnAgentDemoStop");
+  if (btnStop) {
+    btnStop.addEventListener("click", () => {
+      for (const player of agentDemoPlayers) player.stop();
+    });
+  }
+
+  if (!prefersReducedMotion() && codingDemoPlayers.length) {
+    setTimeout(() => {
+      codingDemoPlayers[0]?.replay();
+    }, 600);
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   try {
     mermaid.initialize({ startOnLoad: false, theme: "default" });
@@ -1245,6 +2045,11 @@ document.addEventListener("DOMContentLoaded", () => {
   } catch (e) {
     console.error("sandbox init failed", e);
     log(`Sandbox init failed: ${e.message}`);
+  }
+  try {
+    initAgentToolDemos();
+  } catch (e) {
+    console.error("agent tool demos init failed", e);
   }
   $("btnLogin").addEventListener("click", login);
   const btnHealth = $("btnHealth");

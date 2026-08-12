@@ -137,9 +137,15 @@ flowchart TB
 | `onec.odata_patch` | OData PATCH | Docker | 7822 | ↑ |
 | `onec.attach_file` | Файл к документу | Docker | 7822 | ↑ |
 | `onec.sql_query` | Read-only SQL | Docker | 7822 | ↑ |
-| `browser.navigate` | Открыть URL | Docker | 7824 | [browser/main.py](services/platform-tool-browser/platform_tool_browser/main.py) |
+| `browser.open_session` | Ephemeral session | Docker | 7824 | [browser/main.py](services/platform-tool-browser/platform_tool_browser/main.py) |
+| `browser.close_session` | Закрыть session | Docker | 7824 | ↑ |
+| `browser.navigate` | Открыть URL (в session) | Docker | 7824 | ↑ |
+| `browser.snapshot` | Интерактивные элементы + ref | Docker | 7824 | ↑ |
+| `browser.click` | Клик (selector/ref) | Docker | 7824 | ↑ |
+| `browser.type` / `browser.fill` | Ввод текста | Docker | 7824 | ↑ |
+| `browser.wait` | Ожидание selector/URL | Docker | 7824 | ↑ |
+| `browser.tabs` | list/new/switch | Docker | 7824 | ↑ |
 | `browser.screenshot` | Скриншот | Docker | 7824 | ↑ |
-| `browser.click` | Клик | Docker | 7824 | ↑ |
 | `browser.extract_text` | Текст/DuckDuckGo | Docker | 7824 | ↑ |
 | `shell.run` | Команда (sandbox) | Docker | 7823 | [shell/main.py](services/platform-tool-shell/platform_tool_shell/main.py) |
 | `shell.run` | Команда (native) | **Windows host** | 7828 | [shell/native_main.py](services/platform-tool-shell/platform_tool_shell/native_main.py) |
@@ -153,6 +159,10 @@ flowchart TB
 | `com.connect` | COM-сессия | **Windows host** | 7826 | ↑ |
 | `com.invoke` | Вызов метода COM | **Windows host** | 7826 | ↑ |
 | `com.release` | Закрыть сессию | **Windows host** | 7826 | ↑ |
+| `com.outlook.launch` | Запуск Outlook (COM) | **Windows host** | 7826 | [outlook_calendar.py](services/platform-tool-com/platform_tool_com/outlook_calendar.py) |
+| `com.outlook.calendar_list` | Список встреч календаря | **Windows host** | 7826 | ↑ |
+| `com.outlook.calendar_get` | Встреча по EntryID | **Windows host** | 7826 | ↑ |
+| `com.outlook.close` | Закрыть Outlook session | **Windows host** | 7826 | ↑ |
 
 ### 4.2. Payload (ключевые поля)
 
@@ -174,12 +184,27 @@ flowchart TB
 | `imap.search` | `{ "user": "td_ceh", "query": "td_ceh", "limit": 3 }` |
 | `imap.fetch_message` | `{ "uid": 8801, "user": "omto" }` |
 | `onec.odata_get` | `{ "path": "/Document_...?$top=5", "entity": "...", "top": 5 }` |
+| `browser.open_session` | `{}` (+ `run_id` в корне запроса) |
+| `browser.navigate` | `{ "url": "https://donnews.ru/" }` |
+| `browser.snapshot` | `{}` → `elements[{ref,role,name,selector}]` |
+| `browser.click` | `{ "ref": "e3" }` или `{ "selector": "#go" }` |
+| `browser.type` | `{ "ref": "e2", "text": "...", "submit": false }` |
 | `browser.extract_text` | `{ "query": "новости", "url": "https://...", "selector": "body" }` |
+
+**Browser workflow (ephemeral session):** `open_session` → `navigate` → `snapshot` → `click`/`type` → `extract_text` → `close_session`.  
+Сессия keyed by `run_id`; cookies/вкладки уничтожаются при close или TTL (~15 мин). Локальный coding-агент (`agent/`) проксирует те же tools на `:7824`.
 | `shell.run` | `{ "command": "dir", "runtime": "native", "cwd": "" }` |
 | `fs.list` | `{ "path": ".", "pattern": "*", "recursive": false }` |
 | `fs.read` | `{ "path": "incoming/file.txt", "max_bytes": 4096 }` |
 | `com.connect` | `{ "app": "onec" }` |
 | `com.invoke` | `{ "session_id": "...", "method": "Connect", "args": [] }` |
+| `com.outlook.launch` | `{ "visible": true }` |
+| `com.outlook.calendar_list` | `{ "session_id": "...", "days": 7, "limit": 50, "query": "планерка" }` |
+| `com.outlook.calendar_get` | `{ "session_id": "...", "entry_id": "...", "include_body": true }` |
+| `com.outlook.close` | `{ "session_id": "...", "quit": false }` |
+
+**Outlook calendar workflow:** `com.outlook.launch` → `com.outlook.calendar_list` → (optional) `com.outlook.calendar_get` → `com.outlook.close`.  
+Требует Windows host + установленный Outlook; в `USE_STUBS=true` отдаёт демо-встречи без COM.
 
 **Ответ** — `ToolResult`: `{ "ok": true, "tool_name": "...", "data": { "summary": "...", ... }, "error": null, "audit_id": "..." }`.
 

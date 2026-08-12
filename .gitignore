@@ -6,6 +6,7 @@
 
 # --- Desktop tool runtime data (local workspace) ---
 data/
+scripts/desktop_tools.local.cmd
 
 # --- infra (Docker) — keep compose + init SQL; ignore local runtime ---
 infra/.env

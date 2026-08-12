@@ -84,9 +84,19 @@ MOCK_SCENARIOS: dict[str, MockScenario] = {
         "agent_id": "mock-browser-agent",
         "tool_calls": [
             {
+                "thought": "Открываю ephemeral browser session",
+                "tool_name": "browser.open_session",
+                "payload": {},
+            },
+            {
                 "thought": "Открываю страницу поставщика для сверки реквизитов",
                 "tool_name": "browser.navigate",
                 "payload": {"url": "https://example.com/supplier"},
+            },
+            {
+                "thought": "Снимаю snapshot интерактивных элементов",
+                "tool_name": "browser.snapshot",
+                "payload": {},
             },
             {
                 "thought": "Делаю скриншот для архива",
@@ -97,6 +107,11 @@ MOCK_SCENARIOS: dict[str, MockScenario] = {
                 "thought": "Извлекаю текст с карточки контрагента",
                 "tool_name": "browser.extract_text",
                 "payload": {"selector": "main"},
+            },
+            {
+                "thought": "Закрываю browser session",
+                "tool_name": "browser.close_session",
+                "payload": {},
             },
         ],
     },

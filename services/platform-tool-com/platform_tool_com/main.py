@@ -11,11 +11,24 @@ from pydantic_settings import SettingsConfigDict
 
 from platform_contracts.tools import ToolInvokeRequest
 from platform_service_common.app_factory import ServiceSettings, create_tool_app, run_app
+from platform_tool_com import outlook_calendar
 
 _DEFAULT_APPS = {
     "onec": "V83.Application",
     "outlook": "Outlook.Application",
     "excel": "Excel.Application",
+}
+
+_OUTLOOK_DEFAULT_METHODS = {
+    "Connect",
+    "GetNamespace",
+    "CreateItem",
+    "Quit",
+    "GetDefaultFolder",
+    "GetItemFromID",
+    "Session",
+    "Explorers",
+    "ActiveExplorer",
 }
 
 
@@ -56,18 +69,20 @@ def _parse_apps() -> dict[str, str]:
 def _method_allowlist(app_id: str) -> set[str]:
     env_key = f"COM_METHOD_ALLOWLIST_{app_id}"
     raw = os.environ.get(env_key, "").strip()
-    if not raw:
-        return {
-            "Connect",
-            "NewObject",
-            "Documents",
-            "GetObject",
-            "Quit",
-            "CreateItem",
-            "Workbooks",
-            "ActiveWorkbook",
-        }
-    return {item.strip() for item in raw.split(",") if item.strip()}
+    if raw:
+        return {item.strip() for item in raw.split(",") if item.strip()}
+    if app_id == "outlook":
+        return set(_OUTLOOK_DEFAULT_METHODS)
+    return {
+        "Connect",
+        "NewObject",
+        "Documents",
+        "GetObject",
+        "Quit",
+        "CreateItem",
+        "Workbooks",
+        "ActiveWorkbook",
+    }
 
 
 def _is_windows() -> bool:
@@ -209,11 +224,52 @@ def _stub_release(req: ToolInvokeRequest) -> dict[str, Any]:
     return {"summary": "stub released", "session_id": session_id, "source": "stub"}
 
 
+def _use_stub_outlook() -> bool:
+    return bool(settings.use_stubs) or not _is_windows()
+
+
+def _outlook_launch(req: ToolInvokeRequest) -> dict[str, Any]:
+    visible = bool(req.payload.get("visible", True))
+    return outlook_calendar.launch_outlook(visible=visible, stub=_use_stub_outlook())
+
+
+def _outlook_close(req: ToolInvokeRequest) -> dict[str, Any]:
+    session_id = str(req.payload.get("session_id", "")).strip()
+    quit_app = bool(req.payload.get("quit", False))
+    return outlook_calendar.close_outlook(session_id, quit_app=quit_app, stub=_use_stub_outlook())
+
+
+def _outlook_calendar_list(req: ToolInvokeRequest) -> dict[str, Any]:
+    return outlook_calendar.calendar_list(
+        session_id=str(req.payload.get("session_id", "")).strip(),
+        start=req.payload.get("start"),
+        end=req.payload.get("end"),
+        days=int(req.payload.get("days", 7)),
+        limit=int(req.payload.get("limit", 50)),
+        query=str(req.payload.get("query", "")),
+        include_body=bool(req.payload.get("include_body", False)),
+        stub=_use_stub_outlook(),
+    )
+
+
+def _outlook_calendar_get(req: ToolInvokeRequest) -> dict[str, Any]:
+    return outlook_calendar.calendar_get(
+        entry_id=str(req.payload.get("entry_id", "")).strip(),
+        session_id=str(req.payload.get("session_id", "")).strip(),
+        include_body=bool(req.payload.get("include_body", True)),
+        stub=_use_stub_outlook(),
+    )
+
+
 REAL_HANDLERS = {
     "com.list_apps": _list_apps,
     "com.connect": _connect,
     "com.invoke": _invoke,
     "com.release": _release,
+    "com.outlook.launch": _outlook_launch,
+    "com.outlook.close": _outlook_close,
+    "com.outlook.calendar_list": _outlook_calendar_list,
+    "com.outlook.calendar_get": _outlook_calendar_get,
 }
 
 STUB_HANDLERS = {
@@ -221,6 +277,10 @@ STUB_HANDLERS = {
     "com.connect": _stub_connect,
     "com.invoke": _stub_invoke,
     "com.release": _stub_release,
+    "com.outlook.launch": _outlook_launch,
+    "com.outlook.close": _outlook_close,
+    "com.outlook.calendar_list": _outlook_calendar_list,
+    "com.outlook.calendar_get": _outlook_calendar_get,
 }
 
 app = create_tool_app(settings, REAL_HANDLERS, stub_handlers=STUB_HANDLERS)

@@ -114,11 +114,11 @@ flowchart LR
 |--------|-------|-----------------|
 | **IMAP** | `imap.list_unread`, `imap.fetch_message`, `imap.fetch_attachments`, `imap.search` | Docker :7821 |
 | **1С** | `onec.odata_get`, `onec.odata_post`, `onec.odata_patch`, `onec.attach_file`, `onec.sql_query` | Docker :7822 |
-| **Browser** | `browser.navigate`, `browser.screenshot`, `browser.click`, `browser.extract_text` | Docker :7824 |
+| **Browser** | `browser.open_session/close_session/navigate/snapshot/click/type/fill/wait/tabs/screenshot/extract_text` | Docker :7824 |
 | **Shell sandbox** | `shell.run` с `runtime=sandbox` | Docker :7823 |
 | **Shell native** | `shell.run` с `runtime=native`, опционально `cwd` | Windows host :7828 |
 | **Filesystem** | `fs.list`, `fs.read`, `fs.write`, `fs.stat`, `fs.move`, `fs.copy` | Windows host :7827 |
-| **COM** | `com.list_apps`, `com.connect`, `com.invoke`, `com.release` | Windows host :7826 |
+| **COM** | `com.list_apps`, `com.connect`, `com.invoke`, `com.release`, `com.outlook.launch/close/calendar_list/calendar_get` | Windows host :7826 |
 
 Desktop tools (COM, FS, native shell) запускаются на том же ПК:
 

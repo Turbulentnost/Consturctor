@@ -4,22 +4,20 @@ import base64
 import concurrent.futures
 import os
 import re
-import threading
+import time
 from html import unescape
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
+from uuid import UUID, uuid4
 
 import httpx
 from pydantic_settings import SettingsConfigDict
 
 from platform_contracts.tools import ToolInvokeRequest
 from platform_service_common.app_factory import ServiceSettings, create_tool_app, run_app
+from platform_tool_browser.session_manager import BrowserSessionError, BrowserSessionManager, StubPage
 
-_playwright = None
-_browser = None
-_lock = threading.Lock()
-_contexts: list[Any] = []
 _fetch_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="browser-fetch")
 
 _TAG_RE = re.compile(r"<(script|style|noscript)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
@@ -42,6 +40,60 @@ _DDG_SNIPPET = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_NOISE_FRAGMENTS = (
+    "all regions",
+    "duckduckgo",
+    "smartcaptcha",
+    "не робот",
+    "подтвердите, что запросы",
+    "feedback",
+    "подписаться",
+    "подписка на цифровую",
+)
+
+_URL_ALIASES: dict[str, str] = {
+    "всеинструменты.ру": "https://www.vseinstrumenti.ru/",
+    "www.всеинструменты.ру": "https://www.vseinstrumenti.ru/",
+    "vseinstrumenti.ru": "https://www.vseinstrumenti.ru/",
+    "www.vseinstrumenti.ru": "https://www.vseinstrumenti.ru/",
+}
+
+_SNAPSHOT_JS = """
+() => {
+  const picks = [];
+  const nodes = Array.from(document.querySelectorAll(
+    'a, button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [onclick]'
+  ));
+  let idx = 0;
+  for (const el of nodes) {
+    if (idx >= 40) break;
+    const style = window.getComputedStyle(el);
+    const visible = style && style.visibility !== 'hidden' && style.display !== 'none'
+      && el.offsetParent !== null;
+    const role = el.getAttribute('role')
+      || (el.tagName === 'A' ? 'link'
+        : el.tagName === 'BUTTON' ? 'button'
+        : el.tagName === 'SELECT' ? 'combobox'
+        : (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') ? 'textbox'
+        : el.tagName.toLowerCase());
+    const name = (el.getAttribute('aria-label')
+      || el.getAttribute('name')
+      || el.getAttribute('placeholder')
+      || el.innerText
+      || el.value
+      || '').trim().slice(0, 80);
+    let selector = '';
+    if (el.id) selector = '#' + CSS.escape(el.id);
+    else if (el.getAttribute('name')) selector = el.tagName.toLowerCase() + '[name="' + el.getAttribute('name') + '"]';
+    else if (el.getAttribute('href')) selector = 'a[href="' + el.getAttribute('href') + '"]';
+    else selector = el.tagName.toLowerCase() + ':nth-of-type(' + (Array.from(el.parentElement?.children || []).filter(c => c.tagName === el.tagName).indexOf(el) + 1) + ')';
+    const ref = 'e' + (++idx);
+    picks.push({ ref, role, name, selector, visible: !!visible });
+  }
+  return picks;
+}
+"""
+
 
 class BrowserSettings(ServiceSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -49,6 +101,8 @@ class BrowserSettings(ServiceSettings):
     service_name: str = "platform-tool-browser"
     api_port: int = 7824
     browser_max_contexts: int = 3
+    browser_max_pages: int = 5
+    browser_session_ttl_sec: float = 900.0
     url_whitelist: str = (
         "localhost,127.0.0.1,turbo-don.ru,161.ru,ria.ru,don24.ru,donnews.ru,"
         "yandex.ru,vseinstrumenti.ru,www.vseinstrumenti.ru"
@@ -59,6 +113,13 @@ class BrowserSettings(ServiceSettings):
 
 settings = BrowserSettings()
 
+_session_manager = BrowserSessionManager(
+    max_contexts=settings.browser_max_contexts,
+    max_pages_per_session=settings.browser_max_pages,
+    ttl_sec=settings.browser_session_ttl_sec,
+    force_stub=bool(settings.use_stubs),
+)
+
 
 def _allowed_url(url: str) -> bool:
     parsed = urlparse(url)
@@ -67,7 +128,6 @@ def _allowed_url(url: str) -> bool:
     host = (parsed.hostname or "").lower()
     allowed = [x.strip().lower() for x in settings.url_whitelist.split(",") if x.strip()]
     return any(host == item or host.endswith(f".{item}") for item in allowed)
-
 
 
 def _normalize_input_url(url: str) -> str:
@@ -92,112 +152,6 @@ def _unwrap_ddg_href(href: str) -> str:
         if uddg:
             return unquote(uddg)
     return href
-
-
-def _web_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
-    max_results = max(1, min(10, max_results))
-    with httpx.Client(timeout=settings.browser_http_timeout_sec, follow_redirects=True) as client:
-        response = client.post(
-            "https://html.duckduckgo.com/html/",
-            data={"q": query, "b": "", "kl": "ru-ru"},
-            headers={**_HTTP_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
-        )
-        response.raise_for_status()
-        html = response.text
-
-    results: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for match in _DDG_LINK.finditer(html):
-        href = _unwrap_ddg_href(match.group(1))
-        title = _strip_tags(match.group(2))
-        if not href.startswith(("http://", "https://")):
-            continue
-        if not title or any(noise in title.lower() for noise in _NOISE_FRAGMENTS):
-            continue
-        if href in seen:
-            continue
-        seen.add(href)
-        snippet = ""
-        tail = html[match.end() : match.end() + 1200]
-        snippet_match = _DDG_SNIPPET.search(tail)
-        if snippet_match:
-            snippet = _strip_tags(snippet_match.group(1))
-        results.append({"title": title, "url": href, "snippet": snippet})
-        if len(results) >= max_results:
-            break
-    return results
-
-
-def _format_search_results(query: str, results: list[dict[str, str]]) -> str:
-    lines = [f"Поиск: {query}", f"Найдено: {len(results)}", ""]
-    for idx, row in enumerate(results, 1):
-        lines.append(f"{idx}. {row['title']}")
-        lines.append(f"   {row['url']}")
-        if row.get("snippet"):
-            lines.append(f"   {row['snippet']}")
-        lines.append("")
-    return "\n".join(lines).strip()
-
-
-def _search_and_extract(query: str, max_results: int, fetch_first: bool) -> dict[str, Any]:
-    results = _web_search(query, max_results)
-    if not results:
-        return {
-            "summary": "ничего не найдено",
-            "query": query,
-            "results": [],
-            "text": f"По запросу «{query}» результатов не найдено.",
-            "source": "search",
-        }
-
-    first_url = results[0]["url"]
-    first_title = results[0]["title"]
-    page_text = ""
-    if fetch_first:
-        page = _fetch_page_text_sync(first_url, relax_whitelist=True)
-        if page.get("source") != "blocked":
-            page_text = str(page.get("text") or "").strip()
-            first_url = str(page.get("url") or first_url)
-            first_title = str(page.get("title") or first_title)
-
-    listing = _format_search_results(query, results)
-    text = page_text or listing
-    summary = f"search: {len(results)} results"
-    if page_text:
-        summary += f", fetched first ({len(page_text)} chars)"
-    return {
-        "summary": summary,
-        "query": query,
-        "url": first_url,
-        "title": first_title,
-        "results": results,
-        "text": text,
-        "source": "search",
-    }
-
-
-_NOISE_FRAGMENTS = (
-    "all regions",
-    "duckduckgo",
-    "smartcaptcha",
-    "не робот",
-    "подтвердите, что запросы",
-    "feedback",
-    "подписаться",
-    "подписка на цифровую",
-)
-
-
-_URL_ALIASES: dict[str, str] = {
-    "всеинструменты.ру": "https://www.vseinstrumenti.ru/",
-    "www.всеинструменты.ру": "https://www.vseinstrumenti.ru/",
-    "vseinstrumenti.ru": "https://www.vseinstrumenti.ru/",
-    "www.vseinstrumenti.ru": "https://www.vseinstrumenti.ru/",
-}
-
-
-def _resolve_browser_url(req: ToolInvokeRequest) -> str:
-    return _normalize_input_url(str(req.payload.get("url", "")).strip())
 
 
 def _strip_tags(fragment: str) -> str:
@@ -339,121 +293,465 @@ def _screenshot_dir(run_id: str | None) -> Path:
     return path
 
 
-def _ensure_browser():
-    global _playwright, _browser
-    with _lock:
-        if _browser is not None:
-            return _browser
-        from playwright.sync_api import sync_playwright
+def _web_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
+    max_results = max(1, min(10, max_results))
+    with httpx.Client(timeout=settings.browser_http_timeout_sec, follow_redirects=True) as client:
+        response = client.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query, "b": "", "kl": "ru-ru"},
+            headers={**_HTTP_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        response.raise_for_status()
+        html = response.text
 
-        _playwright = sync_playwright().start()
-        _browser = _playwright.chromium.launch(headless=True)
-        return _browser
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for match in _DDG_LINK.finditer(html):
+        href = _unwrap_ddg_href(match.group(1))
+        title = _strip_tags(match.group(2))
+        if not href.startswith(("http://", "https://")):
+            continue
+        if not title or any(noise in title.lower() for noise in _NOISE_FRAGMENTS):
+            continue
+        if href in seen:
+            continue
+        seen.add(href)
+        snippet = ""
+        tail = html[match.end() : match.end() + 1200]
+        snippet_match = _DDG_SNIPPET.search(tail)
+        if snippet_match:
+            snippet = _strip_tags(snippet_match.group(1))
+        results.append({"title": title, "url": href, "snippet": snippet})
+        if len(results) >= max_results:
+            break
+    return results
 
 
-def _new_page():
-    browser = _ensure_browser()
-    with _lock:
-        if len(_contexts) >= settings.browser_max_contexts:
-            ctx = _contexts.pop(0)
-            ctx.close()
-        context = browser.new_context()
-        _contexts.append(context)
-        return context.new_page()
+def _format_search_results(query: str, results: list[dict[str, str]]) -> str:
+    lines = [f"Поиск: {query}", f"Найдено: {len(results)}", ""]
+    for idx, row in enumerate(results, 1):
+        lines.append(f"{idx}. {row['title']}")
+        lines.append(f"   {row['url']}")
+        if row.get("snippet"):
+            lines.append(f"   {row['snippet']}")
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
-def _fetch_page_text_sync(url: str, selector: str = "body", *, relax_whitelist: bool = False) -> dict[str, Any]:
-    if not relax_whitelist and not _allowed_url(url):
-        raise ValueError(f"url not allowed: {url}")
-    try:
-        data = _fetch_text_http(url)
-        if data.get("source") == "blocked":
-            return data
-        return data
-    except Exception as http_exc:
-        err = str(http_exc)
-        if "Executable doesn't exist" in err or "playwright install" in err.lower():
-            return _blocked_result(url, f"HTTP не удался ({http_exc}). Playwright в контейнере не установлен.")
-        page = None
+def _search_and_extract(query: str, max_results: int, fetch_first: bool) -> dict[str, Any]:
+    results = _web_search(query, max_results)
+    if not results:
+        return {
+            "summary": "ничего не найдено",
+            "query": query,
+            "results": [],
+            "text": f"По запросу «{query}» результатов не найдено.",
+            "source": "search",
+        }
+
+    first_url = results[0]["url"]
+    first_title = results[0]["title"]
+    page_text = ""
+    if fetch_first:
         try:
-            page = _new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            html = page.content()
-            blocked = _detect_blocked_html(html, page.url, 200)
-            if blocked:
-                return _blocked_result(page.url, blocked)
-            text = _extract_readable_text(html, page.url)
-            if selector and selector != "body":
-                try:
-                    text = page.locator(selector).inner_text(timeout=10000)[:12000]
-                except Exception:
-                    pass
-            return {
-                "summary": f"playwright text len={len(text)}",
-                "url": page.url,
-                "title": page.title(),
-                "text": text[:12000],
-                "source": "playwright",
-                "http_error": str(http_exc),
-            }
-        except Exception as pw_exc:
-            return _blocked_result(url, f"Не удалось загрузить страницу: {pw_exc}")
-        finally:
-            if page is not None:
-                page.close()
+            # Search hits may be outside whitelist; allow first-hit preview.
+            page = _fetch_text_http(first_url)
+            if page.get("source") != "blocked":
+                page_text = str(page.get("text") or "").strip()
+                first_url = str(page.get("url") or first_url)
+                first_title = str(page.get("title") or first_title)
+        except Exception:
+            page_text = ""
 
-
-def _fetch_page_text(url: str, selector: str = "body") -> dict[str, Any]:
-    return _fetch_in_background(_fetch_page_text_sync, url, selector)
-
-
-def _navigate(req: ToolInvokeRequest) -> dict[str, Any]:
-    url = _resolve_browser_url(req)
-    if not url:
-        raise ValueError("url or query required")
-    data = _fetch_page_text(url)
+    listing = _format_search_results(query, results)
+    text = page_text or listing
+    summary = f"search: {len(results)} results"
+    if page_text:
+        summary += f", fetched first ({len(page_text)} chars)"
     return {
-        "summary": data.get("title") or data.get("summary", ""),
-        "url": data.get("url", url),
-        "title": data.get("title", ""),
-        "source": data.get("source", "http"),
+        "summary": summary,
+        "query": query,
+        "url": first_url,
+        "title": first_title,
+        "results": results,
+        "text": text,
+        "source": "search",
     }
 
 
-def _screenshot(req: ToolInvokeRequest) -> dict[str, Any]:
-    url = _resolve_browser_url(req)
-    if not url or not _allowed_url(url):
-        raise ValueError("url not allowed")
-    page = _new_page()
+def _resolve_browser_url(req: ToolInvokeRequest) -> str:
+    return _normalize_input_url(str(req.payload.get("url", "")).strip())
+
+
+def _run_id(req: ToolInvokeRequest) -> str:
+    if req.run_id:
+        return str(req.run_id)
+    raw = str(req.payload.get("run_id") or req.payload.get("session_id") or "").strip()
+    if raw:
+        return raw
+    raise BrowserSessionError("SESSION_NOT_FOUND", "run_id is required")
+
+
+def _ensure_run_id(req: ToolInvokeRequest) -> str:
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        png = page.screenshot(full_page=False)
-        out = _screenshot_dir(str(req.run_id) if req.run_id else None) / "shot.png"
-        out.write_bytes(png)
+        return _run_id(req)
+    except BrowserSessionError:
+        return str(uuid4())
+
+
+def _page_meta(page: Any) -> dict[str, str]:
+    try:
+        title = page.title()
+    except Exception:
+        title = ""
+    return {"url": getattr(page, "url", "") or "", "title": title}
+
+
+def _timeout_ms(req: ToolInvokeRequest, default: int = 10000) -> int:
+    try:
+        return max(100, min(120_000, int(req.payload.get("timeout_ms", default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _open_session(req: ToolInvokeRequest) -> dict[str, Any]:
+    run_id = _ensure_run_id(req)
+    prefer_stub = bool(settings.use_stubs)
+    try:
+        session = _session_manager.open_session(run_id, prefer_stub=prefer_stub)
+    except BrowserSessionError:
+        session = _session_manager.open_session(run_id, prefer_stub=True)
+    page = session.active_page()
+    meta = _page_meta(page)
+    return {
+        "summary": f"session open ({'stub' if session.stub else 'playwright'})",
+        "run_id": run_id,
+        "session_id": run_id,
+        "stub": session.stub,
+        **meta,
+    }
+
+
+def _close_session(req: ToolInvokeRequest) -> dict[str, Any]:
+    run_id = _run_id(req)
+    closed = _session_manager.close_session(run_id)
+    return {
+        "summary": "session closed" if closed else "session already closed",
+        "run_id": run_id,
+        "closed": closed,
+    }
+
+
+def _navigate(req: ToolInvokeRequest) -> dict[str, Any]:
+    run_id = _ensure_run_id(req)
+    url = _resolve_browser_url(req)
+    if not url:
+        raise ValueError("url required")
+    if not _allowed_url(url) and not settings.use_stubs:
+        raise BrowserSessionError("URL_NOT_ALLOWED", f"url not allowed: {url}")
+
+    prefer_stub = bool(settings.use_stubs) or not _allowed_url(url)
+    session = _session_manager.require_session(run_id, auto_open=True, prefer_stub=prefer_stub)
+    page = session.active_page()
+    timeout = _timeout_ms(req, 30000)
+
+    if session.stub or isinstance(page, StubPage):
+        if not _allowed_url(url):
+            page.goto(url)
+            return {
+                "summary": f"stub navigate {url}",
+                "run_id": run_id,
+                "url": url,
+                "title": "Stub Page",
+                "source": "stub",
+            }
+        # Whitelisted URL in stub mode: HTTP fastpath + update stub page state
+        try:
+            data = _fetch_text_http(url)
+            page.goto(url)
+            if hasattr(page, "_title"):
+                page._title = str(data.get("title") or page._title)
+            return {
+                "summary": data.get("title") or data.get("summary", ""),
+                "run_id": run_id,
+                "url": data.get("url", url),
+                "title": data.get("title", ""),
+                "source": data.get("source", "http"),
+            }
+        except Exception:
+            page.goto(url)
+            return {"summary": f"stub navigate {url}", "run_id": run_id, "url": url, "title": page.title(), "source": "stub"}
+
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+    except Exception as exc:
+        # Fallback to HTTP metadata when Playwright navigation fails
+        try:
+            data = _fetch_text_http(url)
+            return {
+                "summary": data.get("title") or data.get("summary", ""),
+                "run_id": run_id,
+                "url": data.get("url", url),
+                "title": data.get("title", ""),
+                "source": "http",
+                "playwright_error": str(exc),
+            }
+        except Exception as http_exc:
+            raise BrowserSessionError("TIMEOUT", f"navigate failed: {exc}; http: {http_exc}") from exc
+
+    meta = _page_meta(page)
+    return {
+        "summary": meta["title"] or meta["url"],
+        "run_id": run_id,
+        "url": meta["url"],
+        "title": meta["title"],
+        "source": "playwright",
+    }
+
+
+def _snapshot(req: ToolInvokeRequest) -> dict[str, Any]:
+    run_id = _run_id(req)
+    session = _session_manager.get_session(run_id)
+    page = session.active_page()
+    meta = _page_meta(page)
+
+    if session.stub or isinstance(page, StubPage):
+        elements = list(getattr(page, "elements", []) or [])
+        if not elements:
+            elements = [
+                {"ref": "e1", "role": "heading", "name": page.title(), "selector": "h1", "visible": True},
+            ]
+        session.refs = {str(item["ref"]): str(item["selector"]) for item in elements if item.get("ref") and item.get("selector")}
         return {
-            "summary": "screenshot saved",
-            "path": str(out),
-            "bytes": len(png),
-            "base64": base64.b64encode(png).decode("ascii")[:200] + "...",
+            "summary": f"snapshot {len(elements)} elements",
+            "run_id": run_id,
+            **meta,
+            "elements": elements,
+            "source": "stub",
         }
-    finally:
-        page.close()
+
+    try:
+        elements = page.evaluate(_SNAPSHOT_JS)
+    except Exception as exc:
+        raise BrowserSessionError("SNAPSHOT_FAILED", str(exc)) from exc
+
+    session.refs = {
+        str(item.get("ref")): str(item.get("selector"))
+        for item in elements
+        if item.get("ref") and item.get("selector")
+    }
+    return {
+        "summary": f"snapshot {len(elements)} elements",
+        "run_id": run_id,
+        **meta,
+        "elements": elements[:40],
+        "source": "playwright",
+    }
 
 
 def _click(req: ToolInvokeRequest) -> dict[str, Any]:
+    run_id = _run_id(req)
+    session = _session_manager.get_session(run_id)
+    page = session.active_page()
+    selector = _session_manager.resolve_selector(
+        session,
+        selector=str(req.payload.get("selector", "")),
+        ref=str(req.payload.get("ref", "")),
+    )
+    timeout = _timeout_ms(req, 10000)
+    # Optional url: only navigate if provided AND page is blank
     url = _resolve_browser_url(req)
-    selector = str(req.payload.get("selector", "")).strip()
-    if not url or not selector:
-        raise ValueError("url and selector required")
-    if not _allowed_url(url):
-        raise ValueError("url not allowed")
-    page = _new_page()
+    if url and (not getattr(page, "url", None) or getattr(page, "url", "") in {"", "about:blank"}):
+        if not _allowed_url(url) and not session.stub:
+            raise BrowserSessionError("URL_NOT_ALLOWED", f"url not allowed: {url}")
+        page.goto(url, wait_until="domcontentloaded", timeout=max(timeout, 30000))
+
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        page.click(selector, timeout=10000)
-        return {"summary": f"clicked {selector}", "url": page.url}
-    finally:
-        page.close()
+        if hasattr(page, "locator") and not isinstance(page, StubPage):
+            page.locator(selector).click(timeout=timeout)
+        else:
+            page.click(selector, timeout=timeout)
+    except BrowserSessionError:
+        raise
+    except Exception as exc:
+        raise BrowserSessionError("SELECTOR_NOT_FOUND", f"click failed for {selector}: {exc}") from exc
+
+    meta = _page_meta(page)
+    return {"summary": f"clicked {selector}", "run_id": run_id, "selector": selector, **meta}
+
+
+def _type(req: ToolInvokeRequest) -> dict[str, Any]:
+    run_id = _run_id(req)
+    session = _session_manager.get_session(run_id)
+    page = session.active_page()
+    selector = _session_manager.resolve_selector(
+        session,
+        selector=str(req.payload.get("selector", "")),
+        ref=str(req.payload.get("ref", "")),
+    )
+    text = str(req.payload.get("text", ""))
+    clear = bool(req.payload.get("clear", True))
+    submit = bool(req.payload.get("submit", False))
+    timeout = _timeout_ms(req, 10000)
+    is_password = "password" in selector.lower() or bool(req.payload.get("password"))
+
+    try:
+        if clear:
+            if isinstance(page, StubPage):
+                page.fill(selector, text)
+            else:
+                page.fill(selector, text, timeout=timeout)
+        else:
+            if isinstance(page, StubPage):
+                page.type(selector, text)
+            else:
+                page.type(selector, text, timeout=timeout)
+        if submit:
+            if isinstance(page, StubPage):
+                page.locator(selector).press("Enter")
+            else:
+                page.locator(selector).press("Enter")
+    except BrowserSessionError:
+        raise
+    except Exception as exc:
+        raise BrowserSessionError("SELECTOR_NOT_FOUND", f"type failed for {selector}: {exc}") from exc
+
+    meta = _page_meta(page)
+    return {
+        "summary": f"typed into {selector}",
+        "run_id": run_id,
+        "selector": selector,
+        "submitted": submit,
+        "text_redacted": is_password,
+        **meta,
+    }
+
+
+def _fill(req: ToolInvokeRequest) -> dict[str, Any]:
+    payload = dict(req.payload)
+    payload["clear"] = True
+    return _type(req.model_copy(update={"payload": payload}))
+
+
+def _wait(req: ToolInvokeRequest) -> dict[str, Any]:
+    run_id = _run_id(req)
+    session = _session_manager.get_session(run_id)
+    page = session.active_page()
+    timeout = _timeout_ms(req, 10000)
+    selector = str(req.payload.get("selector", "")).strip()
+    ref = str(req.payload.get("ref", "")).strip()
+    url_glob = str(req.payload.get("url", "")).strip()
+    sleep_ms = req.payload.get("sleep_ms")
+
+    try:
+        if selector or ref:
+            resolved = _session_manager.resolve_selector(session, selector=selector, ref=ref)
+            if isinstance(page, StubPage):
+                page.wait_for_selector(resolved)
+            else:
+                page.wait_for_selector(resolved, timeout=timeout)
+            waited = f"selector:{resolved}"
+        elif url_glob:
+            if isinstance(page, StubPage):
+                page.wait_for_url(url_glob)
+            else:
+                page.wait_for_url(url_glob, timeout=timeout)
+            waited = f"url:{url_glob}"
+        elif sleep_ms is not None:
+            time.sleep(max(0, min(30.0, float(sleep_ms) / 1000.0)))
+            waited = f"sleep:{sleep_ms}ms"
+        else:
+            time.sleep(min(timeout / 1000.0, 1.0))
+            waited = "timeout"
+    except BrowserSessionError:
+        raise
+    except Exception as exc:
+        raise BrowserSessionError("TIMEOUT", str(exc)) from exc
+
+    meta = _page_meta(page)
+    return {"summary": f"waited {waited}", "run_id": run_id, "waited": waited, **meta}
+
+
+def _tabs(req: ToolInvokeRequest) -> dict[str, Any]:
+    run_id = _run_id(req)
+    action = str(req.payload.get("action", "list")).strip().lower()
+    if action == "new":
+        url = _resolve_browser_url(req) or None
+        if url and not _allowed_url(url) and not settings.use_stubs:
+            raise BrowserSessionError("URL_NOT_ALLOWED", f"url not allowed: {url}")
+        info = _session_manager.new_tab(run_id, url=url)
+        return {"summary": "tab created", "run_id": run_id, "action": "new", **info}
+    if action == "switch":
+        page_id = str(req.payload.get("page_id", "")).strip()
+        if not page_id:
+            raise ValueError("page_id required for switch")
+        info = _session_manager.switch_tab(run_id, page_id)
+        return {"summary": f"switched to {page_id}", "run_id": run_id, "action": "switch", **info}
+    tabs = _session_manager.list_tabs(run_id)
+    return {"summary": f"{len(tabs)} tabs", "run_id": run_id, "action": "list", "tabs": tabs}
+
+
+def _screenshot(req: ToolInvokeRequest) -> dict[str, Any]:
+    run_id = _ensure_run_id(req)
+    session = _session_manager.require_session(run_id, auto_open=True, prefer_stub=bool(settings.use_stubs))
+    page = session.active_page()
+    url = _resolve_browser_url(req)
+    if url:
+        if not _allowed_url(url) and not session.stub:
+            raise BrowserSessionError("URL_NOT_ALLOWED", f"url not allowed: {url}")
+        current = getattr(page, "url", "") or ""
+        if current in {"", "about:blank"} or current != url:
+            page.goto(url, wait_until="domcontentloaded", timeout=_timeout_ms(req, 30000))
+
+    png = page.screenshot(full_page=bool(req.payload.get("full_page", False)))
+    out = _screenshot_dir(run_id) / "shot.png"
+    out.write_bytes(png)
+    b64 = base64.b64encode(png).decode("ascii")
+    return {
+        "summary": "screenshot saved",
+        "run_id": run_id,
+        "path": str(out),
+        "bytes": len(png),
+        "base64": b64[:200] + ("..." if len(b64) > 200 else ""),
+        **_page_meta(page),
+    }
+
+
+def _extract_from_active_page(session_run_id: str, selector: str) -> dict[str, Any]:
+    session = _session_manager.get_session(session_run_id)
+    page = session.active_page()
+    meta = _page_meta(page)
+    if session.stub or isinstance(page, StubPage):
+        if selector and selector != "body":
+            text = page.locator(selector).inner_text()
+        else:
+            text = _extract_readable_text(page.content(), meta["url"] or "stub")
+        return {
+            "summary": f"stub text len={len(text)}",
+            "run_id": session_run_id,
+            **meta,
+            "text": text[:12000],
+            "source": "stub",
+        }
+
+    if selector and selector != "body":
+        try:
+            text = page.locator(selector).inner_text(timeout=10000)[:12000]
+        except Exception as exc:
+            raise BrowserSessionError("SELECTOR_NOT_FOUND", str(exc)) from exc
+    else:
+        html = page.content()
+        blocked = _detect_blocked_html(html, meta["url"], 200)
+        if blocked:
+            return {**_blocked_result(meta["url"], blocked), "run_id": session_run_id}
+        text = _extract_readable_text(html, meta["url"])[:12000]
+    return {
+        "summary": f"playwright text len={len(text)}",
+        "run_id": session_run_id,
+        **meta,
+        "text": text,
+        "source": "playwright",
+    }
 
 
 def _extract_text(req: ToolInvokeRequest) -> dict[str, Any]:
@@ -462,16 +760,46 @@ def _extract_text(req: ToolInvokeRequest) -> dict[str, Any]:
     selector = str(req.payload.get("selector", "body")).strip() or "body"
     max_results = max(1, min(10, int(req.payload.get("max_results", 5))))
     fetch_first = bool(req.payload.get("fetch_first", True))
+    use_session = bool(req.payload.get("use_session", True))
 
     if query and not url:
         return _fetch_in_background(_search_and_extract, query, max_results, fetch_first)
 
-    if not url:
-        raise ValueError("url or query required")
-    if not _allowed_url(url):
-        raise ValueError(f"url not allowed: {url}")
+    # Prefer active session page when run_id present and no explicit url override needed
+    if use_session and req.run_id:
+        run_id = str(req.run_id)
+        try:
+            session = _session_manager.get_session(run_id)
+            page_url = getattr(session.active_page(), "url", "") or ""
+            if page_url and page_url not in {"about:blank"} and (not url or url == page_url):
+                return _extract_from_active_page(run_id, selector)
+        except BrowserSessionError:
+            pass
 
-    data = _fetch_page_text(url, selector)
+    if not url:
+        # Try session without url
+        if req.run_id:
+            return _extract_from_active_page(str(req.run_id), selector)
+        raise ValueError("url or query required")
+
+    if not _allowed_url(url):
+        raise BrowserSessionError("URL_NOT_ALLOWED", f"url not allowed: {url}")
+
+    # Session navigate then extract when possible
+    if use_session:
+        run_id = _ensure_run_id(req)
+        nav_req = req.model_copy(update={"run_id": UUID(run_id) if _is_uuid(run_id) else req.run_id, "payload": {**req.payload, "url": url}})
+        # Ensure session exists via navigate helper
+        try:
+            _navigate(nav_req if nav_req.run_id else req.model_copy(update={"payload": {**req.payload, "url": url, "run_id": run_id}}))
+            return _extract_from_active_page(run_id, selector)
+        except Exception:
+            pass
+
+    data = _fetch_in_background(_fetch_text_http, url)
+    if selector != "body" and data.get("source") == "http":
+        # HTTP path cannot honor arbitrary selectors beyond readable extract
+        pass
     return {
         "summary": data.get("summary") or f"text len={len(data.get('text', ''))}",
         "url": data.get("url", url),
@@ -481,40 +809,117 @@ def _extract_text(req: ToolInvokeRequest) -> dict[str, Any]:
     }
 
 
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _wrap(handler):
+    def _inner(req: ToolInvokeRequest) -> dict[str, Any]:
+        try:
+            return handler(req)
+        except BrowserSessionError as exc:
+            raise ValueError(f"{exc.code}: {exc.message}") from exc
+
+    return _inner
+
+
+# --- stubs (session-aware, no Chromium required) ---
+
+def _stub_open_session(req: ToolInvokeRequest) -> dict[str, Any]:
+    return _open_session(req)
+
+
+def _stub_close_session(req: ToolInvokeRequest) -> dict[str, Any]:
+    try:
+        return _close_session(req)
+    except BrowserSessionError as exc:
+        return {"summary": exc.message, "closed": False, "run_id": str(req.run_id or "")}
+
+
 def _stub_navigate(req: ToolInvokeRequest) -> dict[str, Any]:
     url = _resolve_browser_url(req)
     if url and _allowed_url(url):
         return _navigate(req)
-    return {"summary": f"stub navigate {url or 'empty'}", "url": url, "title": "Stub Page"}
+    run_id = _ensure_run_id(req)
+    _session_manager.open_session(run_id, prefer_stub=True)
+    session = _session_manager.get_session(run_id)
+    page = session.active_page()
+    if url:
+        page.goto(url)
+    return {"summary": f"stub navigate {url or 'empty'}", "run_id": run_id, "url": url, "title": "Stub Page", "source": "stub"}
 
 
 def _stub_screenshot(req: ToolInvokeRequest) -> dict[str, Any]:
     url = _resolve_browser_url(req)
     if url and _allowed_url(url):
-        return _screenshot(req)
-    return {"summary": "stub screenshot", "path": "stub.png", "bytes": 0}
+        try:
+            return _screenshot(req)
+        except Exception:
+            pass
+    run_id = _ensure_run_id(req)
+    _session_manager.open_session(run_id, prefer_stub=True)
+    return {"summary": "stub screenshot", "run_id": run_id, "path": "stub.png", "bytes": 0}
 
 
 def _stub_click(req: ToolInvokeRequest) -> dict[str, Any]:
-    return {"summary": "stub click", "selector": req.payload.get("selector", "")}
+    # Require an existing session (same as real handler) so close_session stays meaningful.
+    return _click(req)
 
 
 def _stub_extract_text(req: ToolInvokeRequest) -> dict[str, Any]:
     return _extract_text(req)
 
 
+def _stub_snapshot(req: ToolInvokeRequest) -> dict[str, Any]:
+    return _snapshot(req)
+
+
+def _stub_type(req: ToolInvokeRequest) -> dict[str, Any]:
+    return _type(req)
+
+
+def _stub_fill(req: ToolInvokeRequest) -> dict[str, Any]:
+    return _fill(req)
+
+
+def _stub_wait(req: ToolInvokeRequest) -> dict[str, Any]:
+    return _wait(req)
+
+
+def _stub_tabs(req: ToolInvokeRequest) -> dict[str, Any]:
+    return _tabs(req)
+
+
 REAL_HANDLERS = {
-    "browser.navigate": _navigate,
-    "browser.screenshot": _screenshot,
-    "browser.click": _click,
-    "browser.extract_text": _extract_text,
+    "browser.open_session": _wrap(_open_session),
+    "browser.close_session": _wrap(_close_session),
+    "browser.navigate": _wrap(_navigate),
+    "browser.snapshot": _wrap(_snapshot),
+    "browser.click": _wrap(_click),
+    "browser.type": _wrap(_type),
+    "browser.fill": _wrap(_fill),
+    "browser.wait": _wrap(_wait),
+    "browser.tabs": _wrap(_tabs),
+    "browser.screenshot": _wrap(_screenshot),
+    "browser.extract_text": _wrap(_extract_text),
 }
 
 STUB_HANDLERS = {
-    "browser.navigate": _stub_navigate,
-    "browser.screenshot": _stub_screenshot,
-    "browser.click": _stub_click,
-    "browser.extract_text": _stub_extract_text,
+    "browser.open_session": _wrap(_stub_open_session),
+    "browser.close_session": _wrap(_stub_close_session),
+    "browser.navigate": _wrap(_stub_navigate),
+    "browser.snapshot": _wrap(_stub_snapshot),
+    "browser.click": _wrap(_stub_click),
+    "browser.type": _wrap(_stub_type),
+    "browser.fill": _wrap(_stub_fill),
+    "browser.wait": _wrap(_stub_wait),
+    "browser.tabs": _wrap(_stub_tabs),
+    "browser.screenshot": _wrap(_stub_screenshot),
+    "browser.extract_text": _wrap(_stub_extract_text),
 }
 
 app = create_tool_app(settings, REAL_HANDLERS, stub_handlers=STUB_HANDLERS)
