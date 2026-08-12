@@ -1,0 +1,38 @@
+{
+  "id": "c9fb0daf-3966-4586-92e5-d88ecb4ed084",
+  "name": "Без названия",
+  "phase": "done",
+  "document_text": "===== NOTES =====\nСотруднику тендерного офиса необходимо анализировать тендерные площадки и выгружать информацию по активным тендерам в excel\n===== END NOTES =====",
+  "document_name": "notes",
+  "notes": "Сотруднику тендерного офиса необходимо анализировать тендерные площадки и выгружать информацию по активным тендерам в excel",
+  "attachments": [],
+  "plan": {
+    "title": "План (неструктурированный)",
+    "goal": "",
+    "constraints": [],
+    "out_of_scope": [],
+    "steps": [],
+    "test_criteria": [],
+    "open_questions": [
+      {
+        "id": "q_parse",
+        "question": "Агент не вернул JSON-план. Уточните цель одной фразой или приложите требования ещё раз.",
+        "why": "Нужна структура для последующего выполнения",
+        "answer": "Сотруднику тендерного офиса необходимо анализировать тендерные площадки и выгружать информацию по активным тендерам в excel"
+      }
+    ],
+    "raw_text": ""
+  },
+  "plan_agent_id": "bc-6cc487ff-d4a1-4372-8982-a58d17fcb092",
+  "plan_run_id": "run-8cb813cc-fa56-4c35-8e1c-d036437cbb06",
+  "exec_agent_id": "bc-c044d56d-7209-44f5-96db-b5d3dd408a27",
+  "exec_run_id": "run-9dcfd165-4877-42ed-ba12-628dce352aa4",
+  "repo_url": "",
+  "starting_ref": "",
+  "auto_create_pr": false,
+  "last_result": "## Что сделано\n\nРеализован CLI-инструмент **tender_export** для анализа тендерных площадок и выгрузки активных закупок в Excel (по требованию из open_questions).\n\n### Артефакты\n\n| Путь | Назначение |\n|------|------------|\n| `tender_export/models.py` | Модель `Tender`, параметры поиска |\n| `tender_export/platforms/demo.py` | Demo-площадка с локальными данными |\n| `tender_export/platforms/zakupki_eis.py` | Парсер HTML ЕИС `zakupki.gov.ru` |\n| `tender_export/excel.py` | Экспорт в `.xlsx` (фильтры, гиперссылки, сводка) |\n| `tender_export/cli.py` | CLI: `export`, `parse-fixture` |\n| `tender_export/fixtures/zakupki_results_sample.html` | HTML-фикстура для тестов |\n| `tests/test_tender_export.py` | Unit-тесты |\n| `output/tenders.xlsx` | Demo-выгрузка (4 записи) |\n| `output/fixture_tenders.xlsx` | Результат парсера (2 записи) |\n| `output/servers.xlsx` | Фильтр по ключевому слову (1 запись) |\n\n### Команды и проверки\n\n```bash\ncd /agent\npip install -r requirements.txt\n\n# Unit-тесты\npython -m unittest discover -s tests -v\n\n# Demo-выгрузка\npython -m tender_export export --platform demo -o output/tenders.xlsx\n\n# Парсер на HTML-фикстуре\npython -m tender_export parse-fixture -o output/fixture_tenders.xlsx\n\n# Фильтрация\npython -m tender_export export --platform demo -k \"сервер\" -o output/servers.xlsx\n```\n\n### Результаты по test_criteria\n\n(Критерии выведены из цели: «анализировать площадки и выгружать активные тендеры в Excel»)\n\n| Критерий | Результат |\n|----------|-----------|\n| Поиск/фильтрация активных тендеров | ✅ demo + фильтры по ключам, цене, закону |\n| Парсинг ЕИС | ✅ парсер + фикстура (2 записи) |\n| Экспорт в Excel | ✅ 3 файла, 12 колонок, лист «Сводка» |\n| Автотесты | ✅ 4/4 passed |\n| Live ЕИС из облака | ❌ `Connection reset by peer` (блокировка IP) |\n\n### Что осталось\n\n1. **Live-выгрузка с ЕИС** — запускать `--platform zakupki` с рабочей станции в корпоративной сети (не из облака).\n2. **223-ФЗ в demo** — добавить флаг `--law-223`, если нужны оба типа закона одновременно.\n3. **API-провайдеры** (DaMIA, ГосПлан, navodki) — не входили в scope; при необходимости можно добавить отдельным адаптером.",
+  "branch": "",
+  "pr_url": "",
+  "created_at": "2026-08-12T13:04:03.285670+00:00",
+  "updated_at": "2026-08-12T13:09:42.596767+00:00"
+}
