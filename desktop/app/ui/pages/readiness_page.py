@@ -228,6 +228,14 @@ class ReadinessPage(QWidget):
 
         if question is None:
             layout.addWidget(self._assistant_bubble("Все вопросы уточнены. Можно перейти к согласованию изменений."))
+            finalize = QPushButton("Сформировать новый регламент")
+            finalize.setCursor(Qt.CursorShape.PointingHandCursor)
+            finalize.setEnabled(self._can_finalize())
+            if not self._can_finalize():
+                finalize.setToolTip("Нет подготовленных изменений для формирования новой версии")
+            finalize.setStyleSheet(_primary_button_qss())
+            finalize.clicked.connect(self.finalize_requested.emit)
+            layout.addWidget(finalize)
             return card
 
         if not self._chat_matches(question):
@@ -591,6 +599,11 @@ class ReadinessPage(QWidget):
         finalize.clicked.connect(self.finalize_requested.emit)
         actions.addWidget(finalize)
         return wrap
+
+    def _can_finalize(self) -> bool:
+        if self._result is None:
+            return False
+        return bool(self._result.changes) and all(question.answered for question in self._result.questions)
 
     def _progress_panel(self, questions: list[ReadinessQuestion], current: ReadinessQuestion | None) -> QWidget:
         card = _soft_card()

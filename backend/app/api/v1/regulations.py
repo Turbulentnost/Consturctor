@@ -283,7 +283,43 @@ async def download_revision(
     )
     if revision is None:
         raise HTTPException(status_code=404, detail="Версия регламента не найдена")
-    path = Path(revision.protocol_path if kind == "protocol" else revision.document_path)
+    if kind == "protocol":
+        path = Path(revision.protocol_path)
+    elif kind == "pdf":
+        path = Path((revision.result_json or {}).get("pdfPath") or "")
+    else:
+        path = Path(revision.document_path)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Файл версии не найден")
     return FileResponse(str(path), filename=path.name)
+
+
+@router.get("/{regulation_id}/revisions/{revision_id}/preview/{kind}/{page}")
+async def revision_preview_page(
+    regulation_id: str,
+    revision_id: str,
+    kind: str,
+    page: int,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    revision = (
+        db.query(RegulationRevision)
+        .filter(
+            RegulationRevision.id == revision_id,
+            RegulationRevision.regulation_id == regulation_id,
+            RegulationRevision.user_id == auth.user_id,
+        )
+        .first()
+    )
+    if revision is None:
+        raise HTTPException(status_code=404, detail="Версия регламента не найдена")
+    key = "_sourcePreviewPaths" if kind == "source" else "_revisedPreviewPaths" if kind == "revised" else ""
+    if not key:
+        raise HTTPException(status_code=404, detail="Preview не найден")
+    items = (revision.result_json or {}).get(key) or []
+    item = next((entry for entry in items if int(entry.get("page") or 0) == page), None)
+    path = Path(str((item or {}).get("path") or ""))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Страница preview не найдена")
+    return FileResponse(str(path), media_type="image/png", filename=path.name)

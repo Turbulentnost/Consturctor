@@ -216,16 +216,26 @@ class RevisionDiffBlock:
 
 
 @dataclass(frozen=True, slots=True)
+class RevisionPreviewPage:
+    page: int
+    image_url: str
+
+
+@dataclass(frozen=True, slots=True)
 class RegulationRevisionResult:
     revision_id: str
     regulation_id: str
     readiness_run_id: str
     document_path: str
     protocol_path: str
+    pdf_path: str
     source_preview_html: str
     revised_preview_html: str
+    source_preview_pages: list[RevisionPreviewPage]
+    revised_preview_pages: list[RevisionPreviewPage]
     diff_blocks: list[RevisionDiffBlock]
     download_url: str
+    pdf_download_url: str
     protocol_url: str
     message: str
 
@@ -493,8 +503,25 @@ class ApiClient:
             readiness_run_id=str(data.get("readinessRunId") or ""),
             document_path=str(data.get("documentPath") or ""),
             protocol_path=str(data.get("protocolPath") or ""),
+            pdf_path=str(data.get("pdfPath") or ""),
             source_preview_html=str(data.get("sourcePreviewHtml") or ""),
             revised_preview_html=str(data.get("revisedPreviewHtml") or ""),
+            source_preview_pages=[
+                RevisionPreviewPage(
+                    page=int(item.get("page") or 0),
+                    image_url=str(item.get("imageUrl") or ""),
+                )
+                for item in data.get("sourcePreviewPages") or []
+                if isinstance(item, dict)
+            ],
+            revised_preview_pages=[
+                RevisionPreviewPage(
+                    page=int(item.get("page") or 0),
+                    image_url=str(item.get("imageUrl") or ""),
+                )
+                for item in data.get("revisedPreviewPages") or []
+                if isinstance(item, dict)
+            ],
             diff_blocks=[
                 RevisionDiffBlock(
                     block_id=str(item.get("blockId") or ""),
@@ -507,6 +534,7 @@ class ApiClient:
                 if isinstance(item, dict)
             ],
             download_url=str(data.get("downloadUrl") or ""),
+            pdf_download_url=str(data.get("pdfDownloadUrl") or ""),
             protocol_url=str(data.get("protocolUrl") or ""),
             message=str(data.get("message") or ""),
         )

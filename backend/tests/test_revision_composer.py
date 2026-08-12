@@ -67,7 +67,7 @@ def test_revision_composer_uses_claudehub_revised_blocks(monkeypatch, tmp_path) 
         ),
     )
 
-    document_path, protocol_path, message, source_html, revised_html, diff_blocks = (
+    document_path, protocol_path, _pdf_path, message, source_html, revised_html, diff_blocks, _source_pages, _revised_pages = (
         revision_composer.create_llm_revision_files(
             source_path=source,
             output_dir=tmp_path / "revision",
@@ -122,7 +122,7 @@ def test_revision_composer_merges_pending_changes_for_same_block(monkeypatch, tm
 
     monkeypatch.setattr(revision_composer, "_post_json", lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")))
 
-    _document_path, _protocol_path, _message, _source_html, _revised_html, diff_blocks = (
+    _document_path, _protocol_path, _pdf_path, _message, _source_html, _revised_html, diff_blocks, _source_pages, _revised_pages = (
         revision_composer.create_llm_revision_files(
             source_path=source,
             output_dir=tmp_path / "revision",
@@ -134,3 +134,117 @@ def test_revision_composer_merges_pending_changes_for_same_block(monkeypatch, tm
     assert len(diff_blocks) == 1
     assert "Выполнение начинается" in diff_blocks[0].after
     assert "Контроль выполнения" in diff_blocks[0].after
+
+
+def test_revision_composer_creates_pdf_preview_and_preserves_unchanged_page(monkeypatch, tmp_path) -> None:
+    pytest.importorskip("docx")
+    fitz = pytest.importorskip("fitz")
+
+    source = tmp_path / "source.pdf"
+    _write_sample_pdf(fitz, source, ["Original changed text", "Unchanged second page"])
+    result = RegulationParseResult(
+        regulationId="reg-revision",
+        fileName="source.pdf",
+        pageCount=2,
+        recognitionQuality=1,
+        fragments=[
+            RegulationFragment(
+                fragmentId="B-001",
+                page=1,
+                section="1",
+                text="Original changed text",
+                bbox=[48, 45, 260, 70],
+                fontSize=11,
+            ),
+            RegulationFragment(fragmentId="B-002", page=2, section="2", text="Unchanged second page"),
+        ],
+    )
+    readiness = AgentReadinessResult(
+        readinessRunId="ready-run",
+        regulationId="reg-revision",
+        roleMatchRunId="role-run",
+        changes=[
+            RegulationChangeDraft(
+                changeId="CH-001",
+                targetBlockId="B-001",
+                before="Original changed text",
+                after="Revised changed text",
+                status="pending",
+            )
+        ],
+    )
+    monkeypatch.setattr(revision_composer, "_post_json", lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")))
+
+    _docx, _protocol, pdf_path, _message, _source_html, _revised_html, _diff, source_pages, revised_pages = (
+        revision_composer.create_llm_revision_files(
+            source_path=source,
+            output_dir=tmp_path / "revision",
+            result=result,
+            readiness=readiness,
+        )
+    )
+
+    assert pdf_path is not None and pdf_path.is_file()
+    assert len(source_pages) == 2
+    assert len(revised_pages) == 2
+    assert all((item["path"] and item["page"]) for item in revised_pages)
+    with fitz.open(str(pdf_path)) as doc:
+        assert doc.page_count == 2
+        assert "Unchanged second page" in doc[1].get_text()
+
+
+def test_revision_composer_scan_fallback_replaces_only_changed_page(monkeypatch, tmp_path) -> None:
+    pytest.importorskip("docx")
+    fitz = pytest.importorskip("fitz")
+
+    source = tmp_path / "scan.pdf"
+    _write_sample_pdf(fitz, source, ["Scan page text", "Original page kept"])
+    result = RegulationParseResult(
+        regulationId="reg-scan",
+        fileName="scan.pdf",
+        pageCount=2,
+        recognitionQuality=0.5,
+        isScan=True,
+        fragments=[
+            RegulationFragment(fragmentId="B-001", page=1, section="1", text="Scan page text"),
+            RegulationFragment(fragmentId="B-002", page=2, section="2", text="Original page kept"),
+        ],
+    )
+    readiness = AgentReadinessResult(
+        readinessRunId="ready-run",
+        regulationId="reg-scan",
+        roleMatchRunId="role-run",
+        changes=[
+            RegulationChangeDraft(
+                changeId="CH-001",
+                targetBlockId="B-001",
+                before="Scan page text",
+                after="Scan page revised text",
+                status="pending",
+            )
+        ],
+    )
+    monkeypatch.setattr(revision_composer, "_post_json", lambda _payload, timeout: (_ for _ in ()).throw(RuntimeError("offline")))
+
+    _docx, _protocol, pdf_path, _message, _source_html, _revised_html, _diff, _source_pages, _revised_pages = (
+        revision_composer.create_llm_revision_files(
+            source_path=source,
+            output_dir=tmp_path / "revision",
+            result=result,
+            readiness=readiness,
+        )
+    )
+
+    assert pdf_path is not None and pdf_path.is_file()
+    with fitz.open(str(pdf_path)) as doc:
+        assert doc.page_count == 2
+        assert "Original page kept" in doc[1].get_text()
+
+
+def _write_sample_pdf(fitz, path, page_texts: list[str]) -> None:
+    doc = fitz.open()
+    for text in page_texts:
+        page = doc.new_page(width=360, height=240)
+        page.insert_text((50, 60), text, fontsize=11)
+    doc.save(str(path))
+    doc.close()

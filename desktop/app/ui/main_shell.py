@@ -165,7 +165,7 @@ class MainShell(QWidget):
         self._page_review = RegulationReviewPage()
         self._page_role_match = RoleMatchPage()
         self._page_readiness = ReadinessPage()
-        self._page_revision = RevisionResultPage()
+        self._page_revision = RevisionResultPage(self._api)
         self._page_loading = LoadingPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
@@ -717,8 +717,17 @@ class MainShell(QWidget):
     def _on_revision_download(self, kind: str) -> None:
         if self._current_revision is None:
             return
-        url = self._current_revision.download_url if kind == "document" else self._current_revision.protocol_url
-        default_name = "ai-ready-regulation.docx" if kind == "document" else "change_protocol.txt"
+        if kind == "protocol":
+            url = self._current_revision.protocol_url
+            default_name = "change_protocol.txt"
+        elif kind == "pdf":
+            url = self._current_revision.pdf_download_url
+            default_name = "ai-ready-regulation.pdf"
+        else:
+            url = self._current_revision.download_url
+            default_name = "ai-ready-regulation.docx"
+        if not url:
+            return
         target, _filter = QFileDialog.getSaveFileName(self, "Сохранить файл", default_name)
         if not target:
             return

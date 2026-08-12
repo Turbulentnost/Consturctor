@@ -171,7 +171,17 @@ def finalize_readiness_run(
     readiness = AgentReadinessResult.model_validate(run.result_json)
     revision_id = f"rev-{uuid4().hex[:12]}"
     output_dir = Path(doc.storage_path).parent / "revisions" / revision_id
-    document_path, protocol_path, message, source_html, revised_html, diff_blocks = create_llm_revision_files(
+    (
+        document_path,
+        protocol_path,
+        pdf_path,
+        message,
+        source_html,
+        revised_html,
+        diff_blocks,
+        source_preview_pages,
+        revised_preview_pages,
+    ) = create_llm_revision_files(
         source_path=Path(doc.storage_path),
         output_dir=output_dir,
         result=RegulationParseResult.model_validate(doc.result_json),
@@ -185,10 +195,30 @@ def finalize_readiness_run(
         readinessRunId=readiness_run_id,
         documentPath=str(document_path),
         protocolPath=str(protocol_path),
+        pdfPath=str(pdf_path) if pdf_path is not None else "",
         sourcePreviewHtml=source_html,
         revisedPreviewHtml=revised_html,
+        sourcePreviewPages=[
+            {
+                "page": item["page"],
+                "imageUrl": f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/preview/source/{item['page']}",
+            }
+            for item in source_preview_pages
+        ],
+        revisedPreviewPages=[
+            {
+                "page": item["page"],
+                "imageUrl": f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/preview/revised/{item['page']}",
+            }
+            for item in revised_preview_pages
+        ],
         diffBlocks=diff_blocks,
         downloadUrl=f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/download?kind=document",
+        pdfDownloadUrl=(
+            f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/download?kind=pdf"
+            if pdf_path is not None
+            else ""
+        ),
         protocolUrl=f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/download?kind=protocol",
         message=message,
     )
@@ -205,6 +235,7 @@ def finalize_readiness_run(
             "revisionId": revision_id,
             "documentPath": str(document_path),
             "protocolPath": str(protocol_path),
+            "pdfPath": str(pdf_path) if pdf_path is not None else "",
         }
         db.add(draft)
     db.merge(
@@ -215,7 +246,11 @@ def finalize_readiness_run(
             user_id=user_id,
             document_path=str(document_path),
             protocol_path=str(protocol_path),
-            result_json=revision.model_dump(mode="json"),
+            result_json={
+                **revision.model_dump(mode="json"),
+                "_sourcePreviewPaths": source_preview_pages,
+                "_revisedPreviewPaths": revised_preview_pages,
+            },
         )
     )
     db.commit()

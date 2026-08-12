@@ -16,7 +16,17 @@ def create_llm_revision_files(
     output_dir: Path,
     result: RegulationParseResult,
     readiness: AgentReadinessResult,
-) -> tuple[Path, Path, str, str, str, list[RevisionDiffBlock]]:
+) -> tuple[
+    Path,
+    Path,
+    Path | None,
+    str,
+    str,
+    str,
+    list[RevisionDiffBlock],
+    list[dict],
+    list[dict],
+]:
     output_dir.mkdir(parents=True, exist_ok=True)
     applicable = [
         change
@@ -36,8 +46,25 @@ def create_llm_revision_files(
     )
     diff_blocks = _diff_blocks(result, revised_blocks, applicable)
     _write_docx(document_path, result, revised_blocks, changed_ids={item.blockId for item in diff_blocks})
+    pdf_path, source_preview_pages, revised_preview_pages = _write_pdf_revision_assets(
+        source_path=source_path,
+        output_dir=output_dir,
+        result=result,
+        revised_blocks=revised_blocks,
+        diff_blocks=diff_blocks,
+    )
     protocol_path.write_text(_protocol(readiness, diff_blocks, message), encoding="utf-8")
-    return document_path, protocol_path, message, source_html, revised_html, diff_blocks
+    return (
+        document_path,
+        protocol_path,
+        pdf_path,
+        message,
+        source_html,
+        revised_html,
+        diff_blocks,
+        source_preview_pages,
+        revised_preview_pages,
+    )
 
 
 def _compose_revised_blocks(result: RegulationParseResult, readiness: AgentReadinessResult, changes: list) -> tuple[dict[str, str], str]:
@@ -148,6 +175,143 @@ def _write_docx(document_path: Path, result: RegulationParseResult, revised_bloc
         if fragment.fragmentId in changed_ids:
             run.font.highlight_color = WD_COLOR_INDEX.TURQUOISE
     doc.save(str(document_path))
+
+
+def _write_pdf_revision_assets(
+    *,
+    source_path: Path,
+    output_dir: Path,
+    result: RegulationParseResult,
+    revised_blocks: dict[str, str],
+    diff_blocks: list[RevisionDiffBlock],
+) -> tuple[Path | None, list[dict], list[dict]]:
+    if source_path.suffix.casefold() != ".pdf" or not source_path.exists():
+        return None, [], []
+    try:
+        import fitz
+    except ImportError:
+        return None, [], []
+
+    changed_ids = {item.blockId for item in diff_blocks}
+    fragments_by_id = {fragment.fragmentId: fragment for fragment in result.fragments}
+    changed_fragments = [
+        fragment for block_id in changed_ids if (fragment := fragments_by_id.get(block_id)) is not None
+    ]
+    pdf_path = output_dir / f"{source_path.stem}.ai-ready.pdf"
+    try:
+        with fitz.open(str(source_path)) as source:
+            out = fitz.open()
+            replace_pages = _pages_requiring_text_replacement(source, changed_fragments, result.isScan)
+            for index in range(source.page_count):
+                page_no = index + 1
+                if page_no in replace_pages:
+                    page = source[index]
+                    new_page = out.new_page(width=page.rect.width, height=page.rect.height)
+                    _write_text_page(new_page, _page_text(result, revised_blocks, page_no))
+                else:
+                    out.insert_pdf(source, from_page=index, to_page=index)
+            for fragment in changed_fragments:
+                if fragment.page in replace_pages:
+                    continue
+                _replace_fragment_text(out, fragment, revised_blocks.get(fragment.fragmentId, fragment.text))
+            out.save(str(pdf_path), garbage=4, deflate=True)
+            out.close()
+    except Exception:
+        return None, [], []
+
+    source_pages = _render_pdf_preview_pages(source_path, output_dir / "preview" / "source")
+    revised_pages = _render_pdf_preview_pages(pdf_path, output_dir / "preview" / "revised")
+    return pdf_path, source_pages, revised_pages
+
+
+def _pages_requiring_text_replacement(source, fragments, is_scan: bool) -> set[int]:
+    pages: set[int] = set()
+    for fragment in fragments:
+        if is_scan:
+            pages.add(fragment.page)
+            continue
+        if fragment.page < 1 or fragment.page > source.page_count:
+            pages.add(fragment.page)
+            continue
+        page = source[fragment.page - 1]
+        if not _usable_bbox(fragment.bbox, page.rect):
+            pages.add(fragment.page)
+    return pages
+
+
+def _usable_bbox(bbox: list[float] | None, page_rect) -> bool:
+    if not bbox or len(bbox) < 4:
+        return False
+    x0, y0, x1, y1 = [float(value) for value in bbox[:4]]
+    if x1 <= x0 or y1 <= y0:
+        return False
+    if (x1 - x0) > page_rect.width * 0.85 and (y1 - y0) > page_rect.height * 0.85:
+        return False
+    return True
+
+
+def _replace_fragment_text(doc, fragment, text: str) -> None:
+    if fragment.page < 1 or fragment.page > doc.page_count or not _usable_bbox(fragment.bbox, doc[fragment.page - 1].rect):
+        return
+    import fitz
+
+    page = doc[fragment.page - 1]
+    rect = fitz.Rect(*[float(value) for value in fragment.bbox[:4]])
+    page.add_redact_annot(rect, fill=(1, 1, 1))
+    page.apply_redactions()
+    fontsize = max(7.0, min(float(fragment.fontSize or 10.0), 12.0))
+    page.insert_textbox(rect, text, fontsize=fontsize, color=(0, 0, 0), align=0, **_pdf_font_kwargs())
+
+
+def _write_text_page(page, text: str) -> None:
+    import fitz
+
+    margin = 42
+    rect = fitz.Rect(margin, margin, page.rect.width - margin, page.rect.height - margin)
+    page.insert_textbox(
+        rect,
+        text or "Текст страницы недоступен.",
+        fontsize=10,
+        color=(0, 0, 0),
+        align=0,
+        **_pdf_font_kwargs(),
+    )
+
+
+def _pdf_font_kwargs() -> dict[str, str]:
+    for font_path in (
+        Path("C:/Windows/Fonts/arial.ttf"),
+        Path("C:/Windows/Fonts/calibri.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    ):
+        if font_path.is_file():
+            return {"fontname": "revision-font", "fontfile": str(font_path)}
+    return {"fontname": "helv"}
+
+
+def _page_text(result: RegulationParseResult, revised_blocks: dict[str, str], page_no: int) -> str:
+    lines = [
+        revised_blocks.get(fragment.fragmentId, fragment.text)
+        for fragment in result.fragments
+        if fragment.page == page_no and (fragment.text or "").strip()
+    ]
+    return "\n\n".join(lines)
+
+
+def _render_pdf_preview_pages(path: Path, target_dir: Path) -> list[dict]:
+    try:
+        import fitz
+    except ImportError:
+        return []
+    target_dir.mkdir(parents=True, exist_ok=True)
+    pages: list[dict] = []
+    with fitz.open(str(path)) as doc:
+        for index, page in enumerate(doc, start=1):
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.4, 1.4), alpha=False)
+            image_path = target_dir / f"page-{index:03d}.png"
+            pix.save(str(image_path))
+            pages.append({"page": index, "path": str(image_path)})
+    return pages
 
 
 def _preview_html(fragments, *, changed_ids: set[str]) -> str:

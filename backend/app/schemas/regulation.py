@@ -437,16 +437,25 @@ class RevisionDiffBlock(BaseModel):
     status: Literal["changed", "unchanged", "added"] = "changed"
 
 
+class RevisionPreviewPage(BaseModel):
+    page: int = 1
+    imageUrl: str = ""
+
+
 class RegulationRevisionResult(BaseModel):
     revisionId: str
     regulationId: str
     readinessRunId: str
     documentPath: str = ""
     protocolPath: str = ""
+    pdfPath: str = ""
     sourcePreviewHtml: str = ""
     revisedPreviewHtml: str = ""
+    sourcePreviewPages: list[RevisionPreviewPage] = Field(default_factory=list)
+    revisedPreviewPages: list[RevisionPreviewPage] = Field(default_factory=list)
     diffBlocks: list[RevisionDiffBlock] = Field(default_factory=list)
     downloadUrl: str = ""
+    pdfDownloadUrl: str = ""
     protocolUrl: str = ""
     message: str = ""
     createdAt: datetime | None = None
