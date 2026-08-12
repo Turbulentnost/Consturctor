@@ -42,7 +42,9 @@ from app.ui.pages.regulation_creation_page import RegulationCreationPage
 from app.ui.pages.readiness_page import ReadinessPage
 from app.ui.pages.revision_result_page import RevisionResultPage
 from app.ui.pages.role_match_page import RoleMatchPage
+from app.ui.pages.saved_workflows_page import SavedWorkflowsPage
 from app.ui.pages.settings_page import SettingsPage
+from app.ui.pages.workflow_page import WorkflowPage
 from app.ui.theme import (
     COLOR_CONTENT_MUTED,
     COLOR_CONTENT_BG,
@@ -167,6 +169,8 @@ class MainShell(QWidget):
         self._pages = QStackedWidget()
         self._page_create = CreateAgentPage()
         self._page_agents = MyAgentsPage()
+        self._page_workflows = WorkflowPage(self._api)
+        self._page_saved_workflows = SavedWorkflowsPage(self._api)
         self._page_kpi = KpiPage()
         self._page_settings = SettingsPage(self._api)
         self._page_review = RegulationReviewPage()
@@ -177,6 +181,8 @@ class MainShell(QWidget):
         self._page_loading = LoadingPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
+        self._pages.addWidget(self._page_workflows)
+        self._pages.addWidget(self._page_saved_workflows)
         self._pages.addWidget(self._page_kpi)
         self._pages.addWidget(self._page_settings)
         self._pages.addWidget(self._page_review)
@@ -188,15 +194,19 @@ class MainShell(QWidget):
         self._page_index = {
             "create": 0,
             "agents": 1,
-            "kpi": 2,
-            "settings": 3,
-            "review": 4,
-            "role_match": 5,
-            "readiness": 6,
-            "revision": 7,
-            "creation_chat": 8,
-            "loading": 9,
+            "workflows": 2,
+            "saved_workflows": 3,
+            "kpi": 4,
+            "settings": 5,
+            "review": 6,
+            "role_match": 7,
+            "readiness": 8,
+            "revision": 9,
+            "creation_chat": 10,
+            "loading": 11,
         }
+        self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
+        self._page_saved_workflows.open_requested.connect(self._on_open_saved_workflow)
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_agents.continue_requested.connect(self._on_continue_agent_draft)
         self._page_agents.delete_requested.connect(self._on_delete_agent_draft)
@@ -972,6 +982,17 @@ class MainShell(QWidget):
         self._pages.setCurrentIndex(idx)
         if key == "agents":
             self._load_agent_drafts()
+        if key == "saved_workflows":
+            self._page_saved_workflows.refresh()
+
+    def _on_open_saved_workflow(self, record: object) -> None:
+        from app.api_client import WorkflowRecord as WorkflowRecordType
+
+        if not isinstance(record, WorkflowRecordType):
+            return
+        self._page_workflows.load_record(record)
+        self.sidebar.set_active_key("workflows")
+        self._pages.setCurrentIndex(self._page_index["workflows"])
 
     def _load_agent_drafts(self) -> None:
         def run() -> None:

@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     cursor_api_key: str = Field(default="", validation_alias="CURSOR_API_KEY")
     cursor_api_base_url: str = "https://api.cursor.com"
     cursor_regulation_model: str = "composer-2.5"
+    cursor_workflow_model: str = "composer"
 
     # App Postgres (users, avatars, future agent data). Not ERP.
     database_url: str = (
@@ -53,8 +54,10 @@ class Settings(BaseSettings):
     )
     avatar_storage_dir: Path = BACKEND_ROOT / "storage" / "avatars"
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
+    workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"
 
 
 settings = Settings()
 settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)

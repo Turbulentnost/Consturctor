@@ -20,6 +20,7 @@ def init_db() -> None:
     # Import models so metadata is populated.
     from app.models import regulation as _regulation  # noqa: F401
     from app.models import user as _user  # noqa: F401
+    from app.models import workflow as _workflow  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _ensure_columns()

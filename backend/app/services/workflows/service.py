@@ -1,0 +1,586 @@
+from __future__ import annotations
+
+import shutil
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from sqlalchemy.orm import Session
+
+from app.clients import cursor as cursor_client
+from app.clients.cursor import CursorAgentError
+from app.config import settings
+from app.models.workflow import Workflow
+from app.schemas.workflow import (
+    ArtifactItem,
+    ArtifactsDownloadResult,
+    AttachmentMetaSchema,
+    WorkflowHealth,
+    WorkflowListItem,
+    WorkflowPlanSchema,
+    WorkflowSchema,
+)
+from app.services.workflows import prompts
+from app.services.workflows.document import (
+    DocumentError,
+    collect_prompt_images,
+    compose_document,
+    load_attachment_bytes,
+)
+from app.services.workflows.plan_models import WorkflowPlan
+
+
+class WorkflowError(Exception):
+    def __init__(self, message: str, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
+@dataclass
+class PhaseResult:
+    agent_id: str = ""
+    run_id: str = ""
+    status: str = ""
+    text: str = ""
+    branch: str = ""
+    pr_url: str = ""
+    error: str = ""
+    git: dict[str, Any] = field(default_factory=dict)
+
+
+def workflow_health() -> WorkflowHealth:
+    try:
+        me = cursor_client.get_me()
+        who = str(
+            me.get("userEmail")
+            or me.get("user_email")
+            or me.get("apiKeyName")
+            or me.get("api_key_name")
+            or "ok"
+        )
+        return WorkflowHealth(ok=True, who=who)
+    except CursorAgentError as exc:
+        return WorkflowHealth(ok=False, message=exc.message)
+
+
+def list_workflows(db: Session, *, user_id: str) -> list[WorkflowListItem]:
+    rows = (
+        db.query(Workflow)
+        .filter(Workflow.user_id == user_id)
+        .order_by(Workflow.updated_at.desc())
+        .all()
+    )
+    return [
+        WorkflowListItem(
+            id=row.id,
+            title=row.title,
+            phase=row.phase,
+            document_name=row.document_name,
+            updated_at=_iso(row.updated_at),
+            has_local_run=bool(row.local_run),
+        )
+        for row in rows
+    ]
+
+
+def get_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSchema:
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    return _to_schema(row)
+
+
+def create_workflow(
+    db: Session,
+    *,
+    user_id: str,
+    notes: str,
+    files: list[tuple[str, bytes]],
+) -> WorkflowSchema:
+    workflow_id = str(uuid4())
+    storage_dir = _workflow_dir(workflow_id)
+    storage_dir.mkdir(parents=True, exist_ok=True)
+
+    attachments: list[dict] = []
+    meta: list[dict] = []
+    for original_name, raw in files:
+        try:
+            loaded = load_attachment_bytes(original_name, raw)
+        except DocumentError as exc:
+            shutil.rmtree(storage_dir, ignore_errors=True)
+            raise WorkflowError(str(exc)) from exc
+        safe = _safe_filename(original_name)
+        stored = storage_dir / safe
+        stored.write_bytes(raw)
+        loaded["stored_name"] = safe
+        loaded["path"] = str(stored)
+        attachments.append(loaded)
+        meta.append(
+            {
+                "name": loaded["name"],
+                "kind": loaded["kind"],
+                "mime_type": loaded.get("mime_type") or "",
+                "stored_name": safe,
+                "text_preview": (loaded.get("text") or "")[:500],
+            }
+        )
+
+    document_name, document_text = compose_document(attachments, notes=notes)
+    if not document_text.strip() and not any(a.get("kind") == "image" for a in attachments):
+        shutil.rmtree(storage_dir, ignore_errors=True)
+        raise WorkflowError("Нет материалов — загрузите файлы или заметки.")
+
+    # Persist image base64 in sidecar JSON for later plan calls
+    _save_attachments_payload(workflow_id, attachments)
+
+    title = document_name or "Без названия"
+    row = Workflow(
+        id=workflow_id,
+        user_id=user_id,
+        title=title,
+        phase="document",
+        notes=notes or "",
+        document_name=document_name,
+        document_text=document_text,
+        plan_json={},
+        attachments_meta=meta,
+        local_run={},
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _to_schema(row)
+
+
+def delete_workflow(db: Session, *, user_id: str, workflow_id: str) -> None:
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    db.delete(row)
+    db.commit()
+    shutil.rmtree(_workflow_dir(workflow_id), ignore_errors=True)
+
+
+def update_local_run(
+    db: Session, *, user_id: str, workflow_id: str, local_run: dict[str, Any]
+) -> WorkflowSchema:
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    row.local_run = dict(local_run or {})
+    db.commit()
+    db.refresh(row)
+    return _to_schema(row)
+
+
+def plan_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSchema:
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    attachments = _load_attachments_payload(workflow_id)
+    images = collect_prompt_images(attachments)
+    has_text = bool((row.document_text or "").strip())
+    if not has_text and not images:
+        raise WorkflowError("Нет материалов для планирования — загрузите файлы или заметки.")
+
+    prompt = prompts.build_plan_prompt(
+        document_text=row.document_text,
+        document_name=row.document_name,
+        image_count=len(images),
+        attachment_names=[str(a.get("name") or "") for a in attachments],
+    )
+    model = _resolve_model()
+    try:
+        created = cursor_client.create_agent(
+            prompt=prompt,
+            model_id=model,
+            mode="agent",
+            name=row.title,
+            images=images or None,
+        )
+    except CursorAgentError as exc:
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
+
+    agent = created.get("agent") or {}
+    run = created.get("run") or {}
+    agent_id = str(agent.get("id") or "")
+    run_id = str(run.get("id") or "")
+    row.plan_agent_id = agent_id
+    row.plan_run_id = run_id
+    row.phase = "plan"
+    db.commit()
+
+    phase = _stream_run(agent_id, run_id)
+    plan = prompts.parse_plan_from_text(phase.text)
+    row.plan_json = plan.to_dict()
+    row.title = plan.title or row.title
+    row.phase = "clarify" if plan.unanswered() else "ready"
+    db.commit()
+    db.refresh(row)
+    return _to_schema(row)
+
+
+def clarify_workflow(
+    db: Session, *, user_id: str, workflow_id: str, answers: dict[str, str]
+) -> WorkflowSchema:
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    if not row.plan_json:
+        raise WorkflowError("Нет плана для уточнения")
+    plan = WorkflowPlan.from_dict(row.plan_json)
+    for q in plan.open_questions:
+        if q.id in answers:
+            q.answer = answers[q.id]
+
+    prompt = prompts.build_clarify_prompt(answers=answers, plan=plan)
+    try:
+        if row.plan_agent_id:
+            run = cursor_client.create_run(row.plan_agent_id, prompt=prompt, mode="agent")
+            agent_id = row.plan_agent_id
+            run_id = str(run.get("id") or "")
+        else:
+            created = cursor_client.create_agent(
+                prompt=prompt, model_id=_resolve_model(), mode="agent", name=row.title
+            )
+            agent_id = str((created.get("agent") or {}).get("id") or "")
+            run_id = str((created.get("run") or {}).get("id") or "")
+            row.plan_agent_id = agent_id
+    except CursorAgentError as exc:
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
+
+    row.plan_run_id = run_id
+    db.commit()
+
+    phase = _stream_run(agent_id, run_id)
+    updated = prompts.parse_plan_from_text(phase.text)
+    prior = {q.id: q.answer for q in plan.open_questions if q.answer}
+    for q in updated.open_questions:
+        if not q.answer and q.id in prior:
+            q.answer = prior[q.id]
+    row.plan_json = updated.to_dict()
+    row.title = updated.title or row.title
+    row.phase = "clarify" if updated.unanswered() else "ready"
+    db.commit()
+    db.refresh(row)
+    return _to_schema(row)
+
+
+def execute_workflow(
+    db: Session, *, user_id: str, workflow_id: str, reexecute: bool = False
+) -> WorkflowSchema:
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    if not row.plan_json:
+        raise WorkflowError("Нет плана для выполнения")
+    plan = WorkflowPlan.from_dict(row.plan_json)
+
+    if reexecute:
+        prompt = prompts.build_reexecute_prompt(plan=plan)
+    else:
+        prompt = prompts.build_execute_prompt(plan=plan, document_text=row.document_text)
+
+    try:
+        if reexecute and row.exec_agent_id:
+            try:
+                run = cursor_client.create_run(row.exec_agent_id, prompt=prompt, mode="agent")
+                agent_id = row.exec_agent_id
+                run_id = str(run.get("id") or "")
+            except CursorAgentError:
+                agent_id, run_id = _create_exec_agent(row.title, prompt)
+        else:
+            agent_id, run_id = _create_exec_agent(row.title, prompt)
+    except CursorAgentError as exc:
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
+
+    row.exec_agent_id = agent_id
+    row.exec_run_id = run_id
+    row.phase = "executing"
+    db.commit()
+
+    phase = _stream_run(agent_id, run_id)
+    row.last_result = phase.text
+    row.branch = phase.branch or row.branch
+    row.pr_url = phase.pr_url or row.pr_url
+    row.phase = "done" if phase.status == "FINISHED" else "ready"
+    db.commit()
+    db.refresh(row)
+    return _to_schema(row)
+
+
+def list_artifacts_for_workflow(
+    db: Session, *, user_id: str, workflow_id: str
+) -> list[ArtifactItem]:
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    agent_id = row.exec_agent_id or row.plan_agent_id
+    if not agent_id:
+        return []
+    try:
+        items = cursor_client.list_artifacts(agent_id)
+    except CursorAgentError as exc:
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
+    result: list[ArtifactItem] = []
+    for it in items:
+        path = str(it.get("path") or "")
+        if not path:
+            continue
+        size = it.get("size")
+        result.append(ArtifactItem(path=path, size=int(size) if size is not None else None))
+    return result
+
+
+def download_artifacts(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    paths: list[str] | None = None,
+) -> ArtifactsDownloadResult:
+    """Download Cursor artifacts into backend storage (paths are server-local)."""
+    dest, saved = _materialize_artifacts(
+        db, user_id=user_id, workflow_id=workflow_id, paths=paths
+    )
+    return ArtifactsDownloadResult(dest_dir=str(dest), files=saved)
+
+
+def build_artifacts_zip(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    paths: list[str] | None = None,
+) -> Path:
+    """Materialize artifacts and pack them into a zip for client download."""
+    import zipfile
+
+    dest, saved = _materialize_artifacts(
+        db, user_id=user_id, workflow_id=workflow_id, paths=paths
+    )
+    zip_path = _workflow_dir(workflow_id) / "artifacts.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for file_path in saved:
+            p = Path(file_path)
+            if p.is_file():
+                zf.write(p, arcname=p.name)
+        if not saved:
+            zf.writestr("README.txt", "Артефакты не найдены у Cursor-агента.\n")
+    return zip_path
+
+
+def _materialize_artifacts(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    paths: list[str] | None = None,
+) -> tuple[Path, list[str]]:
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    agent_id = row.exec_agent_id or row.plan_agent_id
+    if not agent_id:
+        raise WorkflowError("Нет агента для скачивания артефактов")
+    try:
+        items = cursor_client.list_artifacts(agent_id)
+    except CursorAgentError as exc:
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
+
+    wanted = set(paths) if paths else None
+    dest = _workflow_dir(workflow_id) / "outputs"
+    dest.mkdir(parents=True, exist_ok=True)
+    saved: list[str] = []
+    for it in items:
+        rel = str(it.get("path") or "")
+        if not rel:
+            continue
+        if wanted is not None and rel not in wanted:
+            continue
+        safe_name = rel.replace("artifacts/", "", 1).replace("/", "_").replace("\\", "_")
+        target = dest / safe_name
+        try:
+            cursor_client.download_artifact_to(agent_id, rel, target)
+            saved.append(str(target))
+        except CursorAgentError:
+            continue
+    return dest, saved
+
+
+def _create_exec_agent(title: str, prompt: str) -> tuple[str, str]:
+    created = cursor_client.create_agent(
+        prompt=prompt,
+        model_id=_resolve_model(),
+        mode="agent",
+        name=title,
+    )
+    agent_id = str((created.get("agent") or {}).get("id") or "")
+    run_id = str((created.get("run") or {}).get("id") or "")
+    if not agent_id or not run_id:
+        raise CursorAgentError("Cursor API не вернул agent/run id")
+    return agent_id, run_id
+
+
+def _resolve_model() -> str | None:
+    preferred = settings.cursor_workflow_model
+    try:
+        models = cursor_client.list_models()
+    except CursorAgentError:
+        return preferred or None
+    ids: list[str] = []
+    for model in models:
+        mid = str(model.get("id") or "")
+        if mid:
+            ids.append(mid)
+        aliases = {str(a) for a in (model.get("aliases") or [])}
+        if preferred and (mid == preferred or preferred in aliases):
+            return mid
+    for mid in ids:
+        if mid.startswith(preferred or "composer"):
+            return mid
+    return preferred or (ids[0] if ids else None)
+
+
+def _stream_run(agent_id: str, run_id: str) -> PhaseResult:
+    result = PhaseResult(agent_id=agent_id, run_id=run_id)
+    assistant_parts: list[str] = []
+    got_terminal = False
+    try:
+        for item in cursor_client.stream_run_events(agent_id, run_id):
+            event = str(item.get("event") or "message")
+            payload = item.get("data") if isinstance(item.get("data"), dict) else {}
+            if event == "assistant":
+                assistant_parts.append(str(payload.get("text") or ""))
+            if event == "result":
+                got_terminal = True
+                result.status = str(payload.get("status") or "")
+                if payload.get("text"):
+                    result.text = str(payload.get("text"))
+                result.git = payload.get("git") or {}
+                result.branch, result.pr_url = _extract_git(result.git)
+            if event == "error":
+                result.error = str(payload.get("message") or payload.get("code") or "")
+    except CursorAgentError:
+        pass
+
+    if not result.text:
+        result.text = "".join(assistant_parts).strip()
+    if not got_terminal:
+        result = _poll_until_terminal(agent_id, run_id, base=result)
+    return result
+
+
+def _poll_until_terminal(
+    agent_id: str,
+    run_id: str,
+    *,
+    base: PhaseResult,
+    max_wait_s: float = 900.0,
+    interval_s: float = 5.0,
+) -> PhaseResult:
+    result = base
+    if not run_id:
+        return result
+    deadline = time.monotonic() + max_wait_s
+    while True:
+        try:
+            run = cursor_client.get_run(agent_id, run_id)
+        except CursorAgentError:
+            break
+        status = str(run.get("status") or "")
+        result.status = status or result.status
+        if run.get("result"):
+            result.text = str(run.get("result"))
+        result.git = run.get("git") or result.git
+        result.branch, result.pr_url = _extract_git(result.git)
+        if status in cursor_client.TERMINAL_RUN_STATUSES:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(interval_s)
+    return result
+
+
+def _extract_git(git: dict[str, Any] | None) -> tuple[str, str]:
+    if not git:
+        return "", ""
+    branches = git.get("branches") or []
+    if branches and isinstance(branches[0], dict):
+        first = branches[0]
+        return str(first.get("branch") or ""), str(first.get("prUrl") or first.get("pr_url") or "")
+    return "", ""
+
+
+def _get_owned(db: Session, *, user_id: str, workflow_id: str) -> Workflow:
+    row = db.query(Workflow).filter(Workflow.id == workflow_id, Workflow.user_id == user_id).first()
+    if row is None:
+        raise WorkflowError("Workflow не найден", status_code=404)
+    return row
+
+
+def _workflow_dir(workflow_id: str) -> Path:
+    return settings.workflow_storage_dir / workflow_id
+
+
+def _attachments_path(workflow_id: str) -> Path:
+    return _workflow_dir(workflow_id) / "attachments_payload.json"
+
+
+def _save_attachments_payload(workflow_id: str, attachments: list[dict]) -> None:
+    import json
+
+    path = _attachments_path(workflow_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Keep base64 for images; trim huge text duplicates (already in DB)
+    slim: list[dict] = []
+    for att in attachments:
+        item = dict(att)
+        if item.get("kind") != "image":
+            item["data_b64"] = ""
+        slim.append(item)
+    path.write_text(json.dumps(slim, ensure_ascii=False), encoding="utf-8")
+
+
+def _load_attachments_payload(workflow_id: str) -> list[dict]:
+    import json
+
+    path = _attachments_path(workflow_id)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _safe_filename(name: str) -> str:
+    base = Path(name).name.replace("..", "_")
+    return base or f"file_{uuid4().hex[:8]}"
+
+
+def _iso(value: Any) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _to_schema(row: Workflow) -> WorkflowSchema:
+    plan = None
+    if row.plan_json:
+        plan = WorkflowPlanSchema.model_validate(row.plan_json)
+    attachments = [
+        AttachmentMetaSchema.model_validate(x)
+        for x in (row.attachments_meta or [])
+        if isinstance(x, dict)
+    ]
+    return WorkflowSchema(
+        id=row.id,
+        title=row.title,
+        phase=row.phase,
+        notes=row.notes or "",
+        document_name=row.document_name or "",
+        document_text=row.document_text or "",
+        plan=plan,
+        attachments=attachments,
+        local_run=dict(row.local_run or {}),
+        plan_agent_id=row.plan_agent_id or "",
+        plan_run_id=row.plan_run_id or "",
+        exec_agent_id=row.exec_agent_id or "",
+        exec_run_id=row.exec_run_id or "",
+        last_result=row.last_result or "",
+        branch=row.branch or "",
+        pr_url=row.pr_url or "",
+        created_at=_iso(row.created_at),
+        updated_at=_iso(row.updated_at),
+    )

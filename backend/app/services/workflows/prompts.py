@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.workflow.models import OpenQuestion, PlanStep, WorkflowPlan
+from app.services.workflows.plan_models import OpenQuestion, PlanStep, WorkflowPlan
 
 PLAN_SCHEMA_HINT = """
 Верни ТОЛЬКО один JSON-объект (можно в блоке ```json), без лишнего текста вокруг.
@@ -232,3 +232,4 @@ def plan_summary_text(plan: WorkflowPlan) -> str:
             lines.append(f"- `{q.id}` {q.question}")
         lines.append("")
     return "\n".join(lines).strip() + "\n"
+

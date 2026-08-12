@@ -303,6 +303,96 @@ class QuestionChatMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowPlanStep:
+    id: str
+    title: str
+    action: str
+    done_when: str = ""
+    depends_on: list[str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowOpenQuestion:
+    id: str
+    question: str
+    why: str = ""
+    answer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowPlan:
+    title: str = ""
+    goal: str = ""
+    constraints: list[str] | None = None
+    out_of_scope: list[str] | None = None
+    steps: list[WorkflowPlanStep] | None = None
+    test_criteria: list[str] | None = None
+    open_questions: list[WorkflowOpenQuestion] | None = None
+    raw_text: str = ""
+
+    def unanswered(self) -> list[WorkflowOpenQuestion]:
+        return [q for q in (self.open_questions or []) if not (q.answer or "").strip()]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowAttachment:
+    name: str
+    kind: str = "text"
+    mime_type: str = ""
+    stored_name: str = ""
+    text_preview: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowRecord:
+    id: str
+    title: str
+    phase: str
+    notes: str = ""
+    document_name: str = ""
+    document_text: str = ""
+    plan: WorkflowPlan | None = None
+    attachments: list[WorkflowAttachment] | None = None
+    local_run: dict | None = None
+    plan_agent_id: str = ""
+    plan_run_id: str = ""
+    exec_agent_id: str = ""
+    exec_run_id: str = ""
+    last_result: str = ""
+    branch: str = ""
+    pr_url: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    @property
+    def name(self) -> str:
+        return self.title
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowListItem:
+    id: str
+    title: str
+    phase: str
+    document_name: str = ""
+    updated_at: str = ""
+    has_local_run: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowHealth:
+    ok: bool
+    who: str = ""
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactsDownloadResult:
+    dest_dir: str
+    files: list[str]
+
+
+@dataclass(frozen=True, slots=True)
 class QuestionChatSession:
     session_id: str
     draft_id: str
@@ -756,6 +846,226 @@ class ApiClient:
         )
         return self._parse_user(data)
 
+    def workflow_health(self) -> WorkflowHealth:
+        data = self._request("GET", "/api/v1/workflows/health", timeout=30.0)
+        return WorkflowHealth(
+            ok=bool(data.get("ok")),
+            who=str(data.get("who") or ""),
+            message=str(data.get("message") or ""),
+        )
+
+    def list_workflows(self) -> list[WorkflowListItem]:
+        data = self._request("GET", "/api/v1/workflows", timeout=60.0)
+        items = data if isinstance(data, list) else []
+        return [
+            WorkflowListItem(
+                id=str(x.get("id") or ""),
+                title=str(x.get("title") or ""),
+                phase=str(x.get("phase") or ""),
+                document_name=str(x.get("document_name") or ""),
+                updated_at=str(x.get("updated_at") or ""),
+                has_local_run=bool(x.get("has_local_run")),
+            )
+            for x in items
+            if isinstance(x, dict)
+        ]
+
+    def get_workflow(self, workflow_id: str) -> WorkflowRecord:
+        data = self._request("GET", f"/api/v1/workflows/{workflow_id}", timeout=60.0)
+        return self._parse_workflow(data)
+
+    def create_workflow(self, *, notes: str, file_paths: list[str | Path]) -> WorkflowRecord:
+        import tempfile
+
+        url = f"{self.base_url}/api/v1/workflows"
+        files: list = []
+        handles = []
+        temp_notes: Path | None = None
+        try:
+            paths = [Path(p) for p in file_paths if Path(p).is_file()]
+            if not paths and (notes or "").strip():
+                tmp = tempfile.NamedTemporaryFile(
+                    mode="w",
+                    suffix=".txt",
+                    delete=False,
+                    encoding="utf-8",
+                )
+                tmp.write(notes)
+                tmp.close()
+                temp_notes = Path(tmp.name)
+                paths = [temp_notes]
+            for path in paths:
+                fh = path.open("rb")
+                handles.append(fh)
+                name = "notes.txt" if temp_notes and path == temp_notes else path.name
+                files.append(("files", (name, fh, "application/octet-stream")))
+            data_form = {"notes": notes or ""}
+            with httpx.Client(timeout=max(self._timeout, 180.0)) as client:
+                response = client.post(
+                    url,
+                    headers=self._headers(),
+                    data=data_form,
+                    files=files,
+                )
+        except httpx.ConnectError as exc:
+            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+        except httpx.TimeoutException as exc:
+            raise ApiError("Превышено время создания workflow") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+        finally:
+            for fh in handles:
+                fh.close()
+            if temp_notes is not None:
+                try:
+                    temp_notes.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if response.status_code >= 400:
+            raise ApiError(_extract_detail(response), status_code=response.status_code)
+        return self._parse_workflow(response.json())
+
+    def delete_workflow(self, workflow_id: str) -> None:
+        self._request("DELETE", f"/api/v1/workflows/{workflow_id}", timeout=60.0)
+
+    def plan_workflow(self, workflow_id: str) -> WorkflowRecord:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/plan",
+            timeout=900.0,
+        )
+        return self._parse_workflow(data)
+
+    def clarify_workflow(self, workflow_id: str, answers: dict[str, str]) -> WorkflowRecord:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/clarify",
+            json={"answers": answers},
+            timeout=900.0,
+        )
+        return self._parse_workflow(data)
+
+    def execute_workflow(self, workflow_id: str, *, reexecute: bool = False) -> WorkflowRecord:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/execute",
+            json={"reexecute": reexecute},
+            timeout=900.0,
+        )
+        return self._parse_workflow(data)
+
+    def download_workflow_artifacts(self, workflow_id: str) -> ArtifactsDownloadResult:
+        import zipfile
+
+        from app.config import DESKTOP_ROOT
+
+        url = f"{self.base_url}/api/v1/workflows/{workflow_id}/artifacts/download"
+        dest = DESKTOP_ROOT / "data" / "outputs" / workflow_id
+        dest.mkdir(parents=True, exist_ok=True)
+        try:
+            with httpx.Client(timeout=300.0) as client:
+                response = client.post(url, headers=self._headers(), json={})
+        except httpx.ConnectError as exc:
+            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+        except httpx.TimeoutException as exc:
+            raise ApiError("Превышено время скачивания артефактов") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+        if response.status_code >= 400:
+            raise ApiError(_extract_detail(response), status_code=response.status_code)
+
+        zip_path = dest / "artifacts.zip"
+        zip_path.write_bytes(response.content)
+        extracted: list[str] = []
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(dest)
+                for name in zf.namelist():
+                    if name.endswith("/"):
+                        continue
+                    if name.lower() == "readme.txt":
+                        continue
+                    extracted.append(str(dest / name))
+        except zipfile.BadZipFile as exc:
+            raise ApiError("Backend вернул некорректный zip артефактов") from exc
+        return ArtifactsDownloadResult(dest_dir=str(dest), files=extracted)
+
+    def update_workflow_local_run(self, workflow_id: str, local_run: dict) -> WorkflowRecord:
+        data = self._request(
+            "PATCH",
+            f"/api/v1/workflows/{workflow_id}/local-run",
+            json={"local_run": local_run},
+            timeout=60.0,
+        )
+        return self._parse_workflow(data)
+
+    def _parse_workflow(self, data: dict) -> WorkflowRecord:
+        plan_data = data.get("plan")
+        plan = None
+        if isinstance(plan_data, dict):
+            steps = [
+                WorkflowPlanStep(
+                    id=str(s.get("id") or ""),
+                    title=str(s.get("title") or ""),
+                    action=str(s.get("action") or ""),
+                    done_when=str(s.get("done_when") or ""),
+                    depends_on=[str(x) for x in (s.get("depends_on") or [])],
+                )
+                for s in (plan_data.get("steps") or [])
+                if isinstance(s, dict)
+            ]
+            questions = [
+                WorkflowOpenQuestion(
+                    id=str(q.get("id") or ""),
+                    question=str(q.get("question") or ""),
+                    why=str(q.get("why") or ""),
+                    answer=str(q.get("answer") or ""),
+                )
+                for q in (plan_data.get("open_questions") or [])
+                if isinstance(q, dict)
+            ]
+            plan = WorkflowPlan(
+                title=str(plan_data.get("title") or ""),
+                goal=str(plan_data.get("goal") or ""),
+                constraints=[str(x) for x in (plan_data.get("constraints") or [])],
+                out_of_scope=[str(x) for x in (plan_data.get("out_of_scope") or [])],
+                steps=steps,
+                test_criteria=[str(x) for x in (plan_data.get("test_criteria") or [])],
+                open_questions=questions,
+                raw_text=str(plan_data.get("raw_text") or ""),
+            )
+        attachments = [
+            WorkflowAttachment(
+                name=str(a.get("name") or ""),
+                kind=str(a.get("kind") or "text"),
+                mime_type=str(a.get("mime_type") or ""),
+                stored_name=str(a.get("stored_name") or ""),
+                text_preview=str(a.get("text_preview") or ""),
+            )
+            for a in (data.get("attachments") or [])
+            if isinstance(a, dict)
+        ]
+        return WorkflowRecord(
+            id=str(data.get("id") or ""),
+            title=str(data.get("title") or "Без названия"),
+            phase=str(data.get("phase") or "document"),
+            notes=str(data.get("notes") or ""),
+            document_name=str(data.get("document_name") or ""),
+            document_text=str(data.get("document_text") or ""),
+            plan=plan,
+            attachments=attachments,
+            local_run=dict(data.get("local_run") or {}),
+            plan_agent_id=str(data.get("plan_agent_id") or ""),
+            plan_run_id=str(data.get("plan_run_id") or ""),
+            exec_agent_id=str(data.get("exec_agent_id") or ""),
+            exec_run_id=str(data.get("exec_run_id") or ""),
+            last_result=str(data.get("last_result") or ""),
+            branch=str(data.get("branch") or ""),
+            pr_url=str(data.get("pr_url") or ""),
+            created_at=str(data.get("created_at") or ""),
+            updated_at=str(data.get("updated_at") or ""),
+        )
+
     @staticmethod
     def _parse_user(data: dict) -> UserProfile:
         avatar = data.get("avatar_url")
@@ -784,7 +1094,7 @@ class ApiClient:
         json: dict | None = None,
         params: dict | None = None,
         timeout: float | None = None,
-    ) -> dict:
+    ):
         url = f"{self.base_url}{path}"
         try:
             with httpx.Client(timeout=timeout or self._timeout) as client:
