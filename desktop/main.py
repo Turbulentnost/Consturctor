@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication
 
+from app.host_manager import ensure_desktop_host, ensure_desktop_launcher
 from app.ui.app_window import AppWindow
 from app.ui.theme import app_font, load_fonts, qss_global
 
@@ -28,6 +29,9 @@ def main() -> int:
     family = load_fonts()
     app.setFont(app_font(14, QFont.Weight.Normal))
     app.setStyleSheet(qss_global(family))
+
+    ensure_desktop_host()
+    ensure_desktop_launcher()
 
     window = AppWindow()
     window.show()

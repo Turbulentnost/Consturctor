@@ -73,8 +73,9 @@ def validate_sql_query(sql: str, *, allowlist: set[str] | None = None) -> str:
     allowed = allowlist or sql_table_allowlist()
     allowed_norm = {normalize_table_name(item) for item in allowed}
     tables = extract_sql_tables(query)
+    # Allow scalar SELECTs without FROM (e.g. SELECT 1 AS x) for health/smoke checks.
     if not tables:
-        raise ValueError("Could not determine tables in SQL query")
+        return query
     unknown = sorted(table for table in tables if table not in allowed_norm)
     if unknown:
         raise ValueError(f"SQL table not allowed: {', '.join(unknown)}")

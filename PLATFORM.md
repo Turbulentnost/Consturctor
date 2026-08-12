@@ -68,19 +68,30 @@ RabbitMQ на хосте: **5673** (AMQP), **15673** (UI) — если 5672 за
 
 Только для разработки отдельных сервисов на Windows (shell/browser native). Полный стек — через Docker выше.
 
-### Desktop tools (Windows, тот же ПК)
+### Desktop host (Windows, один порт для агента)
 
-Запуск после Docker stack:
+**Единый шлюз :7830** — Microsoft COM (1С, Outlook, Excel, Word, PowerPoint), файлы (`fs.*`), native shell, буфер обмена, открытие файлов (`desktop.*`).
+
+| Сценарий | Что запускать |
+|----------|----------------|
+| **Пользователь через turbobot desktop app** | Приложение само поднимает `:7830` + launcher `:7829` (фон, без окон) |
+| **Docker без desktop app** | `scripts\start_desktop_launcher.cmd` — host `:7830` стартует **по первому вызову агента** |
+| **Полный стек** | `scripts\start_platform_all.cmd` (Docker + launcher) |
 
 ```cmd
-scripts\start_desktop_tools.cmd
+scripts\start_desktop_host.cmd     rem только unified host :7830
+scripts\check_desktop_tools.cmd    rem статус launcher + host
 ```
 
-| Порт | Сервис | Tools |
-|------|--------|-------|
-| 7826 | platform-tool-com | `com.list_apps`, `com.connect`, `com.invoke`, `com.release`, `com.outlook.*` |
-| 7827 | platform-tool-filesystem | `fs.list`, `fs.read`, `fs.write`, `fs.stat`, `fs.move`, `fs.copy` |
-| 7828 | platform-tool-shell-native | `shell.run` с `runtime=native` |
+Orchestrator: `TOOL_DESKTOP_HOST_URL=http://host.docker.internal:7830` → все `com.*`, `fs.*`, native `shell.*`, `desktop.*`.
+
+| Порт | Роль |
+|------|------|
+| **7830** | **platform-desktop-host** — все desktop tools (единый API) |
+| **7829** | launcher — lazy-start `:7830` для Docker |
+| 7826–7828 | legacy (если `TOOL_DESKTOP_HOST_URL` не задан) |
+
+Логи: `logs/desktop-host.out.log`.
 
 Orchestrator в Docker обращается через `host.docker.internal`. Настройки в `infra/.env`:
 

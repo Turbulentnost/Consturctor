@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import select
 
 from platform_orchestrator.agent_mocks import MockScenario, get_mock_scenario, tool_names_from_scenario
+from platform_orchestrator.desktop_tools import ensure_desktop_tool_via_launcher, format_tool_unreachable_error
 from platform_orchestrator.tool_acl import ToolNotAllowedError, ensure_sandbox_tool_allowed, ensure_tool_allowed
 from platform_orchestrator.tool_sandbox import SANDBOX_ORDER, get_sandbox_test
 from platform_contracts.runs import RunStartRequest, RunStatus, RunStatusEnum
@@ -21,13 +22,16 @@ from platform_db.models import AgentRunRow, ToolEventRow
 from platform_db.session import get_session_factory
 
 broker = os.environ.get("CELERY_BROKER_URL", "amqp://guest:guest@127.0.0.1:5672//")
+result_backend = os.environ.get("CELERY_RESULT_BACKEND", "rpc://")
 
-celery_app = Celery("platform_orchestrator", broker=broker)
+celery_app = Celery("platform_orchestrator", broker=broker, backend=result_backend)
 celery_app.conf.task_routes = {
     "platform_orchestrator.start_agent_run": {"queue": "default"},
     "platform_orchestrator.invoke_tool_async": {"queue": "default"},
     "platform_orchestrator.retry_failed_tool": {"queue": "default"},
 }
+celery_app.conf.result_backend = result_backend
+celery_app.conf.task_ignore_result = False
 celery_app.conf.beat_schedule = {
     "poll-imap-mailbox": {
         "task": "platform_tool_imap.poll_mailbox",
@@ -55,6 +59,8 @@ class OrchestratorSettings(BaseSettings):
     tool_browser_url: str = "http://127.0.0.1:7824"
     tool_com_url: str = "http://127.0.0.1:7826"
     tool_fs_url: str = "http://127.0.0.1:7827"
+    tool_desktop_host_url: str = "http://127.0.0.1:7830"
+    tool_desktop_launcher_url: str = "http://127.0.0.1:7829"
     use_stubs: bool = True
     api_host: str = "0.0.0.0"
     api_port: int = 7825
@@ -65,6 +71,14 @@ settings = OrchestratorSettings()
 
 
 def _tool_url(tool_name: str, payload: dict | None = None) -> str:
+    inner = payload or {}
+    runtime = str(inner.get("runtime", "")).strip().lower()
+    host_url = (settings.tool_desktop_host_url or os.environ.get("TOOL_DESKTOP_HOST_URL") or "").strip()
+    if host_url:
+        from platform_orchestrator.desktop_tools import is_host_tool
+
+        if is_host_tool(tool_name, shell_runtime=runtime):
+            return host_url
     if tool_name.startswith("imap."):
         return settings.tool_imap_url
     if tool_name.startswith("onec."):
@@ -74,9 +88,6 @@ def _tool_url(tool_name: str, payload: dict | None = None) -> str:
     if tool_name.startswith("fs."):
         return settings.tool_fs_url
     if tool_name.startswith("shell."):
-        runtime = ""
-        if payload:
-            runtime = str(payload.get("runtime", "")).strip().lower()
         native_url = (settings.tool_shell_native_url or os.environ.get("TOOL_SHELL_NATIVE_URL") or "").strip()
         if runtime == "native" and native_url:
             return native_url
@@ -215,6 +226,27 @@ def _audit_orchestrator_event(
         return
 
 
+def _resolve_sandbox_payload(payload: dict, *, uids: list[int], session_id: str) -> dict:
+    """Resolve $uids.N / $session_id placeholders for chained sandbox steps."""
+    resolved: dict = {}
+    for key, value in (payload or {}).items():
+        if isinstance(value, str) and value.startswith("$uids."):
+            try:
+                idx = int(value.split(".", 1)[1])
+            except ValueError as exc:
+                raise ValueError(f"Invalid uid placeholder: {value}") from exc
+            if idx < 0 or idx >= len(uids):
+                raise ValueError(f"UID placeholder {value} out of range (have {len(uids)} uids)")
+            resolved[key] = uids[idx]
+        elif isinstance(value, str) and value == "$session_id":
+            if not session_id:
+                raise ValueError("session_id placeholder used before a session was created")
+            resolved[key] = session_id
+        else:
+            resolved[key] = value
+    return resolved
+
+
 def _simulate_scenario(
     scenario_id: str,
     scenario: MockScenario,
@@ -227,6 +259,8 @@ def _simulate_scenario(
     steps: list[dict] = []
     errors: list[str] = []
     is_sandbox = scenario_id in SANDBOX_ORDER
+    last_uids: list[int] = []
+    last_session_id = ""
 
     for index, call in enumerate(scenario["tool_calls"], start=1):
         thought = call.get("thought") or f"Invoke {call['tool_name']}"
@@ -260,16 +294,32 @@ def _simulate_scenario(
                 "tool_name": call["tool_name"],
             }
         )
+        try:
+            call_payload = _resolve_sandbox_payload(
+                dict(call.get("payload") or {}),
+                uids=last_uids,
+                session_id=last_session_id,
+            )
+        except ValueError as exc:
+            errors.append(f"{tool_name}: {exc}")
+            steps.append(
+                {
+                    "step": index,
+                    "phase": "error",
+                    "tool_name": tool_name,
+                    "message": str(exc),
+                }
+            )
+            break
+
         payload = {
             "department": department,
             "user_id": user_id,
-            "payload": call.get("payload") or {},
+            "payload": call_payload,
         }
         try:
-            if settings.use_stubs:
-                result = invoke_tool_http(run_id, call["tool_name"], payload)
-            else:
-                result = invoke_tool_queued(run_id, call["tool_name"], payload, wait=True)
+            # Always invoke over HTTP so real workers are exercised when USE_STUBS=false.
+            result = invoke_tool_http(run_id, call["tool_name"], payload)
             steps.append(
                 {
                     "step": index,
@@ -281,6 +331,13 @@ def _simulate_scenario(
                     "error": result.error,
                 }
             )
+            if result.ok and isinstance(result.data, dict):
+                if tool_name.endswith(".search") or tool_name == "imap.search":
+                    raw_uids = result.data.get("uids") or []
+                    last_uids = [int(u) for u in raw_uids]
+                sid = result.data.get("session_id") or result.data.get("run_id")
+                if sid:
+                    last_session_id = str(sid)
             if not result.ok:
                 errors.append(f"{call['tool_name']}: {result.error or 'failed'}")
                 break
@@ -408,8 +465,13 @@ def invoke_tool_queued(
     wait: bool = True,
     timeout: float = 120.0,
 ) -> ToolResult:
-    """Dispatch tool work to a per-domain RabbitMQ queue; optional sync wait."""
-    if settings.use_stubs:
+    """Dispatch tool work to a per-domain RabbitMQ queue; optional sync wait.
+
+    Synchronous API calls (wait=True) always go HTTP so interactive tools work
+    without depending on Celery result-backend plumbing. Async fire-and-forget
+    still uses per-domain queues when USE_STUBS=false.
+    """
+    if settings.use_stubs or wait:
         return invoke_tool_http(run_id, tool_name, payload)
 
     task_name = _tool_task_name(tool_name)
@@ -426,19 +488,27 @@ def invoke_tool_queued(
             args=[tool_name, req.model_dump(mode="json")],
             queue=queue,
         )
-        if not wait:
-            return ToolResult(
-                ok=True,
-                tool_name=tool_name,
-                data={"queued": True, "task_id": async_result.id},
-                duration_ms=0,
-            )
-        data = async_result.get(timeout=timeout)
-        if isinstance(data, dict) and "ok" in data:
-            return ToolResult.model_validate(data)
-        return ToolResult(ok=True, tool_name=tool_name, data=data if isinstance(data, dict) else {"result": data})
+        return ToolResult(
+            ok=True,
+            tool_name=tool_name,
+            data={"queued": True, "task_id": async_result.id},
+            duration_ms=0,
+        )
 
     return invoke_tool_http(run_id, tool_name, payload)
+
+
+def _tool_http_timeout(tool_name: str) -> float:
+    name = (tool_name or "").strip().lower()
+    if name.startswith("imap."):
+        return 180.0
+    if name.startswith("onec."):
+        return 120.0
+    if name.startswith("com."):
+        return 90.0
+    if name.startswith("browser."):
+        return 120.0
+    return 120.0
 
 
 def invoke_tool_http(run_id: uuid.UUID, tool_name: str, payload: dict) -> ToolResult:
@@ -461,8 +531,26 @@ def invoke_tool_http(run_id: uuid.UUID, tool_name: str, payload: dict) -> ToolRe
         payload=payload.get("payload") or {},
     )
     started = time.perf_counter()
+    launcher_url = (
+        settings.tool_desktop_launcher_url or os.environ.get("TOOL_DESKTOP_LAUNCHER_URL") or ""
+    ).strip()
+    launcher_error = ensure_desktop_tool_via_launcher(
+        tool_name=tool_name,
+        base_url=base_url,
+        launcher_url=launcher_url,
+        shell_runtime=str((inner_payload or {}).get("runtime", "")),
+    )
+    if launcher_error:
+        return ToolResult(
+            ok=False,
+            tool_name=tool_name,
+            data={"base_url": base_url, "launcher_url": launcher_url},
+            error=launcher_error,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
     try:
-        with httpx.Client(timeout=120.0) as client:
+        timeout = _tool_http_timeout(tool_name)
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(
                 url,
                 json=req.model_dump(mode="json"),
@@ -479,8 +567,12 @@ def invoke_tool_http(run_id: uuid.UUID, tool_name: str, payload: dict) -> ToolRe
         return ToolResult(
             ok=False,
             tool_name=tool_name,
-            data={"url": url},
-            error=f"Tool service unavailable ({base_url}): {exc}",
+            data={"url": url, "base_url": base_url},
+            error=format_tool_unreachable_error(
+                tool_name=tool_name,
+                base_url=base_url,
+                exc=exc,
+            ),
             duration_ms=duration_ms,
         )
 

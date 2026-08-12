@@ -31,7 +31,10 @@ def run_agent(
         run_id=run_id,
         browser=browser,
     )
-    schemas = get_tool_schemas(browser_enabled=config.browser_enabled)
+    schemas = get_tool_schemas(
+        browser_enabled=config.browser_enabled,
+        platform_tools_enabled=config.platform_tools_enabled,
+    )
     messages: list[Message] = [
         Message(role="system", content=system_prompt or load_system_prompt()),
         Message(role="user", content=goal),

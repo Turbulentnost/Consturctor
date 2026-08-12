@@ -12,11 +12,14 @@ from pydantic_settings import SettingsConfigDict
 from platform_contracts.tools import ToolInvokeRequest
 from platform_service_common.app_factory import ServiceSettings, create_tool_app, run_app
 from platform_tool_com import outlook_calendar
+from platform_tool_com.com_runtime import com_call
 
 _DEFAULT_APPS = {
     "onec": "V83.Application",
     "outlook": "Outlook.Application",
     "excel": "Excel.Application",
+    "word": "Word.Application",
+    "powerpoint": "PowerPoint.Application",
 }
 
 _OUTLOOK_DEFAULT_METHODS = {
@@ -99,6 +102,16 @@ def _list_apps(_: ToolInvokeRequest) -> dict[str, Any]:
     }
 
 
+def _connect_real(app_id: str, progid: str) -> tuple[str, Any]:
+    import win32com.client
+
+    obj = win32com.client.Dispatch(progid)
+    session_id = str(uuid.uuid4())
+    with _lock:
+        _sessions[session_id] = {"app": app_id, "progid": progid, "object": obj}
+    return session_id, obj
+
+
 def _connect(req: ToolInvokeRequest) -> dict[str, Any]:
     app_id = str(req.payload.get("app", "")).strip().lower()
     apps = _parse_apps()
@@ -107,14 +120,12 @@ def _connect(req: ToolInvokeRequest) -> dict[str, Any]:
     progid = str(req.payload.get("progid", "")).strip() or apps[app_id]
     if not _is_windows():
         raise RuntimeError("COM is only available on Windows host")
-    with _lock:
-        import pythoncom
-        import win32com.client
 
-        pythoncom.CoInitialize()
-        obj = win32com.client.Dispatch(progid)
-        session_id = str(uuid.uuid4())
-        _sessions[session_id] = {"app": app_id, "progid": progid, "object": obj}
+    def _do_connect() -> str:
+        session_id, _obj = _connect_real(app_id, progid)
+        return session_id
+
+    session_id = com_call(_do_connect, timeout=60.0)
     return {
         "summary": f"connected {app_id}",
         "session_id": session_id,
@@ -124,11 +135,7 @@ def _connect(req: ToolInvokeRequest) -> dict[str, Any]:
     }
 
 
-def _invoke(req: ToolInvokeRequest) -> dict[str, Any]:
-    session_id = str(req.payload.get("session_id", "")).strip()
-    method = str(req.payload.get("method", "")).strip()
-    if not session_id or not method:
-        raise ValueError("session_id and method required")
+def _invoke_real(session_id: str, method: str, args: list[Any], kwargs: dict[str, Any]) -> Any:
     with _lock:
         session = _sessions.get(session_id)
         if not session:
@@ -137,17 +144,31 @@ def _invoke(req: ToolInvokeRequest) -> dict[str, Any]:
         if method not in allowlist:
             raise ValueError(f"method not allowed: {method}")
         obj = session["object"]
-        args = req.payload.get("args") or []
-        kwargs = req.payload.get("kwargs") or {}
-        if not isinstance(args, list):
-            raise ValueError("args must be a list")
-        if not isinstance(kwargs, dict):
-            raise ValueError("kwargs must be an object")
-        result = getattr(obj, method)(*args, **kwargs)
-        if hasattr(result, "__class__"):
-            result_repr = str(result)
-        else:
-            result_repr = result
+    result = getattr(obj, method)(*args, **kwargs)
+    if hasattr(result, "__class__"):
+        return str(result)
+    return result
+
+
+def _invoke(req: ToolInvokeRequest) -> dict[str, Any]:
+    session_id = str(req.payload.get("session_id", "")).strip()
+    method = str(req.payload.get("method", "")).strip()
+    if not session_id or not method:
+        raise ValueError("session_id and method required")
+    args = req.payload.get("args") or []
+    kwargs = req.payload.get("kwargs") or {}
+    if not isinstance(args, list):
+        raise ValueError("args must be a list")
+    if not isinstance(kwargs, dict):
+        raise ValueError("kwargs must be an object")
+    result_repr = com_call(
+        _invoke_real,
+        session_id,
+        method,
+        args,
+        kwargs,
+        timeout=120.0,
+    )
     return {
         "summary": f"invoke {method}",
         "session_id": session_id,
@@ -161,16 +182,23 @@ def _release(req: ToolInvokeRequest) -> dict[str, Any]:
     session_id = str(req.payload.get("session_id", "")).strip()
     if not session_id:
         raise ValueError("session_id required")
-    with _lock:
-        session = _sessions.pop(session_id, None)
-        if not session:
-            raise ValueError("session not found")
-        obj = session.get("object")
+
+    def _release_real() -> None:
+        with _lock:
+            session = _sessions.pop(session_id, None)
+            if not session:
+                raise ValueError("session not found")
+            obj = session.get("object")
         if obj is not None and hasattr(obj, "Quit"):
             try:
                 obj.Quit()
             except Exception:
                 pass
+
+    if _is_windows():
+        com_call(_release_real, timeout=30.0)
+    else:
+        _release_real()
     return {"summary": "released", "session_id": session_id, "source": "com"}
 
 

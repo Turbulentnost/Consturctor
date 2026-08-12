@@ -14,7 +14,7 @@ from agent.safety import (
     safety_failure,
     truncate_text,
 )
-from agent.types import ToolResult
+from agent.types import ToolError, ToolResult
 
 
 def run_terminal(
@@ -54,10 +54,17 @@ def run_terminal(
     except subprocess.TimeoutExpired as exc:
         stdout, stdout_trunc = truncate_text(exc.stdout or "", max_output_bytes)
         stderr, stderr_trunc = truncate_text(exc.stderr or "", max_output_bytes)
-        return ToolResult.failure(
-            tool,
-            "timeout",
-            f"Command timed out after {timeout_ms} ms.",
+        return ToolResult(
+            ok=False,
+            tool=tool,
+            data={
+                "command": command,
+                "stdout": stdout,
+                "stderr": stderr,
+                "stdout_truncated": stdout_trunc,
+                "stderr_truncated": stderr_trunc,
+            },
+            error=ToolError(code="timeout", message=f"Command timed out after {timeout_ms} ms."),
         )
 
     elapsed_ms = int((time.monotonic() - start) * 1000)

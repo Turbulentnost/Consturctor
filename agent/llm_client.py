@@ -179,6 +179,12 @@ def create_llm_client(config: AgentConfig) -> LLMClient:
 def load_config_from_env(workspace_root: str | None = None) -> AgentConfig:
     root = workspace_root or os.environ.get("AGENT_WORKSPACE", str(Path.cwd()))
     browser_enabled_raw = os.environ.get("AGENT_BROWSER_ENABLED", "true").lower()
+    host_url = (
+        os.environ.get("TOOL_DESKTOP_HOST_URL")
+        or os.environ.get("TOOL_BROWSER_URL")
+        or "http://127.0.0.1:7830"
+    )
+    platform_raw = os.environ.get("AGENT_PLATFORM_TOOLS", "false").lower()
     return AgentConfig(
         workspace_root=str(Path(root).resolve()),
         max_steps=int(os.environ.get("AGENT_MAX_STEPS", "25")),
@@ -187,8 +193,10 @@ def load_config_from_env(workspace_root: str | None = None) -> AgentConfig:
         base_url=os.environ.get("AGENT_BASE_URL") or os.environ.get("OPENAI_BASE_URL"),
         provider=os.environ.get("AGENT_PROVIDER", "openai"),
         debug=os.environ.get("AGENT_DEBUG", "").lower() in {"1", "true", "yes"},
-        browser_url=os.environ.get("TOOL_BROWSER_URL", "http://127.0.0.1:7824"),
+        browser_url=host_url.rstrip("/"),
         browser_enabled=browser_enabled_raw in {"1", "true", "yes"},
+        platform_tools_enabled=platform_raw in {"1", "true", "yes"},
+        platform_host_url=host_url.rstrip("/"),
     )
 
 

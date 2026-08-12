@@ -95,8 +95,10 @@ class AgentConfig:
     debug: bool = False
     max_file_write_bytes: int = 512_000
     max_output_bytes: int = 256_000
-    browser_url: str = "http://127.0.0.1:7824"
+    browser_url: str = "http://127.0.0.1:7830"
     browser_enabled: bool = True
+    platform_tools_enabled: bool = False
+    platform_host_url: str = "http://127.0.0.1:7830"
     run_id: str | None = None
 
 

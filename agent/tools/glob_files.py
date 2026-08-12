@@ -37,10 +37,11 @@ def glob_files(
 
         for name in filenames:
             rel_path = f"{rel_dir}/{name}" if rel_dir else name
-            if fnmatch.fnmatch(rel_path.replace("\\", "/"), normalized_pattern):
-                matches.append(rel_path.replace("\\", "/"))
+            rel_norm = rel_path.replace("\\", "/")
+            if fnmatch.fnmatch(rel_norm, normalized_pattern) or fnmatch.fnmatch(name, pattern.replace("\\", "/")):
+                matches.append(rel_norm)
 
-    matches.sort()
+    matches.sort(key=lambda p: _mtime_key(root / p), reverse=True)
     return ToolResult.success(
         tool,
         {
@@ -72,3 +73,10 @@ def _walk(base: Path):
                 files.append(entry.name)
         yield current, [d.name for d in dirs], files
         stack.extend(reversed(dirs))
+
+
+def _mtime_key(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0

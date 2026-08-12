@@ -37,11 +37,27 @@ class FilesystemSettings(ServiceSettings):
 settings = FilesystemSettings()
 
 
+def ensure_fs_workspace(root: Path) -> None:
+    """Create demo folders so sandbox fs.list is not empty on first run."""
+    root.mkdir(parents=True, exist_ok=True)
+    for name in ("incoming", "outgoing", "attachments"):
+        (root / name).mkdir(exist_ok=True)
+    readme = root / "README.txt"
+    if not readme.exists():
+        readme.write_text("Constructor filesystem workspace\n", encoding="utf-8")
+    incoming_readme = root / "incoming" / "README.txt"
+    if not incoming_readme.exists():
+        incoming_readme.write_text("Incoming documents\n", encoding="utf-8")
+    note = root / "attachments" / "note.txt"
+    if not note.exists():
+        note.write_text("Attachment placeholder\n", encoding="utf-8")
+
+
 def _allowlist_roots() -> list[Path]:
     raw = (settings.fs_root_allowlist or os.environ.get("FS_ROOT_ALLOWLIST") or "").strip()
     if not raw:
         default = Path.cwd() / "data" / "filesystem"
-        default.mkdir(parents=True, exist_ok=True)
+        ensure_fs_workspace(default)
         return [default.resolve()]
     roots: list[Path] = []
     for part in raw.split(","):
@@ -49,7 +65,7 @@ def _allowlist_roots() -> list[Path]:
         if not part:
             continue
         path = Path(part).expanduser().resolve()
-        path.mkdir(parents=True, exist_ok=True)
+        ensure_fs_workspace(path)
         roots.append(path)
     if not roots:
         raise RuntimeError("FS_ROOT_ALLOWLIST is empty after parsing")

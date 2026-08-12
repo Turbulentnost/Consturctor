@@ -5,9 +5,11 @@ import os
 from celery import Celery
 
 broker = os.environ.get("CELERY_BROKER_URL", "amqp://guest:guest@127.0.0.1:5672//")
+result_backend = os.environ.get("CELERY_RESULT_BACKEND", "rpc://")
 
-celery_app = Celery("platform_tool_onec", broker=broker)
+celery_app = Celery("platform_tool_onec", broker=broker, backend=result_backend)
 celery_app.conf.task_routes = {"platform_tool_onec.*": {"queue": "onec"}}
+celery_app.conf.result_backend = result_backend
 celery_app.conf.task_annotations = {"platform_tool_onec.invoke_async": {"rate_limit": "10/m"}}
 
 

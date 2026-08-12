@@ -7,18 +7,24 @@
 x-platform-env: &platform-env
   DATABASE_URL: postgresql+psycopg://constructor:constructor@postgres:5432/constructor
   CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+  CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-rpc://}
   USE_STUBS: ${USE_STUBS:-true}
 
 x-tool-urls: &tool-urls
-  TOOL_IMAP_URL: http://platform-tool-imap:7821
-  TOOL_ONEC_URL: http://platform-tool-onec:7822
-  TOOL_SHELL_URL: http://platform-tool-shell:7823
-  TOOL_SHELL_NATIVE_URL: http://host.docker.internal:7828
-  TOOL_BROWSER_URL: http://platform-tool-browser:7824
-  TOOL_COM_URL: http://host.docker.internal:7826
-  TOOL_FS_URL: http://host.docker.internal:7827
-  KPI_SERVICE_URL: http://platform-kpi:7820
-  ORCHESTRATOR_URL: http://platform-orchestrator-api:7825
+  # IMAP/browser can run on Windows host to avoid Docker anti-bot / mail quirks:
+  #   TOOL_IMAP_URL=http://host.docker.internal:7821
+  #   TOOL_BROWSER_URL=http://host.docker.internal:7824
+  TOOL_IMAP_URL: ${TOOL_IMAP_URL:-http://platform-tool-imap:7821}
+  TOOL_ONEC_URL: ${TOOL_ONEC_URL:-http://platform-tool-onec:7822}
+  TOOL_SHELL_URL: ${TOOL_SHELL_URL:-http://platform-tool-shell:7823}
+  TOOL_SHELL_NATIVE_URL: ${TOOL_SHELL_NATIVE_URL:-http://host.docker.internal:7828}
+  TOOL_BROWSER_URL: ${TOOL_BROWSER_URL:-http://platform-tool-browser:7824}
+  TOOL_COM_URL: ${TOOL_COM_URL:-http://host.docker.internal:7826}
+  TOOL_FS_URL: ${TOOL_FS_URL:-http://host.docker.internal:7827}
+  TOOL_DESKTOP_HOST_URL: ${TOOL_DESKTOP_HOST_URL:-http://host.docker.internal:7830}
+  TOOL_DESKTOP_LAUNCHER_URL: ${TOOL_DESKTOP_LAUNCHER_URL:-http://host.docker.internal:7829}
+  KPI_SERVICE_URL: ${KPI_SERVICE_URL:-http://platform-kpi:7820}
+  ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:-http://platform-orchestrator-api:7825}
 
 services:
   postgres:
@@ -73,7 +79,8 @@ services:
       IMAP_PORT: ${IMAP_PORT:-993}
       IMAP_USERNAME: ${IMAP_USERNAME:-}
       IMAP_PASSWORD: ${IMAP_PASSWORD:-}
-      MAILBOX: ${IMAP_MAILBOX:-INBOX}
+      IMAP_MAILBOX: ${IMAP_MAILBOX:-INBOX}
+      IMAP_CONNECT_TIMEOUT_SEC: ${IMAP_CONNECT_TIMEOUT_SEC:-120}
     ports:
       - "7821:7821"
     depends_on:
@@ -90,6 +97,12 @@ services:
     restart: unless-stopped
     environment:
       <<: *platform-env
+      IMAP_HOST: ${IMAP_HOST:-imap.yandex.ru}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_USERNAME: ${IMAP_USERNAME:-}
+      IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+      IMAP_MAILBOX: ${IMAP_MAILBOX:-INBOX}
+      IMAP_CONNECT_TIMEOUT_SEC: ${IMAP_CONNECT_TIMEOUT_SEC:-120}
     depends_on:
       postgres:
         condition: service_healthy
@@ -159,7 +172,7 @@ services:
     environment:
       <<: *platform-env
       API_PORT: "7824"
-      URL_WHITELIST: localhost,127.0.0.1,turbo-don.ru,161.ru,ria.ru,don24.ru,donnews.ru,yandex.ru,vseinstrumenti.ru
+      URL_WHITELIST: localhost,127.0.0.1,turbo-don.ru,161.ru,ria.ru,don24.ru,donnews.ru,yandex.ru,ya.ru,google.com,duckduckgo.com,wikipedia.org,ru.wikipedia.org,en.wikipedia.org,calend.ru,www.calend.ru,vseinstrumenti.ru,rbc.ru,kommersant.ru,lenta.ru,gazeta.ru,mail.ru
     ports:
       - "7824:7824"
     depends_on:
@@ -238,6 +251,9 @@ services:
       ERP_SQL_TRUSTED_CONNECTION: ${ERP_SQL_TRUSTED_CONNECTION:-no}
       ERP_SQL_USER: ${ERP_SQL_USER:-}
       ERP_SQL_PASSWORD: ${ERP_SQL_PASSWORD:-}
+      TOOL_MANIFEST_PATH: /app/backend/data/tool_manifest.json
+    volumes:
+      - ../backend/data/tool_manifest.json:/app/backend/data/tool_manifest.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

@@ -11,11 +11,13 @@ from agent.tools.browser_client import BROWSER_READ_ONLY, BROWSER_TOOLS, Browser
 from agent.tools.delete_file import delete_file
 from agent.tools.glob_files import glob_files
 from agent.tools.grep_search import grep_search
+from agent.tools.platform_client import PLATFORM_TOOL_NAMES, PlatformToolClient
 from agent.tools.read_file import read_file
 from agent.tools.read_lints import read_lints
 from agent.tools.run_terminal import run_terminal
 from agent.tools.str_replace import str_replace
 from agent.tools.todo_write import TodoStore, todo_write
+from agent.tools.web_fetch import web_fetch
 from agent.tools.write_file import write_file
 from agent.types import AgentConfig, ToolResult
 
@@ -28,6 +30,7 @@ class ToolContext:
     todo_store: TodoStore
     run_id: str = field(default_factory=lambda: str(uuid4()))
     browser: BrowserToolClient | None = None
+    platform: PlatformToolClient | None = None
 
 
 Handler = Callable[[ToolContext, dict[str, Any]], ToolResult]
@@ -116,6 +119,8 @@ _CORE_SCHEMAS: list[dict[str, Any]] = [
                 "glob": {"type": "string", "description": "Optional filename glob filter."},
                 "case_insensitive": {"type": "boolean", "default": False},
                 "head_limit": {"type": "integer"},
+                "context_before": {"type": "integer", "description": "Lines before match (rg only)."},
+                "context_after": {"type": "integer", "description": "Lines after match (rg only)."},
             },
             "required": ["pattern"],
         },
@@ -136,12 +141,23 @@ _CORE_SCHEMAS: list[dict[str, Any]] = [
     ),
     _schema(
         "read_lints",
-        "Read linter diagnostics for paths (stub — may be unavailable).",
+        "Read linter diagnostics via ruff when installed.",
         {
             "type": "object",
             "properties": {
                 "paths": {"type": "array", "items": {"type": "string"}},
             },
+        },
+    ),
+    _schema(
+        "web_fetch",
+        "Fetch readable text from an allowlisted URL via desktop host browser worker.",
+        {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+            },
+            "required": ["url"],
         },
     ),
     _schema(
@@ -300,10 +316,24 @@ _BROWSER_SCHEMAS: list[dict[str, Any]] = [
 TOOL_SCHEMAS: list[dict[str, Any]] = _CORE_SCHEMAS + _BROWSER_SCHEMAS
 
 
-def get_tool_schemas(*, browser_enabled: bool = True) -> list[dict[str, Any]]:
+def get_tool_schemas(*, browser_enabled: bool = True, platform_tools_enabled: bool = False) -> list[dict[str, Any]]:
+    schemas = list(_CORE_SCHEMAS)
     if browser_enabled:
-        return _CORE_SCHEMAS + _BROWSER_SCHEMAS
-    return list(_CORE_SCHEMAS)
+        schemas.extend(_BROWSER_SCHEMAS)
+    if platform_tools_enabled:
+        schemas.extend(_platform_schemas())
+    return schemas
+
+
+def _platform_schemas() -> list[dict[str, Any]]:
+    return [
+        _schema(
+            name,
+            f"Platform tool via desktop host :7830 — {name}",
+            {"type": "object", "properties": {"payload": {"type": "object"}}, "additionalProperties": True},
+        )
+        for name in sorted(PLATFORM_TOOL_NAMES)
+    ]
 
 
 def _handle_read_file(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -354,6 +384,8 @@ def _handle_grep(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         glob=args.get("glob"),
         case_insensitive=bool(args.get("case_insensitive", False)),
         head_limit=args.get("head_limit"),
+        context_before=args.get("context_before"),
+        context_after=args.get("context_after"),
     )
 
 
@@ -376,10 +408,44 @@ def _handle_todo_write(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     return todo_write(ctx.todo_store, todos=args.get("todos"), merge=bool(args.get("merge", True)))
 
 
+def _handle_web_fetch(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    return web_fetch(args["url"], host_url=ctx.config.platform_host_url)
+
+
+def _ensure_platform_client(ctx: ToolContext) -> PlatformToolClient | None:
+    if not ctx.config.platform_tools_enabled:
+        return None
+    if ctx.platform is None:
+        ctx.platform = PlatformToolClient(ctx.config.platform_host_url)
+    return ctx.platform
+
+
+def _handle_platform(ctx: ToolContext, tool_name: str, args: dict[str, Any]) -> ToolResult:
+    client = _ensure_platform_client(ctx)
+    if client is None:
+        return ToolResult.failure(
+            tool_name,
+            "PLATFORM_DISABLED",
+            "Set AGENT_PLATFORM_TOOLS=1 to enable platform tools",
+        )
+    payload = dict(args)
+    payload.pop("payload", None)
+    return client.invoke(tool_name, ctx.run_id, payload)
+
+
+def _ensure_browser_client(ctx: ToolContext) -> BrowserToolClient | None:
+    if not ctx.config.browser_enabled:
+        return None
+    if ctx.browser is None:
+        ctx.browser = BrowserToolClient(ctx.config.browser_url)
+    return ctx.browser
+
+
 def _handle_browser(ctx: ToolContext, tool_name: str, args: dict[str, Any]) -> ToolResult:
-    if not ctx.config.browser_enabled or ctx.browser is None:
+    client = _ensure_browser_client(ctx)
+    if client is None:
         return ToolResult.failure(tool_name, "BROWSER_DISABLED", "Browser tools are disabled for this agent run")
-    return ctx.browser.invoke(tool_name, ctx.run_id, args)
+    return client.invoke(tool_name, ctx.run_id, args)
 
 
 def _make_browser_handler(tool_name: str) -> Handler:
@@ -399,10 +465,14 @@ HANDLERS: dict[str, Handler] = {
     "run_terminal": _handle_run_terminal,
     "read_lints": _handle_read_lints,
     "todo_write": _handle_todo_write,
+    "web_fetch": _handle_web_fetch,
 }
 
 for _name in sorted(BROWSER_TOOLS):
     HANDLERS[_name] = _make_browser_handler(_name)
+
+for _pname in sorted(PLATFORM_TOOL_NAMES):
+    HANDLERS[_pname] = (lambda n: lambda ctx, args: _handle_platform(ctx, n, args))(_pname)
 
 
 def is_read_only_tool(name: str) -> bool:

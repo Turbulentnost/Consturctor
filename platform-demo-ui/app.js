@@ -454,6 +454,8 @@ function formatToolResult(result) {
     const lines = [data.summary || `найдено uid: ${data.uids.length}`];
     if (data.user) lines.push(`user: ${data.user}`);
     if (data.query) lines.push(`query: ${data.query}`);
+    if (data.host) lines.push(`host: ${data.host}`);
+    if (data.mailbox) lines.push(`mailbox: ${data.mailbox}`);
     lines.push(`uids: ${data.uids.join(", ")}`);
     if (Array.isArray(data.messages) && data.messages.length) {
       lines.push("");
@@ -461,6 +463,17 @@ function formatToolResult(result) {
         lines.push(`- uid=${row.uid} | ${row.subject || "—"} | ${row.from || ""}`.trimEnd());
       }
     }
+    if (data.source) lines.push(`источник: ${data.source}`);
+    return lines.join("\n");
+  }
+  if (data.uid && (data.subject || data.from || data.body_text)) {
+    const lines = [data.summary || `uid=${data.uid}`];
+    if (data.subject) lines.push(`subject: ${data.subject}`);
+    if (data.from) lines.push(`from: ${data.from}`);
+    if (typeof data.body_text === "string" && data.body_text.length) {
+      lines.push("", data.body_text.trimEnd());
+    }
+    if (data.source) lines.push(`источник: ${data.source}`);
     return lines.join("\n");
   }
   if (Array.isArray(data.entries) && data.entries.length) {
@@ -511,12 +524,14 @@ function formatToolResult(result) {
     const body = data.text.trimEnd();
     return header ? `${header}\n\n${body}` : body;
   }
-  if (typeof data.stdout === "string" && data.stdout.length) {
+  if (typeof data.stdout === "string") {
     let out = data.stdout;
     if (data.stderr) out += `\n[stderr]\n${data.stderr}`;
     if (data.exit_code != null) out += `\n[exit_code=${data.exit_code}]`;
     if (data.cwd) out += `\n[cwd=${data.cwd}]`;
-    return out.trimEnd();
+    if (data.runtime) out += `\n[runtime=${data.runtime}]`;
+    const trimmed = out.trimEnd();
+    return trimmed || `[exit_code=${data.exit_code ?? 0}, пустой вывод]`;
   }
   if (data.summary) return String(data.summary);
   return JSON.stringify(data, null, 2);
@@ -555,32 +570,308 @@ async function refreshSandboxMode() {
   }
 }
 
-function parseOnecPreset(value) {
-  if (!value) return null;
-  const [entity, topRaw] = value.split("|");
-  return {
-    entity: (entity || "").trim(),
-    top: Math.max(1, Number.parseInt(topRaw, 10) || 3),
-  };
+const BROWSER_URL_ALLOWLIST = [
+  "localhost",
+  "127.0.0.1",
+  "turbo-don.ru",
+  "161.ru",
+  "ria.ru",
+  "don24.ru",
+  "donnews.ru",
+  "yandex.ru",
+  "ya.ru",
+  "google.com",
+  "duckduckgo.com",
+  "vseinstrumenti.ru",
+  "www.vseinstrumenti.ru",
+  "rbc.ru",
+  "kommersant.ru",
+  "lenta.ru",
+  "gazeta.ru",
+  "mail.ru",
+];
+
+let browserActiveMode = "search";
+
+function normalizeBrowserHost(host) {
+  const value = (host || "").toLowerCase().trim();
+  return value.startsWith("www.") ? value.slice(4) : value;
+}
+
+function isBrowserSearchPortalUrl(url) {
+  if (!url) return false;
+  try {
+    const host = normalizeBrowserHost(new URL(url).hostname);
+    return ["ya.ru", "yandex.ru", "google.com", "duckduckgo.com"].some(
+      (item) => host === item || host.endsWith(`.${item}`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+const ONEC_DOCFLOW_TABS = [
+  {
+    id: "incoming",
+    label: "Входящие",
+    title: "Входящие документы",
+    description: "Входящая корреспонденция, присоединённые файлы и задачи по входящим.",
+    presets: [
+      {
+        id: "incoming_doc",
+        label: "Входящая корреспонденция (ТД)",
+        entity: "Document_ТД_ВходящаяКорреспонденция",
+        top: 3,
+        default: true,
+      },
+      {
+        id: "incoming_legacy",
+        label: "Входящая корреспонденция (legacy)",
+        entity: "Document_ВходящаяКорреспонденция",
+        top: 3,
+      },
+      {
+        id: "incoming_files",
+        label: "Присоединённые файлы",
+        entity: "Catalog_ТД_ВходящаяКорреспонденцияПрисоединенныеФайлы",
+        top: 5,
+      },
+      {
+        id: "incoming_tasks",
+        label: "Задания по входящим",
+        entity: "BusinessProcess_Задание",
+        top: 5,
+      },
+    ],
+  },
+  {
+    id: "outgoing",
+    label: "Исходящие",
+    title: "Исходящие документы",
+    description: "Исходящая корреспонденция и связанные записи.",
+    presets: [
+      {
+        id: "outgoing_doc",
+        label: "Исходящая корреспонденция (ТД)",
+        entity: "Document_ТД_ИсходящаяКорреспонденция",
+        top: 3,
+        default: true,
+      },
+    ],
+  },
+  {
+    id: "refs",
+    label: "Справочники",
+    title: "Справочники для почты",
+    description: "Контрагенты и подразделения для маршрутизации корреспонденции.",
+    presets: [
+      {
+        id: "counterparties",
+        label: "Контрагенты",
+        entity: "Catalog_КонтрагентыForMail",
+        top: 10,
+        default: true,
+      },
+      {
+        id: "departments",
+        label: "Подразделения",
+        entity: "Catalog_ПодразделенияForMail",
+        top: 20,
+      },
+    ],
+  },
+  {
+    id: "files",
+    label: "Файлы и тома",
+    title: "Файлы и тома хранения",
+    description: "Тома хранения файлов и сведения о прикреплённых файлах.",
+    presets: [
+      {
+        id: "volumes",
+        label: "Тома хранения",
+        entity: "Catalog_ТомаХраненияФайлов",
+        top: 10,
+        default: true,
+      },
+      {
+        id: "file_info",
+        label: "Сведения о файлах",
+        entity: "InformationRegister_СведенияОФайлах",
+        top: 10,
+      },
+    ],
+  },
+  {
+    id: "changes",
+    label: "Регистрация изменений",
+    title: "Изменения документов",
+    description: "Журнал изменений документов документооборота.",
+    presets: [
+      {
+        id: "doc_changes",
+        label: "Изменения документов",
+        entity: "Document_Changes",
+        top: 10,
+        default: true,
+      },
+    ],
+  },
+];
+
+let onecActiveTabId = "incoming";
+let onecActivePresetId = null;
+
+function findOnecTab(tabId) {
+  return ONEC_DOCFLOW_TABS.find((tab) => tab.id === tabId);
+}
+
+function findOnecPreset(tab, presetId) {
+  return tab.presets.find((preset) => preset.id === presetId);
+}
+
+function getDefaultOnecPreset(tab) {
+  return tab.presets.find((preset) => preset.default) || tab.presets[0];
+}
+
+function applyOnecPresetFields() {
+  const tab = findOnecTab(onecActiveTabId);
+  if (!tab) return;
+  const preset = findOnecPreset(tab, onecActivePresetId) || getDefaultOnecPreset(tab);
+  onecActivePresetId = preset.id;
+  if ($("sbOnecPath")) $("sbOnecPath").value = preset.entity;
+  if ($("sbOnecTop")) $("sbOnecTop").value = preset.top;
+}
+
+function renderOnecTabs() {
+  const nav = $("onecTabNav");
+  const presetList = $("onecPresetList");
+  if (!nav || !presetList) return;
+
+  nav.innerHTML = "";
+  for (const tab of ONEC_DOCFLOW_TABS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `onec-tab${tab.id === onecActiveTabId ? " active" : ""}`;
+    btn.textContent = tab.label;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", tab.id === onecActiveTabId ? "true" : "false");
+    btn.dataset.tabId = tab.id;
+    btn.addEventListener("click", () => switchOnecTab(tab.id));
+    nav.appendChild(btn);
+  }
+
+  const tab = findOnecTab(onecActiveTabId);
+  if (!tab) return;
+
+  const titleEl = $("onecTabTitle");
+  const descEl = $("onecTabDesc");
+  if (titleEl) titleEl.textContent = tab.title;
+  if (descEl) descEl.textContent = tab.description;
+
+  if (!onecActivePresetId || !findOnecPreset(tab, onecActivePresetId)) {
+    onecActivePresetId = getDefaultOnecPreset(tab).id;
+  }
+
+  presetList.innerHTML = "";
+  for (const preset of tab.presets) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = `onec-preset${preset.id === onecActivePresetId ? " active" : ""}`;
+    chip.textContent = preset.label;
+    chip.dataset.presetId = preset.id;
+    chip.addEventListener("click", () => selectOnecPreset(preset.id));
+    presetList.appendChild(chip);
+  }
+
+  applyOnecPresetFields();
+}
+
+function switchOnecTab(tabId) {
+  onecActiveTabId = tabId;
+  onecActivePresetId = null;
+  renderOnecTabs();
+}
+
+function selectOnecPreset(presetId) {
+  onecActivePresetId = presetId;
+  renderOnecTabs();
+}
+
+function normalizeBrowserUrlInput(raw) {
+  const value = (raw || "").trim();
+  if (!value) return "";
+  try {
+    const url = new URL(value.startsWith("http://") || value.startsWith("https://") ? value : `https://${value}`);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
+function isBrowserUrlAllowed(url) {
+  if (!url) return false;
+  try {
+    const host = normalizeBrowserHost(new URL(url).hostname);
+    return BROWSER_URL_ALLOWLIST.some((item) => {
+      const allowed = normalizeBrowserHost(item);
+      return host === allowed || host.endsWith(`.${allowed}`);
+    });
+  } catch {
+    return false;
+  }
+}
+
+function switchBrowserMode(mode) {
+  browserActiveMode = mode === "url" ? "url" : "search";
+  document.querySelectorAll(".browser-mode-tab").forEach((tab) => {
+    const active = tab.dataset.mode === browserActiveMode;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll(".browser-mode-panel").forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.mode !== browserActiveMode);
+  });
+}
+
+function resolveBrowserSandboxRequest() {
+  const query = ($("sbBrowserQuery")?.value || "").trim();
+  const rawUrl = ($("sbBrowserUrl")?.value || "").trim();
+
+  if (browserActiveMode === "search") {
+    if (!query) throw new Error("Укажите поисковый запрос");
+    return { mode: "search", query, hint: "" };
+  }
+
+  if (!rawUrl) throw new Error("Укажите URL страницы. Пример: https://donnews.ru/");
+
+  const url = normalizeBrowserUrlInput(rawUrl);
+  if (!url) throw new Error("URL некорректен. Пример: https://donnews.ru/");
+
+  if (!isBrowserUrlAllowed(url)) {
+    throw new Error(
+      `URL не разрешён политикой: ${rawUrl}. Переключитесь на вкладку «Поиск» или используйте allowlisted-домен.`
+    );
+  }
+
+  if (query && isBrowserSearchPortalUrl(url)) {
+    return {
+      mode: "search",
+      query,
+      hint: "URL поисковика игнорируется — выполняется поиск через DuckDuckGo.",
+    };
+  }
+
+  return { mode: "url", url, hint: "" };
 }
 
 function getOnecSandboxParams() {
-  const preset = parseOnecPreset($("sbOnecPreset")?.value);
-  const entity = ($("sbOnecPath")?.value || preset?.entity || "Document_ТД_ВходящаяКорреспонденция")
+  const entity = ($("sbOnecPath")?.value || "Document_ТД_ВходящаяКорреспонденция")
     .trim()
     .replace(/^\//, "");
   const topRaw = $("sbOnecTop")?.value;
-  const top = topRaw
-    ? Math.max(1, Number.parseInt(topRaw, 10) || 3)
-    : (preset?.top || 3);
+  const top = topRaw ? Math.max(1, Number.parseInt(topRaw, 10) || 3) : 3;
   return { entity, top };
-}
-
-function syncOnecPresetFields() {
-  const preset = parseOnecPreset($("sbOnecPreset")?.value);
-  if (!preset) return;
-  if ($("sbOnecPath") && preset.entity) $("sbOnecPath").value = preset.entity;
-  if ($("sbOnecTop") && preset.top) $("sbOnecTop").value = preset.top;
 }
 
 async function runSandboxOnec() {
@@ -645,21 +936,35 @@ async function runSandboxImap() {
 
 async function runSandboxBrowser() {
   if (!sandboxRequireLogin()) return;
-  const url = ($("sbBrowserUrl")?.value || "").trim();
-  const query = ($("sbBrowserQuery")?.value || "").trim();
-  setSandboxFormState("browser", "running", url ? "Загрузка страницы..." : "Поиск...");
-  writeSandboxOut("sbBrowserOut", url ? `GET ${url}\n...` : `Поиск: ${query}\n...`);
+  let request;
+  try {
+    request = resolveBrowserSandboxRequest();
+  } catch (e) {
+    writeSandboxOut("sbBrowserOut", `Ошибка: ${e.message}`);
+    setSandboxFormState("browser", "fail", e.message);
+    return;
+  }
+
+  const { mode, url, query, hint } = request;
+  setSandboxFormState("browser", "running", mode === "url" ? "Загрузка страницы..." : "Поиск...");
+  const preview = hint ? `${hint}\n\n` : "";
+  writeSandboxOut(
+    "sbBrowserOut",
+    preview + (mode === "url" ? `GET ${url}\n...` : `Поиск: ${query}\n...`)
+  );
   try {
     const payload = { selector: "body", fetch_first: true };
-    if (url) payload.url = url;
-    else if (query) payload.query = query;
-    else throw new Error("Укажите URL или поисковый запрос");
+    if (mode === "url") payload.url = url;
+    else payload.query = query;
     const text = await invokeSandboxTool("browser.extract_text", payload);
-    writeSandboxOut("sbBrowserOut", formatToolResult(text));
+    const lines = [];
+    if (hint) lines.push(hint, "");
+    lines.push(formatToolResult(text));
+    writeSandboxOut("sbBrowserOut", lines.join("\n"));
     setSandboxFormState("browser", text.ok ? "done" : "fail", text.ok ? "OK" : text.error || "Ошибка");
     log(`Sandbox Browser: ${text.ok ? text.data?.summary || "ok" : text.error}`);
   } catch (e) {
-    writeSandboxOut("sbBrowserOut", `Ошибка: ${e.message}`);
+    writeSandboxOut("sbBrowserOut", `${hint ? `${hint}\n\n` : ""}Ошибка: ${e.message}`);
     setSandboxFormState("browser", "fail", e.message);
     log(`Sandbox Browser FAILED: ${e.message}`);
   }
@@ -799,6 +1104,29 @@ async function runSandboxComOutlookCalendar() {
       limit: 20,
       query,
     });
+    if (!list.ok && String(list.error || "").includes("CALENDAR_UNAVAILABLE")) {
+      writeSandboxOut(
+        "sbComOut",
+        [
+          `session: ${sessionId}`,
+          "Календарь Outlook недоступен через COM.",
+          "",
+          "Что сделать:",
+          "1. Откройте Microsoft Outlook вручную один раз",
+          "2. Войдите в рабочий профиль / почтовый ящик",
+          "3. Дождитесь синхронизации календаря",
+          "4. Повторите «Outlook calendar»",
+          "",
+          formatToolResult(list),
+        ].join("\n"),
+      );
+      setSandboxFormState("com", "fail", "Откройте Outlook и войдите в профиль");
+      log(`Sandbox COM Outlook calendar: profile required — ${list.error}`);
+      if (sessionId) {
+        await invokeSandboxTool("com.outlook.close", { session_id: sessionId, quit: false }).catch(() => {});
+      }
+      return;
+    }
     const firstId = list.data?.events?.[0]?.entry_id;
     let detail = null;
     if (firstId) {
@@ -880,13 +1208,15 @@ function initSandboxPanel() {
     fsOp.addEventListener("change", syncFsOpFields);
     syncFsOpFields();
   }
+  document.querySelectorAll(".browser-mode-tab").forEach((tab) => {
+    tab.addEventListener("click", () => switchBrowserMode(tab.dataset.mode));
+  });
+  switchBrowserMode(browserActiveMode);
   const btnAll = $("btnSandboxAll");
   if (btnAll) btnAll.addEventListener("click", runAllSandboxTests);
   const btnClear = $("btnSandboxClear");
   if (btnClear) btnClear.addEventListener("click", clearSandboxOutput);
-  const preset = $("sbOnecPreset");
-  if (preset) preset.addEventListener("change", syncOnecPresetFields);
-  syncOnecPresetFields();
+  renderOnecTabs();
   refreshSandboxMode();
 }
 
@@ -1447,7 +1777,7 @@ const PLATFORM_TOOL_DEMOS = [
     id: "onec_odata_get",
     name: "onec.odata_get",
     badge: "1С",
-    desc: "OData-запрос: последние входящие документы из 1С ERP",
+    desc: "OData: раздел «Входящие» — последние документы документооборота",
     steps: [
       {
         type: "call",

@@ -8,7 +8,7 @@ import time
 from html import unescape
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from uuid import UUID, uuid4
 
 import httpx
@@ -40,6 +40,13 @@ _DDG_SNIPPET = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_NEWS_FALLBACK_SITES: tuple[tuple[str, str], ...] = (
+    ("https://donnews.ru/", "donnews.ru"),
+    ("https://161.ru/text/", "161.ru"),
+    ("https://don24.ru/", "don24.ru"),
+    ("https://ria.ru/", "ria.ru"),
+)
+
 _NOISE_FRAGMENTS = (
     "all regions",
     "duckduckgo",
@@ -56,7 +63,24 @@ _URL_ALIASES: dict[str, str] = {
     "www.всеинструменты.ру": "https://www.vseinstrumenti.ru/",
     "vseinstrumenti.ru": "https://www.vseinstrumenti.ru/",
     "www.vseinstrumenti.ru": "https://www.vseinstrumenti.ru/",
+    "ya.ru": "https://yandex.ru/",
+    "www.ya.ru": "https://yandex.ru/",
 }
+
+_SEARCH_PORTAL_HOSTS = frozenset(
+    {"ya.ru", "yandex.ru", "google.com", "duckduckgo.com", "www.google.com"}
+)
+
+_DEFAULT_URL_WHITELIST = (
+    "localhost,127.0.0.1,"
+    "turbo-don.ru,161.ru,ria.ru,don24.ru,donnews.ru,"
+    "yandex.ru,ya.ru,google.com,duckduckgo.com,"
+    "wikipedia.org,ru.wikipedia.org,en.wikipedia.org,"
+    "calend.ru,www.calend.ru,"
+    "vseinstrumenti.ru,www.vseinstrumenti.ru,"
+    "rbc.ru,kommersant.ru,lenta.ru,gazeta.ru,mail.ru,"
+    "vodokanalrnd.ru,www.vodokanalrnd.ru,rostov-zkh.ru,www.rostov-zkh.ru"
+)
 
 _SNAPSHOT_JS = """
 () => {
@@ -103,10 +127,7 @@ class BrowserSettings(ServiceSettings):
     browser_max_contexts: int = 3
     browser_max_pages: int = 5
     browser_session_ttl_sec: float = 900.0
-    url_whitelist: str = (
-        "localhost,127.0.0.1,turbo-don.ru,161.ru,ria.ru,don24.ru,donnews.ru,"
-        "yandex.ru,vseinstrumenti.ru,www.vseinstrumenti.ru"
-    )
+    url_whitelist: str = _DEFAULT_URL_WHITELIST
     workspace_root: str = ""
     browser_http_timeout_sec: float = 30.0
 
@@ -121,13 +142,25 @@ _session_manager = BrowserSessionManager(
 )
 
 
+def _normalize_host(host: str) -> str:
+    host = host.lower().strip()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
 def _allowed_url(url: str) -> bool:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         return False
-    host = (parsed.hostname or "").lower()
-    allowed = [x.strip().lower() for x in settings.url_whitelist.split(",") if x.strip()]
+    host = _normalize_host(parsed.hostname or "")
+    allowed = [_normalize_host(x.strip()) for x in settings.url_whitelist.split(",") if x.strip()]
     return any(host == item or host.endswith(f".{item}") for item in allowed)
+
+
+def _is_search_portal_url(url: str) -> bool:
+    host = _normalize_host(urlparse(url).hostname or "")
+    return host in _SEARCH_PORTAL_HOSTS or any(host.endswith(f".{h}") for h in _SEARCH_PORTAL_HOSTS)
 
 
 def _normalize_input_url(url: str) -> str:
@@ -136,7 +169,7 @@ def _normalize_input_url(url: str) -> str:
         return ""
     if not url.startswith(("http://", "https://")):
         url = f"https://{url.lstrip('/')}"
-    host = (urlparse(url).hostname or "").lower()
+    host = _normalize_host(urlparse(url).hostname or "")
     if host in _URL_ALIASES:
         return _URL_ALIASES[host]
     return url
@@ -249,9 +282,16 @@ def _detect_blocked_html(html: str, url: str, status_code: int) -> str | None:
         return f"HTTP {status_code}: сайт отклонил запрос."
     if any(token in lowered for token in ("servicepipe", "spinner-loader", "cf-challenge", "ddos-guard")):
         return "Страница защиты от ботов (anti-bot challenge)."
-    if len(html) < 8000 and any(
+    if any(
         token in lowered
-        for token in ("sso.passport.yandex", "sso.dzen.ru", "yredirect=true", "smartcaptcha", "не робот")
+        for token in (
+            "sso.passport.yandex",
+            "sso.dzen.ru",
+            "yredirect=true",
+            "smartcaptcha",
+            "не робот",
+            "подтвердите, что запросы",
+        )
     ):
         return "Страница captcha или redirect (контент недоступен автоматически)."
     visible = _html_to_text(html)
@@ -271,6 +311,8 @@ def _fetch_text_http(url: str) -> dict[str, Any]:
         title_match = re.search(r"<title[^>]*>(.*?)</title>", response.text, re.IGNORECASE | re.DOTALL)
         title = unescape(_WS_RE.sub(" ", title_match.group(1)).strip()) if title_match else url
         text = _extract_readable_text(response.text, url)
+    if text.startswith("Сайт вернул captcha"):
+        return _blocked_result(url, "Страница captcha или redirect (контент недоступен автоматически).")
     return {
         "summary": f"http fetch ok ({len(text)} chars)",
         "url": url,
@@ -293,16 +335,23 @@ def _screenshot_dir(run_id: str | None) -> Path:
     return path
 
 
-def _web_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
+def _web_search_ddg(query: str, max_results: int = 5) -> list[dict[str, str]]:
     max_results = max(1, min(10, max_results))
     with httpx.Client(timeout=settings.browser_http_timeout_sec, follow_redirects=True) as client:
         response = client.post(
             "https://html.duckduckgo.com/html/",
             data={"q": query, "b": "", "kl": "ru-ru"},
-            headers={**_HTTP_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+            headers={
+                **_HTTP_HEADERS,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Referer": "https://duckduckgo.com/",
+            },
         )
         response.raise_for_status()
         html = response.text
+
+    if "anomaly-modal" in html or "result__a" not in html:
+        return []
 
     results: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -327,6 +376,117 @@ def _web_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
     return results
 
 
+def _query_tokens(query: str) -> set[str]:
+    return {token for token in re.findall(r"[\w\u0400-\u04ff]+", query.lower()) if len(token) > 2}
+
+
+def _fallback_allowlisted_search(query: str, max_results: int) -> list[dict[str, str]]:
+    tokens = _query_tokens(query)
+    query_lower = query.lower()
+    news_intent = any(
+        marker in query_lower for marker in ("новост", "news", "ростов", "rostov", "don", "161")
+    )
+    scored: list[tuple[int, dict[str, str]]] = []
+
+    for site_url, label in _NEWS_FALLBACK_SITES:
+        if not _allowed_url(site_url):
+            continue
+        try:
+            page = _fetch_text_http(site_url)
+        except Exception:
+            continue
+        if page.get("source") == "blocked":
+            continue
+
+        title = str(page.get("title") or label).strip()
+        text = str(page.get("text") or "").strip()
+        if not text:
+            continue
+
+        for line in text.splitlines():
+            item = line.lstrip("- ").strip()
+            if len(item) < 20:
+                continue
+            item_lower = item.lower()
+            score = sum(1 for token in tokens if token in item_lower)
+            if score > 0 or (news_intent and any(k in item_lower for k in ("новост", "ростов", "don"))):
+                scored.append((score, {"title": item[:160], "url": site_url, "snippet": label}))
+
+        if not scored and news_intent:
+            scored.append((0, {"title": title[:160], "url": site_url, "snippet": text[:240]}))
+
+    scored.sort(key=lambda row: row[0], reverse=True)
+    results: list[dict[str, str]] = []
+    seen_titles: set[str] = set()
+    for _, row in scored:
+        key = row["title"].lower()
+        if key in seen_titles:
+            continue
+        seen_titles.add(key)
+        results.append(row)
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def _strip_wiki_snippet(html: str) -> str:
+    return _WS_RE.sub(" ", _strip_tags(html)).strip()
+
+
+def _web_search_wikipedia(query: str, max_results: int = 5) -> list[dict[str, str]]:
+    """MediaWiki search — works from Docker when DDG/Yandex serve captchas."""
+    max_results = max(1, min(10, max_results))
+    api = (
+        "https://ru.wikipedia.org/w/api.php"
+        f"?action=query&list=search&srsearch={quote(query)}"
+        f"&srlimit={max_results}&format=json&utf8=1"
+    )
+    headers = {
+        **_HTTP_HEADERS,
+        "User-Agent": "ConstructorPlatformBrowser/1.0 (tool worker; +https://localhost)",
+        "Accept": "application/json",
+    }
+    try:
+        with httpx.Client(timeout=settings.browser_http_timeout_sec, follow_redirects=True) as client:
+            response = client.get(api, headers=headers)
+            response.raise_for_status()
+            hits = (response.json().get("query") or {}).get("search") or []
+    except Exception:
+        return []
+
+    results: list[dict[str, str]] = []
+    for hit in hits:
+        title = str(hit.get("title") or "").strip()
+        if not title:
+            continue
+        pageid = hit.get("pageid")
+        if pageid is not None:
+            page_url = f"https://ru.wikipedia.org/?curid={int(pageid)}"
+        else:
+            page_url = "https://ru.wikipedia.org/wiki/" + quote(title.replace(" ", "_"), safe="()%:_")
+        results.append(
+            {
+                "title": title,
+                "url": page_url,
+                "snippet": _strip_wiki_snippet(str(hit.get("snippet") or "")),
+            }
+        )
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def _web_search(query: str, max_results: int = 5) -> tuple[list[dict[str, str]], str]:
+    results = _web_search_ddg(query, max_results)
+    if results:
+        return results, "duckduckgo"
+    # DDG/Yandex HTML from Docker almost always hit anti-bot; Wikipedia API is reliable.
+    results = _web_search_wikipedia(query, max_results)
+    if results:
+        return results, "wikipedia"
+    return _fallback_allowlisted_search(query, max_results), "allowlisted_news"
+
+
 def _format_search_results(query: str, results: list[dict[str, str]]) -> str:
     lines = [f"Поиск: {query}", f"Найдено: {len(results)}", ""]
     for idx, row in enumerate(results, 1):
@@ -339,35 +499,57 @@ def _format_search_results(query: str, results: list[dict[str, str]]) -> str:
 
 
 def _search_and_extract(query: str, max_results: int, fetch_first: bool) -> dict[str, Any]:
-    results = _web_search(query, max_results)
+    results, engine = _web_search(query, max_results)
     if not results:
         return {
             "summary": "ничего не найдено",
             "query": query,
             "results": [],
-            "text": f"По запросу «{query}» результатов не найдено.",
+            "text": (
+                f"По запросу «{query}» результатов не найдено. "
+                "DuckDuckGo/Яндекс из контейнера отдают anti-bot captcha; "
+                "fallback по новостным сайтам тоже пуст. "
+                "Исправьте опечатку в запросе или откройте вкладку URL и загрузите конкретную страницу."
+            ),
             "source": "search",
+            "engine": engine,
         }
 
     first_url = results[0]["url"]
     first_title = results[0]["title"]
     page_text = ""
     if fetch_first:
-        try:
-            # Search hits may be outside whitelist; allow first-hit preview.
-            page = _fetch_text_http(first_url)
-            if page.get("source") != "blocked":
-                page_text = str(page.get("text") or "").strip()
-                first_url = str(page.get("url") or first_url)
-                first_title = str(page.get("title") or first_title)
-        except Exception:
-            page_text = ""
+        # Prefer allowlisted hits; skip captcha/blocked pages so the SERP listing stays visible.
+        ordered = sorted(
+            results,
+            key=lambda row: (0 if _allowed_url(str(row.get("url") or "")) else 1),
+        )
+        for candidate in ordered:
+            try:
+                page = _fetch_text_http(str(candidate["url"]))
+                if page.get("source") == "blocked":
+                    continue
+                candidate_text = str(page.get("text") or "").strip()
+                if not candidate_text:
+                    continue
+                page_text = candidate_text
+                first_url = str(page.get("url") or candidate["url"])
+                first_title = str(page.get("title") or candidate["title"])
+                break
+            except Exception:
+                continue
 
     listing = _format_search_results(query, results)
     text = page_text or listing
-    summary = f"search: {len(results)} results"
+    summary = f"search: {len(results)} results via {engine}"
+    if engine == "wikipedia":
+        summary += " (DuckDuckGo blocked; Wikipedia API fallback)"
+    elif engine == "allowlisted_news":
+        summary += " (fallback: allowlisted news sites; DuckDuckGo blocked bot traffic)"
     if page_text:
-        summary += f", fetched first ({len(page_text)} chars)"
+        summary += f", fetched page ({len(page_text)} chars)"
+    else:
+        summary += ", listing only (target pages blocked/captcha)"
     return {
         "summary": summary,
         "query": query,
@@ -376,6 +558,7 @@ def _search_and_extract(query: str, max_results: int, fetch_first: bool) -> dict
         "results": results,
         "text": text,
         "source": "search",
+        "engine": engine,
     }
 
 
@@ -428,6 +611,8 @@ def _open_session(req: ToolInvokeRequest) -> dict[str, Any]:
         "run_id": run_id,
         "session_id": run_id,
         "stub": session.stub,
+        "mode": "stub" if session.stub else "real",
+        "source": "stub" if session.stub else "playwright",
         **meta,
     }
 
@@ -762,7 +947,7 @@ def _extract_text(req: ToolInvokeRequest) -> dict[str, Any]:
     fetch_first = bool(req.payload.get("fetch_first", True))
     use_session = bool(req.payload.get("use_session", True))
 
-    if query and not url:
+    if query and (not url or _is_search_portal_url(url)):
         return _fetch_in_background(_search_and_extract, query, max_results, fetch_first)
 
     # Prefer active session page when run_id present and no explicit url override needed

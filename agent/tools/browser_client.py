@@ -1,4 +1,4 @@
-"""HTTP client for platform-tool-browser worker (:7824)."""
+"""HTTP client for platform browser tools on unified desktop host (:7830)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import httpx
 
 from agent.types import ToolResult
 
-DEFAULT_BROWSER_URL = "http://127.0.0.1:7824"
+DEFAULT_BROWSER_URL = "http://127.0.0.1:7830"
 
 BROWSER_TOOLS = frozenset(
     {

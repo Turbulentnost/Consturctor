@@ -223,9 +223,11 @@ flowchart TB
 
 | Переменная | Где | Эффект |
 |------------|-----|--------|
-| `USE_STUBS=true` | `infra/.env`, docker-compose | Workers отдают STUB_HANDLERS (CI, demo без ERP/IMAP) |
-| `USE_STUBS=false` + credentials | IMAP_USERNAME, ODATA_* | Real handlers; IMAP stub делегирует в real при наличии ключей |
-| Desktop tools | `scripts/start_desktop_tools.cmd` | `USE_STUBS=false` на Windows host |
+| `USE_STUBS=true` | `infra/.env`, docker-compose | Workers отдают STUB_HANDLERS / фикстуры (только для CI/offline). |
+| `USE_STUBS=false` + credentials | IMAP_*, ODATA_* | **Боевой режим:** живой IMAP, OData, COM/Outlook. Рекомендуемый режим для агента. |
+| Desktop tools | `scripts/ensure_desktop_tools.cmd` | Поднимает launcher `:7829`, host `:7830`, legacy `:7826/:7827/:7828` с тем же `USE_STUBS`, что в `infra/.env` |
+
+В ответах tools смотрите поля `mode` (`stub`/`real`) и `source`. При `mode=stub` данные не боевые.
 
 ---
 
@@ -294,17 +296,19 @@ scripts\start_platform_all.cmd
 scripts\docker_up.cmd
 ```
 
-Desktop tools (Windows):
+Desktop tools (Windows) — перед COM/Outlook/FS/native shell:
 
 ```cmd
-scripts\start_desktop_tools.cmd
+scripts\ensure_desktop_tools.cmd
 ```
+
+(или вручную `scripts\start_desktop_tools.cmd` для портов 7826–7828)
 
 ### Health
 
 | Сервис | URL |
 |--------|-----|
-| Gateway | http://127.0.0.1:7812/health |
+| Gateway | http://127.0.0.1:7812/health **или** http://127.0.0.1:7812/api/v1/health |
 | Orchestrator | http://127.0.0.1:7825/health |
 | IMAP | http://127.0.0.1:7821/health |
 | 1C | http://127.0.0.1:7822/health |

@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     tool_browser_url: str = "http://127.0.0.1:7824"
     tool_com_url: str = "http://127.0.0.1:7826"
     tool_fs_url: str = "http://127.0.0.1:7827"
+    tool_desktop_host_url: str = "http://127.0.0.1:7830"
+    tool_desktop_launcher_url: str = "http://127.0.0.1:7829"
     kpi_service_url: str = "http://127.0.0.1:7820"
     orchestrator_url: str = "http://127.0.0.1:7825"
     orchestrator_broker: str = "amqp://guest:guest@127.0.0.1:5672//"

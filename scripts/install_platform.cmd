@@ -26,6 +26,8 @@ call :install "platform-tool-shell" "%ROOT%\services\platform-tool-shell"
 call :install "platform-tool-browser" "%ROOT%\services\platform-tool-browser"
 call :install "platform-tool-com" "%ROOT%\services\platform-tool-com"
 call :install "platform-tool-filesystem" "%ROOT%\services\platform-tool-filesystem"
+call :install "platform-desktop-launcher" "%ROOT%\services\platform-desktop-launcher"
+call :install "platform-desktop-host" "%ROOT%\services\platform-desktop-host"
 
 echo.
 echo Installing test dependencies...

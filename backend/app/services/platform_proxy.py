@@ -37,6 +37,19 @@ def _forward_headers(
     return headers
 
 
+def _tool_invoke_timeout(tool_name: str) -> float:
+    name = (tool_name or "").strip().lower()
+    if name.startswith("imap."):
+        return 180.0
+    if name.startswith("onec."):
+        return 120.0
+    if name.startswith("com."):
+        return 90.0
+    if name.startswith("browser."):
+        return 120.0
+    return 120.0
+
+
 async def invoke_tool(
     tool_name: str,
     request: ToolInvokeRequest,
@@ -51,8 +64,9 @@ async def invoke_tool(
         department=request.department,
         user_id=request.user_id,
     )
+    timeout = _tool_invoke_timeout(tool_name)
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, json=request.model_dump(mode="json"), headers=headers)
     except httpx.ConnectError as exc:
         raise PlatformProxyError("Agent runtime unavailable") from exc
@@ -88,6 +102,7 @@ async def proxy_post(
     *,
     authorization: str | None = None,
     extra_headers: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     url = f"{service_url.rstrip('/')}{path}"
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -95,8 +110,11 @@ async def proxy_post(
         headers["Authorization"] = authorization
     if extra_headers:
         headers.update(extra_headers)
+    # Sandbox run-all walks many tools and can exceed the default 60s window.
+    if timeout is None:
+        timeout = 180.0 if "sandbox" in path and "run" in path else 60.0
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, json=payload, headers=headers)
     except httpx.HTTPError as exc:
         raise PlatformProxyError(f"Service unavailable: {path}") from exc

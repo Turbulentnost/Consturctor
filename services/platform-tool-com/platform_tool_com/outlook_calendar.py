@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import sys
-import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from platform_tool_com.com_runtime import com_call
+
 # Outlook OlDefaultFolders.olFolderCalendar
 OL_FOLDER_CALENDAR = 9
 
-_lock = threading.Lock()
 _outlook_sessions: dict[str, dict[str, Any]] = {}
 _stub_sessions: dict[str, dict[str, Any]] = {}
 
@@ -59,7 +59,6 @@ def _parse_dt(value: Any, *, default: datetime | None = None) -> datetime:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     text = str(value).strip()
-    # Accept ISO and common Outlook-friendly forms
     for fmt in (
         "%Y-%m-%dT%H:%M:%S%z",
         "%Y-%m-%dT%H:%M:%S",
@@ -83,7 +82,6 @@ def _parse_dt(value: Any, *, default: datetime | None = None) -> datetime:
 
 
 def _fmt_outlook_restrict(dt: datetime) -> str:
-    # Outlook Restrict typically expects locale-ish date; ISO-like works on many RU/EN installs with this form.
     local = dt.astimezone()
     return local.strftime("%m/%d/%Y %H:%M")
 
@@ -136,6 +134,43 @@ def _stub_events_for_range(start: datetime, end: datetime) -> list[dict[str, Any
     return events
 
 
+def _launch_real(*, visible: bool) -> dict[str, Any]:
+    import win32com.client
+
+    outlook = win32com.client.Dispatch("Outlook.Application")
+    namespace = outlook.GetNamespace("MAPI")
+    try:
+        namespace.Logon("", "", False, False)
+    except Exception:
+        pass
+    if visible:
+        try:
+            explorers = outlook.Explorers
+            if explorers.Count == 0:
+                calendar = namespace.GetDefaultFolder(OL_FOLDER_CALENDAR)
+                calendar.Display()
+            else:
+                explorers.Item(1).Display()
+        except Exception:
+            pass
+    session_id = str(uuid.uuid4())
+    _outlook_sessions[session_id] = {
+        "outlook": outlook,
+        "namespace": namespace,
+        "visible": visible,
+    }
+    return {
+        "summary": "Outlook launched via COM",
+        "session_id": session_id,
+        "app": "outlook",
+        "progid": "Outlook.Application",
+        "visible": visible,
+        "mode": "real",
+        "source": "com",
+        "platform": sys.platform,
+    }
+
+
 def launch_outlook(*, visible: bool = True, stub: bool = False) -> dict[str, Any]:
     if stub or not _is_windows():
         session_id = str(uuid.uuid4())
@@ -146,53 +181,25 @@ def launch_outlook(*, visible: bool = True, stub: bool = False) -> dict[str, Any
             "app": "outlook",
             "progid": "Outlook.Application",
             "visible": visible,
+            "mode": "stub",
             "source": "stub",
             "platform": sys.platform,
         }
 
-    with _lock:
-        import pythoncom
-        import win32com.client
-
-        pythoncom.CoInitialize()
-        outlook = win32com.client.Dispatch("Outlook.Application")
-        namespace = outlook.GetNamespace("MAPI")
-        # Ensure profile/store is available; Logon is often a no-op if already running.
-        try:
-            namespace.Logon("", "", False, False)
-        except Exception:
-            pass
-        if visible:
-            try:
-                explorers = outlook.Explorers
-                if explorers.Count == 0:
-                    calendar = namespace.GetDefaultFolder(OL_FOLDER_CALENDAR)
-                    calendar.Display()
-                else:
-                    explorers.Item(1).Display()
-            except Exception:
-                pass
-        session_id = str(uuid.uuid4())
-        _outlook_sessions[session_id] = {
-            "outlook": outlook,
-            "namespace": namespace,
-            "visible": visible,
-        }
-    return {
-        "summary": "Outlook launched via COM",
-        "session_id": session_id,
-        "app": "outlook",
-        "progid": "Outlook.Application",
-        "visible": visible,
-        "source": "com",
-        "platform": sys.platform,
-    }
+    try:
+        return com_call(_launch_real, visible=visible, timeout=45.0)
+    except TimeoutError as exc:
+        raise RuntimeError(
+            "COM_TIMEOUT: Outlook.Application did not respond in 45s. "
+            "Open Outlook desktop once, sign into a profile, then retry."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"COM_ERROR: Outlook launch failed: {exc}") from exc
 
 
 def close_outlook(session_id: str = "", *, quit_app: bool = False, stub: bool = False) -> dict[str, Any]:
     session_id = (session_id or "").strip()
 
-    # Allow close without session_id (sandbox chains): close the newest session.
     if not session_id:
         if _stub_sessions:
             session_id = next(reversed(_stub_sessions))
@@ -219,7 +226,7 @@ def close_outlook(session_id: str = "", *, quit_app: bool = False, stub: bool = 
             "source": "stub",
         }
 
-    with _lock:
+    def _close_real() -> None:
         session = _outlook_sessions.pop(session_id, None)
         if not session:
             raise ValueError("session not found")
@@ -230,11 +237,94 @@ def close_outlook(session_id: str = "", *, quit_app: bool = False, stub: bool = 
                     outlook.Quit()
                 except Exception:
                     pass
+
+    if _is_windows():
+        com_call(_close_real, timeout=30.0)
+    else:
+        _close_real()
+
     return {
         "summary": "Outlook session closed",
         "session_id": session_id,
         "closed": True,
         "quit": quit_app,
+        "source": "com",
+    }
+
+
+def _calendar_list_real(
+    *,
+    session_id: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    limit: int,
+    query: str,
+    include_body: bool,
+) -> dict[str, Any]:
+    session = _outlook_sessions.get(session_id) if session_id else None
+    if session is None:
+        launched = _launch_real(visible=False)
+        session_id = launched["session_id"]
+        session = _outlook_sessions[session_id]
+
+    outlook = session.get("outlook")
+    namespace = session.get("namespace")
+    folder = None
+    last_err: Exception | None = None
+    for getter in (
+        lambda: namespace.GetDefaultFolder(OL_FOLDER_CALENDAR),
+        lambda: outlook.Session.GetDefaultFolder(OL_FOLDER_CALENDAR),
+        lambda: outlook.GetNamespace("MAPI").GetDefaultFolder(OL_FOLDER_CALENDAR),
+    ):
+        try:
+            folder = getter()
+            if folder is not None:
+                break
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            continue
+    if folder is None:
+        raise RuntimeError(
+            f"CALENDAR_UNAVAILABLE: cannot open Outlook calendar folder "
+            f"({last_err}). Open Outlook once and sign into a profile, then retry."
+        )
+
+    items = folder.Items
+    try:
+        items.IncludeRecurrences = True
+        items.Sort("[Start]")
+    except Exception:
+        pass
+    restriction = (
+        f"[Start] >= '{_fmt_outlook_restrict(start_dt)}' AND "
+        f"[Start] <= '{_fmt_outlook_restrict(end_dt)}'"
+    )
+    try:
+        restricted = items.Restrict(restriction)
+    except Exception:
+        restricted = items
+
+    events: list[dict[str, Any]] = []
+    count = int(getattr(restricted, "Count", 0) or 0)
+    for idx in range(1, count + 1):
+        if len(events) >= limit:
+            break
+        try:
+            item = restricted.Item(idx)
+        except Exception:
+            continue
+        row = _appointment_to_dict(item, include_body=include_body)
+        if query and query not in row["subject"].lower() and query not in row["location"].lower():
+            continue
+        events.append(row)
+
+    return {
+        "summary": f"calendar events={len(events)}",
+        "session_id": session_id,
+        "start": start_dt.isoformat(),
+        "end": end_dt.isoformat(),
+        "count": len(events),
+        "events": events,
         "source": "com",
     }
 
@@ -262,7 +352,6 @@ def calendar_list(
     query = (query or "").strip().lower()
 
     if stub or (session_id and session_id in _stub_sessions) or (not _is_windows() and not session_id):
-        # Auto-create stub session if missing for convenience in CI/demo
         if not session_id or session_id not in _stub_sessions:
             launched = launch_outlook(visible=False, stub=True)
             session_id = launched["session_id"]
@@ -280,50 +369,37 @@ def calendar_list(
             "source": "stub",
         }
 
-    with _lock:
-        session = _outlook_sessions.get(session_id) if session_id else None
-        if session is None:
-            # Allow one-shot list without prior launch
-            launched = launch_outlook(visible=False, stub=False)
-            session_id = launched["session_id"]
-            session = _outlook_sessions[session_id]
-
-        namespace = session["namespace"]
-        folder = namespace.GetDefaultFolder(OL_FOLDER_CALENDAR)
-        items = folder.Items
-        items.IncludeRecurrences = True
-        items.Sort("[Start]")
-        restriction = (
-            f"[Start] >= '{_fmt_outlook_restrict(start_dt)}' AND "
-            f"[Start] <= '{_fmt_outlook_restrict(end_dt)}'"
+    try:
+        return com_call(
+            _calendar_list_real,
+            session_id=session_id,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            limit=limit,
+            query=query,
+            include_body=include_body,
+            timeout=90.0,
         )
-        try:
-            restricted = items.Restrict(restriction)
-        except Exception:
-            restricted = items
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"COM_ERROR: calendar list failed: {exc}") from exc
 
-        events: list[dict[str, Any]] = []
-        # Outlook COM collections are 1-based
-        count = int(getattr(restricted, "Count", 0) or 0)
-        for idx in range(1, count + 1):
-            if len(events) >= limit:
-                break
-            try:
-                item = restricted.Item(idx)
-            except Exception:
-                continue
-            row = _appointment_to_dict(item, include_body=include_body)
-            if query and query not in row["subject"].lower() and query not in row["location"].lower():
-                continue
-            events.append(row)
 
+def _calendar_get_real(*, entry_id: str, session_id: str, include_body: bool) -> dict[str, Any]:
+    session = _outlook_sessions.get(session_id) if session_id else None
+    if session is None:
+        launched = _launch_real(visible=False)
+        session_id = launched["session_id"]
+        session = _outlook_sessions[session_id]
+    namespace = session["namespace"]
+    try:
+        item = namespace.GetItemFromID(entry_id)
+    except Exception as exc:
+        raise ValueError(f"appointment not found: {entry_id}") from exc
+    event = _appointment_to_dict(item, include_body=include_body)
     return {
-        "summary": f"calendar events={len(events)}",
+        "summary": event.get("subject") or "appointment",
         "session_id": session_id,
-        "start": start_dt.isoformat(),
-        "end": end_dt.isoformat(),
-        "count": len(events),
-        "events": events,
+        "event": event,
         "source": "com",
     }
 
@@ -355,21 +431,15 @@ def calendar_get(
                 }
         raise ValueError(f"appointment not found: {entry_id}")
 
-    with _lock:
-        session = _outlook_sessions.get(session_id) if session_id else None
-        if session is None:
-            launched = launch_outlook(visible=False, stub=False)
-            session_id = launched["session_id"]
-            session = _outlook_sessions[session_id]
-        namespace = session["namespace"]
-        try:
-            item = namespace.GetItemFromID(entry_id)
-        except Exception as exc:
-            raise ValueError(f"appointment not found: {entry_id}") from exc
-        event = _appointment_to_dict(item, include_body=include_body)
-    return {
-        "summary": event.get("subject") or "appointment",
-        "session_id": session_id,
-        "event": event,
-        "source": "com",
-    }
+    try:
+        return com_call(
+            _calendar_get_real,
+            entry_id=entry_id,
+            session_id=session_id,
+            include_body=include_body,
+            timeout=60.0,
+        )
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"COM_ERROR: calendar get failed: {exc}") from exc

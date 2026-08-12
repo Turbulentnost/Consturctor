@@ -72,6 +72,22 @@ def test_browser_schemas_include_session_tools() -> None:
     assert "browser.open_session" not in {s["function"]["name"] for s in get_tool_schemas(browser_enabled=False)}
 
 
+def test_browser_autowire_without_explicit_client(tmp_path: Path, monkeypatch) -> None:
+    fake = FakeBrowserClient()
+
+    def _factory(url: str = "http://127.0.0.1:7824", timeout_sec: float = 60.0):
+        del url, timeout_sec
+        return fake
+
+    monkeypatch.setattr("agent.tool_registry.BrowserToolClient", _factory)
+    config = AgentConfig(workspace_root=str(tmp_path), browser_enabled=True, browser_url="http://browser.test")
+    ctx = ToolContext(config=config, todo_store=TodoStore())  # browser=None on purpose
+    result = execute_tool(ctx, "browser.open_session", {})
+    assert result.ok is True
+    assert ctx.browser is fake
+    assert any(c[0] == "browser.open_session" for c in fake.calls)
+
+
 def test_execute_browser_tools_via_client(tmp_path: Path) -> None:
     fake = FakeBrowserClient()
     run_id = str(uuid4())

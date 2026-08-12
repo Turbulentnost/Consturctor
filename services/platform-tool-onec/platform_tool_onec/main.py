@@ -280,12 +280,10 @@ def _odata_patch(req: ToolInvokeRequest) -> dict[str, Any]:
 
 
 def _attach_file(req: ToolInvokeRequest) -> dict[str, Any]:
-    return {
-        "summary": "attach not implemented in MVP",
-        "document_ref_key": req.payload.get("document_ref_key"),
-        "filename": req.payload.get("filename"),
-        "stub": True,
-    }
+    raise ValueError(
+        "NOT_IMPLEMENTED: onec.attach_file requires OData file upload — not available in this build. "
+        "Use onec.odata_patch for metadata or attach files manually in 1C."
+    )
 
 
 def _build_connection_string() -> str:

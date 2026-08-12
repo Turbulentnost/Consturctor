@@ -18,7 +18,12 @@ _PLATFORM_SERVICES = (
     ("imap", settings.tool_imap_url),
     ("onec", settings.tool_onec_url),
     ("shell", settings.tool_shell_url),
+    ("shell-native", settings.tool_shell_native_url),
     ("browser", settings.tool_browser_url),
+    ("com", settings.tool_com_url),
+    ("fs", settings.tool_fs_url),
+    ("desktop-host", settings.tool_desktop_host_url),
+    ("desktop-launcher", settings.tool_desktop_launcher_url),
     ("orchestrator", settings.orchestrator_url),
 )
 
@@ -40,6 +45,7 @@ async def _check_platform_services() -> list[PlatformServiceHealth]:
 
 
 @router.get("/health", response_model=HealthResponse)
+@router.get("/api/v1/health", response_model=HealthResponse, include_in_schema=True)
 async def health() -> HealthResponse:
     erp_reachable = False
     if not settings.auth_stub:

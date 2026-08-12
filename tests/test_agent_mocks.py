@@ -109,10 +109,11 @@ def test_invoke_tool_http_reports_unreachable_service(orchestrator_module, monke
     import uuid
 
     monkeypatch.setattr(orchestrator_module.settings, "tool_fs_url", "http://127.0.0.1:1")
+    monkeypatch.setattr(orchestrator_module.settings, "tool_desktop_launcher_url", "")
     result = orchestrator_module.invoke_tool_http(
         uuid.uuid4(),
         "fs.list",
         {"department": "td_ceh", "user_id": "demo", "payload": {"path": "."}},
     )
     assert result.ok is False
-    assert "Tool service unavailable" in (result.error or "")
+    assert "unavailable" in (result.error or "").lower() or "offline" in (result.error or "").lower()
