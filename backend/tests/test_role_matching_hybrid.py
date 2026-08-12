@@ -412,6 +412,59 @@ def test_answer_creates_change_draft() -> None:
     assert change.requiresApproval is True
 
 
+def test_escalation_answer_becomes_logical_clause() -> None:
+    result = RegulationParseResult(
+        regulationId="reg-escalation",
+        fileName="change.txt",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[
+            RegulationFragment(
+                fragmentId="B-010",
+                page=1,
+                section="5.4 Контроль вех",
+                text="Руководитель сектора контролирует выполнение вех проекта.",
+            )
+        ],
+    )
+    question = ReadinessQuestion(
+        questionId="Q-ESC",
+        functionId="F-010",
+        targetField="escalation",
+        severity="blocking",
+        question="Кому передавать проблему при нарушении срока вехи?",
+        reason="Нужен путь эскалации",
+        affectedBlocks=["B-010"],
+    )
+    answer = ReadinessAnswer(answerId="ANSWER-ESC", questionId="Q-ESC", answer="Куратору проекта")
+    clarifying = (
+        "Принято: критерий контроля — веха выполнена в срок либо отклонение зафиксировано и эскалировано. "
+        "Теперь уточним эскалацию: кому руководитель сектора передаёт проблему, "
+        "если срок вехи нарушен и он сам не может устранить отклонение? "
+        "Например: куратору проекта, заказчику, вышестоящему руководителю."
+    )
+
+    change = change_from_answer(
+        change_id="CH-ESC",
+        question=question,
+        answer=answer,
+        result=result,
+        related_field_answers={
+            "control": "веха выполнена в срок либо отклонение зафиксировано и эскалировано",
+        },
+        clarifying_prompt=clarifying,
+    )
+
+    assert (
+        "Если срок вехи нарушен и руководитель сектора сам не может устранить отклонение, "
+        "то проблема передаётся куратору проекта."
+    ) in change.after
+    assert change.source.get("formalized") == (
+        "Если срок вехи нарушен и руководитель сектора сам не может устранить отклонение, "
+        "то проблема передаётся куратору проекта."
+    )
+
+
 def test_docx_editor_applies_accepted_append(tmp_path) -> None:
     try:
         from docx import Document

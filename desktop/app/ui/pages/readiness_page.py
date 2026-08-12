@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QFrame,
@@ -19,7 +19,8 @@ from app.api_client import AgentReadinessResult, QuestionChatMessage, QuestionCh
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 
 
-_CHAT_WIDTH = 600
+_CHAT_MIN_WIDTH = 420
+_CHAT_MAX_WIDTH = 700
 _PANEL_WIDTH = 260
 
 
@@ -65,7 +66,9 @@ class ReadinessPage(QWidget):
         self._result: AgentReadinessResult | None = None
         self._chat: QuestionChatSession | None = None
         self._input: ChatInput | None = None
-        self._height_bucket = -1
+        self._size_bucket: tuple[int, int] = (-1, -1)
+        self._chat_session_id = ""
+        self._chat_stick_to_bottom = True
 
         self._content = QVBoxLayout()
         self._content.setContentsMargins(0, 0, 0, 0)
@@ -88,9 +91,9 @@ class ReadinessPage(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        bucket = self.height() // 40
-        if self._result is not None and bucket != self._height_bucket:
-            self._height_bucket = bucket
+        bucket = (self.width() // 80, self.height() // 40)
+        if self._result is not None and bucket != self._size_bucket:
+            self._size_bucket = bucket
             self._render()
 
     def set_result(self, result: AgentReadinessResult) -> None:
@@ -98,6 +101,10 @@ class ReadinessPage(QWidget):
         self._render()
 
     def set_chat(self, chat: QuestionChatSession | None) -> None:
+        session_id = chat.session_id if chat is not None else ""
+        if session_id != self._chat_session_id:
+            self._chat_stick_to_bottom = True
+            self._chat_session_id = session_id
         self._chat = chat
         self._render()
 
@@ -119,21 +126,23 @@ class ReadinessPage(QWidget):
         chat_column = QVBoxLayout()
         chat_column.setSpacing(12)
         chat_column.addWidget(self._chat_card(current))
-        chat_column.addWidget(self._footer_actions())
         chat_column.addStretch(1)
 
+        chat_width = self._chat_width()
         chat_wrap = QWidget()
-        chat_wrap.setFixedWidth(_CHAT_WIDTH)
+        chat_wrap.setFixedWidth(chat_width)
         chat_wrap.setStyleSheet("background: transparent;")
         chat_wrap.setLayout(chat_column)
+        body.addStretch(1)
         body.addWidget(chat_wrap, 0)
+        body.addStretch(1)
 
         right_wrap = QWidget()
         right_layout = QVBoxLayout(right_wrap)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addWidget(self._progress_panel(self._result.questions, current))
         right_layout.addStretch(1)
-        body.addWidget(right_wrap, 0)
+        body.addWidget(right_wrap, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
 
         body_wrap = QWidget()
         body_wrap.setStyleSheet("background: transparent;")
@@ -185,7 +194,7 @@ class ReadinessPage(QWidget):
 
     def _chat_card(self, question: ReadinessQuestion | None) -> QWidget:
         card = _soft_card()
-        card.setFixedWidth(_CHAT_WIDTH)
+        card.setFixedWidth(self._chat_width())
         layout = QVBoxLayout(card)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(14)
@@ -257,7 +266,20 @@ class ReadinessPage(QWidget):
         scroll.setFixedHeight(self._message_area_height())
         scroll.setWidget(content)
         scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }" + scroll_bar_qss())
+        scroll.verticalScrollBar().valueChanged.connect(lambda: self._sync_chat_scroll_state(scroll))
+        QTimer.singleShot(0, lambda item=scroll: self._scroll_chat_to_bottom(item))
+        QTimer.singleShot(80, lambda item=scroll: self._scroll_chat_to_bottom(item))
         return scroll
+
+    def _sync_chat_scroll_state(self, scroll: QScrollArea) -> None:
+        bar = scroll.verticalScrollBar()
+        self._chat_stick_to_bottom = bar.value() >= max(0, bar.maximum() - 24)
+
+    def _scroll_chat_to_bottom(self, scroll: QScrollArea) -> None:
+        if not self._chat_stick_to_bottom:
+            return
+        bar = scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     def _add_saved_answer_history(self, layout: QVBoxLayout) -> None:
         if self._result is None:
@@ -296,7 +318,7 @@ class ReadinessPage(QWidget):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         bubble = QFrame()
-        bubble.setMaximumWidth(_CHAT_WIDTH - 120)
+        bubble.setMaximumWidth(self._chat_width() - 120)
         bubble.setStyleSheet(
             """
             QFrame {
@@ -364,7 +386,7 @@ class ReadinessPage(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.addStretch(1)
         bubble = QFrame()
-        bubble.setMaximumWidth(_CHAT_WIDTH - 140)
+        bubble.setMaximumWidth(self._chat_width() - 140)
         bubble.setStyleSheet(
             """
             QFrame {
@@ -394,8 +416,8 @@ class ReadinessPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(8)
 
-        left = _hint_scroll_button("‹")
-        right = _hint_scroll_button("›")
+        left = _hint_scroll_button("<")
+        right = _hint_scroll_button(">")
 
         content = QWidget()
         content.setStyleSheet("background: transparent;")
@@ -421,7 +443,7 @@ class ReadinessPage(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setFixedHeight(48)
+        scroll.setFixedHeight(36)
         scroll.setWidget(content)
         scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }" + scroll_bar_qss())
         left.clicked.connect(lambda: _scroll_hints(scroll, -220))
@@ -445,7 +467,7 @@ class ReadinessPage(QWidget):
 
     def _input_bar(self, question: ReadinessQuestion) -> QWidget:
         wrap = QWidget()
-        wrap.setFixedWidth(_CHAT_WIDTH - 36)
+        wrap.setFixedWidth(self._chat_width() - 36)
         wrap.setStyleSheet("background: transparent;")
         row = QHBoxLayout(wrap)
         row.setContentsMargins(0, 0, 0, 0)
@@ -493,7 +515,11 @@ class ReadinessPage(QWidget):
         return question.question_id
 
     def _message_area_height(self) -> int:
-        return max(120, min(260, self.height() - 560))
+        return max(190, min(380, self.height() - 440))
+
+    def _chat_width(self) -> int:
+        available = self.width() - _PANEL_WIDTH - 160
+        return max(_CHAT_MIN_WIDTH, min(_CHAT_MAX_WIDTH, available))
 
     def _change_proposal(self, change: ReadinessChange) -> QWidget:
         card = QFrame()
@@ -554,15 +580,13 @@ class ReadinessPage(QWidget):
         wrap.setStyleSheet("background: transparent;")
         actions = QHBoxLayout(wrap)
         actions.setContentsMargins(0, 0, 0, 0)
-        back = QPushButton("Вернуться позже")
-        back.setCursor(Qt.CursorShape.PointingHandCursor)
-        back.setStyleSheet(_secondary_button_qss())
-        back.clicked.connect(self.back_requested.emit)
-        actions.addWidget(back)
         actions.addStretch(1)
         finalize = QPushButton("Создать копию регламента")
         finalize.setCursor(Qt.CursorShape.PointingHandCursor)
-        finalize.setEnabled(bool(self._result and self._result.changes))
+        all_answered = bool(self._result) and all(question.answered for question in self._result.questions)
+        finalize.setEnabled(bool(self._result and self._result.changes and all_answered))
+        if not all_answered:
+            finalize.setToolTip("Сначала ответьте на все уточняющие вопросы")
         finalize.setStyleSheet(_primary_button_qss())
         finalize.clicked.connect(self.finalize_requested.emit)
         actions.addWidget(finalize)
@@ -701,9 +725,20 @@ def _quick_answer_button(text: str, *, primary: bool) -> QPushButton:
 
 def _hint_scroll_button(text: str) -> QPushButton:
     btn = QPushButton(text)
-    btn.setFixedSize(28, 36)
+    btn.setFixedSize(32, 36)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setStyleSheet(_secondary_button_qss())
+    btn.setFont(app_font(13, QFont.Weight.DemiBold))
+    btn.setStyleSheet(
+        """
+        QPushButton {
+            background: #FFFFFF;
+            color: #08745F;
+            border: 1px solid rgba(8,116,95,0.22);
+            border-radius: 12px;
+        }
+        QPushButton:hover { background: rgba(8,116,95,0.06); }
+        """
+    )
     return btn
 
 

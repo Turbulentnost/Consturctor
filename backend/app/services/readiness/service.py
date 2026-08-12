@@ -108,11 +108,21 @@ def answer_readiness_question(
             item.answer = answer.answer
             break
     _apply_answer_to_field(readiness, question.functionId, question.targetField, answer.answer)
+    related_field_answers = {
+        item.targetField: item.answer.strip()
+        for item in readiness.questions
+        if item.functionId == question.functionId
+        and item.answered
+        and item.answer.strip()
+        and item.questionId != question.questionId
+    }
     change = change_from_answer(
         change_id=f"CH-{len(readiness.changes) + 1:03d}",
         question=question,
         answer=answer,
         result=RegulationParseResult.model_validate(doc.result_json),
+        related_field_answers=related_field_answers,
+        clarifying_prompt=request.clarifyingPrompt.strip(),
     )
     readiness.changes.append(change)
     readiness.transactions.append(transaction_for_change(change, index=len(readiness.transactions) + 1))

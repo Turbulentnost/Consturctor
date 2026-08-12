@@ -173,6 +173,7 @@ def send_question_chat_message(
     ]
     if structured["isComplete"]:
         applied = []
+        clarifying_prompt = _last_assistant_prompt(db, session.id)
         for item in structured["relatedAnswers"]:
             readiness = answer_readiness_question(
                 db,
@@ -182,6 +183,7 @@ def send_question_chat_message(
                 request=ReadinessAnswerRequest(
                     questionId=str(item["questionId"]),
                     answer=str(item["answer"]),
+                    clarifyingPrompt=clarifying_prompt,
                 ),
             )
             applied.append(item)
@@ -343,6 +345,16 @@ def _message_history(db: Session, session_id: str) -> list[dict]:
         {"role": message.role, "content": message.content, "structured": message.structured_json}
         for message in messages
     ]
+
+
+def _last_assistant_prompt(db: Session, session_id: str) -> str:
+    message = (
+        db.query(QuestionChatMessage)
+        .filter(QuestionChatMessage.session_id == session_id, QuestionChatMessage.role == "assistant")
+        .order_by(QuestionChatMessage.created_at.desc())
+        .first()
+    )
+    return (message.content or "").strip() if message is not None else ""
 
 
 def _user_turn_count(db: Session, session_id: str) -> int:

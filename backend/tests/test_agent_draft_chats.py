@@ -268,3 +268,4 @@ def _stub_interview(monkeypatch, *, close_count: int = 1) -> None:
 
     monkeypatch.setattr("app.services.readiness.chat.generate_initial_question", initial)
     monkeypatch.setattr("app.services.readiness.chat.adapt_after_answer", adapt)
+    monkeypatch.setattr("app.services.readiness.change_planner._llm_addition", lambda **_kwargs: "")

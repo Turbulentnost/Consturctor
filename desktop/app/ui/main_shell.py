@@ -223,6 +223,7 @@ class MainShell(QWidget):
         self._current_draft: AgentDraft | None = None
         self._current_chat: QuestionChatSession | None = None
         self._current_revision: RegulationRevisionResult | None = None
+        self._auto_finalize_running = False
 
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
@@ -531,6 +532,7 @@ class MainShell(QWidget):
             self._page_readiness.set_result(draft.readiness)
         self._page_readiness.set_chat(self._current_chat)
         self._pages.setCurrentIndex(self._page_index["readiness"])
+        self._maybe_auto_finalize_readiness()
 
     def _show_readiness_result(self, result: object) -> None:
         if not isinstance(result, AgentReadinessResult):
@@ -538,6 +540,7 @@ class MainShell(QWidget):
         self._current_readiness = result
         self._page_readiness.set_result(result)
         self._pages.setCurrentIndex(self._page_index["readiness"])
+        self._maybe_auto_finalize_readiness()
 
     def _show_chat_result(self, result: object) -> None:
         if not isinstance(result, QuestionChatSession):
@@ -685,11 +688,24 @@ class MainShell(QWidget):
                     self._current_readiness.readiness_run_id,
                 )
             except ApiError as exc:
+                self._auto_finalize_running = False
                 self._readiness_failed.emit(exc.message)
                 return
+            self._auto_finalize_running = False
             self._revision_ready.emit(result)
 
         Thread(target=run, daemon=True).start()
+
+    def _maybe_auto_finalize_readiness(self) -> None:
+        readiness = self._current_readiness
+        if readiness is None or self._auto_finalize_running or readiness.status == "finalized":
+            return
+        if not readiness.changes:
+            return
+        if any(not question.answered for question in readiness.questions):
+            return
+        self._auto_finalize_running = True
+        self._on_readiness_finalize()
 
     def _show_revision_result(self, result: object) -> None:
         if not isinstance(result, RegulationRevisionResult):

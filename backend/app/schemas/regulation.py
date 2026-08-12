@@ -377,6 +377,7 @@ class ReadinessQuestion(BaseModel):
 class ReadinessAnswerRequest(BaseModel):
     questionId: str
     answer: str
+    clarifyingPrompt: str = ""
 
 
 class ReadinessAnswer(BaseModel):
