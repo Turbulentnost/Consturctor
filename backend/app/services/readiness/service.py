@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.models.regulation import ReadinessRun, RegulationDocument, RegulationRevision, RoleMatchRun
+from app.models.regulation import AgentDraft, ReadinessRun, RegulationDocument, RegulationRevision, RoleMatchRun
 from app.schemas.regulation import (
     AgentReadinessResult,
     ChangeDecisionRequest,
@@ -183,6 +183,20 @@ def finalize_readiness_run(
         message=message,
     )
     db.add(run)
+    draft = db.query(AgentDraft).filter(
+        AgentDraft.user_id == user_id,
+        AgentDraft.readiness_run_id == readiness_run_id,
+    ).first()
+    if draft is not None:
+        draft.status = "finalized"
+        draft.progress = 100
+        draft.result_json = {
+            **(draft.result_json or {}),
+            "revisionId": revision_id,
+            "documentPath": str(document_path),
+            "protocolPath": str(protocol_path),
+        }
+        db.add(draft)
     db.merge(
         RegulationRevision(
             id=revision_id,
