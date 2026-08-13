@@ -14,6 +14,8 @@ _WEIGHTS = {
     "graph_relation": 0.30,
     "definition_link": 0.32,
     "actor_inheritance": 0.38,
+    "role_context": 0.28,
+    "unit_process": 0.33,
 }
 
 
@@ -37,6 +39,8 @@ def final_confidence(candidate: Candidate, classifier: dict) -> float:
         signal_score = max(signal_score, 0.78)
     if "definition_link" in types and max_by_type.get("definition_link", 0.0) >= 0.8:
         signal_score = max(signal_score, 0.74)
+    if "unit_process" in types and max_by_type.get("unit_process", 0.0) >= 0.7:
+        signal_score = max(signal_score, 0.72)
     if types == {"department_relation"}:
         signal_score = max(signal_score, 0.55)
     if types == {"related_artifact_or_system"}:

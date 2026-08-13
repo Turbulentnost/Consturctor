@@ -52,6 +52,16 @@ class MyAgentsPage(QWidget):
         self._suggestions = suggestions
         self._render()
 
+    def find_suggestion(self, agent_id: str) -> AgentSuggestion | None:
+        for item in self._suggestions or []:
+            if item.agent_id == agent_id:
+                return item
+        for draft in self._drafts:
+            for item in draft.agent_suggestions or []:
+                if item.agent_id == agent_id:
+                    return item
+        return None
+
     def _render(self) -> None:
         while self._list.count():
             item = self._list.takeAt(0)

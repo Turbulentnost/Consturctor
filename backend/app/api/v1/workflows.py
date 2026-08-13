@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+import json
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -10,7 +12,6 @@ from app.db.session import get_db
 from app.schemas.workflow import (
     ArtifactItem,
     ArtifactsDownloadRequest,
-    ClarifyRequest,
     ExecuteRequest,
     LocalRunUpdate,
     WorkflowHealth,
@@ -116,14 +117,48 @@ async def plan_workflow_endpoint(
 @router.post("/{workflow_id}/clarify", response_model=WorkflowSchema)
 async def clarify_workflow_endpoint(
     workflow_id: str,
-    request: ClarifyRequest,
+    request: Request,
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WorkflowSchema:
+    content_type = (request.headers.get("content-type") or "").lower()
+    answers: dict[str, str] = {}
+    files: list[tuple[str, bytes]] = []
+    file_question_ids: list[str] = []
     try:
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            raw_answers = form.get("answers") or "{}"
+            parsed = json.loads(str(raw_answers))
+            if not isinstance(parsed, dict):
+                raise HTTPException(status_code=400, detail="answers должен быть JSON-объектом")
+            answers = {str(k): str(v or "") for k, v in parsed.items()}
+            qids_raw = form.get("file_question_ids") or "[]"
+            qids = json.loads(str(qids_raw))
+            if isinstance(qids, list):
+                file_question_ids = [str(x or "") for x in qids]
+            uploads = form.getlist("files")
+            for upload in uploads:
+                if not hasattr(upload, "read"):
+                    continue
+                raw = await upload.read()
+                files.append((getattr(upload, "filename", None) or "file", raw))
+        else:
+            body = await request.json()
+            raw = (body or {}).get("answers") or {}
+            if not isinstance(raw, dict):
+                raise HTTPException(status_code=400, detail="answers должен быть объектом")
+            answers = {str(k): str(v or "") for k, v in raw.items()}
         return clarify_workflow(
-            db, user_id=auth.user_id, workflow_id=workflow_id, answers=request.answers
+            db,
+            user_id=auth.user_id,
+            workflow_id=workflow_id,
+            answers=answers,
+            files=files,
+            file_question_ids=file_question_ids,
         )
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Некорректный JSON в clarify") from exc
     except WorkflowError as exc:
         _raise(exc)
         raise

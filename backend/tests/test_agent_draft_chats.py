@@ -70,7 +70,7 @@ def test_question_chat_incomplete_then_complete_answer_creates_change(monkeypatc
     )
     updated = ensure_draft_readiness(db, user_id="user-1", draft_id=draft.draftId)
 
-    assert chat.status == "active"
+    assert chat.status == "answered"
     assert updated.readiness is not None
     assert updated.readiness.changes
     assert chat.messages[-1].structured["answeredQuestionIds"]
@@ -115,9 +115,68 @@ def test_question_chat_single_answer_closes_related_questions(monkeypatch) -> No
     )
     updated = ensure_draft_readiness(db, user_id="user-1", draft_id=draft.draftId)
 
-    assert len(chat.messages[-1].structured["answeredQuestionIds"]) == 2
+    answered_ids = chat.messages[-1].structured["answeredQuestionIds"]
+    assert question_id in answered_ids
+    assert len(answered_ids) >= 2
     assert updated.readiness is not None
-    assert sum(1 for item in updated.readiness.questions if item.answered) == 2
+    assert sum(1 for item in updated.readiness.questions if item.answered) >= 2
+
+
+def test_question_chat_does_not_loop_same_question_when_llm_repeats(monkeypatch) -> None:
+    """Конкретный ответ должен закрыть текущий вопрос, даже если LLM снова прислал тот же текст."""
+
+    def initial(context, pending):
+        return {
+            "assistantMessage": (
+                "Для функции «осуществляет поиск закупок на ЭТП» нужно уточнить: "
+                "Как определить, что функция выполнена правильно?"
+            ),
+            "quickAnswers": ["По количеству найденных закупок"],
+            "answeredQuestionIds": [],
+            "remainingQuestionIds": [item["questionId"] for item in pending],
+            "stopInterview": False,
+            "source": "test",
+        }
+
+    def adapt(context, pending, *, answer, history, turn_count):
+        # Имитация зацикливания LLM: пустой answered + тот же вопрос.
+        return {
+            "assistantMessage": (
+                "Для функции «осуществляет поиск закупок на ЭТП» нужно уточнить: "
+                "Как определить, что функция выполнена правильно?"
+            ),
+            "quickAnswers": ["По количеству найденных закупок"],
+            "answeredQuestionIds": [],
+            "remainingQuestionIds": [item["questionId"] for item in pending],
+            "stopInterview": False,
+            "source": "test",
+        }
+
+    monkeypatch.setattr("app.services.readiness.chat.generate_initial_question", initial)
+    monkeypatch.setattr("app.services.readiness.chat.adapt_after_answer", adapt)
+    monkeypatch.setattr("app.services.readiness.change_planner._llm_addition", lambda **_kwargs: "")
+
+    db = _memory_session()
+    _seed_role_run(db, user_id="user-1", regulation_id="reg-1", run_id="run-1")
+    draft = create_or_get_draft(db, user_id="user-1", regulation_id="reg-1", role_match_run_id="run-1")
+    draft = ensure_draft_readiness(db, user_id="user-1", draft_id=draft.draftId)
+    assert draft.readiness is not None
+    question_id = draft.readiness.questions[0].questionId
+    create_or_get_question_chat(db, user_id="user-1", draft_id=draft.draftId, question_id=question_id)
+
+    chat = send_question_chat_message(
+        db,
+        user_id="user-1",
+        draft_id=draft.draftId,
+        question_id=question_id,
+        request=QuestionChatSendRequest(message="По количеству найденных и зарегистрированных закупок"),
+    )
+
+    assert question_id in chat.messages[-1].structured["answeredQuestionIds"]
+    assert chat.messages[-1].structured["isComplete"] is True
+    assert chat.status == "answered"
+    assert "закрывает вопрос" not in chat.messages[-1].content.casefold()
+    assert "q-007" not in chat.messages[-1].content.casefold()
 
 
 def test_latest_question_chat_restores_saved_history(monkeypatch) -> None:

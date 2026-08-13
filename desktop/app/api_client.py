@@ -273,6 +273,59 @@ class AgentSuggestion:
 
 
 @dataclass(frozen=True, slots=True)
+class PassportFunction:
+    name: str
+    description: str
+    action_level: str = "read"
+    requires_human_approval: bool = False
+    automation_kind: str = "auto"
+
+
+@dataclass
+class AgentPassport:
+    name: str = ""
+    goal: str = ""
+    trigger: str = ""
+    receives: str = ""
+    checks: str = ""
+    decisions: str = ""
+    can_autonomous: str = ""
+    needs_human_approval: str = ""
+    forbidden: str = ""
+    result: str = ""
+    missing_fields: list[str] | None = None
+    questions: list[dict] | None = None
+    source: str = "heuristic"
+    text: str = ""
+
+    def to_api_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "goal": self.goal,
+            "trigger": self.trigger,
+            "receives": self.receives,
+            "checks": self.checks,
+            "decisions": self.decisions,
+            "can_autonomous": self.can_autonomous,
+            "needs_human_approval": self.needs_human_approval,
+            "forbidden": self.forbidden,
+            "result": self.result,
+            "missing_fields": list(self.missing_fields or []),
+            "questions": list(self.questions or []),
+            "source": self.source,
+            "text": self.text,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PassportSession:
+    passport: AgentPassport
+    bp_name: str
+    excerpt: str
+    functions: list[PassportFunction]
+
+
+@dataclass(frozen=True, slots=True)
 class RegulationCreationMessage:
     message_id: str
     draft_id: str
@@ -791,6 +844,91 @@ class ApiClient:
             if isinstance(item, dict)
         ]
 
+    def draft_passport_from_suggestion(self, suggestion: AgentSuggestion) -> PassportSession:
+        data = self._request(
+            "POST",
+            "/api/v1/regulations/passport/draft-from-suggestion",
+            json={
+                "regulationId": suggestion.regulation_id,
+                "roleMatchRunId": suggestion.role_match_run_id,
+                "functionId": suggestion.function_id,
+                "agentTitle": suggestion.title,
+                "agentDescription": suggestion.description,
+            },
+            timeout=max(self._timeout, 180.0),
+        )
+        return self._parse_passport_session(data)
+
+    def complete_passport(
+        self,
+        passport: AgentPassport,
+        *,
+        answers: dict[str, str],
+        bp_name: str,
+        excerpt: str,
+        functions: list[PassportFunction],
+        field_updates: dict[str, str] | None = None,
+    ) -> PassportSession:
+        data = self._request(
+            "POST",
+            "/api/v1/regulations/passport/complete",
+            json={
+                "passport": passport.to_api_dict(),
+                "answers": answers,
+                "field_updates": field_updates or {},
+                "bp_name": bp_name,
+                "excerpt": excerpt,
+                "functions": [
+                    {
+                        "name": item.name,
+                        "description": item.description,
+                        "action_level": item.action_level,
+                        "requires_human_approval": item.requires_human_approval,
+                        "automation_kind": item.automation_kind,
+                    }
+                    for item in functions
+                ],
+            },
+            timeout=max(self._timeout, 180.0),
+        )
+        return self._parse_passport_session(data)
+
+    @staticmethod
+    def _parse_passport_session(data: dict) -> PassportSession:
+        passport_raw = data.get("passport") if isinstance(data.get("passport"), dict) else {}
+        functions = [
+            PassportFunction(
+                name=str(item.get("name") or ""),
+                description=str(item.get("description") or ""),
+                action_level=str(item.get("action_level") or "read"),
+                requires_human_approval=bool(item.get("requires_human_approval")),
+                automation_kind=str(item.get("automation_kind") or "auto"),
+            )
+            for item in data.get("functions") or []
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
+        return PassportSession(
+            passport=AgentPassport(
+                name=str(passport_raw.get("name") or ""),
+                goal=str(passport_raw.get("goal") or ""),
+                trigger=str(passport_raw.get("trigger") or ""),
+                receives=str(passport_raw.get("receives") or ""),
+                checks=str(passport_raw.get("checks") or ""),
+                decisions=str(passport_raw.get("decisions") or ""),
+                can_autonomous=str(passport_raw.get("can_autonomous") or ""),
+                needs_human_approval=str(passport_raw.get("needs_human_approval") or ""),
+                forbidden=str(passport_raw.get("forbidden") or ""),
+                result=str(passport_raw.get("result") or ""),
+                missing_fields=[str(x) for x in passport_raw.get("missing_fields") or []],
+                questions=[item for item in passport_raw.get("questions") or [] if isinstance(item, dict)],
+                source=str(passport_raw.get("source") or "heuristic"),
+                text=str(passport_raw.get("text") or ""),
+            ),
+            bp_name=str(data.get("bp_name") or ""),
+            excerpt=str(data.get("excerpt") or ""),
+            functions=functions,
+        )
+
     @staticmethod
     def _parse_agent_suggestion(data: dict) -> AgentSuggestion:
         return AgentSuggestion(
@@ -936,14 +1074,60 @@ class ApiClient:
         )
         return self._parse_workflow(data)
 
-    def clarify_workflow(self, workflow_id: str, answers: dict[str, str]) -> WorkflowRecord:
-        data = self._request(
-            "POST",
-            f"/api/v1/workflows/{workflow_id}/clarify",
-            json={"answers": answers},
-            timeout=900.0,
-        )
-        return self._parse_workflow(data)
+    def clarify_workflow(
+        self,
+        workflow_id: str,
+        answers: dict[str, str],
+        *,
+        file_paths: list[str | Path] | None = None,
+        file_question_ids: list[str] | None = None,
+    ) -> WorkflowRecord:
+        paths = [Path(p) for p in (file_paths or []) if Path(p).is_file()]
+        if not paths:
+            data = self._request(
+                "POST",
+                f"/api/v1/workflows/{workflow_id}/clarify",
+                json={"answers": answers},
+                timeout=900.0,
+            )
+            return self._parse_workflow(data)
+
+        import json as _json
+
+        url = f"{self.base_url}/api/v1/workflows/{workflow_id}/clarify"
+        files: list = []
+        handles = []
+        try:
+            qids = list(file_question_ids or [])
+            while len(qids) < len(paths):
+                qids.append("")
+            for path in paths:
+                fh = path.open("rb")
+                handles.append(fh)
+                files.append(("files", (path.name, fh, "application/octet-stream")))
+            form = {
+                "answers": _json.dumps(answers or {}, ensure_ascii=False),
+                "file_question_ids": _json.dumps(qids[: len(paths)], ensure_ascii=False),
+            }
+            with httpx.Client(timeout=max(self._timeout, 900.0)) as client:
+                response = client.post(
+                    url,
+                    headers=self._headers(),
+                    data=form,
+                    files=files,
+                )
+        except httpx.ConnectError as exc:
+            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+        except httpx.TimeoutException as exc:
+            raise ApiError("Превышено время уточнения плана") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+        finally:
+            for fh in handles:
+                fh.close()
+        if response.status_code >= 400:
+            raise ApiError(_extract_detail(response), status_code=response.status_code)
+        return self._parse_workflow(response.json())
 
     def execute_workflow(self, workflow_id: str, *, reexecute: bool = False) -> WorkflowRecord:
         data = self._request(

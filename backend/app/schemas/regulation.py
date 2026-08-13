@@ -32,6 +32,7 @@ MatchType = Literal[
     "definition_link",
     "actor_inheritance",
     "role_context",
+    "unit_process",
 ]
 MatchStatus = Literal["accepted", "probable", "pending", "rejected"]
 RelationType = Literal[
@@ -113,7 +114,7 @@ class RegulationParseResult(BaseModel):
 
 class RoleAlias(BaseModel):
     value: str
-    status: Literal["verified", "candidate", "unverified"] = "candidate"
+    status: Literal["verified", "candidate", "unverified", "context"] = "candidate"
     reason: str = ""
     sourceFragments: list[str] = Field(default_factory=list)
 
@@ -481,6 +482,62 @@ class AgentSuggestion(BaseModel):
 
 class AgentSuggestionListResult(BaseModel):
     items: list[AgentSuggestion] = Field(default_factory=list)
+
+
+class PassportFunctionModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: str = ""
+    action_level: str = "read"
+    requires_human_approval: bool = False
+    automation_kind: str = "auto"
+
+
+class AgentPassportModel(BaseModel):
+    name: str = ""
+    goal: str = ""
+    trigger: str = ""
+    receives: str = ""
+    checks: str = ""
+    decisions: str = ""
+    can_autonomous: str = ""
+    needs_human_approval: str = ""
+    forbidden: str = ""
+    result: str = ""
+    missing_fields: list[str] = Field(default_factory=list)
+    questions: list[dict] = Field(default_factory=list)
+    source: str = "heuristic"
+    text: str = ""
+
+
+class DraftPassportRequest(BaseModel):
+    bp_name: str = Field(..., min_length=1)
+    excerpt: str = ""
+    functions: list[PassportFunctionModel] = Field(..., min_length=1)
+    agent_name: str | None = None
+
+
+class DraftPassportFromSuggestionRequest(BaseModel):
+    regulationId: str = Field(..., min_length=1)
+    roleMatchRunId: str = Field(..., min_length=1)
+    functionId: str = Field(..., min_length=1)
+    agentTitle: str = ""
+    agentDescription: str = ""
+
+
+class CompletePassportRequest(BaseModel):
+    passport: AgentPassportModel
+    answers: dict[str, str] = Field(default_factory=dict)
+    field_updates: dict[str, str] = Field(default_factory=dict)
+    bp_name: str = ""
+    excerpt: str = ""
+    functions: list[PassportFunctionModel] = Field(default_factory=list)
+
+
+class PassportResponse(BaseModel):
+    passport: AgentPassportModel
+    bp_name: str = ""
+    excerpt: str = ""
+    functions: list[PassportFunctionModel] = Field(default_factory=list)
 
 
 class AgentDraftSummary(BaseModel):

@@ -42,9 +42,12 @@ def adapt_after_answer(
         {
             "instruction": (
                 "Проанализируй ответ пользователя на уточняющий вопрос по регламенту. "
-                "Если ответ закрывает другие вопросы по этой же функции, укажи их id. "
+                "Если ответ закрывает другие вопросы по этой же функции, укажи их id в answeredQuestionIds. "
                 "Если бизнес-процесс уже понятен достаточно, верни stopInterview=true. "
-                "Иначе сформируй следующий вопрос одним сообщением с контекстом пункта регламента. "
+                "Иначе в assistantMessage задай СЛЕДУЮЩИЙ уточняющий вопрос одним сообщением "
+                "с контекстом пункта регламента. "
+                "Не пиши, что вопрос закрыт, не упоминай id вопросов (Q-001 и т.п.), "
+                "не пиши «это закрывает вопрос» и не пересказывай служебные поля вроде trigger. "
                 "Верни JSON: {assistantMessage, quickAnswers, answeredQuestionIds, remainingQuestionIds, "
                 "newQuestions, stopInterview, isProcessClear, reason}. "
                 "Не задавай бесконечные уточнения и не спрашивай то, на что пользователь уже ответил."
@@ -121,22 +124,29 @@ def _ids(value: object, allowed: list[str]) -> list[str]:
 
 
 def _fallback_response(context: dict, pending_questions: list[dict], *, answer: str = "") -> dict:
-    current = pending_questions[0] if pending_questions else (context.get("question") or {})
+    # Всегда опираемся на текущий вопрос сессии, а не на первый pending —
+    # иначе закрывается чужой id, а исходный вопрос задаётся снова.
+    current = context.get("question") or (pending_questions[0] if pending_questions else {})
     current_id = str(current.get("questionId") or "")
     answered = [current_id] if answer.strip() and not _needs_clarification(answer) and current_id else []
     remaining = [str(item.get("questionId") or "") for item in pending_questions if item.get("questionId")]
     remaining = [qid for qid in remaining if qid not in answered]
+    next_question = None
     message = _contextual_question(context, current)
     if answer.strip() and answered:
-        next_question = next((item for item in pending_questions if str(item.get("questionId") or "") in remaining), None)
+        next_question = next(
+            (item for item in pending_questions if str(item.get("questionId") or "") in remaining),
+            None,
+        )
         message = _contextual_question(context, next_question) if next_question else (
             "Понял. По этому функциональному блоку достаточно информации для подготовки изменения регламента."
         )
     elif answer.strip():
         message = "Пока не хватает конкретики. Уточните правило так, чтобы его можно было прямо внести в регламент."
+    quick_source = next_question or current
     return {
         "assistantMessage": message,
-        "quickAnswers": _quick_answers(current),
+        "quickAnswers": _quick_answers(quick_source),
         "answeredQuestionIds": answered,
         "remainingQuestionIds": remaining,
         "newQuestions": [],

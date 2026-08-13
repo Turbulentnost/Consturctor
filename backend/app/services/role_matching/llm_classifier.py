@@ -30,6 +30,8 @@ _MATCH_TYPES = {
     "graph_relation",
     "definition_link",
     "actor_inheritance",
+    "role_context",
+    "unit_process",
 }
 
 _ACTION_PATTERN = re.compile(
@@ -38,7 +40,11 @@ _ACTION_PATTERN = re.compile(
     r"подготавливает|готовит|проверяет|формирует|направляет|переда[её]т|"
     r"регистрирует|согласовывает|утверждает|вносит|получает|контролирует|"
     r"вед[её]т|выполняет|устраняет|оформляет|проводит|фиксирует|"
-    r"составляет|настраивает|обеспечивает|организует|анализирует"
+    r"составляет|настраивает|обеспечивает|организует|анализирует|"
+    # Типичные формулировки регламентов/положений о подразделениях.
+    r"отвечает|осуществляет|курирует|координирует|сопровождает|"
+    r"мониторит|участвует|взаимодействует|эскалирует|"
+    r"комплектует|поддерживает"
     r")\b",
     flags=re.I,
 )
@@ -322,11 +328,42 @@ def _function_parts(text: str) -> list[str]:
     cleaned = (text or "").strip()
     if not cleaned:
         return []
+    duty_parts = _duty_list_parts(cleaned)
+    if len(duty_parts) >= 2:
+        return duty_parts
     lines = [line.strip(" -•\t") for line in cleaned.splitlines() if line.strip(" -•\t")]
     if len(lines) > 1:
         return [line for line in lines if _has_action(line, {})]
     parts = [part.strip(" -•\t") for part in re.split(r";|\n", cleaned) if part.strip(" -•\t")]
     return [part for part in parts if _has_action(part, {})] or [cleaned]
+
+
+def _duty_list_parts(text: str) -> list[str]:
+    """«… отвечает за A, B, C» → отдельные обязанности."""
+    normalized = re.sub(r"\s+", " ", (text or "").replace("\xa0", " ")).strip()
+    match = re.search(
+        r"отвечает\s+за\s+(?P<body>.+)",
+        normalized,
+        flags=re.I,
+    )
+    if not match:
+        return []
+    body = match.group("body").strip()
+    # Обрезаем хвост только по концу предложения, не по переносам (уже схлопнуты).
+    body = re.split(r"(?<=[а-яёa-z0-9)])\.\s+", body, maxsplit=1)[0].strip(" ;,")
+    if not body:
+        return []
+    chunks = [part.strip(" ;") for part in re.split(r",\s*", body) if part.strip(" ;")]
+    merged: list[str] = []
+    for chunk in chunks:
+        # «и актуальности документов» — продолжение предыдущего пункта.
+        if merged and (len(chunk) < 12 or chunk.casefold().startswith("и ")):
+            merged[-1] = f"{merged[-1]}, {chunk}"
+        else:
+            merged.append(chunk)
+    if len(merged) < 2:
+        return []
+    return [f"отвечает за {item}" for item in merged if len(item) >= 4]
 
 
 def _match_types(values: list) -> list[str]:
@@ -384,16 +421,26 @@ def _fallback_functions(
     parts = _function_parts(candidate.fragment.text)
     if len(parts) <= 1:
         return []
+    rich_parts = [
+        part
+        for part in parts[:10]
+        if _has_action(part, {}) and (_guess_object(part) or _guess_recipient(part))
+    ]
+    # Если нарезка дала только голые глаголы — оставляем одну функцию на весь фрагмент.
+    if len(rich_parts) <= 1:
+        return []
     return [
         _fallback_function(candidate, profile, context, text_override=part)
-        for part in parts[:8]
-        if _has_action(part, {})
+        for part in rich_parts
     ]
 
 
 def _default_relation(candidate: Candidate) -> str:
     types = {signal.matchType for signal in candidate.signals}
     if "assigned_action" in types or "inherited_from_section" in types:
+        return "executor"
+    if "unit_process" in types:
+        # Обязанности подразделения — исполнитель процесса для роли из этого блока.
         return "executor"
     if "interaction" in types:
         return "mentioned"
@@ -447,7 +494,17 @@ def _guess_object(text: str) -> str:
     action = _guess_action(text)
     if not action:
         return ""
-    match = re.search(re.escape(action) + r"\s+(?P<object>[^.;,\n]{2,80})", text or "", flags=re.I)
+    source = text or ""
+    # «отвечает за комплектование пакета…»
+    if action.casefold() == "отвечает":
+        match = re.search(
+            r"отвечает\s+за\s+(?P<object>[^.;,\n]{2,120})",
+            source,
+            flags=re.I,
+        )
+        if match:
+            return match.group("object").strip()
+    match = re.search(re.escape(action) + r"\s+(?P<object>[^.;,\n]{2,80})", source, flags=re.I)
     return match.group("object").strip() if match else ""
 
 

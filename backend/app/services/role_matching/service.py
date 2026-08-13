@@ -9,10 +9,10 @@ from sqlalchemy.orm import Session
 from app.models.regulation import RoleMatchRun
 from app.schemas.regulation import FragmentRoleMatch, RegulationParseResult, RoleMatchResult
 from app.services.regulation.storage import get_document
-from app.services.role_matching.candidates import collect_candidates
+from app.services.role_matching.candidates import collect_candidates, explicit_other_named_role
 from app.services.role_matching.claudehub_client import build_document_map, final_audit
 from app.services.role_matching.context import build_context_package
-from app.services.role_matching.dedupe import dedupe_matches, functions_from_matches
+from app.services.role_matching.dedupe import dedupe_matches, functions_from_matches, sibling_match_ids
 from app.services.role_matching.graph import build_block_graph
 from app.services.role_matching.llm_classifier import classify_candidate
 from app.services.role_matching.profile import build_role_profile, enrich_role_profile
@@ -70,17 +70,34 @@ def create_role_match_run(
         )
         classifier = classify_candidate(candidate, profile, context)
         confidence = final_confidence(candidate, classifier)
-        role_functions = classifier.get("functions") or [classifier.get("function")]
+        if _is_chrome_fragment(candidate.fragment):
+            continue
+        role_functions = list(classifier.get("functions") or [])
+        primary = classifier.get("function")
+        if not role_functions and primary is not None:
+            role_functions = [primary]
+        role_functions = [
+            item
+            for item in role_functions
+            if item is not None and _is_real_function(item)
+        ]
+        # Не плодим десятки карточек из одного абзаца, но списки «отвечает за A, B, C»
+        # должны остаться разными функциями (поиск / анализ / проверка…).
+        role_functions = sorted(
+            role_functions,
+            key=lambda item: (len((item.object or "").strip()), item.confidence),
+            reverse=True,
+        )[:8]
+        fragment_text = getattr(candidate.fragment, "text", "") or ""
+        # Не тащим обязанности начальника / ведущего / аналитика в карточку менеджера.
+        if explicit_other_named_role(fragment_text):
+            continue
         for role_function in role_functions:
-            if role_function is not None:
-                role_function.functionId = f"F-{len(matches) + 1:04d}"
-                role_function.confidence = max(role_function.confidence, confidence)
-            if not _is_real_function(role_function):
-                continue
+            role_function.functionId = f"F-{len(matches) + 1:04d}"
+            role_function.confidence = max(role_function.confidence, confidence)
             requires_confirmation = bool(classifier.get("requiresUserConfirmation")) or confidence < 0.85
-            if role_function is not None:
-                requires_confirmation = requires_confirmation or role_function.requiresUserConfirmation
-                role_function.requiresUserConfirmation = requires_confirmation
+            requires_confirmation = requires_confirmation or role_function.requiresUserConfirmation
+            role_function.requiresUserConfirmation = requires_confirmation
             status = status_for_confidence(confidence, requires_confirmation)
             if status == "rejected" and confidence < 0.40:
                 # Keep the search strict for UI; low confidence can be logged later if needed.
@@ -144,8 +161,28 @@ def _is_real_function(role_function) -> bool:
     action = (role_function.action or "").strip()
     if not action:
         return False
+    object_text = (role_function.object or "").strip()
+    recipient = (role_function.recipient or "").strip()
+    # Глагол без объекта («фиксирует» из шапки таблицы) — не функция для подтверждения.
+    if not object_text and not recipient:
+        return False
     combined = f"{role_function.action} {role_function.object}".strip().casefold()
     return re.match(r"^этап\s+\d+(?:\D|$)", combined) is None
+
+
+def _is_chrome_fragment(fragment) -> bool:
+    text = (getattr(fragment, "text", None) or "").strip()
+    if not text:
+        return True
+    lowered = text.casefold()
+    looks_like_running_header = bool(re.search(r"лист\s+\d+", lowered)) and bool(
+        re.search(r"версия\s+\d+|приложение\s+", lowered)
+    )
+    has_clause = bool(re.search(r"\b\d+\.\d+", text))
+    has_table_stage = "этап процесса" in lowered
+    if looks_like_running_header and not has_clause and not has_table_stage:
+        return True
+    return False
 
 
 def _diagnostics(
@@ -190,25 +227,30 @@ def update_match_status(
     if status not in {"accepted", "rejected"}:
         raise RoleMatchError("Статус должен быть accepted или rejected")
     run = _get_run(db, user_id=user_id, regulation_id=regulation_id, run_id=run_id)
+    current = RoleMatchResult.model_validate(run.result_json)
+    target_ids = set(sibling_match_ids(current.matches, match_id))
+    if match_id not in target_ids:
+        raise RoleMatchError("Соответствие не найдено", status_code=404)
     data = dict(run.result_json or {})
+    touched_function_ids: set[str] = set()
     found = False
     for item in data.get("matches") or []:
-        if item.get("matchId") == match_id:
-            item["status"] = status
-            item["requiresUserConfirmation"] = False
-            function = item.get("function")
-            function_id = ""
-            if isinstance(function, dict):
-                function["requiresUserConfirmation"] = False
-                function_id = str(function.get("functionId") or "")
-            found = True
-            break
+        if item.get("matchId") not in target_ids:
+            continue
+        found = True
+        item["status"] = status
+        item["requiresUserConfirmation"] = False
+        function = item.get("function")
+        if isinstance(function, dict):
+            function["requiresUserConfirmation"] = False
+            function_id = str(function.get("functionId") or "")
+            if function_id:
+                touched_function_ids.add(function_id)
     if not found:
         raise RoleMatchError("Соответствие не найдено", status_code=404)
     for function in data.get("functions") or []:
-        if isinstance(function, dict) and function_id and function.get("functionId") == function_id:
+        if isinstance(function, dict) and str(function.get("functionId") or "") in touched_function_ids:
             function["requiresUserConfirmation"] = False
-            break
     run.result_json = data
     db.add(run)
     db.commit()

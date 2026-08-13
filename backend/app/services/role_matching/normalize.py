@@ -47,6 +47,9 @@ def normalized(value: str) -> str:
     return " ".join(tokens(value))
 
 
+_SENIORITY_STEMS = {"ведущ", "старш", "главн", "младш", "ген"}
+
+
 def contains_phrase(text: str, phrase: str) -> bool:
     haystack = tokens(text)
     needle = tokens(phrase)
@@ -54,6 +57,23 @@ def contains_phrase(text: str, phrase: str) -> bool:
         return False
     width = len(needle)
     return any(haystack[idx : idx + width] == needle for idx in range(len(haystack) - width + 1))
+
+
+def contains_role_phrase(text: str, phrase: str) -> bool:
+    """Как contains_phrase, но не считает «менеджер X» внутри «ведущий менеджер X»."""
+    haystack = tokens(text)
+    needle = tokens(phrase)
+    if not needle or len(needle) > len(haystack):
+        return False
+    width = len(needle)
+    needle_has_seniority = bool(set(needle) & _SENIORITY_STEMS)
+    for idx in range(len(haystack) - width + 1):
+        if haystack[idx : idx + width] != needle:
+            continue
+        if not needle_has_seniority and idx > 0 and haystack[idx - 1] in _SENIORITY_STEMS:
+            continue
+        return True
+    return False
 
 
 def token_similarity(left: str, right: str) -> float:

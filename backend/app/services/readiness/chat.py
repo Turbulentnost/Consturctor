@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -145,6 +146,9 @@ def send_question_chat_message(
     )
     readiness = _get_readiness(db, draft)
     pending = _pending_questions(readiness, session.function_id)
+    pending_ids = [str(item.get("questionId") or "") for item in pending if item.get("questionId")]
+    current_qid = session.question_id
+    clarifying_prompt = _last_assistant_prompt(db, session.id)
     structured = adapt_after_answer(
         session.context_json,
         pending,
@@ -153,27 +157,27 @@ def send_question_chat_message(
         turn_count=_user_turn_count(db, session.id),
     )
     fallback_structured = _extract_structured_answer(user_text, session.context_json, readiness)
-    if not fallback_structured["isComplete"]:
-        structured["answeredQuestionIds"] = []
-        structured["remainingQuestionIds"] = [str(item.get("questionId") or "") for item in pending]
+    answered = _merge_answered_question_ids(
+        llm_answered=list(structured.get("answeredQuestionIds") or []),
+        fallback=fallback_structured,
+        current_question_id=current_qid,
+        pending_ids=pending_ids,
+    )
+    structured["answeredQuestionIds"] = answered
+    structured["remainingQuestionIds"] = [qid for qid in pending_ids if qid not in set(answered)]
+    if answered and current_qid in answered:
+        structured["stopInterview"] = bool(structured.get("stopInterview")) or not structured["remainingQuestionIds"]
+    elif not fallback_structured["isComplete"]:
         structured["stopInterview"] = False
-    if not structured.get("answeredQuestionIds") and fallback_structured["isComplete"]:
-        structured["answeredQuestionIds"] = [item["questionId"] for item in fallback_structured["relatedAnswers"]]
-        structured["remainingQuestionIds"] = [
-            str(item.get("questionId") or "")
-            for item in pending
-            if str(item.get("questionId") or "") not in set(structured["answeredQuestionIds"])
-        ]
-    structured["isComplete"] = bool(structured.get("answeredQuestionIds"))
+    structured["isComplete"] = bool(current_qid and current_qid in answered)
     structured["targetField"] = session.target_field
     structured["answer"] = user_text
     structured["relatedAnswers"] = [
         {"questionId": qid, "answer": user_text}
-        for qid in structured.get("answeredQuestionIds", [])
+        for qid in answered
     ]
     if structured["isComplete"]:
         applied = []
-        clarifying_prompt = _last_assistant_prompt(db, session.id)
         for item in structured["relatedAnswers"]:
             readiness = answer_readiness_question(
                 db,
@@ -197,11 +201,26 @@ def send_question_chat_message(
             context=session.context_json,
         )
         sync_draft_progress(db, draft_id=draft.id, readiness=readiness)
-        session.status = "answered" if _function_interview_done(readiness, session.function_id, structured) else "active"
-        assistant_text = str(structured.get("assistantMessage") or _accepted_answer_text(applied))
+        # Сессию текущего вопроса помечаем answered — UI откроет следующий чат
+        # с нормальным вопросом, а не служебным «это закрывает Q-…».
+        session.status = "answered"
+        assistant_text = _assistant_text_after_answer(
+            structured=structured,
+            applied=applied,
+            previous_prompt=clarifying_prompt,
+            readiness=readiness,
+            function_id=session.function_id,
+        )
     else:
         session.status = "needs_clarification"
-        assistant_text = str(structured.get("followUpQuestion") or _follow_up_prompt(session.context_json))
+        assistant_text = str(
+            structured.get("assistantMessage")
+            or structured.get("followUpQuestion")
+            or fallback_structured.get("followUpQuestion")
+            or _follow_up_prompt(session.context_json)
+        )
+        if _is_repeated_prompt(assistant_text, clarifying_prompt):
+            assistant_text = _follow_up_prompt(session.context_json)
     db.add(
         QuestionChatMessage(
             id=f"qmsg-{uuid4().hex[:12]}",
@@ -468,6 +487,112 @@ def _follow_up_prompt(context: dict) -> str:
     )
 
 
+def _merge_answered_question_ids(
+    *,
+    llm_answered: list[str],
+    fallback: dict,
+    current_question_id: str,
+    pending_ids: list[str],
+) -> list[str]:
+    """Склеивает ответ LLM и эвристику; текущий вопрос закрываем при конкретном ответе."""
+    allowed = set(pending_ids)
+    if current_question_id:
+        allowed.add(current_question_id)
+    out: list[str] = []
+    for qid in llm_answered:
+        text = str(qid or "").strip()
+        if text and text in allowed and text not in out:
+            out.append(text)
+    if fallback.get("isComplete"):
+        for item in fallback.get("relatedAnswers") or []:
+            qid = str((item or {}).get("questionId") or "").strip()
+            if qid and qid in allowed and qid not in out:
+                out.append(qid)
+        if current_question_id and current_question_id not in out:
+            out.insert(0, current_question_id)
+    return out
+
+
+def _normalize_prompt(text: str) -> str:
+    return " ".join((text or "").casefold().split())
+
+
+def _is_repeated_prompt(candidate: str, previous: str) -> bool:
+    left = _normalize_prompt(candidate)
+    right = _normalize_prompt(previous)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    # LLM часто почти дословно повторяет исходный уточняющий вопрос.
+    if len(left) > 40 and (left in right or right in left):
+        return True
+    left_tail = left[-120:]
+    right_tail = right[-120:]
+    return bool(left_tail and left_tail == right_tail)
+
+
+def _assistant_text_after_answer(
+    *,
+    structured: dict,
+    applied: list[dict],
+    previous_prompt: str,
+    readiness: AgentReadinessResult,
+    function_id: str,
+) -> str:
+    next_item = next(
+        (
+            item
+            for item in readiness.questions
+            if not item.answered and item.functionId == function_id
+        ),
+        None,
+    )
+    if next_item is not None:
+        # Пользователю нужен сразу следующий вопрос, без «это закрывает Q-…».
+        message = str(structured.get("assistantMessage") or "").strip()
+        if (
+            message
+            and not _is_repeated_prompt(message, previous_prompt)
+            and not _is_meta_closure_message(message)
+            and _message_looks_like_question(message)
+        ):
+            return message
+        return next_item.question
+    message = str(structured.get("assistantMessage") or "").strip()
+    if message and not _is_meta_closure_message(message) and not _is_repeated_prompt(message, previous_prompt):
+        return message
+    return _accepted_answer_text(applied)
+
+
+def _is_meta_closure_message(text: str) -> bool:
+    clean = (text or "").casefold()
+    if not clean:
+        return False
+    markers = (
+        "закрывает вопрос",
+        "закрывает уточнение",
+        "вопрос закрыт",
+        "answeredquestion",
+        "это закрывает",
+    )
+    if any(marker in clean for marker in markers):
+        return True
+    # «… Q-007 (trigger)» и похожие служебные хвосты
+    return bool(re.search(r"\bq-\d{2,}\b", clean) and ("trigger" in clean or "deadline" in clean or "control" in clean or "(" in clean))
+
+
+def _message_looks_like_question(text: str) -> bool:
+    clean = (text or "").strip()
+    if not clean:
+        return False
+    if "?" in clean or "？" in clean:
+        return True
+    starters = ("как ", "когда ", "кто ", "что ", "какой ", "какая ", "какие ", "нужно уточнить", "уточните")
+    lowered = clean.casefold()
+    return any(lowered.startswith(item) or f" {item}" in f" {lowered}" for item in starters)
+
+
 def _extract_structured_answer(text: str, context: dict, readiness: AgentReadinessResult) -> dict:
     clean = text.strip()
     current = context.get("question") or {}
@@ -595,8 +720,8 @@ def _severity_rank(severity: str) -> int:
 
 def _accepted_answer_text(applied: list[dict]) -> str:
     if len(applied) <= 1:
-        return "Понял. Я предлагаю дополнить пункт регламента так:"
-    return f"Понял. Этот ответ закрывает сразу {len(applied)} уточнения. Я подготовил проекты изменений регламента."
+        return "Понял. Можно переходить к следующему уточнению по этому блоку."
+    return f"Понял. Учёл сразу несколько уточнений ({len(applied)}). Переходим дальше."
 
 
 def _follow_up_from_answer(text: str, context: dict) -> str:

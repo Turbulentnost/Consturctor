@@ -7,6 +7,7 @@ from threading import Thread
 from PySide6.QtCore import Qt, QProcess, QProcessEnvironment, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -20,30 +21,31 @@ from PySide6.QtWidgets import (
 
 from app.api_client import ApiClient, ApiError, WorkflowListItem, WorkflowRecord
 from app.config import tools_dir
-from app.ui.theme import app_font
+from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 
 _PRIMARY = """
 QPushButton {
-    background: #06483D; color: #F7FBFA; border: none;
-    border-radius: 16px; padding: 0 16px;
+    background: #08745F; color: #FFFFFF; border: none;
+    border-radius: 14px; padding: 0 16px;
 }
-QPushButton:hover { background: #08745F; }
-QPushButton:disabled { background: #9DB3AD; color: #EEF3F1; }
+QPushButton:hover { background: #0A8670; }
+QPushButton:disabled { background: #A8C8BF; color: #EAF7F3; }
 """
 _SECONDARY = """
 QPushButton {
-    background: #E4EFEA; color: #06483D; border: 1px solid #BFD8CF;
-    border-radius: 16px; padding: 0 16px;
+    background: #FFFFFF; color: #06483D;
+    border: 1px solid rgba(16,24,23,0.12);
+    border-radius: 14px; padding: 0 16px;
 }
-QPushButton:hover { background: #D3E7DF; }
+QPushButton:hover { background: #F4F7F6; }
 """
 _LIST = """
 QListWidget {
-    background: #FFFFFF; border: 1px solid #D0DFD8;
-    border-radius: 16px; padding: 6px; outline: none;
+    background: #FFFFFF; border: 1px solid rgba(16,24,23,0.10);
+    border-radius: 18px; padding: 6px; outline: none;
 }
-QListWidget::item { padding: 10px 12px; border-radius: 10px; color: #101817; }
-QListWidget::item:selected { background: #E3F3EC; color: #06483D; }
+QListWidget::item { padding: 12px 14px; border-radius: 12px; color: #101817; }
+QListWidget::item:selected { background: rgba(8,116,95,0.10); color: #06483D; }
 """
 _PHASE_HINT = {
     "document": "черновик",
@@ -86,53 +88,75 @@ class SavedWorkflowsPage(QWidget):
 
     def _build(self) -> None:
         title = QLabel("Сохранённые workflow")
-        title.setFont(app_font(26, QFont.Weight.DemiBold))
-        title.setStyleSheet("color: #101817; background: transparent;")
+        title.setFont(app_font(28, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        subtitle = QLabel("Открывайте планы и запускайте локальные сценарии.")
+        subtitle.setFont(app_font(13))
+        subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
 
         refresh = QPushButton("Обновить")
-        refresh.setFixedHeight(32)
+        refresh.setFixedHeight(36)
         refresh.setCursor(Qt.CursorShape.PointingHandCursor)
         refresh.setFont(app_font(12, QFont.Weight.DemiBold))
         refresh.setStyleSheet(_SECONDARY)
         refresh.clicked.connect(self.refresh)
 
         bind = QPushButton("Привязать roseltorg")
-        bind.setFixedHeight(32)
+        bind.setFixedHeight(36)
         bind.setCursor(Qt.CursorShape.PointingHandCursor)
         bind.setFont(app_font(12, QFont.Weight.DemiBold))
         bind.setStyleSheet(_SECONDARY)
         bind.clicked.connect(self._on_bind_roseltorg)
 
+        header_text = QVBoxLayout()
+        header_text.setSpacing(4)
+        header_text.addWidget(title)
+        header_text.addWidget(subtitle)
         header = QHBoxLayout()
-        header.addWidget(title, 1)
-        header.addWidget(bind)
-        header.addWidget(refresh)
+        header.addLayout(header_text, 1)
+        header.addWidget(bind, 0, Qt.AlignmentFlag.AlignTop)
+        header.addWidget(refresh, 0, Qt.AlignmentFlag.AlignTop)
 
         self._list = QListWidget()
         self._list.setFont(app_font(13))
-        self._list.setStyleSheet(_LIST)
+        self._list.setStyleSheet(_LIST + scroll_bar_qss())
         self._list.itemDoubleClicked.connect(lambda _i: self._on_open())
         self._list.currentItemChanged.connect(lambda *_: self._load_detail())
 
+        detail_card = QFrame()
+        detail_card.setObjectName("SavedWorkflowDetail")
+        detail_card.setStyleSheet(
+            """
+            QFrame#SavedWorkflowDetail {
+                background: #FFFFFF;
+                border: 1px solid rgba(16,24,23,0.10);
+                border-radius: 18px;
+            }
+            """
+        )
+        detail_layout = QVBoxLayout(detail_card)
+        detail_layout.setContentsMargins(18, 16, 18, 16)
+        detail_layout.setSpacing(12)
+
         self._detail = QLabel("Выберите workflow.")
-        self._detail.setFont(app_font(12))
+        self._detail.setFont(app_font(13))
         self._detail.setWordWrap(True)
         self._detail.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._detail.setStyleSheet(
-            "color: #33413C; background: #F4F8F6; border: 1px solid #D7E6DF;"
-            "border-radius: 12px; padding: 12px 14px;"
+            f"color: {MAIN_TEXT.name()}; background: #F7FAF9;"
+            "border: 1px solid #EAF1EE; border-radius: 14px; padding: 14px;"
         )
         self._detail.setMinimumWidth(360)
 
         self._run_btn = QPushButton("Запустить локально")
-        self._run_btn.setFixedHeight(34)
+        self._run_btn.setFixedHeight(40)
         self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._run_btn.setFont(app_font(12, QFont.Weight.DemiBold))
         self._run_btn.setStyleSheet(_PRIMARY)
         self._run_btn.clicked.connect(self._on_run)
 
         self._open_result_btn = QPushButton("Открыть отчёт")
-        self._open_result_btn.setFixedHeight(34)
+        self._open_result_btn.setFixedHeight(40)
         self._open_result_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._open_result_btn.setFont(app_font(12, QFont.Weight.DemiBold))
         self._open_result_btn.setStyleSheet(_SECONDARY)
@@ -140,20 +164,21 @@ class SavedWorkflowsPage(QWidget):
         self._open_result_btn.setEnabled(False)
 
         self._open_btn = QPushButton("Открыть в конструкторе")
-        self._open_btn.setFixedHeight(34)
+        self._open_btn.setFixedHeight(40)
         self._open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._open_btn.setFont(app_font(12, QFont.Weight.DemiBold))
         self._open_btn.setStyleSheet(_SECONDARY)
         self._open_btn.clicked.connect(self._on_open)
 
         self._delete_btn = QPushButton("Удалить")
-        self._delete_btn.setFixedHeight(34)
+        self._delete_btn.setFixedHeight(40)
         self._delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._delete_btn.setFont(app_font(12, QFont.Weight.DemiBold))
         self._delete_btn.setStyleSheet(_SECONDARY)
         self._delete_btn.clicked.connect(self._on_delete)
 
         detail_actions = QHBoxLayout()
+        detail_actions.setSpacing(8)
         detail_actions.addWidget(self._run_btn)
         detail_actions.addWidget(self._open_result_btn)
         detail_actions.addWidget(self._open_btn)
@@ -161,35 +186,34 @@ class SavedWorkflowsPage(QWidget):
         detail_actions.addStretch(1)
 
         self._status = QLabel("")
-        self._status.setFont(app_font(12))
+        self._status.setFont(app_font(12, QFont.Weight.Medium))
         self._status.setWordWrap(True)
-        self._status.setStyleSheet("color: #06483D; background: transparent;")
+        self._status.setStyleSheet("color: #2D7A5E; background: transparent;")
 
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
         self._log.setFont(app_font(11))
         self._log.setPlaceholderText("Здесь появится ход локального запуска…")
         self._log.setStyleSheet(
-            "QPlainTextEdit { background: #0E1A16; color: #CDE7DD;"
-            "border: 1px solid #143229; border-radius: 12px; padding: 10px; }"
+            "QPlainTextEdit { background: #F7FAF9; color: #53625E;"
+            "border: 1px solid #EAF1EE; border-radius: 14px; padding: 12px; }"
+            + scroll_bar_qss()
         )
         self._log.setMinimumHeight(160)
 
-        right = QVBoxLayout()
-        right.setSpacing(10)
-        right.addWidget(self._detail, 1)
-        right.addLayout(detail_actions)
-        right.addWidget(self._status)
-        right.addWidget(self._log, 1)
+        detail_layout.addWidget(self._detail, 1)
+        detail_layout.addLayout(detail_actions)
+        detail_layout.addWidget(self._status)
+        detail_layout.addWidget(self._log, 1)
 
         body = QHBoxLayout()
         body.setSpacing(16)
         body.addWidget(self._list, 1)
-        body.addLayout(right, 1)
+        body.addWidget(detail_card, 1)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(14)
+        root.setSpacing(16)
         root.addLayout(header)
         root.addLayout(body, 1)
 

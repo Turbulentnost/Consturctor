@@ -27,32 +27,41 @@ def init_db() -> None:
 
 
 def _ensure_columns() -> None:
-    """Add new columns to existing tables without a full migration tool."""
+    """Add new columns to existing tables without a full migration tool.
+
+    Shared DB (constructor_ai) may already have a `users` table from AIConstructor
+    with a different shape (e.g. avatar_key instead of avatar_path).
+    """
     with engine.begin() as conn:
         rows = conn.execute(
             text(
                 """
                 SELECT column_name
                 FROM information_schema.columns
-                WHERE table_name = 'users'
+                WHERE table_schema = 'public' AND table_name = 'users'
                 """
             )
         ).fetchall()
         existing = {str(r[0]) for r in rows}
+        if not existing:
+            return
+        alters: list[str] = []
         if "department_changed_at" not in existing:
-            conn.execute(
-                text(
-                    "ALTER TABLE users "
-                    "ADD COLUMN department_changed_at TIMESTAMPTZ NULL"
-                )
-            )
+            alters.append("ADD COLUMN department_changed_at TIMESTAMPTZ NULL")
         if "position" not in existing:
-            conn.execute(
-                text(
-                    "ALTER TABLE users "
-                    "ADD COLUMN position VARCHAR(512) NOT NULL DEFAULT ''"
-                )
+            alters.append("ADD COLUMN position VARCHAR(512) NOT NULL DEFAULT ''")
+        if "avatar_path" not in existing:
+            alters.append("ADD COLUMN avatar_path VARCHAR(1024) NULL")
+        if "updated_at" not in existing:
+            alters.append(
+                "ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
             )
+        if "department" not in existing:
+            alters.append("ADD COLUMN department VARCHAR(512) NOT NULL DEFAULT ''")
+        if "fio" not in existing:
+            alters.append("ADD COLUMN fio VARCHAR(512) NOT NULL DEFAULT ''")
+        for clause in alters:
+            conn.execute(text(f"ALTER TABLE users {clause}"))
 
 
 def get_db() -> Generator[Session, None, None]:

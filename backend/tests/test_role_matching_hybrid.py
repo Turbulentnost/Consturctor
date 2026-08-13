@@ -147,7 +147,8 @@ def test_dedupe_merges_same_function_evidence(monkeypatch) -> None:
 
     deduped = dedupe_matches(matches)
 
-    assert len(deduped) == 2
+    # Одна и та же функция с разных блоков схлопывается в одну карточку.
+    assert len(deduped) == 1
     assert all(item.function.duplicateGroup for item in deduped if item.function is not None)
 
 
@@ -513,6 +514,89 @@ def test_docx_editor_applies_accepted_append(tmp_path) -> None:
     assert "DOCX" in message
     updated = Document(str(document_path))
     assert "Срок выполнения" in updated.paragraphs[0].text
+
+
+def test_duty_list_splits_into_multiple_functions() -> None:
+    from app.services.role_matching.llm_classifier import _duty_list_parts, _function_parts
+
+    text = (
+        "7.1.6 Менеджер тендерного офиса отвечает за комплектование пакета документов,\n"
+        "проверку\nкомплектности\nи\nактуальности\nдокументов,\nведение\nархива,\n"
+        "корректность карточки тендера"
+    )
+    parts = _duty_list_parts(text)
+    assert len(parts) >= 3
+    assert any("комплектование" in p for p in parts)
+    assert any("проверку" in p for p in parts)
+    assert any("архива" in p for p in parts)
+    assert len(_function_parts(text)) >= 3
+
+
+def test_unit_process_keeps_office_duties_not_other_roles() -> None:
+    from app.services.role_matching.candidates import explicit_other_named_role
+    from app.services.role_matching.dedupe import dedupe_matches
+    from app.schemas.regulation import FragmentRoleMatch, MatchEvidence
+
+    assert explicit_other_named_role(
+        "7.1.5 Ведущий менеджер тендерного офиса отвечает за ведение сложных процедур"
+    )
+    assert not explicit_other_named_role(
+        "3.1.1 Осуществляет поиск закупок на ЭТП"
+    )
+    assert not explicit_other_named_role(
+        "7.1.6 Менеджер тендерного офиса отвечает за комплектование пакета документов"
+    )
+
+    matches = [
+        FragmentRoleMatch(
+            matchId="M-1",
+            fragmentId="B-1",
+            isRelevant=True,
+            relation="executor",
+            matchTypes=["unit_process"],
+            signals=[],
+            evidence=[MatchEvidence(fragmentId="B-1", quote="поиск")],
+            explanation="",
+            modelConfidence=0.5,
+            confidence=0.7,
+            requiresUserConfirmation=True,
+            status="pending",
+            fragment=RegulationFragment(fragmentId="B-1", page=1, section="", text="поиск закупок"),
+            function=RoleFunction(
+                targetBlockId="B-1",
+                isFunction=True,
+                actor=FunctionActor(text="менеджер тендерного офиса", canonicalPosition="менеджер тендерного офиса"),
+                action="осуществляет",
+                object="поиск закупок на ЭТП",
+                evidence=[],
+            ),
+        ),
+        FragmentRoleMatch(
+            matchId="M-2",
+            fragmentId="B-2",
+            isRelevant=True,
+            relation="executor",
+            matchTypes=["unit_process"],
+            signals=[],
+            evidence=[MatchEvidence(fragmentId="B-2", quote="анализ")],
+            explanation="",
+            modelConfidence=0.5,
+            confidence=0.7,
+            requiresUserConfirmation=True,
+            status="pending",
+            fragment=RegulationFragment(fragmentId="B-2", page=1, section="", text="анализ закупки"),
+            function=RoleFunction(
+                targetBlockId="B-2",
+                isFunction=True,
+                actor=FunctionActor(text="менеджер тендерного офиса", canonicalPosition="менеджер тендерного офиса"),
+                action="выполняет",
+                object="предварительный анализ закупки",
+                evidence=[],
+            ),
+        ),
+    ]
+    deduped = dedupe_matches(matches)
+    assert len(deduped) == 2
 
 
 def _sample_result() -> RegulationParseResult:

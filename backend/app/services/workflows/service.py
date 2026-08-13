@@ -216,17 +216,36 @@ def plan_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSch
 
 
 def clarify_workflow(
-    db: Session, *, user_id: str, workflow_id: str, answers: dict[str, str]
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    answers: dict[str, str],
+    files: list[tuple[str, bytes]] | None = None,
+    file_question_ids: list[str] | None = None,
 ) -> WorkflowSchema:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     if not row.plan_json:
         raise WorkflowError("Нет плана для уточнения")
+
+    merged_answers = dict(answers or {})
+    attached = _append_attachments(
+        db,
+        row=row,
+        files=files or [],
+        file_question_ids=file_question_ids or [],
+        answers=merged_answers,
+    )
+    if attached:
+        db.commit()
+        db.refresh(row)
+
     plan = WorkflowPlan.from_dict(row.plan_json)
     for q in plan.open_questions:
-        if q.id in answers:
-            q.answer = answers[q.id]
+        if q.id in merged_answers:
+            q.answer = merged_answers[q.id]
 
-    prompt = prompts.build_clarify_prompt(answers=answers, plan=plan)
+    prompt = prompts.build_clarify_prompt(answers=merged_answers, plan=plan)
     try:
         if row.plan_agent_id:
             run = cursor_client.create_run(row.plan_agent_id, prompt=prompt, mode="agent")
@@ -508,6 +527,80 @@ def _get_owned(db: Session, *, user_id: str, workflow_id: str) -> Workflow:
 
 def _workflow_dir(workflow_id: str) -> Path:
     return settings.workflow_storage_dir / workflow_id
+
+
+def _append_attachments(
+    db: Session,
+    *,
+    row: Workflow,
+    files: list[tuple[str, bytes]],
+    file_question_ids: list[str],
+    answers: dict[str, str],
+) -> list[str]:
+    """Save clarify attachments and annotate answers with file names."""
+    if not files:
+        return []
+
+    workflow_id = row.id
+    storage_dir = _workflow_dir(workflow_id)
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    existing = _load_attachments_payload(workflow_id)
+    meta = list(row.attachments_meta or [])
+    added_names: list[str] = []
+    by_question: dict[str, list[str]] = {}
+
+    for idx, (original_name, raw) in enumerate(files):
+        try:
+            loaded = load_attachment_bytes(original_name, raw)
+        except DocumentError as exc:
+            raise WorkflowError(str(exc)) from exc
+        safe = _safe_filename(original_name)
+        # Avoid overwrite collisions
+        candidate = storage_dir / safe
+        if candidate.exists():
+            stem = Path(safe).stem
+            suffix = Path(safe).suffix
+            safe = f"{stem}_{uuid4().hex[:6]}{suffix}"
+            candidate = storage_dir / safe
+        candidate.write_bytes(raw)
+        loaded["stored_name"] = safe
+        loaded["path"] = str(candidate)
+        existing.append(loaded)
+        meta.append(
+            {
+                "name": loaded["name"],
+                "kind": loaded["kind"],
+                "mime_type": loaded.get("mime_type") or "",
+                "stored_name": safe,
+                "text_preview": (loaded.get("text") or "")[:500],
+            }
+        )
+        added_names.append(loaded["name"])
+        qid = ""
+        if idx < len(file_question_ids):
+            qid = str(file_question_ids[idx] or "").strip()
+        if qid:
+            by_question.setdefault(qid, []).append(loaded["name"])
+
+    _save_attachments_payload(workflow_id, existing)
+    document_name, document_text = compose_document(existing, notes=row.notes or "")
+    row.attachments_meta = meta
+    row.document_name = document_name or row.document_name
+    row.document_text = document_text
+
+    for qid, names in by_question.items():
+        note = "Приложенные файлы: " + ", ".join(names)
+        prev = (answers.get(qid) or "").strip()
+        answers[qid] = f"{prev}\n{note}".strip() if prev else note
+
+    if added_names and not by_question:
+        note = "Приложенные файлы: " + ", ".join(added_names)
+        if answers:
+            first = next(iter(answers.keys()))
+            prev = (answers.get(first) or "").strip()
+            answers[first] = f"{prev}\n{note}".strip() if prev else note
+
+    return added_names
 
 
 def _attachments_path(workflow_id: str) -> Path:

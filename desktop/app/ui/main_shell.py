@@ -23,6 +23,7 @@ from app.api_client import (
     AgentReadinessResult,
     ApiClient,
     ApiError,
+    PassportSession,
     RegulationParseResult,
     RegulationRevisionResult,
     RoleMatchResult,
@@ -34,6 +35,7 @@ from app.api_client import (
     RegulationCreationSession,
     UserProfile,
 )
+from app.ui.pages.agent_passport_page import AgentPassportPage
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.my_agents_page import MyAgentsPage
@@ -152,6 +154,8 @@ class MainShell(QWidget):
     _draft_ready = Signal(object)
     _drafts_ready = Signal(object)
     _agents_table_ready = Signal(object)
+    _passport_ready = Signal(object)
+    _passport_failed = Signal(str)
     _chat_ready = Signal(object)
     _creation_session_ready = Signal(object)
     _creation_stream_event = Signal(str, str)
@@ -178,6 +182,7 @@ class MainShell(QWidget):
         self._page_readiness = ReadinessPage()
         self._page_revision = RevisionResultPage(self._api)
         self._page_creation_chat = RegulationCreationPage()
+        self._page_passport = AgentPassportPage()
         self._page_loading = LoadingPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
@@ -190,6 +195,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_readiness)
         self._pages.addWidget(self._page_revision)
         self._pages.addWidget(self._page_creation_chat)
+        self._pages.addWidget(self._page_passport)
         self._pages.addWidget(self._page_loading)
         self._page_index = {
             "create": 0,
@@ -203,13 +209,19 @@ class MainShell(QWidget):
             "readiness": 8,
             "revision": 9,
             "creation_chat": 10,
-            "loading": 11,
+            "passport": 11,
+            "loading": 12,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_saved_workflows.open_requested.connect(self._on_open_saved_workflow)
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_agents.continue_requested.connect(self._on_continue_agent_draft)
+        self._page_agents.create_requested.connect(self._on_create_agent_from_suggestion)
         self._page_agents.delete_requested.connect(self._on_delete_agent_draft)
+        self._page_passport.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["agents"]))
+        self._page_passport.draft_requested.connect(self._on_passport_draft_requested)
+        self._page_passport.answer_requested.connect(self._on_passport_answer_requested)
+        self._page_passport.finished_requested.connect(self._on_passport_finished)
         self._page_create.create_regulation_requested.connect(self._on_create_regulation)
         self._page_create.regulation_selected.connect(self._on_regulation_selected)
         self._page_review.back_requested.connect(self._back_to_create)
@@ -240,6 +252,8 @@ class MainShell(QWidget):
         self._draft_ready.connect(self._show_draft_result)
         self._drafts_ready.connect(self._show_drafts_result)
         self._agents_table_ready.connect(self._show_agents_table_result)
+        self._passport_ready.connect(self._show_passport_result)
+        self._passport_failed.connect(self._show_passport_error)
         self._chat_ready.connect(self._show_chat_result)
         self._creation_session_ready.connect(self._show_creation_session)
         self._creation_stream_event.connect(self._page_creation_chat.append_stream_event)
@@ -982,8 +996,6 @@ class MainShell(QWidget):
         self._pages.setCurrentIndex(idx)
         if key == "agents":
             self._load_agent_drafts()
-        if key == "saved_workflows":
-            self._page_saved_workflows.refresh()
 
     def _on_open_saved_workflow(self, record: object) -> None:
         from app.api_client import WorkflowRecord as WorkflowRecordType
@@ -991,7 +1003,6 @@ class MainShell(QWidget):
         if not isinstance(record, WorkflowRecordType):
             return
         self._page_workflows.load_record(record)
-        self.sidebar.set_active_key("workflows")
         self._pages.setCurrentIndex(self._page_index["workflows"])
 
     def _load_agent_drafts(self) -> None:
@@ -1015,6 +1026,65 @@ class MainShell(QWidget):
         elif isinstance(result, list):
             self._page_agents.set_drafts([item for item in result if isinstance(item, AgentDraft)])
         self._pages.setCurrentIndex(self._page_index["agents"])
+
+    def _on_create_agent_from_suggestion(self, agent_id: str) -> None:
+        suggestion = self._page_agents.find_suggestion(agent_id)
+        if suggestion is None:
+            QMessageBox.warning(self, "Агент", "Не удалось найти бизнес-процесс для создания агента.")
+            return
+        self._current_passport_suggestion = suggestion
+        self._pages.setCurrentIndex(self._page_index["passport"])
+        self._page_passport.start(suggestion)
+
+    def _on_passport_draft_requested(self, suggestion: object) -> None:
+        if not isinstance(suggestion, AgentSuggestion):
+            return
+
+        def run() -> None:
+            try:
+                session = self._api.draft_passport_from_suggestion(suggestion)
+            except ApiError as exc:
+                self._passport_failed.emit(exc.message)
+                return
+            self._passport_ready.emit(session)
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_passport_answer_requested(self, answers: object) -> None:
+        session = self._page_passport.current_session()
+        if session is None or not isinstance(answers, dict):
+            return
+
+        def run() -> None:
+            try:
+                updated = self._api.complete_passport(
+                    session.passport,
+                    answers={str(key): str(value) for key, value in answers.items()},
+                    bp_name=session.bp_name,
+                    excerpt=session.excerpt,
+                    functions=session.functions,
+                )
+            except ApiError as exc:
+                self._passport_failed.emit(exc.message)
+                return
+            self._passport_ready.emit(updated)
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_passport_result(self, result: object) -> None:
+        if isinstance(result, PassportSession):
+            self._page_passport.apply_session(result)
+            self._pages.setCurrentIndex(self._page_index["passport"])
+
+    def _show_passport_error(self, message: str) -> None:
+        self._page_passport.show_error(message)
+        self._pages.setCurrentIndex(self._page_index["passport"])
+
+    def _on_passport_finished(self, session: object) -> None:
+        if not isinstance(session, PassportSession):
+            return
+        self._page_workflows.start_from_passport(session, auto_plan=True)
+        self._pages.setCurrentIndex(self._page_index["workflows"])
 
     def _on_continue_agent_draft(self, draft_id: str) -> None:
         self._page_loading.set_message(
