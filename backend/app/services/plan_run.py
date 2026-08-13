@@ -346,16 +346,7 @@ def run_site_search_excel(
     safe_title = re.sub(r"[^\w\-]+", "_", (workflow.title or "agent"), flags=re.UNICODE)[:40]
     dest = dest_dir / f"{safe_title}_{stamp}.xlsx"
 
-    rows = [
-        {
-            "title": t.title,
-            "amount": t.amount,
-            "deadline": t.deadline,
-            "url": t.url,
-            "keywords": ", ".join(t.matched_queries),
-        }
-        for t in tenders
-    ]
+    rows = [_tender_to_row(t) for t in _iter_tenders(tenders)]
     _export_excel(rows, dest, spec.columns)
 
     if on_progress:
@@ -375,6 +366,44 @@ def run_site_search_excel(
         "columns": spec.columns,
         "site_url": spec.site_url,
         "source": spec.source,
+    }
+
+
+def _iter_tenders(items: Any) -> list[Any]:
+    if not isinstance(items, list):
+        return [items]
+    flat: list[Any] = []
+    for item in items:
+        if isinstance(item, list):
+            flat.extend(_iter_tenders(item))
+        else:
+            flat.append(item)
+    return flat
+
+
+def _tender_to_row(tender: Any) -> dict[str, str]:
+    if isinstance(tender, dict):
+        title = str(tender.get("title") or tender.get("name") or "Без названия")
+        amount = str(tender.get("amount") or tender.get("price") or "")
+        deadline = str(tender.get("deadline") or tender.get("date") or "")
+        url = str(tender.get("url") or tender.get("link") or "")
+        matched = tender.get("matched_queries") or tender.get("keywords") or []
+    else:
+        title = str(getattr(tender, "title", "") or "Без названия")
+        amount = str(getattr(tender, "amount", "") or "")
+        deadline = str(getattr(tender, "deadline", "") or "")
+        url = str(getattr(tender, "url", "") or "")
+        matched = getattr(tender, "matched_queries", []) or []
+    if isinstance(matched, str):
+        keywords = matched
+    else:
+        keywords = ", ".join(str(item) for item in matched if str(item).strip())
+    return {
+        "title": title,
+        "amount": amount,
+        "deadline": deadline,
+        "url": url,
+        "keywords": keywords,
     }
 
 
