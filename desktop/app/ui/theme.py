@@ -43,7 +43,12 @@ CONTENT_PADDING_TOP = 30
 
 FONT_FAMILY = "Manrope"
 
-_ASSETS = Path(__file__).resolve().parents[2] / "assets" / "fonts"
+try:
+    from app.config import bundle_path
+
+    _ASSETS = bundle_path("assets", "fonts")
+except Exception:  # pragma: no cover
+    _ASSETS = Path(__file__).resolve().parents[2] / "assets" / "fonts"
 
 
 def load_fonts() -> str:
