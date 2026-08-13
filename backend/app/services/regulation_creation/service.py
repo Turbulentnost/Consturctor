@@ -44,7 +44,7 @@ INTERVIEW_GUIDANCE = (
 )
 FORCE_CREATE_GUIDANCE = (
     "Если пользователь просит создать регламент принудительно, не задавай новых вопросов. "
-    "Сформируй status='ready' и document по текущей истории. "
+    'Сформируй status="ready" и document по текущей истории. '
     "Недостающие сведения заполняй аккуратными типовыми формулировками и явно помечай как предположение."
 )
 
@@ -248,7 +248,7 @@ def _apply_agent_reply(db: Session, *, user_id: str, draft: RegulationCreationDr
             draft=draft,
             role="assistant",
             content=parsed.get("message") or "Регламент сформирован. Проверьте документ перед созданием агента.",
-            structured={"resultRegulationId": result.regulationId},
+            structured={"resultRegulationId": result.regulationId, "document": parsed["document"]},
         )
         draft.status = "finalized"
         draft.result_regulation_id = result.regulationId
@@ -405,6 +405,7 @@ def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationS
             for item in _messages_for_draft(db, draft.id)
         ],
         resultRegulation=result,
+        resultDocument=draft.draft_document_json or {},
         resultDocumentPath=draft.result_document_path,
         createdAt=draft.created_at,
         updatedAt=draft.updated_at,

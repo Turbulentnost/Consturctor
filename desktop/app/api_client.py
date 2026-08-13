@@ -344,6 +344,7 @@ class RegulationCreationSession:
     positions: list[str]
     messages: list[RegulationCreationMessage]
     result_regulation: RegulationParseResult | None
+    result_document: dict
     result_document_path: str
 
 
@@ -1549,6 +1550,7 @@ class ApiClient:
                 if isinstance(item, dict)
             ],
             result_regulation=ApiClient._parse_regulation(result_raw) if isinstance(result_raw, dict) else None,
+            result_document=data.get("resultDocument") if isinstance(data.get("resultDocument"), dict) else {},
             result_document_path=str(data.get("resultDocumentPath") or ""),
         )
 

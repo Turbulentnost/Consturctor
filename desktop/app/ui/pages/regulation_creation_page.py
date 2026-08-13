@@ -156,7 +156,7 @@ class RegulationCreationPage(QWidget):
                 self._messages_layout.addWidget(self._think_block())
             else:
                 self._messages_layout.addWidget(self._working_block())
-        if self._session.status == "finalized" and self._session.result_document_path:
+        if self._session.status == "finalized" and self._has_result_document():
             self._messages_layout.addWidget(self._document_result_block())
         self._messages_layout.addStretch(1)
         if should_scroll:
@@ -282,6 +282,24 @@ class RegulationCreationPage(QWidget):
         hint.setFont(app_font(12))
         hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         layout.addWidget(hint)
+        preview_text = self._document_preview_text()
+        if preview_text:
+            preview = QLabel(preview_text)
+            preview.setWordWrap(True)
+            preview.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            preview.setFont(app_font(12))
+            preview.setStyleSheet(
+                """
+                QLabel {
+                    color: #101817;
+                    background: #F8FBFA;
+                    border: 1px solid rgba(16,24,23,0.08);
+                    border-radius: 12px;
+                    padding: 10px 12px;
+                }
+                """
+            )
+            layout.addWidget(preview)
 
         actions = QHBoxLayout()
         actions.addStretch(1)
@@ -290,12 +308,14 @@ class RegulationCreationPage(QWidget):
         download.setFixedHeight(36)
         download.setFont(app_font(12, QFont.Weight.DemiBold))
         download.setStyleSheet(_SECONDARY_BUTTON)
+        download.setEnabled(self._document_path() is not None)
         download.clicked.connect(self._download_document)
         preview = QPushButton("Просмотреть")
         preview.setCursor(Qt.CursorShape.PointingHandCursor)
         preview.setFixedHeight(36)
         preview.setFont(app_font(12, QFont.Weight.DemiBold))
         preview.setStyleSheet(_PRIMARY_BUTTON)
+        preview.setEnabled(self._document_path() is not None)
         preview.clicked.connect(self._preview_document)
         actions.addWidget(download)
         actions.addWidget(preview)
@@ -309,6 +329,44 @@ class RegulationCreationPage(QWidget):
         wrap.setStyleSheet("background: transparent;")
         wrap.setLayout(row)
         return wrap
+
+    def _has_result_document(self) -> bool:
+        if self._session is None:
+            return False
+        return bool(
+            self._session.result_document
+            or self._session.result_document_path
+            or self._session.result_regulation is not None
+        )
+
+    def _document_preview_text(self) -> str:
+        if self._session is None:
+            return ""
+        document = self._session.result_document
+        if document:
+            lines = [str(document.get("title") or "Регламент").strip()]
+            for section in document.get("sections") or []:
+                if not isinstance(section, dict):
+                    continue
+                number = str(section.get("number") or "").strip()
+                title = str(section.get("title") or "").strip()
+                heading = f"{number} {title}".strip()
+                if heading:
+                    lines.extend(["", heading])
+                for paragraph in section.get("paragraphs") or []:
+                    text = str(paragraph or "").strip()
+                    if text:
+                        lines.append(text)
+                for item in section.get("items") or []:
+                    text = str(item or "").strip()
+                    if text:
+                        lines.append(f"- {text}")
+            return "\n".join(line for line in lines if line or lines)
+        result = self._session.result_regulation
+        if result is None:
+            return ""
+        parts = [fragment.text.strip() for fragment in result.fragments if fragment.text.strip()]
+        return "\n\n".join(parts)
 
     def _document_path(self) -> Path | None:
         if self._session is None or not self._session.result_document_path:
