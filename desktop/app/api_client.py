@@ -641,6 +641,8 @@ class ApiClient:
                                 payload_type = str(payload.get("type") or event_name)
                                 if payload_type in {"thinking", "assistant"}:
                                     on_event(payload_type, str(payload.get("text") or ""))
+                                elif payload_type == "status":
+                                    on_event(payload_type, str(payload.get("status") or ""))
                                 elif payload_type == "error":
                                     raise ApiError(str(payload.get("message") or "Ошибка Cursor Agent"))
                                 elif payload_type == "session" and isinstance(payload.get("session"), dict):

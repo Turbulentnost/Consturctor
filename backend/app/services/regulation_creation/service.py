@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -30,6 +31,22 @@ from app.services.regulation_creation.style_profile import build_style_profile
 
 
 FIRST_QUESTION = "Напишите, для каких должностей создается регламент"
+INTERVIEW_GUIDANCE = (
+    "В режиме need_more не засыпай пользователя цепочкой открытых вопросов. "
+    "Каждый следующий шаг формулируй так: 1) один конкретный вопрос; "
+    "2) предполагаемый ответ, который ты сам выводишь из истории и типовой логики регламента; "
+    "3) короткий вопрос 'Оставить это или переделать?'. "
+    "В поле message пиши в понятном виде: 'Вопрос: ...\\n\\nПредлагаю так: ...\\n\\nОставить это или переделать?'. "
+    "В поле quickAnswers для need_more всегда возвращай ['Оставить', 'Переделать']; "
+    "если уместно, добавь третий краткий вариант с готовым альтернативным ответом. "
+    "Если пользователь пишет 'Оставить', считай предложенный ответ подтверждённым и переходи дальше. "
+    "Если пользователь пишет 'Переделать', попроси новую формулировку только для этого пункта."
+)
+FORCE_CREATE_GUIDANCE = (
+    "Если пользователь просит создать регламент принудительно, не задавай новых вопросов. "
+    "Сформируй status='ready' и document по текущей истории. "
+    "Недостающие сведения заполняй аккуратными типовыми формулировками и явно помечай как предположение."
+)
 
 
 class RegulationCreationError(Exception):
@@ -236,12 +253,13 @@ def _apply_agent_reply(db: Session, *, user_id: str, draft: RegulationCreationDr
         draft.status = "finalized"
         draft.result_regulation_id = result.regulationId
     else:
+        quick_answers = parsed.get("quickAnswers") or ["Оставить", "Переделать"]
         _add_message(
             db,
             draft=draft,
             role="assistant",
             content=parsed.get("message") or raw or "Уточните, пожалуйста, детали процесса.",
-            structured={"quickAnswers": parsed.get("quickAnswers") or []},
+            structured={"quickAnswers": quick_answers},
         )
         draft.status = "interview"
         if positions := parsed.get("positions"):
@@ -306,9 +324,11 @@ def _initial_prompt(draft: RegulationCreationDraft, positions_message: str) -> s
         "Веди интервью: сначала извлеки должности из ответа пользователя, затем по каждой должности выясняй функции, "
         "условия запуска, входы/выходы, сроки, исключения, согласования, системы и ответственность. "
         "Если сведений недостаточно, задай один конкретный следующий вопрос. "
+        f"{INTERVIEW_GUIDANCE} "
+        f"{FORCE_CREATE_GUIDANCE} "
         "Когда данных достаточно, верни JSON с status='ready' и document. "
         "Всегда отвечай строго JSON без markdown: "
-        "{status:'need_more'|'ready', message:'...', positions:[], quickAnswers:[], document:{title:'', sections:[{number:'1', title:'', paragraphs:[], items:[]}]}}.\n"
+        '{"status":"need_more|ready","message":"...","positions":[],"quickAnswers":[],"document":{"title":"","sections":[{"number":"1","title":"","paragraphs":[],"items":[]}]}}.\n'
         f"Обобщённый профиль стилизации без текста исходных документов: {json.dumps(draft.style_profile_json, ensure_ascii=False)}\n"
         f"Ответ пользователя о должностях: {positions_message}"
     )
@@ -323,8 +343,10 @@ def _followup_prompt(history_items: list[RegulationCreationMessage], message: st
         "Продолжай интервью для создания регламента. Используй историю и новый ответ пользователя. "
         "Не запрашивай и не ожидай файлы существующих регламентов: применяй только уже переданные обобщённые правила стилизации. "
         "Если информации мало, задай следующий точный вопрос. Если достаточно, сформируй document. "
+        f"{INTERVIEW_GUIDANCE} "
+        f"{FORCE_CREATE_GUIDANCE} "
         "Отвечай строго JSON без markdown: "
-        "{status:'need_more'|'ready', message:'...', positions:[], quickAnswers:[], document:{title:'', sections:[{number:'1', title:'', paragraphs:[], items:[]}]}}.\n"
+        '{"status":"need_more|ready","message":"...","positions":[],"quickAnswers":[],"document":{"title":"","sections":[{"number":"1","title":"","paragraphs":[],"items":[]}]}}.\n'
         f"История: {json.dumps(history, ensure_ascii=False)}\n"
         f"Новый ответ пользователя: {message}"
     )
@@ -338,13 +360,22 @@ def _parse_agent_response(raw: str) -> dict:
         data = json.loads(text)
         return data if isinstance(data, dict) else {"status": "need_more", "message": raw}
     except json.JSONDecodeError:
+        try:
+            data = ast.literal_eval(text)
+            return data if isinstance(data, dict) else {"status": "need_more", "message": raw}
+        except (SyntaxError, ValueError):
+            pass
         match = re.search(r"\{.*\}", text, flags=re.S)
         if match:
             try:
                 data = json.loads(match.group(0))
                 return data if isinstance(data, dict) else {"status": "need_more", "message": raw}
             except json.JSONDecodeError:
-                pass
+                try:
+                    data = ast.literal_eval(match.group(0))
+                    return data if isinstance(data, dict) else {"status": "need_more", "message": raw}
+                except (SyntaxError, ValueError):
+                    pass
     return {"status": "need_more", "message": raw}
 
 
