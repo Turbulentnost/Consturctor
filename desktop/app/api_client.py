@@ -371,6 +371,7 @@ class WorkflowOpenQuestion:
     question: str
     why: str = ""
     answer: str = ""
+    options: list[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1083,6 +1084,17 @@ class ApiClient:
         )
         return self._parse_workflow(data)
 
+    def stream_plan_workflow(
+        self,
+        workflow_id: str,
+        on_event: Callable[[str, str], None],
+    ) -> WorkflowRecord:
+        return self._stream_workflow(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/plan/stream",
+            on_event=on_event,
+        )
+
     def clarify_workflow(
         self,
         workflow_id: str,
@@ -1138,6 +1150,24 @@ class ApiClient:
             raise ApiError(_extract_detail(response), status_code=response.status_code)
         return self._parse_workflow(response.json())
 
+    def stream_clarify_workflow(
+        self,
+        workflow_id: str,
+        answers: dict[str, str],
+        on_event: Callable[[str, str], None],
+        *,
+        file_paths: list[str | Path] | None = None,
+        file_question_ids: list[str] | None = None,
+    ) -> WorkflowRecord:
+        return self._stream_workflow(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/clarify/stream",
+            on_event=on_event,
+            answers=answers,
+            file_paths=file_paths,
+            file_question_ids=file_question_ids,
+        )
+
     def execute_workflow(self, workflow_id: str, *, reexecute: bool = False) -> WorkflowRecord:
         data = self._request(
             "POST",
@@ -1146,6 +1176,139 @@ class ApiClient:
             timeout=900.0,
         )
         return self._parse_workflow(data)
+
+    def stream_execute_workflow(
+        self,
+        workflow_id: str,
+        on_event: Callable[[str, str], None],
+        *,
+        reexecute: bool = False,
+    ) -> WorkflowRecord:
+        return self._stream_workflow(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/execute/stream",
+            on_event=on_event,
+            json_body={"reexecute": reexecute},
+        )
+
+    def list_agent_tools(self) -> list[dict]:
+        data = self._request("GET", "/api/v1/workflows/agent-tools", timeout=60.0)
+        return [item for item in (data.get("tools") or []) if isinstance(item, dict)]
+
+    def stream_workflow_agent_run(
+        self,
+        workflow_id: str,
+        message: str,
+        on_event: Callable[[dict], None],
+    ) -> dict:
+        url = f"{self.base_url}/api/v1/workflows/{workflow_id}/agent-runs/stream"
+        final_result: dict | None = None
+        try:
+            with httpx.Client(timeout=None) as client:
+                with client.stream(
+                    "POST",
+                    url,
+                    headers={**self._headers(), "Accept": "text/event-stream"},
+                    json={"message": message},
+                ) as response:
+                    if response.status_code >= 400:
+                        body = response.read().decode("utf-8", errors="replace")
+                        raise ApiError(body or "Ошибка запуска агента", status_code=response.status_code)
+                    data_lines: list[str] = []
+                    for line in response.iter_lines():
+                        if line == "":
+                            if data_lines:
+                                payload = _parse_sse_payload("\n".join(data_lines))
+                                payload_type = str(payload.get("type") or "")
+                                if payload_type == "error":
+                                    raise ApiError(str(payload.get("message") or "Ошибка запуска агента"))
+                                if payload_type == "done":
+                                    final_result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+                                else:
+                                    on_event(payload)
+                            data_lines = []
+                            continue
+                        if line.startswith("data:"):
+                            data_lines.append(line.split(":", 1)[1].strip())
+        except httpx.ConnectError as exc:
+            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+        return final_result or {}
+
+    def _stream_workflow(
+        self,
+        method: str,
+        path: str,
+        *,
+        on_event: Callable[[str, str], None],
+        json_body: dict | None = None,
+        answers: dict[str, str] | None = None,
+        file_paths: list[str | Path] | None = None,
+        file_question_ids: list[str] | None = None,
+    ) -> WorkflowRecord:
+        url = f"{self.base_url}{path}"
+        final_record: WorkflowRecord | None = None
+        files: list = []
+        handles = []
+        data = None
+        request_json = json_body
+        paths = [Path(p) for p in (file_paths or []) if Path(p).is_file()]
+        if answers is not None:
+            if paths:
+                qids = list(file_question_ids or [])
+                while len(qids) < len(paths):
+                    qids.append("")
+                for file_path in paths:
+                    fh = file_path.open("rb")
+                    handles.append(fh)
+                    files.append(("files", (file_path.name, fh, "application/octet-stream")))
+                data = {
+                    "answers": json.dumps(answers or {}, ensure_ascii=False),
+                    "file_question_ids": json.dumps(qids[: len(paths)], ensure_ascii=False),
+                }
+                request_json = None
+            else:
+                request_json = {"answers": answers}
+        try:
+            with httpx.Client(timeout=None) as client:
+                with client.stream(
+                    method,
+                    url,
+                    headers={**self._headers(), "Accept": "text/event-stream"},
+                    json=request_json,
+                    data=data,
+                    files=files or None,
+                ) as response:
+                    if response.status_code >= 400:
+                        body = response.read().decode("utf-8", errors="replace")
+                        raise ApiError(body or "Ошибка workflow", status_code=response.status_code)
+                    data_lines: list[str] = []
+                    for line in response.iter_lines():
+                        if line == "":
+                            if data_lines:
+                                payload = _parse_sse_payload("\n".join(data_lines))
+                                payload_type = str(payload.get("type") or "")
+                                if payload_type in {"thinking", "assistant", "message", "decision", "system"}:
+                                    on_event(payload_type, str(payload.get("text") or ""))
+                                elif payload_type == "error":
+                                    raise ApiError(str(payload.get("message") or "Ошибка workflow"))
+                                elif payload_type == "workflow" and isinstance(payload.get("workflow"), dict):
+                                    final_record = self._parse_workflow(payload["workflow"])
+                            data_lines = []
+                            continue
+                        if line.startswith("data:"):
+                            data_lines.append(line.split(":", 1)[1].strip())
+        except httpx.ConnectError as exc:
+            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+        finally:
+            for handle in handles:
+                handle.close()
+        if final_record is None:
+            raise ApiError("Backend не вернул итоговый workflow")
+        return final_record
 
     def download_workflow_artifacts(self, workflow_id: str) -> ArtifactsDownloadResult:
         import zipfile
@@ -1213,6 +1376,7 @@ class ApiClient:
                     question=str(q.get("question") or ""),
                     why=str(q.get("why") or ""),
                     answer=str(q.get("answer") or ""),
+                    options=[str(x) for x in q.get("options") or []],
                 )
                 for q in (plan_data.get("open_questions") or [])
                 if isinstance(q, dict)

@@ -18,6 +18,7 @@ class OpenQuestionSchema(BaseModel):
     question: str = ""
     why: str = ""
     answer: str = ""
+    options: list[str] = Field(default_factory=list)
 
 
 class WorkflowPlanSchema(BaseModel):

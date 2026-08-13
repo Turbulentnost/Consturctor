@@ -29,6 +29,7 @@ class OpenQuestion:
     question: str
     why: str = ""
     answer: str = ""
+    options: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> OpenQuestion:
@@ -37,6 +38,7 @@ class OpenQuestion:
             question=str(data.get("question") or ""),
             why=str(data.get("why") or ""),
             answer=str(data.get("answer") or ""),
+            options=[str(x) for x in (data.get("options") or [])],
         )
 
 

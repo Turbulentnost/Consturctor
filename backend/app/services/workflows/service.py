@@ -5,7 +5,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -173,7 +173,16 @@ def update_local_run(
     return _to_schema(row)
 
 
-def plan_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSchema:
+WorkflowEventCallback = Callable[[str, str], None]
+
+
+def plan_workflow(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     logger.info("Workflow plan start id=%s title=%s", workflow_id, row.title)
     attachments = _load_attachments_payload(workflow_id)
@@ -182,6 +191,7 @@ def plan_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSch
     if not has_text and not images:
         raise WorkflowError("Нет материалов для планирования — загрузите файлы или заметки.")
 
+    _emit(on_event, "decision", "Изучаю материалы и формирую структуру workflow.")
     prompt = prompts.build_plan_prompt(
         document_text=row.document_text,
         document_name=row.document_name,
@@ -222,13 +232,15 @@ def plan_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSch
         run_id,
     )
 
-    phase = _stream_run(agent_id, run_id)
+    _emit(on_event, "decision", "Планировщик запущен, получаю рассуждения агента.")
+    phase = _stream_run(agent_id, run_id, on_event=on_event)
     plan = prompts.parse_plan_from_text(phase.text)
     row.plan_json = plan.to_dict()
     row.title = plan.title or row.title
     row.phase = "clarify" if plan.unanswered() else "ready"
     db.commit()
     db.refresh(row)
+    _emit(on_event, "decision", "План разобран и сохранён.")
     return _to_schema(row)
 
 
@@ -240,6 +252,7 @@ def clarify_workflow(
     answers: dict[str, str],
     files: list[tuple[str, bytes]] | None = None,
     file_question_ids: list[str] | None = None,
+    on_event: WorkflowEventCallback | None = None,
 ) -> WorkflowSchema:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     if not row.plan_json:
@@ -279,6 +292,7 @@ def clarify_workflow(
         for a in clarify_attachments
         if a.get("kind") == "image" and a.get("name")
     ][: len(images)]
+    _emit(on_event, "decision", "Учитываю ответы пользователя и обновляю план.")
     prompt = prompts.build_clarify_prompt(
         answers=merged_answers,
         plan=plan,
@@ -325,7 +339,7 @@ def clarify_workflow(
         run_id,
     )
 
-    phase = _stream_run(agent_id, run_id)
+    phase = _stream_run(agent_id, run_id, on_event=on_event)
     updated = prompts.parse_plan_from_text(phase.text)
     prior = {q.id: q.answer for q in plan.open_questions if q.answer}
     for q in updated.open_questions:
@@ -336,11 +350,17 @@ def clarify_workflow(
     row.phase = "clarify" if updated.unanswered() else "ready"
     db.commit()
     db.refresh(row)
+    _emit(on_event, "decision", "Уточнения применены к плану.")
     return _to_schema(row)
 
 
 def execute_workflow(
-    db: Session, *, user_id: str, workflow_id: str, reexecute: bool = False
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    reexecute: bool = False,
+    on_event: WorkflowEventCallback | None = None,
 ) -> WorkflowSchema:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     if not row.plan_json:
@@ -358,6 +378,7 @@ def execute_workflow(
     else:
         prompt = prompts.build_execute_prompt(plan=plan, document_text=row.document_text)
 
+    _emit(on_event, "decision", "Запускаю реализацию workflow.")
     try:
         if reexecute and row.exec_agent_id:
             try:
@@ -386,13 +407,14 @@ def execute_workflow(
         run_id,
     )
 
-    phase = _stream_run(agent_id, run_id)
+    phase = _stream_run(agent_id, run_id, on_event=on_event)
     row.last_result = phase.text
     row.branch = phase.branch or row.branch
     row.pr_url = phase.pr_url or row.pr_url
     row.phase = "done" if phase.status == "FINISHED" else "ready"
     db.commit()
     db.refresh(row)
+    _emit(on_event, "decision", "Результат реализации сохранён.")
     return _to_schema(row)
 
 
@@ -538,7 +560,17 @@ def _resolve_model() -> str | None:
     return chosen
 
 
-def _stream_run(agent_id: str, run_id: str) -> PhaseResult:
+def _emit(on_event: WorkflowEventCallback | None, event_type: str, text: str) -> None:
+    if on_event is not None and text:
+        on_event(event_type, text)
+
+
+def _stream_run(
+    agent_id: str,
+    run_id: str,
+    *,
+    on_event: WorkflowEventCallback | None = None,
+) -> PhaseResult:
     result = PhaseResult(agent_id=agent_id, run_id=run_id)
     assistant_parts: list[str] = []
     got_terminal = False
@@ -553,6 +585,7 @@ def _stream_run(agent_id: str, run_id: str) -> PhaseResult:
                 if not chunk:
                     continue
                 assistant_parts.append(chunk)
+                _emit(on_event, "thinking", chunk)
                 # Stream may send deltas or cumulative snapshots — log only new text.
                 if chunk.startswith(logged_assistant):
                     delta = chunk[len(logged_assistant) :]
@@ -562,6 +595,8 @@ def _stream_run(agent_id: str, run_id: str) -> PhaseResult:
                     logged_assistant += chunk
                 if delta.strip():
                     logger.info("Cursor assistant [%s/%s]: %s", agent_id[-8:], run_id[-8:], delta)
+            elif event == "message":
+                _emit(on_event, "message", str(payload.get("text") or payload.get("message") or ""))
             elif event == "result":
                 got_terminal = True
                 result.status = str(payload.get("status") or "")
