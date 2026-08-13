@@ -344,6 +344,7 @@ class RegulationCreationSession:
     positions: list[str]
     messages: list[RegulationCreationMessage]
     result_regulation: RegulationParseResult | None
+    result_document: dict
     result_document_path: str
 
 
@@ -641,6 +642,8 @@ class ApiClient:
                                 payload_type = str(payload.get("type") or event_name)
                                 if payload_type in {"thinking", "assistant"}:
                                     on_event(payload_type, str(payload.get("text") or ""))
+                                elif payload_type == "status":
+                                    on_event(payload_type, str(payload.get("status") or ""))
                                 elif payload_type == "error":
                                     raise ApiError(str(payload.get("message") or "Ошибка Cursor Agent"))
                                 elif payload_type == "session" and isinstance(payload.get("session"), dict):
@@ -1555,6 +1558,7 @@ class ApiClient:
                 if isinstance(item, dict)
             ],
             result_regulation=ApiClient._parse_regulation(result_raw) if isinstance(result_raw, dict) else None,
+            result_document=data.get("resultDocument") if isinstance(data.get("resultDocument"), dict) else {},
             result_document_path=str(data.get("resultDocumentPath") or ""),
         )
 

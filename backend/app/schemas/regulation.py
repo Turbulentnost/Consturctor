@@ -619,6 +619,7 @@ class RegulationCreationSession(BaseModel):
     positions: list[str] = Field(default_factory=list)
     messages: list[RegulationCreationMessage] = Field(default_factory=list)
     resultRegulation: RegulationParseResult | None = None
+    resultDocument: dict = Field(default_factory=dict)
     resultDocumentPath: str = ""
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
