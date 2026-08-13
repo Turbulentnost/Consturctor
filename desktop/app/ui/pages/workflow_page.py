@@ -446,14 +446,15 @@ class WorkflowPage(QWidget):
                     action_key="show_plan",
                 )
             )
-            for q in record.plan.unanswered():
+            first_q = next(iter(record.plan.unanswered()), None)
+            if first_q is not None:
                 self._events.append(
                     FeedEvent(
                         "Уточнение",
-                        q.question,
+                        first_q.question,
                         self._now(),
                         action="Ответить в поле ниже",
-                        action_key=f"q:{q.id}",
+                        action_key=f"q:{first_q.id}",
                     )
                 )
         if record.last_result:
@@ -583,14 +584,14 @@ class WorkflowPage(QWidget):
             return
         self._input.clear()
         if self._record and self._record.plan and self._record.plan.unanswered():
-            # Treat as clarify answers: map text to all unanswered or first
-            unanswered = self._record.plan.unanswered()
-            answers = {q.id: text for q in unanswered}
+            # Один вопрос за раз — не сваливаем все уточнения в один ответ.
+            current = self._record.plan.unanswered()[0]
+            answers = {current.id: text}
             self._push_event("Вы", text or "Файл приложен")
             self._append_user_files_to_event()
             wid = self._record.id
             paths = list(self._pending_paths)
-            qids = [unanswered[0].id] * len(paths) if unanswered and paths else []
+            qids = [current.id] * len(paths) if paths else []
 
             def work() -> WorkflowRecord:
                 return self._api.clarify_workflow(
@@ -665,7 +666,7 @@ class WorkflowPage(QWidget):
             self._notes = result.notes or self._notes
             self._render_chips()
             if label.startswith("Планирование"):
-                n = len(result.plan.unanswered()) if result.plan else 0
+                unanswered = result.plan.unanswered() if result.plan else []
                 goal = (result.plan.goal if result.plan else "") or result.title
                 self._push_event(
                     "План",
@@ -673,14 +674,14 @@ class WorkflowPage(QWidget):
                     action="Показать шаги плана",
                     action_key="show_plan",
                 )
-                if n:
-                    for q in result.plan.unanswered()[:3]:  # type: ignore[union-attr]
-                        self._push_event(
-                            "Уточнение",
-                            q.question,
-                            action="Ответить в поле ниже",
-                            action_key=f"q:{q.id}",
-                        )
+                if unanswered:
+                    q = unanswered[0]
+                    self._push_event(
+                        "Уточнение",
+                        q.question,
+                        action="Ответить в поле ниже",
+                        action_key=f"q:{q.id}",
+                    )
                 else:
                     self._push_event(
                         "Сборка workflow",
@@ -689,10 +690,15 @@ class WorkflowPage(QWidget):
                         action_key="run_plan",
                     )
             elif label.startswith("Уточнение"):
-                n = len(result.plan.unanswered()) if result.plan else 0
-                if n:
-                    for q in result.plan.unanswered()[:2]:  # type: ignore[union-attr]
-                        self._push_event("Уточнение", q.question)
+                unanswered = result.plan.unanswered() if result.plan else []
+                if unanswered:
+                    q = unanswered[0]
+                    self._push_event(
+                        "Уточнение",
+                        q.question,
+                        action="Ответить в поле ниже",
+                        action_key=f"q:{q.id}",
+                    )
                 else:
                     self._push_event(
                         "Сборка workflow",

@@ -112,6 +112,16 @@ def collect_prompt_images(attachments: list[dict]) -> list[dict[str, str]]:
             continue
         data = str(att.get("data_b64") or "").strip()
         mime = str(att.get("mime_type") or "").strip()
+        if not data:
+            # Fallback: reload bytes from stored path (e.g. after payload slim/migrate).
+            path = str(att.get("path") or "").strip()
+            if path and Path(path).is_file():
+                raw = Path(path).read_bytes()
+                if raw and len(raw) <= MAX_IMAGE_BYTES:
+                    data = base64.b64encode(raw).decode("ascii")
+                    if not mime:
+                        suffix = Path(path).suffix.lower()
+                        mime = _MIME_BY_SUFFIX.get(suffix) or "image/png"
         if not data or not mime:
             continue
         images.append({"data": data, "mimeType": mime})

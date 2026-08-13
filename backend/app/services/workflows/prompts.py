@@ -72,8 +72,21 @@ def build_plan_prompt(
     )
 
 
-def build_clarify_prompt(*, answers: dict[str, str], plan: WorkflowPlan) -> str:
+def build_clarify_prompt(
+    *,
+    answers: dict[str, str],
+    plan: WorkflowPlan,
+    image_count: int = 0,
+    image_names: list[str] | None = None,
+) -> str:
     lines = ["Пользователь ответил на открытые вопросы. Обнови план."]
+    if image_count:
+        names = ", ".join(image_names or []) or "—"
+        lines.append(
+            f"К этому сообщению приложено изображений: {image_count} ({names}). "
+            "Прочитай текст/таблицы/списки со скриншотов и используй их в answers и плане. "
+            "Не говори, что файл недоступен, если изображение приложено к запросу."
+        )
     for q in plan.open_questions:
         ans = (answers.get(q.id) or q.answer or "").strip()
         lines.append(f"- {q.id}: {q.question}\n  answer: {ans or '(пусто)'}")

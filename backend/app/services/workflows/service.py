@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -12,6 +13,8 @@ from sqlalchemy.orm import Session
 from app.clients import cursor as cursor_client
 from app.clients.cursor import CursorAgentError
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 from app.models.workflow import Workflow
 from app.schemas.workflow import (
     ArtifactItem,
@@ -172,6 +175,7 @@ def update_local_run(
 
 def plan_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSchema:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    logger.info("Workflow plan start id=%s title=%s", workflow_id, row.title)
     attachments = _load_attachments_payload(workflow_id)
     images = collect_prompt_images(attachments)
     has_text = bool((row.document_text or "").strip())
@@ -185,6 +189,13 @@ def plan_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSch
         attachment_names=[str(a.get("name") or "") for a in attachments],
     )
     model = _resolve_model()
+    logger.info(
+        "Workflow plan creating Cursor agent id=%s model=%s prompt_len=%s images=%s",
+        workflow_id,
+        model or "-",
+        len(prompt or ""),
+        len(images),
+    )
     try:
         created = cursor_client.create_agent(
             prompt=prompt,
@@ -204,6 +215,12 @@ def plan_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSch
     row.plan_run_id = run_id
     row.phase = "plan"
     db.commit()
+    logger.info(
+        "Workflow plan agent created id=%s agent=%s run=%s — waiting for stream text",
+        workflow_id,
+        agent_id,
+        run_id,
+    )
 
     phase = _stream_run(agent_id, run_id)
     plan = prompts.parse_plan_from_text(phase.text)
@@ -245,15 +262,53 @@ def clarify_workflow(
         if q.id in merged_answers:
             q.answer = merged_answers[q.id]
 
-    prompt = prompts.build_clarify_prompt(answers=merged_answers, plan=plan)
+    all_attachments = _load_attachments_payload(workflow_id)
+    # Prefer images just attached in this clarify turn; else any stored images.
+    if attached:
+        wanted = {n.lower() for n in attached}
+        clarify_attachments = [
+            a
+            for a in all_attachments
+            if str(a.get("name") or "").lower() in wanted
+        ] or all_attachments
+    else:
+        clarify_attachments = all_attachments
+    images = collect_prompt_images(clarify_attachments)
+    image_names = [
+        str(a.get("name") or "")
+        for a in clarify_attachments
+        if a.get("kind") == "image" and a.get("name")
+    ][: len(images)]
+    prompt = prompts.build_clarify_prompt(
+        answers=merged_answers,
+        plan=plan,
+        image_count=len(images),
+        image_names=image_names,
+    )
+    logger.info(
+        "Workflow clarify start id=%s answers=%s images=%s names=%s",
+        workflow_id,
+        list((merged_answers or {}).keys()),
+        len(images),
+        image_names,
+    )
     try:
         if row.plan_agent_id:
-            run = cursor_client.create_run(row.plan_agent_id, prompt=prompt, mode="agent")
+            run = cursor_client.create_run(
+                row.plan_agent_id,
+                prompt=prompt,
+                mode="agent",
+                images=images or None,
+            )
             agent_id = row.plan_agent_id
             run_id = str(run.get("id") or "")
         else:
             created = cursor_client.create_agent(
-                prompt=prompt, model_id=_resolve_model(), mode="agent", name=row.title
+                prompt=prompt,
+                model_id=_resolve_model(),
+                mode="agent",
+                name=row.title,
+                images=images or None,
             )
             agent_id = str((created.get("agent") or {}).get("id") or "")
             run_id = str((created.get("run") or {}).get("id") or "")
@@ -263,6 +318,12 @@ def clarify_workflow(
 
     row.plan_run_id = run_id
     db.commit()
+    logger.info(
+        "Workflow clarify run started id=%s agent=%s run=%s",
+        workflow_id,
+        agent_id,
+        run_id,
+    )
 
     phase = _stream_run(agent_id, run_id)
     updated = prompts.parse_plan_from_text(phase.text)
@@ -285,6 +346,12 @@ def execute_workflow(
     if not row.plan_json:
         raise WorkflowError("Нет плана для выполнения")
     plan = WorkflowPlan.from_dict(row.plan_json)
+    logger.info(
+        "Workflow execute start id=%s reexecute=%s title=%s",
+        workflow_id,
+        reexecute,
+        row.title,
+    )
 
     if reexecute:
         prompt = prompts.build_reexecute_prompt(plan=plan)
@@ -294,6 +361,10 @@ def execute_workflow(
     try:
         if reexecute and row.exec_agent_id:
             try:
+                logger.info(
+                    "Workflow execute creating run on existing agent=%s",
+                    row.exec_agent_id,
+                )
                 run = cursor_client.create_run(row.exec_agent_id, prompt=prompt, mode="agent")
                 agent_id = row.exec_agent_id
                 run_id = str(run.get("id") or "")
@@ -308,6 +379,12 @@ def execute_workflow(
     row.exec_run_id = run_id
     row.phase = "executing"
     db.commit()
+    logger.info(
+        "Workflow execute agent ready id=%s agent=%s run=%s — waiting for stream text",
+        workflow_id,
+        agent_id,
+        run_id,
+    )
 
     phase = _stream_run(agent_id, run_id)
     row.last_result = phase.text
@@ -415,9 +492,16 @@ def _materialize_artifacts(
 
 
 def _create_exec_agent(title: str, prompt: str) -> tuple[str, str]:
+    model = _resolve_model()
+    logger.info(
+        "Workflow execute creating Cursor agent title=%s model=%s prompt_len=%s",
+        title,
+        model or "-",
+        len(prompt or ""),
+    )
     created = cursor_client.create_agent(
         prompt=prompt,
-        model_id=_resolve_model(),
+        model_id=model,
         mode="agent",
         name=title,
     )
@@ -430,9 +514,11 @@ def _create_exec_agent(title: str, prompt: str) -> tuple[str, str]:
 
 def _resolve_model() -> str | None:
     preferred = settings.cursor_workflow_model
+    logger.info("Cursor resolve model preferred=%s", preferred or "-")
     try:
         models = cursor_client.list_models()
-    except CursorAgentError:
+    except CursorAgentError as exc:
+        logger.warning("Cursor list_models failed: %s — fallback=%s", exc.message, preferred or "-")
         return preferred or None
     ids: list[str] = []
     for model in models:
@@ -441,39 +527,96 @@ def _resolve_model() -> str | None:
             ids.append(mid)
         aliases = {str(a) for a in (model.get("aliases") or [])}
         if preferred and (mid == preferred or preferred in aliases):
+            logger.info("Cursor model resolved=%s (preferred match)", mid)
             return mid
     for mid in ids:
         if mid.startswith(preferred or "composer"):
+            logger.info("Cursor model resolved=%s (prefix)", mid)
             return mid
-    return preferred or (ids[0] if ids else None)
+    chosen = preferred or (ids[0] if ids else None)
+    logger.info("Cursor model resolved=%s from %s candidates", chosen or "-", len(ids))
+    return chosen
 
 
 def _stream_run(agent_id: str, run_id: str) -> PhaseResult:
     result = PhaseResult(agent_id=agent_id, run_id=run_id)
     assistant_parts: list[str] = []
     got_terminal = False
+    logged_assistant = ""
+    logger.info("Cursor stream start agent=%s run=%s", agent_id, run_id)
     try:
         for item in cursor_client.stream_run_events(agent_id, run_id):
             event = str(item.get("event") or "message")
             payload = item.get("data") if isinstance(item.get("data"), dict) else {}
             if event == "assistant":
-                assistant_parts.append(str(payload.get("text") or ""))
-            if event == "result":
+                chunk = str(payload.get("text") or "")
+                if not chunk:
+                    continue
+                assistant_parts.append(chunk)
+                # Stream may send deltas or cumulative snapshots — log only new text.
+                if chunk.startswith(logged_assistant):
+                    delta = chunk[len(logged_assistant) :]
+                    logged_assistant = chunk
+                else:
+                    delta = chunk
+                    logged_assistant += chunk
+                if delta.strip():
+                    logger.info("Cursor assistant [%s/%s]: %s", agent_id[-8:], run_id[-8:], delta)
+            elif event == "result":
                 got_terminal = True
                 result.status = str(payload.get("status") or "")
                 if payload.get("text"):
                     result.text = str(payload.get("text"))
                 result.git = payload.get("git") or {}
                 result.branch, result.pr_url = _extract_git(result.git)
-            if event == "error":
+                preview = (result.text or "")[:1200]
+                logger.info(
+                    "Cursor stream result status=%s branch=%s text_len=%s preview=%s",
+                    result.status,
+                    result.branch or "-",
+                    len(result.text or ""),
+                    preview,
+                )
+            elif event == "error":
                 result.error = str(payload.get("message") or payload.get("code") or "")
-    except CursorAgentError:
-        pass
+                logger.error(
+                    "Cursor stream error agent=%s run=%s: %s",
+                    agent_id,
+                    run_id,
+                    result.error,
+                )
+            elif event not in {"heartbeat", "ping", "message", "done"}:
+                logger.info(
+                    "Cursor stream event=%s agent=%s run=%s keys=%s",
+                    event,
+                    agent_id[-8:],
+                    run_id[-8:],
+                    sorted(payload.keys()),
+                )
+    except CursorAgentError as exc:
+        logger.warning(
+            "Cursor stream failed agent=%s run=%s: %s",
+            agent_id,
+            run_id,
+            exc.message,
+        )
 
     if not result.text:
         result.text = "".join(assistant_parts).strip()
     if not got_terminal:
+        logger.info(
+            "Cursor stream incomplete — polling agent=%s run=%s",
+            agent_id,
+            run_id,
+        )
         result = _poll_until_terminal(agent_id, run_id, base=result)
+    logger.info(
+        "Cursor stream end agent=%s run=%s status=%s text_len=%s",
+        agent_id,
+        run_id,
+        result.status or "-",
+        len(result.text or ""),
+    )
     return result
 
 
@@ -500,9 +643,22 @@ def _poll_until_terminal(
             result.text = str(run.get("result"))
         result.git = run.get("git") or result.git
         result.branch, result.pr_url = _extract_git(result.git)
+        logger.info(
+            "Cursor poll agent=%s run=%s status=%s text_len=%s",
+            agent_id[-8:],
+            run_id[-8:],
+            status or "-",
+            len(result.text or ""),
+        )
         if status in cursor_client.TERMINAL_RUN_STATUSES:
             break
         if time.monotonic() >= deadline:
+            logger.warning(
+                "Cursor poll timeout agent=%s run=%s last_status=%s",
+                agent_id,
+                run_id,
+                status or "-",
+            )
             break
         time.sleep(interval_s)
     return result
