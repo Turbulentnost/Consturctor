@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 import httpx
 import pyodbc
+from pydantic import Field
 from pydantic_settings import SettingsConfigDict
 
 from platform_contracts.tools import ToolInvokeRequest
@@ -29,6 +31,8 @@ class OnecSettings(ServiceSettings):
     odata_password: str = ""
     odata_timeout_sec: float = 60.0
     odata_incoming_doc_entity: str = "Document_ТД_ВходящаяКорреспонденция"
+    erp_login: str = Field(default="", validation_alias="ERP_LOGIN")
+    erp_password: str = Field(default="", validation_alias="ERP_PASSWORD")
     erp_sql_server: str = "ii1"
     erp_sql_database: str = "erp_pm"
     erp_sql_driver: str = "ODBC Driver 18 for SQL Server"
@@ -99,9 +103,63 @@ def _sql_allowlist() -> set[str]:
 
 def _build_list_path(entity: str, top: int) -> str:
     entity = entity.strip().lstrip("/")
-    if entity.startswith(("Document_", "BusinessProcess_")):
-        return f"{entity}?$format=json&$top={top}"
     return f"{entity}?$format=json&$top={top}"
+
+
+def _ensure_odata_query(path: str, *, top: int | None = None) -> str:
+    """1C OData requires $format=json; callers often omit it."""
+    normalized = path.strip().lstrip("/")
+    if "$format" not in normalized.lower():
+        normalized = f"{normalized}{'&' if '?' in normalized else '?'}$format=json"
+    if top is not None and "$top" not in normalized.lower():
+        normalized = f"{normalized}&$top={top}"
+    return normalized
+
+
+def _payload_credentials(payload: dict[str, Any]) -> tuple[str, str] | None:
+    username = str(
+        payload.get("username") or payload.get("erp_login") or payload.get("user") or ""
+    ).strip()
+    password = str(
+        payload.get("password") or payload.get("erp_password") or ""
+    ).strip()
+    if username and password:
+        return username, password
+    return None
+
+
+def _odata_auth(req: ToolInvokeRequest | None = None) -> tuple[str, str] | None:
+    """1C returns HTTP 402 for bad credentials (not «payment required»)."""
+    payload = req.payload if req else {}
+    explicit = _payload_credentials(payload)
+    if explicit:
+        return explicit
+    if settings.erp_login and settings.erp_password:
+        return settings.erp_login, settings.erp_password
+    if settings.odata_username and settings.odata_password:
+        return settings.odata_username, settings.odata_password
+    return None
+
+
+def _parse_onec_http_error(response: httpx.Response) -> str:
+    text = response.text.lstrip("\ufeff")
+    try:
+        data = json.loads(text)
+        exc = data.get("exception")
+        if isinstance(exc, dict):
+            desc = str(exc.get("descr") or exc.get("desc") or "").strip()
+            if desc:
+                if response.status_code == 402:
+                    return f"1C OData: неверный пользователь или пароль (HTTP 402). {desc}"
+                return f"1C OData HTTP {response.status_code}: {desc}"
+    except json.JSONDecodeError:
+        pass
+    if response.status_code == 402:
+        return (
+            "1C OData: неверный пользователь или пароль (HTTP 402). "
+            "Укажите ERP_LOGIN/ERP_PASSWORD в infra/.env или передайте username/password в payload."
+        )
+    return f"1C OData HTTP {response.status_code}: {text[:300]}"
 
 
 def _normalize_odata_rows(data: Any) -> list[dict[str, Any]]:
@@ -140,7 +198,7 @@ def _fetch_odata_list(req: ToolInvokeRequest) -> dict[str, Any]:
     top = _parse_top_limit(path, req.payload)
     cleaned_path = path.strip().lstrip("/")
     if cleaned_path and cleaned_path.split("?", 1)[0] == entity:
-        odata_path = cleaned_path
+        odata_path = _ensure_odata_query(cleaned_path, top=top)
     else:
         odata_path = _build_list_path(entity, top)
     if not settings.odata_base_url:
@@ -235,20 +293,23 @@ def _stub_sql_query(req: ToolInvokeRequest) -> dict[str, Any]:
     }
 
 
-def _odata_auth() -> tuple[str, str] | None:
-    if settings.odata_username and settings.odata_password:
-        return settings.odata_username, settings.odata_password
-    return None
-
-
 def _odata_get(req: ToolInvokeRequest) -> dict[str, Any]:
-    path = validate_odata_path(str(req.payload.get("path", "")), allowlist=_odata_allowlist())
+    raw_path = str(req.payload.get("path", ""))
+    path = validate_odata_path(raw_path, allowlist=_odata_allowlist())
+    top = _parse_top_limit(raw_path, req.payload) if raw_path else None
+    path = _ensure_odata_query(path, top=top if "$top" not in path.lower() else None)
     if not settings.odata_base_url:
         raise RuntimeError("ODATA_BASE_URL not configured")
+    auth = _odata_auth(req)
+    if not auth:
+        raise RuntimeError(
+            "OData credentials not configured: set ERP_LOGIN/ERP_PASSWORD or ODATA_USERNAME/ODATA_PASSWORD"
+        )
     url = f"{settings.odata_base_url.rstrip('/')}/{path}"
-    with httpx.Client(timeout=settings.odata_timeout_sec, auth=_odata_auth()) as client:
-        response = client.get(url)
-        response.raise_for_status()
+    with httpx.Client(timeout=settings.odata_timeout_sec, auth=auth) as client:
+        response = client.get(url, headers={"Accept": "application/json"})
+        if response.status_code >= 400:
+            raise RuntimeError(_parse_onec_http_error(response))
         data = response.json()
     return {"summary": "odata get ok", "path": path, "data": data}
 
@@ -258,10 +319,14 @@ def _odata_post(req: ToolInvokeRequest) -> dict[str, Any]:
     body = req.payload.get("body") or {}
     if not settings.odata_base_url:
         raise RuntimeError("ODATA_BASE_URL not configured")
+    auth = _odata_auth(req)
+    if not auth:
+        raise RuntimeError("OData credentials not configured")
     url = f"{settings.odata_base_url.rstrip('/')}/{entity}"
-    with httpx.Client(timeout=settings.odata_timeout_sec, auth=_odata_auth()) as client:
-        response = client.post(url, json=body)
-        response.raise_for_status()
+    with httpx.Client(timeout=settings.odata_timeout_sec, auth=auth) as client:
+        response = client.post(url, json=body, headers={"Accept": "application/json"})
+        if response.status_code >= 400:
+            raise RuntimeError(_parse_onec_http_error(response))
         data = response.json()
     return {
         "summary": "odata post ok",
@@ -277,9 +342,13 @@ def _odata_patch(req: ToolInvokeRequest) -> dict[str, Any]:
     if not ref_key:
         raise ValueError("ref_key required")
     url = f"{settings.odata_base_url.rstrip('/')}/{entity}(guid'{ref_key}')"
-    with httpx.Client(timeout=settings.odata_timeout_sec, auth=_odata_auth()) as client:
-        response = client.patch(url, json=body)
-        response.raise_for_status()
+    auth = _odata_auth(req)
+    if not auth:
+        raise RuntimeError("OData credentials not configured")
+    with httpx.Client(timeout=settings.odata_timeout_sec, auth=auth) as client:
+        response = client.patch(url, json=body, headers={"Accept": "application/json"})
+        if response.status_code >= 400:
+            raise RuntimeError(_parse_onec_http_error(response))
     return {"summary": "odata patch ok", "updated": True, "ref_key": ref_key}
 
 

@@ -113,6 +113,7 @@ VALUES
     ('fs.list', '', 'List files in allowed roots', '[]'),
     ('fs.read', '', 'Read file from allowed roots', '[]'),
     ('fs.write', '', 'Write file in allowed roots', '[]'),
+    ('fs.build_office_file', '', 'Create docx/xlsx at custom path via OOXML', '[]'),
     ('fs.stat', '', 'Stat file or directory', '[]'),
     ('fs.move', '', 'Move file within allowed roots', '[]'),
     ('fs.copy', '', 'Copy file within allowed roots', '[]'),

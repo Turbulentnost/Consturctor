@@ -326,14 +326,32 @@ def get_tool_schemas(*, browser_enabled: bool = True, platform_tools_enabled: bo
 
 
 def _platform_schemas() -> list[dict[str, Any]]:
-    return [
-        _schema(
-            name,
-            f"Platform tool via desktop host :7830 — {name}",
-            {"type": "object", "properties": {"payload": {"type": "object"}}, "additionalProperties": True},
-        )
-        for name in sorted(PLATFORM_TOOL_NAMES)
-    ]
+    try:
+        from platform_contracts.tool_catalog import openai_function_schema
+
+        schemas: list[dict[str, Any]] = []
+        for name in sorted(PLATFORM_TOOL_NAMES):
+            schema = openai_function_schema(name)
+            if schema is not None:
+                schemas.append(schema)
+            else:
+                schemas.append(
+                    _schema(
+                        name,
+                        f"Platform tool — {name}",
+                        {"type": "object", "properties": {"payload": {"type": "object"}}, "additionalProperties": True},
+                    )
+                )
+        return schemas
+    except ImportError:
+        return [
+            _schema(
+                name,
+                f"Platform tool via desktop host :7830 — {name}",
+                {"type": "object", "properties": {"payload": {"type": "object"}}, "additionalProperties": True},
+            )
+            for name in sorted(PLATFORM_TOOL_NAMES)
+        ]
 
 
 def _handle_read_file(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:

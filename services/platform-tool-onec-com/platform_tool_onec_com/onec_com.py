@@ -99,14 +99,53 @@ def get_current_user_name(app: Any) -> str:
     return str(user)
 
 
+def _rows_from_table(table: Any, *, source: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for i in range(table.Count()):
+        row = table.Get(i)
+        rows.append(
+            {
+                "number": str(getattr(row, "Number", "") or getattr(row, "Номер", "") or ""),
+                "description": str(
+                    getattr(row, "Description", "") or getattr(row, "Наименование", "") or ""
+                ),
+                "date": str(getattr(row, "Date", "") or getattr(row, "Дата", "") or ""),
+                "due_date": str(getattr(row, "DueDate", "") or getattr(row, "СрокИсполнения", "") or ""),
+                "executor": str(getattr(row, "Executor", "") or getattr(row, "Исполнитель", "") or ""),
+                "source": source,
+            }
+        )
+    return rows
+
+
+def query_crm_my_tasks(app: Any, *, user_name: str, limit: int = 30) -> list[dict[str, Any]]:
+    """CRM «Мои задачи» — register CRM_ЗадачиПользователей (start page widget)."""
+    limit = max(1, min(100, int(limit)))
+    safe_name = user_name.replace('"', '""')
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ {limit}
+        Р.Номер КАК Number,
+        Р.Наименование КАК Description,
+        Р.Поставлено КАК Date,
+        Р.КрайнийСрок КАК DueDate,
+        Р.Пользователь.Наименование КАК Executor
+        ИЗ РегистрСведений.CRM_ЗадачиПользователей КАК Р
+        ГДЕ Р.Пользователь.Наименование = "{safe_name}"
+            И Р.Закрыта = ДАТАВРЕМЯ(1, 1, 1)
+        УПОРЯДОЧИТЬ ПО Р.Поставлено УБЫВ"""
+    table = app.NewObject("Query", query_text).Execute().Unload()
+    return _rows_from_table(table, source="crm_мои_задачи")
+
+
 def query_performer_tasks(
     app: Any,
     *,
     mine_only: bool = True,
     limit: int = 30,
-) -> list[dict[str, Any]]:
+    prefer_crm: bool = False,
+) -> tuple[list[dict[str, Any]], str]:
     limit = max(1, min(100, int(limit)))
     user_name = get_current_user_name(app) if mine_only else ""
+
     if mine_only and user_name:
         query_text = f"""ВЫБРАТЬ ПЕРВЫЕ {limit}
             Т.Номер КАК Number,
@@ -118,7 +157,17 @@ def query_performer_tasks(
             ГДЕ НЕ Т.Выполнена
                 И Т.Исполнитель.Наименование = "{user_name.replace('"', '""')}"
             УПОРЯДОЧИТЬ ПО Т.Дата УБЫВ"""
-    else:
+        table = app.NewObject("Query", query_text).Execute().Unload()
+        erp_rows = _rows_from_table(table, source="erp_задача_исполнителя")
+        if erp_rows or not prefer_crm:
+            return erp_rows, "erp_задача_исполнителя"
+
+    if prefer_crm and mine_only and user_name:
+        crm_rows = query_crm_my_tasks(app, user_name=user_name, limit=limit)
+        if crm_rows:
+            return crm_rows, "crm_мои_задачи"
+
+    if not mine_only:
         query_text = f"""ВЫБРАТЬ ПЕРВЫЕ {limit}
             Т.Номер КАК Number,
             Т.Наименование КАК Description,
@@ -128,21 +177,10 @@ def query_performer_tasks(
             ИЗ Задача.ЗадачаИсполнителя КАК Т
             ГДЕ НЕ Т.Выполнена
             УПОРЯДОЧИТЬ ПО Т.Дата УБЫВ"""
+        table = app.NewObject("Query", query_text).Execute().Unload()
+        return _rows_from_table(table, source="erp_задача_исполнителя_all"), "erp_задача_исполнителя_all"
 
-    table = app.NewObject("Query", query_text).Execute().Unload()
-    rows: list[dict[str, Any]] = []
-    for i in range(table.Count()):
-        row = table.Get(i)
-        rows.append(
-            {
-                "number": str(getattr(row, "Number", "") or ""),
-                "description": str(getattr(row, "Description", "") or ""),
-                "date": str(getattr(row, "Date", "") or ""),
-                "due_date": str(getattr(row, "DueDate", "") or ""),
-                "executor": str(getattr(row, "Executor", "") or ""),
-            }
-        )
-    return rows
+    return [], "erp_задача_исполнителя"
 
 
 def connect_application(*, progid: str = "", connection_string: str = "") -> tuple[Any, str, str]:

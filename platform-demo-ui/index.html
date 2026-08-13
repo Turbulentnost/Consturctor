@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Constructor Platform — Demo Pipeline v2</title>
-  <link rel="stylesheet" href="style.css?v=29" />
+  <link rel="stylesheet" href="style.css?v=30" />
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 </head>
 <body>
@@ -30,6 +30,13 @@
       <button id="btnTool">4. Tool via Runtime</button>
       <button id="btnKpi">5. KPI summary</button>
     </div>
+    <ol id="pipeline" class="pipeline">
+      <li data-step="login">1. JWT login</li>
+      <li data-step="run">2. Agent run</li>
+      <li data-step="queue">3. RabbitMQ queue</li>
+      <li data-step="tool">4. Tool invoke</li>
+    </ol>
+    <div id="services" class="services-grid" aria-live="polite"></div>
     <pre id="log" class="log"></pre>
   </section>
 
@@ -41,7 +48,7 @@
     </p>
 
     <div class="sandbox-toolbar">
-      <button id="btnSandboxAll" type="button">Запустить все 6</button>
+      <button id="btnSandboxAll" type="button">Запустить все (real)</button>
       <button id="btnSandboxClear" type="button" class="secondary">Очистить вывод</button>
     </div>
 
@@ -79,6 +86,30 @@
         <label class="sandbox-out-label">
           Вывод
           <pre id="sbOnecOut" class="sandbox-io" aria-live="polite">—</pre>
+        </label>
+      </article>
+
+      <article class="sandbox-tool-form onec-sandbox" data-tool="onecCom">
+        <header class="sandbox-tool-head">
+          <span class="sandbox-badge">1С ERP</span>
+          <div>
+            <strong>COM — Мои задачи (ERP)</strong>
+            <div class="hint">onec.com.query_tasks — Задача.ЗадачаИсполнителя через COMConnector, :7831, 32-bit Python</div>
+          </div>
+        </header>
+        <div class="onec-params">
+          <label>
+            Лимит задач
+            <input id="sbOnecComLimit" type="number" min="1" max="100" value="20" />
+          </label>
+        </div>
+        <div class="sandbox-row-actions">
+          <button id="btnSbOnecCom" type="button">Мои задачи (COM)</button>
+          <span id="sbOnecComStatus" class="sandbox-status"></span>
+        </div>
+        <label class="sandbox-out-label">
+          Вывод
+          <pre id="sbOnecComOut" class="sandbox-io" aria-live="polite">—</pre>
         </label>
       </article>
 
@@ -390,6 +421,6 @@
     <pre class="mermaid" id="diagramSource"></pre>
   </section>
 
-  <script src="app.js?v=29"></script>
+  <script src="app.js?v=30"></script>
 </body>
 </html>

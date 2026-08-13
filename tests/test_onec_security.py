@@ -41,11 +41,13 @@ def test_odata_allowlist_accepts_outgoing_doc() -> None:
     assert entity == "Document_ТД_ИсходящаяКорреспонденция"
 
 
-def test_odata_path_strips_query_and_guid() -> None:
-    entity = validate_odata_path(
-        "Document_ТД_ВходящаяКорреспонденция(guid'00000000-0000-0000-0000-000000000001')?$top=3"
+def test_odata_path_preserves_query_and_validates_entity() -> None:
+    path = validate_odata_path(
+        "Document_ТД_ВходящаяКорреспонденция(guid'00000000-0000-0000-0000-000000000001')?$format=json&$top=3"
     )
-    assert entity == "Document_ТД_ВходящаяКорреспонденция"
+    assert path.startswith("Document_ТД_ВходящаяКорреспонденция(guid'")
+    assert "$format=json" in path
+    assert "$top=3" in path
 
 
 def test_onec_stub_odata_get_without_real_url(onec_client: TestClient) -> None:

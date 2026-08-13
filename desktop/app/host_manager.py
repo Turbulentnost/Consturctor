@@ -81,7 +81,14 @@ def ensure_desktop_host(*, wait_seconds: float = 25.0) -> bool:
     )
     env.setdefault("URL_WHITELIST", _DEFAULT_URL_WHITELIST)
     if "FS_ROOT_ALLOWLIST" not in env:
-        env["FS_ROOT_ALLOWLIST"] = str(root / "data" / "filesystem")
+        try:
+            from platform_tool_filesystem.desktop_paths import default_fs_allowlist
+
+            env["FS_ROOT_ALLOWLIST"] = default_fs_allowlist(
+                repo_data_filesystem=root / "data" / "filesystem"
+            )
+        except Exception:
+            env["FS_ROOT_ALLOWLIST"] = str(root / "data" / "filesystem")
     if "SHELL_CWD_ROOTS" not in env:
         env["SHELL_CWD_ROOTS"] = str(root / "data" / "shell-native")
 

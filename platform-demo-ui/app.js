@@ -3,12 +3,14 @@ const SERVICES = [
   { id: "runtime", name: "Agent Runtime", port: 7825 },
   { id: "kpi", name: "platform-kpi", port: 7820 },
   { id: "imap", name: "tool-imap HTTP", port: 7821 },
-  { id: "onec", name: "tool-onec HTTP", port: 7822 },
+  { id: "onec", name: "tool-onec OData", port: 7822 },
   { id: "shell", name: "tool-shell sandbox", port: 7823 },
-  { id: "shellNative", name: "tool-shell native", port: 7828 },
   { id: "browser", name: "tool-browser", port: 7824 },
-  { id: "com", name: "tool-com", port: 7826 },
-  { id: "fs", name: "tool-fs", port: 7827 },
+  { id: "desktopHost", name: "desktop host (IMAP/browser/COM/FS)", port: 7830 },
+  { id: "onecCom", name: "1C ERP COM", port: 7831 },
+  { id: "shellNative", name: "tool-shell native (legacy)", port: 7828 },
+  { id: "com", name: "tool-com (legacy)", port: 7826 },
+  { id: "fs", name: "tool-fs (legacy)", port: 7827 },
 ];
 
 const FIGJAM_URL = "https://www.figma.com/board/d3SqK8NI5SejQtfy8yzpxF";
@@ -97,6 +99,7 @@ async function renderServices() {
   const box = $("services");
   if (!box) return;
   box.innerHTML = "";
+  let okCount = 0;
   for (const svc of SERVICES) {
     const div = document.createElement("div");
     div.className = "svc";
@@ -105,6 +108,7 @@ async function renderServices() {
     try {
       const data = await fetchHealth(svc.port);
       div.classList.add(data.reachable ? "ok" : "down");
+      if (data.reachable) okCount += 1;
       div.querySelector(".status").textContent = data.reachable
         ? `OK — ${JSON.stringify(data.body?.status || data.body?.service || "ok")}`
         : `DOWN — ${data.error || "unreachable"}`;
@@ -113,6 +117,7 @@ async function renderServices() {
       div.querySelector(".status").textContent = `DOWN — ${e.message}`;
     }
   }
+  log(`Health: ${okCount}/${SERVICES.length} сервисов доступны`);
 }
 
 function formatApiError(data, fallback) {
@@ -874,6 +879,38 @@ function getOnecSandboxParams() {
   return { entity, top };
 }
 
+async function runSandboxOnecCom() {
+  if (!sandboxRequireLogin()) return;
+  const limit = Math.max(1, Number.parseInt($("sbOnecComLimit")?.value, 10) || 20);
+  setSandboxFormState("onecCom", "running", "COM ERP: Мои задачи...");
+  writeSandboxOut("sbOnecComOut", "onec.com.query_tasks (ERP COM) ...\n...");
+  try {
+    const result = await invokeSandboxTool("onec.com.query_tasks", {
+      mine_only: true,
+      prefer_crm: false,
+      limit,
+    });
+    const data = result.data || {};
+    const lines = [
+      formatToolResult(result),
+      "",
+      `task_source: ${data.task_source || "?"}`,
+      `current_user: ${data.current_user || "?"}`,
+      `count: ${data.count ?? 0}`,
+    ];
+    for (const task of data.tasks || []) {
+      lines.push(`  ${task.number || ""} | ${String(task.date || "").slice(0, 16)} | ${task.description || ""}`);
+    }
+    writeSandboxOut("sbOnecComOut", lines.join("\n"));
+    setSandboxFormState("onecCom", result.ok ? "done" : "fail", result.ok ? `OK — ${data.count ?? 0}` : result.error || "Ошибка");
+    log(`Sandbox 1C COM ERP: ${data.count ?? 0} tasks (${data.task_source || "?"})`);
+  } catch (e) {
+    writeSandboxOut("sbOnecComOut", `FAILED: ${e.message}`);
+    setSandboxFormState("onecCom", "fail", e.message);
+    log(`Sandbox 1C COM FAILED: ${e.message}`);
+  }
+}
+
 async function runSandboxOnec() {
   if (!sandboxRequireLogin()) return;
   const { entity, top } = getOnecSandboxParams();
@@ -881,7 +918,7 @@ async function runSandboxOnec() {
   writeSandboxOut("sbOnecOut", `GET ${entity}?$format=json&$top=${top}\n...`);
   try {
     const result = await invokeSandboxTool("onec.odata_get", {
-      path: `/${entity}?$top=${top}`,
+      path: `/${entity}?$format=json&$top=${top}`,
       entity,
       top,
       subsystem: "document_flow",
@@ -1168,14 +1205,15 @@ function clearSandboxOutput() {
 
 async function runAllSandboxTests() {
   if (!sandboxRequireLogin()) return;
-  log("Sandbox: run all...");
+  log("Sandbox: run all (real)...");
+  await runSandboxOnecCom();
   await runSandboxOnec();
   await runSandboxImap();
   await runSandboxBrowser();
   await runSandboxShell();
   await runSandboxFs();
   await runSandboxCom();
-  log("Sandbox: все 6 форм выполнены");
+  log("Sandbox: все формы выполнены");
 }
 
 function syncFsOpFields() {
@@ -1191,6 +1229,7 @@ function syncFsOpFields() {
 function initSandboxPanel() {
   const bindings = [
     ["btnSbOnec", runSandboxOnec],
+    ["btnSbOnecCom", runSandboxOnecCom],
     ["btnSbImap", runSandboxImap],
     ["btnSbBrowser", runSandboxBrowser],
     ["btnSbShell", runSandboxShell],

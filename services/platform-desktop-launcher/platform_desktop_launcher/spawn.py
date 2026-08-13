@@ -31,7 +31,11 @@ def repo_root() -> Path:
 
 
 def load_specs(root: Path) -> dict[int, DesktopServiceSpec]:
-    fs_allow = os.environ.get("FS_ROOT_ALLOWLIST") or str(root / "data" / "filesystem")
+    from platform_tool_filesystem.desktop_paths import default_fs_allowlist
+
+    fs_allow = os.environ.get("FS_ROOT_ALLOWLIST") or default_fs_allowlist(
+        repo_data_filesystem=root / "data" / "filesystem"
+    )
     shell_roots = os.environ.get("SHELL_CWD_ROOTS") or str(root / "data" / "shell-native")
     return {
         DESKTOP_HOST_PORT: DesktopServiceSpec(

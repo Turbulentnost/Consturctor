@@ -25,6 +25,8 @@ DOCKER_HEALTH_HOSTS = {
     "7826": "host.docker.internal",
     "7827": "host.docker.internal",
     "7828": "host.docker.internal",
+    "7830": "host.docker.internal",
+    "7831": "host.docker.internal",
 }
 
 

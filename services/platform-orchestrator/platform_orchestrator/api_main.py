@@ -31,6 +31,7 @@ from platform_orchestrator.tool_acl import ToolNotAllowedError
 from platform_contracts.cron import CronJobCreate, CronJobOut, CronJobUpdate
 from platform_contracts.runs import RunStartRequest, RunStatus
 from platform_contracts.tools import ToolInvokeRequest, ToolResult
+from platform_contracts.tool_catalog import list_tool_metadata
 
 app = FastAPI(title="platform-orchestrator", version="0.1.0")
 
@@ -56,6 +57,13 @@ def run_status(run_id: UUID) -> RunStatus:
 @app.get("/api/v1/runs/{run_id}/events")
 def run_events(run_id: UUID) -> dict:
     return {"items": get_run_events(run_id)}
+
+
+@app.get("/api/v1/tools/catalog")
+def tool_catalog(names: str = "") -> dict:
+    selected = [part.strip() for part in names.split(",") if part.strip()] or None
+    items = list_tool_metadata(selected)
+    return {"items": items, "count": len(items), "use_stubs": settings.use_stubs}
 
 
 @app.post("/api/v1/tools/{tool_name}/invoke", response_model=ToolResult)

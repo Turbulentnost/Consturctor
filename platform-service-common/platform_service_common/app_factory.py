@@ -9,8 +9,6 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from platform_contracts.tools import ToolInvokeRequest, ToolResult
-from platform_db.audit import log_tool_event
-from platform_db.session import get_session_factory
 
 
 class ServiceSettings(BaseSettings):
@@ -126,6 +124,9 @@ def _audit(
     payload: dict[str, Any] | None = None,
 ) -> uuid.UUID | None:
     try:
+        from platform_db.audit import log_tool_event
+        from platform_db.session import get_session_factory
+
         factory = get_session_factory()
         with factory() as session:
             row = log_tool_event(

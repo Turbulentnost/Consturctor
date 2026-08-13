@@ -21,7 +21,7 @@ from app.services.agents import (
     list_drafts,
     update_draft_status,
 )
-from app.services.agent_platform import list_allowed_tools
+from app.services.agent_platform import list_allowed_tools_with_metadata
 from app.services.readiness.chat import (
     create_or_get_question_chat,
     get_question_chat,
@@ -148,7 +148,7 @@ async def list_draft_tools(
     except AgentDraftError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     department = draft.department or auth.department or ""
-    tools = list_allowed_tools(department)
+    tools = list_allowed_tools_with_metadata(department)
     return {
         "agent_id": draft.id,
         "department": department,

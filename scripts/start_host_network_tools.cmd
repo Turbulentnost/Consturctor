@@ -23,7 +23,9 @@ pushd infra
 docker compose stop platform-tool-imap platform-tool-imap-worker platform-tool-browser >nul 2>&1
 popd
 
-set "FS_ROOT_ALLOWLIST=%CD%\data\filesystem"
+set "FS_ROOT_ALLOWLIST="
+for /f "usebackq delims=" %%A in (`py -3.12 -c "from pathlib import Path; from platform_tool_filesystem.desktop_paths import default_fs_allowlist; print(default_fs_allowlist(repo_data_filesystem=Path(r'%CD%') / 'data' / 'filesystem'))"`) do set "FS_ROOT_ALLOWLIST=%%A"
+if not defined FS_ROOT_ALLOWLIST set "FS_ROOT_ALLOWLIST=%CD%\data\filesystem"
 set "SHELL_CWD_ROOTS=%CD%\data\shell-native"
 if not exist "data\filesystem" mkdir "data\filesystem" >nul 2>&1
 if not exist "data\shell-native" mkdir "data\shell-native" >nul 2>&1

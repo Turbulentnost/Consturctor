@@ -6,6 +6,8 @@ import logging
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from platform_contracts.tool_catalog import list_tool_metadata
+
 from app.config import settings
 from app.models.regulation import AgentDraft
 
@@ -32,6 +34,10 @@ def list_allowed_tools(department: str) -> list[str]:
     return sorted(allowed)
 
 
+def list_allowed_tools_with_metadata(department: str) -> list[dict]:
+    return list_tool_metadata(list_allowed_tools(department))
+
+
 def _fallback_tool_catalog() -> set[str]:
     return {
         "imap.list_unread",
@@ -43,6 +49,11 @@ def _fallback_tool_catalog() -> set[str]:
         "onec.odata_patch",
         "onec.attach_file",
         "onec.sql_query",
+        "onec.com.status",
+        "onec.com.connect",
+        "onec.com.invoke",
+        "onec.com.query_tasks",
+        "onec.com.release",
         "com.list_apps",
         "com.connect",
         "com.invoke",
@@ -59,6 +70,7 @@ def _fallback_tool_catalog() -> set[str]:
         "fs.list",
         "fs.read",
         "fs.write",
+        "fs.build_office_file",
         "fs.stat",
         "fs.move",
         "fs.copy",

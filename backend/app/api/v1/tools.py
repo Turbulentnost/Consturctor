@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import get_current_user
 from app.config import settings
-from app.services.agent_platform import list_allowed_tools
+from app.services.agent_platform import list_allowed_tools_with_metadata
 from app.core.jwt import AuthContext
 from app.services import platform_proxy
 from platform_contracts.tools import ToolInvokeRequest, ToolResult
@@ -20,7 +20,7 @@ def _ensure_tool_allowed(tool_name: str, auth: AuthContext) -> None:
 
 @router.get("")
 async def list_tools(auth: AuthContext = Depends(get_current_user)) -> dict:
-    tools = list_allowed_tools(auth.department or "")
+    tools = list_allowed_tools_with_metadata(auth.department or "")
     return {"items": tools, "department": auth.department}
 
 

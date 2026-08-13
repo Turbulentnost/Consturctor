@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import uuid
+from pathlib import Path
 from typing import Any
 
 from pydantic_settings import SettingsConfigDict
@@ -42,6 +44,41 @@ class OnecComSettings(ServiceSettings):
 settings = OnecComSettings()
 _lock = threading.Lock()
 _sessions: dict[str, dict[str, Any]] = {}
+
+
+def _load_infra_env() -> None:
+    """Load infra/.env into os.environ (cmd start scripts break on Cyrillic values)."""
+    root = os.environ.get("CONSTRUCTOR_ROOT", "").strip()
+    if not root:
+        root = str(Path(__file__).resolve().parents[3])
+    env_path = Path(root) / "infra" / ".env"
+    if not env_path.is_file():
+        return
+    keys_from_file = (
+        "USE_STUBS",
+        "ERP_LOGIN",
+        "ERP_PASSWORD",
+        "ODATA_BASE_URL",
+        "ONEC_COM_SERVER",
+        "ONEC_COM_REF",
+        "ONEC_COM_USER",
+        "ONEC_COM_PASSWORD",
+        "ONEC_COM_CONNECTION_STRING",
+        "ONEC_COM_PROGID",
+    )
+    parsed: dict[str, str] = {}
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        parsed[key.strip()] = value.strip().strip('"').strip("'")
+    for key in keys_from_file:
+        if key in parsed:
+            os.environ[key] = parsed[key]
+
+
+_load_infra_env()
 
 
 def _is_windows() -> bool:
@@ -122,6 +159,7 @@ def _query_tasks(req: ToolInvokeRequest) -> dict[str, Any]:
     session_id = str(req.payload.get("session_id", "")).strip()
     mine_only = bool(req.payload.get("mine_only", True))
     limit = int(req.payload.get("limit") or 30)
+    prefer_crm = bool(req.payload.get("prefer_crm", False))
 
     def _do() -> dict[str, Any]:
         nonlocal session_id
@@ -139,15 +177,19 @@ def _query_tasks(req: ToolInvokeRequest) -> dict[str, Any]:
                 raise ValueError("session not found")
             app = stored["object"]
 
-        rows = query_performer_tasks(app, mine_only=mine_only, limit=limit)
+        rows, task_source = query_performer_tasks(
+            app, mine_only=mine_only, limit=limit, prefer_crm=prefer_crm
+        )
         current_user = stored.get("current_user") or get_current_user_name(app)
         return {
-            "summary": f"COM tasks for {current_user}" if mine_only else "COM open tasks",
+            "summary": f"COM ERP tasks for {current_user} ({task_source})",
             "session_id": session_id,
             "current_user": current_user,
             "count": len(rows),
             "tasks": rows,
+            "task_source": task_source,
             "mine_only": mine_only,
+            "prefer_crm": prefer_crm,
             "session_created": created,
             "transport": "com-connector",
             "source": "onec-com",

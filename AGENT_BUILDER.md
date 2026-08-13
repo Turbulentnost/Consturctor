@@ -201,7 +201,7 @@ Content-Type: application/json
 | `imap.search` | `{ "query": "UNSEEN", "limit": 20 }` |
 | `onec.odata_get` | `{ "entity": "Document_...", "path": "/...?$top=5", "top": 5 }` |
 | `onec.com.connect` | `{}` или `{ "progid": "V83.COMConnector" }` |
-| `onec.com.query_tasks` | `{ "mine_only": true, "limit": 30, "session_id": "..." }` |
+| `onec.com.query_tasks` | `{ "mine_only": true, "limit": 30, "prefer_crm": false }` — ERP `Задача.ЗадачаИсполнителя`; CRM только при `"prefer_crm": true` |
 | `onec.com.invoke` | `{ "session_id": "...", "method": "NewObject", "args": ["Query", "..."] }` |
 | `browser.open_session` | `{}` |
 | `com.outlook.launch` | `{ "visible": true }` |

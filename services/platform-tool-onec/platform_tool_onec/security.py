@@ -102,9 +102,9 @@ def validate_odata_path(path: str, *, allowlist: set[str] | None = None) -> str:
     if not cleaned:
         raise ValueError("path required")
     head = cleaned.split("?", 1)[0]
-    if "(" in head:
-        head = head.split("(", 1)[0]
-    return validate_odata_entity(head, allowlist=allowlist)
+    entity_head = head.split("(", 1)[0] if "(" in head else head
+    validate_odata_entity(entity_head, allowlist=allowlist)
+    return cleaned
 
 
 def stub_odata_rows(entity: str, top: int) -> dict[str, Any]:

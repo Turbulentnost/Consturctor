@@ -22,23 +22,21 @@ if errorlevel 1 (
 echo [1] Found 32-bit Python:
 py -0p | findstr /I "-32"
 
-echo [2] Install pywin32 for 32-bit Python ...
-py -3.12-32 -m pip install --upgrade pip pywin32
+echo [2] Install runtime deps for 32-bit Python ...
+py -3.12-32 -m pip install --upgrade pip
+py -3.12-32 -m pip install "fastapi>=0.115.0" "uvicorn>=0.32.0" "pydantic-settings>=2.6.0" "pywin32>=306"
 if errorlevel 1 (
   echo ERROR: pip install failed. Try: py -3.12-32 -m ensurepip
   exit /b 1
 )
 
-echo [3] Install platform-tool-com + platform-tool-onec-com into 32-bit env ...
-py -3.12-32 -m pip install -e "services\platform-tool-com[windows]"
-py -3.12-32 -m pip install -e "services\platform-tool-onec-com[windows]"
-if errorlevel 1 exit /b 1
-
-echo [3] Install platform-tool-onec-com (32-bit) ...
-py -3.12-32 -m pip install -e "services\platform-tool-onec-com[windows]"
+echo [3] Install local packages (no platform-db — psycopg has no 32-bit wheels) ...
+py -3.12-32 -m pip install -e "platform-contracts"
+py -3.12-32 -m pip install -e "platform-service-common" --no-deps
+py -3.12-32 -m pip install -e "services\platform-tool-onec-com" --no-deps
 if errorlevel 1 exit /b 1
 
 echo.
 echo OK. Start 1C COM service: scripts\start_onec_com_service.cmd
-echo Test: py scripts\smoke_host_tools.py  (or com.onec.status via sandbox)
+echo Test: py scripts\smoke_onec_com.py
 exit /b 0

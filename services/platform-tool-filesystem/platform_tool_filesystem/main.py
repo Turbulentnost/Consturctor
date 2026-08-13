@@ -56,9 +56,9 @@ def ensure_fs_workspace(root: Path) -> None:
 def _allowlist_roots() -> list[Path]:
     raw = (settings.fs_root_allowlist or os.environ.get("FS_ROOT_ALLOWLIST") or "").strip()
     if not raw:
-        default = Path.cwd() / "data" / "filesystem"
-        ensure_fs_workspace(default)
-        return [default.resolve()]
+        from platform_tool_filesystem.desktop_paths import default_fs_allowlist
+
+        raw = default_fs_allowlist()
     roots: list[Path] = []
     for part in raw.split(","):
         part = part.strip()
@@ -183,6 +183,55 @@ def _write(req: ToolInvokeRequest) -> dict[str, Any]:
         "bytes": len(data),
         "mode": mode,
         "source": "filesystem",
+    }
+
+
+def _build_office_file(req: ToolInvokeRequest) -> dict[str, Any]:
+    from platform_tool_filesystem.agent_build_files import build_office_write_payload
+
+    path = str(req.payload.get("path", "")).strip()
+    if not path:
+        raise ValueError("path required (full path including filename, e.g. C:\\Users\\Public\\Documents\\file.xlsx)")
+    rows = req.payload.get("rows")
+    if rows is not None and not isinstance(rows, list):
+        raise ValueError("rows must be a list of lists")
+    inner = build_office_write_payload(
+        path=path,
+        format=str(req.payload.get("format", "")).strip(),
+        title=str(req.payload.get("title", "Constructor agent file")).strip() or "Constructor agent file",
+        body=str(req.payload.get("body", "")),
+        rows=rows,
+        mode=str(req.payload.get("mode", "overwrite")).strip() or "overwrite",
+    )
+    write_req = ToolInvokeRequest(
+        run_id=req.run_id,
+        department=req.department,
+        user_id=req.user_id,
+        payload=inner,
+    )
+    result = _write(write_req)
+    result["format"] = (str(req.payload.get("format", "")).strip() or Path(path).suffix.lstrip(".")).lower()
+    result["source"] = "filesystem"
+    return result
+
+
+def _stub_build_office_file(req: ToolInvokeRequest) -> dict[str, Any]:
+    path_str = _stub_resolve(str(req.payload.get("path", "")))
+    parts = [p for p in path_str.split("/") if p]
+    if not parts:
+        raise ValueError("path required")
+    node: Any = _STUB_TREE
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+    node[parts[-1]] = "stub office file\n"
+    fmt = str(req.payload.get("format", "")).strip() or Path(path_str).suffix.lstrip(".")
+    return {
+        "summary": "stub build office file",
+        "path": path_str,
+        "format": fmt,
+        "bytes": len(str(node[parts[-1]])),
+        "mode": str(req.payload.get("mode", "overwrite")),
+        "source": "stub",
     }
 
 
@@ -334,6 +383,7 @@ REAL_HANDLERS = {
     "fs.list": _list,
     "fs.read": _read,
     "fs.write": _write,
+    "fs.build_office_file": _build_office_file,
     "fs.stat": _stat,
     "fs.move": _move,
     "fs.copy": _copy,
@@ -343,6 +393,7 @@ STUB_HANDLERS = {
     "fs.list": _stub_list,
     "fs.read": _stub_read,
     "fs.write": _stub_write,
+    "fs.build_office_file": _stub_build_office_file,
     "fs.stat": _stub_stat,
     "fs.move": _stub_move,
     "fs.copy": _stub_copy,
