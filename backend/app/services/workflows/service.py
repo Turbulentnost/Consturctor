@@ -503,7 +503,6 @@ def _stream_run(
                 result.branch, result.pr_url = _extract_git(result.git)
             if event == "error":
                 result.error = str(payload.get("message") or payload.get("code") or "")
-                _emit(on_event, "error", result.error)
     except CursorAgentError:
         pass
 

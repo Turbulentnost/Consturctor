@@ -105,6 +105,16 @@ QRadioButton::indicator {
     width: 15px;
     height: 15px;
 }
+QRadioButton::indicator:unchecked {
+    border: 1px solid #6E7D79;
+    border-radius: 8px;
+    background: #FFFFFF;
+}
+QRadioButton::indicator:checked {
+    border: 1px solid #6E7D79;
+    border-radius: 8px;
+    background: #B8C2BE;
+}
 """
 _REASONING = """
 QPlainTextEdit {
@@ -231,6 +241,18 @@ def _strip_json_blob(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
+def _visible_live_text(text: str) -> str:
+    visible = _strip_json_blob(text).strip()
+    if (
+        not visible
+        or visible.lstrip().startswith("{")
+        or "```json" in visible.lower()
+        or '"steps"' in visible
+    ):
+        return ""
+    return visible
+
+
 def reasoning_text(record: WorkflowRecord | None) -> str:
     if record is None:
         return "Загрузите материалы и нажмите «Спланировать» — здесь появятся рассуждения модели."
@@ -330,6 +352,19 @@ def _format_step_item(index: int, step: WorkflowPlanStep) -> str:
     if step.depends_on:
         lines.append(f"Зависит от: {', '.join(step.depends_on)}")
     return "\n".join(lines)
+
+
+def _clear_layout(layout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        child = item.widget()
+        if child is not None:
+            child.deleteLater()
+            continue
+        child_layout = item.layout()
+        if child_layout is not None:
+            _clear_layout(child_layout)
+            child_layout.deleteLater()
 
 
 def _phase_step_widget(label: str, state: str) -> QWidget:
@@ -558,6 +593,8 @@ class WorkflowPage(QWidget):
         self._selected_quick_answer = ""
         self._thinking_expanded = False
         self._thinking_text = ""
+        self._live_label = ""
+        self._live_lines: list[str] = []
         self._stream_messages: list[tuple[str, str]] = []
         self._results_dir = ""
         self._busy = False
@@ -791,7 +828,7 @@ class WorkflowPage(QWidget):
         has_exec = bool(self._record and self._record.exec_agent_id)
         ready_for_launch = bool(self._record and self._record.phase in {"ready", "done"} and not unanswered)
         self._questions_card.setVisible(unanswered)
-        self._input_bar.setVisible(not ready_for_launch)
+        self._input_bar.setVisible(not ready_for_launch and not unanswered)
         self._chat_files_label.setVisible(bool(self._chat_files) and not ready_for_launch)
         self._next_btn.setVisible(ready_for_launch)
         self._exec_btn.setEnabled(bool(plan) and not unanswered and not self._busy)
@@ -853,11 +890,16 @@ class WorkflowPage(QWidget):
             self._thinking_text += text
         elif event_type == "decision":
             self._ok(text)
-            self._append(f"\n[{text}]\n")
+            if text.strip():
+                self._live_lines.append(text.strip())
         elif event_type in {"assistant", "message"}:
-            self._stream_messages.append(("agent_message", text))
+            visible = _visible_live_text(text)
+            if visible and self._busy:
+                self._live_lines.append(visible)
+            elif visible:
+                self._stream_messages.append(("agent_message", visible))
         elif event_type == "system":
-            self._stream_messages.append(("system", text))
+            self._live_label = text.strip() or self._live_label
         self._render_feed()
 
     def _render_feed(self) -> None:
@@ -866,21 +908,14 @@ class WorkflowPage(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-        if self._record is None:
-            self._feed_layout.addWidget(
-                self._message_bubble(
-                    "Загрузите материалы или откройте паспорт агента. Агент начнёт писать ход работы здесь.",
-                    kind="system",
-                )
-            )
-        else:
+        if self._record is not None:
             title = self._record.title or "ИИ-агент"
             self._feed_layout.addWidget(self._message_bubble(f"Workflow «{title}» открыт.", kind="system"))
             reasoning = reasoning_text(self._record)
             if reasoning:
                 self._feed_layout.addWidget(self._message_bubble(reasoning, kind="agent_message"))
-        if self._thinking_text:
-            self._feed_layout.addWidget(self._thinking_block())
+        if self._busy:
+            self._feed_layout.addWidget(self._live_block())
         for kind, text in self._stream_messages:
             if kind == "decision":
                 continue
@@ -926,6 +961,47 @@ class WorkflowPage(QWidget):
         row.addWidget(bubble)
         if not user:
             row.addStretch(1)
+        wrap = QWidget()
+        wrap.setStyleSheet("background: transparent;")
+        wrap.setLayout(row)
+        return wrap
+
+    def _live_block(self) -> QWidget:
+        card = QFrame()
+        card.setMaximumWidth(720)
+        card.setStyleSheet(
+            """
+            QFrame {
+                background: #FFFFFF;
+                border: 1px solid rgba(8,116,95,0.18);
+                border-radius: 16px;
+            }
+            """
+        )
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(8)
+        title = QLabel(self._live_label or "Агент работает")
+        title.setFont(app_font(12, QFont.Weight.DemiBold))
+        title.setStyleSheet("color: #08745F; background: transparent;")
+        layout.addWidget(title)
+
+        lines = list(dict.fromkeys(line for line in self._live_lines if line.strip()))
+        thinking = _visible_live_text(self._thinking_text)
+        if thinking and thinking not in lines:
+            lines.append(thinking)
+        if not lines:
+            lines.append("Агент формирует ответ в реальном времени...")
+        body = QLabel("\n\n".join(lines[-4:]))
+        body.setWordWrap(True)
+        body.setFont(app_font(12))
+        body.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        layout.addWidget(body)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(card)
+        row.addStretch(1)
         wrap = QWidget()
         wrap.setStyleSheet("background: transparent;")
         wrap.setLayout(row)
@@ -1056,10 +1132,17 @@ class WorkflowPage(QWidget):
         custom_input.setPlaceholderText("Напишите свой ответ")
         custom_input.setFont(app_font(12))
         custom_input.setStyleSheet(_CUSTOM_ANSWER_FIELD)
+        custom_attach = QToolButton()
+        custom_attach.setText("📎")
+        custom_attach.setToolTip("Приложить документ к своему варианту")
+        custom_attach.setCursor(Qt.CursorShape.PointingHandCursor)
+        custom_attach.setFixedSize(34, 34)
+        custom_attach.setStyleSheet(_CLIP_BTN)
         self._question_fields[question.id] = custom_input
         group.addButton(custom_option)
         custom_row.addWidget(custom_option, 0)
         custom_row.addWidget(custom_input, 1)
+        custom_row.addWidget(custom_attach, 0)
         self._questions_layout.addLayout(custom_row)
 
         custom_option.toggled.connect(
@@ -1070,19 +1153,30 @@ class WorkflowPage(QWidget):
         custom_input.textEdited.connect(
             lambda value, option=custom_option, field=custom_input: self._edit_custom_answer(value, option, field)
         )
+        custom_attach.clicked.connect(
+            lambda _checked=False, option=custom_option: self._attach_custom_answer_file(option)
+        )
 
         hint = QLabel("Выберите вариант или заполните последнюю строку своим ответом.")
         hint.setFont(app_font(11))
         hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         self._questions_layout.addWidget(hint)
+        next_row = QHBoxLayout()
+        next_row.setContentsMargins(0, 4, 0, 0)
+        next_row.addStretch(1)
+        next_btn = QPushButton("Далее")
+        next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        next_btn.setFixedHeight(36)
+        next_btn.setMinimumWidth(120)
+        next_btn.setFont(app_font(12, QFont.Weight.DemiBold))
+        next_btn.setStyleSheet(_PRIMARY)
+        next_btn.clicked.connect(self._submit_question_answer)
+        next_row.addWidget(next_btn)
+        self._questions_layout.addLayout(next_row)
         self._questions_card.setVisible(True)
 
     def _clear_questions(self) -> None:
-        while self._questions_layout.count():
-            item = self._questions_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        _clear_layout(self._questions_layout)
         self._question_fields = {}
         self._question_files = {}
         self._question_file_labels = {}
@@ -1094,18 +1188,23 @@ class WorkflowPage(QWidget):
 
     def _select_quick_answer(self, answer: str) -> None:
         self._selected_quick_answer = answer
-        self._chat_input.setPlainText(answer)
-        self._chat_input.setFocus()
+        field = self._question_fields.get(self._current_question_id)
+        if isinstance(field, QLineEdit):
+            field.clear()
 
     def _select_custom_answer(self, answer: str, field: QLineEdit) -> None:
-        self._selected_quick_answer = answer
-        self._chat_input.setPlainText(answer)
+        del answer
+        self._selected_quick_answer = ""
         field.setFocus()
 
     def _edit_custom_answer(self, answer: str, option: QRadioButton, field: QLineEdit) -> None:
         if not option.isChecked():
             option.setChecked(True)
         self._select_custom_answer(answer, field)
+
+    def _attach_custom_answer_file(self, option: QRadioButton) -> None:
+        option.setChecked(True)
+        self._on_attach_chat_files()
 
     def _on_attach_chat_files(self) -> None:
         if not self._current_question_id:
@@ -1134,17 +1233,22 @@ class WorkflowPage(QWidget):
     def _submit_chat(self) -> None:
         text = self._current_answer_text()
         if self._current_question_id:
-            if not text and not self._chat_files:
-                QMessageBox.information(self, "Ответ", "Введите ответ или приложите файл.")
-                return
-            self._stream_messages.append(("user_message", text or "Ответ приложен файлом"))
-            self._on_clarify()
+            self._submit_question_answer()
             return
         if text:
             self._stream_messages.append(("user_message", text))
             self._chat_input.clear()
             self._render_feed()
             self._ok("Сообщение сохранено в ленте. Для запуска используйте этапы workflow.")
+
+    def _submit_question_answer(self) -> None:
+        if not self._current_question_id:
+            return
+        text = self._current_answer_text()
+        if not text and not self._chat_files:
+            QMessageBox.information(self, "Ответ", "Выберите вариант, заполните свой ответ или приложите файл.")
+            return
+        self._on_clarify()
 
     def _current_answer_text(self) -> str:
         if self._current_question_id:
@@ -1224,9 +1328,10 @@ class WorkflowPage(QWidget):
     def _run_async(self, label: str, fn) -> None:
         self._thinking_text = ""
         self._thinking_expanded = False
-        self._stream_messages.append(("system", label))
-        self._render_feed()
+        self._live_label = label
+        self._live_lines = []
         self._set_busy(True, label)
+        self._render_feed()
 
         def work() -> None:
             try:
@@ -1246,6 +1351,9 @@ class WorkflowPage(QWidget):
             self._pending_paths = []
             self._workflow_title = result.title
             self._notes = result.notes or self._notes
+            self._thinking_text = ""
+            self._live_lines = []
+            self._live_label = ""
             self._render_plan()
             self._render_phase()
             self.saved.emit(result.id)
@@ -1270,9 +1378,17 @@ class WorkflowPage(QWidget):
                 self._results.addItem(item)
             self._ok(f"Файлов результата: {len(files)}")
             self._append(f"\n[результат] {dest_dir}\n")
+            self._thinking_text = ""
+            self._live_lines = []
+            self._live_label = ""
+            self._render_feed()
 
     def _on_async_fail(self, message: str) -> None:
         self._set_busy(False)
+        self._thinking_text = ""
+        self._live_lines = []
+        self._live_label = ""
+        self._render_feed()
         self._fail(message)
 
     def _on_plan(self) -> None:
@@ -1320,6 +1436,8 @@ class WorkflowPage(QWidget):
             return
         self._append("\n→ Отправляю ответы…\n")
         wid = self._record.id
+        self._questions_card.setVisible(False)
+        self._clear_questions()
 
         def work() -> WorkflowRecord:
             return self._api.stream_clarify_workflow(
