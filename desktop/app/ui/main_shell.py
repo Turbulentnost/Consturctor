@@ -758,8 +758,17 @@ class MainShell(QWidget):
                     message,
                 )
                 draft = self._api.get_agent_draft(self._current_draft.draft_id)
+                # Backend после ответа уже может вернуть чат следующего вопроса.
+                # Если всё ещё answered — дотягиваем следующий явно.
                 if chat.status == "answered":
                     chat = self._first_chat_for_draft(draft) or chat
+                elif draft.readiness is not None:
+                    next_q = next(
+                        (item for item in draft.readiness.questions if not item.answered),
+                        None,
+                    )
+                    if next_q is not None and chat.question_id != next_q.question_id:
+                        chat = self._first_chat_for_draft(draft) or chat
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return

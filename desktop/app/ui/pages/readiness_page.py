@@ -76,6 +76,7 @@ class ReadinessPage(QWidget):
         self._chat_session_id = ""
         self._chat_stick_to_bottom = True
         self._show_supplement_choice = False
+        self._auto_chat_requested_for = ""
 
         self._content = QVBoxLayout()
         self._content.setContentsMargins(0, 0, 0, 0)
@@ -117,6 +118,8 @@ class ReadinessPage(QWidget):
             self._chat_stick_to_bottom = True
             self._chat_session_id = session_id
         self._chat = chat
+        if chat is not None and chat.question_id == self._auto_chat_requested_for:
+            self._auto_chat_requested_for = ""
         self._render()
 
     def _render(self) -> None:
@@ -289,10 +292,14 @@ class ReadinessPage(QWidget):
             return card
 
         if not self._chat_matches(question):
-            open_chat = QPushButton("Начать уточнение")
-            open_chat.setCursor(Qt.CursorShape.PointingHandCursor)
-            open_chat.clicked.connect(lambda _checked=False, qid=question.question_id: self.chat_requested.emit(qid))
-            layout.addWidget(open_chat)
+            # Сразу открываем чат следующего вопроса — без ожидания клика пользователя.
+            if self._auto_chat_requested_for != question.question_id:
+                self._auto_chat_requested_for = question.question_id
+                QTimer.singleShot(
+                    0,
+                    lambda qid=question.question_id: self.chat_requested.emit(qid),
+                )
+            layout.addWidget(self._assistant_bubble("Готовлю следующий вопрос…"))
             return card
 
         layout.addWidget(self._message_area(question))
@@ -578,16 +585,16 @@ class ReadinessPage(QWidget):
     def _chat_matches(self, question: ReadinessQuestion) -> bool:
         if self._chat is None:
             return False
-        return self._chat.question_id == question.question_id or (
-            bool(self._chat.function_id) and self._chat.function_id == question.function_id
-        )
+        # Только точный question_id: иначе после ответа чат Q1 «прилипает»
+        # к Q2 той же функции, и следующий вопрос не создаётся.
+        return self._chat.question_id == question.question_id
 
     def _is_generating_question(self, question: ReadinessQuestion) -> bool:
         return self._chat_matches(question) and self._chat is not None and self._chat.status == "generating"
 
     def _chat_target_question_id(self, question: ReadinessQuestion) -> str:
-        if self._chat_matches(question) and self._chat is not None:
-            return self._chat.question_id
+        # Всегда шлём ответ в id текущего незакрытого вопроса из readiness,
+        # а не в устаревший session.question_id после перехода дальше.
         return question.question_id
 
     def _message_area_height(self) -> int:

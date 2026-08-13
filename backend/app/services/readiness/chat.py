@@ -233,7 +233,65 @@ def send_question_chat_message(
     db.add(session)
     db.commit()
     db.refresh(session)
+    # Сразу готовим чат следующего вопроса — не ждём клика пользователя.
+    if session.status == "answered":
+        next_session = _ensure_next_question_chat(
+            db,
+            user_id=user_id,
+            draft=draft,
+            readiness=_get_readiness(db, draft),
+            function_id=session.function_id,
+        )
+        if next_session is not None:
+            return _session_result(db, next_session)
     return _session_result(db, session)
+
+
+def _ensure_next_question_chat(
+    db: Session,
+    *,
+    user_id: str,
+    draft: AgentDraft,
+    readiness: AgentReadinessResult,
+    function_id: str,
+) -> QuestionChatSession | None:
+    """Создаёт (или возвращает) активный чат для следующего неотвеченного вопроса."""
+    next_question = next(
+        (
+            item
+            for item in readiness.questions
+            if not item.answered and item.functionId == function_id
+        ),
+        None,
+    )
+    if next_question is None:
+        next_question = next((item for item in readiness.questions if not item.answered), None)
+    if next_question is None:
+        return None
+    existing = (
+        db.query(QuestionChatSession)
+        .filter(
+            QuestionChatSession.draft_id == draft.id,
+            QuestionChatSession.question_id == next_question.questionId,
+        )
+        .first()
+    )
+    if existing is not None:
+        return existing
+    create_or_get_question_chat(
+        db,
+        user_id=user_id,
+        draft_id=draft.id,
+        question_id=next_question.questionId,
+    )
+    return (
+        db.query(QuestionChatSession)
+        .filter(
+            QuestionChatSession.draft_id == draft.id,
+            QuestionChatSession.question_id == next_question.questionId,
+        )
+        .first()
+    )
 
 
 def _get_draft(db: Session, *, user_id: str, draft_id: str) -> AgentDraft:

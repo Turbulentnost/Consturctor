@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # App Postgres (users, avatars, future agent data). Not ERP.
     database_url: str = (
-        "postgresql+psycopg://constructor:constructor@127.0.0.1:5435/constructor"
+        "postgresql+psycopg://constructor:constructor@192.168.1.157:5435/constructor"
     )
     avatar_storage_dir: Path = BACKEND_ROOT / "storage" / "avatars"
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"

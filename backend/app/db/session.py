@@ -29,8 +29,8 @@ def init_db() -> None:
 def _ensure_columns() -> None:
     """Add new columns to existing tables without a full migration tool.
 
-    Shared DB (constructor_ai) may already have a `users` table from AIConstructor
-    with a different shape (e.g. avatar_key instead of avatar_path).
+    Shared DB (constructor @ 192.168.1.157:5435) may already have a `users` table
+    from AIConstructor with a different shape (e.g. avatar_key instead of avatar_path).
     """
     with engine.begin() as conn:
         rows = conn.execute(
