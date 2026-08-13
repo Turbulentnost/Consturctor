@@ -109,6 +109,11 @@ def _extract_cards(page, query: str) -> list[Tender]:
             title = card_text.splitlines()[0].strip()
         if not title:
             continue
+        # Site search is fuzzy; keep only cards that actually contain the keyword.
+        blob = f"{title}\n{card_text}".casefold()
+        q = (query or "").strip().casefold()
+        if q and q not in blob:
+            continue
         if url and url.startswith("/"):
             url = "https://www.roseltorg.ru" + url
         pid = ""
@@ -156,14 +161,40 @@ def search(queries: list[str], *, headless: bool = True, on_progress=None) -> li
     dedup: dict[str, Tender] = {}
     total = len(queries)
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        page = browser.new_page()
+        browser = p.chromium.launch(
+            headless=headless,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = browser.new_context(
+            user_agent=getattr(config, "USER_AGENT", None)
+            or (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/128.0.0.0 Safari/537.36"
+            ),
+            locale="ru-RU",
+            viewport={"width": 1400, "height": 900},
+        )
+        page = context.new_page()
+        page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
         page.set_default_timeout(config.PAGE_TIMEOUT_MS)
         for i, query in enumerate(queries, start=1):
             found_here = 0
             try:
                 page.goto(build_search_url(query), wait_until="domcontentloaded")
                 page.wait_for_timeout(config.RESULTS_WAIT_MS)
+                body_low = ""
+                try:
+                    body_low = (page.inner_text("body") or "").casefold()
+                except Exception:
+                    body_low = ""
+                if "web page blocked" in body_low or "has been blocked" in body_low:
+                    raise RuntimeError(
+                        "Росэлторг заблокировал запрос (WAF). "
+                        "Повторите позже или проверьте сеть/прокси."
+                    )
                 for _ in range(config.MAX_PAGES):
                     for t in _extract_cards(page, query):
                         key = t.dedup_key()
@@ -182,6 +213,7 @@ def search(queries: list[str], *, headless: bool = True, on_progress=None) -> li
             if on_progress:
                 on_progress(i, total, query, found_here)
             time.sleep(config.BETWEEN_QUERIES_S)
+        context.close()
         browser.close()
 
     return list(dedup.values())

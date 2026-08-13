@@ -1,14 +1,36 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
+from urllib.parse import quote_plus
 
 from sqlalchemy.orm import Session
 
 from app.models.workflow import Workflow
 from app.services.local_mcp import LocalMcpError, call_tool, list_tools
+from app.services.plan_run import (
+    PlanRunError,
+    format_plan_run_answer,
+    run_site_search_excel,
+    uses_plan_export,
+)
 
 
 AgentEventCallback = Callable[[dict[str, Any]], None]
+
+_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_ROSELTORG_SEARCH = "https://www.roseltorg.ru/procedures/search"
+
+_ETP_HINTS = (
+    "roseltorg",
+    "росэлторг",
+    "этп",
+    "закуп",
+    "тендер",
+    "223-фз",
+    "44-фз",
+    "площадк",
+)
 
 
 class AgentRuntimeError(RuntimeError):
@@ -38,97 +60,213 @@ def run_agent_task(
     if not task:
         raise AgentRuntimeError("Пустая задача")
 
-    emit({"type": "thinking", "text": "Получил задачу и сверяю её с готовым workflow.\n"})
-    emit({"type": "agent_message", "text": f"Запускаю агента «{workflow.title or 'ИИ-агент'}»."})
+    emit({"type": "status", "text": "Получил задачу, готовлю запуск…"})
+    emit({"type": "agent_message", "text": f"Запускаю «{workflow.title or 'ИИ-агент'}»."})
 
-    tool_result: dict[str, Any] | None = None
-    query = _search_query(task, workflow)
-    if query:
-        fetch_top = _needs_page_extract(task)
-        arguments = {"query": query, "max_results": 8, "fetch_top": fetch_top}
+    # Rules come from THIS agent's plan (runtime / constraints / answers), not globals.
+    if uses_plan_export(workflow):
+        emit({"type": "status", "text": "Читаю правила из паспорта этого агента…"})
         emit(
             {
-                "type": "thinking",
+                "type": "agent_message",
                 "text": (
-                    "Целевой сайт ЭТП из cloud VM может быть недоступен — "
-                    "использую локальный web_search (DuckDuckGo/Wikipedia).\n"
+                    "Выполняю по правилам из ответов при создании: поиск по ключам, "
+                    "Excel с указанными колонками, сохранение куда указано в плане."
                 ),
             }
         )
-        emit({"type": "tool_call", "tool": "web_search", "arguments": arguments})
+
+        def _progress(text: str) -> None:
+            # status — отдельный тип для UI (не схлопывать в «анализирует задачу»).
+            emit({"type": "status", "text": text})
+
         try:
-            tool_result = call_tool("web_search", arguments)
-        except LocalMcpError as exc:
+            result = run_site_search_excel(workflow, on_progress=_progress)
+        except PlanRunError as exc:
             emit({"type": "error", "message": str(exc)})
             raise AgentRuntimeError(str(exc)) from exc
-        emit({"type": "tool_result", "tool": "web_search", "result": tool_result})
+        except Exception as exc:  # noqa: BLE001
+            msg = f"Ошибка выполнения по плану: {exc}"
+            emit({"type": "error", "message": msg})
+            raise AgentRuntimeError(msg) from exc
 
-    answer = _compose_answer(task, tool_result)
+        answer = format_plan_run_answer(result)
+        emit({"type": "tool_result", "tool": "plan_export", "result": result})
+        emit({"type": "agent_message", "text": answer})
+        return {"answer": answer, "tool": "plan_export", "tool_result": result}
+
+    tool_name = ""
+    tool_result: dict[str, Any] | None = None
+    arguments: dict[str, Any] = {}
+
+    browser_args = _site_browser_args(task, workflow)
+    if browser_args:
+        tool_name = "site_browser"
+        arguments = browser_args
+        emit({"type": "thinking", "text": "Открываю площадку и собираю закупки.\n"})
+    else:
+        query = _search_query(task, workflow)
+        if query:
+            tool_name = "web_search"
+            arguments = {"query": query, "max_results": 8, "fetch_top": False}
+            emit({"type": "thinking", "text": "Ищу информацию в интернете.\n"})
+
+    if tool_name:
+        emit({"type": "tool_call", "tool": tool_name, "arguments": arguments})
+        try:
+            tool_result = call_tool(tool_name, arguments)
+        except LocalMcpError as exc:
+            if tool_name == "site_browser":
+                emit({"type": "thinking", "text": "Повторяю открытие площадки…\n"})
+                retry = {
+                    "action": "open",
+                    "url": _ROSELTORG_SEARCH,
+                    "wait_ms": 2500,
+                    "max_items": 25,
+                    "headless": True,
+                }
+                try:
+                    tool_result = call_tool("site_browser", retry)
+                    arguments = retry
+                except LocalMcpError as exc2:
+                    emit({"type": "error", "message": str(exc2)})
+                    raise AgentRuntimeError(str(exc2)) from exc2
+            else:
+                emit({"type": "error", "message": str(exc)})
+                raise AgentRuntimeError(str(exc)) from exc
+        emit({"type": "tool_result", "tool": tool_name, "result": tool_result})
+
+    answer = _compose_answer(task, tool_name, tool_result)
     emit({"type": "agent_message", "text": answer})
-    return {"answer": answer, "tool_result": tool_result or {}}
+    return {"answer": answer, "tool": tool_name, "tool_result": tool_result or {}}
 
 
-_SEARCH_HINTS = (
-    "найди",
-    "поиск",
-    "интернет",
-    "сайт",
-    "сведения",
-    "актуальн",
-    "закуп",
-    "тендер",
-    "roseltorg",
-    "росэлторг",
-    "этп",
-    "мониторинг",
-    "оферт",
-    "live",
-    "прогон",
-)
+def _is_etp_agent(task: str, workflow: Workflow) -> bool:
+    blob = f"{task}\n{workflow.title or ''}\n{workflow.document_name or ''}".casefold()
+    notes = ""
+    try:
+        notes = str(getattr(workflow, "notes", "") or "")
+    except Exception:
+        notes = ""
+    blob = f"{blob}\n{notes.casefold()}"
+    plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
+    constraints = "\n".join(str(c) for c in (plan.get("constraints") or []))
+    blob = f"{blob}\n{constraints.casefold()}"
+    return any(h in blob for h in _ETP_HINTS)
 
 
-def _needs_web_search(text: str) -> bool:
-    lowered = text.casefold()
-    return any(word in lowered for word in _SEARCH_HINTS)
+def _extract_url(text: str) -> str:
+    m = _URL_RE.search(text or "")
+    return m.group(0).rstrip(").,;") if m else ""
 
 
-def _needs_page_extract(text: str) -> bool:
-    lowered = text.casefold()
-    return any(word in lowered for word in ("закуп", "тендер", "roseltorg", "росэлторг", "этп"))
+def _keyword_from_task(task: str, workflow: Workflow) -> str:
+    """Short search keyword; never the whole agent title sentence."""
+    text = _URL_RE.sub("", task or "")
+    for junk in (
+        r"найди\s+актуальн\w*\s+закупки(?:\s+по\s+теме)?",
+        r"открой\s+сайт\s+площадки",
+        r"верни\s+список.*",
+        r"с\s+названиями\s+и\s+ссылками",
+        r"ии-агент\s*:",
+        r"осуществляет\s+поиск\s+закупок\s+на\s+этп",
+        r"поиск\s+закупок\s+на\s+\w+",
+        r"на\s+этп",
+    ):
+        text = re.sub(junk, " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"[«»\"']", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .-:")
+    for token in ("бумага", "лекарств", "медицин", "строитель", "мониторинг"):
+        if token in (task or "").casefold():
+            return token
+    if not text or _is_etp_agent(text, workflow) or len(text.split()) <= 2:
+        if _is_etp_agent(task, workflow):
+            return ""
+    words = [w for w in text.split() if len(w) > 3][:3]
+    return " ".join(words)[:80] if words else ""
 
 
 def _search_query(task: str, workflow: Workflow) -> str:
-    if not _needs_web_search(task) and not _needs_web_search(workflow.title or ""):
-        # For published tender agents still search when task looks operational.
-        lowered = task.casefold()
-        if not any(w in lowered for w in ("запуск", "найди", "покажи", "проверь", "live")):
-            return ""
-    title = (workflow.title or "").strip()
-    if _needs_web_search(task):
-        return task
-    if title:
-        return f"{task} {title}".strip()
-    return task
+    kw = _keyword_from_task(task, workflow)
+    return kw or (workflow.title or task)[:120]
 
 
-def _compose_answer(task: str, tool_result: dict[str, Any] | None) -> str:
+def _site_browser_args(task: str, workflow: Workflow) -> dict[str, Any] | None:
+    if not _is_etp_agent(task, workflow) and not _extract_url(task):
+        return None
+
+    plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
+    plan_url = ""
+    for c in plan.get("constraints") or []:
+        plan_url = _extract_url(str(c))
+        if plan_url:
+            break
+    url = _extract_url(task) or plan_url or _ROSELTORG_SEARCH
+    keyword = _keyword_from_task(task, workflow)
+
+    if "roseltorg" in url.casefold() or url == _ROSELTORG_SEARCH:
+        base = url.split("?")[0] if "procedures/search" in url else _ROSELTORG_SEARCH
+        if keyword:
+            # Keep source filters from plan URL when present.
+            if "?" in url and "search=" not in url.casefold():
+                url = f"{url}&search={quote_plus(keyword)}"
+            elif "?" in url:
+                url = re.sub(r"([?&])search=[^&]*", rf"\1search={quote_plus(keyword)}", url)
+            else:
+                url = f"{base}?search={quote_plus(keyword)}"
+        return {
+            "action": "open",
+            "url": url,
+            "wait_ms": 2500,
+            "max_items": 25,
+            "headless": True,
+        }
+
+    return {
+        "action": "open",
+        "url": url,
+        "wait_ms": 2000,
+        "max_items": 25,
+        "headless": True,
+    }
+
+
+def _compose_answer(task: str, tool_name: str, tool_result: dict[str, Any] | None) -> str:
     if not tool_result:
+        return "Не удалось получить данные. Попробуйте ещё раз или уточните задачу."
+
+    if tool_name == "site_browser":
+        cards = tool_result.get("cards") or []
+        lines = ["Нашла закупки на площадке:"]
+        if cards:
+            for item in cards[:10]:
+                title = str(item.get("title") or "Без названия").strip()
+                url = str(item.get("url") or "").strip()
+                snippet = str(item.get("text") or "").strip()
+                line = f"• {title}"
+                if url:
+                    line += f"\n  {url}"
+                elif snippet:
+                    line += f"\n  {snippet[:160]}"
+                lines.append(line)
+            return "\n".join(lines)
+        text = str(tool_result.get("text") or "").strip()
+        if text:
+            return "Открыла страницу площадки, но список карточек пуст. Фрагмент страницы:\n" + text[:1200]
         return (
-            "Задача принята. Для выполнения без внешнего поиска использую сформированный workflow "
-            f"и переданные материалы: {task}"
+            "Не удалось прочитать список закупок с площадки. "
+            "Проверьте доступ в интернет и попробуйте ещё раз."
         )
+
     results = tool_result.get("results") or []
-    extracted = str(tool_result.get("extracted_text") or "").strip()
-    if not results and not extracted:
-        return "Я выполнил web_search, но подходящих результатов не нашёл."
-    lines = ["Я выполнил поиск через локальный MCP-инструмент web_search и нашёл:"]
+    if not results:
+        return (
+            "Поиск в интернете не дал результатов. "
+            "Для закупок лучше открывать площадку напрямую — нажмите «Запустить типовую задачу» ещё раз."
+        )
+    lines = ["Нашла в интернете:"]
     for item in results[:5]:
         title = str(item.get("title") or "Без названия")
         url = str(item.get("url") or "")
-        snippet = str(item.get("snippet") or "")
-        lines.append(f"- {title}: {snippet} {url}".strip())
-    if extracted:
-        lines.append("")
-        lines.append("Фрагмент страницы:")
-        lines.append(extracted[:1200])
+        lines.append(f"• {title}\n  {url}".rstrip())
     return "\n".join(lines)

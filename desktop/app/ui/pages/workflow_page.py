@@ -600,6 +600,12 @@ class WorkflowPage(QWidget):
         self._stream_messages: list[tuple[str, str]] = []
         self._results_dir = ""
         self._busy = False
+        self._live_title_label: QLabel | None = None
+        self._live_body_label: QLabel | None = None
+        self._feed_render_timer = QTimer(self)
+        self._feed_render_timer.setSingleShot(True)
+        self._feed_render_timer.setInterval(120)
+        self._feed_render_timer.timeout.connect(self._render_feed)
         self._async_ok.connect(self._on_async_ok)
         self._async_fail.connect(self._on_async_fail)
         self._stream_event.connect(self.append_stream_event)
@@ -931,14 +937,35 @@ class WorkflowPage(QWidget):
                 self._stream_messages.append(("agent_message", visible))
         elif event_type == "system":
             self._live_label = text.strip() or self._live_label
+        # During stream: update one live card in place. Full rebuild every token
+        # stacked deleteLater widgets on top of each other (broken feed).
+        if self._busy and self._live_body_label is not None:
+            self._refresh_live_block_text()
+            return
+        self._schedule_feed_render()
+
+    def _schedule_feed_render(self) -> None:
+        if self._busy:
+            if not self._feed_render_timer.isActive():
+                self._feed_render_timer.start()
+            return
+        self._feed_render_timer.stop()
         self._render_feed()
 
-    def _render_feed(self) -> None:
+    def _clear_feed_layout(self) -> None:
+        self._live_title_label = None
+        self._live_body_label = None
         while self._feed_layout.count():
             item = self._feed_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
+
+    def _render_feed(self) -> None:
+        self._feed_render_timer.stop()
+        self._clear_feed_layout()
         if self._record is not None:
             title = self._record.title or "ИИ-агент"
             self._feed_layout.addWidget(self._message_bubble(f"Workflow «{title}» открыт.", kind="system"))
@@ -953,7 +980,12 @@ class WorkflowPage(QWidget):
             if text.strip():
                 self._feed_layout.addWidget(self._message_bubble(text, kind=kind))
         self._feed_layout.addStretch(1)
-        QTimer.singleShot(0, lambda: self._feed_scroll.verticalScrollBar().setValue(self._feed_scroll.verticalScrollBar().maximum()))
+        QTimer.singleShot(
+            0,
+            lambda: self._feed_scroll.verticalScrollBar().setValue(
+                self._feed_scroll.verticalScrollBar().maximum()
+            ),
+        )
 
     def _message_bubble(self, text: str, *, kind: str) -> QWidget:
         user = kind == "user_message"
@@ -963,6 +995,7 @@ class WorkflowPage(QWidget):
             row.addStretch(1)
         bubble = QFrame()
         bubble.setMaximumWidth(720)
+        bubble.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         color = {
             "user_message": "rgba(8,116,95,0.09)",
             "decision": "#FFF8EF",
@@ -986,20 +1019,45 @@ class WorkflowPage(QWidget):
             layout.addWidget(heading)
         label = QLabel(text)
         label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         label.setFont(app_font(12))
         label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         layout.addWidget(label)
-        row.addWidget(bubble)
+        row.addWidget(bubble, 0, Qt.AlignmentFlag.AlignTop)
         if not user:
             row.addStretch(1)
         wrap = QWidget()
         wrap.setStyleSheet("background: transparent;")
+        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         wrap.setLayout(row)
         return wrap
+
+    def _live_lines_text(self) -> str:
+        lines = list(dict.fromkeys(line for line in self._live_lines if line.strip()))
+        thinking = _visible_live_text(self._thinking_text)
+        if thinking and thinking not in lines:
+            lines.append(thinking)
+        if not lines:
+            lines.append("Агент формирует ответ в реальном времени...")
+        return "\n\n".join(lines[-4:])
+
+    def _refresh_live_block_text(self) -> None:
+        if self._live_title_label is not None:
+            self._live_title_label.setText(self._live_label or "Агент работает")
+        if self._live_body_label is not None:
+            self._live_body_label.setText(self._live_lines_text())
+            QTimer.singleShot(
+                0,
+                lambda: self._feed_scroll.verticalScrollBar().setValue(
+                    self._feed_scroll.verticalScrollBar().maximum()
+                ),
+            )
 
     def _live_block(self) -> QWidget:
         card = QFrame()
         card.setMaximumWidth(720)
+        card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         card.setStyleSheet(
             """
             QFrame {
@@ -1017,24 +1075,23 @@ class WorkflowPage(QWidget):
         title.setStyleSheet("color: #08745F; background: transparent;")
         layout.addWidget(title)
 
-        lines = list(dict.fromkeys(line for line in self._live_lines if line.strip()))
-        thinking = _visible_live_text(self._thinking_text)
-        if thinking and thinking not in lines:
-            lines.append(thinking)
-        if not lines:
-            lines.append("Агент формирует ответ в реальном времени...")
-        body = QLabel("\n\n".join(lines[-4:]))
+        body = QLabel(self._live_lines_text())
         body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         body.setFont(app_font(12))
         body.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         layout.addWidget(body)
+        self._live_title_label = title
+        self._live_body_label = body
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(card)
+        row.addWidget(card, 0, Qt.AlignmentFlag.AlignTop)
         row.addStretch(1)
         wrap = QWidget()
         wrap.setStyleSheet("background: transparent;")
+        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         wrap.setLayout(row)
         return wrap
 
@@ -1349,7 +1406,7 @@ class WorkflowPage(QWidget):
         if not cleaned:
             return
         self._stream_messages.append(("system", cleaned))
-        self._render_feed()
+        self._schedule_feed_render()
 
     def _ok(self, message: str) -> None:
         self._status.setText(message)

@@ -26,3 +26,16 @@ cd tools\web_search_tool
 pip install -r requirements.txt
 python -m websearch "запрос"
 ```
+
+## site_browser_tool
+
+Универсальный парсер **любого сайта** (Playwright Chromium, JS-страницы).
+Доступен агенту как MCP-инструмент `site_browser`.
+
+```powershell
+cd tools\site_browser_tool
+pip install -r requirements.txt
+python -m playwright install chromium
+python -m sitebrowser open https://example.com
+python -m sitebrowser extract https://www.roseltorg.ru/procedures/search --wait-ms 1500
+```

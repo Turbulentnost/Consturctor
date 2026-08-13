@@ -14,10 +14,12 @@ SEARCH_URL = (
 )
 
 # Имя GET-параметра, в который подставляется ключевое слово.
-QUERY_PARAM = "search"
+# На актуальной вёрстке Росэлторг — query_field (не search).
+QUERY_PARAM = "query_field"
 
 # Селекторы карточек результатов. Первый сработавший — используется.
 CARD_SELECTORS = [
+    "div.search-results__item.autoload-post",
     "div.search-results__item",
     "div.procedure-card",
     "[data-qa='procedure-card']",
@@ -25,7 +27,21 @@ CARD_SELECTORS = [
 ]
 
 # Внутри карточки: название/ссылка, сумма, дата окончания подачи заявок.
-TITLE_SELECTORS = ["a.card__title", "a.procedure-card__title", "a[href*='/procedure']", "a"]
+TITLE_SELECTORS = [
+    "a.search-results__link--description",
+    "a.search-results__link.search-results__link--description",
+    "a.card__title",
+    "a.procedure-card__title",
+    "a[href*='/procedure']",
+    "a",
+]
+
+# Реалистичный UA: без него WAF Росэлторга отдаёт «Web Page Blocked» headless-Chromium.
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/128.0.0.0 Safari/537.36"
+)
 AMOUNT_SELECTORS = [
     "[class*='price']",
     "[class*='sum']",

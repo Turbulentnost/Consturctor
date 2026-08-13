@@ -1187,16 +1187,22 @@ class MainShell(QWidget):
     def _on_workflow_record_saved(self, record: object) -> None:
         if str(getattr(record, "phase", "")) != "done":
             return
+        # Keep passport suggestion in «Черновики». Removing it on publish made the
+        # card disappear while the published agent lives under «Мои агенты».
+        # Remember source ids on the workflow so a later delete can stay consistent.
         draft_id = self._current_passport_draft_id
         agent_id = self._current_passport_agent_id
-        if not draft_id or not agent_id:
-            return
+        workflow_id = str(getattr(record, "id", "") or "")
         self._current_passport_draft_id = ""
         self._current_passport_agent_id = ""
 
         def run() -> None:
             try:
-                self._api.delete_agent_draft_suggestion(draft_id, agent_id)
+                if workflow_id and draft_id and agent_id:
+                    local = dict(getattr(record, "local_run", None) or {})
+                    local["source_draft_id"] = draft_id
+                    local["source_agent_id"] = agent_id
+                    self._api.update_workflow_local_run(workflow_id, local)
                 drafts = self._api.list_agent_drafts()
                 workflows = self._api.list_workflows()
             except ApiError as exc:

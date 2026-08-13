@@ -235,6 +235,9 @@ def plan_workflow(
     _emit(on_event, "decision", "Планировщик запущен, получаю рассуждения агента.")
     phase = _stream_run(agent_id, run_id, on_event=on_event)
     plan = prompts.parse_plan_from_text(phase.text)
+    from app.services.plan_run import ensure_runtime
+
+    ensure_runtime(plan)
     row.plan_json = plan.to_dict()
     row.title = plan.title or row.title
     row.phase = "clarify" if plan.unanswered() else "ready"
@@ -345,6 +348,12 @@ def clarify_workflow(
     for q in updated.open_questions:
         if not q.answer and q.id in prior:
             q.answer = prior[q.id]
+    # Keep previous runtime if planner omitted it; then normalize from answers/constraints.
+    if not updated.runtime.kind and plan.runtime.kind:
+        updated.runtime = plan.runtime
+    from app.services.plan_run import ensure_runtime
+
+    ensure_runtime(updated)
     row.plan_json = updated.to_dict()
     row.title = updated.title or row.title
     row.phase = "clarify" if updated.unanswered() else "ready"
@@ -439,36 +448,19 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
         if not (row.exec_agent_id and (row.last_result or "").strip()):
             raise WorkflowError("Агент ещё не готов к сохранению")
 
-    # Materialize artifacts so runtime has files on disk.
-    try:
-        dest, saved = _materialize_artifacts(db, user_id=user_id, workflow_id=workflow_id)
-        local["artifacts_dir"] = str(dest)
-        local["artifact_files"] = [Path(p).name for p in saved[:50]]
-    except Exception:  # noqa: BLE001
-        logger.warning("publish: artifacts materialize skipped for %s", workflow_id, exc_info=True)
-
+    # Published agents run only via in-app MCP runtime (no bat/terminal/code UI).
+    for key in ("cwd", "bat", "module", "output", "cmd", "shell"):
+        local.pop(key, None)
     local.update(
         {
             "status": "published",
             "can_publish": False,
             "published": True,
             "runtime": "mcp",
-            "tools": ["web_search"],
+            "tools": ["site_browser", "web_search"],
+            "ui_mode": "chat",
         }
     )
-    # Prefer roseltorg local tool when plan/title mentions it.
-    blob = f"{row.title}\n{row.last_result or ''}".casefold()
-    if "roseltorg" in blob or "росэлторг" in blob:
-        tools_root = Path(__file__).resolve().parents[4] / "tools" / "roseltorg_tender_search"
-        if tools_root.is_dir():
-            local.update(
-                {
-                    "cwd": str(tools_root),
-                    "bat": "run.bat",
-                    "module": "roseltorg_tender_search",
-                    "output": "report.xlsx",
-                }
-            )
     row.local_run = local
     row.phase = "done"
     db.commit()
