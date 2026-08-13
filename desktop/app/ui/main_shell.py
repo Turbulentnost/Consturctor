@@ -161,6 +161,7 @@ class MainShell(QWidget):
     _implementation_agents_ready = Signal(object)
     _passport_ready = Signal(object)
     _passport_failed = Signal(str)
+    _published_agent_ready = Signal(object)
     _chat_ready = Signal(object)
     _creation_session_ready = Signal(object)
     _creation_stream_event = Signal(str, str)
@@ -235,6 +236,7 @@ class MainShell(QWidget):
         self._page_agents.delete_requested.connect(self._on_delete_agent_draft)
         self._page_agents.delete_suggestion_requested.connect(self._on_delete_agent_suggestion)
         self._page_agents.delete_agent_requested.connect(self._on_delete_published_agent)
+        self._page_agents.run_agent_requested.connect(self._on_run_published_agent)
         self._page_passport.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["agents"]))
         self._page_passport.draft_requested.connect(self._on_passport_draft_requested)
         self._page_passport.answer_requested.connect(self._on_passport_answer_requested)
@@ -272,6 +274,7 @@ class MainShell(QWidget):
         self._implementation_agents_ready.connect(self._show_implementation_agents)
         self._passport_ready.connect(self._show_passport_result)
         self._passport_failed.connect(self._show_passport_error)
+        self._published_agent_ready.connect(self._on_launch_workflow_agent)
         self._chat_ready.connect(self._show_chat_result)
         self._creation_session_ready.connect(self._show_creation_session)
         self._creation_stream_event.connect(self._page_creation_chat.append_stream_event)
@@ -1287,6 +1290,17 @@ class MainShell(QWidget):
                 self._readiness_failed.emit(exc.message)
                 return
             self._drafts_ready.emit((drafts, workflows))
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_run_published_agent(self, workflow_id: str) -> None:
+        def run() -> None:
+            try:
+                record = self._api.get_workflow(workflow_id)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._published_agent_ready.emit(record)
 
         Thread(target=run, daemon=True).start()
 

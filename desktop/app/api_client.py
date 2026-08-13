@@ -1355,6 +1355,14 @@ class ApiClient:
         )
         return self._parse_workflow(data)
 
+    def publish_workflow(self, workflow_id: str) -> WorkflowRecord:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/publish",
+            timeout=180.0,
+        )
+        return self._parse_workflow(data)
+
     def _parse_workflow(self, data: dict) -> WorkflowRecord:
         plan_data = data.get("plan")
         plan = None

@@ -10,7 +10,7 @@ from app.ui.theme import app_font
 
 _TITLE_COL_WIDTH = 300
 _DESC_COL_WIDTH = 360
-_ACTION_COL_WIDTH = 104
+_ACTION_COL_WIDTH = 120
 
 
 class MyAgentsPage(QWidget):
@@ -20,6 +20,7 @@ class MyAgentsPage(QWidget):
     delete_requested = Signal(str)
     delete_suggestion_requested = Signal(str, str)
     delete_agent_requested = Signal(str)
+    run_agent_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -317,12 +318,17 @@ class MyAgentsPage(QWidget):
         description.setStyleSheet("color: #6B7773; background: transparent;")
         description.setWordWrap(True)
         description.setFixedWidth(_DESC_COL_WIDTH)
+        run = QPushButton("Запустить")
+        run.setCursor(Qt.CursorShape.PointingHandCursor)
+        run.clicked.connect(
+            lambda _checked=False, workflow_id=agent.id: self.run_agent_requested.emit(workflow_id)
+        )
         delete = QPushButton("Удалить")
         delete.setCursor(Qt.CursorShape.PointingHandCursor)
         delete.clicked.connect(lambda _checked=False, workflow_id=agent.id: self.delete_agent_requested.emit(workflow_id))
         layout.addWidget(title, 0, 0)
         layout.addWidget(description, 0, 1)
-        layout.addWidget(_actions_widget(delete), 0, 2)
+        layout.addWidget(_actions_widget(run, delete), 0, 2)
         layout.setColumnStretch(0, 2)
         layout.setColumnStretch(1, 3)
         return card

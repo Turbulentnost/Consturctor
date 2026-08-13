@@ -411,10 +411,69 @@ def execute_workflow(
     row.last_result = phase.text
     row.branch = phase.branch or row.branch
     row.pr_url = phase.pr_url or row.pr_url
-    row.phase = "done" if phase.status == "FINISHED" else "ready"
+    # Не публикуем в «Мои агенты» автоматически — только после явного Save.
+    if phase.status == "FINISHED":
+        row.phase = "tested"
+        local = dict(row.local_run or {})
+        local.update({"status": "tested", "can_publish": True, "runtime": "mcp"})
+        row.local_run = local
+        _emit(on_event, "decision", "Реализация завершена. Нужен тестовый прогон и Сохранить.")
+    else:
+        row.phase = "ready"
+        _emit(on_event, "decision", "Реализация не завершена — можно запустить снова.")
     db.commit()
     db.refresh(row)
-    _emit(on_event, "decision", "Результат реализации сохранён.")
+    return _to_schema(row)
+
+
+def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSchema:
+    """Опубликовать проверенный workflow в «Мои агенты» (phase=done)."""
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    if row.phase not in {"tested", "done", "ready"}:
+        raise WorkflowError("Сначала завершите реализацию и тесты")
+    if row.phase == "ready" and not row.exec_agent_id:
+        raise WorkflowError("Нет результата реализации для публикации")
+    local = dict(row.local_run or {})
+    if row.phase != "done" and not local.get("can_publish") and row.phase != "tested":
+        # allow ready+exec after manual verify on older records
+        if not (row.exec_agent_id and (row.last_result or "").strip()):
+            raise WorkflowError("Агент ещё не готов к сохранению")
+
+    # Materialize artifacts so runtime has files on disk.
+    try:
+        dest, saved = _materialize_artifacts(db, user_id=user_id, workflow_id=workflow_id)
+        local["artifacts_dir"] = str(dest)
+        local["artifact_files"] = [Path(p).name for p in saved[:50]]
+    except Exception:  # noqa: BLE001
+        logger.warning("publish: artifacts materialize skipped for %s", workflow_id, exc_info=True)
+
+    local.update(
+        {
+            "status": "published",
+            "can_publish": False,
+            "published": True,
+            "runtime": "mcp",
+            "tools": ["web_search"],
+        }
+    )
+    # Prefer roseltorg local tool when plan/title mentions it.
+    blob = f"{row.title}\n{row.last_result or ''}".casefold()
+    if "roseltorg" in blob or "росэлторг" in blob:
+        tools_root = Path(__file__).resolve().parents[4] / "tools" / "roseltorg_tender_search"
+        if tools_root.is_dir():
+            local.update(
+                {
+                    "cwd": str(tools_root),
+                    "bat": "run.bat",
+                    "module": "roseltorg_tender_search",
+                    "output": "report.xlsx",
+                }
+            )
+    row.local_run = local
+    row.phase = "done"
+    db.commit()
+    db.refresh(row)
+    logger.info("Workflow published id=%s title=%s", workflow_id, row.title)
     return _to_schema(row)
 
 

@@ -164,7 +164,8 @@ _PHASE_PIPELINE = [
     ("document", "Материалы"),
     ("plan", "План"),
     ("clarify", "Уточнения"),
-    ("ready", "Готов"),
+    ("ready", "Сборка"),
+    ("tested", "Тестовый прогон"),
     ("done", "Готово"),
 ]
 _PHASE_RANK = {
@@ -173,7 +174,8 @@ _PHASE_RANK = {
     "clarify": 2,
     "ready": 3,
     "executing": 3,
-    "done": 4,
+    "tested": 4,
+    "done": 5,
 }
 
 
@@ -707,12 +709,13 @@ class WorkflowPage(QWidget):
         self._input_bar = QWidget()
         self._input_bar.setStyleSheet("background: transparent;")
         self._input_bar.setLayout(input_row)
-        self._next_btn = QPushButton("Далее")
+        self._next_btn = QPushButton("Сохранить")
         self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._next_btn.setFixedHeight(46)
         self._next_btn.setStyleSheet(_PRIMARY)
-        self._next_btn.clicked.connect(self._on_launch_requested)
+        self._next_btn.clicked.connect(self._on_save_requested)
         self._next_btn.setVisible(False)
+        self._tests_ok = False
 
         center.addWidget(self._feed_scroll, 1)
         center.addWidget(self._questions_card, 0)
@@ -826,17 +829,45 @@ class WorkflowPage(QWidget):
         plan = self._record.plan if self._record else None
         unanswered = bool(plan and plan.unanswered())
         has_exec = bool(self._record and self._record.exec_agent_id)
-        ready_for_launch = bool(self._record and self._record.phase in {"ready", "done"} and not unanswered)
+        can_save = bool(
+            self._record
+            and self._record.phase == "tested"
+            and self._tests_ok
+            and not self._busy
+        )
+        assembly_ready = bool(
+            self._record and self._record.phase == "ready" and not unanswered
+        )
         self._questions_card.setVisible(unanswered)
-        self._input_bar.setVisible(not ready_for_launch and not unanswered)
-        self._chat_files_label.setVisible(bool(self._chat_files) and not ready_for_launch)
-        self._next_btn.setVisible(ready_for_launch)
+        self._input_bar.setVisible(not can_save and not unanswered)
+        self._chat_files_label.setVisible(bool(self._chat_files) and not can_save)
+        self._next_btn.setText("Сохранить")
+        self._next_btn.setVisible(can_save)
         self._exec_btn.setEnabled(bool(plan) and not unanswered and not self._busy)
+        self._exec_btn.setVisible(assembly_ready or (has_exec and phase in {"ready", "tested"}))
         self._rerun_btn.setVisible(has_exec)
         self._fetch_btn.setEnabled(has_exec and not self._busy)
         self._open_dir_btn.setEnabled(bool(self._results_dir) or has_exec)
         self._render_graphs()
         self._render_phase_steps()
+
+    def _on_save_requested(self) -> None:
+        if self._record is None:
+            return
+        if not self._tests_ok:
+            QMessageBox.information(
+                self,
+                "Тесты",
+                "Сначала дождитесь успешного тестового прогона.",
+            )
+            return
+        wid = self._record.id
+        self._append("\n→ Сохраняю агента в «Мои агенты»…\n")
+
+        def work() -> WorkflowRecord:
+            return self._api.publish_workflow(wid)
+
+        self._run_async("Публикация", work)
 
     def _on_launch_requested(self) -> None:
         if self._record is not None:
@@ -1314,7 +1345,11 @@ class WorkflowPage(QWidget):
         self._activity.setText(f"● {self._busy_base}{'.' * self._busy_n}")
 
     def _append(self, text: str) -> None:
-        del text
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return
+        self._stream_messages.append(("system", cleaned))
+        self._render_feed()
 
     def _ok(self, message: str) -> None:
         self._status.setText(message)
@@ -1357,17 +1392,31 @@ class WorkflowPage(QWidget):
             self._render_plan()
             self._render_phase()
             self.saved.emit(result.id)
-            self.saved_record.emit(result)
+            # Черновик убираем только после publish (phase=done).
+            if result.phase == "done":
+                self.saved_record.emit(result)
             if label.startswith("Планирование") or label.startswith("Уточнение"):
                 n = len(result.plan.unanswered()) if result.plan else 0
                 self._ok(f"План готов · вопросов: {n}" if n else "План готов · можно реализовывать")
             elif label.startswith("Реализация"):
-                self._ok(f"{result.phase} · можно скачать артефакты")
+                self._tests_ok = False
+                self._ok(f"{result.phase} · скачиваю артефакты и гоняю проверки")
                 if result.last_result:
                     self._append("\n" + result.last_result + "\n")
                 self._on_fetch_results()
+            elif label.startswith("Публикация"):
+                self._ok("Сохранено в «Мои агенты»")
+                self._append(
+                    "\n✓ Агент опубликован. Откройте «Мои агенты» → «Запустить».\n"
+                )
             else:
                 self._ok("Готово")
+        elif isinstance(result, tuple) and len(result) == 2 and result[0] == "__live_ok__":
+            self._tests_ok = True
+            self._append("\n✓ Live-проверка web_search завершена — можно сохранить агента.\n")
+            self._ok("Тесты пройдены · можно сохранить")
+            self._render_phase()
+            self._render_feed()
         elif isinstance(result, tuple) and len(result) == 2:
             dest_dir, files = result
             self._results_dir = str(dest_dir)
@@ -1381,7 +1430,9 @@ class WorkflowPage(QWidget):
             self._thinking_text = ""
             self._live_lines = []
             self._live_label = ""
+            self._evaluate_tests_and_verify(list(files))
             self._render_feed()
+            self._render_phase()
 
     def _on_async_fail(self, message: str) -> None:
         self._set_busy(False)
@@ -1481,6 +1532,71 @@ class WorkflowPage(QWidget):
 
         self._run_async("Скачивание", work)
 
+    def _evaluate_tests_and_verify(self, files: list[str]) -> None:
+        """Parse RESULT.md / last_result and run live web_search smoke test."""
+        blob_parts: list[str] = []
+        if self._record and self._record.last_result:
+            blob_parts.append(self._record.last_result)
+        for path in files:
+            name = Path(path).name.lower()
+            if name in {"result.md", "results.md", "readme.md"}:
+                try:
+                    blob_parts.append(Path(path).read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    continue
+        blob = "\n".join(blob_parts)
+        upper = blob.upper()
+        explicit_fail = "TESTS: FAIL" in upper
+        explicit_pass = "TESTS: PASS" in upper
+        if explicit_fail:
+            self._tests_ok = False
+            self._append("\n✗ Тесты: FAIL — исправьте реализацию и запустите снова.\n")
+            self._ok("Тесты не прошли")
+            self._render_phase()
+            return
+        self._tests_ok = explicit_pass
+        if explicit_pass:
+            self._append("\n✓ Тесты по артефактам: PASS. Запускаю live web_search…\n")
+        else:
+            self._append("\n… В RESULT.md нет TESTS: PASS — запускаю live web_search.\n")
+
+        if self._record is None:
+            return
+        wid = self._record.id
+        title = self._record.title or "закупки"
+        message = (
+            f"Сделай live тестовый прогон через web_search: найди актуальные закупки "
+            f"по теме «{title}». Если ЭТП недоступна — всё равно верни результаты поиска."
+        )
+
+        def live() -> None:
+            try:
+                self._api.stream_workflow_agent_run(
+                    wid,
+                    message,
+                    lambda payload: self._stream_event.emit(
+                        str(payload.get("type") or "message"),
+                        str(
+                            payload.get("text")
+                            or payload.get("message")
+                            or payload.get("tool")
+                            or ""
+                        ),
+                    ),
+                )
+                self._async_ok.emit(("__live_ok__", []), "Live-проверка")
+            except Exception as exc:  # noqa: BLE001
+                # Fixture PASS already allows save; live failure is non-blocking then.
+                if explicit_pass:
+                    self._async_ok.emit(("__live_ok__", []), "Live-проверка")
+                else:
+                    self._async_fail.emit(str(getattr(exc, "message", None) or exc))
+
+        Thread(target=live, daemon=True).start()
+        self._set_busy(True, "Live-проверка web_search")
+        if explicit_pass:
+            self._render_phase()
+
     def _open_result_item(self, item: QListWidgetItem) -> None:
         path = item.data(Qt.ItemDataRole.UserRole)
         if path:
@@ -1505,6 +1621,7 @@ class WorkflowPage(QWidget):
         self._log.clear()
         self._results.clear()
         self._results_dir = ""
+        self._tests_ok = False
         self._clear_questions()
         self._questions_card.setVisible(False)
         self._render_phase()

@@ -10,6 +10,7 @@ from app.services.workflows.service import (
     list_artifacts_for_workflow,
     list_workflows,
     plan_workflow,
+    publish_workflow,
     update_local_run,
     workflow_health,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "list_artifacts_for_workflow",
     "list_workflows",
     "plan_workflow",
+    "publish_workflow",
     "update_local_run",
     "workflow_health",
 ]

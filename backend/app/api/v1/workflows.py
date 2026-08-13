@@ -32,6 +32,7 @@ from app.services.workflows import (
     list_artifacts_for_workflow,
     list_workflows,
     plan_workflow,
+    publish_workflow,
     update_local_run,
     workflow_health,
 )
@@ -424,6 +425,19 @@ async def patch_local_run(
             workflow_id=workflow_id,
             local_run=request.local_run,
         )
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/publish", response_model=WorkflowSchema)
+async def publish_workflow_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowSchema:
+    try:
+        return publish_workflow(db, user_id=auth.user_id, workflow_id=workflow_id)
     except WorkflowError as exc:
         _raise(exc)
         raise

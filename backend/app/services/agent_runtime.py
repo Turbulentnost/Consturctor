@@ -42,8 +42,19 @@ def run_agent_task(
     emit({"type": "agent_message", "text": f"Запускаю агента «{workflow.title or 'ИИ-агент'}»."})
 
     tool_result: dict[str, Any] | None = None
-    if _needs_web_search(task):
-        arguments = {"query": task, "max_results": 5, "fetch_top": False}
+    query = _search_query(task, workflow)
+    if query:
+        fetch_top = _needs_page_extract(task)
+        arguments = {"query": query, "max_results": 8, "fetch_top": fetch_top}
+        emit(
+            {
+                "type": "thinking",
+                "text": (
+                    "Целевой сайт ЭТП из cloud VM может быть недоступен — "
+                    "использую локальный web_search (DuckDuckGo/Wikipedia).\n"
+                ),
+            }
+        )
         emit({"type": "tool_call", "tool": "web_search", "arguments": arguments})
         try:
             tool_result = call_tool("web_search", arguments)
@@ -57,9 +68,47 @@ def run_agent_task(
     return {"answer": answer, "tool_result": tool_result or {}}
 
 
+_SEARCH_HINTS = (
+    "найди",
+    "поиск",
+    "интернет",
+    "сайт",
+    "сведения",
+    "актуальн",
+    "закуп",
+    "тендер",
+    "roseltorg",
+    "росэлторг",
+    "этп",
+    "мониторинг",
+    "оферт",
+    "live",
+    "прогон",
+)
+
+
 def _needs_web_search(text: str) -> bool:
     lowered = text.casefold()
-    return any(word in lowered for word in ("найди", "поиск", "интернет", "сайт", "сведения", "актуальн"))
+    return any(word in lowered for word in _SEARCH_HINTS)
+
+
+def _needs_page_extract(text: str) -> bool:
+    lowered = text.casefold()
+    return any(word in lowered for word in ("закуп", "тендер", "roseltorg", "росэлторг", "этп"))
+
+
+def _search_query(task: str, workflow: Workflow) -> str:
+    if not _needs_web_search(task) and not _needs_web_search(workflow.title or ""):
+        # For published tender agents still search when task looks operational.
+        lowered = task.casefold()
+        if not any(w in lowered for w in ("запуск", "найди", "покажи", "проверь", "live")):
+            return ""
+    title = (workflow.title or "").strip()
+    if _needs_web_search(task):
+        return task
+    if title:
+        return f"{task} {title}".strip()
+    return task
 
 
 def _compose_answer(task: str, tool_result: dict[str, Any] | None) -> str:
@@ -69,12 +118,17 @@ def _compose_answer(task: str, tool_result: dict[str, Any] | None) -> str:
             f"и переданные материалы: {task}"
         )
     results = tool_result.get("results") or []
-    if not results:
+    extracted = str(tool_result.get("extracted_text") or "").strip()
+    if not results and not extracted:
         return "Я выполнил web_search, но подходящих результатов не нашёл."
-    lines = ["Я выполнил поиск через локальный MCP-инструмент и нашёл:"]
-    for item in results[:3]:
+    lines = ["Я выполнил поиск через локальный MCP-инструмент web_search и нашёл:"]
+    for item in results[:5]:
         title = str(item.get("title") or "Без названия")
         url = str(item.get("url") or "")
         snippet = str(item.get("snippet") or "")
         lines.append(f"- {title}: {snippet} {url}".strip())
+    if extracted:
+        lines.append("")
+        lines.append("Фрагмент страницы:")
+        lines.append(extracted[:1200])
     return "\n".join(lines)

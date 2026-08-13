@@ -109,8 +109,21 @@ ARTIFACTS_INSTRUCTION = (
     "`artifacts/` и скопируй туда ВСЕ итоговые файлы, чтобы их можно было скачать:\n"
     "- `artifacts/solution.zip` — архив всего написанного кода/проекта;\n"
     "- сгенерированные выходные файлы (например, .xlsx/.csv/.pdf), если они есть;\n"
-    "- `artifacts/RESULT.md` — краткое описание: что сделано, как запустить, что внутри.\n"
+    "- `artifacts/RESULT.md` — краткое описание: что сделано, как запустить, что внутри;\n"
+    "  в RESULT.md обязательно итоговая строка `TESTS: PASS` или `TESTS: FAIL`.\n"
     "Клади готовые файлы именно в `artifacts/` (пути должны быть относительными)."
+)
+
+RUNTIME_NETWORK_INSTRUCTION = (
+    "Сеть и прогоны:\n"
+    "- Cloud VM часто НЕ достучится до roseltorg.ru / закрытых ЭТП "
+    "(Connection reset) — это ожидаемо, не считай задачу проваленной только из‑за этого.\n"
+    "- Реализуй ДВА режима: `--fixtures` (офлайн/CI) и `--live` (боевой).\n"
+    "- Live-режим на рабочей станции использует HTTP-поиск "
+    "(DuckDuckGo/Wikipedia через web_search / httpx), а не только Playwright к ЭТП.\n"
+    "- Фикстуры — запасной путь для тестов; основной рабочий сценарий должен уметь live-поиск.\n"
+    "- В RESULT.md опиши: какие тесты реально прогнаны, live доступен или нет, "
+    "и как запускать агента локально."
 )
 
 
@@ -124,6 +137,7 @@ def build_execute_prompt(*, plan: WorkflowPlan, document_text: str) -> str:
         "опиши реализацию, артефакты, команды/проверки и результат по test_criteria.\n"
         "Следуй steps по порядку зависимостей. Не расширяй scope.\n"
         "В финальном ответе кратко: что сделано, результаты проверок, что осталось.\n\n"
+        f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
         f"{ARTIFACTS_INSTRUCTION}\n\n"
         "===== PLAN JSON =====\n"
         f"{plan_json}\n"
@@ -139,7 +153,8 @@ def build_reexecute_prompt(*, plan: WorkflowPlan) -> str:
     return (
         "Повторно выполни сохранённый план (без GitHub-репозитория).\n"
         "Не ломай уже корректное. Доведи незакрытые steps и test_criteria.\n"
-        "В конце — статус PASS/FAIL по критериям.\n\n"
+        "В конце — статус PASS/FAIL по критериям (TESTS: PASS|FAIL в RESULT.md).\n\n"
+        f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
         f"{ARTIFACTS_INSTRUCTION}\n\n"
         f"{plan_json}"
     )
