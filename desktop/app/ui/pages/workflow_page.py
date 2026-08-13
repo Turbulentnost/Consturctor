@@ -459,6 +459,7 @@ def _group_nodes(
 
 class WorkflowPage(QWidget):
     saved = Signal(str)
+    saved_record = Signal(object)
     _async_ok = Signal(object, str)
     _async_fail = Signal(str)
 
@@ -927,6 +928,7 @@ class WorkflowPage(QWidget):
             self._render_plan()
             self._render_phase()
             self.saved.emit(result.id)
+            self.saved_record.emit(result)
             if label.startswith("Планирование") or label.startswith("Уточнение"):
                 n = len(result.plan.unanswered()) if result.plan else 0
                 self._ok(f"План готов · вопросов: {n}" if n else "План готов · можно реализовывать")

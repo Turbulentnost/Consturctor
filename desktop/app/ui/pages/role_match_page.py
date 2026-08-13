@@ -29,6 +29,7 @@ from app.ui.theme import (
 )
 
 _HIGH_CONFIDENCE = 0.85
+_MAX_FUNCTION_TITLE_CHARS = 420
 _TEMP = Path(__file__).resolve().parents[1] / "temp"
 _CHECK_ICON_PATH = _TEMP / "зеленаягалочка.png"
 _WARN_ICON_PATH = _TEMP / "внимание.png"
@@ -714,8 +715,11 @@ def _function_title(match: RoleMatch) -> str:
         if function.recipient:
             title_parts.append(f"→ {function.recipient}")
         title = " ".join(part for part in title_parts if part).strip()
-        if title:
-            return title[:220]
+        if title and not _has_dangling_end(title):
+            return _as_title(title, max_chars=_MAX_FUNCTION_TITLE_CHARS)
+        source_title = _title_from_source_text(match)
+        if source_title:
+            return source_title
     full_text = _fragment_preview_text(match, full=True)
     contextual_title = _title_from_role_context(full_text, _role_terms(match))
     if contextual_title:
@@ -900,7 +904,47 @@ def _meaningful_lines_from_text(text: str) -> list[str]:
     return lines
 
 
-def _as_title(text: str) -> str:
+def _title_from_source_text(match: RoleMatch) -> str:
+    function = match.function
+    candidates: list[str] = []
+    if function is not None:
+        candidates.extend(_clean_line(item.quote) for item in function.evidence if _clean_line(item.quote))
+    candidates.extend(_meaningful_fragment_lines(match))
+    for candidate in candidates:
+        title = _as_title(candidate, max_chars=_MAX_FUNCTION_TITLE_CHARS)
+        if title and not _has_dangling_end(title):
+            return title
+    return ""
+
+
+def _has_dangling_end(text: str) -> bool:
+    words = _clean_line(text).rstrip(".,;:—-–").casefold().split()
+    if not words:
+        return False
+    return words[-1] in {
+        "в",
+        "во",
+        "на",
+        "по",
+        "для",
+        "с",
+        "со",
+        "к",
+        "ко",
+        "от",
+        "до",
+        "из",
+        "за",
+        "при",
+        "о",
+        "об",
+        "и",
+        "или",
+        "что",
+    }
+
+
+def _as_title(text: str, *, max_chars: int = _MAX_FUNCTION_TITLE_CHARS) -> str:
     text = _clean_line(text)
     if not text or _is_service_line(text):
         return ""
@@ -908,8 +952,8 @@ def _as_title(text: str) -> str:
     parts = [part.strip() for part in text.split(".") if part.strip()]
     if parts:
         text = parts[0]
-    if len(text) > 220:
-        text = text[:217].rstrip(" ,;:-") + "..."
+    if max_chars > 0 and len(text) > max_chars:
+        text = text[: max_chars - 3].rstrip(" ,;:-") + "..."
     return text
 
 
@@ -1356,7 +1400,8 @@ def _document_icon_label() -> QLabel:
 
 def _keep_label_inside_width(label: QLabel) -> None:
     label.setText(_soft_wrap_text(label.text()))
-    label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    label.setMinimumWidth(0)
+    label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
 
 def _soft_wrap_text(text: str) -> str:

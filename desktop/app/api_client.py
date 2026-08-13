@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Callable
+from urllib.parse import quote
 
 import httpx
 
@@ -814,6 +815,14 @@ class ApiClient:
 
     def delete_agent_draft(self, draft_id: str) -> None:
         self._request("DELETE", f"/api/v1/agents/drafts/{draft_id}", timeout=max(self._timeout, 60.0))
+
+    def delete_agent_draft_suggestion(self, draft_id: str, agent_id: str) -> None:
+        safe_agent_id = quote(agent_id, safe="")
+        self._request(
+            "DELETE",
+            f"/api/v1/agents/drafts/{draft_id}/suggestions/{safe_agent_id}",
+            timeout=max(self._timeout, 60.0),
+        )
 
     def ensure_draft_readiness(self, draft_id: str) -> AgentDraft:
         data = self._request(

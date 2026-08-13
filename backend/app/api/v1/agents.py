@@ -18,6 +18,7 @@ from app.services.agents import (
     AgentDraftError,
     create_or_get_draft,
     delete_draft,
+    delete_draft_suggestion,
     ensure_draft_readiness,
     get_draft,
     list_drafts,
@@ -63,6 +64,20 @@ async def delete_agent_draft(
 ) -> dict[str, bool]:
     try:
         delete_draft(db, user_id=auth.user_id, draft_id=draft_id)
+    except AgentDraftError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return {"deleted": True}
+
+
+@router.delete("/drafts/{draft_id}/suggestions/{agent_id}")
+async def delete_agent_draft_suggestion(
+    draft_id: str,
+    agent_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    try:
+        delete_draft_suggestion(db, user_id=auth.user_id, draft_id=draft_id, agent_id=agent_id)
     except AgentDraftError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return {"deleted": True}

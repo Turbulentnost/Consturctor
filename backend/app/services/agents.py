@@ -88,6 +88,21 @@ def delete_draft(db: Session, *, user_id: str, draft_id: str) -> None:
     db.commit()
 
 
+def delete_draft_suggestion(db: Session, *, user_id: str, draft_id: str, agent_id: str) -> None:
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    data = dict(draft.result_json or {})
+    suggestions = [item for item in data.get("agentSuggestions") or [] if isinstance(item, dict)]
+    remaining = [item for item in suggestions if str(item.get("agentId") or "") != agent_id]
+    if len(remaining) == len(suggestions):
+        raise AgentDraftError("Черновик ИИ-агента не найден", status_code=404)
+    if remaining:
+        draft.result_json = {**data, "agentSuggestions": remaining}
+        db.add(draft)
+    else:
+        db.delete(draft)
+    db.commit()
+
+
 def ensure_draft_readiness(db: Session, *, user_id: str, draft_id: str) -> AgentDraftDetail:
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     if not draft.readiness_run_id:
@@ -116,6 +131,8 @@ def update_draft_status(
 ) -> AgentDraftDetail:
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     draft.status = request.status
+    if request.status == "ready":
+        draft.result_json = _ensure_agent_suggestions(db, draft)
     db.add(draft)
     db.commit()
     db.refresh(draft)
@@ -182,7 +199,9 @@ def _agent_suggestions_from_role_result(role_result: RoleMatchResult) -> list[Ag
     suggestions: list[AgentSuggestion] = []
     seen: set[str] = set()
     for index, function in enumerate(functions, start=1):
-        if function is None or not function.isFunction:
+        if function is None:
+            continue
+        if not function.isFunction and not (function.action or function.object):
             continue
         key = function.duplicateGroup or function.functionId or f"{function.action}:{function.object}"
         if key in seen:
@@ -201,6 +220,25 @@ def _agent_suggestions_from_role_result(role_result: RoleMatchResult) -> list[Ag
             )
         )
     return suggestions
+
+
+def _ensure_agent_suggestions(db: Session, draft: AgentDraft) -> dict:
+    data = dict(draft.result_json or {})
+    if data.get("agentSuggestions"):
+        return data
+    role_run = db.query(RoleMatchRun).filter(RoleMatchRun.id == draft.role_match_run_id).first()
+    if role_run is None:
+        return data
+    role_result = RoleMatchResult.model_validate(role_run.result_json)
+    suggestions = _agent_suggestions_from_role_result(role_result)
+    if not suggestions:
+        return data
+    return {
+        **data,
+        "agentSuggestions": [item.model_dump(mode="json") for item in suggestions],
+        "suggestionRegulationId": draft.regulation_id,
+        "suggestionRoleMatchRunId": draft.role_match_run_id,
+    }
 
 
 def _agent_title_from_function(function, index: int) -> str:

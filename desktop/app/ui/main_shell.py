@@ -34,8 +34,10 @@ from app.api_client import (
     RegulationCreationMessage,
     RegulationCreationSession,
     UserProfile,
+    WorkflowListItem,
 )
 from app.ui.pages.agent_passport_page import AgentPassportPage
+from app.ui.pages.agent_implementation_page import AgentImplementationPage
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.my_agents_page import MyAgentsPage
@@ -154,6 +156,7 @@ class MainShell(QWidget):
     _draft_ready = Signal(object)
     _drafts_ready = Signal(object)
     _agents_table_ready = Signal(object)
+    _implementation_agents_ready = Signal(object)
     _passport_ready = Signal(object)
     _passport_failed = Signal(str)
     _chat_ready = Signal(object)
@@ -173,6 +176,7 @@ class MainShell(QWidget):
         self._pages = QStackedWidget()
         self._page_create = CreateAgentPage()
         self._page_agents = MyAgentsPage()
+        self._page_implementation_agents = AgentImplementationPage()
         self._page_workflows = WorkflowPage(self._api)
         self._page_saved_workflows = SavedWorkflowsPage(self._api)
         self._page_kpi = KpiPage()
@@ -186,6 +190,7 @@ class MainShell(QWidget):
         self._page_loading = LoadingPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
+        self._pages.addWidget(self._page_implementation_agents)
         self._pages.addWidget(self._page_workflows)
         self._pages.addWidget(self._page_saved_workflows)
         self._pages.addWidget(self._page_kpi)
@@ -200,24 +205,30 @@ class MainShell(QWidget):
         self._page_index = {
             "create": 0,
             "agents": 1,
-            "workflows": 2,
-            "saved_workflows": 3,
-            "kpi": 4,
-            "settings": 5,
-            "review": 6,
-            "role_match": 7,
-            "readiness": 8,
-            "revision": 9,
-            "creation_chat": 10,
-            "passport": 11,
-            "loading": 12,
+            "implementation_agents": 2,
+            "workflows": 3,
+            "saved_workflows": 4,
+            "kpi": 5,
+            "settings": 6,
+            "review": 7,
+            "role_match": 8,
+            "readiness": 9,
+            "revision": 10,
+            "creation_chat": 11,
+            "passport": 12,
+            "loading": 13,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
+        self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
         self._page_saved_workflows.open_requested.connect(self._on_open_saved_workflow)
+        self._page_implementation_agents.create_requested.connect(self._on_create_agent_from_inline_suggestion)
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_agents.continue_requested.connect(self._on_continue_agent_draft)
         self._page_agents.create_requested.connect(self._on_create_agent_from_suggestion)
+        self._page_agents.create_suggestion_requested.connect(self._on_create_agent_from_draft_suggestion)
         self._page_agents.delete_requested.connect(self._on_delete_agent_draft)
+        self._page_agents.delete_suggestion_requested.connect(self._on_delete_agent_suggestion)
+        self._page_agents.delete_agent_requested.connect(self._on_delete_published_agent)
         self._page_passport.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["agents"]))
         self._page_passport.draft_requested.connect(self._on_passport_draft_requested)
         self._page_passport.answer_requested.connect(self._on_passport_answer_requested)
@@ -252,6 +263,7 @@ class MainShell(QWidget):
         self._draft_ready.connect(self._show_draft_result)
         self._drafts_ready.connect(self._show_drafts_result)
         self._agents_table_ready.connect(self._show_agents_table_result)
+        self._implementation_agents_ready.connect(self._show_implementation_agents)
         self._passport_ready.connect(self._show_passport_result)
         self._passport_failed.connect(self._show_passport_error)
         self._chat_ready.connect(self._show_chat_result)
@@ -266,6 +278,9 @@ class MainShell(QWidget):
         self._current_chat: QuestionChatSession | None = None
         self._current_creation_session: RegulationCreationSession | None = None
         self._current_revision: RegulationRevisionResult | None = None
+        self._implementation_draft_id = ""
+        self._current_passport_draft_id = ""
+        self._current_passport_agent_id = ""
         self._auto_finalize_running = False
         self._supplement_in_progress = False
 
@@ -589,8 +604,9 @@ class MainShell(QWidget):
                 readiness = draft.readiness
                 if readiness is None or not any(not question.answered for question in readiness.questions):
                     draft = self._api.update_agent_draft_status(draft.draft_id, "ready")
-                    drafts = self._api.list_agent_drafts()
-                    self._agents_table_ready.emit(drafts)
+                    workflows = self._api.list_workflows()
+                    suggestions = draft.agent_suggestions or _suggestions_from_role_match(self._current_role_match)
+                    self._implementation_agents_ready.emit((suggestions, workflows, draft.draft_id))
                     return
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
@@ -702,12 +718,13 @@ class MainShell(QWidget):
 
         def run() -> None:
             try:
-                self._api.update_agent_draft_status(self._current_draft.draft_id, "ready")
-                drafts = self._api.list_agent_drafts()
+                draft = self._api.update_agent_draft_status(self._current_draft.draft_id, "ready")
+                workflows = self._api.list_workflows()
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._agents_table_ready.emit(drafts)
+            suggestions = draft.agent_suggestions or _suggestions_from_role_match(self._current_role_match)
+            self._implementation_agents_ready.emit((suggestions, workflows, draft.draft_id))
 
         Thread(target=run, daemon=True).start()
 
@@ -995,6 +1012,7 @@ class MainShell(QWidget):
             return
         self._pages.setCurrentIndex(idx)
         if key == "agents":
+            self._page_agents.show_agents()
             self._load_agent_drafts()
 
     def _on_open_saved_workflow(self, record: object) -> None:
@@ -1009,23 +1027,55 @@ class MainShell(QWidget):
         def run() -> None:
             try:
                 drafts = self._api.list_agent_drafts()
+                workflows = self._api.list_workflows()
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._drafts_ready.emit(drafts)
+            self._drafts_ready.emit((drafts, workflows))
 
         Thread(target=run, daemon=True).start()
 
     def _show_drafts_result(self, result: object) -> None:
+        if isinstance(result, tuple) and len(result) >= 2:
+            drafts = [item for item in result[0] if isinstance(item, AgentDraft)] if isinstance(result[0], list) else []
+            workflows = (
+                [item for item in result[1] if isinstance(item, WorkflowListItem)]
+                if isinstance(result[1], list)
+                else []
+            )
+            self._page_agents.set_agents(workflows)
+            self._page_agents.set_drafts(drafts)
+            return
         if isinstance(result, list):
             self._page_agents.set_drafts([item for item in result if isinstance(item, AgentDraft)])
 
     def _show_agents_table_result(self, result: object) -> None:
         if isinstance(result, list) and all(isinstance(item, AgentSuggestion) for item in result):
-            self._page_agents.set_agent_suggestions(result)
+            self._page_agents.show_drafts()
+            self._pages.setCurrentIndex(self._page_index["agents"])
+            self._load_agent_drafts()
+            return
         elif isinstance(result, list):
             self._page_agents.set_drafts([item for item in result if isinstance(item, AgentDraft)])
         self._pages.setCurrentIndex(self._page_index["agents"])
+
+    def _show_implementation_agents(self, result: object) -> None:
+        workflows: list[WorkflowListItem] = []
+        raw_suggestions = result
+        self._implementation_draft_id = ""
+        if isinstance(result, tuple) and len(result) >= 2:
+            raw_suggestions = result[0]
+            workflows = [item for item in result[1] if isinstance(item, WorkflowListItem)] if isinstance(result[1], list) else []
+            if len(result) >= 3:
+                self._implementation_draft_id = str(result[2] or "")
+        suggestions = (
+            [item for item in raw_suggestions if isinstance(item, AgentSuggestion)]
+            if isinstance(raw_suggestions, list)
+            else []
+        )
+        self.sidebar.set_active_key("create", animate=False)
+        self._page_implementation_agents.set_suggestions(suggestions, created_agents=workflows)
+        self._pages.setCurrentIndex(self._page_index["implementation_agents"])
 
     def _on_create_agent_from_suggestion(self, agent_id: str) -> None:
         suggestion = self._page_agents.find_suggestion(agent_id)
@@ -1033,6 +1083,29 @@ class MainShell(QWidget):
             QMessageBox.warning(self, "Агент", "Не удалось найти бизнес-процесс для создания агента.")
             return
         self._current_passport_suggestion = suggestion
+        self._current_passport_draft_id = ""
+        self._current_passport_agent_id = ""
+        self._pages.setCurrentIndex(self._page_index["passport"])
+        self._page_passport.start(suggestion)
+
+    def _on_create_agent_from_draft_suggestion(self, draft_id: str, agent_id: str) -> None:
+        suggestion = self._page_agents.find_suggestion(agent_id, draft_id=draft_id)
+        if suggestion is None:
+            QMessageBox.warning(self, "Агент", "Не удалось найти бизнес-процесс для создания агента.")
+            return
+        self._current_passport_suggestion = suggestion
+        self._current_passport_draft_id = draft_id
+        self._current_passport_agent_id = agent_id
+        self._pages.setCurrentIndex(self._page_index["passport"])
+        self._page_passport.start(suggestion)
+
+    def _on_create_agent_from_inline_suggestion(self, suggestion: object) -> None:
+        if not isinstance(suggestion, AgentSuggestion):
+            QMessageBox.warning(self, "Агент", "Не удалось найти бизнес-процесс для создания агента.")
+            return
+        self._current_passport_suggestion = suggestion
+        self._current_passport_draft_id = self._implementation_draft_id
+        self._current_passport_agent_id = suggestion.agent_id if self._implementation_draft_id else ""
         self._pages.setCurrentIndex(self._page_index["passport"])
         self._page_passport.start(suggestion)
 
@@ -1086,6 +1159,28 @@ class MainShell(QWidget):
         self._page_workflows.start_from_passport(session, auto_plan=True)
         self._pages.setCurrentIndex(self._page_index["workflows"])
 
+    def _on_workflow_record_saved(self, record: object) -> None:
+        if str(getattr(record, "phase", "")) != "done":
+            return
+        draft_id = self._current_passport_draft_id
+        agent_id = self._current_passport_agent_id
+        if not draft_id or not agent_id:
+            return
+        self._current_passport_draft_id = ""
+        self._current_passport_agent_id = ""
+
+        def run() -> None:
+            try:
+                self._api.delete_agent_draft_suggestion(draft_id, agent_id)
+                drafts = self._api.list_agent_drafts()
+                workflows = self._api.list_workflows()
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._drafts_ready.emit((drafts, workflows))
+
+        Thread(target=run, daemon=True).start()
+
     def _on_continue_agent_draft(self, draft_id: str) -> None:
         self._page_loading.set_message(
             "Открываем черновик ИИ-агента",
@@ -1096,6 +1191,12 @@ class MainShell(QWidget):
         def run() -> None:
             try:
                 draft = self._api.ensure_draft_readiness(draft_id)
+                if draft.status == "ready" and not draft.agent_suggestions:
+                    draft = self._api.update_agent_draft_status(draft.draft_id, "ready")
+                if draft.status == "ready" and draft.agent_suggestions:
+                    workflows = self._api.list_workflows()
+                    self._implementation_agents_ready.emit((draft.agent_suggestions, workflows, draft.draft_id))
+                    return
                 chat = self._first_chat_for_draft(draft)
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
@@ -1117,9 +1218,109 @@ class MainShell(QWidget):
             try:
                 self._api.delete_agent_draft(draft_id)
                 drafts = self._api.list_agent_drafts()
+                workflows = self._api.list_workflows()
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._drafts_ready.emit(drafts)
+            self._drafts_ready.emit((drafts, workflows))
 
         Thread(target=run, daemon=True).start()
+
+    def _on_delete_agent_suggestion(self, draft_id: str, agent_id: str) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Удалить черновик",
+            "Удалить этот черновик ИИ-агента? Это действие нельзя отменить.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def run() -> None:
+            try:
+                self._api.delete_agent_draft_suggestion(draft_id, agent_id)
+                drafts = self._api.list_agent_drafts()
+                workflows = self._api.list_workflows()
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._drafts_ready.emit((drafts, workflows))
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_delete_published_agent(self, workflow_id: str) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Удалить ИИ-агента",
+            "Удалить этого опубликованного ИИ-агента? Это действие нельзя отменить.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def run() -> None:
+            try:
+                self._api.delete_workflow(workflow_id)
+                drafts = self._api.list_agent_drafts()
+                workflows = self._api.list_workflows()
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._drafts_ready.emit((drafts, workflows))
+
+        Thread(target=run, daemon=True).start()
+
+
+def _suggestions_from_role_match(role_match: RoleMatchResult | None) -> list[AgentSuggestion]:
+    if role_match is None:
+        return []
+    functions = role_match.functions or [
+        match.function
+        for match in role_match.matches
+        if match.function is not None and match.status != "rejected"
+    ]
+    suggestions: list[AgentSuggestion] = []
+    seen: set[str] = set()
+    for index, function in enumerate(functions, start=1):
+        if function is None:
+            continue
+        if not function.is_function and not (function.action or function.object):
+            continue
+        key = function.duplicate_group or function.function_id or f"{function.action}:{function.object}"
+        if key in seen:
+            continue
+        seen.add(key)
+        suggestions.append(
+            AgentSuggestion(
+                agent_id=f"agent-suggestion-{index:03d}",
+                title=_suggestion_title(function, index),
+                description=_suggestion_description(function),
+                regulation_id=role_match.regulation_id,
+                role_match_run_id=role_match.run_id,
+                function_id=function.function_id,
+                source_block_id=function.target_block_id,
+            )
+        )
+    return suggestions
+
+
+def _suggestion_title(function, index: int) -> str:
+    action = (function.action or "").strip()
+    obj = (function.object or "").strip()
+    if action and obj:
+        return f"ИИ-агент: {action} {obj}"[:180]
+    if action:
+        return f"ИИ-агент: {action}"[:180]
+    return f"ИИ-агент для бизнес-процесса {index}"
+
+
+def _suggestion_description(function) -> str:
+    parts: list[str] = []
+    actor = getattr(function, "actor", None)
+    if actor is not None and actor.canonical_position:
+        parts.append(f"Роль: {actor.canonical_position}")
+    if function.conditions:
+        parts.append("Условия: " + "; ".join(function.conditions[:2]))
+    if function.recipient:
+        parts.append(f"Получатель/участник: {function.recipient}")
+    if function.explanation:
+        parts.append(function.explanation)
+    return "\n".join(part for part in parts if part).strip()
