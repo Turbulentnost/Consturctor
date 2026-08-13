@@ -12,18 +12,20 @@ from PySide6.QtGui import (
     QFontMetrics,
     QPainter,
     QPen,
-    QTextCursor,
 )
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QToolButton,
@@ -77,6 +79,31 @@ QPlainTextEdit {
     border-radius: 12px;
     padding: 8px 12px;
     selection-background-color: #08745F;
+}
+"""
+_CUSTOM_ANSWER_FIELD = """
+QLineEdit {
+    background: #FFFFFF; color: #101817;
+    border: 1px solid rgba(16,24,23,0.10);
+    border-radius: 10px;
+    padding: 6px 10px;
+    selection-background-color: #08745F;
+}
+QLineEdit:disabled {
+    background: #F4F7F6;
+    color: #9DB3AD;
+}
+"""
+_RADIO_OPTION = """
+QRadioButton {
+    color: #101817;
+    background: transparent;
+    spacing: 8px;
+    padding: 3px 0;
+}
+QRadioButton::indicator {
+    width: 15px;
+    height: 15px;
 }
 """
 _REASONING = """
@@ -275,6 +302,56 @@ def _topo_levels(steps: list[WorkflowPlanStep]) -> list[list[WorkflowPlanStep]]:
     return levels or [steps]
 
 
+def _quick_answers_for_question(question) -> list[str]:
+    options = [str(item).strip() for item in getattr(question, "options", []) or [] if str(item).strip()]
+    if options:
+        return options[:4]
+    text = (question.question or "").lower()
+    if any(word in text for word in ("система", "интерфейс", "api", "ui", "интеграц")):
+        return [
+            "Через API",
+            "Через UI",
+            "Через интеграционную шину",
+            "Нужно уточнить у владельца системы",
+        ]
+    if any(word in text for word in ("срок", "когда", "дата", "время")):
+        return ["В течение 1 рабочего дня", "В день получения", "До окончания срока подачи", "Нужно уточнить"]
+    if any(word in text for word in ("кто", "роль", "ответственный", "исполнитель")):
+        return ["Инициатор заявки", "Ответственный менеджер", "Руководитель подразделения", "Нужно уточнить"]
+    return ["По регламенту", "Вручную ответственным", "Автоматически агентом", "Нужно уточнить"]
+
+
+def _format_step_item(index: int, step: WorkflowPlanStep) -> str:
+    lines = [f"{index}. {step.title or step.id or 'Шаг'}"]
+    if step.action:
+        lines.append(step.action)
+    if step.done_when:
+        lines.append(f"Готово: {step.done_when}")
+    if step.depends_on:
+        lines.append(f"Зависит от: {', '.join(step.depends_on)}")
+    return "\n".join(lines)
+
+
+def _phase_step_widget(label: str, state: str) -> QWidget:
+    row = QFrame()
+    row.setStyleSheet("background: transparent;")
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    dot = QLabel("✓" if state == "done" else "●" if state == "active" else "○")
+    dot.setFixedWidth(20)
+    dot.setFont(app_font(13, QFont.Weight.DemiBold))
+    color = "#08745F" if state == "done" else "#F0A202" if state == "active" else "#9DB3AD"
+    dot.setStyleSheet(f"color: {color}; background: transparent;")
+    text = QLabel(label)
+    text.setWordWrap(True)
+    text.setFont(app_font(12, QFont.Weight.DemiBold if state == "active" else QFont.Weight.Medium))
+    text.setStyleSheet(f"color: {MAIN_TEXT.name() if state != 'idle' else COLOR_CONTENT_MUTED.name()}; background: transparent;")
+    layout.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
+    layout.addWidget(text, 1)
+    return row
+
+
 class NodeGraphWidget(QWidget):
     """Connected labeled circles; completed nodes are green.
 
@@ -460,8 +537,10 @@ def _group_nodes(
 class WorkflowPage(QWidget):
     saved = Signal(str)
     saved_record = Signal(object)
+    launch_requested = Signal(object)
     _async_ok = Signal(object, str)
     _async_fail = Signal(str)
+    _stream_event = Signal(str, str)
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -470,13 +549,21 @@ class WorkflowPage(QWidget):
         self._pending_paths: list[str] = []
         self._workflow_title = ""
         self._notes = ""
-        self._question_fields: dict[str, QPlainTextEdit] = {}
+        self._question_fields: dict[str, QLineEdit] = {}
         self._question_files: dict[str, list[str]] = {}
         self._question_file_labels: dict[str, QLabel] = {}
+        self._answer_group: QButtonGroup | None = None
+        self._current_question_id = ""
+        self._chat_files: list[str] = []
+        self._selected_quick_answer = ""
+        self._thinking_expanded = False
+        self._thinking_text = ""
+        self._stream_messages: list[tuple[str, str]] = []
         self._results_dir = ""
         self._busy = False
         self._async_ok.connect(self._on_async_ok)
         self._async_fail.connect(self._on_async_fail)
+        self._stream_event.connect(self.append_stream_event)
         self._build()
         self._render_phase()
 
@@ -508,71 +595,93 @@ class WorkflowPage(QWidget):
         header.addWidget(self._activity, 0, Qt.AlignmentFlag.AlignVCenter)
         header.addWidget(self._phase, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        right_card = QFrame()
-        right_card.setObjectName("WorkflowCard")
-        right_card.setStyleSheet(_CARD)
-        right_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        right_outer = QVBoxLayout(right_card)
-        right_outer.setContentsMargins(16, 14, 16, 14)
-        right_outer.setSpacing(8)
+        body = QHBoxLayout()
+        body.setSpacing(14)
 
         self._phase_graph = NodeGraphWidget(mode="row")
         self._step_section = _section("Шаги плана")
-        self._step_graph = NodeGraphWidget(mode="dag")
+        self._step_list = QListWidget()
+        self._step_list.setFont(app_font(11))
+        self._step_list.setWordWrap(True)
+        self._step_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self._step_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._step_list.setStyleSheet(_LIST + scroll_bar_qss())
+        self._step_list.setMinimumHeight(120)
+        self._step_list.setMaximumHeight(260)
         self._step_section.setVisible(False)
-        self._step_graph.setVisible(False)
+        self._step_list.setVisible(False)
 
-        self._reasoning = QPlainTextEdit()
-        self._reasoning.setReadOnly(True)
-        self._reasoning.setFont(app_font(12))
-        self._reasoning.setStyleSheet(_REASONING + scroll_bar_qss())
-        self._reasoning.setPlaceholderText("Рассуждения модели…")
-        self._reasoning.setMinimumHeight(0)
-        self._reasoning.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        center_card = QFrame()
+        center_card.setObjectName("WorkflowCard")
+        center_card.setStyleSheet(_CARD)
+        center_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        center = QVBoxLayout(center_card)
+        center.setContentsMargins(16, 14, 16, 14)
+        center.setSpacing(10)
+
+        self._feed_layout = QVBoxLayout()
+        self._feed_layout.setContentsMargins(14, 14, 14, 14)
+        self._feed_layout.setSpacing(10)
+        feed_inner = QWidget()
+        feed_inner.setStyleSheet("background: transparent;")
+        feed_inner.setLayout(self._feed_layout)
+        self._feed_scroll = _FitWidthScrollArea()
+        self._feed_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._feed_scroll.setWidget(feed_inner)
+        self._feed_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }" + scroll_bar_qss())
 
         self._questions_card = QFrame()
         self._questions_card.setObjectName("qcard")
         self._questions_card.setStyleSheet(_QCARD)
-        self._questions_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        card_layout = QVBoxLayout(self._questions_card)
-        card_layout.setContentsMargins(12, 10, 12, 10)
-        card_layout.setSpacing(8)
-        self._q_header = QLabel("Уточнения — текст или файл 📎")
-        self._q_header.setFont(app_font(12, QFont.Weight.DemiBold))
-        self._q_header.setStyleSheet("color: #8A5300; background: transparent;")
-        self._q_header.setWordWrap(True)
-        self._questions_inner = QWidget()
-        self._questions_inner.setStyleSheet("background: transparent;")
-        self._questions_inner.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
-        )
-        self._questions_layout = QVBoxLayout(self._questions_inner)
-        self._questions_layout.setContentsMargins(0, 0, 6, 0)
+        self._questions_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self._questions_layout = QVBoxLayout(self._questions_card)
+        self._questions_layout.setContentsMargins(12, 10, 12, 10)
         self._questions_layout.setSpacing(8)
-        q_scroll = _FitWidthScrollArea()
-        q_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        q_scroll.setWidget(self._questions_inner)
-        q_scroll.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }" + scroll_bar_qss()
-        )
-        self._q_scroll = q_scroll
-        self._clarify_btn = self._mk_button("Отправить ответы", _PRIMARY, self._on_clarify, height=36)
-        card_layout.addWidget(self._q_header)
-        card_layout.addWidget(q_scroll, 1)
-        clarify_row = QHBoxLayout()
-        clarify_row.addStretch(1)
-        clarify_row.addWidget(self._clarify_btn)
-        card_layout.addLayout(clarify_row)
         self._questions_card.setVisible(False)
 
-        # Средняя зона: рассуждения сверху, уточняющие вопросы ниже на всю ширину.
-        self._mid_layout = QVBoxLayout()
-        self._mid_layout.setSpacing(10)
-        self._mid_layout.addWidget(_section("Рассуждения модели"))
-        self._reasoning.setMinimumHeight(100)
-        self._reasoning.setMaximumHeight(220)
-        self._mid_layout.addWidget(self._reasoning, 1)
-        self._mid_layout.addWidget(self._questions_card, 2)
+        self._chat_input = QPlainTextEdit()
+        self._chat_input.setFixedHeight(58)
+        self._chat_input.setPlaceholderText("Напишите сообщение агенту...")
+        self._chat_input.setFont(app_font(12))
+        self._chat_input.setStyleSheet(_ANSWER_FIELD)
+        self._attach_btn = QToolButton()
+        self._attach_btn.setText("📎")
+        self._attach_btn.setToolTip("Приложить файл")
+        self._attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._attach_btn.setFixedSize(42, 42)
+        self._attach_btn.setStyleSheet(_CLIP_BTN)
+        self._attach_btn.clicked.connect(self._on_attach_chat_files)
+        self._send_btn = QPushButton("➤")
+        self._send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._send_btn.setFixedSize(42, 42)
+        self._send_btn.setStyleSheet(_PRIMARY)
+        self._send_btn.clicked.connect(self._submit_chat)
+        self._chat_files_label = QLabel("")
+        self._chat_files_label.setFont(app_font(11))
+        self._chat_files_label.setWordWrap(True)
+        self._chat_files_label.setStyleSheet("color: #08745F; background: transparent;")
+        self._chat_files_label.setVisible(False)
+        input_row = QHBoxLayout()
+        input_row.setContentsMargins(0, 0, 0, 0)
+        input_row.setSpacing(8)
+        input_row.addWidget(self._attach_btn, 0, Qt.AlignmentFlag.AlignTop)
+        input_row.addWidget(self._chat_input, 1)
+        input_row.addWidget(self._send_btn, 0, Qt.AlignmentFlag.AlignTop)
+        self._input_bar = QWidget()
+        self._input_bar.setStyleSheet("background: transparent;")
+        self._input_bar.setLayout(input_row)
+        self._next_btn = QPushButton("Далее")
+        self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._next_btn.setFixedHeight(46)
+        self._next_btn.setStyleSheet(_PRIMARY)
+        self._next_btn.clicked.connect(self._on_launch_requested)
+        self._next_btn.setVisible(False)
+
+        center.addWidget(self._feed_scroll, 1)
+        center.addWidget(self._questions_card, 0)
+        center.addWidget(self._chat_files_label, 0)
+        center.addWidget(self._input_bar, 0)
+        center.addWidget(self._next_btn, 0)
 
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
@@ -593,25 +702,26 @@ class WorkflowPage(QWidget):
         results_actions.addWidget(self._open_dir_btn)
         results_actions.addStretch(1)
 
-        bottom = QHBoxLayout()
-        bottom.setSpacing(12)
-        log_col = QVBoxLayout()
-        log_col.setSpacing(4)
-        log_col.addWidget(_section("Журнал"))
-        log_col.addWidget(self._log)
-        res_col = QVBoxLayout()
-        res_col.setSpacing(4)
-        res_col.addWidget(_section("Результат"))
-        res_col.addWidget(self._results)
-        res_col.addLayout(results_actions)
-        bottom.addLayout(log_col, 1)
-        bottom.addLayout(res_col, 1)
+        side_card = QFrame()
+        side_card.setObjectName("WorkflowCard")
+        side_card.setStyleSheet(_CARD)
+        side_card.setFixedWidth(250)
+        side = QVBoxLayout(side_card)
+        side.setContentsMargins(16, 16, 16, 16)
+        side.setSpacing(12)
+        side.addWidget(_section("Этапы работы"))
+        self._phase_steps_widget = QWidget()
+        self._phase_steps_widget.setStyleSheet("background: transparent;")
+        self._phase_steps_layout = QVBoxLayout(self._phase_steps_widget)
+        self._phase_steps_layout.setContentsMargins(0, 0, 0, 0)
+        self._phase_steps_layout.setSpacing(10)
+        side.addWidget(self._phase_steps_widget, 0)
+        side.addWidget(self._step_section, 0)
+        side.addWidget(self._step_list, 0)
+        side.addStretch(1)
 
-        right_outer.addWidget(self._phase_graph)
-        right_outer.addWidget(self._step_section)
-        right_outer.addWidget(self._step_graph)
-        right_outer.addLayout(self._mid_layout, 1)
-        right_outer.addLayout(bottom, 0)
+        body.addWidget(center_card, 1)
+        body.addWidget(side_card, 0)
 
         self._plan_btn = self._mk_button("Спланировать", _PRIMARY, self._on_plan, height=36)
         self._exec_btn = self._mk_button("Запустить", _PRIMARY, self._on_execute, height=36)
@@ -635,10 +745,10 @@ class WorkflowPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
         root.addLayout(header)
-        root.addWidget(right_card, 1)
+        root.addLayout(body, 1)
         root.addLayout(actions)
         self._render_graphs()
-        self._reasoning.setPlainText(reasoning_text(None))
+        self._render_feed()
 
     def _mk_button(self, text: str, style: str, slot, *, height: int = 36) -> QPushButton:
         btn = QPushButton(text)
@@ -679,15 +789,21 @@ class WorkflowPage(QWidget):
         plan = self._record.plan if self._record else None
         unanswered = bool(plan and plan.unanswered())
         has_exec = bool(self._record and self._record.exec_agent_id)
+        ready_for_launch = bool(self._record and self._record.phase in {"ready", "done"} and not unanswered)
         self._questions_card.setVisible(unanswered)
-        # Без вопросов рассуждения занимают всю среднюю зону.
-        self._reasoning.setMaximumHeight(220 if unanswered else 16777215)
-        self._mid_layout.setStretchFactor(self._questions_card, 3 if unanswered else 0)
+        self._input_bar.setVisible(not ready_for_launch)
+        self._chat_files_label.setVisible(bool(self._chat_files) and not ready_for_launch)
+        self._next_btn.setVisible(ready_for_launch)
         self._exec_btn.setEnabled(bool(plan) and not unanswered and not self._busy)
         self._rerun_btn.setVisible(has_exec)
         self._fetch_btn.setEnabled(has_exec and not self._busy)
         self._open_dir_btn.setEnabled(bool(self._results_dir) or has_exec)
         self._render_graphs()
+        self._render_phase_steps()
+
+    def _on_launch_requested(self) -> None:
+        if self._record is not None:
+            self.launch_requested.emit(self._record)
 
     def _render_graphs(self) -> None:
         phase = self._record.phase if self._record else "document"
@@ -713,121 +829,253 @@ class WorkflowPage(QWidget):
         steps = list(plan.steps or []) if plan else []
         if not steps:
             self._step_section.setVisible(False)
-            self._step_graph.setVisible(False)
-            self._step_graph.set_graph([])
+            self._step_list.setVisible(False)
+            self._step_list.clear()
             return
         self._step_section.setVisible(True)
-        self._step_graph.setVisible(True)
-        step_nodes: list[tuple[str, str, str]] = []
-        for s in steps:
-            sid = s.id or s.title or "step"
-            label = s.title or sid
-            if phase == "done":
-                state = "done"
-            elif phase == "executing":
-                state = "active"
-            elif phase in {"ready", "clarify"}:
-                state = "idle"
-            else:
-                state = "idle"
-            step_nodes.append((sid, label, state))
-        edges: list[tuple[str, str]] = []
-        for s in steps:
-            if not s.id:
-                continue
-            for d in s.depends_on or []:
-                edges.append((d, s.id))
-        if not edges and len(steps) > 1:
-            ordered = [s for level in _topo_levels(steps) for s in level]
-            for i in range(len(ordered) - 1):
-                a, b = ordered[i].id or f"s{i}", ordered[i + 1].id or f"s{i+1}"
-                edges.append((a, b))
-        self._step_graph.set_graph(step_nodes, edges)
+        self._step_list.setVisible(True)
+        self._step_list.clear()
+        for index, step in enumerate(steps, start=1):
+            item = QListWidgetItem(_format_step_item(index, step))
+            item.setSizeHint(QSize(0, 78))
+            self._step_list.addItem(item)
 
     def _render_plan(self) -> None:
-        self._reasoning.setPlainText(reasoning_text(self._record))
         if self._record and self._record.plan:
             self._build_questions(self._record.plan)
         else:
             self._clear_questions()
         self._render_graphs()
+        self._render_feed()
+
+    def append_stream_event(self, event_type: str, text: str) -> None:
+        if event_type == "thinking":
+            self._thinking_text += text
+        elif event_type == "decision":
+            self._ok(text)
+            self._append(f"\n[{text}]\n")
+        elif event_type in {"assistant", "message"}:
+            self._stream_messages.append(("agent_message", text))
+        elif event_type == "system":
+            self._stream_messages.append(("system", text))
+        self._render_feed()
+
+    def _render_feed(self) -> None:
+        while self._feed_layout.count():
+            item = self._feed_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        if self._record is None:
+            self._feed_layout.addWidget(
+                self._message_bubble(
+                    "Загрузите материалы или откройте паспорт агента. Агент начнёт писать ход работы здесь.",
+                    kind="system",
+                )
+            )
+        else:
+            title = self._record.title or "ИИ-агент"
+            self._feed_layout.addWidget(self._message_bubble(f"Workflow «{title}» открыт.", kind="system"))
+            reasoning = reasoning_text(self._record)
+            if reasoning:
+                self._feed_layout.addWidget(self._message_bubble(reasoning, kind="agent_message"))
+        if self._thinking_text:
+            self._feed_layout.addWidget(self._thinking_block())
+        for kind, text in self._stream_messages:
+            if kind == "decision":
+                continue
+            if text.strip():
+                self._feed_layout.addWidget(self._message_bubble(text, kind=kind))
+        self._feed_layout.addStretch(1)
+        QTimer.singleShot(0, lambda: self._feed_scroll.verticalScrollBar().setValue(self._feed_scroll.verticalScrollBar().maximum()))
+
+    def _message_bubble(self, text: str, *, kind: str) -> QWidget:
+        user = kind == "user_message"
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        if user:
+            row.addStretch(1)
+        bubble = QFrame()
+        bubble.setMaximumWidth(720)
+        color = {
+            "user_message": "rgba(8,116,95,0.09)",
+            "decision": "#FFF8EF",
+            "system": "#F7FAF9",
+        }.get(kind, "#FFFFFF")
+        bubble.setStyleSheet(
+            f"""
+            QFrame {{
+                background: {color};
+                border: 1px solid rgba(8,116,95,0.14);
+                border-radius: 16px;
+            }}
+            """
+        )
+        layout = QVBoxLayout(bubble)
+        layout.setContentsMargins(14, 10, 14, 10)
+        if kind == "decision":
+            heading = QLabel("Промежуточное решение")
+            heading.setFont(app_font(12, QFont.Weight.DemiBold))
+            heading.setStyleSheet("color: #8A5300; background: transparent;")
+            layout.addWidget(heading)
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setFont(app_font(12))
+        label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        layout.addWidget(label)
+        row.addWidget(bubble)
+        if not user:
+            row.addStretch(1)
+        wrap = QWidget()
+        wrap.setStyleSheet("background: transparent;")
+        wrap.setLayout(row)
+        return wrap
+
+    def _thinking_block(self) -> QWidget:
+        card = QFrame()
+        card.setMaximumWidth(720)
+        card.setStyleSheet(
+            """
+            QFrame {
+                background: #FFFFFF;
+                border: 1px solid rgba(8,116,95,0.14);
+                border-radius: 16px;
+            }
+            """
+        )
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(8)
+        toggle = QPushButton(("Thinking ▾" if self._thinking_expanded else "Thinking ▸") + " Агент размышляет")
+        toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        toggle.setFont(app_font(12, QFont.Weight.DemiBold))
+        toggle.setStyleSheet(
+            """
+            QPushButton {
+                text-align: left;
+                border: none;
+                background: transparent;
+                color: #08745F;
+                padding: 0;
+            }
+            """
+        )
+        toggle.clicked.connect(self._toggle_thinking)
+        layout.addWidget(toggle)
+        if self._thinking_expanded:
+            visible_text = _strip_json_blob(self._thinking_text).strip()
+            if (
+                not visible_text
+                or visible_text.lstrip().startswith("{")
+                or "```json" in visible_text.lower()
+                or '"steps"' in visible_text
+            ):
+                visible_text = "Агент формирует план. Подробности появятся после структурирования ответа."
+            text = QLabel(visible_text)
+            text.setWordWrap(True)
+            text.setFont(app_font(12))
+            text.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+            layout.addWidget(text)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(card)
+        row.addStretch(1)
+        wrap = QWidget()
+        wrap.setStyleSheet("background: transparent;")
+        wrap.setLayout(row)
+        return wrap
+
+    def _toggle_thinking(self) -> None:
+        self._thinking_expanded = not self._thinking_expanded
+        self._render_feed()
+
+    def _render_phase_steps(self) -> None:
+        while self._phase_steps_layout.count():
+            item = self._phase_steps_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        phase = self._record.phase if self._record else "document"
+        rank = _PHASE_RANK.get(phase, 0)
+        for index, (pid, label) in enumerate(_PHASE_PIPELINE):
+            if phase == "done" and pid == "done":
+                state = "done"
+            elif index < rank:
+                state = "done"
+            elif index == rank:
+                state = "active"
+            else:
+                state = "idle"
+            self._phase_steps_layout.addWidget(_phase_step_widget(label, state))
 
     def _build_questions(self, plan: WorkflowPlan) -> None:
         self._clear_questions()
-        for i, q in enumerate(plan.unanswered(), start=1):
-            bubble = QFrame()
-            bubble.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            bubble.setStyleSheet(
-                """
-                QFrame {
-                    background: #FFFFFF;
-                    border: 1px solid rgba(16,24,23,0.08);
-                    border-radius: 14px;
-                }
-                """
+        unanswered = plan.unanswered()
+        if not unanswered:
+            self._questions_card.setVisible(False)
+            return
+        question = unanswered[0]
+        self._current_question_id = question.id
+        title = QLabel("Агенту нужно уточнение")
+        title.setFont(app_font(12, QFont.Weight.DemiBold))
+        title.setStyleSheet("color: #8A5300; background: transparent;")
+        question_label = QLabel(question.question)
+        question_label.setFont(app_font(13, QFont.Weight.DemiBold))
+        question_label.setWordWrap(True)
+        question_label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        self._questions_layout.addWidget(title)
+        self._questions_layout.addWidget(question_label)
+        if question.why:
+            why = QLabel(question.why)
+            why.setFont(app_font(11))
+            why.setWordWrap(True)
+            why.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+            self._questions_layout.addWidget(why)
+        group = QButtonGroup(self._questions_card)
+        self._answer_group = group
+        group.setExclusive(True)
+        variants = _quick_answers_for_question(question)
+        for answer in variants:
+            option = QRadioButton(answer)
+            option.setCursor(Qt.CursorShape.PointingHandCursor)
+            option.setFont(app_font(12))
+            option.setStyleSheet(_RADIO_OPTION)
+            option.toggled.connect(
+                lambda checked=False, value=answer: self._select_quick_answer(value) if checked else None
             )
-            bubble_layout = QVBoxLayout(bubble)
-            bubble_layout.setContentsMargins(12, 10, 12, 10)
-            bubble_layout.setSpacing(8)
-            label = QLabel(f"{i}. {q.question}")
-            label.setFont(app_font(13, QFont.Weight.DemiBold))
-            label.setWordWrap(True)
-            label.setMinimumWidth(0)
-            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-            if q.why:
-                why = QLabel(q.why)
-                why.setFont(app_font(11))
-                why.setWordWrap(True)
-                why.setMinimumWidth(0)
-                why.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-                why.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-                bubble_layout.addWidget(label)
-                bubble_layout.addWidget(why)
-            else:
-                bubble_layout.addWidget(label)
+            group.addButton(option)
+            self._questions_layout.addWidget(option)
 
-            field = QPlainTextEdit()
-            field.setPlainText(q.answer)
-            field.setFont(app_font(12))
-            field.setFixedHeight(66)
-            field.setStyleSheet(_ANSWER_FIELD)
-            field.setPlaceholderText("Напишите ответ своими словами…")
-            field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        custom_row = QHBoxLayout()
+        custom_row.setSpacing(8)
+        custom_option = QRadioButton("Свой вариант")
+        custom_option.setCursor(Qt.CursorShape.PointingHandCursor)
+        custom_option.setFont(app_font(12))
+        custom_option.setStyleSheet(_RADIO_OPTION)
+        custom_input = QLineEdit()
+        custom_input.setPlaceholderText("Напишите свой ответ")
+        custom_input.setFont(app_font(12))
+        custom_input.setStyleSheet(_CUSTOM_ANSWER_FIELD)
+        self._question_fields[question.id] = custom_input
+        group.addButton(custom_option)
+        custom_row.addWidget(custom_option, 0)
+        custom_row.addWidget(custom_input, 1)
+        self._questions_layout.addLayout(custom_row)
 
-            clip = QToolButton()
-            clip.setText("📎")
-            clip.setToolTip("Приложить файл к ответу")
-            clip.setCursor(Qt.CursorShape.PointingHandCursor)
-            clip.setFixedSize(40, 40)
-            clip.setStyleSheet(_CLIP_BTN)
-            qid = q.id
-            clip.clicked.connect(lambda _=False, question_id=qid: self._on_attach_answer_file(question_id))
+        custom_option.toggled.connect(
+            lambda checked=False, field=custom_input: self._select_custom_answer(field.text(), field)
+            if checked
+            else None
+        )
+        custom_input.textEdited.connect(
+            lambda value, option=custom_option, field=custom_input: self._edit_custom_answer(value, option, field)
+        )
 
-            answer_row = QHBoxLayout()
-            answer_row.setSpacing(8)
-            answer_row.addWidget(field, 1)
-            answer_row.addWidget(clip, 0, Qt.AlignmentFlag.AlignTop)
-
-            files_lbl = QLabel("")
-            files_lbl.setFont(app_font(11))
-            files_lbl.setWordWrap(True)
-            files_lbl.setMinimumWidth(0)
-            files_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            files_lbl.setStyleSheet("color: #08745F; background: transparent;")
-            files_lbl.setVisible(False)
-
-            bubble_layout.addLayout(answer_row)
-            bubble_layout.addWidget(files_lbl)
-            self._questions_layout.addWidget(bubble)
-            self._question_fields[q.id] = field
-            self._question_files[q.id] = []
-            self._question_file_labels[q.id] = files_lbl
-        self._questions_layout.addStretch(1)
-        # Re-apply viewport width after content rebuild so labels wrap immediately.
-        if hasattr(self, "_q_scroll") and self._q_scroll.viewport() is not None:
-            width = max(1, self._q_scroll.viewport().width())
-            self._questions_inner.setMaximumWidth(width)
+        hint = QLabel("Выберите вариант или заполните последнюю строку своим ответом.")
+        hint.setFont(app_font(11))
+        hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        self._questions_layout.addWidget(hint)
+        self._questions_card.setVisible(True)
 
     def _clear_questions(self) -> None:
         while self._questions_layout.count():
@@ -838,6 +1086,76 @@ class WorkflowPage(QWidget):
         self._question_fields = {}
         self._question_files = {}
         self._question_file_labels = {}
+        if self._answer_group is not None:
+            self._answer_group.deleteLater()
+            self._answer_group = None
+        self._current_question_id = ""
+        self._selected_quick_answer = ""
+
+    def _select_quick_answer(self, answer: str) -> None:
+        self._selected_quick_answer = answer
+        self._chat_input.setPlainText(answer)
+        self._chat_input.setFocus()
+
+    def _select_custom_answer(self, answer: str, field: QLineEdit) -> None:
+        self._selected_quick_answer = answer
+        self._chat_input.setPlainText(answer)
+        field.setFocus()
+
+    def _edit_custom_answer(self, answer: str, option: QRadioButton, field: QLineEdit) -> None:
+        if not option.isChecked():
+            option.setChecked(True)
+        self._select_custom_answer(answer, field)
+
+    def _on_attach_chat_files(self) -> None:
+        if not self._current_question_id:
+            QMessageBox.information(self, "Файл", "Файл можно приложить к текущему вопросу агента.")
+            return
+        patterns = " ".join(f"*{s}" for s in sorted(SUPPORTED_SUFFIXES))
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Файл к ответу",
+            "",
+            f"Документы ({patterns});;Все файлы (*)",
+        )
+        if not paths:
+            return
+        for path in paths:
+            if path and Path(path).is_file() and path not in self._chat_files:
+                suffix = Path(path).suffix.lower()
+                if suffix and suffix not in SUPPORTED_SUFFIXES:
+                    continue
+                self._chat_files.append(path)
+        names = [Path(path).name for path in self._chat_files]
+        self._chat_files_label.setText("📎 " + ", ".join(names))
+        self._chat_files_label.setVisible(bool(names))
+        self._ok(f"К ответу приложено: {len(self._chat_files)}")
+
+    def _submit_chat(self) -> None:
+        text = self._current_answer_text()
+        if self._current_question_id:
+            if not text and not self._chat_files:
+                QMessageBox.information(self, "Ответ", "Введите ответ или приложите файл.")
+                return
+            self._stream_messages.append(("user_message", text or "Ответ приложен файлом"))
+            self._on_clarify()
+            return
+        if text:
+            self._stream_messages.append(("user_message", text))
+            self._chat_input.clear()
+            self._render_feed()
+            self._ok("Сообщение сохранено в ленте. Для запуска используйте этапы workflow.")
+
+    def _current_answer_text(self) -> str:
+        if self._current_question_id:
+            field = self._question_fields.get(self._current_question_id)
+            if isinstance(field, QLineEdit):
+                custom = field.text().strip()
+                if custom:
+                    return custom
+            if self._selected_quick_answer.strip():
+                return self._selected_quick_answer.strip()
+        return self._chat_input.toPlainText().strip()
 
     def _on_attach_answer_file(self, question_id: str) -> None:
         patterns = " ".join(f"*{s}" for s in sorted(SUPPORTED_SUFFIXES))
@@ -867,7 +1185,8 @@ class WorkflowPage(QWidget):
         self._busy = busy
         for btn in (
             self._plan_btn,
-            self._clarify_btn,
+            self._send_btn,
+            self._attach_btn,
             self._exec_btn,
             self._rerun_btn,
             self._new_btn,
@@ -891,9 +1210,7 @@ class WorkflowPage(QWidget):
         self._activity.setText(f"● {self._busy_base}{'.' * self._busy_n}")
 
     def _append(self, text: str) -> None:
-        self._log.moveCursor(QTextCursor.MoveOperation.End)
-        self._log.insertPlainText(text)
-        self._log.moveCursor(QTextCursor.MoveOperation.End)
+        del text
 
     def _ok(self, message: str) -> None:
         self._status.setText(message)
@@ -905,6 +1222,10 @@ class WorkflowPage(QWidget):
         self._append(f"\n[error] {message}\n")
 
     def _run_async(self, label: str, fn) -> None:
+        self._thinking_text = ""
+        self._thinking_expanded = False
+        self._stream_messages.append(("system", label))
+        self._render_feed()
         self._set_busy(True, label)
 
         def work() -> None:
@@ -969,24 +1290,31 @@ class WorkflowPage(QWidget):
 
             def create_and_plan() -> WorkflowRecord:
                 created = self._api.create_workflow(notes=notes, file_paths=self._pending_paths)
-                return self._api.plan_workflow(created.id)
+                return self._api.stream_plan_workflow(
+                    created.id,
+                    lambda event_type, text: self._stream_event.emit(event_type, text),
+                )
 
             self._run_async("Планирование", create_and_plan)
             return
 
         self._append("→ Планирование через backend…\n")
-        self._run_async("Планирование", lambda: self._api.plan_workflow(self._record.id))  # type: ignore[union-attr]
+        self._run_async(
+            "Планирование",
+            lambda: self._api.stream_plan_workflow(
+                self._record.id,  # type: ignore[union-attr]
+                lambda event_type, text: self._stream_event.emit(event_type, text),
+            ),
+        )
 
     def _on_clarify(self) -> None:
         if self._record is None or self._record.plan is None:
             return
-        answers = {qid: field.toPlainText().strip() for qid, field in self._question_fields.items()}
-        file_paths: list[str] = []
-        file_question_ids: list[str] = []
-        for qid, paths in self._question_files.items():
-            for path in paths:
-                file_paths.append(path)
-                file_question_ids.append(qid)
+        qid = self._current_question_id
+        text = self._current_answer_text()
+        answers = {qid: text} if qid and text else {}
+        file_paths = list(self._chat_files)
+        file_question_ids = [qid for _ in file_paths if qid]
         if not any(answers.values()) and not file_paths:
             QMessageBox.information(self, "Ответы", "Введите ответ или приложите файл.")
             return
@@ -994,14 +1322,19 @@ class WorkflowPage(QWidget):
         wid = self._record.id
 
         def work() -> WorkflowRecord:
-            return self._api.clarify_workflow(
+            return self._api.stream_clarify_workflow(
                 wid,
                 answers,
+                lambda event_type, text: self._stream_event.emit(event_type, text),
                 file_paths=file_paths,
                 file_question_ids=file_question_ids,
             )
 
         self._run_async("Уточнение плана", work)
+        self._chat_input.clear()
+        self._chat_files = []
+        self._chat_files_label.clear()
+        self._chat_files_label.setVisible(False)
 
     def _on_execute(self, reexecute: bool = False) -> None:
         if self._record is None or self._record.plan is None:
@@ -1011,7 +1344,11 @@ class WorkflowPage(QWidget):
         wid = self._record.id
         self._run_async(
             "Реализация",
-            lambda: self._api.execute_workflow(wid, reexecute=reexecute),
+            lambda: self._api.stream_execute_workflow(
+                wid,
+                lambda event_type, text: self._stream_event.emit(event_type, text),
+                reexecute=reexecute,
+            ),
         )
 
     def _on_fetch_results(self) -> None:
@@ -1040,13 +1377,20 @@ class WorkflowPage(QWidget):
         self._pending_paths.clear()
         self._workflow_title = ""
         self._notes = ""
-        self._reasoning.setPlainText(reasoning_text(None))
+        self._thinking_text = ""
+        self._thinking_expanded = False
+        self._stream_messages = []
+        self._chat_input.clear()
+        self._chat_files = []
+        self._chat_files_label.clear()
+        self._chat_files_label.setVisible(False)
         self._log.clear()
         self._results.clear()
         self._results_dir = ""
         self._clear_questions()
         self._questions_card.setVisible(False)
         self._render_phase()
+        self._render_feed()
         self._ok("Новый workflow")
 
 

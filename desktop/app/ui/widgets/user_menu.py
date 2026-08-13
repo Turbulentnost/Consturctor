@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -19,6 +19,29 @@ from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 _AVATAR_SIZE = 42
 _HEADER_WIDTH = 300
 _DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
+
+
+class ElidedLabel(QLabel):
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        super().setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full_text = text
+        self._sync_elide()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_elide()
+
+    def _sync_elide(self) -> None:
+        width = max(0, self.width() - 2)
+        if width <= 0:
+            super().setText(self._full_text)
+            return
+        metrics = QFontMetrics(self.font())
+        super().setText(metrics.elidedText(self._full_text, Qt.TextElideMode.ElideRight, width))
 
 
 class RoundAvatarButton(QToolButton):
@@ -115,14 +138,14 @@ class UserMenuHeader(QWidget):
         logout_action.triggered.connect(self.logout_requested.emit)
         self.avatar.setMenu(menu)
 
-        self._fio = QLabel("—")
+        self._fio = ElidedLabel("—")
         self._fio.setFont(app_font(15, QFont.Weight.DemiBold))
         self._fio.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         self._fio.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._fio.setMinimumWidth(0)
         self._fio.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-        self._position = QLabel("")
+        self._position = ElidedLabel("")
         self._position.setFont(app_font(12))
         self._position.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         self._position.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)

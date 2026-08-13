@@ -35,9 +35,11 @@ from app.api_client import (
     RegulationCreationSession,
     UserProfile,
     WorkflowListItem,
+    WorkflowRecord,
 )
 from app.ui.pages.agent_passport_page import AgentPassportPage
 from app.ui.pages.agent_implementation_page import AgentImplementationPage
+from app.ui.pages.agent_run_page import AgentRunPage
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.my_agents_page import MyAgentsPage
@@ -178,6 +180,7 @@ class MainShell(QWidget):
         self._page_agents = MyAgentsPage()
         self._page_implementation_agents = AgentImplementationPage()
         self._page_workflows = WorkflowPage(self._api)
+        self._page_agent_run = AgentRunPage(self._api)
         self._page_saved_workflows = SavedWorkflowsPage(self._api)
         self._page_kpi = KpiPage()
         self._page_settings = SettingsPage(self._api)
@@ -192,6 +195,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_implementation_agents)
         self._pages.addWidget(self._page_workflows)
+        self._pages.addWidget(self._page_agent_run)
         self._pages.addWidget(self._page_saved_workflows)
         self._pages.addWidget(self._page_kpi)
         self._pages.addWidget(self._page_settings)
@@ -207,19 +211,21 @@ class MainShell(QWidget):
             "agents": 1,
             "implementation_agents": 2,
             "workflows": 3,
-            "saved_workflows": 4,
-            "kpi": 5,
-            "settings": 6,
-            "review": 7,
-            "role_match": 8,
-            "readiness": 9,
-            "revision": 10,
-            "creation_chat": 11,
-            "passport": 12,
-            "loading": 13,
+            "agent_run": 4,
+            "saved_workflows": 5,
+            "kpi": 6,
+            "settings": 7,
+            "review": 8,
+            "role_match": 9,
+            "readiness": 10,
+            "revision": 11,
+            "creation_chat": 12,
+            "passport": 13,
+            "loading": 14,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
+        self._page_workflows.launch_requested.connect(self._on_launch_workflow_agent)
         self._page_saved_workflows.open_requested.connect(self._on_open_saved_workflow)
         self._page_implementation_agents.create_requested.connect(self._on_create_agent_from_inline_suggestion)
         self._page_settings.profile_updated.connect(self._on_profile_updated)
@@ -1158,6 +1164,13 @@ class MainShell(QWidget):
             return
         self._page_workflows.start_from_passport(session, auto_plan=True)
         self._pages.setCurrentIndex(self._page_index["workflows"])
+
+    def _on_launch_workflow_agent(self, record: object) -> None:
+        if not isinstance(record, WorkflowRecord):
+            return
+        self.sidebar.set_active_key("agents", animate=False)
+        self._page_agent_run.start(record)
+        self._pages.setCurrentIndex(self._page_index["agent_run"])
 
     def _on_workflow_record_saved(self, record: object) -> None:
         if str(getattr(record, "phase", "")) != "done":
