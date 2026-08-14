@@ -39,3 +39,19 @@ BACKEND_URL=http://127.0.0.1:7812
 ```
 
 Подключение к 1С настраивается только на стороне [backend](../backend/README.md) (`ERP_SQL_SERVER=ii1`).
+
+## Сборка Windows exe
+
+```powershell
+cd Constructor
+python desktop\build_exe.py
+```
+
+Скрипт собирает onedir-дистрибутив в `dist/ConstructorDesktop`:
+
+- `ConstructorDesktop.exe` — desktop-приложение без необходимости ставить Python пользователю.
+- `.env` рядом с exe — адрес серверного backend (`BACKEND_URL`).
+- `tools/roseltorg_tender_search/roseltorg_tender_search.exe` — локальный инструмент поиска Росэлторг без Python.
+- `tools/roseltorg_tender_search/ms-playwright` — браузеры Playwright для инструмента.
+
+Backend не поставляется вместе с desktop: он должен быть запущен на сервере, указанном в `.env`.

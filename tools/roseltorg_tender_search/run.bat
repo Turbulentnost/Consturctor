@@ -8,6 +8,29 @@ echo   Поиск тендеров на Росэлторг (223-ФЗ)
 echo ============================================================
 echo.
 
+REM --- 0. Готовый exe из desktop-дистрибутива: Python пользователю не нужен ---
+if exist "%~dp0roseltorg_tender_search.exe" (
+  if exist "%~dp0ms-playwright" set "PLAYWRIGHT_BROWSERS_PATH=%~dp0ms-playwright"
+  echo [1/2] Запускаю встроенный инструмент поиска...
+  "%~dp0roseltorg_tender_search.exe" run %* -o report.xlsx
+  if errorlevel 1 (
+    echo.
+    echo [ОШИБКА] Поиск завершился с ошибкой. Смотрите сообщение выше.
+    if not defined RTS_NONINTERACTIVE pause
+    exit /b 1
+  )
+  if not defined RTS_NONINTERACTIVE (
+    echo.
+    echo [2/2] Открываю отчёт report.xlsx...
+    if exist "report.xlsx" start "" "report.xlsx"
+  )
+  echo.
+  echo Готово.
+  if not defined RTS_NONINTERACTIVE pause
+  endlocal
+  exit /b 0
+)
+
 REM --- 1. Выбор интерпретатора Python ---
 set "PY=py -3"
 %PY% --version >nul 2>&1

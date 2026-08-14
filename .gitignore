@@ -9,11 +9,15 @@ __pycache__/
 *$py.class
 *.egg-info/
 .eggs/
-dist/
-build/
 .venv/
 venv/
 *.egg
+
+# Build / packaging outputs (any depth)
+build/
+dist/
+**/build/
+**/dist/
 
 # Tooling / caches
 .pytest_cache/

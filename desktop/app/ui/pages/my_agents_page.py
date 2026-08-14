@@ -10,7 +10,31 @@ from app.ui.theme import app_font
 
 _TITLE_COL_WIDTH = 300
 _DESC_COL_WIDTH = 360
-_ACTION_COL_WIDTH = 120
+_ACTION_COL_WIDTH = 150
+_PRIMARY_ACTION_QSS = """
+QPushButton {
+    background: #08745F;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 10px;
+    padding: 0 14px;
+}
+QPushButton:hover { background: #0A8670; }
+QPushButton:pressed { background: #06483D; }
+QPushButton:disabled { background: #A8C8BF; color: #EAF7F3; }
+"""
+_DANGER_ACTION_QSS = """
+QPushButton {
+    background: #FFFFFF;
+    color: #9B1C1C;
+    border: 1px solid rgba(155,28,28,0.35);
+    border-radius: 10px;
+    padding: 0 14px;
+}
+QPushButton:hover { background: #FFF4F4; border-color: #B42318; }
+QPushButton:pressed { background: #FEE4E2; }
+QPushButton:disabled { background: #F4F7F6; color: #9DB3AD; border-color: rgba(16,24,23,0.10); }
+"""
 
 
 class MyAgentsPage(QWidget):
@@ -224,9 +248,11 @@ class MyAgentsPage(QWidget):
         description.setFixedWidth(_DESC_COL_WIDTH)
         button = QPushButton("Создать")
         button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setStyleSheet(_PRIMARY_ACTION_QSS)
         button.clicked.connect(lambda _checked=False, draft_id=draft.draft_id: self.continue_requested.emit(draft_id))
         delete = QPushButton("Удалить")
         delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete.setStyleSheet(_DANGER_ACTION_QSS)
         delete.setToolTip("Удалить")
         delete.clicked.connect(lambda _checked=False, draft_id=draft.draft_id: self.delete_requested.emit(draft_id))
         actions = _actions_widget(button, delete)
@@ -264,6 +290,7 @@ class MyAgentsPage(QWidget):
         description.setFixedWidth(_DESC_COL_WIDTH)
         create = QPushButton("Создать")
         create.setCursor(Qt.CursorShape.PointingHandCursor)
+        create.setStyleSheet(_PRIMARY_ACTION_QSS)
         create.clicked.connect(
             lambda _checked=False, did=draft_id, agent_id=suggestion.agent_id: (
                 self.create_suggestion_requested.emit(did, agent_id)
@@ -273,6 +300,7 @@ class MyAgentsPage(QWidget):
         )
         delete = QPushButton("Удалить")
         delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete.setStyleSheet(_DANGER_ACTION_QSS)
         delete.setEnabled(bool(draft_id))
         delete.setToolTip("Удалить черновик" if draft_id else "Черновик можно удалить после обновления списка")
         delete.clicked.connect(
@@ -320,11 +348,13 @@ class MyAgentsPage(QWidget):
         description.setFixedWidth(_DESC_COL_WIDTH)
         run = QPushButton("Запустить")
         run.setCursor(Qt.CursorShape.PointingHandCursor)
+        run.setStyleSheet(_PRIMARY_ACTION_QSS)
         run.clicked.connect(
             lambda _checked=False, workflow_id=agent.id: self.run_agent_requested.emit(workflow_id)
         )
         delete = QPushButton("Удалить")
         delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete.setStyleSheet(_DANGER_ACTION_QSS)
         delete.clicked.connect(lambda _checked=False, workflow_id=agent.id: self.delete_agent_requested.emit(workflow_id))
         layout.addWidget(title, 0, 0)
         layout.addWidget(description, 0, 1)
@@ -349,6 +379,8 @@ def _actions_widget(*buttons: QPushButton) -> QWidget:
     layout.setSpacing(6)
     for button in buttons:
         button.setFixedWidth(_ACTION_COL_WIDTH)
+        button.setFixedHeight(34)
+        button.setFont(app_font(12, QFont.Weight.DemiBold))
         layout.addWidget(button)
     layout.addStretch(1)
     return widget
