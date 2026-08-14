@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from threading import Thread
 
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
@@ -463,7 +464,13 @@ class MainShell(QWidget):
 
         Thread(target=run, daemon=True).start()
 
-    def _on_regulation_creation_message(self, draft_id: str, message: str) -> None:
+    def _on_regulation_creation_message(self, draft_id: str, message: str, file_paths: list | None = None) -> None:
+        paths = [str(path) for path in (file_paths or []) if str(path).strip()]
+        names = [Path(path).name for path in paths]
+        display = message.strip()
+        if names:
+            note = "📎 " + ", ".join(names)
+            display = f"{display}\n\n{note}".strip() if display else note
         if self._current_creation_session is not None:
             from dataclasses import replace
 
@@ -471,8 +478,8 @@ class MainShell(QWidget):
                 message_id="local-pending",
                 draft_id=draft_id,
                 role="user",
-                content=message,
-                structured={},
+                content=display or message,
+                structured={"attachments": [{"name": name} for name in names]} if names else {},
             )
             self._page_creation_chat.set_session(
                 replace(
@@ -488,6 +495,7 @@ class MainShell(QWidget):
                     draft_id,
                     message,
                     lambda event_type, text: self._creation_stream_event.emit(event_type, text),
+                    file_paths=paths,
                 )
             except ApiError as exc:
                 self._regulation_failed.emit(exc.message)
@@ -527,7 +535,7 @@ class MainShell(QWidget):
 
     def _show_regulation_error(self, message: str) -> None:
         self._page_create.set_processing(False)
-        QMessageBox.warning(self, "Распознавание регламента", message)
+        QMessageBox.warning(self, "Создание регламента", message)
 
     def _back_to_create(self) -> None:
         self._page_review.set_fullscreen(False)

@@ -619,20 +619,50 @@ class ApiClient:
         draft_id: str,
         message: str,
         on_event: Callable[[str, str], None],
+        *,
+        file_paths: list[str | Path] | None = None,
     ) -> RegulationCreationSession:
         url = f"{self.base_url}/api/v1/regulation-creation/sessions/{draft_id}/messages/stream"
         final_session: RegulationCreationSession | None = None
+        paths = [Path(path) for path in (file_paths or []) if Path(path).is_file()]
+        handles: list = []
+        files: list = []
+        data = None
+        request_json: dict | None = {"message": message}
         try:
+            if paths:
+                request_json = None
+                data = {"message": message}
+                for path in paths:
+                    handle = path.open("rb")
+                    handles.append(handle)
+                    files.append(("files", (path.name, handle, "application/octet-stream")))
             with httpx.Client(timeout=None) as client:
                 with client.stream(
                     "POST",
                     url,
                     headers={**self._headers(), "Accept": "text/event-stream"},
-                    json={"message": message},
+                    json=request_json,
+                    data=data,
+                    files=files or None,
                 ) as response:
                     if response.status_code >= 400:
                         body = response.read().decode("utf-8", errors="replace")
-                        raise ApiError(body or "Ошибка создания регламента", status_code=response.status_code)
+                        detail = body
+                        try:
+                            payload = json.loads(body)
+                            value = payload.get("detail")
+                            if isinstance(value, str) and value.strip():
+                                detail = value
+                            elif isinstance(value, list) and value:
+                                first = value[0]
+                                if isinstance(first, dict):
+                                    detail = str(first.get("msg") or first.get("message") or first)
+                                else:
+                                    detail = str(first)
+                        except Exception:
+                            pass
+                        raise ApiError(detail or "Ошибка создания регламента", status_code=response.status_code)
                     event_name = "message"
                     data_lines: list[str] = []
                     for line in response.iter_lines():
@@ -659,6 +689,9 @@ class ApiClient:
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
         except httpx.HTTPError as exc:
             raise ApiError(f"Ошибка сети: {exc}") from exc
+        finally:
+            for handle in handles:
+                handle.close()
         if final_session is None:
             raise ApiError("Backend не вернул итоговую сессию создания регламента")
         return final_session

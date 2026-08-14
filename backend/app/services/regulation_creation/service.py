@@ -28,6 +28,10 @@ from app.services.regulation_creation.cursor_agent import (
     wait_for_run,
 )
 from app.services.regulation_creation.style_profile import build_style_profile
+from app.services.workflows.document import DocumentError, load_attachment_bytes
+
+_CREATION_ATTACH_SUFFIXES = {".doc", ".docx", ".pdf", ".md", ".txt"}
+_MAX_ATTACH_CHARS = 120_000
 
 
 FIRST_QUESTION = "Напишите, для каких должностей создается регламент"
@@ -111,20 +115,34 @@ def send_creation_message(
     user_id: str,
     draft_id: str,
     request: RegulationCreationSendRequest,
+    files: list[tuple[str, bytes]] | None = None,
 ) -> RegulationCreationSession:
+    attachments = _load_creation_attachments(files or [])
     message = request.message.strip()
-    if not message:
-        raise RegulationCreationError("Введите сообщение")
+    if not message and not attachments:
+        raise RegulationCreationError("Введите сообщение или приложите файл")
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     if draft.status == "finalized":
         return _session(db, draft)
-    _add_message(db, draft=draft, role="user", content=message)
+    display_message = _display_user_message(message, attachments)
+    agent_message = _agent_user_message(message, attachments)
+    _add_message(
+        db,
+        draft=draft,
+        role="user",
+        content=display_message,
+        structured=_attachments_structured(attachments),
+    )
     draft.status = "generating"
     db.add(draft)
     db.commit()
 
     history = _messages_for_draft(db, draft.id)
-    prompt = _initial_prompt(draft, message) if not draft.cursor_agent_id else _followup_prompt(history, message)
+    prompt = (
+        _initial_prompt(draft, agent_message)
+        if not draft.cursor_agent_id
+        else _followup_prompt(history, agent_message)
+    )
     try:
         if not draft.cursor_agent_id:
             agent_id, run_id = create_agent(prompt)
@@ -155,23 +173,37 @@ def stream_creation_message(
     user_id: str,
     draft_id: str,
     request: RegulationCreationSendRequest,
+    files: list[tuple[str, bytes]] | None = None,
 ) -> Iterator[dict]:
+    attachments = _load_creation_attachments(files or [])
     message = request.message.strip()
-    if not message:
-        raise RegulationCreationError("Введите сообщение")
+    if not message and not attachments:
+        raise RegulationCreationError("Введите сообщение или приложите файл")
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     if draft.status == "finalized":
         yield {"type": "session", "session": _session(db, draft).model_dump(mode="json")}
         return
 
-    _add_message(db, draft=draft, role="user", content=message)
+    display_message = _display_user_message(message, attachments)
+    agent_message = _agent_user_message(message, attachments)
+    _add_message(
+        db,
+        draft=draft,
+        role="user",
+        content=display_message,
+        structured=_attachments_structured(attachments),
+    )
     draft.status = "generating"
     db.add(draft)
     db.commit()
     yield {"type": "status", "status": "generating"}
 
     history = _messages_for_draft(db, draft.id)
-    prompt = _initial_prompt(draft, message) if not draft.cursor_agent_id else _followup_prompt(history, message)
+    prompt = (
+        _initial_prompt(draft, agent_message)
+        if not draft.cursor_agent_id
+        else _followup_prompt(history, agent_message)
+    )
     final_text = ""
     try:
         if not draft.cursor_agent_id:
@@ -319,8 +351,9 @@ def _write_docx(path: Path, document: dict) -> None:
 def _initial_prompt(draft: RegulationCreationDraft, positions_message: str) -> str:
     return (
         "Ты помогаешь создать регламент на русском языке в деловом стиле. "
-        "Файлы существующих регламентов тебе не передаются и не должны запрашиваться. "
-        "Backend заранее проанализировал их локально и передаёт только обобщённые правила стилизации. "
+        "Корпус существующих регламентов для стиля тебе не передаётся файлами: "
+        "backend заранее проанализировал их локально и передаёт только обобщённые правила стилизации. "
+        "Если пользователь приложил свои файлы в этом сообщении, используй их текст для анализа и уточнения регламента. "
         "Веди интервью: сначала извлеки должности из ответа пользователя, затем по каждой должности выясняй функции, "
         "условия запуска, входы/выходы, сроки, исключения, согласования, системы и ответственность. "
         "Если сведений недостаточно, задай один конкретный следующий вопрос. "
@@ -341,7 +374,8 @@ def _followup_prompt(history_items: list[RegulationCreationMessage], message: st
     ][-20:]
     return (
         "Продолжай интервью для создания регламента. Используй историю и новый ответ пользователя. "
-        "Не запрашивай и не ожидай файлы существующих регламентов: применяй только уже переданные обобщённые правила стилизации. "
+        "Не запрашивай исходный корпус регламентов для стиля: применяй только уже переданные обобщённые правила стилизации. "
+        "Если в новом ответе есть приложенные файлы, обязательно учти их текст при анализе. "
         "Если информации мало, задай следующий точный вопрос. Если достаточно, сформируй document. "
         f"{INTERVIEW_GUIDANCE} "
         f"{FORCE_CREATE_GUIDANCE} "
@@ -350,6 +384,80 @@ def _followup_prompt(history_items: list[RegulationCreationMessage], message: st
         f"История: {json.dumps(history, ensure_ascii=False)}\n"
         f"Новый ответ пользователя: {message}"
     )
+
+
+def _load_creation_attachments(files: list[tuple[str, bytes]]) -> list[dict]:
+    loaded: list[dict] = []
+    total_chars = 0
+    for name, raw in files:
+        suffix = Path(name or "").suffix.lower()
+        if suffix == ".doc":
+            raise RegulationCreationError("Формат DOC не поддерживается. Сохраните файл как DOCX.")
+        if suffix not in _CREATION_ATTACH_SUFFIXES:
+            raise RegulationCreationError(
+                f"Формат «{suffix or 'без расширения'}» не поддерживается. "
+                "Допустимо: doc, docx, pdf, md, txt."
+            )
+        try:
+            item = load_attachment_bytes(name, raw)
+        except DocumentError as exc:
+            raise RegulationCreationError(str(exc)) from exc
+        text = str(item.get("text") or "")
+        remain = max(0, _MAX_ATTACH_CHARS - total_chars)
+        if len(text) > remain:
+            item["text"] = text[:remain] + "\n...[текст файла обрезан]"
+            text = str(item["text"])
+        total_chars += len(text)
+        loaded.append(item)
+        if total_chars >= _MAX_ATTACH_CHARS:
+            break
+    return loaded
+
+
+def _display_user_message(message: str, attachments: list[dict]) -> str:
+    names = [str(item.get("name") or "file") for item in attachments]
+    if not names:
+        return message
+    note = "📎 " + ", ".join(names)
+    return f"{message}\n\n{note}".strip() if message else note
+
+
+def _attachments_structured(attachments: list[dict]) -> dict:
+    if not attachments:
+        return {}
+    return {
+        "attachments": [
+            {
+                "name": str(item.get("name") or "file"),
+                "shortName": _short_attachment_name(str(item.get("name") or "file")),
+            }
+            for item in attachments
+        ]
+    }
+
+
+def _short_attachment_name(name: str, keep: int = 6) -> str:
+    path = Path(name)
+    stem = path.stem.replace(" ", "_")
+    suffix = path.suffix.lower()
+    if len(stem) <= keep:
+        return f"{stem}{suffix}"
+    return f"{stem[:keep]}...{suffix}"
+
+
+def _agent_user_message(message: str, attachments: list[dict]) -> str:
+    if not attachments:
+        return message
+    parts: list[str] = []
+    if message:
+        parts.append(message)
+    names = [str(item.get("name") or "file") for item in attachments]
+    parts.append("Приложенные пользователем файлы для анализа: " + ", ".join(names))
+    for item in attachments:
+        name = str(item.get("name") or "file")
+        text = str(item.get("text") or "").strip()
+        parts.append(f"===== FILE: {name} =====\n{text}\n===== END FILE =====")
+    return "\n\n".join(parts)
 
 
 def _parse_agent_response(raw: str) -> dict:

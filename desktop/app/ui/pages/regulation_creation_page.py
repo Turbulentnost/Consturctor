@@ -19,10 +19,12 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -35,6 +37,9 @@ _AVATAR_SIZE = 36
 _CHAT_MIN_WIDTH = 640
 _CHAT_MAX_WIDTH = 1400
 _CHAT_WIDTH_RATIO = 0.68
+_USER_MENU_RESERVE = 320
+_ATTACH_SUFFIXES = {".doc", ".docx", ".pdf", ".md", ".txt"}
+_ATTACH_FILTER = "Документы (*.doc *.docx *.pdf *.md *.txt)"
 
 _INPUT_SHELL = """
 QFrame#ComposerShell {
@@ -93,13 +98,100 @@ QPushButton {
 QPushButton:hover { background: #F4F7F6; border-color: #08745F; }
 QPushButton:disabled { background: #F4F7F6; color: #9DB3AD; }
 """
+_ATTACH_BUTTON = """
+QToolButton {
+    background: transparent;
+    color: #8B9692;
+    border: none;
+    border-radius: 16px;
+    font-size: 16px;
+    padding: 0;
+}
+QToolButton:hover { color: #06483D; background: rgba(8,116,95,0.08); }
+QToolButton:disabled { color: #C5D0CC; }
+"""
+_FILE_CHIP = """
+QFrame#FileChip {
+    background: #F3F7F5;
+    border: 1px solid rgba(16,24,23,0.10);
+    border-radius: 10px;
+}
+QFrame#FileChip QLabel {
+    background: transparent;
+    border: none;
+    color: #06483D;
+}
+QToolButton#FileChipRemove {
+    background: transparent;
+    border: none;
+    color: #8B9692;
+    font-size: 12px;
+    padding: 0;
+}
+QToolButton#FileChipRemove:hover { color: #06483D; }
+"""
+_FILE_CHIP_USER = """
+QFrame#FileChip {
+    background: rgba(255,255,255,0.16);
+    border: 1px solid rgba(255,255,255,0.28);
+    border-radius: 10px;
+}
+QFrame#FileChip QLabel {
+    background: transparent;
+    border: none;
+    color: #FFFFFF;
+}
+"""
 _INPUT_FONT_SIZE = 12
 _INPUT_MAX_LINES = 5
 _SEND_SIZE = 32
 
 
+def _short_attachment_name(name: str, keep: int = 6) -> str:
+    path = Path(name)
+    stem = path.stem.replace(" ", "_")
+    suffix = path.suffix.lower()
+    if len(stem) <= keep:
+        return f"{stem}{suffix}"
+    return f"{stem[:keep]}...{suffix}"
+
+
+def _split_message_attachments(text: str, structured: dict | None = None) -> tuple[str, list[str]]:
+    names: list[str] = []
+    data = structured if isinstance(structured, dict) else {}
+    raw = data.get("attachments") or []
+    for item in raw:
+        if isinstance(item, dict):
+            value = str(item.get("name") or "").strip()
+            if value:
+                names.append(value)
+        else:
+            value = str(item or "").strip()
+            if value:
+                names.append(value)
+    if names:
+        body_lines = []
+        for line in (text or "").splitlines():
+            if line.strip().startswith("📎"):
+                continue
+            body_lines.append(line)
+        return "\n".join(body_lines).strip(), names
+
+    body_lines: list[str] = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("📎"):
+            for part in stripped.lstrip("📎").split(","):
+                value = part.strip()
+                if value:
+                    names.append(value)
+            continue
+        body_lines.append(line)
+    return "\n".join(body_lines).strip(), names
+
+
 class RegulationCreationPage(QWidget):
-    message_requested = Signal(str, str)
+    message_requested = Signal(str, str, list)
     finished_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -111,6 +203,7 @@ class RegulationCreationPage(QWidget):
         self._auto_scroll_enabled = True
         self._programmatic_scroll = False
         self._size_bucket = -1
+        self._pending_files: list[str] = []
         self._messages_layout = QVBoxLayout()
         self._messages_layout.setContentsMargins(0, 0, 0, 0)
         self._messages_layout.setSpacing(10)
@@ -136,6 +229,12 @@ class RegulationCreationPage(QWidget):
         self._composer.setObjectName("ComposerShell")
         self._composer.setStyleSheet(_INPUT_SHELL)
         self._composer.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._files_host = QWidget()
+        self._files_host.setStyleSheet("background: transparent;")
+        self._files_host.hide()
+        self._files_row = QHBoxLayout(self._files_host)
+        self._files_row.setContentsMargins(10, 8, 10, 0)
+        self._files_row.setSpacing(8)
         self._input = _ComposerInput()
         self._input.setPlaceholderText("Напишите ответ...")
         self._input.setFont(app_font(_INPUT_FONT_SIZE))
@@ -147,17 +246,30 @@ class RegulationCreationPage(QWidget):
         self._input.setTabChangesFocus(True)
         self._input.textChanged.connect(self._resize_input)
         self._input.submit_requested.connect(self._submit)
+        self._attach = QToolButton()
+        self._attach.setText("📎")
+        self._attach.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._attach.setFixedSize(_SEND_SIZE, _SEND_SIZE)
+        self._attach.setStyleSheet(_ATTACH_BUTTON)
+        self._attach.setToolTip("Прикрепить файлы (doc, docx, pdf, md, txt)")
+        self._attach.clicked.connect(self._pick_files)
         self._send = QPushButton("↑")
         self._send.setCursor(Qt.CursorShape.PointingHandCursor)
         self._send.setFixedSize(_SEND_SIZE, _SEND_SIZE)
         self._send.setStyleSheet(_SEND_BUTTON)
         self._send.setToolTip("Отправить")
         self._send.clicked.connect(self._submit)
-        composer_row = QHBoxLayout(self._composer)
+        composer_row = QHBoxLayout()
         composer_row.setContentsMargins(4, 4, 8, 4)
-        composer_row.setSpacing(6)
+        composer_row.setSpacing(4)
         composer_row.addWidget(self._input, 1)
+        composer_row.addWidget(self._attach, 0, Qt.AlignmentFlag.AlignBottom)
         composer_row.addWidget(self._send, 0, Qt.AlignmentFlag.AlignBottom)
+        composer_inner = QVBoxLayout(self._composer)
+        composer_inner.setContentsMargins(0, 0, 0, 0)
+        composer_inner.setSpacing(0)
+        composer_inner.addWidget(self._files_host)
+        composer_inner.addLayout(composer_row)
         self._resize_input()
         composer_wrap = QHBoxLayout()
         composer_wrap.setContentsMargins(14, 0, 14, 0)
@@ -177,6 +289,8 @@ class RegulationCreationPage(QWidget):
         title = QLabel("Создание регламента")
         title.setFont(app_font(26, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        title.setWordWrap(True)
+        self._title = title
         self._force_create = QPushButton("Создать принудительно")
         self._force_create.setCursor(Qt.CursorShape.PointingHandCursor)
         self._force_create.setFixedHeight(36)
@@ -184,27 +298,42 @@ class RegulationCreationPage(QWidget):
         self._force_create.setStyleSheet(_SECONDARY_BUTTON)
         self._force_create.setEnabled(False)
         self._force_create.clicked.connect(self._force_create_now)
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(14)
-        header.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
-        header.addWidget(self._force_create, 0, Qt.AlignmentFlag.AlignVCenter)
-        header.addStretch(1)
+        self._header_inline = True
+        self._title_row = QHBoxLayout()
+        self._title_row.setContentsMargins(0, 0, 0, 0)
+        self._title_row.setSpacing(14)
+        self._title_row.addWidget(self._title, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._title_row.addWidget(self._force_create, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._title_row.addStretch(1)
+        self._force_create_host = QWidget()
+        self._force_create_host.setStyleSheet("background: transparent;")
+        self._force_create_row = QHBoxLayout(self._force_create_host)
+        self._force_create_row.setContentsMargins(0, 0, 0, 0)
+        self._force_create_row.setSpacing(0)
+        self._force_create_host.hide()
         subtitle = QLabel("Ответьте на вопросы, и ИИ подготовит регламент в стиле ваших документов")
         subtitle.setFont(app_font(13))
+        subtitle.setWordWrap(True)
         subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        header_block = QVBoxLayout()
+        header_block.setContentsMargins(0, 0, _USER_MENU_RESERVE, 0)
+        header_block.setSpacing(8)
+        header_block.addLayout(self._title_row)
+        header_block.addWidget(self._force_create_host)
+        header_block.addWidget(subtitle)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        layout.addLayout(header)
-        layout.addWidget(subtitle)
+        layout.addLayout(header_block)
         layout.addWidget(self._scroll, 1)
         layout.addLayout(composer_footer)
         self._apply_chat_width(force=True)
+        self._update_header_layout(force=True)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._apply_chat_width()
+        self._update_header_layout()
 
     def _chat_width(self) -> int:
         available = max(0, self.width() - 28)
@@ -212,6 +341,28 @@ class RegulationCreationPage(QWidget):
 
     def _bubble_max_width(self) -> int:
         return max(420, self._chat_width() - _AVATAR_SIZE - 28)
+
+    def _update_header_layout(self, *, force: bool = False) -> None:
+        available = max(0, self.width() - _USER_MENU_RESERVE)
+        title_w = self._title.sizeHint().width()
+        button_w = self._force_create.sizeHint().width()
+        want_inline = (title_w + self._title_row.spacing() + button_w) <= available
+        if not force and want_inline == self._header_inline:
+            return
+        self._header_inline = want_inline
+        self._title_row.removeWidget(self._force_create)
+        self._force_create_row.removeWidget(self._force_create)
+        while self._force_create_row.count():
+            item = self._force_create_row.takeAt(0)
+            del item
+        if want_inline:
+            self._title_row.insertWidget(1, self._force_create, 0, Qt.AlignmentFlag.AlignVCenter)
+            self._force_create_host.hide()
+        else:
+            self._force_create_row.addWidget(self._force_create, 0, Qt.AlignmentFlag.AlignLeft)
+            self._force_create_row.addStretch(1)
+            self._force_create_host.show()
+        self._force_create.show()
 
     def _apply_chat_width(self, *, force: bool = False) -> None:
         width = self._chat_width()
@@ -236,9 +387,13 @@ class RegulationCreationPage(QWidget):
         enabled = not generating and not finalized
         self._input.setEnabled(enabled)
         self._send.setEnabled(enabled)
+        self._attach.setEnabled(enabled)
         self._composer.setEnabled(enabled)
         has_user_input = any(message.role == "user" for message in session.messages)
         self._force_create.setEnabled(has_user_input and enabled)
+        if not enabled:
+            self._pending_files.clear()
+            self._sync_files_chips()
 
     def _render_messages(self) -> None:
         should_scroll = self._should_auto_scroll()
@@ -255,11 +410,13 @@ class RegulationCreationPage(QWidget):
             if message.role != "user" and can_answer and index == len(self._session.messages) - 1:
                 raw = message.structured.get("quickAnswers") if isinstance(message.structured, dict) else []
                 quick_answers = [str(item) for item in (raw or []) if str(item).strip()]
+            body, attachments = _split_message_attachments(message.content, message.structured)
             self._messages_layout.addWidget(
                 self._bubble(
-                    message.content,
+                    body,
                     user=message.role == "user",
                     quick_answers=quick_answers,
+                    attachments=attachments,
                 )
             )
         if self._session.status == "generating":
@@ -277,12 +434,106 @@ class RegulationCreationPage(QWidget):
         if self._session is None or not self._send.isEnabled():
             return
         text = self._input.toPlainText().strip()
-        if not text:
+        files = list(self._pending_files)
+        if not text and not files:
             return
         self._input.clear()
         self._input.setPlaceholderText("Напишите ответ...")
+        self._pending_files.clear()
+        self._sync_files_chips()
         self._resize_input()
-        self.message_requested.emit(self._session.draft_id, text)
+        self.message_requested.emit(self._session.draft_id, text, files)
+
+    def _pick_files(self) -> None:
+        if not self._attach.isEnabled():
+            return
+        paths, _filter = QFileDialog.getOpenFileNames(
+            self,
+            "Файлы для анализа",
+            "",
+            f"{_ATTACH_FILTER};;Все файлы (*)",
+        )
+        if not paths:
+            return
+        added = 0
+        skipped: list[str] = []
+        for path in paths:
+            file_path = Path(path)
+            if not file_path.is_file():
+                continue
+            suffix = file_path.suffix.lower()
+            if suffix not in _ATTACH_SUFFIXES:
+                skipped.append(file_path.name)
+                continue
+            value = str(file_path)
+            if value not in self._pending_files:
+                self._pending_files.append(value)
+                added += 1
+        self._sync_files_chips()
+        self._resize_input()
+        if skipped:
+            QMessageBox.information(
+                self,
+                "Файлы",
+                "Поддерживаются только: doc, docx, pdf, md, txt.\n"
+                f"Пропущены: {', '.join(skipped)}",
+            )
+        elif added == 0 and paths:
+            QMessageBox.information(self, "Файлы", "Эти файлы уже прикреплены.")
+
+    def _remove_pending_file(self, path: str) -> None:
+        self._pending_files = [item for item in self._pending_files if item != path]
+        self._sync_files_chips()
+        self._resize_input()
+
+    def _sync_files_chips(self) -> None:
+        while self._files_row.count():
+            item = self._files_row.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        if not self._pending_files:
+            self._files_host.hide()
+            return
+        for path in self._pending_files:
+            self._files_row.addWidget(
+                self._file_chip(Path(path).name, removable=True, on_remove=lambda p=path: self._remove_pending_file(p))
+            )
+        self._files_row.addStretch(1)
+        self._files_host.show()
+
+    def _file_chip(
+        self,
+        name: str,
+        *,
+        user_bubble: bool = False,
+        removable: bool = False,
+        on_remove=None,
+    ) -> QFrame:
+        chip = QFrame()
+        chip.setObjectName("FileChip")
+        chip.setStyleSheet(_FILE_CHIP_USER if user_bubble else _FILE_CHIP)
+        row = QHBoxLayout(chip)
+        row.setContentsMargins(8, 4, 8, 4)
+        row.setSpacing(6)
+        icon = QLabel("📄")
+        icon.setFont(app_font(12))
+        icon.setStyleSheet("background: transparent; border: none;")
+        title = QLabel(_short_attachment_name(name))
+        title.setFont(app_font(11, QFont.Weight.DemiBold))
+        title.setToolTip(name)
+        title.setStyleSheet("background: transparent; border: none;")
+        row.addWidget(icon)
+        row.addWidget(title)
+        if removable and on_remove is not None:
+            remove = QToolButton()
+            remove.setObjectName("FileChipRemove")
+            remove.setText("×")
+            remove.setCursor(Qt.CursorShape.PointingHandCursor)
+            remove.setFixedSize(18, 18)
+            remove.clicked.connect(on_remove)
+            row.addWidget(remove)
+        return chip
 
     def _resize_input(self) -> None:
         metrics = self._input.fontMetrics()
@@ -296,8 +547,9 @@ class RegulationCreationPage(QWidget):
         needed = int(doc.size().height()) + top + bottom
         height = max(min_h, min(max_h, needed))
         self._input.setFixedHeight(height)
-        shell_h = height + 8
-        self._composer.setFixedHeight(max(shell_h, _SEND_SIZE + 8))
+        files_h = self._files_host.sizeHint().height() if self._files_host.isVisible() else 0
+        shell_h = height + 8 + files_h
+        self._composer.setFixedHeight(max(shell_h, _SEND_SIZE + 8 + files_h))
         at_max = needed > max_h
         self._input.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded if at_max else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -310,6 +562,7 @@ class RegulationCreationPage(QWidget):
             self._session.draft_id,
             "Создай регламент принудительно по текущей информации. "
             "Если каких-то данных не хватает, используй разумные типовые формулировки и явно отметь, что это предположение.",
+            [],
         )
 
     def append_stream_event(self, event_type: str, text: str) -> None:
@@ -335,7 +588,7 @@ class RegulationCreationPage(QWidget):
             self._input.setFocus()
             return
         self._input.clear()
-        self.message_requested.emit(self._session.draft_id, value)
+        self.message_requested.emit(self._session.draft_id, value, [])
 
     def _assistant_avatar(self) -> QLabel:
         avatar = QLabel()
@@ -367,7 +620,14 @@ class RegulationCreationPage(QWidget):
         avatar.setPixmap(canvas)
         return avatar
 
-    def _bubble(self, text: str, *, user: bool, quick_answers: list[str] | None = None) -> QWidget:
+    def _bubble(
+        self,
+        text: str,
+        *,
+        user: bool,
+        quick_answers: list[str] | None = None,
+        attachments: list[str] | None = None,
+    ) -> QWidget:
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
@@ -385,37 +645,57 @@ class RegulationCreationPage(QWidget):
         column.addWidget(who)
 
         bubble = QFrame()
+        bubble.setObjectName("MessageBubble")
         bubble.setMaximumWidth(self._bubble_max_width())
         bubble.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         if user:
             bubble.setStyleSheet(
                 """
-                QFrame {
+                QFrame#MessageBubble {
                     background: #08745F;
                     border: none;
                     border-radius: 16px;
+                }
+                QFrame#MessageBubble > QLabel {
+                    background: transparent;
+                    border: none;
+                    color: #FFFFFF;
                 }
                 """
             )
         else:
             bubble.setStyleSheet(
                 """
-                QFrame {
+                QFrame#MessageBubble {
                     background: #FFFFFF;
                     border: 1px solid rgba(16,24,23,0.10);
                     border-radius: 16px;
+                }
+                QFrame#MessageBubble > QLabel {
+                    background: transparent;
+                    border: none;
+                    color: #101817;
                 }
                 """
             )
         layout = QVBoxLayout(bubble)
         layout.setContentsMargins(14, 10, 14, 10)
-        label = QLabel(text)
-        label.setWordWrap(True)
-        label.setFont(app_font(13))
-        label.setStyleSheet(
-            f"color: {'#FFFFFF' if user else MAIN_TEXT.name()}; background: transparent;"
-        )
-        layout.addWidget(label)
+        layout.setSpacing(8)
+        if text.strip():
+            label = QLabel(text)
+            label.setWordWrap(True)
+            label.setFont(app_font(13))
+            label.setStyleSheet("background: transparent; border: none;")
+            layout.addWidget(label)
+        files = attachments or []
+        if files:
+            chips = QHBoxLayout()
+            chips.setContentsMargins(0, 0, 0, 0)
+            chips.setSpacing(6)
+            for name in files:
+                chips.addWidget(self._file_chip(name, user_bubble=user), 0)
+            chips.addStretch(1)
+            layout.addLayout(chips)
         answers = quick_answers or []
         if answers:
             actions = QHBoxLayout()
@@ -453,13 +733,17 @@ class RegulationCreationPage(QWidget):
 
     def _document_result_block(self) -> QWidget:
         card = QFrame()
+        card.setObjectName("ResultCard")
         card.setMaximumWidth(self._bubble_max_width())
         card.setStyleSheet(
             """
-            QFrame {
+            QFrame#ResultCard {
                 background: #FFFFFF;
                 border: 1px solid rgba(8,116,95,0.18);
                 border-radius: 16px;
+            }
+            QFrame#ResultCard QLabel {
+                border: none;
             }
             """
         )
@@ -588,13 +872,18 @@ class RegulationCreationPage(QWidget):
 
     def _think_block(self) -> QWidget:
         card = QFrame()
+        card.setObjectName("ThinkCard")
         card.setMaximumWidth(self._bubble_max_width())
         card.setStyleSheet(
             """
-            QFrame {
+            QFrame#ThinkCard {
                 background: #FFFFFF;
                 border: 1px solid rgba(8,116,95,0.14);
                 border-radius: 16px;
+            }
+            QFrame#ThinkCard QLabel {
+                background: transparent;
+                border: none;
             }
             """
         )
