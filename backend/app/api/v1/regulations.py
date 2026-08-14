@@ -36,6 +36,10 @@ from app.services.role_matching import (
     get_role_match_run,
     update_match_status,
 )
+from app.services.regulation_functions import (
+    RegulationFunctionExtractionError,
+    create_cursor_function_extraction,
+)
 from app.services.readiness import (
     ReadinessError,
     answer_readiness_question,
@@ -104,6 +108,28 @@ async def create_role_matches(
             department=department,
         )
     except RoleMatchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/{regulation_id}/function-extraction", response_model=RoleMatchResult)
+async def extract_function_blocks(
+    regulation_id: str,
+    request: RoleMatchRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RoleMatchResult:
+    user = get_app_user(auth.user_id)
+    position = (request.position or "").strip() or ((user.position if user else "") or "").strip()
+    department = (request.department or "").strip() or ((user.department if user else "") or "").strip()
+    try:
+        return create_cursor_function_extraction(
+            db,
+            user_id=auth.user_id,
+            regulation_id=regulation_id,
+            position=position,
+            department=department,
+        )
+    except RegulationFunctionExtractionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 

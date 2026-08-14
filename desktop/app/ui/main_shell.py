@@ -565,17 +565,18 @@ class MainShell(QWidget):
             if not ok or not department:
                 return
         self._page_loading.set_message(
-            "Анализируем функции должности",
+            "Cursor Agent выделяет функциональные блоки",
             (
-                f"Ищем фрагменты регламента для должности «{position}» "
-                f"и подразделения «{department}». Это может занять несколько минут."
+                "Передаём полный распознанный регламент агенту, чтобы выделить "
+                "связанные бизнес-функции и вопросы для оптимизации. "
+                "Это может занять несколько минут."
             ),
         )
         self._pages.setCurrentIndex(self._page_index["loading"])
 
         def run() -> None:
             try:
-                result = self._api.create_role_matches(
+                result = self._api.extract_regulation_functions(
                     self._current_regulation.regulation_id,
                     position=position,
                     department=department,

@@ -724,6 +724,21 @@ class ApiClient:
         )
         return self._parse_role_matches(data)
 
+    def extract_regulation_functions(
+        self,
+        regulation_id: str,
+        *,
+        position: str,
+        department: str,
+    ) -> RoleMatchResult:
+        data = self._request(
+            "POST",
+            f"/api/v1/regulations/{regulation_id}/function-extraction",
+            json={"position": position.strip(), "department": department.strip()},
+            timeout=max(self._timeout, 420.0),
+        )
+        return self._parse_role_matches(data)
+
     def decide_role_match(
         self,
         regulation_id: str,
