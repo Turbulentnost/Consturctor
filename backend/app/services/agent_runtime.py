@@ -42,6 +42,16 @@ _IMAP_TOOLS = frozenset(
     }
 )
 
+_ONEC_TOOLS = frozenset(
+    {
+        "onec.odata_get",
+        "onec.odata_post",
+        "onec.odata_patch",
+        "onec.attach_file",
+        "onec.sql_query",
+    }
+)
+
 
 class AgentRuntimeError(RuntimeError):
     pass
@@ -177,6 +187,8 @@ def _request_desktop_tool(
 ) -> dict[str, Any]:
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, arguments)
+    if tool.startswith("onec.") or tool in _ONEC_TOOLS:
+        return _invoke_onec_server(tool, arguments)
 
     request_id = tool_bridge.new_request_id()
     tool_bridge.begin_wait(request_id=request_id, user_id=user_id)
@@ -210,6 +222,15 @@ def _invoke_imap_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     try:
         return invoke_imap(tool, arguments)
     except ImapToolError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
+
+
+def _invoke_onec_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.onec_tools import OnecToolError, invoke_onec
+
+    try:
+        return invoke_onec(tool, arguments)
+    except OnecToolError as exc:
         raise AgentRuntimeError(str(exc)) from exc
 
 

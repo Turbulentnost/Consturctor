@@ -11,6 +11,7 @@ from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.schemas.workflow import WebSearchRequest, WebSearchResponse, WebSearchResultItem
 from app.services.imap_tools import ImapToolError, imap_configured, invoke_imap
+from app.services.onec_tools import ONEC_TOOLS, OnecToolError, invoke_onec, odata_configured
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -26,6 +27,8 @@ _IMAP_TOOLS = frozenset(
         "imap.fetch_attachments",
     }
 )
+
+_SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS
 
 
 class ToolInvokeBody(BaseModel):
@@ -48,6 +51,16 @@ async def imap_status(auth: AuthContext = Depends(get_current_user)) -> dict[str
     }
 
 
+@router.get("/onec/status")
+async def onec_status(auth: AuthContext = Depends(get_current_user)) -> dict[str, Any]:
+    _ = auth
+    return {
+        "configured": odata_configured(),
+        "mode": "real" if odata_configured() else "stub",
+        "tools": sorted(ONEC_TOOLS),
+    }
+
+
 @router.post("/{tool_name}/invoke")
 async def invoke_tool(
     tool_name: str,
@@ -55,17 +68,20 @@ async def invoke_tool(
     auth: AuthContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     _ = auth
-    if tool_name not in _IMAP_TOOLS:
+    if tool_name not in _SERVER_TOOLS:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Инструмент «{tool_name}» через этот endpoint пока только для imap.*. "
-                "Desktop-tools идут через agent-runs SSE."
+                f"Инструмент «{tool_name}» через этот endpoint только для "
+                "imap.* / onec.*. Desktop-tools идут через agent-runs SSE."
             ),
         )
     try:
-        result = invoke_imap(tool_name, body.arguments)
-    except ImapToolError as exc:
+        if tool_name in _IMAP_TOOLS:
+            result = invoke_imap(tool_name, body.arguments)
+        else:
+            result = invoke_onec(tool_name, body.arguments)
+    except (ImapToolError, OnecToolError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"ok": True, "tool": tool_name, "result": result}
 

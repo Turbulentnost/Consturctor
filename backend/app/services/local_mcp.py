@@ -134,12 +134,83 @@ def list_tools() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "name": "onec.odata_get",
+            "description": "Чтение сущности/пути 1С OData (сервер).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "entity": {"type": "string"},
+                    "path": {"type": "string"},
+                    "top": {
+                        "type": "integer",
+                        "default": 3,
+                        "description": "OData $top — сколько записей вернуть",
+                    },
+                    "skip": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "OData $skip — смещение (сколько записей пропустить)",
+                    },
+                },
+            },
+        },
+        {
+            "name": "onec.odata_post",
+            "description": "Создание объекта через 1С OData (сервер).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "entity": {"type": "string"},
+                    "body": {"type": "object"},
+                },
+                "required": ["entity"],
+            },
+        },
+        {
+            "name": "onec.odata_patch",
+            "description": "Обновление объекта через 1С OData (сервер).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "entity": {"type": "string"},
+                    "ref_key": {"type": "string"},
+                    "body": {"type": "object"},
+                },
+                "required": ["entity", "ref_key"],
+            },
+        },
+        {
+            "name": "onec.attach_file",
+            "description": "Прикрепление файла к документу 1С (пока не реализовано).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "document_ref_key": {"type": "string"},
+                    "filename": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "onec.sql_query",
+            "description": "Только SELECT к ERP SQL (allowlist таблиц, сервер).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {"sql": {"type": "string"}},
+                "required": ["sql"],
+            },
+        },
     ]
 
 
 def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     _ = arguments
     raise LocalMcpError(
-        f"Инструмент «{name}» больше не исполняется на backend. "
-        "Desktop-tools идут через SSE tool_request; IMAP — через серверный сервис."
+        f"Инструмент «{name}» больше не исполняется через local_mcp.call_tool. "
+        "Desktop-tools — SSE tool_request; imap.*/onec.* — серверные сервисы."
     )

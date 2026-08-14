@@ -39,6 +39,10 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str,
         raise ToolHostError(
             f"Инструмент {name} выполняется на сервере (IMAP), не на desktop."
         )
+    if name.startswith("onec."):
+        raise ToolHostError(
+            f"Инструмент {name} выполняется на сервере (1С OData/SQL), не на desktop."
+        )
     handler = _HANDLERS.get(name)
     if handler is None:
         raise ToolHostError(f"Неизвестный инструмент: {name}")
