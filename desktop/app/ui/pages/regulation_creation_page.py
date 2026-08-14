@@ -3,26 +3,73 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont
-from PySide6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtCore import QRectF, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QFont,
+    QKeyEvent,
+    QPainter,
+    QPainterPath,
+    QPixmap,
+    QTextOption,
+)
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.api_client import RegulationCreationSession
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 
+_LOGO_PATH = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
+_AVATAR_SIZE = 36
+_CHAT_MIN_WIDTH = 640
+_CHAT_MAX_WIDTH = 1400
+_CHAT_WIDTH_RATIO = 0.68
+
+_INPUT_SHELL = """
+QFrame#ComposerShell {
+    background: #FFFFFF;
+    border: 1px solid rgba(16,24,23,0.12);
+    border-radius: 18px;
+}
+QFrame#ComposerShell:disabled {
+    background: #F4F7F6;
+}
+"""
 _INPUT_STYLE = """
 QTextEdit {
-    background: #FFFFFF;
+    background: transparent;
     color: #101817;
-    border: 1px solid rgba(16,24,23,0.12);
-    border-radius: 16px;
-    padding: 12px 14px;
+    border: none;
+    padding: 8px 4px 8px 12px;
     selection-background-color: #08745F;
 }
 QTextEdit:disabled {
-    background: #F4F7F6;
     color: #9DB3AD;
 }
+"""
+_SEND_BUTTON = """
+QPushButton {
+    background: #08745F;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 16px;
+    font-size: 16px;
+    font-weight: 700;
+}
+QPushButton:hover { background: #0A8670; }
+QPushButton:pressed { background: #06483D; }
+QPushButton:disabled { background: #A8C8BF; color: #EAF7F3; }
 """
 _PRIMARY_BUTTON = """
 QPushButton {
@@ -46,6 +93,9 @@ QPushButton {
 QPushButton:hover { background: #F4F7F6; border-color: #08745F; }
 QPushButton:disabled { background: #F4F7F6; color: #9DB3AD; }
 """
+_INPUT_FONT_SIZE = 12
+_INPUT_MAX_LINES = 5
+_SEND_SIZE = 32
 
 
 class RegulationCreationPage(QWidget):
@@ -60,35 +110,70 @@ class RegulationCreationPage(QWidget):
         self._live_status = ""
         self._auto_scroll_enabled = True
         self._programmatic_scroll = False
+        self._size_bucket = -1
         self._messages_layout = QVBoxLayout()
-        self._messages_layout.setContentsMargins(14, 14, 14, 14)
+        self._messages_layout.setContentsMargins(0, 0, 0, 0)
         self._messages_layout.setSpacing(10)
+        self._chat_column = QWidget()
+        self._chat_column.setStyleSheet("background: transparent;")
+        self._chat_column.setLayout(self._messages_layout)
+        self._chat_column.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         content = QWidget()
-        content.setLayout(self._messages_layout)
         content.setStyleSheet("background: transparent;")
+        content_row = QHBoxLayout(content)
+        content_row.setContentsMargins(14, 14, 14, 14)
+        content_row.setSpacing(0)
+        content_row.addStretch(1)
+        content_row.addWidget(self._chat_column, 0, Qt.AlignmentFlag.AlignTop)
+        content_row.addStretch(1)
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setWidget(content)
         self._scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }" + scroll_bar_qss())
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_value_changed)
-        self._input = QTextEdit()
-        self._input.setFixedHeight(76)
+        self._composer = QFrame()
+        self._composer.setObjectName("ComposerShell")
+        self._composer.setStyleSheet(_INPUT_SHELL)
+        self._composer.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._input = _ComposerInput()
         self._input.setPlaceholderText("Напишите ответ...")
-        self._input.setFont(app_font(13))
+        self._input.setFont(app_font(_INPUT_FONT_SIZE))
         self._input.setStyleSheet(_INPUT_STYLE + scroll_bar_qss())
-        self._send = QPushButton("Отправить")
+        self._input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._input.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._input.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self._input.setAcceptRichText(False)
+        self._input.setTabChangesFocus(True)
+        self._input.textChanged.connect(self._resize_input)
+        self._input.submit_requested.connect(self._submit)
+        self._send = QPushButton("↑")
         self._send.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._send.setFixedHeight(48)
-        self._send.setMinimumWidth(132)
-        self._send.setFont(app_font(12, QFont.Weight.DemiBold))
-        self._send.setStyleSheet(_PRIMARY_BUTTON)
+        self._send.setFixedSize(_SEND_SIZE, _SEND_SIZE)
+        self._send.setStyleSheet(_SEND_BUTTON)
+        self._send.setToolTip("Отправить")
         self._send.clicked.connect(self._submit)
-        input_row = QHBoxLayout()
-        input_row.setContentsMargins(0, 0, 0, 0)
-        input_row.setSpacing(12)
-        input_row.addWidget(self._input, 1)
-        input_row.addWidget(self._send, 0, Qt.AlignmentFlag.AlignBottom)
+        composer_row = QHBoxLayout(self._composer)
+        composer_row.setContentsMargins(4, 4, 8, 4)
+        composer_row.setSpacing(6)
+        composer_row.addWidget(self._input, 1)
+        composer_row.addWidget(self._send, 0, Qt.AlignmentFlag.AlignBottom)
+        self._resize_input()
+        composer_wrap = QHBoxLayout()
+        composer_wrap.setContentsMargins(14, 0, 14, 0)
+        composer_wrap.setSpacing(0)
+        composer_wrap.addStretch(1)
+        composer_wrap.addWidget(self._composer, 0)
+        composer_wrap.addStretch(1)
+        composer_hint = QLabel("Enter — отправить • Shift + Enter — новая строка")
+        composer_hint.setFont(app_font(11))
+        composer_hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        composer_hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        composer_footer = QVBoxLayout()
+        composer_footer.setContentsMargins(0, 0, 0, 8)
+        composer_footer.setSpacing(6)
+        composer_footer.addLayout(composer_wrap)
+        composer_footer.addWidget(composer_hint)
         title = QLabel("Создание регламента")
         title.setFont(app_font(26, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
@@ -114,7 +199,31 @@ class RegulationCreationPage(QWidget):
         layout.addLayout(header)
         layout.addWidget(subtitle)
         layout.addWidget(self._scroll, 1)
-        layout.addLayout(input_row)
+        layout.addLayout(composer_footer)
+        self._apply_chat_width(force=True)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._apply_chat_width()
+
+    def _chat_width(self) -> int:
+        available = max(0, self.width() - 28)
+        return max(_CHAT_MIN_WIDTH, min(_CHAT_MAX_WIDTH, int(available * _CHAT_WIDTH_RATIO)))
+
+    def _bubble_max_width(self) -> int:
+        return max(420, self._chat_width() - _AVATAR_SIZE - 28)
+
+    def _apply_chat_width(self, *, force: bool = False) -> None:
+        width = self._chat_width()
+        if not force and width == self._size_bucket:
+            return
+        prev = self._size_bucket
+        self._size_bucket = width
+        self._chat_column.setFixedWidth(width)
+        self._composer.setFixedWidth(width)
+        self._resize_input()
+        if prev > 0 and self._session is not None:
+            self._render_messages()
 
     def set_session(self, session: RegulationCreationSession) -> None:
         self._session = session
@@ -124,10 +233,12 @@ class RegulationCreationPage(QWidget):
         self._render_messages()
         generating = session.status == "generating"
         finalized = session.status == "finalized"
-        self._input.setEnabled(not generating and not finalized)
-        self._send.setEnabled(not generating and not finalized)
+        enabled = not generating and not finalized
+        self._input.setEnabled(enabled)
+        self._send.setEnabled(enabled)
+        self._composer.setEnabled(enabled)
         has_user_input = any(message.role == "user" for message in session.messages)
-        self._force_create.setEnabled(has_user_input and not generating and not finalized)
+        self._force_create.setEnabled(has_user_input and enabled)
 
     def _render_messages(self) -> None:
         should_scroll = self._should_auto_scroll()
@@ -163,14 +274,34 @@ class RegulationCreationPage(QWidget):
             self._scroll_to_bottom()
 
     def _submit(self) -> None:
-        if self._session is None:
+        if self._session is None or not self._send.isEnabled():
             return
         text = self._input.toPlainText().strip()
         if not text:
             return
         self._input.clear()
         self._input.setPlaceholderText("Напишите ответ...")
+        self._resize_input()
         self.message_requested.emit(self._session.draft_id, text)
+
+    def _resize_input(self) -> None:
+        metrics = self._input.fontMetrics()
+        line_h = max(metrics.lineSpacing(), metrics.height())
+        top = self._input.contentsMargins().top() + 8
+        bottom = self._input.contentsMargins().bottom() + 8
+        min_h = line_h + top + bottom
+        max_h = line_h * _INPUT_MAX_LINES + top + bottom
+        doc = self._input.document()
+        doc.setTextWidth(max(self._input.viewport().width(), 40))
+        needed = int(doc.size().height()) + top + bottom
+        height = max(min_h, min(max_h, needed))
+        self._input.setFixedHeight(height)
+        shell_h = height + 8
+        self._composer.setFixedHeight(max(shell_h, _SEND_SIZE + 8))
+        at_max = needed > max_h
+        self._input.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded if at_max else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
 
     def _force_create_now(self) -> None:
         if self._session is None or not self._force_create.isEnabled():
@@ -206,29 +337,84 @@ class RegulationCreationPage(QWidget):
         self._input.clear()
         self.message_requested.emit(self._session.draft_id, value)
 
+    def _assistant_avatar(self) -> QLabel:
+        avatar = QLabel()
+        avatar.setFixedSize(_AVATAR_SIZE, _AVATAR_SIZE)
+        avatar.setStyleSheet("background: transparent;")
+        canvas = QPixmap(_AVATAR_SIZE, _AVATAR_SIZE)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        rect = QRectF(0.5, 0.5, _AVATAR_SIZE - 1, _AVATAR_SIZE - 1)
+        path = QPainterPath()
+        path.addEllipse(rect)
+        painter.fillPath(path, QColor("#E7F4F0"))
+        if _LOGO_PATH.exists():
+            logo = QPixmap(str(_LOGO_PATH))
+            if not logo.isNull():
+                painter.setClipPath(path)
+                scaled = logo.scaled(
+                    _AVATAR_SIZE - 6,
+                    _AVATAR_SIZE - 6,
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                x = (_AVATAR_SIZE - scaled.width()) // 2
+                y = (_AVATAR_SIZE - scaled.height()) // 2
+                painter.drawPixmap(x, y, scaled)
+        painter.end()
+        avatar.setPixmap(canvas)
+        return avatar
+
     def _bubble(self, text: str, *, user: bool, quick_answers: list[str] | None = None) -> QWidget:
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
         if user:
             row.addStretch(1)
+
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(4)
+
+        who = QLabel("Вы" if user else "ИИ-ассистент")
+        who.setFont(app_font(11))
+        who.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        who.setAlignment(Qt.AlignmentFlag.AlignRight if user else Qt.AlignmentFlag.AlignLeft)
+        column.addWidget(who)
+
         bubble = QFrame()
-        bubble.setMaximumWidth(720)
-        bubble.setStyleSheet(
-            """
-            QFrame {
-                background: %s;
-                border: 1px solid rgba(8,116,95,0.14);
-                border-radius: 16px;
-            }
-            """
-            % ("rgba(8,116,95,0.09)" if user else "#FFFFFF")
-        )
+        bubble.setMaximumWidth(self._bubble_max_width())
+        bubble.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        if user:
+            bubble.setStyleSheet(
+                """
+                QFrame {
+                    background: #08745F;
+                    border: none;
+                    border-radius: 16px;
+                }
+                """
+            )
+        else:
+            bubble.setStyleSheet(
+                """
+                QFrame {
+                    background: #FFFFFF;
+                    border: 1px solid rgba(16,24,23,0.10);
+                    border-radius: 16px;
+                }
+                """
+            )
         layout = QVBoxLayout(bubble)
         layout.setContentsMargins(14, 10, 14, 10)
         label = QLabel(text)
         label.setWordWrap(True)
         label.setFont(app_font(13))
-        label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        label.setStyleSheet(
+            f"color: {'#FFFFFF' if user else MAIN_TEXT.name()}; background: transparent;"
+        )
         layout.addWidget(label)
         answers = quick_answers or []
         if answers:
@@ -245,9 +431,18 @@ class RegulationCreationPage(QWidget):
                 actions.addWidget(btn)
             actions.addStretch(1)
             layout.addLayout(actions)
-        row.addWidget(bubble)
+        column.addWidget(bubble, 0, Qt.AlignmentFlag.AlignRight if user else Qt.AlignmentFlag.AlignLeft)
+
+        if not user:
+            row.addWidget(self._assistant_avatar(), 0, Qt.AlignmentFlag.AlignTop)
+        body = QWidget()
+        body.setStyleSheet("background: transparent;")
+        body.setLayout(column)
+        body.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        row.addWidget(body, 0, Qt.AlignmentFlag.AlignTop)
         if not user:
             row.addStretch(1)
+
         wrap = QWidget()
         wrap.setStyleSheet("background: transparent;")
         wrap.setLayout(row)
@@ -258,7 +453,7 @@ class RegulationCreationPage(QWidget):
 
     def _document_result_block(self) -> QWidget:
         card = QFrame()
-        card.setMaximumWidth(720)
+        card.setMaximumWidth(self._bubble_max_width())
         card.setStyleSheet(
             """
             QFrame {
@@ -323,6 +518,8 @@ class RegulationCreationPage(QWidget):
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        row.addSpacing(_AVATAR_SIZE)
         row.addWidget(card)
         row.addStretch(1)
         wrap = QWidget()
@@ -391,7 +588,7 @@ class RegulationCreationPage(QWidget):
 
     def _think_block(self) -> QWidget:
         card = QFrame()
-        card.setMaximumWidth(720)
+        card.setMaximumWidth(self._bubble_max_width())
         card.setStyleSheet(
             """
             QFrame {
@@ -430,6 +627,8 @@ class RegulationCreationPage(QWidget):
             layout.addWidget(text)
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        row.addWidget(self._assistant_avatar(), 0, Qt.AlignmentFlag.AlignTop)
         row.addWidget(card)
         row.addStretch(1)
         wrap = QWidget()
@@ -467,3 +666,15 @@ def _creation_status_text(status: str) -> str:
         "generating": "Задаю вопрос...",
         "stream_unavailable_polling": "Агент продолжает работу, ожидаю следующий вопрос...",
     }.get(status, "Агент готовит следующий вопрос...")
+
+
+class _ComposerInput(QTextEdit):
+    submit_requested = Signal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
+            event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+        ):
+            self.submit_requested.emit()
+            return
+        super().keyPressEvent(event)
