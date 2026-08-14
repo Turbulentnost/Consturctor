@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -8,10 +9,12 @@ from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QFont,
+    QFontMetrics,
     QKeyEvent,
     QPainter,
     QPainterPath,
     QPixmap,
+    QTextCursor,
     QTextOption,
 )
 from PySide6.QtWidgets import (
@@ -94,6 +97,18 @@ QPushButton {
     border: 1px solid rgba(16,24,23,0.12);
     border-radius: 14px;
     padding: 0 14px;
+}
+QPushButton:hover { background: #F4F7F6; border-color: #08745F; }
+QPushButton:disabled { background: #F4F7F6; color: #9DB3AD; }
+"""
+_QUICK_ANSWER_BUTTON = """
+QPushButton {
+    background: #FFFFFF;
+    color: #06483D;
+    border: 1px solid rgba(16,24,23,0.12);
+    border-radius: 14px;
+    padding: 0 12px;
+    text-align: left;
 }
 QPushButton:hover { background: #F4F7F6; border-color: #08745F; }
 QPushButton:disabled { background: #F4F7F6; color: #9DB3AD; }
@@ -188,6 +203,31 @@ def _split_message_attachments(text: str, structured: dict | None = None) -> tup
             continue
         body_lines.append(line)
     return "\n".join(body_lines).strip(), names
+
+
+def _extract_proposal_text(message: str) -> str:
+    text = (message or "").strip()
+    if not text:
+        return ""
+    match = re.search(
+        r"Предлагаю\s+так\s*:\s*(.*?)(?:\n\s*\n\s*Оставить это или переделать\s*\??\s*$|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        return re.sub(r"\s+", " ", match.group(1)).strip()
+    # Fallback: take the middle block between question and the keep/redo prompt.
+    parts = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    if len(parts) >= 2:
+        for part in parts[1:]:
+            if part.lower().startswith("оставить это или переделать"):
+                continue
+            if part.lower().startswith("вопрос"):
+                continue
+            cleaned = re.sub(r"^Предлагаю\s+так\s*:\s*", "", part, flags=re.IGNORECASE).strip()
+            if cleaned:
+                return re.sub(r"\s+", " ", cleaned).strip()
+    return ""
 
 
 class RegulationCreationPage(QWidget):
@@ -417,6 +457,7 @@ class RegulationCreationPage(QWidget):
                     user=message.role == "user",
                     quick_answers=quick_answers,
                     attachments=attachments,
+                    source_text=body,
                 )
             )
         if self._session.status == "generating":
@@ -577,15 +618,21 @@ class RegulationCreationPage(QWidget):
             self._live_status = _creation_status_text(text)
             self._render_messages()
 
-    def _send_quick_answer(self, answer: str) -> None:
+    def _send_quick_answer(self, answer: str, source_text: str = "") -> None:
         if self._session is None:
             return
         value = answer.strip()
         if not value:
             return
         if value.lower().startswith("передел"):
-            self._input.setPlaceholderText("Напишите, как нужно переделать предложенный вариант...")
+            proposal = _extract_proposal_text(source_text)
+            self._input.setPlainText(proposal)
+            self._input.setPlaceholderText("Измените предложенный вариант и отправьте...")
+            self._resize_input()
             self._input.setFocus()
+            cursor = self._input.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self._input.setTextCursor(cursor)
             return
         self._input.clear()
         self.message_requested.emit(self._session.draft_id, value, [])
@@ -627,6 +674,7 @@ class RegulationCreationPage(QWidget):
         user: bool,
         quick_answers: list[str] | None = None,
         attachments: list[str] | None = None,
+        source_text: str = "",
     ) -> QWidget:
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -698,18 +746,28 @@ class RegulationCreationPage(QWidget):
             layout.addLayout(chips)
         answers = quick_answers or []
         if answers:
-            actions = QHBoxLayout()
+            actions = QVBoxLayout()
             actions.setContentsMargins(0, 6, 0, 0)
             actions.setSpacing(8)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+            used = 0
+            max_row = max(220, self._bubble_max_width() - 28)
             for answer in answers:
-                btn = QPushButton(answer)
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setFixedHeight(34)
-                btn.setFont(app_font(12, QFont.Weight.DemiBold))
-                btn.setStyleSheet(_SECONDARY_BUTTON)
-                btn.clicked.connect(lambda _checked=False, value=answer: self._send_quick_answer(value))
-                actions.addWidget(btn)
-            actions.addStretch(1)
+                btn = self._quick_answer_button(answer, source_text=source_text or text)
+                need = btn.sizeHint().width() + (8 if used else 0)
+                if used and used + need > max_row:
+                    row.addStretch(1)
+                    actions.addLayout(row)
+                    row = QHBoxLayout()
+                    row.setContentsMargins(0, 0, 0, 0)
+                    row.setSpacing(8)
+                    used = 0
+                row.addWidget(btn, 0)
+                used += need
+            row.addStretch(1)
+            actions.addLayout(row)
             layout.addLayout(actions)
         column.addWidget(bubble, 0, Qt.AlignmentFlag.AlignRight if user else Qt.AlignmentFlag.AlignLeft)
 
@@ -727,6 +785,25 @@ class RegulationCreationPage(QWidget):
         wrap.setStyleSheet("background: transparent;")
         wrap.setLayout(row)
         return wrap
+
+    def _quick_answer_button(self, answer: str, *, source_text: str) -> QPushButton:
+        btn = QPushButton()
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedHeight(34)
+        btn.setFont(app_font(12, QFont.Weight.DemiBold))
+        btn.setStyleSheet(_QUICK_ANSWER_BUTTON)
+        btn.setToolTip(answer)
+        btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        max_w = min(360, max(180, self._bubble_max_width() - 48))
+        metrics = QFontMetrics(btn.font())
+        text_w = max(40, max_w - 28)
+        elided = metrics.elidedText(answer, Qt.TextElideMode.ElideRight, text_w)
+        btn.setText(elided)
+        btn.setMaximumWidth(max_w)
+        btn.clicked.connect(
+            lambda _checked=False, value=answer, src=source_text: self._send_quick_answer(value, src)
+        )
+        return btn
 
     def _working_block(self) -> QWidget:
         return self._bubble(self._live_status or "Задаю вопрос...", user=False)
