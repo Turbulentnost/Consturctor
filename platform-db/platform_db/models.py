@@ -125,3 +125,16 @@ class KpiSnapshotRow(Base):
     department: Mapped[str] = mapped_column(String(256), nullable=False, default="")
     metrics_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentExecutionHistoryRow(Base):
+    __tablename__ = "agent_execution_history"
+    __table_args__ = {"schema": "kpi"}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    process_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_started: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

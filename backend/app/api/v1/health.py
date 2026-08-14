@@ -8,7 +8,7 @@ from fastapi import APIRouter
 from app.clients.erp_sql import ErpSqlError, ping
 from app.config import settings
 from app.schemas.health import HealthResponse, PlatformServiceHealth
-from app.services import platform_proxy
+from app.services import auth_service, platform_proxy
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -71,5 +71,7 @@ async def health() -> HealthResponse:
         erp_reachable=erp_reachable,
         erp_server=settings.erp_sql_server,
         llm_provider=settings.llm_provider,
+        auth_stub=settings.auth_stub,
+        registration_enabled=auth_service.registration_enabled(),
         platform_services=platform_services,
     )

@@ -34,6 +34,16 @@ def saved_fio() -> str:
     return str(_settings().value("session/fio", "", type=str) or "").strip()
 
 
+def saved_backend_url() -> str:
+    return str(_settings().value("server/backend_url", "", type=str) or "").strip()
+
+
+def save_backend_url(url: str) -> None:
+    s = _settings()
+    s.setValue("server/backend_url", url.strip().rstrip("/"))
+    s.sync()
+
+
 def save_session(*, access_token: str, fio: str = "") -> None:
     s = _settings()
     s.setValue("session/remember", True)

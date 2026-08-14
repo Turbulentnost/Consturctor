@@ -11,8 +11,21 @@ from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 from sqlalchemy import func, select
 
 from platform_contracts.agent_card import AgentTaskReport
-from platform_contracts.kpi import KpiSummary, ReviewEvent, ReviewEventCreate
-from platform_db.models import AgentRunRow, AgentTaskReportRow, ReviewEventRow, ToolEventRow
+from platform_contracts.kpi import (
+    AgentExecutionHistoryListResponse,
+    AgentExecutionHistoryOut,
+    AgentExecutionHistoryStart,
+    KpiSummary,
+    ReviewEvent,
+    ReviewEventCreate,
+)
+from platform_db.models import (
+    AgentExecutionHistoryRow,
+    AgentRunRow,
+    AgentTaskReportRow,
+    ReviewEventRow,
+    ToolEventRow,
+)
 from platform_db.session import get_session_factory
 
 SUCCESS_STATUSES = ("done",)
@@ -66,6 +79,51 @@ def task_kpi_metrics(reports: list[AgentTaskReportRow]) -> tuple[int, int, int]:
     return correct, window_total, lifetime
 
 
+def execution_history_task_metrics(
+    rows: list[AgentExecutionHistoryRow],
+) -> tuple[int, int, int, float]:
+    """Return (started_total, completed_total, lifetime_total, avg_duration_sec)."""
+    lifetime_total = len(rows)
+    started_rows = [row for row in rows if row.is_started]
+    completed_rows = [
+        row
+        for row in started_rows
+        if row.is_completed and row.completed_at is not None
+    ]
+    durations = [
+        (row.completed_at - row.started_at).total_seconds()
+        for row in completed_rows
+        if row.completed_at is not None
+    ]
+    avg_sec = round(sum(durations) / len(durations), 2) if durations else 0.0
+    return len(started_rows), len(completed_rows), lifetime_total, avg_sec
+
+
+def _execution_history_out(row: AgentExecutionHistoryRow) -> AgentExecutionHistoryOut:
+    duration_sec: float | None = None
+    if row.is_completed and row.completed_at is not None:
+        duration_sec = round((row.completed_at - row.started_at).total_seconds(), 2)
+    return AgentExecutionHistoryOut(
+        id=row.id,
+        agent_id=row.agent_id,
+        process_seq=row.process_seq,
+        started_at=row.started_at,
+        completed_at=row.completed_at,
+        is_started=row.is_started,
+        is_completed=row.is_completed,
+        duration_sec=duration_sec,
+    )
+
+
+def _next_process_seq(session, agent_id: str) -> int:
+    current = session.scalar(
+        select(func.max(AgentExecutionHistoryRow.process_seq)).where(
+            AgentExecutionHistoryRow.agent_id == agent_id
+        )
+    )
+    return int(current or 0) + 1
+
+
 def collect_summary(*, department: str = "", agent_id: str = "", hours: int = 24) -> KpiSummary:
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=hours)
@@ -75,6 +133,8 @@ def collect_summary(*, department: str = "", agent_id: str = "", hours: int = 24
         runs_q = select(AgentRunRow).where(AgentRunRow.started_at >= start)
         if department:
             runs_q = runs_q.where(AgentRunRow.department == department)
+        if agent_id:
+            runs_q = runs_q.where(AgentRunRow.agent_id == agent_id)
 
         runs = session.scalars(runs_q).all()
         total_runs = len(runs)
@@ -111,12 +171,23 @@ def collect_summary(*, department: str = "", agent_id: str = "", hours: int = 24
         tasks_correct = 0
         tasks_total = 0
         tasks_lifetime_total = 0
+        completed_tasks_total = 0
+        avg_execution_duration_sec = 0.0
+
+        history_q = select(AgentExecutionHistoryRow)
         if agent_id:
-            reports_q = (
-                select(AgentTaskReportRow)
-                .where(AgentTaskReportRow.agent_id == agent_id)
-                .order_by(AgentTaskReportRow.created_at.asc())
+            history_q = history_q.where(AgentExecutionHistoryRow.agent_id == agent_id)
+        history_rows = session.scalars(history_q).all()
+
+        if history_rows:
+            tasks_total, tasks_correct, tasks_lifetime_total, avg_execution_duration_sec = (
+                execution_history_task_metrics(history_rows)
             )
+            completed_tasks_total = tasks_correct
+        else:
+            reports_q = select(AgentTaskReportRow).order_by(AgentTaskReportRow.created_at.asc())
+            if agent_id:
+                reports_q = reports_q.where(AgentTaskReportRow.agent_id == agent_id)
             reports = session.scalars(reports_q).all()
             tasks_correct, tasks_total, tasks_lifetime_total = task_kpi_metrics(reports)
 
@@ -140,6 +211,8 @@ def collect_summary(*, department: str = "", agent_id: str = "", hours: int = 24
         tasks_total=int(tasks_total),
         tasks_lifetime_total=int(tasks_lifetime_total),
         task_success_rate=rate(int(tasks_correct), int(tasks_total)),
+        completed_tasks_total=int(completed_tasks_total),
+        avg_execution_duration_sec=float(avg_execution_duration_sec),
     )
 
     GAUGE_SUCCESS_RATE.set(summary.success_rate)
@@ -242,6 +315,76 @@ def kpi_review(body: ReviewEventCreate) -> ReviewEvent:
         department=row.department,
         created_at=row.created_at,
     )
+
+
+@app.get("/api/v1/kpi/execution-history", response_model=AgentExecutionHistoryListResponse)
+def list_execution_history(
+    agent_id: str = Query(default=""),
+    limit: int = Query(default=50, ge=1, le=500),
+) -> AgentExecutionHistoryListResponse:
+    factory = get_session_factory()
+    with factory() as session:
+        query = select(AgentExecutionHistoryRow).order_by(
+            AgentExecutionHistoryRow.started_at.desc()
+        )
+        agent = agent_id.strip()
+        if agent:
+            query = query.where(AgentExecutionHistoryRow.agent_id == agent)
+        rows = session.scalars(query.limit(limit)).all()
+    return AgentExecutionHistoryListResponse(items=[_execution_history_out(row) for row in rows])
+
+
+@app.post("/api/v1/kpi/execution-history/start", response_model=AgentExecutionHistoryOut)
+def start_execution_history(body: AgentExecutionHistoryStart) -> AgentExecutionHistoryOut:
+    agent_id = body.agent_id.strip()
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agent_id обязателен")
+
+    factory = get_session_factory()
+    now = datetime.now(timezone.utc)
+    row = AgentExecutionHistoryRow(
+        id=uuid.uuid4(),
+        agent_id=agent_id,
+        process_seq=0,
+        started_at=now,
+        completed_at=None,
+        is_started=True,
+        is_completed=False,
+    )
+    with factory() as session:
+        row.process_seq = _next_process_seq(session, agent_id)
+        session.add(row)
+        try:
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        session.refresh(row)
+    return _execution_history_out(row)
+
+
+@app.post(
+    "/api/v1/kpi/execution-history/{history_id}/complete",
+    response_model=AgentExecutionHistoryOut,
+)
+def complete_execution_history(history_id: uuid.UUID) -> AgentExecutionHistoryOut:
+    factory = get_session_factory()
+    now = datetime.now(timezone.utc)
+    with factory() as session:
+        row = session.get(AgentExecutionHistoryRow, history_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Запись истории не найдена")
+        if row.is_completed:
+            return _execution_history_out(row)
+        row.is_completed = True
+        row.completed_at = now
+        try:
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        session.refresh(row)
+    return _execution_history_out(row)
 
 
 def main() -> None:

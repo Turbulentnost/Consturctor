@@ -23,6 +23,25 @@ class ReviewEvent(ReviewEventCreate):
     created_at: datetime
 
 
+class AgentExecutionHistoryStart(BaseModel):
+    agent_id: str
+
+
+class AgentExecutionHistoryOut(BaseModel):
+    id: UUID
+    agent_id: str
+    process_seq: int
+    started_at: datetime
+    completed_at: datetime | None = None
+    is_started: bool = False
+    is_completed: bool = False
+    duration_sec: float | None = None
+
+
+class AgentExecutionHistoryListResponse(BaseModel):
+    items: list[AgentExecutionHistoryOut] = Field(default_factory=list)
+
+
 class KpiSummary(BaseModel):
     period_start: datetime | None = None
     period_end: datetime | None = None
@@ -40,4 +59,6 @@ class KpiSummary(BaseModel):
     tasks_total: int = 0
     tasks_lifetime_total: int = 0
     task_success_rate: float = 0.0
+    completed_tasks_total: int = 0
+    avg_execution_duration_sec: float = 0.0
     by_department: dict[str, Any] = Field(default_factory=dict)

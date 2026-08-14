@@ -71,6 +71,7 @@ class Settings(BaseSettings):
 
     use_stubs: bool = True
     auth_stub: bool = False
+    allow_local_registration: bool = True
     tool_manifest_path: str = str(BACKEND_ROOT / "data" / "tool_manifest.json")
 
     def resolved_tool_manifest_path(self) -> Path:

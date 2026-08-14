@@ -44,6 +44,8 @@ def test_kpi_summary_defaults() -> None:
     assert summary.tasks_total == 0
     assert summary.tasks_lifetime_total == 0
     assert summary.task_success_rate == 0.0
+    assert summary.completed_tasks_total == 0
+    assert summary.avg_execution_duration_sec == 0.0
 
 
 def test_agent_card_tasks() -> None:

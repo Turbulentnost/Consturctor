@@ -183,7 +183,7 @@ class MainShell(QWidget):
         self._page_workflows = WorkflowPage(self._api)
         self._page_agent_run = AgentRunPage(self._api)
         self._page_saved_workflows = SavedWorkflowsPage(self._api)
-        self._page_kpi = KpiPage()
+        self._page_kpi = KpiPage(self._api)
         self._page_settings = SettingsPage(self._api)
         self._page_review = RegulationReviewPage()
         self._page_role_match = RoleMatchPage()
@@ -1032,6 +1032,8 @@ class MainShell(QWidget):
         if key == "agents":
             self._page_agents.show_agents()
             self._load_agent_drafts()
+        elif key == "kpi":
+            self._page_kpi.refresh()
 
     def _on_open_saved_workflow(self, record: object) -> None:
         from app.api_client import WorkflowRecord as WorkflowRecordType

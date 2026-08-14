@@ -32,6 +32,54 @@ def test_task_kpi_metrics_window() -> None:
     assert correct == 2
 
 
+def test_execution_history_task_metrics() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from platform_kpi.main import execution_history_task_metrics
+
+    now = datetime.now(timezone.utc)
+
+    class Row:
+        def __init__(
+            self,
+            *,
+            is_started: bool,
+            is_completed: bool,
+            started_at: datetime,
+            completed_at: datetime | None,
+        ) -> None:
+            self.is_started = is_started
+            self.is_completed = is_completed
+            self.started_at = started_at
+            self.completed_at = completed_at
+
+    rows = [
+        Row(
+            is_started=True,
+            is_completed=True,
+            started_at=now - timedelta(hours=2),
+            completed_at=now - timedelta(hours=1, minutes=50),
+        ),
+        Row(
+            is_started=True,
+            is_completed=True,
+            started_at=now - timedelta(hours=4),
+            completed_at=now - timedelta(hours=3, minutes=40),
+        ),
+        Row(
+            is_started=True,
+            is_completed=False,
+            started_at=now - timedelta(minutes=30),
+            completed_at=None,
+        ),
+    ]
+    started, completed, lifetime, avg_sec = execution_history_task_metrics(rows)  # type: ignore[arg-type]
+    assert started == 3
+    assert completed == 2
+    assert lifetime == 3
+    assert avg_sec == 900.0
+
+
 def test_collect_summary_empty_sqlite(monkeypatch) -> None:
     pytest.importorskip("psycopg")
     monkeypatch.setenv(

@@ -60,6 +60,8 @@ def _ensure_columns() -> None:
             alters.append("ADD COLUMN department VARCHAR(512) NOT NULL DEFAULT ''")
         if "fio" not in existing:
             alters.append("ADD COLUMN fio VARCHAR(512) NOT NULL DEFAULT ''")
+        if "password_hash" not in existing:
+            alters.append("ADD COLUMN password_hash VARCHAR(512) NULL")
         for clause in alters:
             conn.execute(text(f"ALTER TABLE users {clause}"))
 
