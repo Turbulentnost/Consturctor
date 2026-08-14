@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
     workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"
 
+    # IMAP (server-side tools only; desktop never executes imap.*)
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_username: str = ""
+    imap_password: str = ""
+    imap_mailbox: str = "INBOX"
+
 
 settings = Settings()
 settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)

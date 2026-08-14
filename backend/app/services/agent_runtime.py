@@ -205,12 +205,12 @@ def _request_desktop_tool(
 
 
 def _invoke_imap_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    _ = arguments
-    # Server-side only; full IMAP microservice lands later.
-    raise AgentRuntimeError(
-        f"Инструмент {tool} выполняется на сервере и пока не подключён. "
-        "Почтовые операции (IMAP) не уходят на desktop."
-    )
+    from app.services.imap_tools import ImapToolError, invoke_imap
+
+    try:
+        return invoke_imap(tool, arguments)
+    except ImapToolError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
 
 
 def _is_etp_agent(task: str, workflow: Workflow) -> bool:

@@ -86,7 +86,14 @@ def list_tools() -> list[dict[str, Any]]:
             "name": "imap.list_unread",
             "description": "Список непрочитанных писем (сервер, IMAP).",
             "execution": "server",
-            "input_schema": {"type": "object", "properties": {}},
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 20},
+                    "user": {"type": "string"},
+                    "query": {"type": "string"},
+                },
+            },
         },
         {
             "name": "imap.search",
@@ -94,28 +101,37 @@ def list_tools() -> list[dict[str, Any]]:
             "execution": "server",
             "input_schema": {
                 "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string"},
+                    "user": {"type": "string"},
+                    "limit": {"type": "integer", "default": 50},
+                },
             },
         },
         {
             "name": "imap.fetch_message",
-            "description": "Загрузить письмо по id (сервер, IMAP).",
+            "description": "Загрузить письмо по uid (сервер, IMAP).",
             "execution": "server",
             "input_schema": {
                 "type": "object",
-                "properties": {"message_id": {"type": "string"}},
-                "required": ["message_id"],
+                "properties": {
+                    "uid": {"type": "integer"},
+                    "message_id": {"type": "integer"},
+                    "user": {"type": "string"},
+                },
             },
         },
         {
             "name": "imap.fetch_attachments",
-            "description": "Скачать вложения письма (сервер, IMAP).",
+            "description": "Список вложений письма по uid (сервер, IMAP).",
             "execution": "server",
             "input_schema": {
                 "type": "object",
-                "properties": {"message_id": {"type": "string"}},
-                "required": ["message_id"],
+                "properties": {
+                    "uid": {"type": "integer"},
+                    "message_id": {"type": "integer"},
+                    "user": {"type": "string"},
+                },
             },
         },
     ]
