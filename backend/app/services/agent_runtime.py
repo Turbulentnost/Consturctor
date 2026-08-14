@@ -7,13 +7,14 @@ from urllib.parse import quote_plus
 from sqlalchemy.orm import Session
 
 from app.models.workflow import Workflow
-from app.services.local_mcp import LocalMcpError, call_tool, list_tools
+from app.services.local_mcp import list_tools
 from app.services.plan_run import (
     PlanRunError,
+    build_plan_export_arguments,
     format_plan_run_answer,
-    run_site_search_excel,
     uses_plan_export,
 )
+from app.services.tool_bridge import DEFAULT_TIMEOUT_S, tool_bridge
 
 
 AgentEventCallback = Callable[[dict[str, Any]], None]
@@ -32,6 +33,15 @@ _ETP_HINTS = (
     "площадк",
 )
 
+_IMAP_TOOLS = frozenset(
+    {
+        "imap.list_unread",
+        "imap.search",
+        "imap.fetch_message",
+        "imap.fetch_attachments",
+    }
+)
+
 
 class AgentRuntimeError(RuntimeError):
     pass
@@ -48,6 +58,7 @@ def run_agent_task(
     workflow_id: str,
     message: str,
     emit: AgentEventCallback,
+    run_id: str,
 ) -> dict[str, Any]:
     workflow = (
         db.query(Workflow)
@@ -75,20 +86,23 @@ def run_agent_task(
                 ),
             }
         )
-
-        def _progress(text: str) -> None:
-            # status — отдельный тип для UI (не схлопывать в «анализирует задачу»).
-            emit({"type": "status", "text": text})
-
         try:
-            result = run_site_search_excel(workflow, on_progress=_progress)
+            arguments = build_plan_export_arguments(workflow)
         except PlanRunError as exc:
             emit({"type": "error", "message": str(exc)})
             raise AgentRuntimeError(str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001
-            msg = f"Ошибка выполнения по плану: {exc}"
-            emit({"type": "error", "message": msg})
-            raise AgentRuntimeError(msg) from exc
+
+        try:
+            result = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                tool="plan_export",
+                arguments=arguments,
+            )
+        except AgentRuntimeError as exc:
+            emit({"type": "error", "message": str(exc)})
+            raise
 
         answer = format_plan_run_answer(result)
         emit({"type": "tool_result", "tool": "plan_export", "result": result})
@@ -112,10 +126,15 @@ def run_agent_task(
             emit({"type": "thinking", "text": "Ищу информацию в интернете.\n"})
 
     if tool_name:
-        emit({"type": "tool_call", "tool": tool_name, "arguments": arguments})
         try:
-            tool_result = call_tool(tool_name, arguments)
-        except LocalMcpError as exc:
+            tool_result = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                tool=tool_name,
+                arguments=arguments,
+            )
+        except AgentRuntimeError as exc:
             if tool_name == "site_browser":
                 emit({"type": "thinking", "text": "Повторяю открытие площадки…\n"})
                 retry = {
@@ -126,19 +145,72 @@ def run_agent_task(
                     "headless": True,
                 }
                 try:
-                    tool_result = call_tool("site_browser", retry)
+                    tool_result = _request_desktop_tool(
+                        emit,
+                        run_id=run_id,
+                        user_id=user_id,
+                        tool="site_browser",
+                        arguments=retry,
+                    )
                     arguments = retry
-                except LocalMcpError as exc2:
+                except AgentRuntimeError as exc2:
                     emit({"type": "error", "message": str(exc2)})
                     raise AgentRuntimeError(str(exc2)) from exc2
             else:
                 emit({"type": "error", "message": str(exc)})
-                raise AgentRuntimeError(str(exc)) from exc
+                raise
         emit({"type": "tool_result", "tool": tool_name, "result": tool_result})
 
     answer = _compose_answer(task, tool_name, tool_result)
     emit({"type": "agent_message", "text": answer})
     return {"answer": answer, "tool": tool_name, "tool_result": tool_result or {}}
+
+
+def _request_desktop_tool(
+    emit: AgentEventCallback,
+    *,
+    run_id: str,
+    user_id: str,
+    tool: str,
+    arguments: dict[str, Any],
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> dict[str, Any]:
+    if tool.startswith("imap.") or tool in _IMAP_TOOLS:
+        return _invoke_imap_server(tool, arguments)
+
+    request_id = tool_bridge.new_request_id()
+    tool_bridge.begin_wait(request_id=request_id, user_id=user_id)
+    emit({"type": "tool_call", "tool": tool, "arguments": arguments})
+    emit(
+        {
+            "type": "tool_request",
+            "run_id": run_id,
+            "request_id": request_id,
+            "tool": tool,
+            "arguments": arguments,
+        }
+    )
+    try:
+        payload = tool_bridge.await_result(
+            request_id=request_id,
+            timeout_s=timeout_s,
+        )
+    except TimeoutError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
+
+    if not payload.get("ok"):
+        raise AgentRuntimeError(str(payload.get("error") or f"Ошибка инструмента {tool}"))
+    result = payload.get("result")
+    return result if isinstance(result, dict) else {}
+
+
+def _invoke_imap_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    _ = arguments
+    # Server-side only; full IMAP microservice lands later.
+    raise AgentRuntimeError(
+        f"Инструмент {tool} выполняется на сервере и пока не подключён. "
+        "Почтовые операции (IMAP) не уходят на desktop."
+    )
 
 
 def _is_etp_agent(task: str, workflow: Workflow) -> bool:

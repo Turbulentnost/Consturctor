@@ -118,3 +118,10 @@ class WebSearchResponse(BaseModel):
     query: str
     results: list[WebSearchResultItem] = Field(default_factory=list)
     extracted_text: str = ""
+
+
+class AgentToolResultSubmit(BaseModel):
+    request_id: str
+    ok: bool = True
+    result: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""

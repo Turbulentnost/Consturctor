@@ -287,6 +287,12 @@ class AgentRunPage(QWidget):
 def _friendly_event(event: dict) -> dict | None:
     """Hide raw tool payloads / code; keep only user-facing messages."""
     event_type = str(event.get("type") or "system")
+    if event_type == "run":
+        return None
+    if event_type == "tool_request":
+        tool = str(event.get("tool") or "")
+        label = _TOOL_LABELS.get(tool, tool or "инструмент")
+        return {"type": "status", "text": f"Выполняю на этом ПК: «{label}»…"}
     if event_type == "status":
         text = str(event.get("text") or "").strip()
         return {"type": "status", "text": text[:280] or "Агент работает…"}

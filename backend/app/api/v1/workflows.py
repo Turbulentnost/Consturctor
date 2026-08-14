@@ -12,6 +12,7 @@ from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.db.session import SessionLocal, get_db
 from app.schemas.workflow import (
+    AgentToolResultSubmit,
     ArtifactItem,
     ArtifactsDownloadRequest,
     ExecuteRequest,
@@ -21,6 +22,7 @@ from app.schemas.workflow import (
     WorkflowSchema,
 )
 from app.services.agent_runtime import AgentRuntimeError, available_tools, run_agent_task
+from app.services.tool_bridge import ToolBridgeError, tool_bridge
 from app.services.workflows import (
     WorkflowError,
     build_artifacts_zip,
@@ -77,6 +79,8 @@ def _workflow_stream(action):
 
 def _agent_run_stream(*, user_id: str, workflow_id: str, message: str):
     queue: Queue[dict | None] = Queue()
+    run_id = tool_bridge.new_run_id()
+    tool_bridge.register_run(run_id, user_id)
 
     def emit(payload: dict) -> None:
         queue.put(payload)
@@ -84,12 +88,14 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str):
     def run() -> None:
         db = SessionLocal()
         try:
+            emit({"type": "run", "run_id": run_id})
             result = run_agent_task(
                 db,
                 user_id=user_id,
                 workflow_id=workflow_id,
                 message=message,
                 emit=emit,
+                run_id=run_id,
             )
             queue.put({"type": "done", "result": result})
         except AgentRuntimeError as exc:
@@ -97,6 +103,7 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str):
         except Exception as exc:  # noqa: BLE001
             queue.put({"type": "error", "message": str(exc)})
         finally:
+            tool_bridge.unregister_run(run_id)
             db.close()
             queue.put(None)
 
@@ -183,6 +190,26 @@ async def run_workflow_agent_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/agent-runs/{run_id}/tool-results")
+async def submit_agent_tool_result(
+    run_id: str,
+    body: AgentToolResultSubmit,
+    auth: AuthContext = Depends(get_current_user),
+) -> dict[str, bool]:
+    try:
+        tool_bridge.submit_result(
+            run_id=run_id,
+            request_id=body.request_id,
+            user_id=auth.user_id,
+            ok=body.ok,
+            result=body.result,
+            error=body.error,
+        )
+    except ToolBridgeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"ok": True}
 
 
 @router.post("", response_model=WorkflowSchema)

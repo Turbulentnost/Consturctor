@@ -1198,14 +1198,38 @@ class ApiClient:
         data = self._request("GET", "/api/v1/workflows/agent-tools", timeout=60.0)
         return [item for item in (data.get("tools") or []) if isinstance(item, dict)]
 
+    def post_agent_tool_result(
+        self,
+        run_id: str,
+        *,
+        request_id: str,
+        ok: bool,
+        result: dict | None = None,
+        error: str = "",
+    ) -> None:
+        self._request(
+            "POST",
+            f"/api/v1/workflows/agent-runs/{run_id}/tool-results",
+            json={
+                "request_id": request_id,
+                "ok": ok,
+                "result": result or {},
+                "error": error or "",
+            },
+            timeout=120.0,
+        )
+
     def stream_workflow_agent_run(
         self,
         workflow_id: str,
         message: str,
         on_event: Callable[[dict], None],
     ) -> dict:
+        from app.tools import ToolHostError, invoke_tool
+
         url = f"{self.base_url}/api/v1/workflows/{workflow_id}/agent-runs/stream"
         final_result: dict | None = None
+        run_id = ""
         try:
             with httpx.Client(timeout=None) as client:
                 with client.stream(
@@ -1223,10 +1247,61 @@ class ApiClient:
                             if data_lines:
                                 payload = _parse_sse_payload("\n".join(data_lines))
                                 payload_type = str(payload.get("type") or "")
-                                if payload_type == "error":
+                                if payload_type == "run":
+                                    run_id = str(payload.get("run_id") or "")
+                                    on_event(payload)
+                                elif payload_type == "tool_request":
+                                    req_run = str(payload.get("run_id") or run_id)
+                                    request_id = str(payload.get("request_id") or "")
+                                    tool = str(payload.get("tool") or "")
+                                    arguments = (
+                                        payload.get("arguments")
+                                        if isinstance(payload.get("arguments"), dict)
+                                        else {}
+                                    )
+                                    on_event(
+                                        {
+                                            "type": "status",
+                                            "text": f"Выполняю на этом компьютере: {tool}…",
+                                        }
+                                    )
+                                    try:
+                                        tool_result = invoke_tool(tool, arguments)
+                                        self.post_agent_tool_result(
+                                            req_run,
+                                            request_id=request_id,
+                                            ok=True,
+                                            result=tool_result,
+                                        )
+                                    except ToolHostError as exc:
+                                        try:
+                                            self.post_agent_tool_result(
+                                                req_run,
+                                                request_id=request_id,
+                                                ok=False,
+                                                error=str(exc),
+                                            )
+                                        except ApiError:
+                                            raise ApiError(str(exc)) from exc
+                                    except Exception as exc:  # noqa: BLE001
+                                        err = f"Ошибка инструмента {tool}: {exc}"
+                                        try:
+                                            self.post_agent_tool_result(
+                                                req_run,
+                                                request_id=request_id,
+                                                ok=False,
+                                                error=err,
+                                            )
+                                        except ApiError:
+                                            raise ApiError(err) from exc
+                                elif payload_type == "error":
                                     raise ApiError(str(payload.get("message") or "Ошибка запуска агента"))
-                                if payload_type == "done":
-                                    final_result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+                                elif payload_type == "done":
+                                    final_result = (
+                                        payload.get("result")
+                                        if isinstance(payload.get("result"), dict)
+                                        else {}
+                                    )
                                 else:
                                     on_event(payload)
                             data_lines = []

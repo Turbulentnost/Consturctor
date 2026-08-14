@@ -1,19 +1,16 @@
-"""Запуск агента по правилам из plan_json (не по захардкоженному сценарию)."""
+"""Запуск агента по правилам из plan_json (не по захардкоженному сценарию).
+
+Исполнение поиска/Excel — на desktop (SSE tool_request). Здесь только
+резолв правил из plan и форматирование ответа.
+"""
 
 from __future__ import annotations
 
-import os
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
-
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font
-from openpyxl.utils import get_column_letter
 
 from app.models.workflow import Workflow
 from app.services.workflows.plan_models import PlanRuntime, WorkflowPlan
@@ -22,25 +19,6 @@ ProgressCallback = Callable[[str], None]
 
 _TOOLS_ROSELTORG = Path(__file__).resolve().parents[3] / "tools" / "roseltorg_tender_search"
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
-
-# Map free-text column names from the plan → tender fields.
-_COLUMN_ALIASES: dict[str, str] = {
-    "название": "title",
-    "название тендера": "title",
-    "наименование": "title",
-    "предмет": "title",
-    "цена": "amount",
-    "сумма": "amount",
-    "нмц": "amount",
-    "дата": "deadline",
-    "дата окончания": "deadline",
-    "срок": "deadline",
-    "ссылка": "url",
-    "url": "url",
-    "ключевые слова": "keywords",
-    "ключевые": "keywords",
-    "ключи": "keywords",
-}
 
 
 class PlanRunError(RuntimeError):
@@ -55,20 +33,6 @@ class ResolvedRun:
     destination: str  # desktop | ...
     export_format: str  # xlsx
     source: str  # runtime | inferred
-
-
-def desktop_dir() -> Path:
-    home = Path.home()
-    candidates = [
-        home / "Desktop",
-        home / "OneDrive" / "Desktop",
-        Path(os.environ.get("USERPROFILE", "")) / "Desktop",
-        Path(os.environ.get("USERPROFILE", "")) / "OneDrive" / "Desktop",
-    ]
-    for path in candidates:
-        if path and path.is_dir():
-            return path
-    return home
 
 
 def plan_dict(workflow: Workflow) -> dict[str, Any]:
@@ -112,6 +76,32 @@ def resolve_run_spec(workflow: Workflow) -> ResolvedRun | None:
 
 def uses_plan_export(workflow: Workflow) -> bool:
     return resolve_run_spec(workflow) is not None
+
+
+def build_plan_export_arguments(
+    workflow: Workflow,
+    *,
+    max_queries: int = 80,
+) -> dict[str, Any]:
+    """Arguments for desktop tool `plan_export` (no local Playwright/Excel)."""
+    spec = resolve_run_spec(workflow)
+    if spec is None:
+        raise PlanRunError("В плане агента нет правил поиска/Excel-выгрузки")
+    if spec.export_format != "xlsx":
+        raise PlanRunError(f"Формат выгрузки «{spec.export_format}» пока не поддержан")
+    queries = list(spec.keywords[:max_queries])
+    if not queries:
+        raise PlanRunError("В плане нет ключевых слов для поиска")
+    return {
+        "site_url": spec.site_url,
+        "keywords": queries,
+        "columns": list(spec.columns),
+        "destination": spec.destination,
+        "export_format": spec.export_format,
+        "workflow_title": workflow.title or "agent",
+        "source": spec.source,
+        "max_queries": max_queries,
+    }
 
 
 def ensure_runtime(plan: WorkflowPlan) -> WorkflowPlan:
@@ -200,7 +190,6 @@ def _extract_keyword_block(plan: WorkflowPlan) -> str:
             )
             if m:
                 return m.group(1).strip()
-            # Drop leading prose up to first ":" if it looks like a list after.
             if ":" in line:
                 tail = line.split(":", 1)[1].strip()
                 if ";" in tail or "," in tail:
@@ -219,7 +208,6 @@ def _extract_keyword_block(plan: WorkflowPlan) -> str:
 
 def _extract_columns(blob: str) -> list[str]:
     low = blob.casefold()
-    # Prefer explicit «колонки: a, b, c»
     m = re.search(
         r"колонк[аи]\s*(?:excel[^:]*|выгрузки)?\s*[:—-]\s*([^\n.]+)",
         low,
@@ -229,17 +217,14 @@ def _extract_columns(blob: str) -> list[str]:
     if m:
         raw = m.group(1)
         found = [p.strip(" «»\"'") for p in re.split(r"[,;/]| и ", raw) if p.strip(" «»\"'")]
-    # Fallback: look for the classic triad mentioned in answers.
     defaults = []
     for name in ("название", "цена", "дата", "ссылка", "ключевые слова"):
         if name in low:
             defaults.append(name)
     cols = found or defaults or ["название", "цена", "дата"]
-    # Always keep link/keywords if plan mentions them and they aren't already there.
     for extra in ("ссылка", "ключевые слова"):
         if extra in low and extra not in cols:
             cols.append(extra)
-    # Normalize display labels
     nice = []
     for c in cols:
         c = c.strip().casefold()
@@ -292,144 +277,11 @@ def run_site_search_excel(
     on_progress: ProgressCallback | None = None,
     max_queries: int = 80,
 ) -> dict[str, Any]:
-    spec = resolve_run_spec(workflow)
-    if spec is None:
-        raise PlanRunError("В плане агента нет правил поиска/Excel-выгрузки")
-
-    if spec.export_format != "xlsx":
-        raise PlanRunError(f"Формат выгрузки «{spec.export_format}» пока не поддержан")
-
-    queries = spec.keywords[:max_queries]
-    if on_progress:
-        on_progress(
-            f"Правила из паспорта: {len(queries)} ключ., колонки={', '.join(spec.columns)}, "
-            f"файл → {spec.destination}, сайт={spec.site_url[:80]}"
-        )
-
-    host = (urlparse(spec.site_url).hostname or "").casefold()
-    if "roseltorg" not in host and "росэлторг" not in (workflow.title or "").casefold():
-        # Generic sites: still try Roseltorg client only for roseltorg; else error clearly.
-        if "roseltorg" not in spec.site_url.casefold():
-            raise PlanRunError(
-                "Поиск с Excel пока реализован для Росэлторг. "
-                f"В плане указан другой сайт: {spec.site_url}"
-            )
-
-    path = str(_TOOLS_ROSELTORG)
-    if path not in sys.path:
-        sys.path.insert(0, path)
-    try:
-        from roseltorg_tender_search import config as rt_config  # type: ignore
-        from roseltorg_tender_search.roseltorg_client import search  # type: ignore
-    except ImportError as exc:
-        raise PlanRunError(
-            "Не установлен инструмент поиска (Playwright). "
-            "В tools/roseltorg_tender_search: pip install -r requirements.txt "
-            "&& python -m playwright install chromium"
-        ) from exc
-
-    # Use THIS agent's URL (source filters etc.), not a global hardcode.
-    prev_url = rt_config.SEARCH_URL
-    try:
-        if spec.site_url:
-            rt_config.SEARCH_URL = spec.site_url
-        def _progress(i: int, total: int, query: str, found: int) -> None:
-            if on_progress:
-                on_progress(f"Ищу «{query}» ({i}/{total}) — найдено: {found}")
-
-        tenders = search(queries, headless=True, on_progress=_progress)
-    finally:
-        rt_config.SEARCH_URL = prev_url
-
-    dest_dir = desktop_dir() if spec.destination == "desktop" else desktop_dir()
-    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    safe_title = re.sub(r"[^\w\-]+", "_", (workflow.title or "agent"), flags=re.UNICODE)[:40]
-    dest = dest_dir / f"{safe_title}_{stamp}.xlsx"
-
-    rows = [_tender_to_row(t) for t in _iter_tenders(tenders)]
-    _export_excel(rows, dest, spec.columns)
-
-    if on_progress:
-        if not rows:
-            on_progress(
-                "Поиск завершён без записей. Если Росэлторг блокировал запросы — "
-                "повторите запуск; файл Excel всё равно сохранён (пустой)."
-            )
-        on_progress(f"Excel сохранён: {dest}")
-
-    return {
-        "ok": True,
-        "file": str(dest),
-        "count": len(rows),
-        "queries": queries,
-        "rows": rows[:30],
-        "columns": spec.columns,
-        "site_url": spec.site_url,
-        "source": spec.source,
-    }
-
-
-def _iter_tenders(items: Any) -> list[Any]:
-    if not isinstance(items, list):
-        return [items]
-    flat: list[Any] = []
-    for item in items:
-        if isinstance(item, list):
-            flat.extend(_iter_tenders(item))
-        else:
-            flat.append(item)
-    return flat
-
-
-def _tender_to_row(tender: Any) -> dict[str, str]:
-    if isinstance(tender, dict):
-        title = str(tender.get("title") or tender.get("name") or "Без названия")
-        amount = str(tender.get("amount") or tender.get("price") or "")
-        deadline = str(tender.get("deadline") or tender.get("date") or "")
-        url = str(tender.get("url") or tender.get("link") or "")
-        matched = tender.get("matched_queries") or tender.get("keywords") or []
-    else:
-        title = str(getattr(tender, "title", "") or "Без названия")
-        amount = str(getattr(tender, "amount", "") or "")
-        deadline = str(getattr(tender, "deadline", "") or "")
-        url = str(getattr(tender, "url", "") or "")
-        matched = getattr(tender, "matched_queries", []) or []
-    if isinstance(matched, str):
-        keywords = matched
-    else:
-        keywords = ", ".join(str(item) for item in matched if str(item).strip())
-    return {
-        "title": title,
-        "amount": amount,
-        "deadline": deadline,
-        "url": url,
-        "keywords": keywords,
-    }
-
-
-def _export_excel(rows: list[dict[str, Any]], dest: Path, columns: list[str]) -> Path:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Результат"
-    header_font = Font(bold=True)
-
-    headers = [c[:1].upper() + c[1:] if c else c for c in columns]
-    for col, name in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col, value=name)
-        cell.font = header_font
-        cell.alignment = Alignment(vertical="center", wrap_text=True)
-        ws.column_dimensions[get_column_letter(col)].width = 28 if col > 1 else 55
-    ws.freeze_panes = "A2"
-
-    field_keys = [_COLUMN_ALIASES.get(c.casefold(), c.casefold()) for c in columns]
-    for r_i, row in enumerate(rows, start=2):
-        for c_i, key in enumerate(field_keys, start=1):
-            val = row.get(key, "")
-            ws.cell(row=r_i, column=c_i, value=val).alignment = Alignment(wrap_text=True)
-
-    wb.save(dest)
-    return dest
+    """Deprecated: execution moved to desktop via tool_request `plan_export`."""
+    _ = workflow, on_progress, max_queries
+    raise PlanRunError(
+        "Поиск и Excel выполняются на desktop (tool plan_export), не на backend."
+    )
 
 
 def format_plan_run_answer(result: dict[str, Any]) -> str:
