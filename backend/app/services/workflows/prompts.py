@@ -136,11 +136,11 @@ ARTIFACTS_INSTRUCTION = (
 
 RUNTIME_NETWORK_INSTRUCTION = (
     "Сеть и прогоны:\n"
-    "- Cloud VM часто НЕ достучится до roseltorg.ru / закрытых ЭТП "
+    "- Cloud VM часто НЕ достучится до закрытых площадок / внутренних сайтов "
     "(Connection reset) — это ожидаемо, не считай задачу проваленной только из‑за этого.\n"
     "- Реализуй ДВА режима: `--fixtures` (офлайн/CI) и `--live` (боевой).\n"
     "- Live-режим на рабочей станции использует HTTP-поиск "
-    "(DuckDuckGo/Wikipedia через web_search / httpx), а не только Playwright к ЭТП.\n"
+    "(DuckDuckGo/Wikipedia через web_search / httpx), а не только Playwright.\n"
     "- Фикстуры — запасной путь для тестов; основной рабочий сценарий должен уметь live-поиск.\n"
     "- В RESULT.md опиши: какие тесты реально прогнаны, live доступен или нет, "
     "и как запускать агента локально."

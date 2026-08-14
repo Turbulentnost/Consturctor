@@ -7,9 +7,7 @@
 from __future__ import annotations
 
 import re
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable
 
 from app.models.workflow import Workflow
@@ -17,7 +15,6 @@ from app.services.workflows.plan_models import PlanRuntime, WorkflowPlan
 
 ProgressCallback = Callable[[str], None]
 
-_TOOLS_ROSELTORG = Path(__file__).resolve().parents[3] / "tools" / "roseltorg_tender_search"
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
@@ -62,7 +59,8 @@ def resolve_run_spec(workflow: Workflow) -> ResolvedRun | None:
         fmt = "xlsx"
     url = (rt.site_url or "").strip()
     if not url:
-        url = "https://www.roseltorg.ru/procedures/search"
+        # Без URL в плане — не подставляем чужую площадку.
+        return None
 
     return ResolvedRun(
         site_url=url,
@@ -92,6 +90,11 @@ def build_plan_export_arguments(
     queries = list(spec.keywords[:max_queries])
     if not queries:
         raise PlanRunError("В плане нет ключевых слов для поиска")
+    if not str(spec.site_url or "").strip():
+        raise PlanRunError(
+            "В плане агента не указан URL сайта (runtime.site_url). "
+            "Укажите площадку в ответах при создании — без подстановки по умолчанию."
+        )
     return {
         "site_url": spec.site_url,
         "keywords": queries,
@@ -141,6 +144,9 @@ def infer_runtime(plan: WorkflowPlan) -> PlanRuntime | None:
             return None
 
     url = _extract_url(blob) or ""
+    if not url:
+        # Не выводим runtime без явного сайта — иначе позже подставлялась чужая площадка.
+        return None
     keyword_text = _extract_keyword_block(plan)
     keywords = _expand_keyword_text(keyword_text) if keyword_text else []
     if not keywords:
@@ -236,39 +242,32 @@ def _extract_columns(blob: str) -> list[str]:
 
 
 def _expand_keyword_text(block: str) -> list[str]:
+    """Split keyword block into queries — no marketplace dictionaries."""
     block = (block or "").strip()
     if not block:
         return []
-    # Prefer semicolon groups (dictionary lines), else newlines.
     if ";" in block:
         raw_parts = [p.strip() for p in block.split(";") if p.strip()]
     else:
         raw_parts = [p.strip() for p in re.split(r"[\n]+", block) if p.strip()]
-        if len(raw_parts) == 1 and "," in raw_parts[0]:
-            # Single comma list without semicolons.
-            raw_parts = [raw_parts[0]]
 
-    path = str(_TOOLS_ROSELTORG)
-    if path not in sys.path:
-        sys.path.insert(0, path)
-    try:
-        from roseltorg_tender_search.search_rules import build_queries  # type: ignore
-
-        return build_queries(raw_parts)
-    except Exception:
-        out: list[str] = []
-        seen: set[str] = set()
-        for part in raw_parts:
-            for chunk in re.split(r"[,/]", part):
-                q = chunk.strip()
-                if not q:
-                    continue
-                key = q.casefold()
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(q)
-        return out
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in raw_parts:
+        # Semicolon groups stay as phrases; otherwise allow comma-splitting.
+        pieces = [part] if ";" in block else [c.strip() for c in re.split(r"[,/]", part) if c.strip()]
+        if not pieces:
+            pieces = [part]
+        for q in pieces:
+            q = q.strip()
+            if not q:
+                continue
+            key = q.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(q)
+    return out
 
 
 def run_site_search_excel(

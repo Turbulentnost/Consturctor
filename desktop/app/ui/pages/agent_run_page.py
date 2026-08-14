@@ -50,8 +50,7 @@ QPlainTextEdit {
 _TOOL_LABELS = {
     "web_search": "Поиск в интернете",
     "site_browser": "Просмотр сайта",
-    "plan_export": "Поиск закупок и Excel",
-    "roseltorg_excel": "Поиск закупок и Excel",
+    "plan_export": "Поиск по сайту и Excel",
 }
 
 
@@ -179,14 +178,12 @@ class AgentRunPage(QWidget):
         QTimer.singleShot(250, self._run_default_task)
 
     def _default_task(self) -> str:
-        title = (self._workflow.title if self._workflow else "") or "закупки"
-        low = title.casefold()
-        if any(x in low for x in ("roseltorg", "росэлторг", "закуп", "тендер", "этп")):
-            return (
-                "Найди актуальные закупки на https://www.roseltorg.ru/procedures/search "
-                "и верни список с названиями и ссылками."
-            )
-        return f"Выполни рабочую задачу агента «{title}» и покажи понятный результат."
+        title = (self._workflow.title if self._workflow else "") or "агент"
+        # Без хардкода конкретной площадки — задача из цели агента.
+        return (
+            f"Выполни рабочую задачу агента «{title}» по правилам из его плана "
+            "и покажи понятный результат."
+        )
 
     def _run_default_task(self) -> None:
         if self._busy or self._workflow is None:
@@ -338,7 +335,7 @@ def _summarize_tool_result(tool: str, result: dict) -> str:
     if tool == "web_search":
         n = len(result.get("results") or [])
         return f"Нашла {n} результатов в поиске." if n else "Поиск не дал результатов."
-    if tool in {"plan_export", "roseltorg_excel"}:
+    if tool == "plan_export":
         count = int(result.get("count") or 0)
         path = str(result.get("file") or "").strip()
         if path:

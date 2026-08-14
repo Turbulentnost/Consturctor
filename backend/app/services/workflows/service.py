@@ -457,7 +457,7 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
             "can_publish": False,
             "published": True,
             "runtime": "mcp",
-            "tools": ["site_browser", "web_search"],
+            "tools": ["site_browser", "web_search", "plan_export"],
             "ui_mode": "chat",
         }
     )

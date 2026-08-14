@@ -1,4 +1,4 @@
-"""Roseltorg search + Excel on the user's Desktop (plan_export tool)."""
+"""Plan-driven site search + Excel on the user's machine (plan_export tool)."""
 
 from __future__ import annotations
 
@@ -70,16 +70,18 @@ def run_plan_export(arguments: dict[str, Any]) -> dict[str, Any]:
         raise ToolHostError(f"Формат выгрузки «{export_format}» пока не поддержан")
     if not keywords:
         raise ToolHostError("Нет ключевых слов для поиска")
+    if not site_url:
+        raise ToolHostError(
+            "В плане не указан URL сайта (site_url). "
+            "Укажите площадку в правилах агента — без подстановки по умолчанию."
+        )
 
     queries = keywords[:max_queries]
-    if not site_url:
-        site_url = "https://www.roseltorg.ru/procedures/search"
-
     host = (urlparse(site_url).hostname or "").casefold()
-    if "roseltorg" not in host and "roseltorg" not in site_url.casefold():
+    if "roseltorg" not in host:
         raise ToolHostError(
-            "Поиск с Excel пока реализован для Росэлторг. "
-            f"В плане указан другой сайт: {site_url}"
+            "Поиск с Excel пока реализован только для Росэлторг (адаптер). "
+            f"В плане указан сайт: {site_url}"
         )
 
     path = str(_tools_roseltorg())

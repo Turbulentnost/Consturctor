@@ -1620,10 +1620,10 @@ class WorkflowPage(QWidget):
         if self._record is None:
             return
         wid = self._record.id
-        title = self._record.title or "закупки"
+        title = self._record.title or "агент"
         message = (
-            f"Сделай live тестовый прогон через web_search: найди актуальные закупки "
-            f"по теме «{title}». Если ЭТП недоступна — всё равно верни результаты поиска."
+            f"Сделай live тестовый прогон через web_search по теме «{title}». "
+            "Верни понятный список результатов."
         )
 
         def live() -> None:

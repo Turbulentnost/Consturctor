@@ -57,16 +57,6 @@ _PHASE_HINT = {
 }
 
 
-def _default_roseltorg_local_run() -> dict:
-    cwd = tools_dir() / "roseltorg_tender_search"
-    return {
-        "cwd": str(cwd),
-        "bat": "run.bat",
-        "module": "roseltorg_tender_search",
-        "output": "report.xlsx",
-    }
-
-
 class SavedWorkflowsPage(QWidget):
     open_requested = Signal(object)
     _list_ready = Signal(object)
@@ -101,20 +91,12 @@ class SavedWorkflowsPage(QWidget):
         refresh.setStyleSheet(_SECONDARY)
         refresh.clicked.connect(self.refresh)
 
-        bind = QPushButton("Привязать roseltorg")
-        bind.setFixedHeight(36)
-        bind.setCursor(Qt.CursorShape.PointingHandCursor)
-        bind.setFont(app_font(12, QFont.Weight.DemiBold))
-        bind.setStyleSheet(_SECONDARY)
-        bind.clicked.connect(self._on_bind_roseltorg)
-
         header_text = QVBoxLayout()
         header_text.setSpacing(4)
         header_text.addWidget(title)
         header_text.addWidget(subtitle)
         header = QHBoxLayout()
         header.addLayout(header_text, 1)
-        header.addWidget(bind, 0, Qt.AlignmentFlag.AlignTop)
         header.addWidget(refresh, 0, Qt.AlignmentFlag.AlignTop)
 
         self._list = QListWidget()
@@ -330,27 +312,6 @@ class SavedWorkflowsPage(QWidget):
             return
         self.open_requested.emit(self._current_full)
 
-    def _on_bind_roseltorg(self) -> None:
-        if self._current_full is None:
-            QMessageBox.information(self, "Привязка", "Выберите workflow.")
-            return
-        wid = self._current_full.id
-        spec = _default_roseltorg_local_run()
-        if not Path(spec["cwd"]).is_dir():
-            QMessageBox.warning(self, "Инструмент", f"Не найден каталог:\n{spec['cwd']}")
-            return
-
-        def work() -> None:
-            try:
-                self._detail_ready.emit(self._api.update_workflow_local_run(wid, spec))
-            except ApiError as exc:
-                self._fail.emit(exc.message)
-            except Exception as exc:  # noqa: BLE001
-                self._fail.emit(str(exc))
-
-        Thread(target=work, daemon=True).start()
-        self._status.setText("Привязываю roseltorg_tender_search…")
-
     def _on_run(self) -> None:
         record = self._current_full
         if record is None:
@@ -361,7 +322,8 @@ class SavedWorkflowsPage(QWidget):
             QMessageBox.warning(
                 self,
                 "Локальный запуск не настроен",
-                "Нажмите «Привязать roseltorg» или задайте local_run через API.",
+                "Опубликованные агенты запускаются из «Мои агенты». "
+                "Либо задайте local_run через API для legacy CLI.",
             )
             return
         if self._proc is not None:
