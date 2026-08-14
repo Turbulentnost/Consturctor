@@ -31,6 +31,8 @@ MatchType = Literal[
     "graph_relation",
     "definition_link",
     "actor_inheritance",
+    "role_context",
+    "unit_process",
 ]
 MatchStatus = Literal["accepted", "probable", "pending", "rejected"]
 RelationType = Literal[
@@ -90,6 +92,7 @@ class RegulationFragment(BaseModel):
     numbering: str | None = None
     location: dict = Field(default_factory=dict)
     style: str = ""
+    styleRuns: list[dict] = Field(default_factory=list)
     contentHash: str = ""
     context: RegulationFragmentContext | None = None
     ocrConfidence: float = Field(default=1.0, ge=0.0, le=1.0)
@@ -111,7 +114,7 @@ class RegulationParseResult(BaseModel):
 
 class RoleAlias(BaseModel):
     value: str
-    status: Literal["verified", "candidate", "unverified"] = "candidate"
+    status: Literal["verified", "candidate", "unverified", "context"] = "candidate"
     reason: str = ""
     sourceFragments: list[str] = Field(default_factory=list)
 
@@ -376,6 +379,7 @@ class ReadinessQuestion(BaseModel):
 class ReadinessAnswerRequest(BaseModel):
     questionId: str
     answer: str
+    clarifyingPrompt: str = ""
 
 
 class ReadinessAnswer(BaseModel):
@@ -427,12 +431,36 @@ class AgentReadinessResult(BaseModel):
     createdAt: datetime | None = None
 
 
+class RevisionDiffBlock(BaseModel):
+    blockId: str = ""
+    section: str = ""
+    before: str = ""
+    after: str = ""
+    page: int = 0
+    bbox: list[float] | None = None
+    status: Literal["changed", "unchanged", "added"] = "changed"
+
+
+class RevisionPreviewPage(BaseModel):
+    page: int = 1
+    imageUrl: str = ""
+
+
 class RegulationRevisionResult(BaseModel):
     revisionId: str
     regulationId: str
     readinessRunId: str
     documentPath: str = ""
     protocolPath: str = ""
+    pdfPath: str = ""
+    sourcePreviewHtml: str = ""
+    revisedPreviewHtml: str = ""
+    sourcePreviewPages: list[RevisionPreviewPage] = Field(default_factory=list)
+    revisedPreviewPages: list[RevisionPreviewPage] = Field(default_factory=list)
+    diffBlocks: list[RevisionDiffBlock] = Field(default_factory=list)
+    downloadUrl: str = ""
+    pdfDownloadUrl: str = ""
+    protocolUrl: str = ""
     message: str = ""
     createdAt: datetime | None = None
 
@@ -440,6 +468,76 @@ class RegulationRevisionResult(BaseModel):
 AgentDraftStatus = Literal["draft", "interview", "changes_pending", "ready", "finalized"]
 QuestionChatStatus = Literal["active", "answered", "needs_clarification", "closed"]
 QuestionChatRole = Literal["assistant", "user", "system"]
+
+
+class AgentSuggestion(BaseModel):
+    agentId: str
+    title: str
+    description: str = ""
+    regulationId: str = ""
+    roleMatchRunId: str = ""
+    functionId: str = ""
+    sourceBlockId: str = ""
+
+
+class AgentSuggestionListResult(BaseModel):
+    items: list[AgentSuggestion] = Field(default_factory=list)
+
+
+class PassportFunctionModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: str = ""
+    action_level: str = "read"
+    requires_human_approval: bool = False
+    automation_kind: str = "auto"
+
+
+class AgentPassportModel(BaseModel):
+    name: str = ""
+    goal: str = ""
+    trigger: str = ""
+    receives: str = ""
+    checks: str = ""
+    decisions: str = ""
+    can_autonomous: str = ""
+    needs_human_approval: str = ""
+    forbidden: str = ""
+    result: str = ""
+    missing_fields: list[str] = Field(default_factory=list)
+    questions: list[dict] = Field(default_factory=list)
+    source: str = "heuristic"
+    text: str = ""
+
+
+class DraftPassportRequest(BaseModel):
+    bp_name: str = Field(..., min_length=1)
+    excerpt: str = ""
+    functions: list[PassportFunctionModel] = Field(..., min_length=1)
+    agent_name: str | None = None
+
+
+class DraftPassportFromSuggestionRequest(BaseModel):
+    regulationId: str = Field(..., min_length=1)
+    roleMatchRunId: str = Field(..., min_length=1)
+    functionId: str = Field(..., min_length=1)
+    agentTitle: str = ""
+    agentDescription: str = ""
+
+
+class CompletePassportRequest(BaseModel):
+    passport: AgentPassportModel
+    answers: dict[str, str] = Field(default_factory=dict)
+    field_updates: dict[str, str] = Field(default_factory=dict)
+    bp_name: str = ""
+    excerpt: str = ""
+    functions: list[PassportFunctionModel] = Field(default_factory=list)
+
+
+class PassportResponse(BaseModel):
+    passport: AgentPassportModel
+    bp_name: str = ""
+    excerpt: str = ""
+    functions: list[PassportFunctionModel] = Field(default_factory=list)
 
 
 class AgentDraftSummary(BaseModel):
@@ -452,6 +550,7 @@ class AgentDraftSummary(BaseModel):
     department: str = ""
     status: AgentDraftStatus = "draft"
     progress: int = Field(default=0, ge=0, le=100)
+    agentSuggestions: list[AgentSuggestion] = Field(default_factory=list)
     updatedAt: datetime | None = None
     createdAt: datetime | None = None
 
@@ -490,4 +589,41 @@ class QuestionChatSessionResult(BaseModel):
 
 
 class QuestionChatSendRequest(BaseModel):
+    message: str
+
+
+RegulationCreationStatus = Literal[
+    "collecting_positions",
+    "interview",
+    "generating",
+    "finalized",
+    "error",
+    "closed",
+]
+
+
+class RegulationCreationMessage(BaseModel):
+    messageId: str
+    draftId: str
+    role: Literal["assistant", "user", "system"]
+    content: str = ""
+    structured: dict = Field(default_factory=dict)
+    createdAt: datetime | None = None
+
+
+class RegulationCreationSession(BaseModel):
+    draftId: str
+    status: RegulationCreationStatus = "collecting_positions"
+    cursorAgentId: str = ""
+    latestRunId: str = ""
+    positions: list[str] = Field(default_factory=list)
+    messages: list[RegulationCreationMessage] = Field(default_factory=list)
+    resultRegulation: RegulationParseResult | None = None
+    resultDocument: dict = Field(default_factory=dict)
+    resultDocumentPath: str = ""
+    createdAt: datetime | None = None
+    updatedAt: datetime | None = None
+
+
+class RegulationCreationSendRequest(BaseModel):
     message: str

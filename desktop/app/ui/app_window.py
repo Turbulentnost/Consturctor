@@ -26,6 +26,7 @@ class AppWindow(QMainWindow):
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.WindowCloseButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
             | Qt.WindowType.WindowMinimizeButtonHint
         )
 
@@ -64,7 +65,18 @@ class AppWindow(QMainWindow):
         self._stack.setCurrentWidget(self.main_shell)
 
     def _on_logout(self) -> None:
+        self._terminate_creation_sessions()
         clear_session(keep_fio=True)
         self.api.set_token(None)
         self.login_page.reset_form()
         self._stack.setCurrentWidget(self.login_page)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._terminate_creation_sessions()
+        super().closeEvent(event)
+
+    def _terminate_creation_sessions(self) -> None:
+        try:
+            self.api.terminate_regulation_creation_sessions()
+        except ApiError:
+            pass

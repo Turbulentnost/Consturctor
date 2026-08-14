@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -19,7 +19,8 @@ from app.api_client import AgentReadinessResult, QuestionChatMessage, QuestionCh
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 
 
-_CHAT_WIDTH = 600
+_CHAT_MIN_WIDTH = 420
+_CHAT_MAX_WIDTH = 700
 _PANEL_WIDTH = 260
 
 
@@ -38,6 +39,10 @@ class ChatInput(QTextEdit):
                 border-radius: 18px;
                 padding: 12px 54px 12px 14px;
                 color: #101817;
+            }
+            QTextEdit:disabled {
+                background: #F4F7F6;
+                color: #8B9692;
             }
             """
         )
@@ -59,12 +64,19 @@ class ReadinessPage(QWidget):
     chat_message_requested = Signal(str, str)
     change_decision_requested = Signal(str, str, str)
     finalize_requested = Signal()
+    skip_to_agents_requested = Signal()
+    supplement_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._result: AgentReadinessResult | None = None
         self._chat: QuestionChatSession | None = None
         self._input: ChatInput | None = None
+        self._size_bucket: tuple[int, int] = (-1, -1)
+        self._chat_session_id = ""
+        self._chat_stick_to_bottom = True
+        self._show_supplement_choice = False
+        self._auto_chat_requested_for = ""
 
         self._content = QVBoxLayout()
         self._content.setContentsMargins(0, 0, 0, 0)
@@ -85,12 +97,29 @@ class ReadinessPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(scroll, 1)
 
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        bucket = (self.width() // 80, self.height() // 40)
+        if self._result is not None and bucket != self._size_bucket:
+            self._size_bucket = bucket
+            self._render()
+
     def set_result(self, result: AgentReadinessResult) -> None:
         self._result = result
         self._render()
 
+    def set_supplement_choice(self, enabled: bool) -> None:
+        self._show_supplement_choice = enabled
+        self._render()
+
     def set_chat(self, chat: QuestionChatSession | None) -> None:
+        session_id = chat.session_id if chat is not None else ""
+        if session_id != self._chat_session_id:
+            self._chat_stick_to_bottom = True
+            self._chat_session_id = session_id
         self._chat = chat
+        if chat is not None and chat.question_id == self._auto_chat_requested_for:
+            self._auto_chat_requested_for = ""
         self._render()
 
     def _render(self) -> None:
@@ -102,38 +131,77 @@ class ReadinessPage(QWidget):
         unanswered = [question for question in self._result.questions if not question.answered]
         current = unanswered[0] if unanswered else None
         answered_count = len(self._result.questions) - len(unanswered)
-        total_count = len(self._result.questions)
-        current_number = min(answered_count + 1, total_count) if total_count else 0
 
         self._content.addWidget(self._header())
-        self._content.addWidget(self._progress_card(self._result.score, current_number, total_count))
+        self._content.addWidget(self._progress_card(self._result.score, answered_count))
+
+        if self._show_supplement_choice:
+            self._content.addWidget(self._supplement_choice_card())
+            self._content.addStretch(1)
+            return
 
         body = QHBoxLayout()
         body.setSpacing(24)
         chat_column = QVBoxLayout()
         chat_column.setSpacing(12)
         chat_column.addWidget(self._chat_card(current))
-        chat_column.addWidget(self._footer_actions())
         chat_column.addStretch(1)
 
+        chat_width = self._chat_width()
         chat_wrap = QWidget()
-        chat_wrap.setFixedWidth(_CHAT_WIDTH)
+        chat_wrap.setFixedWidth(chat_width)
         chat_wrap.setStyleSheet("background: transparent;")
         chat_wrap.setLayout(chat_column)
+        body.addStretch(1)
         body.addWidget(chat_wrap, 0)
+        body.addStretch(1)
 
         right_wrap = QWidget()
         right_layout = QVBoxLayout(right_wrap)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addWidget(self._progress_panel(self._result.questions, current))
         right_layout.addStretch(1)
-        body.addWidget(right_wrap, 0)
+        body.addWidget(right_wrap, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
 
         body_wrap = QWidget()
         body_wrap.setStyleSheet("background: transparent;")
         body_wrap.setLayout(body)
         self._content.addWidget(body_wrap, 1)
         self._content.addStretch(1)
+
+    def _supplement_choice_card(self) -> QWidget:
+        card = _soft_card()
+        card.setMaximumWidth(760)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(14)
+
+        title = QLabel("Система выявила неполноту регламента")
+        title.setFont(app_font(20, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        title.setWordWrap(True)
+        message = QLabel("Хотите дополнить регламент перед созданием ИИ-агента?")
+        message.setFont(app_font(14))
+        message.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        message.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(message)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        skip = QPushButton("Нет, к ИИ-агентам")
+        skip.setCursor(Qt.CursorShape.PointingHandCursor)
+        skip.setStyleSheet(_secondary_button_qss())
+        skip.clicked.connect(self.skip_to_agents_requested.emit)
+        supplement = QPushButton("Дописать")
+        supplement.setCursor(Qt.CursorShape.PointingHandCursor)
+        supplement.setStyleSheet(_primary_button_qss())
+        supplement.clicked.connect(self.supplement_requested.emit)
+        actions.addWidget(skip)
+        actions.addWidget(supplement)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        return card
 
     def _header(self) -> QWidget:
         wrap = QWidget()
@@ -151,7 +219,7 @@ class ReadinessPage(QWidget):
         layout.addWidget(subtitle)
         return wrap
 
-    def _progress_card(self, score: int, current_number: int, total_count: int) -> QWidget:
+    def _progress_card(self, score: int, answered_count: int) -> QWidget:
         card = _soft_card()
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 12, 16, 12)
@@ -162,7 +230,7 @@ class ReadinessPage(QWidget):
         label.setStyleSheet("color: #06483D; background: transparent;")
         row.addWidget(label)
         row.addStretch(1)
-        count = QLabel(f"Вопрос {current_number} из {total_count}")
+        count = QLabel(f"Уточнено параметров: {answered_count}")
         count.setFont(app_font(12, QFont.Weight.DemiBold))
         count.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         row.addWidget(count)
@@ -179,7 +247,7 @@ class ReadinessPage(QWidget):
 
     def _chat_card(self, question: ReadinessQuestion | None) -> QWidget:
         card = _soft_card()
-        card.setFixedWidth(_CHAT_WIDTH)
+        card.setFixedWidth(self._chat_width())
         layout = QVBoxLayout(card)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(14)
@@ -213,13 +281,25 @@ class ReadinessPage(QWidget):
 
         if question is None:
             layout.addWidget(self._assistant_bubble("Все вопросы уточнены. Можно перейти к согласованию изменений."))
+            finalize = QPushButton("Сформировать новый регламент")
+            finalize.setCursor(Qt.CursorShape.PointingHandCursor)
+            finalize.setEnabled(self._can_finalize())
+            if not self._can_finalize():
+                finalize.setToolTip("Нет подготовленных изменений для формирования новой версии")
+            finalize.setStyleSheet(_primary_button_qss())
+            finalize.clicked.connect(self.finalize_requested.emit)
+            layout.addWidget(finalize)
             return card
 
-        if self._chat is None or self._chat.question_id != question.question_id:
-            open_chat = QPushButton("Начать уточнение")
-            open_chat.setCursor(Qt.CursorShape.PointingHandCursor)
-            open_chat.clicked.connect(lambda _checked=False, qid=question.question_id: self.chat_requested.emit(qid))
-            layout.addWidget(open_chat)
+        if not self._chat_matches(question):
+            # Сразу открываем чат следующего вопроса — без ожидания клика пользователя.
+            if self._auto_chat_requested_for != question.question_id:
+                self._auto_chat_requested_for = question.question_id
+                QTimer.singleShot(
+                    0,
+                    lambda qid=question.question_id: self.chat_requested.emit(qid),
+                )
+            layout.addWidget(self._assistant_bubble("Готовлю следующий вопрос…"))
             return card
 
         layout.addWidget(self._message_area(question))
@@ -235,9 +315,9 @@ class ReadinessPage(QWidget):
         messages_layout = QVBoxLayout(content)
         messages_layout.setContentsMargins(0, 0, 0, 0)
         messages_layout.setSpacing(12)
+        self._add_saved_answer_history(messages_layout)
         messages = self._chat.messages if self._chat is not None else []
-        messages_layout.addWidget(self._first_assistant_bubble(question))
-        for message in messages[1:]:
+        for message in messages:
             messages_layout.addWidget(self._message_bubble(message, question))
         change = self._change_for_question(question)
         if change is not None and change.status == "pending":
@@ -248,10 +328,33 @@ class ReadinessPage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setFixedHeight(260)
+        scroll.setFixedHeight(self._message_area_height())
         scroll.setWidget(content)
         scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }" + scroll_bar_qss())
+        scroll.verticalScrollBar().valueChanged.connect(lambda: self._sync_chat_scroll_state(scroll))
+        QTimer.singleShot(0, lambda item=scroll: self._scroll_chat_to_bottom(item))
+        QTimer.singleShot(80, lambda item=scroll: self._scroll_chat_to_bottom(item))
         return scroll
+
+    def _sync_chat_scroll_state(self, scroll: QScrollArea) -> None:
+        bar = scroll.verticalScrollBar()
+        self._chat_stick_to_bottom = bar.value() >= max(0, bar.maximum() - 24)
+
+    def _scroll_chat_to_bottom(self, scroll: QScrollArea) -> None:
+        if not self._chat_stick_to_bottom:
+            return
+        bar = scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _add_saved_answer_history(self, layout: QVBoxLayout) -> None:
+        if self._result is None:
+            return
+        current_chat_question_id = self._chat.question_id if self._chat is not None else ""
+        for item in self._result.questions:
+            if not item.answered or not item.answer or item.question_id == current_chat_question_id:
+                continue
+            layout.addWidget(self._assistant_bubble(item.question))
+            layout.addWidget(self._user_bubble(item.answer))
 
     def _first_assistant_bubble(self, question: ReadinessQuestion) -> QWidget:
         function_title = self._context_function_title(question)
@@ -267,10 +370,7 @@ class ReadinessPage(QWidget):
     def _message_bubble(self, message: QuestionChatMessage, question: ReadinessQuestion) -> QWidget:
         if message.role == "user":
             return self._user_bubble(message.content)
-        structured = message.structured or {}
-        if structured.get("isComplete"):
-            return self._assistant_bubble("Понял. Я предлагаю дополнить пункт регламента так:", question=question)
-        return self._assistant_bubble(message.content, question=question)
+        return self._assistant_bubble(message.content)
 
     def _assistant_bubble(
         self,
@@ -283,7 +383,7 @@ class ReadinessPage(QWidget):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         bubble = QFrame()
-        bubble.setMaximumWidth(_CHAT_WIDTH - 120)
+        bubble.setMaximumWidth(self._chat_width() - 120)
         bubble.setStyleSheet(
             """
             QFrame {
@@ -351,7 +451,7 @@ class ReadinessPage(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.addStretch(1)
         bubble = QFrame()
-        bubble.setMaximumWidth(_CHAT_WIDTH - 140)
+        bubble.setMaximumWidth(self._chat_width() - 140)
         bubble.setStyleSheet(
             """
             QFrame {
@@ -377,53 +477,78 @@ class ReadinessPage(QWidget):
     def _quick_answers(self, question: ReadinessQuestion) -> QWidget:
         wrap = QWidget()
         wrap.setStyleSheet("background: transparent;")
-        layout = QVBoxLayout(wrap)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        for row_options in _chunks(_primary_options(question), 2):
-            primary = QHBoxLayout()
-            primary.setSpacing(8)
-            for option in row_options:
-                btn = QPushButton(option)
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setStyleSheet(_chip_qss(primary=True))
-                btn.clicked.connect(
-                    lambda _checked=False, qid=question.question_id, value=option: self.chat_message_requested.emit(
-                        qid,
-                        value,
-                    )
-                )
-                primary.addWidget(btn)
-            primary.addStretch(1)
-            layout.addLayout(primary)
+        outer = QHBoxLayout(wrap)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
 
-        secondary = QHBoxLayout()
-        for option in ("Пока неизвестно", "Для этой функции не требуется"):
-            btn = QPushButton(option)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setFlat(True)
-            btn.setStyleSheet("QPushButton { color: #6B7773; background: transparent; text-align: left; }")
+        left = _hint_scroll_button("<")
+        right = _hint_scroll_button(">")
+        disabled = self._is_generating_question(question)
+        left.setEnabled(not disabled)
+        right.setEnabled(not disabled)
+
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        row = QHBoxLayout(content)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        options = [
+            *self._quick_answer_options(question),
+            "Пока неизвестно",
+            "Для этой функции не требуется",
+        ]
+        for option in options:
+            btn = _quick_answer_button(option, primary=True)
+            btn.setEnabled(not disabled)
             btn.clicked.connect(
-                lambda _checked=False, qid=question.question_id, value=option: self.chat_message_requested.emit(
+                lambda _checked=False, qid=self._chat_target_question_id(question), value=option: self.chat_message_requested.emit(
                     qid,
                     value,
                 )
             )
-            secondary.addWidget(btn)
-        secondary.addStretch(1)
-        layout.addLayout(secondary)
+            row.addWidget(btn)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(False)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setFixedHeight(36)
+        scroll.setWidget(content)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }" + scroll_bar_qss())
+        left.clicked.connect(lambda: _scroll_hints(scroll, -220))
+        right.clicked.connect(lambda: _scroll_hints(scroll, 220))
+        outer.addWidget(left)
+        outer.addWidget(scroll, 1)
+        outer.addWidget(right)
         return wrap
+
+    def _quick_answer_options(self, question: ReadinessQuestion) -> list[str]:
+        if self._chat is not None:
+            for message in reversed(self._chat.messages):
+                if message.role != "assistant":
+                    continue
+                quick = message.structured.get("quickAnswers") if isinstance(message.structured, dict) else None
+                if isinstance(quick, list):
+                    values = [str(item).strip() for item in quick if str(item).strip()]
+                    if values:
+                        return values[:5]
+        return _primary_options(question)
 
     def _input_bar(self, question: ReadinessQuestion) -> QWidget:
         wrap = QWidget()
-        wrap.setFixedWidth(_CHAT_WIDTH - 36)
+        wrap.setFixedWidth(self._chat_width() - 36)
         wrap.setStyleSheet("background: transparent;")
         row = QHBoxLayout(wrap)
         row.setContentsMargins(0, 0, 0, 0)
         self._input = ChatInput()
+        disabled = self._is_generating_question(question)
+        self._input.setEnabled(not disabled)
+        if disabled:
+            self._input.setPlaceholderText("Дождитесь, пока ИИ сформирует вопрос...")
         send = QPushButton("➤")
         send.setFixedSize(46, 46)
         send.setCursor(Qt.CursorShape.PointingHandCursor)
+        send.setEnabled(not disabled)
         send.setStyleSheet(
             """
             QPushButton {
@@ -434,15 +559,21 @@ class ReadinessPage(QWidget):
                 font-size: 18px;
             }
             QPushButton:hover { background: #0A806A; }
+            QPushButton:disabled {
+                background: #C8D6D2;
+                color: #FFFFFF;
+            }
             """
         )
 
         def submit() -> None:
             if self._input is None:
                 return
+            if self._is_generating_question(question):
+                return
             text = self._input.toPlainText().strip()
             if text:
-                self.chat_message_requested.emit(question.question_id, text)
+                self.chat_message_requested.emit(self._chat_target_question_id(question), text)
                 self._input.clear()
 
         self._input.send_requested.connect(submit)
@@ -450,6 +581,28 @@ class ReadinessPage(QWidget):
         row.addWidget(self._input, 1)
         row.addWidget(send)
         return wrap
+
+    def _chat_matches(self, question: ReadinessQuestion) -> bool:
+        if self._chat is None:
+            return False
+        # Только точный question_id: иначе после ответа чат Q1 «прилипает»
+        # к Q2 той же функции, и следующий вопрос не создаётся.
+        return self._chat.question_id == question.question_id
+
+    def _is_generating_question(self, question: ReadinessQuestion) -> bool:
+        return self._chat_matches(question) and self._chat is not None and self._chat.status == "generating"
+
+    def _chat_target_question_id(self, question: ReadinessQuestion) -> str:
+        # Всегда шлём ответ в id текущего незакрытого вопроса из readiness,
+        # а не в устаревший session.question_id после перехода дальше.
+        return question.question_id
+
+    def _message_area_height(self) -> int:
+        return max(190, min(380, self.height() - 440))
+
+    def _chat_width(self) -> int:
+        available = self.width() - _PANEL_WIDTH - 160
+        return max(_CHAT_MIN_WIDTH, min(_CHAT_MAX_WIDTH, available))
 
     def _change_proposal(self, change: ReadinessChange) -> QWidget:
         card = QFrame()
@@ -510,19 +663,22 @@ class ReadinessPage(QWidget):
         wrap.setStyleSheet("background: transparent;")
         actions = QHBoxLayout(wrap)
         actions.setContentsMargins(0, 0, 0, 0)
-        back = QPushButton("Вернуться позже")
-        back.setCursor(Qt.CursorShape.PointingHandCursor)
-        back.setStyleSheet(_secondary_button_qss())
-        back.clicked.connect(self.back_requested.emit)
-        actions.addWidget(back)
         actions.addStretch(1)
         finalize = QPushButton("Создать копию регламента")
         finalize.setCursor(Qt.CursorShape.PointingHandCursor)
-        finalize.setEnabled(bool(self._result and self._result.changes))
+        all_answered = bool(self._result) and all(question.answered for question in self._result.questions)
+        finalize.setEnabled(bool(self._result and self._result.changes and all_answered))
+        if not all_answered:
+            finalize.setToolTip("Сначала ответьте на все уточняющие вопросы")
         finalize.setStyleSheet(_primary_button_qss())
         finalize.clicked.connect(self.finalize_requested.emit)
         actions.addWidget(finalize)
         return wrap
+
+    def _can_finalize(self) -> bool:
+        if self._result is None:
+            return False
+        return bool(self._result.changes) and all(question.answered for question in self._result.questions)
 
     def _progress_panel(self, questions: list[ReadinessQuestion], current: ReadinessQuestion | None) -> QWidget:
         card = _soft_card()
@@ -536,13 +692,12 @@ class ReadinessPage(QWidget):
         title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         layout.addWidget(title)
         done = [question for question in questions if question.answered]
-        total = len(questions)
-        count = QLabel(f"Уточнено {len(done)} из {total} вопросов")
+        count = QLabel(f"Уточнено параметров: {len(done)}")
         count.setFont(app_font(12))
         count.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         layout.addWidget(count)
         progress = QProgressBar()
-        progress.setRange(0, max(total, 1))
+        progress.setRange(0, max(len(questions), 1))
         progress.setValue(len(done))
         progress.setTextVisible(False)
         progress.setFixedHeight(5)
@@ -559,7 +714,9 @@ class ReadinessPage(QWidget):
             layout.addWidget(_group_label("Далее"))
             for question in upcoming:
                 layout.addWidget(_topic_row(_field_title(question.target_field)))
-        hint = QLabel("Ответы можно изменить до формирования итогового документа.")
+        hint = QLabel(
+            "LLM задаёт следующий вопрос по мере необходимости; внутренний список параметров не является фиксированным сценарием."
+        )
         hint.setWordWrap(True)
         hint.setFont(app_font(11))
         hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
@@ -639,6 +796,48 @@ def _topic_row(text: str, *, done: bool = False, active: bool = False) -> QLabel
     color = "#08745F" if done or active else "#6B7773"
     label.setStyleSheet(f"color: {color}; background: transparent;")
     return label
+
+
+def _quick_answer_button(text: str, *, primary: bool) -> QPushButton:
+    btn = QPushButton()
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setStyleSheet(_chip_qss(primary=primary))
+    btn.setFont(app_font(12))
+    metrics = QFontMetrics(btn.font())
+    width = metrics.horizontalAdvance(text) + 28
+    btn.setText(text)
+    btn.setFixedWidth(max(120, width))
+    btn.setFixedHeight(36)
+    return btn
+
+
+def _hint_scroll_button(text: str) -> QPushButton:
+    btn = QPushButton(text)
+    btn.setFixedSize(32, 36)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setFont(app_font(13, QFont.Weight.DemiBold))
+    btn.setStyleSheet(
+        """
+        QPushButton {
+            background: #FFFFFF;
+            color: #08745F;
+            border: 1px solid rgba(8,116,95,0.22);
+            border-radius: 12px;
+        }
+        QPushButton:hover { background: rgba(8,116,95,0.06); }
+        QPushButton:disabled {
+            background: #F4F7F6;
+            color: #8B9692;
+            border: 1px solid rgba(16,24,23,0.08);
+        }
+        """
+    )
+    return btn
+
+
+def _scroll_hints(scroll: QScrollArea, delta: int) -> None:
+    bar = scroll.horizontalScrollBar()
+    bar.setValue(bar.value() + delta)
 
 
 def _primary_options(question: ReadinessQuestion) -> list[str]:
@@ -758,6 +957,11 @@ def _chip_qss(*, primary: bool) -> str:
         padding: 8px 10px;
     }}
     QPushButton:hover {{ background: rgba(8,116,95,0.10); }}
+    QPushButton:disabled {{
+        background: #F4F7F6;
+        color: #8B9692;
+        border: 1px solid rgba(16,24,23,0.08);
+    }}
     """
 
 

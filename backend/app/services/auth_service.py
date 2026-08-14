@@ -21,6 +21,26 @@ from tools.onec.password import verify_password
 
 logger = logging.getLogger(__name__)
 
+# Локальные оверрайды должности по подстроке ФИО (без учёта ь/ъ).
+_POSITION_OVERRIDES: tuple[tuple[str, str], ...] = (
+    ("комарков", "менеджер тендерного офиса"),
+)
+
+
+def _normalize_fio_key(value: str) -> str:
+    text = (value or "").casefold()
+    for ch in ("ь", "ъ", "\u0301"):
+        text = text.replace(ch, "")
+    return text
+
+
+def _apply_position_override(fio: str, position: str) -> str:
+    key = _normalize_fio_key(fio)
+    for needle, override in _POSITION_OVERRIDES:
+        if _normalize_fio_key(needle) in key:
+            return override
+    return position or ""
+
 
 def _erp_login_error_message(exc: ErpSqlError) -> str:
     text = str(exc)
@@ -109,6 +129,7 @@ async def login(fio: str, password: str) -> LoginResponse:
             position = position or profile.position
         except ErpSqlError:
             logger.warning("Could not load department/position for user id=%s", erp_user.id)
+    position = _apply_position_override(erp_user.fio, position)
 
     token = create_access_token(
         user_id=erp_user.id,
@@ -165,6 +186,7 @@ async def get_current_user_profile(user_id: str, fio_hint: str | None = None) ->
             position = position or profile.position
         except ErpSqlError:
             logger.warning("Could not refresh department/position for user id=%s", user_id)
+    position = _apply_position_override(erp_user.fio or (fio_hint or ""), position)
 
     return await asyncio.to_thread(
         _to_user_out,

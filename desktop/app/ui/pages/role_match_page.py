@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import RegulationParseResult, RoleMatch, RoleMatchResult
-from app.ui.pages.regulation_review_page import _fragment_widget
+from app.api_client import RegulationFragment, RegulationParseResult, RoleMatch, RoleMatchResult
+from app.ui.pages.regulation_review_page import _table_widget
 from app.ui.theme import (
     COLOR_CONTENT_MUTED,
     MAIN_TEXT,
@@ -29,6 +29,7 @@ from app.ui.theme import (
 )
 
 _HIGH_CONFIDENCE = 0.85
+_MAX_FUNCTION_TITLE_CHARS = 420
 _TEMP = Path(__file__).resolve().parents[1] / "temp"
 _CHECK_ICON_PATH = _TEMP / "зеленаягалочка.png"
 _WARN_ICON_PATH = _TEMP / "внимание.png"
@@ -227,10 +228,18 @@ class RoleMatchPage(QWidget):
             return
 
         total = len(self._matches)
-        self._subtitle.setText(
-            f"{self._result.canonical_title}"
-            + (f" · {self._result.department}" if self._result.department else "")
+        subtitle = f"{self._result.canonical_title}" + (
+            f" · {self._result.department}" if self._result.department else ""
         )
+        diagnostics = (self._result.audit or {}).get("diagnostics") if self._result.audit else None
+        if isinstance(diagnostics, dict):
+            sections = diagnostics.get("candidateSections") if isinstance(diagnostics.get("candidateSections"), dict) else {}
+            subtitle += (
+                f" · проверено фрагментов {diagnostics.get('fragmentsTotal', 0)}"
+                f" · кандидатов {diagnostics.get('candidatesTotal', 0)}"
+                f" · разделов {len(sections)}"
+            )
+        self._subtitle.setText(subtitle)
         needs_review = sum(1 for match in self._matches if _needs_user_review(match))
         _set_badge_text(self._found_badge, f"Найдено {total} функций")
         _set_badge_text(self._review_badge, f"Нужно проверить {needs_review}")
@@ -467,11 +476,13 @@ class RoleMatchPage(QWidget):
             return
 
         self._doc_title.setText(self._regulation.file_name)
+        pages: dict[int, list] = {}
         for fragment in self._regulation.fragments:
-            widget = _fragment_widget(fragment)
-            widget.setProperty("fragment_id", fragment.fragment_id)
-            self._fragment_widgets[fragment.fragment_id] = widget
-            self._doc_content.addWidget(widget)
+            pages.setdefault(fragment.page, []).append(fragment)
+        for page in sorted(pages):
+            page_widget, page_fragments = _document_page_widget(page, pages[page])
+            self._fragment_widgets.update(page_fragments)
+            self._doc_content.addWidget(page_widget)
         self._doc_content.addStretch(1)
 
     def _show_document_for_current(self) -> None:
@@ -580,10 +591,10 @@ class RoleMatchPage(QWidget):
             return
         widget.setStyleSheet(
             """
-            QFrame#Fragment {
-                background: #FFFFFF;
+            QFrame#DocumentFragment {
+                background: rgba(8,116,95,0.12);
                 border: 2px solid #08745F;
-                border-radius: 14px;
+                border-radius: 10px;
             }
             """
         )
@@ -592,10 +603,10 @@ class RoleMatchPage(QWidget):
         for widget in self._fragment_widgets.values():
             widget.setStyleSheet(
                 """
-                QFrame#Fragment {
-                    background: #FFFFFF;
-                    border: 1px solid rgba(16,24,23,0.10);
-                    border-radius: 14px;
+                QFrame#DocumentFragment {
+                    background: transparent;
+                    border: 1px solid transparent;
+                    border-radius: 10px;
                 }
                 """
             )
@@ -613,12 +624,67 @@ def _ordered_matches(matches: list[RoleMatch]) -> list[RoleMatch]:
     return sorted(visible, key=lambda item: (item.fragment.page, -item.confidence, item.match_id))
 
 
+def _document_page_widget(page: int, fragments: list[RegulationFragment]) -> tuple[QWidget, dict[str, QWidget]]:
+    card = QFrame()
+    card.setObjectName("DocumentPage")
+    card.setStyleSheet(
+        """
+        QFrame#DocumentPage {
+            background: #FFFFFF;
+            border: 1px solid rgba(16,24,23,0.10);
+            border-radius: 18px;
+        }
+        """
+    )
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(28, 24, 28, 28)
+    layout.setSpacing(8)
+    title = QLabel(f"Страница {page}")
+    title.setFont(app_font(13, QFont.Weight.DemiBold))
+    title.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+    layout.addWidget(title)
+    widgets: dict[str, QWidget] = {}
+    for fragment in fragments:
+        widget = _document_fragment_widget(fragment)
+        widgets[fragment.fragment_id] = widget
+        layout.addWidget(widget)
+    return card, widgets
+
+
+def _document_fragment_widget(fragment: RegulationFragment) -> QWidget:
+    frame = QFrame()
+    frame.setObjectName("DocumentFragment")
+    frame.setProperty("fragment_id", fragment.fragment_id)
+    frame.setStyleSheet(
+        """
+        QFrame#DocumentFragment {
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 10px;
+        }
+        """
+    )
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(10, 6, 10, 6)
+    layout.setSpacing(4)
+    if fragment.kind == "table" and fragment.table is not None:
+        layout.addWidget(_table_widget(fragment))
+    else:
+        text = QLabel(fragment.text or "")
+        text.setWordWrap(True)
+        text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        text.setFont(app_font(13))
+        text.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        layout.addWidget(text)
+    return frame
+
+
 def _needs_user_review(match: RoleMatch) -> bool:
     return match.requires_confirmation or match.status in {"pending", "probable"}
 
 
 def _is_high_confidence(match: RoleMatch) -> bool:
-    return match.confidence >= _HIGH_CONFIDENCE and not match.requires_confirmation
+    return match.confidence >= _HIGH_CONFIDENCE
 
 
 def _should_persist_accept(match: RoleMatch) -> bool:
@@ -649,8 +715,11 @@ def _function_title(match: RoleMatch) -> str:
         if function.recipient:
             title_parts.append(f"→ {function.recipient}")
         title = " ".join(part for part in title_parts if part).strip()
-        if title:
-            return title[:220]
+        if title and not _has_dangling_end(title):
+            return _as_title(title, max_chars=_MAX_FUNCTION_TITLE_CHARS)
+        source_title = _title_from_source_text(match)
+        if source_title:
+            return source_title
     full_text = _fragment_preview_text(match, full=True)
     contextual_title = _title_from_role_context(full_text, _role_terms(match))
     if contextual_title:
@@ -835,7 +904,47 @@ def _meaningful_lines_from_text(text: str) -> list[str]:
     return lines
 
 
-def _as_title(text: str) -> str:
+def _title_from_source_text(match: RoleMatch) -> str:
+    function = match.function
+    candidates: list[str] = []
+    if function is not None:
+        candidates.extend(_clean_line(item.quote) for item in function.evidence if _clean_line(item.quote))
+    candidates.extend(_meaningful_fragment_lines(match))
+    for candidate in candidates:
+        title = _as_title(candidate, max_chars=_MAX_FUNCTION_TITLE_CHARS)
+        if title and not _has_dangling_end(title):
+            return title
+    return ""
+
+
+def _has_dangling_end(text: str) -> bool:
+    words = _clean_line(text).rstrip(".,;:—-–").casefold().split()
+    if not words:
+        return False
+    return words[-1] in {
+        "в",
+        "во",
+        "на",
+        "по",
+        "для",
+        "с",
+        "со",
+        "к",
+        "ко",
+        "от",
+        "до",
+        "из",
+        "за",
+        "при",
+        "о",
+        "об",
+        "и",
+        "или",
+        "что",
+    }
+
+
+def _as_title(text: str, *, max_chars: int = _MAX_FUNCTION_TITLE_CHARS) -> str:
     text = _clean_line(text)
     if not text or _is_service_line(text):
         return ""
@@ -843,8 +952,8 @@ def _as_title(text: str) -> str:
     parts = [part.strip() for part in text.split(".") if part.strip()]
     if parts:
         text = parts[0]
-    if len(text) > 220:
-        text = text[:217].rstrip(" ,;:-") + "..."
+    if max_chars > 0 and len(text) > max_chars:
+        text = text[: max_chars - 3].rstrip(" ,;:-") + "..."
     return text
 
 
@@ -1291,7 +1400,8 @@ def _document_icon_label() -> QLabel:
 
 def _keep_label_inside_width(label: QLabel) -> None:
     label.setText(_soft_wrap_text(label.text()))
-    label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    label.setMinimumWidth(0)
+    label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
 
 def _soft_wrap_text(text: str) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -9,6 +10,8 @@ from app.models.regulation import AgentDraft, ReadinessRun, RegulationDocument, 
 from app.schemas.regulation import (
     AgentDraftDetail,
     AgentDraftListResult,
+    AgentSuggestion,
+    AgentSuggestionListResult,
     AgentDraftStatusRequest,
     AgentDraftSummary,
     AgentReadinessResult,
@@ -16,6 +19,8 @@ from app.schemas.regulation import (
 )
 from app.services.agent_platform import sync_draft_to_platform_card
 from app.services.readiness.service import create_readiness_run
+from app.services.regulation import RegulationError, parse_upload
+from app.services.role_matching import RoleMatchError, create_role_match_run
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +86,27 @@ def get_draft(db: Session, *, user_id: str, draft_id: str) -> AgentDraftDetail:
     return _draft_detail(db, _get_draft(db, user_id=user_id, draft_id=draft_id))
 
 
+def delete_draft(db: Session, *, user_id: str, draft_id: str) -> None:
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    db.delete(draft)
+    db.commit()
+
+
+def delete_draft_suggestion(db: Session, *, user_id: str, draft_id: str, agent_id: str) -> None:
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    data = dict(draft.result_json or {})
+    suggestions = [item for item in data.get("agentSuggestions") or [] if isinstance(item, dict)]
+    remaining = [item for item in suggestions if str(item.get("agentId") or "") != agent_id]
+    if len(remaining) == len(suggestions):
+        raise AgentDraftError("Черновик ИИ-агента не найден", status_code=404)
+    if remaining:
+        draft.result_json = {**data, "agentSuggestions": remaining}
+        db.add(draft)
+    else:
+        db.delete(draft)
+    db.commit()
+
+
 def ensure_draft_readiness(db: Session, *, user_id: str, draft_id: str) -> AgentDraftDetail:
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     if not draft.readiness_run_id:
@@ -109,6 +135,8 @@ def update_draft_status(
 ) -> AgentDraftDetail:
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     draft.status = request.status
+    if request.status == "ready":
+        draft.result_json = _ensure_agent_suggestions(db, draft)
     db.add(draft)
     db.commit()
     db.refresh(draft)
@@ -117,6 +145,131 @@ def update_draft_status(
     except Exception:
         logger.exception("Failed to sync draft %s to platform agent card", draft.id)
     return _draft_detail(db, draft)
+
+
+def reanalyze_revision_document(db: Session, *, user_id: str, draft_id: str) -> AgentSuggestionListResult:
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    data = draft.result_json or {}
+    source_path = data.get("pdfPath") or data.get("documentPath")
+    if not source_path:
+        raise AgentDraftError("Сформированный документ для повторного анализа не найден", status_code=404)
+    path = Path(str(source_path))
+    if not path.is_file():
+        raise AgentDraftError("Файл сформированного документа не найден", status_code=404)
+    content_type = "application/pdf" if path.suffix.casefold() == ".pdf" else (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if path.suffix.casefold() == ".docx"
+        else "application/octet-stream"
+    )
+    try:
+        result = parse_upload(
+            db,
+            user_id=user_id,
+            filename=path.name,
+            content_type=content_type,
+            data=path.read_bytes(),
+        )
+        role_result = create_role_match_run(
+            db,
+            user_id=user_id,
+            regulation_id=result.regulationId,
+            position=draft.position,
+            department=draft.department,
+        )
+        suggestions = _agent_suggestions_from_role_result(role_result)
+        draft.status = "ready"
+        draft.progress = 100
+        draft.result_json = {
+            **(draft.result_json or {}),
+            "agentSuggestions": [item.model_dump(mode="json") for item in suggestions],
+            "suggestionRegulationId": result.regulationId,
+            "suggestionRoleMatchRunId": role_result.runId,
+        }
+        db.add(draft)
+        db.commit()
+        return AgentSuggestionListResult(items=suggestions)
+    except AgentDraftError:
+        raise
+    except (RegulationError, RoleMatchError) as exc:
+        status_code = getattr(exc, "status_code", 400)
+        message = getattr(exc, "message", str(exc))
+        raise AgentDraftError(message, status_code=status_code) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise AgentDraftError(f"Не удалось повторно проанализировать документ: {exc}") from exc
+
+
+def _agent_suggestions_from_role_result(role_result: RoleMatchResult) -> list[AgentSuggestion]:
+    functions = role_result.functions or [
+        match.function
+        for match in role_result.matches
+        if match.function is not None and match.status != "rejected"
+    ]
+    suggestions: list[AgentSuggestion] = []
+    seen: set[str] = set()
+    for index, function in enumerate(functions, start=1):
+        if function is None:
+            continue
+        if not function.isFunction and not (function.action or function.object):
+            continue
+        key = function.duplicateGroup or function.functionId or f"{function.action}:{function.object}"
+        if key in seen:
+            continue
+        seen.add(key)
+        title = _agent_title_from_function(function, index)
+        suggestions.append(
+            AgentSuggestion(
+                agentId=f"agent-suggestion-{index:03d}",
+                title=title,
+                description=_agent_description_from_function(function),
+                regulationId=role_result.regulationId,
+                roleMatchRunId=role_result.runId,
+                functionId=function.functionId,
+                sourceBlockId=function.targetBlockId,
+            )
+        )
+    return suggestions
+
+
+def _ensure_agent_suggestions(db: Session, draft: AgentDraft) -> dict:
+    data = dict(draft.result_json or {})
+    if data.get("agentSuggestions"):
+        return data
+    role_run = db.query(RoleMatchRun).filter(RoleMatchRun.id == draft.role_match_run_id).first()
+    if role_run is None:
+        return data
+    role_result = RoleMatchResult.model_validate(role_run.result_json)
+    suggestions = _agent_suggestions_from_role_result(role_result)
+    if not suggestions:
+        return data
+    return {
+        **data,
+        "agentSuggestions": [item.model_dump(mode="json") for item in suggestions],
+        "suggestionRegulationId": draft.regulation_id,
+        "suggestionRoleMatchRunId": draft.role_match_run_id,
+    }
+
+
+def _agent_title_from_function(function, index: int) -> str:
+    action = (function.action or "").strip()
+    obj = (function.object or "").strip()
+    if action and obj:
+        return f"ИИ-агент: {action} {obj}"[:180]
+    if action:
+        return f"ИИ-агент: {action}"[:180]
+    return f"ИИ-агент для бизнес-процесса {index}"
+
+
+def _agent_description_from_function(function) -> str:
+    parts = []
+    if function.actor and function.actor.canonicalPosition:
+        parts.append(f"Роль: {function.actor.canonicalPosition}")
+    if function.conditions:
+        parts.append("Условия: " + "; ".join(function.conditions[:2]))
+    if function.recipient:
+        parts.append(f"Получатель/участник: {function.recipient}")
+    if function.explanation:
+        parts.append(function.explanation)
+    return "\n".join(part for part in parts if part).strip()
 
 
 def sync_draft_progress(db: Session, *, draft_id: str, readiness: AgentReadinessResult) -> None:
@@ -140,6 +293,12 @@ def _draft_detail(db: Session, draft: AgentDraft) -> AgentDraftDetail:
 
 
 def _draft_summary(draft: AgentDraft) -> AgentDraftSummary:
+    suggestions_raw = (draft.result_json or {}).get("agentSuggestions") or []
+    suggestions = [
+        AgentSuggestion.model_validate(item)
+        for item in suggestions_raw
+        if isinstance(item, dict)
+    ]
     return AgentDraftSummary(
         draftId=draft.id,
         regulationId=draft.regulation_id,
@@ -150,6 +309,7 @@ def _draft_summary(draft: AgentDraft) -> AgentDraftSummary:
         department=draft.department,
         status=draft.status,
         progress=draft.progress,
+        agentSuggestions=suggestions,
         updatedAt=draft.updated_at,
         createdAt=draft.created_at,
     )

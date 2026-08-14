@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -37,13 +38,23 @@ class Settings(BaseSettings):
     claude_api_key: str = ""
     claudehub_base_url: str = "https://api.claudehub.fun"
     claudehub_model: str = "claude-sonnet-4.6"
+    claudehub_fallback_model: str = "claude-haiku-4-5-20251001"
+    claudehub_external_fallback_model: str = "gpt-5.6-sol"
     claudehub_max_blocks_per_chunk: int = 120
+    chad_api_key: str = Field(default="", validation_alias="CHAD_AI")
+    chad_base_url: str = "https://ask.chadgpt.ru/api"
+    chad_model: str = "grok-4.1-fast-with-web-search"
+    cursor_api_key: str = Field(default="", validation_alias="CURSOR_API_KEY")
+    cursor_api_base_url: str = "https://api.cursor.com"
+    cursor_regulation_model: str = "composer-2.5"
+    cursor_workflow_model: str = "composer"
 
     database_url: str = (
         "postgresql+psycopg://constructor:constructor@127.0.0.1:5432/constructor"
     )
     avatar_storage_dir: Path = BACKEND_ROOT / "storage" / "avatars"
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
+    workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"
 
     tool_imap_url: str = "http://127.0.0.1:7821"
     tool_onec_url: str = "http://127.0.0.1:7822"
@@ -109,3 +120,4 @@ class Settings(BaseSettings):
 settings = Settings()
 settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)

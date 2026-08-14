@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.models.regulation import ReadinessRun, RegulationDocument, RegulationRevision, RoleMatchRun
+from app.models.regulation import AgentDraft, ReadinessRun, RegulationDocument, RegulationRevision, RoleMatchRun
 from app.schemas.regulation import (
     AgentReadinessResult,
     ChangeDecisionRequest,
@@ -18,8 +18,8 @@ from app.schemas.regulation import (
 )
 from app.services.readiness.analyzer import analyze_readiness
 from app.services.readiness.change_planner import change_from_answer
-from app.services.readiness.docx_editor import create_revision_files
 from app.services.readiness.impact import transaction_for_change
+from app.services.readiness.revision_composer import create_llm_revision_files
 
 
 class ReadinessError(Exception):
@@ -108,11 +108,21 @@ def answer_readiness_question(
             item.answer = answer.answer
             break
     _apply_answer_to_field(readiness, question.functionId, question.targetField, answer.answer)
+    related_field_answers = {
+        item.targetField: item.answer.strip()
+        for item in readiness.questions
+        if item.functionId == question.functionId
+        and item.answered
+        and item.answer.strip()
+        and item.questionId != question.questionId
+    }
     change = change_from_answer(
         change_id=f"CH-{len(readiness.changes) + 1:03d}",
         question=question,
         answer=answer,
         result=RegulationParseResult.model_validate(doc.result_json),
+        related_field_answers=related_field_answers,
+        clarifying_prompt=request.clarifyingPrompt.strip(),
     )
     readiness.changes.append(change)
     readiness.transactions.append(transaction_for_change(change, index=len(readiness.transactions) + 1))
@@ -161,11 +171,21 @@ def finalize_readiness_run(
     readiness = AgentReadinessResult.model_validate(run.result_json)
     revision_id = f"rev-{uuid4().hex[:12]}"
     output_dir = Path(doc.storage_path).parent / "revisions" / revision_id
-    document_path, protocol_path, message = create_revision_files(
+    (
+        document_path,
+        protocol_path,
+        pdf_path,
+        message,
+        source_html,
+        revised_html,
+        diff_blocks,
+        source_preview_pages,
+        revised_preview_pages,
+    ) = create_llm_revision_files(
         source_path=Path(doc.storage_path),
         output_dir=output_dir,
         result=RegulationParseResult.model_validate(doc.result_json),
-        changes=readiness.changes,
+        readiness=readiness,
     )
     readiness.status = "finalized"
     run.result_json = readiness.model_dump(mode="json")
@@ -175,9 +195,49 @@ def finalize_readiness_run(
         readinessRunId=readiness_run_id,
         documentPath=str(document_path),
         protocolPath=str(protocol_path),
+        pdfPath=str(pdf_path) if pdf_path is not None else "",
+        sourcePreviewHtml=source_html,
+        revisedPreviewHtml=revised_html,
+        sourcePreviewPages=[
+            {
+                "page": item["page"],
+                "imageUrl": f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/preview/source/{item['page']}",
+            }
+            for item in source_preview_pages
+        ],
+        revisedPreviewPages=[
+            {
+                "page": item["page"],
+                "imageUrl": f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/preview/revised/{item['page']}",
+            }
+            for item in revised_preview_pages
+        ],
+        diffBlocks=diff_blocks,
+        downloadUrl=f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/download?kind=document",
+        pdfDownloadUrl=(
+            f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/download?kind=pdf"
+            if pdf_path is not None
+            else ""
+        ),
+        protocolUrl=f"/api/v1/regulations/{regulation_id}/revisions/{revision_id}/download?kind=protocol",
         message=message,
     )
     db.add(run)
+    draft = db.query(AgentDraft).filter(
+        AgentDraft.user_id == user_id,
+        AgentDraft.readiness_run_id == readiness_run_id,
+    ).first()
+    if draft is not None:
+        draft.status = "finalized"
+        draft.progress = 100
+        draft.result_json = {
+            **(draft.result_json or {}),
+            "revisionId": revision_id,
+            "documentPath": str(document_path),
+            "protocolPath": str(protocol_path),
+            "pdfPath": str(pdf_path) if pdf_path is not None else "",
+        }
+        db.add(draft)
     db.merge(
         RegulationRevision(
             id=revision_id,
@@ -186,7 +246,11 @@ def finalize_readiness_run(
             user_id=user_id,
             document_path=str(document_path),
             protocol_path=str(protocol_path),
-            result_json=revision.model_dump(mode="json"),
+            result_json={
+                **revision.model_dump(mode="json"),
+                "_sourcePreviewPaths": source_preview_pages,
+                "_revisedPreviewPaths": revised_preview_pages,
+            },
         )
     )
     db.commit()

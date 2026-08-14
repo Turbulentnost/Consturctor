@@ -6,6 +6,7 @@ from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
+    QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -22,21 +23,34 @@ from app.api_client import (
     AgentReadinessResult,
     ApiClient,
     ApiError,
+    PassportSession,
     RegulationParseResult,
     RegulationRevisionResult,
     RoleMatchResult,
     AgentDraft,
+    AgentSuggestion,
+    QuestionChatMessage,
     QuestionChatSession,
+    RegulationCreationMessage,
+    RegulationCreationSession,
     UserProfile,
+    WorkflowListItem,
+    WorkflowRecord,
 )
+from app.ui.pages.agent_passport_page import AgentPassportPage
+from app.ui.pages.agent_implementation_page import AgentImplementationPage
+from app.ui.pages.agent_run_page import AgentRunPage
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.my_agents_page import MyAgentsPage
 from app.ui.pages.regulation_review_page import RegulationReviewPage
+from app.ui.pages.regulation_creation_page import RegulationCreationPage
 from app.ui.pages.readiness_page import ReadinessPage
 from app.ui.pages.revision_result_page import RevisionResultPage
 from app.ui.pages.role_match_page import RoleMatchPage
+from app.ui.pages.saved_workflows_page import SavedWorkflowsPage
 from app.ui.pages.settings_page import SettingsPage
+from app.ui.pages.workflow_page import WorkflowPage
 from app.ui.theme import (
     COLOR_CONTENT_MUTED,
     COLOR_CONTENT_BG,
@@ -143,7 +157,14 @@ class MainShell(QWidget):
     _revision_ready = Signal(object)
     _draft_ready = Signal(object)
     _drafts_ready = Signal(object)
+    _agents_table_ready = Signal(object)
+    _implementation_agents_ready = Signal(object)
+    _passport_ready = Signal(object)
+    _passport_failed = Signal(str)
+    _published_agent_ready = Signal(object)
     _chat_ready = Signal(object)
+    _creation_session_ready = Signal(object)
+    _creation_stream_event = Signal(str, str)
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -158,35 +179,68 @@ class MainShell(QWidget):
         self._pages = QStackedWidget()
         self._page_create = CreateAgentPage()
         self._page_agents = MyAgentsPage()
+        self._page_implementation_agents = AgentImplementationPage()
+        self._page_workflows = WorkflowPage(self._api)
+        self._page_agent_run = AgentRunPage(self._api)
+        self._page_saved_workflows = SavedWorkflowsPage(self._api)
         self._page_kpi = KpiPage()
         self._page_settings = SettingsPage(self._api)
         self._page_review = RegulationReviewPage()
         self._page_role_match = RoleMatchPage()
         self._page_readiness = ReadinessPage()
-        self._page_revision = RevisionResultPage()
+        self._page_revision = RevisionResultPage(self._api)
+        self._page_creation_chat = RegulationCreationPage()
+        self._page_passport = AgentPassportPage()
         self._page_loading = LoadingPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
+        self._pages.addWidget(self._page_implementation_agents)
+        self._pages.addWidget(self._page_workflows)
+        self._pages.addWidget(self._page_agent_run)
+        self._pages.addWidget(self._page_saved_workflows)
         self._pages.addWidget(self._page_kpi)
         self._pages.addWidget(self._page_settings)
         self._pages.addWidget(self._page_review)
         self._pages.addWidget(self._page_role_match)
         self._pages.addWidget(self._page_readiness)
         self._pages.addWidget(self._page_revision)
+        self._pages.addWidget(self._page_creation_chat)
+        self._pages.addWidget(self._page_passport)
         self._pages.addWidget(self._page_loading)
         self._page_index = {
             "create": 0,
             "agents": 1,
-            "kpi": 2,
-            "settings": 3,
-            "review": 4,
-            "role_match": 5,
-            "readiness": 6,
-            "revision": 7,
-            "loading": 8,
+            "implementation_agents": 2,
+            "workflows": 3,
+            "agent_run": 4,
+            "saved_workflows": 5,
+            "kpi": 6,
+            "settings": 7,
+            "review": 8,
+            "role_match": 9,
+            "readiness": 10,
+            "revision": 11,
+            "creation_chat": 12,
+            "passport": 13,
+            "loading": 14,
         }
+        self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
+        self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
+        self._page_workflows.launch_requested.connect(self._on_launch_workflow_agent)
+        self._page_saved_workflows.open_requested.connect(self._on_open_saved_workflow)
+        self._page_implementation_agents.create_requested.connect(self._on_create_agent_from_inline_suggestion)
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_agents.continue_requested.connect(self._on_continue_agent_draft)
+        self._page_agents.create_requested.connect(self._on_create_agent_from_suggestion)
+        self._page_agents.create_suggestion_requested.connect(self._on_create_agent_from_draft_suggestion)
+        self._page_agents.delete_requested.connect(self._on_delete_agent_draft)
+        self._page_agents.delete_suggestion_requested.connect(self._on_delete_agent_suggestion)
+        self._page_agents.delete_agent_requested.connect(self._on_delete_published_agent)
+        self._page_agents.run_agent_requested.connect(self._on_run_published_agent)
+        self._page_passport.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["agents"]))
+        self._page_passport.draft_requested.connect(self._on_passport_draft_requested)
+        self._page_passport.answer_requested.connect(self._on_passport_answer_requested)
+        self._page_passport.finished_requested.connect(self._on_passport_finished)
         self._page_create.create_regulation_requested.connect(self._on_create_regulation)
         self._page_create.regulation_selected.connect(self._on_regulation_selected)
         self._page_review.back_requested.connect(self._back_to_create)
@@ -201,6 +255,12 @@ class MainShell(QWidget):
         self._page_readiness.answer_requested.connect(self._on_readiness_answer)
         self._page_readiness.change_decision_requested.connect(self._on_readiness_change_decision)
         self._page_readiness.finalize_requested.connect(self._on_readiness_finalize)
+        self._page_readiness.skip_to_agents_requested.connect(self._on_skip_readiness_to_agents)
+        self._page_readiness.supplement_requested.connect(self._on_start_readiness_supplement)
+        self._page_revision.download_requested.connect(self._on_revision_download)
+        self._page_revision.next_requested.connect(self._on_revision_next)
+        self._page_creation_chat.message_requested.connect(self._on_regulation_creation_message)
+        self._page_creation_chat.finished_requested.connect(self._show_regulation_result)
         self._regulation_ready.connect(self._show_regulation_result)
         self._regulation_failed.connect(self._show_regulation_error)
         self._role_match_ready.connect(self._show_role_match_result)
@@ -210,7 +270,14 @@ class MainShell(QWidget):
         self._revision_ready.connect(self._show_revision_result)
         self._draft_ready.connect(self._show_draft_result)
         self._drafts_ready.connect(self._show_drafts_result)
+        self._agents_table_ready.connect(self._show_agents_table_result)
+        self._implementation_agents_ready.connect(self._show_implementation_agents)
+        self._passport_ready.connect(self._show_passport_result)
+        self._passport_failed.connect(self._show_passport_error)
+        self._published_agent_ready.connect(self._on_launch_workflow_agent)
         self._chat_ready.connect(self._show_chat_result)
+        self._creation_session_ready.connect(self._show_creation_session)
+        self._creation_stream_event.connect(self._page_creation_chat.append_stream_event)
         self._pages.currentChanged.connect(self._on_stack_changed)
         self._review_fullscreen = False
         self._current_regulation: RegulationParseResult | None = None
@@ -218,6 +285,13 @@ class MainShell(QWidget):
         self._current_readiness: AgentReadinessResult | None = None
         self._current_draft: AgentDraft | None = None
         self._current_chat: QuestionChatSession | None = None
+        self._current_creation_session: RegulationCreationSession | None = None
+        self._current_revision: RegulationRevisionResult | None = None
+        self._implementation_draft_id = ""
+        self._current_passport_draft_id = ""
+        self._current_passport_agent_id = ""
+        self._auto_finalize_running = False
+        self._supplement_in_progress = False
 
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
@@ -373,11 +447,61 @@ class MainShell(QWidget):
             self._apply_user(user)
 
     def _on_create_regulation(self) -> None:
-        QMessageBox.information(
-            self,
-            "Создать регламент",
-            "Мастер создания регламента с ИИ появится здесь.",
+        self._page_loading.set_message(
+            "Создаём чат регламента",
+            "Готовим профиль стиля и первый вопрос.",
         )
+        self._pages.setCurrentIndex(self._page_index["loading"])
+
+        def run() -> None:
+            try:
+                session = self._api.start_regulation_creation()
+            except ApiError as exc:
+                self._regulation_failed.emit(exc.message)
+                return
+            self._creation_session_ready.emit(session)
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_regulation_creation_message(self, draft_id: str, message: str) -> None:
+        if self._current_creation_session is not None:
+            from dataclasses import replace
+
+            pending = RegulationCreationMessage(
+                message_id="local-pending",
+                draft_id=draft_id,
+                role="user",
+                content=message,
+                structured={},
+            )
+            self._page_creation_chat.set_session(
+                replace(
+                    self._current_creation_session,
+                    status="generating",
+                    messages=[*self._current_creation_session.messages, pending],
+                )
+            )
+
+        def run() -> None:
+            try:
+                session = self._api.stream_regulation_creation_message(
+                    draft_id,
+                    message,
+                    lambda event_type, text: self._creation_stream_event.emit(event_type, text),
+                )
+            except ApiError as exc:
+                self._regulation_failed.emit(exc.message)
+                return
+            self._creation_session_ready.emit(session)
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_creation_session(self, session: object) -> None:
+        if not isinstance(session, RegulationCreationSession):
+            return
+        self._current_creation_session = session
+        self._page_creation_chat.set_session(session)
+        self._pages.setCurrentIndex(self._page_index["creation_chat"])
 
     def _on_regulation_selected(self, path: str) -> None:
         self._page_create.set_processing(True)
@@ -486,11 +610,17 @@ class MainShell(QWidget):
                     self._current_role_match.run_id,
                 )
                 draft = self._api.ensure_draft_readiness(draft.draft_id)
-                chat = self._first_chat_for_draft(draft)
+                readiness = draft.readiness
+                if readiness is None or not any(not question.answered for question in readiness.questions):
+                    draft = self._api.update_agent_draft_status(draft.draft_id, "ready")
+                    workflows = self._api.list_workflows()
+                    suggestions = draft.agent_suggestions or _suggestions_from_role_match(self._current_role_match)
+                    self._implementation_agents_ready.emit((suggestions, workflows, draft.draft_id))
+                    return
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._draft_ready.emit((draft, chat))
+            self._draft_ready.emit((draft, None, "choice"))
 
         Thread(target=run, daemon=True).start()
 
@@ -499,13 +629,25 @@ class MainShell(QWidget):
         if readiness is None:
             return None
         question = next((item for item in readiness.questions if not item.answered), None)
+        try:
+            latest = self._api.latest_question_chat(draft.draft_id)
+        except ApiError:
+            latest = None
+        if latest is not None:
+            if latest.status != "answered":
+                return latest
+            if question is None:
+                return latest
         if question is None:
             return None
         return self._api.create_question_chat(draft.draft_id, question.question_id)
 
     def _show_draft_result(self, payload: object) -> None:
+        mode = ""
         if isinstance(payload, tuple):
-            draft, chat = payload
+            draft = payload[0] if len(payload) >= 1 else None
+            chat = payload[1] if len(payload) >= 2 else None
+            mode = str(payload[2]) if len(payload) >= 3 else ""
         else:
             draft, chat = payload, None
         if not isinstance(draft, AgentDraft):
@@ -515,15 +657,21 @@ class MainShell(QWidget):
         self._current_chat = chat if isinstance(chat, QuestionChatSession) else None
         if draft.readiness is not None:
             self._page_readiness.set_result(draft.readiness)
+        self._page_readiness.set_supplement_choice(mode == "choice")
         self._page_readiness.set_chat(self._current_chat)
         self._pages.setCurrentIndex(self._page_index["readiness"])
+        if mode != "choice" and self._supplement_in_progress and self._readiness_complete_with_changes():
+            self._finalize_supplement_revision()
 
     def _show_readiness_result(self, result: object) -> None:
         if not isinstance(result, AgentReadinessResult):
             return
         self._current_readiness = result
         self._page_readiness.set_result(result)
+        self._page_readiness.set_supplement_choice(False)
         self._pages.setCurrentIndex(self._page_index["readiness"])
+        if self._supplement_in_progress and self._readiness_complete_with_changes():
+            self._finalize_supplement_revision()
 
     def _show_chat_result(self, result: object) -> None:
         if not isinstance(result, QuestionChatSession):
@@ -536,13 +684,13 @@ class MainShell(QWidget):
         QMessageBox.warning(self, "Готовность регламента", message)
 
     def _on_readiness_answer(self, question_id: str, answer: str) -> None:
-        if self._current_regulation is None or self._current_readiness is None or not answer.strip():
+        if self._current_readiness is None or not answer.strip():
             return
 
         def run() -> None:
             try:
                 result = self._api.answer_readiness_question(
-                    self._current_regulation.regulation_id,
+                    self._active_readiness_regulation_id(),
                     self._current_readiness.readiness_run_id,
                     question_id,
                     answer,
@@ -568,9 +716,48 @@ class MainShell(QWidget):
 
         Thread(target=run, daemon=True).start()
 
+    def _on_skip_readiness_to_agents(self) -> None:
+        if self._current_draft is None:
+            return
+        self._page_loading.set_message(
+            "Готовим ИИ-агента",
+            "Сохраняем подтверждённые функции без изменения регламента.",
+        )
+        self._pages.setCurrentIndex(self._page_index["loading"])
+
+        def run() -> None:
+            try:
+                draft = self._api.update_agent_draft_status(self._current_draft.draft_id, "ready")
+                workflows = self._api.list_workflows()
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            suggestions = draft.agent_suggestions or _suggestions_from_role_match(self._current_role_match)
+            self._implementation_agents_ready.emit((suggestions, workflows, draft.draft_id))
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_start_readiness_supplement(self) -> None:
+        if self._current_draft is None:
+            return
+        self._supplement_in_progress = True
+        self._page_readiness.set_supplement_choice(False)
+
+        def run() -> None:
+            try:
+                draft = self._api.get_agent_draft(self._current_draft.draft_id)
+                chat = self._first_chat_for_draft(draft)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._draft_ready.emit((draft, chat, "supplement"))
+
+        Thread(target=run, daemon=True).start()
+
     def _on_send_question_chat_message(self, question_id: str, message: str) -> None:
         if self._current_draft is None or not message.strip():
             return
+        self._show_pending_chat_message(question_id, message.strip())
 
         def run() -> None:
             try:
@@ -580,8 +767,17 @@ class MainShell(QWidget):
                     message,
                 )
                 draft = self._api.get_agent_draft(self._current_draft.draft_id)
+                # Backend после ответа уже может вернуть чат следующего вопроса.
+                # Если всё ещё answered — дотягиваем следующий явно.
                 if chat.status == "answered":
                     chat = self._first_chat_for_draft(draft) or chat
+                elif draft.readiness is not None:
+                    next_q = next(
+                        (item for item in draft.readiness.questions if not item.answered),
+                        None,
+                    )
+                    if next_q is not None and chat.question_id != next_q.question_id:
+                        chat = self._first_chat_for_draft(draft) or chat
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
@@ -589,14 +785,45 @@ class MainShell(QWidget):
 
         Thread(target=run, daemon=True).start()
 
+    def _show_pending_chat_message(self, question_id: str, message: str) -> None:
+        if self._current_chat is None:
+            return
+        if question_id != self._current_chat.question_id:
+            return
+        pending = QuestionChatSession(
+            session_id=self._current_chat.session_id,
+            draft_id=self._current_chat.draft_id,
+            readiness_run_id=self._current_chat.readiness_run_id,
+            question_id=self._current_chat.question_id,
+            function_id=self._current_chat.function_id,
+            target_field=self._current_chat.target_field,
+            status="generating",
+            context=self._current_chat.context,
+            messages=[
+                *self._current_chat.messages,
+                QuestionChatMessage(
+                    message_id="local-user-pending",
+                    session_id=self._current_chat.session_id,
+                    role="user",
+                    content=message,
+                    structured={},
+                ),
+                QuestionChatMessage(
+                    message_id="local-assistant-generating",
+                    session_id=self._current_chat.session_id,
+                    role="assistant",
+                    content="Задаю вопрос ...",
+                    structured={"isGenerating": True, "quickAnswers": []},
+                ),
+            ],
+        )
+        self._current_chat = pending
+        self._page_readiness.set_chat(pending)
+
     def _on_readiness_change_decision(self, change_id: str, status: str, after: str) -> None:
         if self._current_readiness is None:
             return
-        regulation_id = (
-            self._current_regulation.regulation_id
-            if self._current_regulation is not None
-            else self._current_readiness.regulation_id
-        )
+        regulation_id = self._active_readiness_regulation_id()
 
         def run() -> None:
             try:
@@ -617,11 +844,7 @@ class MainShell(QWidget):
     def _on_readiness_finalize(self) -> None:
         if self._current_readiness is None:
             return
-        regulation_id = (
-            self._current_regulation.regulation_id
-            if self._current_regulation is not None
-            else self._current_readiness.regulation_id
-        )
+        regulation_id = self._active_readiness_regulation_id()
         self._page_loading.set_message(
             "Создаём копию регламента",
             "Применяем подтверждённые изменения и формируем протокол.",
@@ -635,17 +858,121 @@ class MainShell(QWidget):
                     self._current_readiness.readiness_run_id,
                 )
             except ApiError as exc:
+                self._auto_finalize_running = False
                 self._readiness_failed.emit(exc.message)
                 return
+            self._auto_finalize_running = False
             self._revision_ready.emit(result)
+
+        Thread(target=run, daemon=True).start()
+
+    def _active_readiness_regulation_id(self) -> str:
+        if self._current_readiness is not None and self._current_readiness.regulation_id:
+            return self._current_readiness.regulation_id
+        if self._current_draft is not None and self._current_draft.regulation_id:
+            return self._current_draft.regulation_id
+        if self._current_regulation is not None:
+            return self._current_regulation.regulation_id
+        return ""
+
+    def _maybe_auto_finalize_readiness(self) -> None:
+        readiness = self._current_readiness
+        if readiness is None or self._auto_finalize_running or readiness.status == "finalized":
+            return
+        if not readiness.changes:
+            return
+        if any(not question.answered for question in readiness.questions):
+            return
+        self._auto_finalize_running = True
+        self._on_readiness_finalize()
+
+    def _readiness_complete_with_changes(self) -> bool:
+        readiness = self._current_readiness
+        if readiness is None:
+            return False
+        if any(not question.answered for question in readiness.questions):
+            return False
+        return bool(readiness.changes)
+
+    def _finalize_supplement_revision(self) -> None:
+        if self._current_readiness is None or self._current_draft is None or self._auto_finalize_running:
+            return
+        regulation_id = self._active_readiness_regulation_id()
+        readiness_run_id = self._current_readiness.readiness_run_id
+        self._auto_finalize_running = True
+        self._page_loading.set_message(
+            "Дополняем регламент",
+            "Формируем новую редакцию документа.",
+        )
+        self._pages.setCurrentIndex(self._page_index["loading"])
+
+        def run() -> None:
+            try:
+                result = self._api.finalize_readiness(regulation_id, readiness_run_id)
+            except ApiError as exc:
+                self._auto_finalize_running = False
+                self._readiness_failed.emit(exc.message)
+                return
+            self._auto_finalize_running = False
+            self._revision_ready.emit(result)
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_revision_next(self) -> None:
+        if self._current_draft is None:
+            return
+        draft_id = self._current_draft.draft_id
+        self._page_loading.set_message(
+            "Анализируем бизнес-процессы",
+            "Повторно выявляем функции по сформированному регламенту и готовим таблицу ИИ-агентов.",
+        )
+        self._pages.setCurrentIndex(self._page_index["loading"])
+
+        def run() -> None:
+            try:
+                suggestions = self._api.reanalyze_revision_document(draft_id)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._supplement_in_progress = False
+            self._agents_table_ready.emit(suggestions)
 
         Thread(target=run, daemon=True).start()
 
     def _show_revision_result(self, result: object) -> None:
         if not isinstance(result, RegulationRevisionResult):
             return
+        self._current_revision = result
         self._page_revision.set_result(result)
         self._pages.setCurrentIndex(self._page_index["revision"])
+
+    def _on_revision_download(self, kind: str) -> None:
+        if self._current_revision is None:
+            return
+        if kind == "protocol":
+            url = self._current_revision.protocol_url
+            default_name = "change_protocol.txt"
+        elif kind == "pdf":
+            url = self._current_revision.pdf_download_url
+            default_name = "ai-ready-regulation.pdf"
+        else:
+            url = self._current_revision.download_url
+            default_name = "ai-ready-regulation.docx"
+        if not url:
+            return
+        target, _filter = QFileDialog.getSaveFileName(self, "Сохранить файл", default_name)
+        if not target:
+            return
+
+        def run() -> None:
+            try:
+                data = self._api.fetch_bytes(url)
+                with open(target, "wb") as fh:
+                    fh.write(data)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+
+        Thread(target=run, daemon=True).start()
 
     def _on_role_match_decision(self, match_id: str, status: str) -> None:
         if self._current_regulation is None or self._current_role_match is None:
@@ -703,22 +1030,187 @@ class MainShell(QWidget):
             return
         self._pages.setCurrentIndex(idx)
         if key == "agents":
+            self._page_agents.show_agents()
             self._load_agent_drafts()
+
+    def _on_open_saved_workflow(self, record: object) -> None:
+        from app.api_client import WorkflowRecord as WorkflowRecordType
+
+        if not isinstance(record, WorkflowRecordType):
+            return
+        self._page_workflows.load_record(record)
+        self._pages.setCurrentIndex(self._page_index["workflows"])
 
     def _load_agent_drafts(self) -> None:
         def run() -> None:
             try:
                 drafts = self._api.list_agent_drafts()
+                workflows = self._api.list_workflows()
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._drafts_ready.emit(drafts)
+            self._drafts_ready.emit((drafts, workflows))
 
         Thread(target=run, daemon=True).start()
 
     def _show_drafts_result(self, result: object) -> None:
+        if isinstance(result, tuple) and len(result) >= 2:
+            drafts = [item for item in result[0] if isinstance(item, AgentDraft)] if isinstance(result[0], list) else []
+            workflows = (
+                [item for item in result[1] if isinstance(item, WorkflowListItem)]
+                if isinstance(result[1], list)
+                else []
+            )
+            self._page_agents.set_agents(workflows)
+            self._page_agents.set_drafts(drafts)
+            return
         if isinstance(result, list):
             self._page_agents.set_drafts([item for item in result if isinstance(item, AgentDraft)])
+
+    def _show_agents_table_result(self, result: object) -> None:
+        if isinstance(result, list) and all(isinstance(item, AgentSuggestion) for item in result):
+            self._page_agents.show_drafts()
+            self._pages.setCurrentIndex(self._page_index["agents"])
+            self._load_agent_drafts()
+            return
+        elif isinstance(result, list):
+            self._page_agents.set_drafts([item for item in result if isinstance(item, AgentDraft)])
+        self._pages.setCurrentIndex(self._page_index["agents"])
+
+    def _show_implementation_agents(self, result: object) -> None:
+        workflows: list[WorkflowListItem] = []
+        raw_suggestions = result
+        self._implementation_draft_id = ""
+        if isinstance(result, tuple) and len(result) >= 2:
+            raw_suggestions = result[0]
+            workflows = [item for item in result[1] if isinstance(item, WorkflowListItem)] if isinstance(result[1], list) else []
+            if len(result) >= 3:
+                self._implementation_draft_id = str(result[2] or "")
+        suggestions = (
+            [item for item in raw_suggestions if isinstance(item, AgentSuggestion)]
+            if isinstance(raw_suggestions, list)
+            else []
+        )
+        self.sidebar.set_active_key("create", animate=False)
+        self._page_implementation_agents.set_suggestions(suggestions, created_agents=workflows)
+        self._pages.setCurrentIndex(self._page_index["implementation_agents"])
+
+    def _on_create_agent_from_suggestion(self, agent_id: str) -> None:
+        suggestion = self._page_agents.find_suggestion(agent_id)
+        if suggestion is None:
+            QMessageBox.warning(self, "Агент", "Не удалось найти бизнес-процесс для создания агента.")
+            return
+        self._current_passport_suggestion = suggestion
+        self._current_passport_draft_id = ""
+        self._current_passport_agent_id = ""
+        self._pages.setCurrentIndex(self._page_index["passport"])
+        self._page_passport.start(suggestion)
+
+    def _on_create_agent_from_draft_suggestion(self, draft_id: str, agent_id: str) -> None:
+        suggestion = self._page_agents.find_suggestion(agent_id, draft_id=draft_id)
+        if suggestion is None:
+            QMessageBox.warning(self, "Агент", "Не удалось найти бизнес-процесс для создания агента.")
+            return
+        self._current_passport_suggestion = suggestion
+        self._current_passport_draft_id = draft_id
+        self._current_passport_agent_id = agent_id
+        self._pages.setCurrentIndex(self._page_index["passport"])
+        self._page_passport.start(suggestion)
+
+    def _on_create_agent_from_inline_suggestion(self, suggestion: object) -> None:
+        if not isinstance(suggestion, AgentSuggestion):
+            QMessageBox.warning(self, "Агент", "Не удалось найти бизнес-процесс для создания агента.")
+            return
+        self._current_passport_suggestion = suggestion
+        self._current_passport_draft_id = self._implementation_draft_id
+        self._current_passport_agent_id = suggestion.agent_id if self._implementation_draft_id else ""
+        self._pages.setCurrentIndex(self._page_index["passport"])
+        self._page_passport.start(suggestion)
+
+    def _on_passport_draft_requested(self, suggestion: object) -> None:
+        if not isinstance(suggestion, AgentSuggestion):
+            return
+
+        def run() -> None:
+            try:
+                session = self._api.draft_passport_from_suggestion(suggestion)
+            except ApiError as exc:
+                self._passport_failed.emit(exc.message)
+                return
+            self._passport_ready.emit(session)
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_passport_answer_requested(self, answers: object) -> None:
+        session = self._page_passport.current_session()
+        if session is None or not isinstance(answers, dict):
+            return
+
+        def run() -> None:
+            try:
+                updated = self._api.complete_passport(
+                    session.passport,
+                    answers={str(key): str(value) for key, value in answers.items()},
+                    bp_name=session.bp_name,
+                    excerpt=session.excerpt,
+                    functions=session.functions,
+                )
+            except ApiError as exc:
+                self._passport_failed.emit(exc.message)
+                return
+            self._passport_ready.emit(updated)
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_passport_result(self, result: object) -> None:
+        if isinstance(result, PassportSession):
+            self._page_passport.apply_session(result)
+            self._pages.setCurrentIndex(self._page_index["passport"])
+
+    def _show_passport_error(self, message: str) -> None:
+        self._page_passport.show_error(message)
+        self._pages.setCurrentIndex(self._page_index["passport"])
+
+    def _on_passport_finished(self, session: object) -> None:
+        if not isinstance(session, PassportSession):
+            return
+        self._page_workflows.start_from_passport(session, auto_plan=True)
+        self._pages.setCurrentIndex(self._page_index["workflows"])
+
+    def _on_launch_workflow_agent(self, record: object) -> None:
+        if not isinstance(record, WorkflowRecord):
+            return
+        self.sidebar.set_active_key("agents", animate=False)
+        self._page_agent_run.start(record)
+        self._pages.setCurrentIndex(self._page_index["agent_run"])
+
+    def _on_workflow_record_saved(self, record: object) -> None:
+        if str(getattr(record, "phase", "")) != "done":
+            return
+        # Keep passport suggestion in «Черновики». Removing it on publish made the
+        # card disappear while the published agent lives under «Мои агенты».
+        # Remember source ids on the workflow so a later delete can stay consistent.
+        draft_id = self._current_passport_draft_id
+        agent_id = self._current_passport_agent_id
+        workflow_id = str(getattr(record, "id", "") or "")
+        self._current_passport_draft_id = ""
+        self._current_passport_agent_id = ""
+
+        def run() -> None:
+            try:
+                if workflow_id and draft_id and agent_id:
+                    local = dict(getattr(record, "local_run", None) or {})
+                    local["source_draft_id"] = draft_id
+                    local["source_agent_id"] = agent_id
+                    self._api.update_workflow_local_run(workflow_id, local)
+                drafts = self._api.list_agent_drafts()
+                workflows = self._api.list_workflows()
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._drafts_ready.emit((drafts, workflows))
+
+        Thread(target=run, daemon=True).start()
 
     def _on_continue_agent_draft(self, draft_id: str) -> None:
         self._page_loading.set_message(
@@ -730,6 +1222,12 @@ class MainShell(QWidget):
         def run() -> None:
             try:
                 draft = self._api.ensure_draft_readiness(draft_id)
+                if draft.status == "ready" and not draft.agent_suggestions:
+                    draft = self._api.update_agent_draft_status(draft.draft_id, "ready")
+                if draft.status == "ready" and draft.agent_suggestions:
+                    workflows = self._api.list_workflows()
+                    self._implementation_agents_ready.emit((draft.agent_suggestions, workflows, draft.draft_id))
+                    return
                 chat = self._first_chat_for_draft(draft)
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
@@ -737,3 +1235,134 @@ class MainShell(QWidget):
             self._draft_ready.emit((draft, chat))
 
         Thread(target=run, daemon=True).start()
+
+    def _on_delete_agent_draft(self, draft_id: str) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Удалить черновик",
+            "Удалить этот черновик ИИ-агента? Это действие нельзя отменить.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def run() -> None:
+            try:
+                self._api.delete_agent_draft(draft_id)
+                drafts = self._api.list_agent_drafts()
+                workflows = self._api.list_workflows()
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._drafts_ready.emit((drafts, workflows))
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_delete_agent_suggestion(self, draft_id: str, agent_id: str) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Удалить черновик",
+            "Удалить этот черновик ИИ-агента? Это действие нельзя отменить.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def run() -> None:
+            try:
+                self._api.delete_agent_draft_suggestion(draft_id, agent_id)
+                drafts = self._api.list_agent_drafts()
+                workflows = self._api.list_workflows()
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._drafts_ready.emit((drafts, workflows))
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_delete_published_agent(self, workflow_id: str) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Удалить ИИ-агента",
+            "Удалить этого опубликованного ИИ-агента? Это действие нельзя отменить.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def run() -> None:
+            try:
+                self._api.delete_workflow(workflow_id)
+                drafts = self._api.list_agent_drafts()
+                workflows = self._api.list_workflows()
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._drafts_ready.emit((drafts, workflows))
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_run_published_agent(self, workflow_id: str) -> None:
+        def run() -> None:
+            try:
+                record = self._api.get_workflow(workflow_id)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._published_agent_ready.emit(record)
+
+        Thread(target=run, daemon=True).start()
+
+
+def _suggestions_from_role_match(role_match: RoleMatchResult | None) -> list[AgentSuggestion]:
+    if role_match is None:
+        return []
+    functions = role_match.functions or [
+        match.function
+        for match in role_match.matches
+        if match.function is not None and match.status != "rejected"
+    ]
+    suggestions: list[AgentSuggestion] = []
+    seen: set[str] = set()
+    for index, function in enumerate(functions, start=1):
+        if function is None:
+            continue
+        if not function.is_function and not (function.action or function.object):
+            continue
+        key = function.duplicate_group or function.function_id or f"{function.action}:{function.object}"
+        if key in seen:
+            continue
+        seen.add(key)
+        suggestions.append(
+            AgentSuggestion(
+                agent_id=f"agent-suggestion-{index:03d}",
+                title=_suggestion_title(function, index),
+                description=_suggestion_description(function),
+                regulation_id=role_match.regulation_id,
+                role_match_run_id=role_match.run_id,
+                function_id=function.function_id,
+                source_block_id=function.target_block_id,
+            )
+        )
+    return suggestions
+
+
+def _suggestion_title(function, index: int) -> str:
+    action = (function.action or "").strip()
+    obj = (function.object or "").strip()
+    if action and obj:
+        return f"ИИ-агент: {action} {obj}"[:180]
+    if action:
+        return f"ИИ-агент: {action}"[:180]
+    return f"ИИ-агент для бизнес-процесса {index}"
+
+
+def _suggestion_description(function) -> str:
+    parts: list[str] = []
+    actor = getattr(function, "actor", None)
+    if actor is not None and actor.canonical_position:
+        parts.append(f"Роль: {actor.canonical_position}")
+    if function.conditions:
+        parts.append("Условия: " + "; ".join(function.conditions[:2]))
+    if function.recipient:
+        parts.append(f"Получатель/участник: {function.recipient}")
+    if function.explanation:
+        parts.append(function.explanation)
+    return "\n".join(part for part in parts if part).strip()

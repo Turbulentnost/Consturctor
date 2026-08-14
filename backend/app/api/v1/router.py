@@ -8,10 +8,12 @@ from app.api.v1 import (
     health,
     kpi,
     llm,
+    regulation_creation,
     regulations,
     runs,
     tool_sandbox,
     tools,
+    workflows,
 )
 
 api_router = APIRouter()
@@ -26,3 +28,5 @@ api_router.include_router(agent_mocks.router, prefix="/api/v1")
 api_router.include_router(runs.router, prefix="/api/v1")
 api_router.include_router(cron_jobs.router, prefix="/api/v1")
 api_router.include_router(kpi.router, prefix="/api/v1")
+api_router.include_router(regulation_creation.router, prefix="/api/v1")
+api_router.include_router(workflows.router, prefix="/api/v1")

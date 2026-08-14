@@ -12,6 +12,12 @@ from app.db.session import get_db
 from app.models.regulation import RegulationRevision
 from app.schemas.regulation import (
     AgentDraftDetail,
+    AgentPassportModel,
+    CompletePassportRequest,
+    DraftPassportFromSuggestionRequest,
+    DraftPassportRequest,
+    PassportFunctionModel,
+    PassportResponse,
     RegulationParseResult,
     AgentReadinessResult,
     ChangeDecisionRequest,
@@ -38,6 +44,12 @@ from app.services.readiness import (
     get_readiness_run,
     update_change_status,
 )
+from app.services.agent_passport import complete_passport, draft_passport, passport_from_dict
+from app.services.agent_passport.from_suggestion import (
+    PassportBuildError,
+    draft_passport_from_function,
+)
+from app.services.agent_passport.types import ExtractedFunction
 
 router = APIRouter(prefix="/regulations", tags=["regulations"])
 
@@ -283,7 +295,154 @@ async def download_revision(
     )
     if revision is None:
         raise HTTPException(status_code=404, detail="Версия регламента не найдена")
-    path = Path(revision.protocol_path if kind == "protocol" else revision.document_path)
+    if kind == "protocol":
+        path = Path(revision.protocol_path)
+    elif kind == "pdf":
+        path = Path((revision.result_json or {}).get("pdfPath") or "")
+    else:
+        path = Path(revision.document_path)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Файл версии не найден")
     return FileResponse(str(path), filename=path.name)
+
+
+@router.get("/{regulation_id}/revisions/{revision_id}/preview/{kind}/{page}")
+async def revision_preview_page(
+    regulation_id: str,
+    revision_id: str,
+    kind: str,
+    page: int,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    revision = (
+        db.query(RegulationRevision)
+        .filter(
+            RegulationRevision.id == revision_id,
+            RegulationRevision.regulation_id == regulation_id,
+            RegulationRevision.user_id == auth.user_id,
+        )
+        .first()
+    )
+    if revision is None:
+        raise HTTPException(status_code=404, detail="Версия регламента не найдена")
+    key = "_sourcePreviewPaths" if kind == "source" else "_revisedPreviewPaths" if kind == "revised" else ""
+    if not key:
+        raise HTTPException(status_code=404, detail="Preview не найден")
+    items = (revision.result_json or {}).get(key) or []
+    item = next((entry for entry in items if int(entry.get("page") or 0) == page), None)
+    path = Path(str((item or {}).get("path") or ""))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Страница preview не найдена")
+    return FileResponse(str(path), media_type="image/png", filename=path.name)
+
+
+def _passport_response(
+    passport,
+    *,
+    bp_name: str = "",
+    excerpt: str = "",
+    functions: list[ExtractedFunction] | None = None,
+) -> PassportResponse:
+    data = passport.as_dict()
+    return PassportResponse(
+        passport=AgentPassportModel(
+            **{key: data.get(key) for key in AgentPassportModel.model_fields if key != "text"},
+            text=passport.format_text(),
+        ),
+        bp_name=bp_name,
+        excerpt=excerpt,
+        functions=[
+            PassportFunctionModel(
+                name=item.name,
+                description=item.description,
+                action_level=item.action_level,
+                requires_human_approval=item.requires_human_approval,
+                automation_kind=item.automation_kind,
+            )
+            for item in (functions or [])
+        ],
+    )
+
+
+def _to_extracted(items: list[PassportFunctionModel]) -> list[ExtractedFunction]:
+    return [
+        ExtractedFunction(
+            name=item.name,
+            description=item.description,
+            action_level=item.action_level,
+            requires_human_approval=item.requires_human_approval,
+            automation_kind=item.automation_kind,
+        ).with_derived_approval()
+        for item in items
+    ]
+
+
+@router.post("/passport/draft", response_model=PassportResponse)
+def create_passport_draft(
+    body: DraftPassportRequest,
+    _auth: AuthContext = Depends(get_current_user),
+) -> PassportResponse:
+    try:
+        functions = _to_extracted(body.functions)
+        passport = draft_passport(
+            bp_name=body.bp_name,
+            excerpt=body.excerpt,
+            functions=functions,
+            agent_name=body.agent_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _passport_response(
+        passport,
+        bp_name=body.bp_name,
+        excerpt=body.excerpt,
+        functions=functions,
+    )
+
+
+@router.post("/passport/draft-from-suggestion", response_model=PassportResponse)
+def create_passport_draft_from_suggestion(
+    body: DraftPassportFromSuggestionRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PassportResponse:
+    try:
+        passport, excerpt, functions = draft_passport_from_function(
+            db,
+            user_id=auth.user_id,
+            regulation_id=body.regulationId,
+            role_match_run_id=body.roleMatchRunId,
+            function_id=body.functionId,
+            agent_title=body.agentTitle,
+            agent_description=body.agentDescription,
+        )
+    except PassportBuildError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    bp_name = body.agentTitle.strip() or passport.name
+    return _passport_response(passport, bp_name=bp_name, excerpt=excerpt, functions=functions)
+
+
+@router.post("/passport/complete", response_model=PassportResponse)
+def complete_passport_draft(
+    body: CompletePassportRequest,
+    _auth: AuthContext = Depends(get_current_user),
+) -> PassportResponse:
+    current = passport_from_dict(body.passport.model_dump())
+    functions = _to_extracted(body.functions) if body.functions else []
+    passport = complete_passport(
+        current,
+        answers=body.answers,
+        field_updates=body.field_updates,
+        bp_name=body.bp_name,
+        excerpt=body.excerpt,
+        functions=functions or None,
+    )
+    return _passport_response(
+        passport,
+        bp_name=body.bp_name,
+        excerpt=body.excerpt,
+        functions=functions,
+    )

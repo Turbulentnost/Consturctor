@@ -30,6 +30,8 @@ _MATCH_TYPES = {
     "graph_relation",
     "definition_link",
     "actor_inheritance",
+    "role_context",
+    "unit_process",
 }
 
 _ACTION_PATTERN = re.compile(
@@ -38,7 +40,11 @@ _ACTION_PATTERN = re.compile(
     r"подготавливает|готовит|проверяет|формирует|направляет|переда[её]т|"
     r"регистрирует|согласовывает|утверждает|вносит|получает|контролирует|"
     r"вед[её]т|выполняет|устраняет|оформляет|проводит|фиксирует|"
-    r"составляет|настраивает|обеспечивает|организует|анализирует"
+    r"составляет|настраивает|обеспечивает|организует|анализирует|"
+    # Типичные формулировки регламентов/положений о подразделениях.
+    r"отвечает|осуществляет|курирует|координирует|сопровождает|"
+    r"мониторит|участвует|взаимодействует|эскалирует|"
+    r"комплектует|поддерживает"
     r")\b",
     flags=re.I,
 )
@@ -77,6 +83,7 @@ def _fallback_response(
         "contradictions": [],
         "requiresUserConfirmation": True,
         "function": _fallback_function(candidate, profile, context),
+        "functions": _fallback_functions(candidate, profile, context),
     }
 
 
@@ -120,39 +127,25 @@ def _payload(
             "modelConfidence": 0.0,
             "contradictions": [],
             "requiresUserConfirmation": False,
-            "function": {
-                "isFunction": True,
-                "actor": {
-                    "text": "он",
-                    "canonicalPosition": profile.canonicalTitle,
-                    "sourceBlockId": "blockId with actor evidence",
-                },
-                "action": "направить",
-                "object": "заявку",
-                "recipient": "руководитель",
-                "conditions": [],
-                "dependencies": [
-                    {
-                        "type": "after",
-                        "blockId": "previous blockId",
-                        "description": "После проверки заявки",
-                    }
-                ],
-                "evidence": [
-                    {"fragmentId": fragment.fragmentId, "quote": "точная цитата действия"}
-                ],
-                "proofChain": [
-                    {
-                        "blockId": "source blockId",
-                        "relation": "actor_inheritance",
-                        "text": "текст доказательства",
-                        "evidence": "почему связан",
-                        "confidence": 0.9,
-                    }
-                ],
-                "explanation": "кратко",
-                "confidence": 0.0,
-            },
+            "functions": [
+                {
+                    "isFunction": True,
+                    "actor": {
+                        "text": "он",
+                        "canonicalPosition": profile.canonicalTitle,
+                        "sourceBlockId": "blockId with actor evidence",
+                    },
+                    "action": "направить",
+                    "object": "заявку",
+                    "recipient": "руководитель",
+                    "conditions": [],
+                    "dependencies": [],
+                    "evidence": [{"fragmentId": fragment.fragmentId, "quote": "точная цитата действия"}],
+                    "explanation": "кратко",
+                    "confidence": 0.0,
+                }
+            ],
+            "function": {},
         },
     }
     return {
@@ -225,7 +218,25 @@ def _validated(
         "contradictions": [str(x) for x in data.get("contradictions") or []],
         "requiresUserConfirmation": bool(data.get("requiresUserConfirmation", False)),
         "function": _validated_function(data.get("function"), candidate, profile, context, evidence),
+        "functions": _validated_functions(data.get("functions"), candidate, profile, context, evidence),
     }
+
+
+def _validated_functions(
+    raw: Any,
+    candidate: Candidate,
+    profile: RoleProfile,
+    context: ContextPackage | None,
+    fallback_evidence: list[dict],
+) -> list[RoleFunction]:
+    if not isinstance(raw, list):
+        return []
+    functions = [
+        _validated_function(item, candidate, profile, context, fallback_evidence)
+        for item in raw
+        if isinstance(item, dict)
+    ]
+    return [item for item in functions if item.isFunction]
 
 
 def _validated_function(
@@ -290,22 +301,69 @@ def _validated_function(
         object=str(raw.get("object") or _guess_object(fragment.text)),
         recipient=str(raw.get("recipient") or ""),
         conditions=[str(x)[:500] for x in raw.get("conditions") or []],
-        dependencies=dependencies,
-        evidence=evidence[:6],
-        proofChain=proof_chain[:8],
+        dependencies=_dedupe_dependencies(dependencies),
+        evidence=_dedupe_evidence(evidence)[:6],
+        proofChain=_dedupe_proof_chain(proof_chain)[:8],
         explanation=str(raw.get("explanation") or "")[:1000],
         confidence=_clamp(float(raw.get("confidence") or raw.get("modelConfidence") or 0.0)),
         requiresUserConfirmation=bool(raw.get("requiresUserConfirmation", False)),
     )
 
 
-def _rule_evidence(candidate: Candidate) -> list[MatchEvidence]:
+def _rule_evidence(candidate: Candidate, *, quote_override: str = "") -> list[MatchEvidence]:
+    if quote_override.strip():
+        return [MatchEvidence(fragmentId=candidate.fragment.fragmentId, quote=quote_override.strip()[:500])]
     out: list[MatchEvidence] = []
+    seen: set[str] = set()
     for signal in candidate.signals:
         quote = signal.quote or candidate.fragment.text[:220]
-        if quote:
+        key = _dedupe_text_key(quote)
+        if quote and key not in seen:
             out.append(MatchEvidence(fragmentId=candidate.fragment.fragmentId, quote=quote))
+            seen.add(key)
     return out[:3]
+
+
+def _function_parts(text: str) -> list[str]:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+    duty_parts = _duty_list_parts(cleaned)
+    if len(duty_parts) >= 2:
+        return duty_parts
+    lines = [line.strip(" -•\t") for line in cleaned.splitlines() if line.strip(" -•\t")]
+    if len(lines) > 1:
+        return [line for line in lines if _has_action(line, {})]
+    parts = [part.strip(" -•\t") for part in re.split(r";|\n", cleaned) if part.strip(" -•\t")]
+    return [part for part in parts if _has_action(part, {})] or [cleaned]
+
+
+def _duty_list_parts(text: str) -> list[str]:
+    """«… отвечает за A, B, C» → отдельные обязанности."""
+    normalized = re.sub(r"\s+", " ", (text or "").replace("\xa0", " ")).strip()
+    match = re.search(
+        r"отвечает\s+за\s+(?P<body>.+)",
+        normalized,
+        flags=re.I,
+    )
+    if not match:
+        return []
+    body = match.group("body").strip()
+    # Обрезаем хвост только по концу предложения, не по переносам (уже схлопнуты).
+    body = re.split(r"(?<=[а-яёa-z0-9)])\.\s+", body, maxsplit=1)[0].strip(" ;,")
+    if not body:
+        return []
+    chunks = [part.strip(" ;") for part in re.split(r",\s*", body) if part.strip(" ;")]
+    merged: list[str] = []
+    for chunk in chunks:
+        # «и актуальности документов» — продолжение предыдущего пункта.
+        if merged and (len(chunk) < 12 or chunk.casefold().startswith("и ")):
+            merged[-1] = f"{merged[-1]}, {chunk}"
+        else:
+            merged.append(chunk)
+    if len(merged) < 2:
+        return []
+    return [f"отвечает за {item}" for item in merged if len(item) >= 4]
 
 
 def _match_types(values: list) -> list[str]:
@@ -323,29 +381,31 @@ def _fallback_function(
     context: ContextPackage | None,
     *,
     fallback_evidence: list[dict] | None = None,
+    text_override: str = "",
 ) -> RoleFunction:
     fragment = candidate.fragment
+    text = text_override or fragment.text
     evidence = (
         [MatchEvidence.model_validate(item) for item in fallback_evidence]
         if fallback_evidence
-        else _rule_evidence(candidate)
+        else _rule_evidence(candidate, quote_override=text_override)
     )
-    proof_chain = context.linkedBlocks[:4] if context else []
+    proof_chain = _dedupe_proof_chain(context.linkedBlocks if context else [])[:4]
     source_block = _actor_source_block(context) or fragment.fragmentId
     return RoleFunction(
         targetBlockId=fragment.fragmentId,
-        isFunction=_has_action(fragment.text, fragment.cells),
+        isFunction=_has_action(text, fragment.cells),
         actor=FunctionActor(
             text=profile.canonicalTitle,
             canonicalPosition=profile.canonicalTitle,
             sourceBlockId=source_block,
         ),
-        action=_guess_action(fragment.text),
-        object=_guess_object(fragment.text),
-        recipient=_guess_recipient(fragment.text),
+        action=_guess_action(text),
+        object=_guess_object(text),
+        recipient=_guess_recipient(text),
         conditions=_conditions(context),
         dependencies=_dependencies(context),
-        evidence=evidence[:6],
+        evidence=_dedupe_evidence(evidence)[:6],
         proofChain=proof_chain,
         explanation="Функция извлечена по правилам и связям графа",
         confidence=0.0,
@@ -353,9 +413,34 @@ def _fallback_function(
     )
 
 
+def _fallback_functions(
+    candidate: Candidate,
+    profile: RoleProfile,
+    context: ContextPackage | None,
+) -> list[RoleFunction]:
+    parts = _function_parts(candidate.fragment.text)
+    if len(parts) <= 1:
+        return []
+    rich_parts = [
+        part
+        for part in parts[:10]
+        if _has_action(part, {}) and (_guess_object(part) or _guess_recipient(part))
+    ]
+    # Если нарезка дала только голые глаголы — оставляем одну функцию на весь фрагмент.
+    if len(rich_parts) <= 1:
+        return []
+    return [
+        _fallback_function(candidate, profile, context, text_override=part)
+        for part in rich_parts
+    ]
+
+
 def _default_relation(candidate: Candidate) -> str:
     types = {signal.matchType for signal in candidate.signals}
     if "assigned_action" in types or "inherited_from_section" in types:
+        return "executor"
+    if "unit_process" in types:
+        # Обязанности подразделения — исполнитель процесса для роли из этого блока.
         return "executor"
     if "interaction" in types:
         return "mentioned"
@@ -409,7 +494,17 @@ def _guess_object(text: str) -> str:
     action = _guess_action(text)
     if not action:
         return ""
-    match = re.search(re.escape(action) + r"\s+(?P<object>[^.;,\n]{2,80})", text or "", flags=re.I)
+    source = text or ""
+    # «отвечает за комплектование пакета…»
+    if action.casefold() == "отвечает":
+        match = re.search(
+            r"отвечает\s+за\s+(?P<object>[^.;,\n]{2,120})",
+            source,
+            flags=re.I,
+        )
+        if match:
+            return match.group("object").strip()
+    match = re.search(re.escape(action) + r"\s+(?P<object>[^.;,\n]{2,80})", source, flags=re.I)
     return match.group("object").strip() if match else ""
 
 
@@ -449,4 +544,44 @@ def _dependencies(context: ContextPackage | None) -> list[FunctionDependency]:
                     description=block.text[:500],
                 )
             )
-    return out[:5]
+    return _dedupe_dependencies(out)[:5]
+
+
+def _dedupe_evidence(items: list[MatchEvidence]) -> list[MatchEvidence]:
+    out: list[MatchEvidence] = []
+    seen: set[str] = set()
+    for item in items:
+        key = _dedupe_text_key(item.quote)
+        if not key or key in seen:
+            continue
+        out.append(item)
+        seen.add(key)
+    return out
+
+
+def _dedupe_proof_chain(items: list[ContextLinkedBlock]) -> list[ContextLinkedBlock]:
+    out: list[ContextLinkedBlock] = []
+    seen: set[str] = set()
+    for item in items:
+        key = _dedupe_text_key(item.evidence or item.text or item.blockId)
+        if not key or key in seen:
+            continue
+        out.append(item)
+        seen.add(key)
+    return out
+
+
+def _dedupe_dependencies(items: list[FunctionDependency]) -> list[FunctionDependency]:
+    out: list[FunctionDependency] = []
+    seen: set[str] = set()
+    for item in items:
+        key = f"{item.type}:{item.blockId}:{_dedupe_text_key(item.description)}"
+        if key in seen:
+            continue
+        out.append(item)
+        seen.add(key)
+    return out
+
+
+def _dedupe_text_key(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").casefold()).strip()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import pyodbc
@@ -124,6 +126,61 @@ def resolve_odbc_driver(configured: str) -> str:
     )
 
 
+def _parse_domain_user(user: str) -> tuple[str, str]:
+    if "\\" in user:
+        domain, username = user.split("\\", 1)
+        return domain, username
+    if "@" in user:
+        username, domain = user.split("@", 1)
+        return domain, username
+    return "", user
+
+
+@contextmanager
+def _windows_impersonation(user: str, password: str) -> Generator[None, None, None]:
+    """Impersonate a Windows account for Trusted_Connection (как в Constructor)."""
+    import win32con
+    import win32security
+
+    domain, username = _parse_domain_user(user)
+    logon_types = (
+        win32con.LOGON32_LOGON_NEW_CREDENTIALS,
+        win32con.LOGON32_LOGON_NETWORK,
+        win32con.LOGON32_LOGON_INTERACTIVE,
+    )
+
+    last_error: Exception | None = None
+    token = None
+    for logon_type in logon_types:
+        try:
+            token = win32security.LogonUser(
+                username,
+                domain or None,
+                password,
+                logon_type,
+                win32con.LOGON32_PROVIDER_DEFAULT,
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            token = None
+
+    if token is None:
+        raise ErpSqlError(f"Windows LogonUser failed for {user!r}: {last_error}")
+
+    win32security.ImpersonateLoggedOnUser(token)
+    try:
+        yield
+    finally:
+        win32security.RevertToSelf()
+        token.Close()
+
+
+def _use_windows_impersonation() -> bool:
+    """Domain user + password → Trusted_Connection under impersonation."""
+    return bool(settings.erp_sql_user.strip() and settings.erp_sql_password)
+
+
 def _build_connection_string() -> str:
     driver = resolve_odbc_driver(settings.erp_sql_driver)
     parts = [
@@ -134,7 +191,7 @@ def _build_connection_string() -> str:
         "TrustServerCertificate=yes",
         "Connection Timeout=15",
     ]
-    if settings.erp_sql_trusted_connection:
+    if _use_windows_impersonation() or settings.erp_sql_trusted_connection:
         parts.append("Trusted_Connection=yes")
     else:
         parts.append(f"UID={settings.erp_sql_user}")
@@ -144,6 +201,9 @@ def _build_connection_string() -> str:
 
 def _connect() -> pyodbc.Connection:
     try:
+        if _use_windows_impersonation():
+            with _windows_impersonation(settings.erp_sql_user, settings.erp_sql_password):
+                return pyodbc.connect(_build_connection_string(), autocommit=True)
         return pyodbc.connect(_build_connection_string(), autocommit=True)
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to connect to erp_pm: {exc}") from exc

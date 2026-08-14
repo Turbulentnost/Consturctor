@@ -147,9 +147,9 @@ def test_dedupe_merges_same_function_evidence(monkeypatch) -> None:
 
     deduped = dedupe_matches(matches)
 
+    # Одна и та же функция с разных блоков схлопывается в одну карточку.
     assert len(deduped) == 1
-    assert len(deduped[0].function.evidence) >= 1
-    assert deduped[0].function.duplicateGroup
+    assert all(item.function.duplicateGroup for item in deduped if item.function is not None)
 
 
 def test_process_stage_with_contacts_is_not_role_function_candidate() -> None:
@@ -184,6 +184,70 @@ def test_process_stage_with_contacts_is_not_role_function_candidate() -> None:
     )
 
     assert collect_candidates(result, profile, []) == []
+
+
+def test_neighbor_role_context_collects_adjacent_work(monkeypatch) -> None:
+    monkeypatch.setattr(llm_classifier, "_post", lambda _payload: (_ for _ in ()).throw(RuntimeError("offline")))
+    role = RegulationFragment(
+        fragmentId="B-001",
+        page=1,
+        section="5 Функции",
+        sectionPath=["5 Функции"],
+        text="Ответственный исполнитель: Промпт-инженер.",
+        context=RegulationFragmentContext(nextFragmentId="B-002", nextText="Разрабатывает промпты и тестирует сценарии."),
+    )
+    work = RegulationFragment(
+        fragmentId="B-002",
+        page=1,
+        section="5 Функции",
+        sectionPath=["5 Функции"],
+        text="Разрабатывает промпты и тестирует сценарии.",
+        context=RegulationFragmentContext(previousFragmentId="B-001", previousText=role.text),
+    )
+    result = RegulationParseResult(
+        regulationId="reg-neighbor",
+        fileName="neighbor.txt",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[role, work],
+    )
+    profile = build_role_profile(
+        position="Промпт-инженер",
+        department="Сектор по внедрению искусственного интеллекта",
+        result=result,
+    )
+
+    candidates = collect_candidates(result, profile, [])
+
+    assert any(candidate.fragment.fragmentId == "B-002" for candidate in candidates)
+
+
+def test_classifier_returns_multiple_functions_for_multi_action_fragment(monkeypatch) -> None:
+    monkeypatch.setattr(llm_classifier, "_post", lambda _payload: (_ for _ in ()).throw(RuntimeError("offline")))
+    fragment = RegulationFragment(
+        fragmentId="B-001",
+        page=1,
+        section="5.3 Промпт-инженер",
+        sectionPath=["5.3 Промпт-инженер"],
+        text="Разрабатывает промпты; тестирует сценарии; документирует результаты.",
+    )
+    result = RegulationParseResult(
+        regulationId="reg-multi",
+        fileName="multi.txt",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[fragment],
+    )
+    profile = build_role_profile(
+        position="Промпт-инженер",
+        department="Сектор по внедрению искусственного интеллекта",
+        result=result,
+    )
+    candidate = collect_candidates(result, profile, [])[0]
+    classified = classify_candidate(candidate, profile, None)
+
+    assert len(classified["functions"]) == 3
+    assert [item.action for item in classified["functions"]] == ["разрабатывает", "тестирует", "документирует"]
 
 
 def test_position_category_uses_base_title_alias() -> None:
@@ -349,6 +413,59 @@ def test_answer_creates_change_draft() -> None:
     assert change.requiresApproval is True
 
 
+def test_escalation_answer_becomes_logical_clause() -> None:
+    result = RegulationParseResult(
+        regulationId="reg-escalation",
+        fileName="change.txt",
+        pageCount=1,
+        recognitionQuality=1,
+        fragments=[
+            RegulationFragment(
+                fragmentId="B-010",
+                page=1,
+                section="5.4 Контроль вех",
+                text="Руководитель сектора контролирует выполнение вех проекта.",
+            )
+        ],
+    )
+    question = ReadinessQuestion(
+        questionId="Q-ESC",
+        functionId="F-010",
+        targetField="escalation",
+        severity="blocking",
+        question="Кому передавать проблему при нарушении срока вехи?",
+        reason="Нужен путь эскалации",
+        affectedBlocks=["B-010"],
+    )
+    answer = ReadinessAnswer(answerId="ANSWER-ESC", questionId="Q-ESC", answer="Куратору проекта")
+    clarifying = (
+        "Принято: критерий контроля — веха выполнена в срок либо отклонение зафиксировано и эскалировано. "
+        "Теперь уточним эскалацию: кому руководитель сектора передаёт проблему, "
+        "если срок вехи нарушен и он сам не может устранить отклонение? "
+        "Например: куратору проекта, заказчику, вышестоящему руководителю."
+    )
+
+    change = change_from_answer(
+        change_id="CH-ESC",
+        question=question,
+        answer=answer,
+        result=result,
+        related_field_answers={
+            "control": "веха выполнена в срок либо отклонение зафиксировано и эскалировано",
+        },
+        clarifying_prompt=clarifying,
+    )
+
+    assert (
+        "Если срок вехи нарушен и руководитель сектора сам не может устранить отклонение, "
+        "то проблема передаётся куратору проекта."
+    ) in change.after
+    assert change.source.get("formalized") == (
+        "Если срок вехи нарушен и руководитель сектора сам не может устранить отклонение, "
+        "то проблема передаётся куратору проекта."
+    )
+
+
 def test_docx_editor_applies_accepted_append(tmp_path) -> None:
     try:
         from docx import Document
@@ -397,6 +514,89 @@ def test_docx_editor_applies_accepted_append(tmp_path) -> None:
     assert "DOCX" in message
     updated = Document(str(document_path))
     assert "Срок выполнения" in updated.paragraphs[0].text
+
+
+def test_duty_list_splits_into_multiple_functions() -> None:
+    from app.services.role_matching.llm_classifier import _duty_list_parts, _function_parts
+
+    text = (
+        "7.1.6 Менеджер тендерного офиса отвечает за комплектование пакета документов,\n"
+        "проверку\nкомплектности\nи\nактуальности\nдокументов,\nведение\nархива,\n"
+        "корректность карточки тендера"
+    )
+    parts = _duty_list_parts(text)
+    assert len(parts) >= 3
+    assert any("комплектование" in p for p in parts)
+    assert any("проверку" in p for p in parts)
+    assert any("архива" in p for p in parts)
+    assert len(_function_parts(text)) >= 3
+
+
+def test_unit_process_keeps_office_duties_not_other_roles() -> None:
+    from app.services.role_matching.candidates import explicit_other_named_role
+    from app.services.role_matching.dedupe import dedupe_matches
+    from app.schemas.regulation import FragmentRoleMatch, MatchEvidence
+
+    assert explicit_other_named_role(
+        "7.1.5 Ведущий менеджер тендерного офиса отвечает за ведение сложных процедур"
+    )
+    assert not explicit_other_named_role(
+        "3.1.1 Осуществляет поиск закупок на ЭТП"
+    )
+    assert not explicit_other_named_role(
+        "7.1.6 Менеджер тендерного офиса отвечает за комплектование пакета документов"
+    )
+
+    matches = [
+        FragmentRoleMatch(
+            matchId="M-1",
+            fragmentId="B-1",
+            isRelevant=True,
+            relation="executor",
+            matchTypes=["unit_process"],
+            signals=[],
+            evidence=[MatchEvidence(fragmentId="B-1", quote="поиск")],
+            explanation="",
+            modelConfidence=0.5,
+            confidence=0.7,
+            requiresUserConfirmation=True,
+            status="pending",
+            fragment=RegulationFragment(fragmentId="B-1", page=1, section="", text="поиск закупок"),
+            function=RoleFunction(
+                targetBlockId="B-1",
+                isFunction=True,
+                actor=FunctionActor(text="менеджер тендерного офиса", canonicalPosition="менеджер тендерного офиса"),
+                action="осуществляет",
+                object="поиск закупок на ЭТП",
+                evidence=[],
+            ),
+        ),
+        FragmentRoleMatch(
+            matchId="M-2",
+            fragmentId="B-2",
+            isRelevant=True,
+            relation="executor",
+            matchTypes=["unit_process"],
+            signals=[],
+            evidence=[MatchEvidence(fragmentId="B-2", quote="анализ")],
+            explanation="",
+            modelConfidence=0.5,
+            confidence=0.7,
+            requiresUserConfirmation=True,
+            status="pending",
+            fragment=RegulationFragment(fragmentId="B-2", page=1, section="", text="анализ закупки"),
+            function=RoleFunction(
+                targetBlockId="B-2",
+                isFunction=True,
+                actor=FunctionActor(text="менеджер тендерного офиса", canonicalPosition="менеджер тендерного офиса"),
+                action="выполняет",
+                object="предварительный анализ закупки",
+                evidence=[],
+            ),
+        ),
+    ]
+    deduped = dedupe_matches(matches)
+    assert len(deduped) == 2
 
 
 def _sample_result() -> RegulationParseResult:

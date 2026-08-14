@@ -66,3 +66,7 @@ backend/scripts/exports/*
 
 # --- App uploads (regulations, avatars) ---
 backend/storage/
+
+# Desktop packaging artifacts (rebuild via build_exe.bat / installer/build_installer.bat)
+desktop/installer/payload/
+*.exe

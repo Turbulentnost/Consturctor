@@ -9,7 +9,7 @@ def dedupe_matches(matches: list[FragmentRoleMatch]) -> list[FragmentRoleMatch]:
     grouped: dict[str, FragmentRoleMatch] = {}
     order: list[str] = []
     for match in matches:
-        key = _key(match.function)
+        key = _key(match)
         if not key:
             key = f"fragment:{match.fragmentId}"
         existing = grouped.get(key)
@@ -19,12 +19,41 @@ def dedupe_matches(matches: list[FragmentRoleMatch]) -> list[FragmentRoleMatch]:
             grouped[key] = match
             order.append(key)
             continue
-        _merge_match(existing, match, key)
+        preferred, other = _ordered_by_specificity(existing, match)
+        if preferred is not existing:
+            grouped[key] = preferred
+        _merge_match(grouped[key], other, key)
     return [grouped[key] for key in order]
 
 
 def functions_from_matches(matches: list[FragmentRoleMatch]) -> list[RoleFunction]:
     return [match.function for match in matches if match.function is not None and match.function.isFunction]
+
+
+def sibling_match_ids(matches: list[FragmentRoleMatch], match_id: str) -> list[str]:
+    """Match ids that share the same semantic duplicate group (including the seed)."""
+    seed = next((item for item in matches if item.matchId == match_id), None)
+    if seed is None:
+        return []
+    group = ""
+    if seed.function is not None and seed.function.duplicateGroup:
+        group = seed.function.duplicateGroup
+    else:
+        group = _key(seed)
+    if not group:
+        return [match_id]
+    out = [match_id]
+    for item in matches:
+        if item.matchId == match_id:
+            continue
+        item_group = ""
+        if item.function is not None and item.function.duplicateGroup:
+            item_group = item.function.duplicateGroup
+        else:
+            item_group = _key(item)
+        if item_group == group:
+            out.append(item.matchId)
+    return out
 
 
 def _merge_match(target: FragmentRoleMatch, source: FragmentRoleMatch, key: str) -> None:
@@ -72,19 +101,57 @@ def _merge_match(target: FragmentRoleMatch, source: FragmentRoleMatch, key: str)
             target.function.dependencies.append(dependency)
 
 
-def _key(function: RoleFunction | None) -> str:
+def _ordered_by_specificity(
+    left: FragmentRoleMatch, right: FragmentRoleMatch
+) -> tuple[FragmentRoleMatch, FragmentRoleMatch]:
+    if _specificity(right) > _specificity(left):
+        return right, left
+    return left, right
+
+
+def _specificity(match: FragmentRoleMatch) -> tuple:
+    function = match.function
+    object_len = len((function.object or "").strip()) if function else 0
+    has_cells = 1 if match.fragment.cells else 0
+    # Row fragments (...-R-003) are more specific than parent table blocks.
+    is_row = 1 if "-R-" in match.fragmentId else 0
+    text_len = len((match.fragment.text or "").strip())
+    return (object_len, has_cells, is_row, match.confidence, text_len)
+
+
+def _key(match: FragmentRoleMatch) -> str:
+    function = match.function
     if function is None or not function.isFunction:
         return ""
-    parts = [
-        function.actor.canonicalPosition,
-        function.action,
-        function.object,
-        function.recipient,
-    ]
-    normalized = [_norm(part) for part in parts if _norm(part)]
+    action = _norm(function.action)
+    if not action:
+        return ""
+    object_key = _object_key(function.object)
+    actor = _norm(function.actor.canonicalPosition)
+    recipient = _norm(function.recipient)
+    # Без blockId: одна и та же обязанность из шапки таблицы и строки матрицы
+    # не должна требовать двух подтверждений.
+    parts = [actor, action, object_key or "noobj", recipient]
+    normalized = [part for part in parts if part]
     if len(normalized) < 2:
         return ""
+    if not object_key:
+        # Пустой объект — дополнительно привязываем к фрагменту, чтобы не склеить
+        # разные «фиксирует» из разных разделов в одну кучу.
+        normalized.append(_norm(match.fragmentId))
     return "|".join(normalized)
+
+
+def _object_key(value: str) -> str:
+    tokens = _norm(value).split()
+    if not tokens:
+        return ""
+    # Берём смысловое ядро объекта. Слишком короткий ключ («документов»)
+    # склеивал поиск / анализ / проверку в одну карточку.
+    if len(tokens) == 1:
+        return tokens[0]
+    # 2–4 токена: комплектование пакета / поиск закупок / предварительный анализ
+    return " ".join(tokens[:4])
 
 
 def _norm(value: str) -> str:

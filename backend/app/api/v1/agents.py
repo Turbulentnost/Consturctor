@@ -9,6 +9,7 @@ from app.db.session import get_db
 from app.schemas.regulation import (
     AgentDraftDetail,
     AgentDraftListResult,
+    AgentSuggestionListResult,
     AgentDraftStatusRequest,
     QuestionChatSendRequest,
     QuestionChatSessionResult,
@@ -16,14 +17,18 @@ from app.schemas.regulation import (
 from app.services.agents import (
     AgentDraftError,
     create_or_get_draft,
+    delete_draft,
+    delete_draft_suggestion,
     ensure_draft_readiness,
     get_draft,
     list_drafts,
+    reanalyze_revision_document,
     update_draft_status,
 )
 from app.services.agent_platform import list_allowed_tools_with_metadata
 from app.services.readiness.chat import (
     create_or_get_question_chat,
+    get_latest_question_chat,
     get_question_chat,
     send_question_chat_message,
 )
@@ -52,6 +57,33 @@ async def get_agent_draft(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
+@router.delete("/drafts/{draft_id}")
+async def delete_agent_draft(
+    draft_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    try:
+        delete_draft(db, user_id=auth.user_id, draft_id=draft_id)
+    except AgentDraftError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return {"deleted": True}
+
+
+@router.delete("/drafts/{draft_id}/suggestions/{agent_id}")
+async def delete_agent_draft_suggestion(
+    draft_id: str,
+    agent_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    try:
+        delete_draft_suggestion(db, user_id=auth.user_id, draft_id=draft_id, agent_id=agent_id)
+    except AgentDraftError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return {"deleted": True}
+
+
 @router.post("/drafts/{draft_id}/readiness", response_model=AgentDraftDetail)
 async def ensure_agent_draft_readiness(
     draft_id: str,
@@ -74,6 +106,33 @@ async def update_agent_draft_status(
     try:
         return update_draft_status(db, user_id=auth.user_id, draft_id=draft_id, request=request)
     except AgentDraftError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/drafts/{draft_id}/reanalyze-revision", response_model=AgentSuggestionListResult)
+async def reanalyze_agent_draft_revision(
+    draft_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentSuggestionListResult:
+    try:
+        return reanalyze_revision_document(db, user_id=auth.user_id, draft_id=draft_id)
+    except (AgentDraftError, ReadinessError) as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.get(
+    "/drafts/{draft_id}/chat/latest",
+    response_model=QuestionChatSessionResult,
+)
+async def read_latest_question_chat(
+    draft_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> QuestionChatSessionResult:
+    try:
+        return get_latest_question_chat(db, user_id=auth.user_id, draft_id=draft_id)
+    except ReadinessError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 

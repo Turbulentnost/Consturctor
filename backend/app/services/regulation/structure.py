@@ -57,6 +57,7 @@ def build_result(
                 numbering=block.numbering,
                 location=block.location,
                 style=block.style,
+                styleRuns=block.style_runs,
                 contentHash=block.content_hash,
                 context={
                     "previousFragmentId": (
