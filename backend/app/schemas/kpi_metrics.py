@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from platform_contracts.agent_card import AgentKpiMetricSpec
+from platform_contracts.kpi import AgentExecutionHistoryListResponse, KpiSummary
 
 
 class KpiMetricTemplate(BaseModel):
@@ -37,3 +38,9 @@ class UpdateAgentKpiMetricsRequest(BaseModel):
 
 class UpdateAgentCardTitleRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
+
+
+class AgentKpiOverviewResponse(BaseModel):
+    card: AgentCardKpiOut
+    summary: KpiSummary
+    history: AgentExecutionHistoryListResponse

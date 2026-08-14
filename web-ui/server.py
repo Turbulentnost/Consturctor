@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", "8780"))
-BIND_HOST = os.environ.get("BIND_HOST", "127.0.0.1")
+BIND_HOST = os.environ.get("BIND_HOST", "0.0.0.0")
 GATEWAY = os.environ.get("GATEWAY_URL", "http://127.0.0.1:7812").rstrip("/")
 
 

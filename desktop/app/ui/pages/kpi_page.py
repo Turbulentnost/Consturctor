@@ -165,11 +165,9 @@ class KpiPage(QWidget):
             agent_summaries: dict[str, KpiSummary] = {}
             agent_histories: dict[str, tuple[ExecutionHistoryItem, ...]] = {}
             for card in cards:
-                agent_summaries[card.agent_id] = self._api.kpi_summary(agent_id=card.agent_id)
-                agent_histories[card.agent_id] = self._api.kpi_execution_history(
-                    card.agent_id,
-                    limit=50,
-                )
+                overview = self._api.kpi_agent_overview(card.agent_id, hours=168, limit=50)
+                agent_summaries[card.agent_id] = overview.summary
+                agent_histories[card.agent_id] = overview.history
         except ApiError as exc:
             self._data_ready.emit(f"Ошибка: {exc.message}")
             return
@@ -202,6 +200,8 @@ class KpiPage(QWidget):
         value: str,
         hint: str = "",
         accent: str = _TILE_INFO,
+        badge: str = "",
+        badge_accent: str = "",
     ) -> QFrame:
         card = QFrame()
         card.setObjectName("kpiCard")
@@ -232,19 +232,46 @@ class KpiPage(QWidget):
             hint_label.setFont(app_font(10))
             hint_label.setStyleSheet("color: #6B7773; background: transparent;")
             card_layout.addWidget(hint_label)
+        if badge:
+            badge_label = QLabel(badge)
+            badge_label.setFont(app_font(9, QFont.Weight.Bold))
+            badge_color = badge_accent or accent
+            badge_label.setStyleSheet(f"color: {badge_color}; background: transparent;")
+            card_layout.addWidget(badge_label)
         return card
 
-    def _summary_tiles(self, summary: KpiSummary) -> list[tuple[str, str, str, str, str]]:
-        tasks_hint = (
-            f"{summary.tasks_correct} из {summary.tasks_total} задач"
+    def _summary_tiles(self, summary: KpiSummary) -> list[tuple[str, str, str, str, str, str, str]]:
+        success_hint = (
+            f"{summary.tasks_correct} из {summary.tasks_total} завершённых"
             if summary.tasks_total
-            else "нет задач в истории"
+            else "нет завершённых задач"
+        )
+        if summary.tasks_in_progress > 0:
+            success_hint = f"{success_hint} · ещё {summary.tasks_in_progress} в работе"
+        delta = summary.success_rate_delta
+        success_badge = ""
+        success_badge_accent = ""
+        if delta is not None:
+            arrow = "▼" if delta < 0 else "▲"
+            success_badge = f"{arrow} {delta * 100:+.1f} п.п."
+            if delta > 0:
+                success_badge_accent = _TILE_GOOD
+            elif delta < 0:
+                success_badge_accent = _TILE_BAD
+            else:
+                success_badge_accent = _TILE_WARN
+        error_hint = (
+            f"{summary.tasks_failed} из {summary.tasks_total} завершённых"
+            if summary.tasks_total
+            else "нет завершённых задач"
         )
         return [
-            ("👤", "HITL", _pct(summary.hitl_rate), "участие оператора", _rate_variant(summary.hitl_rate, good=0.15, warn=0.3, invert=True)),
-            ("◎", "Успех задач", _pct(summary.task_success_rate), tasks_hint, _rate_variant(summary.task_success_rate)),
-            ("✔", "Выполненные задачи", str(summary.completed_tasks_total), "завершённые процессы", _TILE_GOOD if summary.completed_tasks_total else _TILE_MUTED),
-            ("⏱", "Среднее время", _format_duration(summary.avg_execution_duration_sec), "средняя длительность процесса", _TILE_INFO),
+            ("👤", "HITL", _pct(summary.hitl_rate), "участие оператора", _rate_variant(summary.hitl_rate, good=0.15, warn=0.3, invert=True), "", ""),
+            ("◎", "Успех задач", _pct(summary.task_success_rate), success_hint, _rate_variant(summary.task_success_rate), success_badge, success_badge_accent),
+            ("⚠", "Доля ошибок", _pct(summary.task_error_rate), error_hint, _rate_variant(summary.task_error_rate, good=0.05, warn=0.15, invert=True), "", ""),
+            ("✔", "Выполненные задачи", str(summary.completed_tasks_total), f"за период · всего {summary.tasks_lifetime_total}", _TILE_GOOD if summary.completed_tasks_total else _TILE_MUTED, "", ""),
+            ("📈", "Темп", f"{summary.tasks_per_day:.1f}/день", "завершённых за период", _TILE_INFO if summary.tasks_per_day else _TILE_MUTED, "", ""),
+            ("⏱", "Среднее время", _format_duration(summary.avg_execution_duration_sec), f"медиана: {_format_duration(summary.median_execution_duration_sec)}", _TILE_INFO, "", ""),
         ]
 
     def _render_summary(self) -> None:
@@ -252,9 +279,17 @@ class KpiPage(QWidget):
         if self._summary is None:
             return
         tiles = self._summary_tiles(self._summary)
-        cols = 4
-        for index, (icon, label, value, hint, accent) in enumerate(tiles):
-            tile = self._make_tile(icon=icon, label=label, value=value, hint=hint, accent=accent)
+        cols = 3
+        for index, (icon, label, value, hint, accent, badge, badge_accent) in enumerate(tiles):
+            tile = self._make_tile(
+                icon=icon,
+                label=label,
+                value=value,
+                hint=hint,
+                accent=accent,
+                badge=badge,
+                badge_accent=badge_accent,
+            )
             self._summary_layout.addWidget(tile, index // cols, index % cols)
 
     def _render_agent_summary(self, parent_layout: QVBoxLayout, summary: KpiSummary) -> None:
@@ -264,9 +299,17 @@ class KpiPage(QWidget):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
         tiles = self._summary_tiles(summary)
-        cols = 4
-        for index, (icon, label, value, hint, accent) in enumerate(tiles):
-            tile = self._make_tile(icon=icon, label=label, value=value, hint=hint, accent=accent)
+        cols = 3
+        for index, (icon, label, value, hint, accent, badge, badge_accent) in enumerate(tiles):
+            tile = self._make_tile(
+                icon=icon,
+                label=label,
+                value=value,
+                hint=hint,
+                accent=accent,
+                badge=badge,
+                badge_accent=badge_accent,
+            )
             grid.addWidget(tile, index // cols, index % cols)
         parent_layout.addWidget(grid_host)
 
@@ -285,12 +328,24 @@ class KpiPage(QWidget):
             parent_layout.addWidget(empty)
             return
         for item in history:
-            status = "Завершён" if item.is_completed else "В работе" if item.is_started else "Создан"
+            status_key = (item.status or "").strip().lower()
+            if status_key == "error":
+                status = "Ошибка"
+                color = _TILE_BAD
+            elif item.is_completed:
+                status = "Завершён"
+                color = "#6B7773"
+            elif item.is_started:
+                status = "В работе"
+                color = "#6B7773"
+            else:
+                status = "Создан"
+                color = "#6B7773"
             duration = _format_duration(item.duration_sec or 0) if item.is_completed else "—"
             started = item.started_at.replace("T", " ")[:16] if item.started_at else "—"
             row = QLabel(f"#{item.process_seq} · {started} · {duration} · {status}")
-            row.setFont(app_font(11))
-            row.setStyleSheet("color: #6B7773; background: transparent;")
+            row.setFont(app_font(11, QFont.Weight.DemiBold if status_key == "error" else QFont.Weight.Normal))
+            row.setStyleSheet(f"color: {color}; background: transparent;")
             parent_layout.addWidget(row)
 
     def _render_cards(self) -> None:

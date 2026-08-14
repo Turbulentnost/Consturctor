@@ -84,8 +84,15 @@ class KpiSummary:
     task_success_rate: float = 0.0
     tasks_correct: int = 0
     tasks_total: int = 0
+    tasks_lifetime_total: int = 0
     completed_tasks_total: int = 0
     avg_execution_duration_sec: float = 0.0
+    tasks_failed: int = 0
+    task_error_rate: float = 0.0
+    tasks_in_progress: int = 0
+    median_execution_duration_sec: float = 0.0
+    tasks_per_day: float = 0.0
+    success_rate_delta: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +102,14 @@ class ExecutionHistoryItem:
     is_started: bool
     is_completed: bool
     duration_sec: float | None = None
+    status: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AgentKpiOverview:
+    card: AgentCardKpi
+    summary: KpiSummary
+    history: tuple[ExecutionHistoryItem, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -550,6 +565,79 @@ class ApiClient:
     def set_base_url(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
 
+    @staticmethod
+    def _parse_agent_kpi_metric(data: dict) -> AgentKpiMetric:
+        threshold_min = data.get("threshold_min")
+        threshold_max = data.get("threshold_max")
+        return AgentKpiMetric(
+            metric_id=str(data.get("metric_id", "")),
+            title=str(data.get("title", "")),
+            kind=str(data.get("kind", "rate")),
+            source=str(data.get("source", "")),
+            threshold_min=float(threshold_min) if threshold_min is not None else None,
+            threshold_max=float(threshold_max) if threshold_max is not None else None,
+            weight=float(data.get("weight") or 1.0),
+            task_ids=tuple(str(x) for x in (data.get("task_ids") or [])),
+        )
+
+    @staticmethod
+    def _parse_agent_card_kpi(data: dict) -> AgentCardKpi:
+        metrics = [
+            ApiClient._parse_agent_kpi_metric(metric)
+            for metric in data.get("kpi_metrics") or []
+            if isinstance(metric, dict)
+        ]
+        return AgentCardKpi(
+            agent_id=str(data.get("agent_id", "")),
+            title=str(data.get("title", "")),
+            department=str(data.get("department", "")),
+            kpi_metrics=tuple(metrics),
+        )
+
+    @staticmethod
+    def _parse_kpi_summary(data: dict) -> KpiSummary:
+        rate = data.get("operator_keep_rate")
+        delta = data.get("success_rate_delta")
+        return KpiSummary(
+            total_runs=int(data.get("total_runs") or 0),
+            success_rate=float(data.get("success_rate") or 0.0),
+            error_rate=float(data.get("error_rate") or 0.0),
+            hitl_rate=float(data.get("hitl_rate") or 0.0),
+            operator_keep_rate=float(rate) if rate is not None else None,
+            tool_failure_rate=float(data.get("tool_failure_rate") or 0.0),
+            task_success_rate=float(data.get("task_success_rate") or 0.0),
+            tasks_correct=int(data.get("tasks_correct") or 0),
+            tasks_total=int(data.get("tasks_total") or 0),
+            tasks_lifetime_total=int(data.get("tasks_lifetime_total") or 0),
+            completed_tasks_total=int(data.get("completed_tasks_total") or 0),
+            avg_execution_duration_sec=float(data.get("avg_execution_duration_sec") or 0.0),
+            tasks_failed=int(data.get("tasks_failed") or 0),
+            task_error_rate=float(data.get("task_error_rate") or 0.0),
+            tasks_in_progress=int(data.get("tasks_in_progress") or 0),
+            median_execution_duration_sec=float(data.get("median_execution_duration_sec") or 0.0),
+            tasks_per_day=float(data.get("tasks_per_day") or 0.0),
+            success_rate_delta=float(delta) if delta is not None else None,
+        )
+
+    @staticmethod
+    def _parse_execution_history(data: dict) -> tuple[ExecutionHistoryItem, ...]:
+        items: list[ExecutionHistoryItem] = []
+        for item in data.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            duration = item.get("duration_sec")
+            items.append(
+                ExecutionHistoryItem(
+                    process_seq=int(item.get("process_seq") or 0),
+                    started_at=str(item.get("started_at") or ""),
+                    is_started=bool(item.get("is_started")),
+                    is_completed=bool(item.get("is_completed")),
+                    duration_sec=float(duration) if duration is not None else None,
+                    status=str(item.get("status") or ""),
+                )
+            )
+        return tuple(items)
+
     def health(self) -> HealthStatus:
         data = self._request("GET", "/health")
         services = []
@@ -595,37 +683,11 @@ class ApiClient:
 
     def list_agent_kpi_cards(self) -> list[AgentCardKpi]:
         data = self._request("GET", "/api/v1/kpi/agent-cards")
-        cards: list[AgentCardKpi] = []
-        for item in data.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            metrics = []
-            for metric in item.get("kpi_metrics") or []:
-                if not isinstance(metric, dict):
-                    continue
-                threshold_min = metric.get("threshold_min")
-                threshold_max = metric.get("threshold_max")
-                metrics.append(
-                    AgentKpiMetric(
-                        metric_id=str(metric.get("metric_id", "")),
-                        title=str(metric.get("title", "")),
-                        kind=str(metric.get("kind", "rate")),
-                        source=str(metric.get("source", "")),
-                        threshold_min=float(threshold_min) if threshold_min is not None else None,
-                        threshold_max=float(threshold_max) if threshold_max is not None else None,
-                        weight=float(metric.get("weight") or 1.0),
-                        task_ids=tuple(str(x) for x in (metric.get("task_ids") or [])),
-                    )
-                )
-            cards.append(
-                AgentCardKpi(
-                    agent_id=str(item.get("agent_id", "")),
-                    title=str(item.get("title", "")),
-                    department=str(item.get("department", "")),
-                    kpi_metrics=tuple(metrics),
-                )
-            )
-        return cards
+        return [
+            self._parse_agent_card_kpi(item)
+            for item in data.get("items") or []
+            if isinstance(item, dict)
+        ]
 
     def update_agent_kpi_metrics(
         self,
@@ -637,50 +699,14 @@ class ApiClient:
             f"/api/v1/kpi/agent-cards/{agent_id}/metrics",
             json={"kpi_metrics": metrics},
         )
-        parsed_metrics = []
-        for metric in data.get("kpi_metrics") or []:
-            if not isinstance(metric, dict):
-                continue
-            threshold_min = metric.get("threshold_min")
-            threshold_max = metric.get("threshold_max")
-            parsed_metrics.append(
-                AgentKpiMetric(
-                    metric_id=str(metric.get("metric_id", "")),
-                    title=str(metric.get("title", "")),
-                    kind=str(metric.get("kind", "rate")),
-                    source=str(metric.get("source", "")),
-                    threshold_min=float(threshold_min) if threshold_min is not None else None,
-                    threshold_max=float(threshold_max) if threshold_max is not None else None,
-                    weight=float(metric.get("weight") or 1.0),
-                    task_ids=tuple(str(x) for x in (metric.get("task_ids") or [])),
-                )
-            )
-        return AgentCardKpi(
-            agent_id=str(data.get("agent_id", agent_id)),
-            title=str(data.get("title", "")),
-            department=str(data.get("department", "")),
-            kpi_metrics=tuple(parsed_metrics),
-        )
+        return self._parse_agent_card_kpi(data)
 
     def kpi_summary(self, *, agent_id: str = "", hours: int = 168) -> KpiSummary:
         params: dict[str, str] = {"hours": str(hours)}
         if agent_id:
             params["agent_id"] = agent_id
         data = self._request("GET", "/api/v1/kpi/summary", params=params)
-        rate = data.get("operator_keep_rate")
-        return KpiSummary(
-            total_runs=int(data.get("total_runs") or 0),
-            success_rate=float(data.get("success_rate") or 0.0),
-            error_rate=float(data.get("error_rate") or 0.0),
-            hitl_rate=float(data.get("hitl_rate") or 0.0),
-            operator_keep_rate=float(rate) if rate is not None else None,
-            tool_failure_rate=float(data.get("tool_failure_rate") or 0.0),
-            task_success_rate=float(data.get("task_success_rate") or 0.0),
-            tasks_correct=int(data.get("tasks_correct") or 0),
-            tasks_total=int(data.get("tasks_total") or 0),
-            completed_tasks_total=int(data.get("completed_tasks_total") or 0),
-            avg_execution_duration_sec=float(data.get("avg_execution_duration_sec") or 0.0),
-        )
+        return self._parse_kpi_summary(data)
 
     def kpi_execution_history(
         self,
@@ -692,19 +718,24 @@ class ApiClient:
         if agent_id:
             params["agent_id"] = agent_id
         data = self._request("GET", "/api/v1/kpi/execution-history", params=params)
-        items: list[ExecutionHistoryItem] = []
-        for item in data.get("items") or []:
-            duration = item.get("duration_sec")
-            items.append(
-                ExecutionHistoryItem(
-                    process_seq=int(item.get("process_seq") or 0),
-                    started_at=str(item.get("started_at") or ""),
-                    is_started=bool(item.get("is_started")),
-                    is_completed=bool(item.get("is_completed")),
-                    duration_sec=float(duration) if duration is not None else None,
-                )
-            )
-        return tuple(items)
+        return self._parse_execution_history(data)
+
+    def kpi_agent_overview(
+        self,
+        agent_id: str,
+        *,
+        hours: int = 168,
+        limit: int = 50,
+    ) -> AgentKpiOverview:
+        params: dict[str, str] = {"hours": str(hours), "limit": str(limit)}
+        data = self._request(
+            "GET", f"/api/v1/kpi/agent-overview/{agent_id}", params=params
+        )
+        return AgentKpiOverview(
+            card=self._parse_agent_card_kpi(data.get("card") or {}),
+            summary=self._parse_kpi_summary(data.get("summary") or {}),
+            history=self._parse_execution_history(data.get("history") or {}),
+        )
 
     def start_run(self, agent_id: str, tools: list[str] | None = None) -> RunStatus:
         data = self._request(

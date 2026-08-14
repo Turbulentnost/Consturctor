@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from platform_contracts.agent_card import AgentCard, AgentTaskSpec
-from platform_contracts.kpi import KpiSummary, ReviewEventCreate
+from platform_contracts.kpi import (
+    AgentExecutionHistoryComplete,
+    AgentExecutionHistoryOut,
+    KpiSummary,
+    ReviewEventCreate,
+)
 from platform_contracts.runs import RunStartRequest, RunStatus, RunStatusEnum
 from platform_contracts.tools import ToolInvokeRequest, ToolResult
 
@@ -46,6 +51,24 @@ def test_kpi_summary_defaults() -> None:
     assert summary.task_success_rate == 0.0
     assert summary.completed_tasks_total == 0
     assert summary.avg_execution_duration_sec == 0.0
+    assert summary.tasks_failed == 0
+    assert summary.task_error_rate == 0.0
+    assert summary.tasks_in_progress == 0
+    assert summary.median_execution_duration_sec == 0.0
+    assert summary.tasks_per_day == 0.0
+    assert summary.success_rate_delta is None
+
+
+def test_execution_history_complete_default() -> None:
+    body = AgentExecutionHistoryComplete()
+    assert body.status == "done"
+    out = AgentExecutionHistoryOut(
+        id=uuid4(),
+        agent_id="demo",
+        process_seq=1,
+        started_at=datetime.now(timezone.utc),
+    )
+    assert out.status == ""
 
 
 def test_agent_card_tasks() -> None:

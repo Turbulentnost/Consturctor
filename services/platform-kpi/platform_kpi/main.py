@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import json
+import statistics
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from platform_contracts.agent_card import AgentTaskReport
 from platform_contracts.kpi import (
+    AgentExecutionHistoryComplete,
     AgentExecutionHistoryListResponse,
     AgentExecutionHistoryOut,
     AgentExecutionHistoryStart,
@@ -20,6 +23,7 @@ from platform_contracts.kpi import (
     ReviewEventCreate,
 )
 from platform_db.models import (
+    AgentCardRow,
     AgentExecutionHistoryRow,
     AgentRunRow,
     AgentTaskReportRow,
@@ -32,6 +36,7 @@ SUCCESS_STATUSES = ("done",)
 ERROR_STATUSES = ("error",)
 HITL_STATUSES = ("hitl",)
 TASK_SUCCESS_STATUSES = frozenset({"done", "success", "completed", "ok", "correct"})
+COMPLETE_STATUSES = frozenset({"done", "error"})
 KPI_TASK_WINDOW = 100
 OPERATOR_APPROVE = "operator_approve"
 OPERATOR_CHANGE = "operator_change"
@@ -79,24 +84,104 @@ def task_kpi_metrics(reports: list[AgentTaskReportRow]) -> tuple[int, int, int]:
     return correct, window_total, lifetime
 
 
+@dataclass(frozen=True)
+class ExecutionHistoryMetrics:
+    started_total: int
+    finished_total: int
+    done_total: int
+    failed_total: int
+    in_progress: int
+    lifetime_total: int
+    avg_duration_sec: float
+    median_duration_sec: float
+
+    @property
+    def success_rate(self) -> float:
+        if self.finished_total <= 0:
+            return 0.0
+        return round(self.done_total / self.finished_total, 4)
+
+    @property
+    def error_rate(self) -> float:
+        if self.finished_total <= 0:
+            return 0.0
+        return round(self.failed_total / self.finished_total, 4)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _history_status(row: AgentExecutionHistoryRow) -> str:
+    return str(getattr(row, "status", "") or "").strip().lower()
+
+
+def _is_finished(row: AgentExecutionHistoryRow) -> bool:
+    return bool(row.is_completed and row.completed_at is not None)
+
+
 def execution_history_task_metrics(
     rows: list[AgentExecutionHistoryRow],
-) -> tuple[int, int, int, float]:
-    """Return (started_total, completed_total, lifetime_total, avg_duration_sec)."""
-    lifetime_total = len(rows)
+) -> ExecutionHistoryMetrics:
+    """Window metrics: finished = completed rows; in-progress is not a failure."""
     started_rows = [row for row in rows if row.is_started]
-    completed_rows = [
-        row
-        for row in started_rows
-        if row.is_completed and row.completed_at is not None
-    ]
+    finished_rows = [row for row in started_rows if _is_finished(row)]
+    done_total = sum(1 for row in finished_rows if _history_status(row) == "done")
+    failed_total = sum(1 for row in finished_rows if _history_status(row) == "error")
+    in_progress = sum(1 for row in started_rows if not _is_finished(row))
     durations = [
         (row.completed_at - row.started_at).total_seconds()
-        for row in completed_rows
+        for row in finished_rows
         if row.completed_at is not None
     ]
     avg_sec = round(sum(durations) / len(durations), 2) if durations else 0.0
-    return len(started_rows), len(completed_rows), lifetime_total, avg_sec
+    median_sec = round(float(statistics.median(durations)), 2) if durations else 0.0
+    return ExecutionHistoryMetrics(
+        started_total=len(started_rows),
+        finished_total=len(finished_rows),
+        done_total=done_total,
+        failed_total=failed_total,
+        in_progress=in_progress,
+        lifetime_total=len(rows),
+        avg_duration_sec=avg_sec,
+        median_duration_sec=median_sec,
+    )
+
+
+def compute_success_rate_delta(
+    current_rate: float,
+    previous_finished: int,
+    previous_rate: float,
+) -> float | None:
+    if previous_finished <= 0:
+        return None
+    return round(current_rate - previous_rate, 4)
+
+
+def _visible_agent_card_ids(department: str):
+    query = select(AgentCardRow.agent_id).where(AgentCardRow.enabled.is_(True))
+    dept = (department or "").strip()
+    if dept:
+        query = query.where(
+            or_(
+                AgentCardRow.department == dept,
+                AgentCardRow.department == "",
+                AgentCardRow.department.is_(None),
+            )
+        )
+    return query
+
+
+def _apply_history_scope(query, *, department: str = "", agent_id: str = ""):
+    if agent_id:
+        query = query.where(AgentExecutionHistoryRow.agent_id == agent_id)
+    if department:
+        query = query.where(
+            AgentExecutionHistoryRow.agent_id.in_(_visible_agent_card_ids(department))
+        )
+    return query
 
 
 def _execution_history_out(row: AgentExecutionHistoryRow) -> AgentExecutionHistoryOut:
@@ -112,6 +197,7 @@ def _execution_history_out(row: AgentExecutionHistoryRow) -> AgentExecutionHisto
         is_started=row.is_started,
         is_completed=row.is_completed,
         duration_sec=duration_sec,
+        status=_history_status(row),
     )
 
 
@@ -173,21 +259,55 @@ def collect_summary(*, department: str = "", agent_id: str = "", hours: int = 24
         tasks_lifetime_total = 0
         completed_tasks_total = 0
         avg_execution_duration_sec = 0.0
+        tasks_failed = 0
+        task_error_rate = 0.0
+        tasks_in_progress = 0
+        median_execution_duration_sec = 0.0
+        tasks_per_day = 0.0
+        success_rate_delta = None
 
-        history_q = select(AgentExecutionHistoryRow)
-        if agent_id:
-            history_q = history_q.where(AgentExecutionHistoryRow.agent_id == agent_id)
-        history_rows = session.scalars(history_q).all()
+        lifetime_q = _apply_history_scope(
+            select(func.count()).select_from(AgentExecutionHistoryRow),
+            department=department,
+            agent_id=agent_id,
+        )
+        tasks_lifetime_total = int(session.scalar(lifetime_q) or 0)
 
-        if history_rows:
-            tasks_total, tasks_correct, tasks_lifetime_total, avg_execution_duration_sec = (
-                execution_history_task_metrics(history_rows)
+        if tasks_lifetime_total > 0:
+            prev_start = start - timedelta(hours=hours)
+            history_q = _apply_history_scope(
+                select(AgentExecutionHistoryRow),
+                department=department,
+                agent_id=agent_id,
+            ).where(AgentExecutionHistoryRow.started_at >= prev_start)
+            history_rows = session.scalars(history_q).all()
+            current_rows = [row for row in history_rows if _as_utc(row.started_at) >= start]
+            previous_rows = [row for row in history_rows if _as_utc(row.started_at) < start]
+            current = execution_history_task_metrics(current_rows)
+            previous = execution_history_task_metrics(previous_rows)
+            tasks_correct = current.done_total
+            tasks_total = current.finished_total
+            completed_tasks_total = current.finished_total
+            avg_execution_duration_sec = current.avg_duration_sec
+            tasks_failed = current.failed_total
+            task_error_rate = current.error_rate
+            tasks_in_progress = current.in_progress
+            median_execution_duration_sec = current.median_duration_sec
+            days = hours / 24.0
+            tasks_per_day = round(current.finished_total / days, 2) if days else 0.0
+            success_rate_delta = compute_success_rate_delta(
+                current.success_rate,
+                previous.finished_total,
+                previous.success_rate,
             )
-            completed_tasks_total = tasks_correct
         else:
             reports_q = select(AgentTaskReportRow).order_by(AgentTaskReportRow.created_at.asc())
             if agent_id:
                 reports_q = reports_q.where(AgentTaskReportRow.agent_id == agent_id)
+            if department:
+                reports_q = reports_q.where(
+                    AgentTaskReportRow.agent_id.in_(_visible_agent_card_ids(department))
+                )
             reports = session.scalars(reports_q).all()
             tasks_correct, tasks_total, tasks_lifetime_total = task_kpi_metrics(reports)
 
@@ -213,6 +333,12 @@ def collect_summary(*, department: str = "", agent_id: str = "", hours: int = 24
         task_success_rate=rate(int(tasks_correct), int(tasks_total)),
         completed_tasks_total=int(completed_tasks_total),
         avg_execution_duration_sec=float(avg_execution_duration_sec),
+        tasks_failed=int(tasks_failed),
+        task_error_rate=float(task_error_rate),
+        tasks_in_progress=int(tasks_in_progress),
+        median_execution_duration_sec=float(median_execution_duration_sec),
+        tasks_per_day=float(tasks_per_day),
+        success_rate_delta=success_rate_delta,
     )
 
     GAUGE_SUCCESS_RATE.set(summary.success_rate)
@@ -350,6 +476,7 @@ def start_execution_history(body: AgentExecutionHistoryStart) -> AgentExecutionH
         completed_at=None,
         is_started=True,
         is_completed=False,
+        status="pending",
     )
     with factory() as session:
         row.process_seq = _next_process_seq(session, agent_id)
@@ -367,7 +494,14 @@ def start_execution_history(body: AgentExecutionHistoryStart) -> AgentExecutionH
     "/api/v1/kpi/execution-history/{history_id}/complete",
     response_model=AgentExecutionHistoryOut,
 )
-def complete_execution_history(history_id: uuid.UUID) -> AgentExecutionHistoryOut:
+def complete_execution_history(
+    history_id: uuid.UUID,
+    body: AgentExecutionHistoryComplete | None = Body(default=None),
+) -> AgentExecutionHistoryOut:
+    status = (body.status if body is not None else "done").strip().lower()
+    if status not in COMPLETE_STATUSES:
+        raise HTTPException(status_code=400, detail="status должен быть done или error")
+
     factory = get_session_factory()
     now = datetime.now(timezone.utc)
     with factory() as session:
@@ -378,6 +512,7 @@ def complete_execution_history(history_id: uuid.UUID) -> AgentExecutionHistoryOu
             return _execution_history_out(row)
         row.is_completed = True
         row.completed_at = now
+        row.status = status
         try:
             session.commit()
         except Exception as exc:

@@ -126,20 +126,30 @@ def _seed_execution_history(
     count: int,
     completion_rate: float,
     avg_duration_min: int,
-) -> tuple[int, int]:
+) -> tuple[int, int, int, int]:
     conn.execute(
         text("DELETE FROM kpi.agent_execution_history WHERE agent_id = :agent_id"),
         {"agent_id": agent_id},
     )
-    completed_target = max(0, min(count, int(round(count * completion_rate))))
-    incomplete_slots = {count} if count > 0 else set()
-    if completed_target < count:
-        incomplete_slots.add(max(1, count // 2))
+    in_progress_slots: set[int] = set()
+    if count >= 1:
+        in_progress_slots.add(count)
+    if count >= 2:
+        in_progress_slots.add(max(1, count // 2))
+    completed_seqs = [seq for seq in range(1, count + 1) if seq not in in_progress_slots]
+    done_target = int(round(len(completed_seqs) * completion_rate))
 
     completed_count = 0
+    done_count = 0
+    error_count = 0
     for process_seq in range(1, count + 1):
         hours_ago = int((count - process_seq) * (24 * 14 / max(count, 1)))
-        is_completed = process_seq not in incomplete_slots and completed_count < completed_target
+        is_completed = process_seq not in in_progress_slots
+        if is_completed:
+            completed_index = completed_seqs.index(process_seq)
+            status = "done" if completed_index < done_target else "error"
+        else:
+            status = "pending"
         duration_min = max(
             15,
             avg_duration_min + ((process_seq * 11) % 40) - 20,
@@ -152,15 +162,19 @@ def _seed_execution_history(
         )
         if is_completed:
             completed_count += 1
+            if status == "done":
+                done_count += 1
+            else:
+                error_count += 1
         conn.execute(
             text(
                 """
                 INSERT INTO kpi.agent_execution_history (
                     id, agent_id, process_seq, started_at, completed_at,
-                    is_started, is_completed
+                    is_started, is_completed, status
                 ) VALUES (
                     :id, :agent_id, :process_seq, :started_at, :completed_at,
-                    :is_started, :is_completed
+                    :is_started, :is_completed, :status
                 )
                 """
             ),
@@ -172,9 +186,10 @@ def _seed_execution_history(
                 "completed_at": completed_at,
                 "is_started": True,
                 "is_completed": is_completed,
+                "status": status,
             },
         )
-    return count, completed_count
+    return count, completed_count, done_count, error_count
 
 
 def _upsert_agent_card(conn, spec: DemoAgentSpec) -> None:
@@ -228,7 +243,7 @@ def seed(database_url: str) -> None:
                 text("DELETE FROM kpi.agent_task_reports WHERE agent_id = :agent_id"),
                 {"agent_id": spec.agent_id},
             )
-            total, completed = _seed_execution_history(
+            total, completed, done, failed = _seed_execution_history(
                 conn,
                 agent_id=spec.agent_id,
                 now=now,
@@ -236,10 +251,15 @@ def seed(database_url: str) -> None:
                 completion_rate=spec.completion_rate,
                 avg_duration_min=spec.avg_duration_min,
             )
-            rate = completed / total if total else 0.0
+            rate = done / completed if completed else 0.0
+            in_progress = total - completed
             print(f"Seeded {spec.agent_id}")
             print(f"  title: {spec.title}")
-            print(f"  history: {total} rows ({completed} completed, {rate:.0%})")
+            print(
+                f"  history: {total} rows "
+                f"({completed} finished: {done} done / {failed} error, "
+                f"{in_progress} in progress, success {rate:.0%})"
+            )
 
 
 def main() -> int:

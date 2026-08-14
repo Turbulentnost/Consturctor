@@ -72,11 +72,11 @@ function formatDuration(sec) {
   return seconds ? `${minutes} мин ${seconds} сек` : `${minutes} мин`;
 }
 
-function renderKpiTile({ icon, label, value, hint, variant, badge }) {
+function renderKpiTile({ icon, label, value, hint, variant, badge, badgeVariant, index = 0 }) {
   const badgeHtml = badge
-    ? `<span class="kpi-tile-badge kpi-tile-badge--${variant}">${escapeHtml(badge)}</span>`
+    ? `<span class="kpi-tile-badge kpi-tile-badge--${badgeVariant || variant}">${escapeHtml(badge)}</span>`
     : "";
-  return `<div class="kpi-tile kpi-tile--${variant}">
+  return `<div class="kpi-tile kpi-tile--${variant}" style="--tile-index:${index}">
     <div class="kpi-tile-icon">${icon}</div>
     <div class="kpi-tile-value">${escapeHtml(String(value))}</div>
     <div class="kpi-tile-label">${escapeHtml(label)}</div>
@@ -85,11 +85,32 @@ function renderKpiTile({ icon, label, value, hint, variant, badge }) {
   </div>`;
 }
 
+function successRateDeltaBadge(delta) {
+  if (delta === null || delta === undefined || Number.isNaN(Number(delta))) {
+    return { badge: "", variant: "" };
+  }
+  const n = Number(delta);
+  const arrow = n < 0 ? "▼" : "▲";
+  const variant = n > 0 ? "good" : n < 0 ? "bad" : "warn";
+  return { badge: `${arrow} ${n >= 0 ? "+" : ""}${(n * 100).toFixed(1)} п.п.`, variant };
+}
+
 function buildSummaryTiles(summary) {
-  const tasksHint =
-    summary.tasks_total > 0
-      ? `${summary.tasks_correct || 0} из ${summary.tasks_total} задач`
-      : "нет задач в истории";
+  const finished = summary.tasks_total || 0;
+  const inProgress = summary.tasks_in_progress || 0;
+  let successHint =
+    finished > 0
+      ? `${summary.tasks_correct || 0} из ${finished} завершённых`
+      : "нет завершённых задач";
+  if (inProgress > 0) {
+    successHint += ` · ещё ${inProgress} в работе`;
+  }
+  const delta = successRateDeltaBadge(summary.success_rate_delta);
+  const errorHint =
+    finished > 0
+      ? `${summary.tasks_failed || 0} из ${finished} завершённых`
+      : "нет завершённых задач";
+  const lifetime = summary.tasks_lifetime_total ?? 0;
   return [
     renderKpiTile({
       icon: "👤",
@@ -97,27 +118,49 @@ function buildSummaryTiles(summary) {
       value: pct(summary.hitl_rate),
       hint: "участие оператора",
       variant: rateVariant(summary.hitl_rate, { good: 0.15, warn: 0.3, invert: true }),
+      index: 0,
     }),
     renderKpiTile({
       icon: "◎",
       label: "Успех задач",
       value: pct(summary.task_success_rate || 0),
-      hint: tasksHint,
+      hint: successHint,
       variant: rateVariant(summary.task_success_rate || 0),
+      badge: delta.badge,
+      badgeVariant: delta.variant,
+      index: 1,
+    }),
+    renderKpiTile({
+      icon: "⚠",
+      label: "Доля ошибок",
+      value: pct(summary.task_error_rate || 0),
+      hint: errorHint,
+      variant: rateVariant(summary.task_error_rate || 0, { good: 0.05, warn: 0.15, invert: true }),
+      index: 2,
     }),
     renderKpiTile({
       icon: "✔",
       label: "Выполненные задачи",
       value: summary.completed_tasks_total ?? 0,
-      hint: "завершённые процессы",
+      hint: `за период · всего ${lifetime}`,
       variant: (summary.completed_tasks_total ?? 0) > 0 ? "good" : "muted",
+      index: 3,
+    }),
+    renderKpiTile({
+      icon: `<svg class="kpi-tile-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M3 17 L8 11 L13 15 L21 7"/><path fill="currentColor" d="M18 5 L23 5 L23 10 Z"/></svg>`,
+      label: "Темп",
+      value: summary.tasks_per_day == null ? "—/день" : `${Number(summary.tasks_per_day).toFixed(1)}/день`,
+      hint: "завершённых за период",
+      variant: summary.tasks_per_day == null ? "muted" : (summary.tasks_per_day || 0) > 0 ? "info" : "muted",
+      index: 4,
     }),
     renderKpiTile({
       icon: "⏱",
       label: "Среднее время",
       value: formatDuration(summary.avg_execution_duration_sec),
-      hint: "средняя длительность процесса",
+      hint: `медиана: ${formatDuration(summary.median_execution_duration_sec)}`,
       variant: "info",
+      index: 5,
     }),
   ].join("");
 }
@@ -139,16 +182,27 @@ function renderExecutionHistory(items) {
     return "<p class='muted'>История выполнения пуста</p>";
   }
   const rows = items
-    .map(
-      (item) => `<tr>
+    .map((item) => {
+      const statusKey = String(item.status || "").toLowerCase();
+      let statusClass = "new";
+      let statusLabel = "Создан";
+      if (statusKey === "error") {
+        statusClass = "error";
+        statusLabel = "Ошибка";
+      } else if (item.is_completed) {
+        statusClass = "done";
+        statusLabel = "Завершён";
+      } else if (item.is_started) {
+        statusClass = "run";
+        statusLabel = "В работе";
+      }
+      return `<tr>
         <td>#${item.process_seq}</td>
         <td>${escapeHtml(formatDateTime(item.started_at))}</td>
         <td>${item.is_completed ? escapeHtml(formatDuration(item.duration_sec || 0)) : "—"}</td>
-        <td><span class="history-status history-status--${item.is_completed ? "done" : item.is_started ? "run" : "new"}">${
-          item.is_completed ? "Завершён" : item.is_started ? "В работе" : "Создан"
-        }</span></td>
-      </tr>`
-    )
+        <td><span class="history-status history-status--${statusClass}">${statusLabel}</span></td>
+      </tr>`;
+    })
     .join("");
   return `<div class="kpi-history-wrap">
     <div class="kpi-history-title">История выполнения (${items.length})</div>
@@ -630,41 +684,7 @@ function applyFolderTabStacking(stackEl, activeIndex) {
   });
 }
 
-function animateKpiFolderSwitch(stackEl, activeIndex, activeColor, active) {
-  const prevIndex = Number(stackEl.dataset.activeIndex ?? activeIndex);
-  const direction = activeIndex === prevIndex ? 1 : activeIndex > prevIndex ? 1 : -1;
-  const bodyEl = stackEl.querySelector(".kpi-folder-body");
-
-  stackEl.dataset.activeIndex = String(activeIndex);
-  setFolderTabPosition(stackEl, activeIndex, stackEl.querySelectorAll(".kpi-folder-tab-slot").length);
-  stackEl.style.setProperty("--folder-color", activeColor);
-  stackEl.style.setProperty("--slide-dir", String(direction));
-
-  stackEl.querySelectorAll(".kpi-folder-tab-slot").forEach((tab, index) => {
-    const isActive = index === activeIndex;
-    tab.classList.toggle("is-active", isActive);
-    tab.setAttribute("aria-selected", String(isActive));
-    tab.title = isActive ? "Перетащите для смены порядка" : "Открыть · перетащите для смены порядка";
-  });
-
-  applyFolderTabStacking(stackEl, activeIndex);
-  applyFolderColorsToStack(stackEl);
-
-  if (!bodyEl || !active) return;
-
-  bodyEl.classList.remove("is-entering");
-  bodyEl.classList.add("is-leaving");
-
-  window.setTimeout(() => {
-    bodyEl.classList.remove("is-leaving");
-    bodyEl.innerHTML = renderAgentPanelContent(active.card, active.agentSummary, active.historyItems);
-    bodyEl.classList.add("is-entering");
-    updateFolderSettingsPanel(stackEl, active.card, folderColorForAgent(active.card.agent_id, activeIndex));
-    window.setTimeout(() => bodyEl.classList.remove("is-entering"), 320);
-  }, 220);
-}
-
-function renderKpiFolderStack({ animate = false } = {}) {
+function renderKpiFolderStack() {
   const stackEl = $("#kpi-folder-stack");
   if (!stackEl) return;
 
@@ -679,12 +699,6 @@ function renderKpiFolderStack({ animate = false } = {}) {
   const activeIndex = order.indexOf(state.kpiActiveAgentId);
   const activeColor = folderColorForAgent(state.kpiActiveAgentId, activeIndex);
   const active = byId.get(state.kpiActiveAgentId);
-
-  if (animate && stackEl.querySelector(".kpi-folder-tabs")) {
-    stackEl.style.setProperty("--tab-count", String(order.length));
-    animateKpiFolderSwitch(stackEl, activeIndex, activeColor, active);
-    return;
-  }
 
   stackEl.style.setProperty("--tab-count", String(order.length));
   stackEl.style.setProperty("--folder-color", activeColor);
@@ -725,11 +739,9 @@ function renderKpiFolderStack({ animate = false } = {}) {
 
   stackEl.querySelectorAll(".kpi-folder-tab-slot").forEach((tab) => {
     tab.addEventListener("click", () => {
-      if (tab.classList.contains("is-active") || stackEl.classList.contains("is-switching")) return;
-      stackEl.classList.add("is-switching");
+      if (tab.classList.contains("is-active")) return;
       state.kpiActiveAgentId = tab.dataset.agentId;
-      renderKpiFolderStack({ animate: true });
-      window.setTimeout(() => stackEl.classList.remove("is-switching"), 540);
+      renderKpiFolderStack();
     });
   });
 
@@ -1033,19 +1045,155 @@ async function loadKpi() {
       state.kpiAgentData = [];
       return;
     }
-    const agentData = await Promise.all(
-      cards.map(async (card) => {
-        const [agentSummary, history] = await Promise.all([
-          Api.kpiSummary(card.agent_id),
-          Api.kpiExecutionHistory(card.agent_id, 50),
-        ]);
-        return { card, agentSummary, historyItems: history.items || [] };
-      })
-    );
-    renderKpiAgentsSection(agentData);
+    startProgressiveKpiAgents(cards);
   } catch (e) {
     $("#kpi-summary").innerHTML = `<p class="error">${escapeHtml(e.message)}</p>`;
   }
+}
+
+function startProgressiveKpiAgents(cards) {
+  state.kpiAgentData = [];
+  state.kpiAgentOrder = loadKpiAgentOrder(cards.map((c) => c.agent_id));
+  ensureAgentFolderColors(state.kpiAgentOrder);
+  state.kpiActiveAgentId = state.kpiAgentOrder[0] || null;
+
+  const wrap = $("#kpi-agents-wrap");
+  const empty = $("#kpi-agents-empty");
+  empty.classList.add("hidden");
+  wrap.classList.remove("hidden");
+
+  const stackEl = $("#kpi-folder-stack");
+  if (stackEl) {
+    stackEl.style.setProperty("--tab-count", String(cards.length));
+    stackEl.innerHTML = `
+      <div class="kpi-folder-tabs" role="tablist"></div>
+      <div class="kpi-folder-panel" role="tabpanel">
+        <div class="kpi-folder-body kpi-folder-body--placeholder">
+          <div class="kpi-folder-loading">
+            <span class="kpi-folder-loading-spinner"></span>
+            <span>Загрузка агентов…</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  let remaining = cards.length;
+  let completed = 0;
+  const staggerMs = 220;
+
+  const fetchResults = new Array(cards.length).fill(null);
+  const fetchPromises = cards.map((card, cardIndex) =>
+    Api.kpiAgentOverview(card.agent_id, 168, 50)
+      .then((overview) => {
+        fetchResults[cardIndex] = {
+          card: overview.card || card,
+          agentSummary: overview.summary || {},
+          historyItems: overview.history?.items || [],
+        };
+      })
+      .catch((err) => {
+        console.error("KPI agent overview failed", card.agent_id, err);
+        fetchResults[cardIndex] = { card, agentSummary: {}, historyItems: [] };
+      })
+  );
+
+  cards.forEach((card, cardIndex) => {
+    window.setTimeout(async () => {
+      await fetchPromises[cardIndex];
+      const item = fetchResults[cardIndex];
+      if (item) {
+        state.kpiAgentData.push(item);
+        addKpiAgentFolderSequentially(card, cardIndex, item, remaining === cards.length);
+      }
+      remaining -= 1;
+      completed += 1;
+      const placeholder = stackEl?.querySelector(".kpi-folder-body--placeholder");
+      if (completed === cards.length && placeholder) {
+        placeholder.classList.remove("kpi-folder-body--placeholder");
+      }
+    }, cardIndex * staggerMs);
+  });
+}
+
+function addKpiAgentFolderSequentially(card, index, item, isFirst) {
+  const stackEl = $("#kpi-folder-stack");
+  if (!stackEl) return;
+  const tabs = stackEl.querySelector(".kpi-folder-tabs");
+  if (!tabs) return;
+
+  const order = state.kpiAgentOrder.filter((id) =>
+    state.kpiAgentData.some((d) => d.card.agent_id === id)
+  );
+  const realIndex = order.indexOf(item.card.agent_id);
+  if (realIndex < 0) return;
+
+  const isActive = item.card.agent_id === state.kpiActiveAgentId;
+  const color = folderColorForAgent(item.card.agent_id, realIndex);
+  const tabFg = folderTabTextColor(color, isActive);
+  const tabTitle = agentDisplayTitle(item.card);
+  const tabHtml = `<button
+    type="button"
+    class="kpi-folder-tab-slot kpi-folder-tab-slot--placeholder is-colorizing${isActive ? " is-active" : ""}"
+    role="tab"
+    aria-selected="${isActive}"
+    draggable="true"
+    data-agent-id="${escapeHtml(item.card.agent_id)}"
+    data-tab-index="${realIndex}"
+    style="--folder-color:${color};--folder-tab-fg:${tabFg};"
+    title="${escapeHtml(tabTitle)}"
+  ><span class="kpi-folder-tab-label">${renderFolderTabLabelHtml(item.card)}</span></button>`;
+
+  const existing = tabs.querySelector(`[data-agent-id="${CSS.escape(item.card.agent_id)}"]`);
+  if (existing) return;
+
+  const before = tabs.children[realIndex];
+  if (before) {
+    before.insertAdjacentHTML("beforebegin", tabHtml);
+  } else {
+    tabs.insertAdjacentHTML("beforeend", tabHtml);
+  }
+
+  const tab = tabs.querySelector(`[data-agent-id="${CSS.escape(item.card.agent_id)}"]`);
+  if (tab) {
+    window.setTimeout(() => tab.classList.remove("is-colorizing", "kpi-folder-tab-slot--placeholder"), 60);
+    tab.addEventListener("click", () => {
+      if (tab.classList.contains("is-active")) return;
+      state.kpiActiveAgentId = tab.dataset.agentId;
+      renderKpiFolderStack();
+    });
+  }
+
+  if (isActive || isFirst) {
+    renderKpiFolderPanel(item, color, realIndex, order.length);
+  }
+
+  applyFolderTabStacking(stackEl, order.indexOf(state.kpiActiveAgentId));
+  bindFolderDragDrop(stackEl);
+  bindFolderSettings(stackEl);
+}
+
+function renderKpiFolderPanel(item, color, index, total) {
+  const stackEl = $("#kpi-folder-stack");
+  if (!stackEl) return;
+  state.kpiActiveAgentId = item.card.agent_id;
+  stackEl.style.setProperty("--folder-color", color);
+  stackEl.dataset.activeIndex = String(index);
+  setFolderTabPosition(stackEl, index, total);
+  applyFolderTheme(stackEl, color);
+
+  let panel = stackEl.querySelector(".kpi-folder-panel");
+  if (!panel) {
+    stackEl.insertAdjacentHTML("beforeend", `<div class="kpi-folder-panel" role="tabpanel"></div>`);
+    panel = stackEl.querySelector(".kpi-folder-panel");
+  }
+  panel.innerHTML = `
+    ${renderFolderSettingsToolbar(item.card, color)}
+    <div class="kpi-folder-body">
+      ${renderAgentPanelContent(item.card, item.agentSummary, item.historyItems)}
+    </div>
+  `;
+  bindFolderSettings(stackEl);
 }
 
 async function loadSettings() {

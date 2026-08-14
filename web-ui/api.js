@@ -123,6 +123,15 @@ const Api = {
     return this.request("GET", "/api/v1/kpi/agent-cards");
   },
 
+  kpiAgentOverview(agentId, hours = 168, limit = 50) {
+    const params = { hours: String(hours), limit: String(limit) };
+    return this.request(
+      "GET",
+      `/api/v1/kpi/agent-overview/${encodeURIComponent(agentId)}`,
+      { params }
+    );
+  },
+
   updateKpiAgentTitle(agentId, title) {
     return this.request("PATCH", `/api/v1/kpi/agent-cards/${encodeURIComponent(agentId)}/title`, {
       json: { title },

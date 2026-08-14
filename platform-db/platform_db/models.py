@@ -138,3 +138,13 @@ class AgentExecutionHistoryRow(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_started: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+
+
+class AgentCardRow(Base):
+    __tablename__ = "agent_cards"
+    __table_args__ = {"schema": "platform_core"}
+
+    agent_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    department: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

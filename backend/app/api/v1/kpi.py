@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import asyncio
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.api.deps import get_current_user
 from app.config import settings
@@ -9,6 +11,7 @@ from app.db.session import get_db
 from app.schemas.kpi_metrics import (
     AgentCardKpiListResponse,
     AgentCardKpiOut,
+    AgentKpiOverviewResponse,
     KpiMetricTemplateListResponse,
     UpdateAgentKpiMetricsRequest,
     UpdateAgentCardTitleRequest,
@@ -16,6 +19,7 @@ from app.schemas.kpi_metrics import (
 from app.services import kpi_metrics, platform_proxy
 from platform_contracts.agent_card import AgentTaskReport
 from platform_contracts.kpi import (
+    AgentExecutionHistoryComplete,
     AgentExecutionHistoryListResponse,
     AgentExecutionHistoryOut,
     AgentExecutionHistoryStart,
@@ -83,6 +87,42 @@ async def get_agent_card_kpi(
         return kpi_metrics.get_agent_card_metrics(db, agent_id)
     except kpi_metrics.KpiMetricsError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.get("/agent-overview/{agent_id}", response_model=AgentKpiOverviewResponse)
+async def get_agent_kpi_overview(
+    agent_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    hours: int = Query(default=168, ge=1, le=24 * 30),
+    limit: int = Query(default=50, ge=1, le=500),
+) -> AgentKpiOverviewResponse:
+    try:
+        card = kpi_metrics.get_agent_card_metrics(db, agent_id)
+    except kpi_metrics.KpiMetricsError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    params: list[str] = [f"agent_id={agent_id}"]
+    dept = (auth.department or "").strip()
+    if dept:
+        params.append(f"department={dept}")
+    if hours != 24:
+        params.append(f"hours={hours}")
+    summary_path = f"/api/v1/kpi/summary?{'&'.join(params)}"
+    history_path = f"/api/v1/kpi/execution-history?agent_id={agent_id}&limit={limit}"
+
+    try:
+        summary_task = platform_proxy.proxy_get(settings.kpi_service_url, summary_path)
+        history_task = platform_proxy.proxy_get(settings.kpi_service_url, history_path)
+        summary_data, history_data = await asyncio.gather(summary_task, history_task)
+    except platform_proxy.PlatformProxyError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    return AgentKpiOverviewResponse(
+        card=card,
+        summary=KpiSummary.model_validate(summary_data),
+        history=AgentExecutionHistoryListResponse.model_validate(history_data),
+    )
 
 
 @router.patch("/agent-cards/{agent_id}/title", response_model=AgentCardKpiOut)
@@ -196,14 +236,16 @@ async def start_execution_history(
 )
 async def complete_execution_history(
     history_id: str,
+    body: AgentExecutionHistoryComplete | None = Body(default=None),
     auth: AuthContext = Depends(get_current_user),
 ) -> AgentExecutionHistoryOut:
     _ = auth
+    payload = (body or AgentExecutionHistoryComplete()).model_dump(mode="json")
     try:
         data = await platform_proxy.proxy_post(
             settings.kpi_service_url,
             f"/api/v1/kpi/execution-history/{history_id}/complete",
-            {},
+            payload,
         )
         return AgentExecutionHistoryOut.model_validate(data)
     except platform_proxy.PlatformProxyError as exc:
