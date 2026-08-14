@@ -125,6 +125,7 @@ class RoleFunction:
     function_id: str
     target_block_id: str
     is_function: bool
+    title: str
     actor: FunctionActor
     action: str
     object: str
@@ -605,6 +606,14 @@ class ApiClient:
         )
         return self._parse_creation_session(data)
 
+    def get_regulation_creation_session(self, draft_id: str) -> RegulationCreationSession:
+        data = self._request(
+            "GET",
+            f"/api/v1/regulation-creation/sessions/{draft_id}",
+            timeout=max(self._timeout, 30.0),
+        )
+        return self._parse_creation_session(data)
+
     def send_regulation_creation_message(self, draft_id: str, message: str) -> RegulationCreationSession:
         data = self._request(
             "POST",
@@ -686,15 +695,33 @@ class ApiClient:
                         elif line.startswith("data:"):
                             data_lines.append(line.split(":", 1)[1].strip())
         except httpx.ConnectError as exc:
+            recovered = self._try_recover_creation_session(draft_id)
+            if recovered is not None:
+                return recovered
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
         except httpx.HTTPError as exc:
+            recovered = self._try_recover_creation_session(draft_id)
+            if recovered is not None:
+                return recovered
             raise ApiError(f"Ошибка сети: {exc}") from exc
         finally:
             for handle in handles:
                 handle.close()
         if final_session is None:
+            recovered = self._try_recover_creation_session(draft_id)
+            if recovered is not None:
+                return recovered
             raise ApiError("Backend не вернул итоговую сессию создания регламента")
         return final_session
+
+    def _try_recover_creation_session(self, draft_id: str) -> RegulationCreationSession | None:
+        try:
+            session = self.get_regulation_creation_session(draft_id)
+        except ApiError:
+            return None
+        if session.status == "generating":
+            return None
+        return session
 
     def terminate_regulation_creation_sessions(self) -> None:
         if not self._token:
@@ -1731,6 +1758,7 @@ class ApiClient:
             function_id=str(data.get("functionId") or ""),
             target_block_id=str(data.get("targetBlockId") or ""),
             is_function=bool(data.get("isFunction")),
+            title=str(data.get("title") or ""),
             actor=actor,
             action=str(data.get("action") or ""),
             object=str(data.get("object") or ""),

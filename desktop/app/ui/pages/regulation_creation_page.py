@@ -243,6 +243,8 @@ class RegulationCreationPage(QWidget):
         self._auto_scroll_enabled = True
         self._programmatic_scroll = False
         self._size_bucket = -1
+        self._rendering = False
+        self._updating_header = False
         self._pending_files: list[str] = []
         self._messages_layout = QVBoxLayout()
         self._messages_layout.setContentsMargins(0, 0, 0, 0)
@@ -383,26 +385,37 @@ class RegulationCreationPage(QWidget):
         return max(420, self._chat_width() - _AVATAR_SIZE - 28)
 
     def _update_header_layout(self, *, force: bool = False) -> None:
+        if self._updating_header:
+            return
         available = max(0, self.width() - _USER_MENU_RESERVE)
         title_w = self._title.sizeHint().width()
         button_w = self._force_create.sizeHint().width()
-        want_inline = (title_w + self._title_row.spacing() + button_w) <= available
+        needed = title_w + self._title_row.spacing() + button_w
+        # Гистерезис: не дёргать кнопку туда-сюда на границе ширины.
+        if self._header_inline:
+            want_inline = needed <= available
+        else:
+            want_inline = needed <= max(0, available - 48)
         if not force and want_inline == self._header_inline:
             return
-        self._header_inline = want_inline
-        self._title_row.removeWidget(self._force_create)
-        self._force_create_row.removeWidget(self._force_create)
-        while self._force_create_row.count():
-            item = self._force_create_row.takeAt(0)
-            del item
-        if want_inline:
-            self._title_row.insertWidget(1, self._force_create, 0, Qt.AlignmentFlag.AlignVCenter)
-            self._force_create_host.hide()
-        else:
-            self._force_create_row.addWidget(self._force_create, 0, Qt.AlignmentFlag.AlignLeft)
-            self._force_create_row.addStretch(1)
-            self._force_create_host.show()
-        self._force_create.show()
+        self._updating_header = True
+        try:
+            self._header_inline = want_inline
+            self._title_row.removeWidget(self._force_create)
+            self._force_create_row.removeWidget(self._force_create)
+            while self._force_create_row.count():
+                item = self._force_create_row.takeAt(0)
+                del item
+            if want_inline:
+                self._title_row.insertWidget(1, self._force_create, 0, Qt.AlignmentFlag.AlignVCenter)
+                self._force_create_host.hide()
+            else:
+                self._force_create_row.addWidget(self._force_create, 0, Qt.AlignmentFlag.AlignLeft)
+                self._force_create_row.addStretch(1)
+                self._force_create_host.show()
+            self._force_create.show()
+        finally:
+            self._updating_header = False
 
     def _apply_chat_width(self, *, force: bool = False) -> None:
         width = self._chat_width()
@@ -413,8 +426,9 @@ class RegulationCreationPage(QWidget):
         self._chat_column.setFixedWidth(width)
         self._composer.setFixedWidth(width)
         self._resize_input()
-        if prev > 0 and self._session is not None:
-            self._render_messages()
+        if prev > 0 and self._session is not None and not self._rendering:
+            # Не пересобирать сообщения из resize — это легко зацикливает layout.
+            return
 
     def set_session(self, session: RegulationCreationSession) -> None:
         self._session = session
@@ -434,42 +448,47 @@ class RegulationCreationPage(QWidget):
         if not enabled:
             self._pending_files.clear()
             self._sync_files_chips()
+        self._update_header_layout(force=True)
 
     def _render_messages(self) -> None:
-        should_scroll = self._should_auto_scroll()
-        while self._messages_layout.count():
-            item = self._messages_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        if self._session is None:
+        if self._rendering or self._session is None:
             return
-        can_answer = self._session.status not in {"generating", "finalized"}
-        for index, message in enumerate(self._session.messages):
-            quick_answers = []
-            if message.role != "user" and can_answer and index == len(self._session.messages) - 1:
-                raw = message.structured.get("quickAnswers") if isinstance(message.structured, dict) else []
-                quick_answers = [str(item) for item in (raw or []) if str(item).strip()]
-            body, attachments = _split_message_attachments(message.content, message.structured)
-            self._messages_layout.addWidget(
-                self._bubble(
-                    body,
-                    user=message.role == "user",
-                    quick_answers=quick_answers,
-                    attachments=attachments,
-                    source_text=body,
+        self._rendering = True
+        try:
+            should_scroll = self._should_auto_scroll()
+            while self._messages_layout.count():
+                item = self._messages_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            can_answer = self._session.status not in {"generating", "finalized"}
+            for index, message in enumerate(self._session.messages):
+                quick_answers = []
+                if message.role != "user" and can_answer and index == len(self._session.messages) - 1:
+                    raw = message.structured.get("quickAnswers") if isinstance(message.structured, dict) else []
+                    quick_answers = [str(item) for item in (raw or []) if str(item).strip()]
+                body, attachments = _split_message_attachments(message.content, message.structured)
+                self._messages_layout.addWidget(
+                    self._bubble(
+                        body,
+                        user=message.role == "user",
+                        quick_answers=quick_answers,
+                        attachments=attachments,
+                        source_text=body,
+                    )
                 )
-            )
-        if self._session.status == "generating":
-            if self._thinking_text:
-                self._messages_layout.addWidget(self._think_block())
-            else:
-                self._messages_layout.addWidget(self._working_block())
-        if self._session.status == "finalized" and self._has_result_document():
-            self._messages_layout.addWidget(self._document_result_block())
-        self._messages_layout.addStretch(1)
-        if should_scroll:
-            self._scroll_to_bottom()
+            if self._session.status == "generating":
+                if self._thinking_text:
+                    self._messages_layout.addWidget(self._think_block())
+                else:
+                    self._messages_layout.addWidget(self._working_block())
+            if self._session.status == "finalized" and self._has_result_document():
+                self._messages_layout.addWidget(self._document_result_block())
+            self._messages_layout.addStretch(1)
+            if should_scroll:
+                self._scroll_to_bottom()
+        finally:
+            self._rendering = False
 
     def _submit(self) -> None:
         if self._session is None or not self._send.isEnabled():
@@ -695,7 +714,8 @@ class RegulationCreationPage(QWidget):
         bubble = QFrame()
         bubble.setObjectName("MessageBubble")
         bubble.setMaximumWidth(self._bubble_max_width())
-        bubble.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        # Preferred, not Maximum: WordWrap + Maximum даёт бесконечный height-for-width в Qt.
+        bubble.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         if user:
             bubble.setStyleSheet(
                 """
@@ -732,6 +752,7 @@ class RegulationCreationPage(QWidget):
         if text.strip():
             label = QLabel(text)
             label.setWordWrap(True)
+            label.setMaximumWidth(max(120, self._bubble_max_width() - 28))
             label.setFont(app_font(13))
             label.setStyleSheet("background: transparent; border: none;")
             layout.addWidget(label)
@@ -749,25 +770,10 @@ class RegulationCreationPage(QWidget):
             actions = QVBoxLayout()
             actions.setContentsMargins(0, 6, 0, 0)
             actions.setSpacing(8)
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(8)
-            used = 0
-            max_row = max(220, self._bubble_max_width() - 28)
+            max_btn_w = min(360, max(160, self._bubble_max_width() - 28))
             for answer in answers:
-                btn = self._quick_answer_button(answer, source_text=source_text or text)
-                need = btn.sizeHint().width() + (8 if used else 0)
-                if used and used + need > max_row:
-                    row.addStretch(1)
-                    actions.addLayout(row)
-                    row = QHBoxLayout()
-                    row.setContentsMargins(0, 0, 0, 0)
-                    row.setSpacing(8)
-                    used = 0
-                row.addWidget(btn, 0)
-                used += need
-            row.addStretch(1)
-            actions.addLayout(row)
+                btn = self._quick_answer_button(answer, source_text=source_text or text, max_width=max_btn_w)
+                actions.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
             layout.addLayout(actions)
         column.addWidget(bubble, 0, Qt.AlignmentFlag.AlignRight if user else Qt.AlignmentFlag.AlignLeft)
 
@@ -776,7 +782,7 @@ class RegulationCreationPage(QWidget):
         body = QWidget()
         body.setStyleSheet("background: transparent;")
         body.setLayout(column)
-        body.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        body.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         row.addWidget(body, 0, Qt.AlignmentFlag.AlignTop)
         if not user:
             row.addStretch(1)
@@ -786,20 +792,20 @@ class RegulationCreationPage(QWidget):
         wrap.setLayout(row)
         return wrap
 
-    def _quick_answer_button(self, answer: str, *, source_text: str) -> QPushButton:
+    def _quick_answer_button(self, answer: str, *, source_text: str, max_width: int = 280) -> QPushButton:
         btn = QPushButton()
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setFixedHeight(34)
         btn.setFont(app_font(12, QFont.Weight.DemiBold))
         btn.setStyleSheet(_QUICK_ANSWER_BUTTON)
         btn.setToolTip(answer)
-        btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        max_w = min(360, max(180, self._bubble_max_width() - 48))
         metrics = QFontMetrics(btn.font())
-        text_w = max(40, max_w - 28)
+        text_w = max(40, max_width - 28)
         elided = metrics.elidedText(answer, Qt.TextElideMode.ElideRight, text_w)
         btn.setText(elided)
-        btn.setMaximumWidth(max_w)
+        # Fixed sizes only — Maximum + nested layouts давали бесконечный пересчёт Qt.
+        width = min(max_width, metrics.horizontalAdvance(elided) + 28)
+        btn.setFixedWidth(max(96, width))
         btn.clicked.connect(
             lambda _checked=False, value=answer, src=source_text: self._send_quick_answer(value, src)
         )

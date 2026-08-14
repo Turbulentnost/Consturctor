@@ -508,8 +508,9 @@ class MainShell(QWidget):
         if not isinstance(session, RegulationCreationSession):
             return
         self._current_creation_session = session
-        self._page_creation_chat.set_session(session)
+        # Сначала показать страницу, потом наполнить — меньше риска layout-шторма на скрытом виджете.
         self._pages.setCurrentIndex(self._page_index["creation_chat"])
+        self._page_creation_chat.set_session(session)
 
     def _on_regulation_selected(self, path: str) -> None:
         self._page_create.set_processing(True)
@@ -1354,6 +1355,11 @@ def _suggestions_from_role_match(role_match: RoleMatchResult | None) -> list[Age
 
 
 def _suggestion_title(function, index: int) -> str:
+    explicit = (getattr(function, "title", "") or "").strip()
+    if explicit:
+        cleaned = explicit.split("→", 1)[0].strip()
+        if cleaned:
+            return f"ИИ-агент: {cleaned}"[:180]
     action = (function.action or "").strip()
     obj = (function.object or "").strip()
     if action and obj:

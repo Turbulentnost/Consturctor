@@ -122,7 +122,7 @@ def _build_prompt(result: RegulationParseResult, *, position: str, department: s
         '  "functions": [\n'
         "    {\n"
         '      "id": "f1",\n'
-        '      "title": "краткое название процесса",\n'
+        '      "title": "краткое человекочитаемое название процесса на русском (не склеивай action+object+получателя)",\n'
         '      "description": "что происходит и почему это бизнес-функция именно этой должности",\n'
         '      "action": "глагол действия",\n'
         '      "object": "объект обработки/результат",\n'
@@ -154,6 +154,9 @@ def _build_prompt(result: RegulationParseResult, *, position: str, department: s
         "Требования:\n"
         f"- В functions.actor указывай только «{position}» или её явный алиас из документа.\n"
         f"- Если фрагмент/заголовок явно про другую должность (не «{position}» и не её алиас), пропускай его.\n"
+        "- title — отдельное короткое название (например «Регистрация карточки инициативы»), "
+        "без стрелок «→» и без списка ролей/получателей.\n"
+        "- action — глагол/сказуемое; object — объект в нужном падеже; recipient — отдельно, не в title.\n"
         "- Выделяй только реальные процессы/функции этой должности, которые можно оптимизировать или автоматизировать.\n"
         "- Для связанных блоков ЭТОЙ ЖЕ должности заполняй relatedFunctionIds и sharedContext.\n"
         "- Вопросы формируй только по включённым функциям, не теряя контекст.\n"
@@ -203,7 +206,9 @@ def _map_agent_result(
         title = _clean(item.get("title")) or _clean(item.get("description")) or function_id
         description = _clean(item.get("description"))
         action = _clean(item.get("action")) or _infer_action(title)
-        obj = _clean(item.get("object")) or title
+        obj = _clean(item.get("object"))
+        if not obj or obj.casefold() == title.casefold():
+            obj = _object_from_title(title, action) or obj or title
         conditions = _list_text(item.get("conditions"))
         inputs = _list_text(item.get("inputs"))
         outputs = _list_text(item.get("outputs"))
@@ -230,6 +235,7 @@ def _map_agent_result(
             functionId=function_id,
             targetBlockId=fragment.fragmentId,
             isFunction=True,
+            title=title,
             actor=FunctionActor(
                 text=position,
                 canonicalPosition=position,
@@ -591,3 +597,15 @@ def _confidence(value: Any) -> float:
 def _infer_action(title: str) -> str:
     first = title.split(" ", 1)[0].strip()
     return first or "выполняет"
+
+
+def _object_from_title(title: str, action: str) -> str:
+    cleaned = title.strip()
+    if not cleaned:
+        return ""
+    # Убрать хвост «→ получатели», если агент всё же вшил его в title.
+    cleaned = re.split(r"\s*→\s*", cleaned, maxsplit=1)[0].strip()
+    if action and cleaned.casefold().startswith(action.casefold()):
+        rest = cleaned[len(action) :].strip(" —-:;")
+        return rest
+    return cleaned

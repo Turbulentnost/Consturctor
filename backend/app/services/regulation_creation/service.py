@@ -61,6 +61,9 @@ class RegulationCreationError(Exception):
 
 
 def start_creation_session(db: Session, *, user_id: str) -> RegulationCreationSession:
+    # При каждом открытии — новый чат, старую историю закрываем.
+    terminate_active_creation_sessions(db, user_id=user_id)
+
     draft = RegulationCreationDraft(
         id=f"reg-create-{uuid4().hex[:12]}",
         user_id=user_id,
@@ -205,6 +208,7 @@ def stream_creation_message(
         else _followup_prompt(history, agent_message)
     )
     final_text = ""
+    assistant_parts: list[str] = []
     try:
         if not draft.cursor_agent_id:
             agent_id, run_id = create_agent(prompt)
@@ -226,6 +230,7 @@ def stream_creation_message(
                 elif event_type == "assistant":
                     text = str(data.get("text") or "")
                     if text:
+                        assistant_parts.append(text)
                         yield {"type": "assistant", "text": text}
                 elif event_type == "result":
                     final_text = str(data.get("text") or "")
@@ -243,6 +248,8 @@ def stream_creation_message(
         yield {"type": "error", "message": exc.message}
         return
 
+    if not final_text:
+        final_text = "".join(assistant_parts).strip()
     if not final_text:
         try:
             final_text = str(wait_for_run(draft.cursor_agent_id, draft.latest_run_id).get("result") or "")

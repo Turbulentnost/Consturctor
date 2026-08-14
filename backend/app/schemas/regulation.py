@@ -229,6 +229,7 @@ class RoleFunction(BaseModel):
     functionId: str = ""
     targetBlockId: str = ""
     isFunction: bool = False
+    title: str = ""
     actor: FunctionActor = Field(default_factory=FunctionActor)
     action: str = ""
     object: str = ""
