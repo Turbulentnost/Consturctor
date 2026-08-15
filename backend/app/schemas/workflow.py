@@ -29,6 +29,7 @@ class WorkflowPlanSchema(BaseModel):
     steps: list[PlanStepSchema] = Field(default_factory=list)
     test_criteria: list[str] = Field(default_factory=list)
     open_questions: list[OpenQuestionSchema] = Field(default_factory=list)
+    answered_questions: list[OpenQuestionSchema] = Field(default_factory=list)
     raw_text: str = ""
 
 

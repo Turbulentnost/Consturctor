@@ -71,8 +71,11 @@ def run_agent_task(
     emit({"type": "status", "text": "Получил задачу, готовлю запуск…"})
     emit({"type": "agent_message", "text": f"Запускаю «{workflow.title or 'ИИ-агент'}»."})
 
+    domain = _agent_domain(workflow)
+
     # Rules come from THIS agent's plan (runtime / constraints / answers), not globals.
-    if uses_plan_export(workflow):
+    # Outlook/meetings must never fall into tender Excel export or web_search.
+    if domain != "outlook_calendar" and uses_plan_export(workflow):
         emit({"type": "status", "text": "Читаю правила из паспорта этого агента…"})
         emit(
             {
@@ -105,6 +108,14 @@ def run_agent_task(
         emit({"type": "tool_result", "tool": "plan_export", "result": result})
         emit({"type": "agent_message", "text": answer})
         return {"answer": answer, "tool": "plan_export", "tool_result": result}
+
+    # Calendar / meetings: site_browser is for scraping websites, NOT Outlook.
+    # There is no Graph/Outlook connector yet — answer from the agent's own plan.
+    if domain == "outlook_calendar":
+        emit({"type": "status", "text": "Разбираю задачу по правилам плана совещаний…"})
+        answer = _compose_outlook_answer(task, workflow)
+        emit({"type": "agent_message", "text": answer})
+        return {"answer": answer, "tool": "", "tool_result": {}}
 
     tool_name = ""
     tool_result: dict[str, Any] | None = None
@@ -139,6 +150,63 @@ def run_agent_task(
     answer = _compose_answer(task, tool_name, tool_result)
     emit({"type": "agent_message", "text": answer})
     return {"answer": answer, "tool": tool_name, "tool_result": tool_result or {}}
+
+
+def _agent_domain(workflow: Workflow) -> str:
+    plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
+    runtime = plan.get("runtime") if isinstance(plan.get("runtime"), dict) else {}
+    kind = str(runtime.get("kind") or "").strip().casefold()
+    if kind in {"outlook_calendar", "site_search_excel", "browser_task", "onec"}:
+        return kind
+    answered = plan.get("answered_questions") or []
+    answered_text = ""
+    if isinstance(answered, list):
+        answered_text = " ".join(
+            f"{x.get('question', '')} {x.get('answer', '')}"
+            for x in answered
+            if isinstance(x, dict)
+        )
+    elif isinstance(answered, dict):
+        answered_text = " ".join(f"{k} {v}" for k, v in answered.items())
+    open_qs = plan.get("open_questions") or []
+    open_text = ""
+    if isinstance(open_qs, list):
+        open_text = " ".join(
+            f"{x.get('question', '')} {x.get('answer', '')}"
+            for x in open_qs
+            if isinstance(x, dict)
+        )
+    blob = " ".join(
+        [
+            str(workflow.title or ""),
+            str(workflow.notes or ""),
+            str(plan.get("title") or ""),
+            str(plan.get("goal") or ""),
+            " ".join(str(x) for x in (plan.get("constraints") or [])),
+            " ".join(str(x) for x in (plan.get("test_criteria") or [])),
+            answered_text,
+            open_text,
+        ]
+    ).casefold()
+    if any(tip in blob for tip in ("1с", "1c", "onec", "odata")) and "outlook" not in blob:
+        return "onec"
+    if any(
+        tip in blob
+        for tip in (
+            "outlook",
+            "календар",
+            "совещан",
+            "встреч",
+            "занятост",
+            "confirm_slot",
+        )
+    ):
+        return "outlook_calendar"
+    if ("excel" in blob or "xlsx" in blob) and (
+        "ключев" in blob or "этп" in blob or "сайт" in blob
+    ):
+        return "site_search_excel"
+    return ""
 
 
 def _request_desktop_tool(
@@ -235,6 +303,107 @@ def _keyword_from_task(task: str, workflow: Workflow) -> str:
 def _search_query(task: str, workflow: Workflow) -> str:
     kw = _keyword_from_task(task, workflow)
     return kw or (workflow.title or task)[:120]
+
+
+def _compose_outlook_answer(task: str, workflow: Workflow) -> str:
+    """Answer meeting/calendar tasks from the plan — do not call site_browser."""
+    plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
+    goal = str(plan.get("goal") or workflow.title or "").strip()
+    constraints = [
+        str(x).strip() for x in (plan.get("constraints") or []) if str(x).strip()
+    ]
+    criteria = [
+        str(x).strip() for x in (plan.get("test_criteria") or []) if str(x).strip()
+    ]
+    answered = _answered_pairs(plan)
+    steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+
+    lines = [
+        f"Задача: {(task or '').strip() or 'выполнить рабочий сценарий агента'}",
+        "",
+        "Работаю как агент планирования совещаний по правилам своего плана. "
+        "Календарь Outlook пока не подключён напрямую в этом чате, поэтому "
+        "не лезу в «просмотр сайта».",
+        "",
+    ]
+    if goal:
+        lines.append(f"Цель из плана: {goal}")
+    if answered:
+        lines.append("Ваши ответы при создании (обязательны):")
+        for question, answer in answered[:12]:
+            lines.append(f"• {question}: {answer}")
+    if constraints:
+        lines.append("Правила из паспорта / уточнений:")
+        for item in constraints[:8]:
+            lines.append(f"• {item}")
+    if steps:
+        lines.append("Шаги плана:")
+        for step in steps[:8]:
+            if isinstance(step, dict):
+                sid = str(step.get("id") or "").strip()
+                title = str(step.get("title") or step.get("action") or "").strip()
+                lines.append(f"• {sid + ': ' if sid else ''}{title or step}")
+            else:
+                lines.append(f"• {step}")
+    if criteria:
+        lines.append("Критерии готовности:")
+        for item in criteria[:6]:
+            lines.append(f"• {item}")
+
+    lines.extend(
+        [
+            "",
+            "Чтобы продолжить по делу, напишите в чат:",
+            "• тему встречи;",
+            "• участников;",
+            "• желаемое окно времени / длительность;",
+            "• нужно ли обязательное подтверждение человека перед созданием в Outlook.",
+            "",
+            "Интеграции из ваших ответов (1С / COM Outlook и т.п.) сохранены в плане "
+            "и должны использоваться при сборке агента; в этом чате пока только сценарий "
+            "по правилам, без живого COM.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _answered_pairs(plan: dict[str, Any]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for key in ("answered_questions", "open_questions"):
+        raw = plan.get(key) or []
+        if isinstance(raw, dict):
+            for qid, value in raw.items():
+                if isinstance(value, dict):
+                    q = str(value.get("question") or qid).strip()
+                    a = str(value.get("answer") or "").strip()
+                else:
+                    q = str(qid).strip()
+                    a = str(value).strip()
+                if a and a.casefold() not in seen:
+                    pairs.append((q or qid, a))
+                    seen.add(a.casefold())
+            continue
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            q = str(item.get("question") or item.get("id") or "").strip()
+            a = str(item.get("answer") or "").strip()
+            if a and a.casefold() not in seen:
+                pairs.append((q or str(item.get("id") or "ответ"), a))
+                seen.add(a.casefold())
+    # Legacy phantom field
+    answers = plan.get("answers")
+    if isinstance(answers, dict):
+        for key, value in answers.items():
+            a = str(value).strip() if not isinstance(value, dict) else str(value.get("answer") or "").strip()
+            q = str(key) if not isinstance(value, dict) else str(value.get("question") or key)
+            if a and a.casefold() not in seen:
+                pairs.append((q, a))
+                seen.add(a.casefold())
+    return pairs
 
 
 def _site_browser_args(task: str, workflow: Workflow) -> dict[str, Any] | None:

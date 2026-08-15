@@ -178,6 +178,8 @@ def _plan_blob(plan: WorkflowPlan) -> str:
         parts.append(f"{s.title}\n{s.action}\n{s.done_when}")
     for q in plan.open_questions:
         parts.append(f"{q.question}\n{q.answer}")
+    for q in plan.answered_questions:
+        parts.append(f"{q.question}\n{q.answer}")
     return "\n".join(parts)
 
 

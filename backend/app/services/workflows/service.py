@@ -274,9 +274,7 @@ def clarify_workflow(
         db.refresh(row)
 
     plan = WorkflowPlan.from_dict(row.plan_json)
-    for q in plan.open_questions:
-        if q.id in merged_answers:
-            q.answer = merged_answers[q.id]
+    plan.record_answers(merged_answers)
 
     all_attachments = _load_attachments_payload(workflow_id)
     # Prefer images just attached in this clarify turn; else any stored images.
@@ -348,18 +346,39 @@ def clarify_workflow(
     for q in updated.open_questions:
         if not q.answer and q.id in prior:
             q.answer = prior[q.id]
+    # Durable answers must survive even if the planner returned open_questions: [].
+    if not updated.answered_questions and plan.answered_questions:
+        updated.answered_questions = list(plan.answered_questions)
+    else:
+        by_id = {q.id: q for q in updated.answered_questions}
+        for q in plan.answered_questions:
+            if q.id not in by_id and (q.answer or "").strip():
+                updated.answered_questions.append(q)
+    updated.record_answers(merged_answers)
     # Keep previous runtime if planner omitted it; then normalize from answers/constraints.
     if not updated.runtime.kind and plan.runtime.kind:
         updated.runtime = plan.runtime
     from app.services.plan_run import ensure_runtime
 
     ensure_runtime(updated)
+    followups = updated.ensure_followups_for_unclear_answers(
+        recent_answers=merged_answers,
+        prior_questions=plan.open_questions,
+    )
     row.plan_json = updated.to_dict()
     row.title = updated.title or row.title
     row.phase = "clarify" if updated.unanswered() else "ready"
     db.commit()
     db.refresh(row)
-    _emit(on_event, "decision", "Уточнения применены к плану.")
+    if followups or updated.unanswered():
+        q = (followups[0] if followups else updated.unanswered()[0]).question
+        _emit(
+            on_event,
+            "decision",
+            f"Ответ учтён, но нужно ещё уточнение: {q}",
+        )
+    else:
+        _emit(on_event, "decision", "Уточнения применены к плану — можно собирать.")
     return _to_schema(row)
 
 
@@ -383,7 +402,28 @@ def execute_workflow(
     )
 
     if reexecute:
-        prompt = prompts.build_reexecute_prompt(plan=plan)
+        clarification = str((row.local_run or {}).get("post_build_answer") or "").strip()
+        if clarification:
+            from app.services.workflows.plan_models import OpenQuestion
+
+            # Ensure question text is meaningful (not just the id).
+            if not any(q.id == "post-build" for q in plan.open_questions):
+                plan.open_questions.append(
+                    OpenQuestion(
+                        id="post-build",
+                        question="Уточнение после сборки",
+                        why="Блокер TESTS: FAIL",
+                    )
+                )
+            plan.record_answers({"post-build": clarification})
+            # Drop temporary open question if it was only for recording.
+            plan.open_questions = [q for q in plan.open_questions if q.id != "post-build"]
+            row.plan_json = plan.to_dict()
+            db.commit()
+        prompt = prompts.build_reexecute_prompt(
+            plan=plan,
+            user_clarification=clarification,
+        )
     else:
         prompt = prompts.build_execute_prompt(plan=plan, document_text=row.document_text)
 
@@ -421,14 +461,64 @@ def execute_workflow(
     row.branch = phase.branch or row.branch
     row.pr_url = phase.pr_url or row.pr_url
     # Не публикуем в «Мои агенты» автоматически — только после явного Save.
+    # can_publish только при TESTS: PASS в результате реализации.
     if phase.status == "FINISHED":
-        row.phase = "tested"
+        tests = _tests_status_from_text(phase.text or "")
         local = dict(row.local_run or {})
-        local.update({"status": "tested", "can_publish": True, "runtime": "mcp"})
+        if tests == "pass":
+            row.phase = "tested"
+            local.update(
+                {
+                    "status": "tested",
+                    "can_publish": True,
+                    "tests_status": "pass",
+                    "runtime": "mcp",
+                }
+            )
+            _emit(
+                on_event,
+                "decision",
+                "Реализация завершена, TESTS: PASS. Можно сохранить агента.",
+            )
+        elif tests == "fail":
+            row.phase = "ready"
+            local.update(
+                {
+                    "status": "tests_failed",
+                    "can_publish": False,
+                    "tests_status": "fail",
+                    "runtime": "mcp",
+                }
+            )
+            _emit(
+                on_event,
+                "decision",
+                "TESTS: FAIL — сохранение недоступно. "
+                "Задайте пользователю вопрос в чате (варианты ответа) и после ответа перезапустите сборку.",
+            )
+        else:
+            row.phase = "ready"
+            local.update(
+                {
+                    "status": "awaiting_tests",
+                    "can_publish": False,
+                    "tests_status": "unknown",
+                    "runtime": "mcp",
+                }
+            )
+            _emit(
+                on_event,
+                "decision",
+                "Реализация завершена, но TESTS: PASS не найден. "
+                "Задайте вопрос в чате (с вариантами), затем перезапустите. "
+                "Без TESTS: PASS сохранить нельзя.",
+            )
         row.local_run = local
-        _emit(on_event, "decision", "Реализация завершена. Нужен тестовый прогон и Сохранить.")
     else:
         row.phase = "ready"
+        local = dict(row.local_run or {})
+        local.update({"can_publish": False, "tests_status": "unknown"})
+        row.local_run = local
         _emit(on_event, "decision", "Реализация не завершена — можно запустить снова.")
     db.commit()
     db.refresh(row)
@@ -438,26 +528,36 @@ def execute_workflow(
 def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSchema:
     """Опубликовать проверенный workflow в «Мои агенты» (phase=done)."""
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
-    if row.phase not in {"tested", "done", "ready"}:
+    if row.phase == "done" and (row.local_run or {}).get("published"):
+        return _to_schema(row)
+    if row.phase not in {"tested", "ready", "done"}:
         raise WorkflowError("Сначала завершите реализацию и тесты")
-    if row.phase == "ready" and not row.exec_agent_id:
+    if not row.exec_agent_id:
         raise WorkflowError("Нет результата реализации для публикации")
+
     local = dict(row.local_run or {})
-    if row.phase != "done" and not local.get("can_publish") and row.phase != "tested":
-        # allow ready+exec after manual verify on older records
-        if not (row.exec_agent_id and (row.last_result or "").strip()):
-            raise WorkflowError("Агент ещё не готов к сохранению")
+    tests = str(local.get("tests_status") or "").casefold()
+    if tests != "pass":
+        tests = _tests_status_from_text(row.last_result or "")
+    if tests == "fail":
+        raise WorkflowError("Нельзя сохранить агента: TESTS: FAIL")
+    if tests != "pass":
+        raise WorkflowError(
+            "Нельзя сохранить агента без прохождения тестов (нужен TESTS: PASS)"
+        )
 
     # Published agents run only via in-app MCP runtime (no bat/terminal/code UI).
     for key in ("cwd", "bat", "module", "output", "cmd", "shell"):
         local.pop(key, None)
+    plan = WorkflowPlan.from_dict(row.plan_json or {})
     local.update(
         {
             "status": "published",
             "can_publish": False,
             "published": True,
+            "tests_status": "pass",
             "runtime": "mcp",
-            "tools": ["site_browser", "web_search", "plan_export"],
+            "tools": _tools_for_published_plan(plan, row),
             "ui_mode": "chat",
         }
     )
@@ -467,6 +567,78 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     db.refresh(row)
     logger.info("Workflow published id=%s title=%s", workflow_id, row.title)
     return _to_schema(row)
+
+
+def _tests_status_from_text(text: str) -> str:
+    """Return pass|fail|unknown from RESULT / agent output."""
+    upper = (text or "").upper()
+    if "TESTS: FAIL" in upper or "TESTS:FAIL" in upper:
+        return "fail"
+    if "TESTS: PASS" in upper or "TESTS:PASS" in upper:
+        return "pass"
+    return "unknown"
+
+
+def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
+    """Pick MCP tools from plan domain — never force web_search for Outlook/meetings."""
+    answered = " ".join(
+        f"{q.question} {q.answer}" for q in (plan.answered_questions or []) if q.answer
+    )
+    blob = " ".join(
+        [
+            plan.title,
+            plan.goal,
+            row.title or "",
+            row.notes or "",
+            " ".join(plan.constraints),
+            " ".join(plan.test_criteria),
+            answered,
+            str(getattr(plan.runtime, "kind", "") or ""),
+        ]
+    ).casefold()
+    kind = str(getattr(plan.runtime, "kind", "") or "").casefold()
+
+    if kind == "onec" or (
+        any(tip in blob for tip in ("1с", "1c", "onec", "odata"))
+        and not any(tip in blob for tip in ("outlook", "календар", "совещан"))
+    ):
+        return ["onec.odata_get", "onec.sql_query"]
+
+    if kind == "outlook_calendar" or any(
+        tip in blob
+        for tip in (
+            "outlook",
+            "календар",
+            "совещан",
+            "встреч",
+            "планирован",
+            "занятост",
+            "confirm_slot",
+            "через com",
+            "win32com",
+            "outlook.application",
+        )
+    ):
+        # Calendar/meeting agents: no site_browser (that's for web pages, not Outlook).
+        # IMAP only if mail is part of the flow; Graph/COM calendar connector TBD.
+        tools: list[str] = []
+        if any(tip in blob for tip in ("почт", "письм", "imap", "email", "mail")):
+            tools.extend(["imap.list_unread", "imap.search"])
+        if any(tip in blob for tip in ("1с", "1c", "onec", "odata")):
+            tools.extend(["onec.odata_get", "onec.sql_query"])
+        return tools
+
+    if kind == "site_search_excel" or (
+        ("excel" in blob or "xlsx" in blob)
+        and ("ключев" in blob or "сайт" in blob or "этп" in blob)
+    ):
+        return ["site_browser", "plan_export", "web_search"]
+
+    if kind == "browser_task" or "http://" in blob or "https://" in blob:
+        return ["site_browser", "web_search"]
+
+    # Generic fallback — still allow search, but browser first.
+    return ["site_browser", "web_search", "plan_export"]
 
 
 def list_artifacts_for_workflow(
