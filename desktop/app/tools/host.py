@@ -35,18 +35,30 @@ def _ensure_path(subdir: str) -> Path:
 
 def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     args = arguments if isinstance(arguments, dict) else {}
+    _SERVER_ONEC = {
+        "onec.odata_get",
+        "onec.odata_post",
+        "onec.odata_patch",
+        "onec.attach_file",
+        "onec.sql_query",
+    }
     if name.startswith("imap."):
         raise ToolHostError(
             f"Инструмент {name} выполняется на сервере (IMAP), не на desktop."
         )
-    if name.startswith("onec."):
+    if name in _SERVER_ONEC:
         raise ToolHostError(
             f"Инструмент {name} выполняется на сервере (1С OData/SQL), не на desktop."
         )
     handler = _HANDLERS.get(name)
-    if handler is None:
-        raise ToolHostError(f"Неизвестный инструмент: {name}")
-    return handler(args)
+    if handler is not None:
+        return handler(args)
+    from app.tools.ac.dispatch import AcToolError, invoke_ac_tool
+
+    try:
+        return invoke_ac_tool(name, args)
+    except AcToolError as exc:
+        raise ToolHostError(str(exc)) from exc
 
 
 def _web_search(arguments: dict[str, Any]) -> dict[str, Any]:

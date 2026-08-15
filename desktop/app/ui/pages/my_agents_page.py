@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
@@ -172,13 +174,25 @@ class MyAgentsPage(QWidget):
             if draft.agent_suggestions:
                 for suggestion in draft.agent_suggestions:
                     rendered_suggestions.add((draft.draft_id, suggestion.agent_id))
-                    self._list.addWidget(self._suggestion_row(suggestion, draft_id=draft.draft_id))
+                    self._list.addWidget(
+                        self._suggestion_row(
+                            suggestion,
+                            draft_id=draft.draft_id,
+                            created_at=draft.created_at,
+                        )
+                    )
             else:
                 self._list.addWidget(self._row(draft))
         for suggestion in self._suggestions:
             draft_id = self._suggestion_draft_ids.get(suggestion.agent_id, "")
             if (draft_id, suggestion.agent_id) not in rendered_suggestions:
-                self._list.addWidget(self._suggestion_row(suggestion))
+                created_at = next(
+                    (item.created_at for item in self._drafts if item.draft_id == draft_id),
+                    None,
+                )
+                self._list.addWidget(
+                    self._suggestion_row(suggestion, draft_id=draft_id, created_at=created_at)
+                )
         self._list.addStretch(1)
 
     def _render_agents(self) -> None:
@@ -255,7 +269,7 @@ class MyAgentsPage(QWidget):
         delete.setStyleSheet(_DANGER_ACTION_QSS)
         delete.setToolTip("Удалить")
         delete.clicked.connect(lambda _checked=False, draft_id=draft.draft_id: self.delete_requested.emit(draft_id))
-        actions = _actions_widget(button, delete)
+        actions = _actions_widget(button, delete, created_at=draft.created_at)
         layout.addWidget(title, 0, 0)
         layout.addWidget(description, 0, 1)
         layout.addWidget(actions, 0, 2)
@@ -263,7 +277,13 @@ class MyAgentsPage(QWidget):
         layout.setColumnStretch(1, 3)
         return card
 
-    def _suggestion_row(self, suggestion: AgentSuggestion, *, draft_id: str = "") -> QWidget:
+    def _suggestion_row(
+        self,
+        suggestion: AgentSuggestion,
+        *,
+        draft_id: str = "",
+        created_at: datetime | None = None,
+    ) -> QWidget:
         card = QFrame()
         card.setObjectName("AgentSuggestionRow")
         card.setStyleSheet(
@@ -309,7 +329,7 @@ class MyAgentsPage(QWidget):
                 agent_id,
             )
         )
-        actions = _actions_widget(create, delete)
+        actions = _actions_widget(create, delete, created_at=created_at)
         layout.addWidget(title, 0, 0)
         layout.addWidget(description, 0, 1)
         layout.addWidget(actions, 0, 2)
@@ -370,7 +390,7 @@ def _agent_title(draft: AgentDraft) -> str:
     return draft.title or "ИИ-агент"
 
 
-def _actions_widget(*buttons: QPushButton) -> QWidget:
+def _actions_widget(*buttons: QPushButton, created_at: datetime | None = None) -> QWidget:
     widget = QWidget()
     widget.setStyleSheet("background: transparent;")
     widget.setFixedWidth(_ACTION_COL_WIDTH)
@@ -382,6 +402,18 @@ def _actions_widget(*buttons: QPushButton) -> QWidget:
         button.setFixedHeight(34)
         button.setFont(app_font(12, QFont.Weight.DemiBold))
         layout.addWidget(button)
+    date_text, time_text = _format_created_parts(created_at)
+    if date_text:
+        date_label = QLabel(date_text)
+        date_label.setFont(app_font(11))
+        date_label.setStyleSheet("color: #6B7773; background: transparent;")
+        date_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(date_label)
+        time_label = QLabel(time_text)
+        time_label.setFont(app_font(11))
+        time_label.setStyleSheet("color: #6B7773; background: transparent;")
+        time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(time_label)
     layout.addStretch(1)
     return widget
 
@@ -434,3 +466,11 @@ def _format_dt(value) -> str:
     if value is None:
         return ""
     return value.strftime("%d.%m.%Y %H:%M")
+
+
+def _format_created_parts(value: datetime | None) -> tuple[str, str]:
+    if value is None:
+        return "", ""
+    if value.tzinfo is not None:
+        value = value.astimezone()
+    return value.strftime("%d.%m.%Y"), value.strftime("%H:%M")

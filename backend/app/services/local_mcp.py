@@ -205,7 +205,148 @@ def list_tools() -> list[dict[str, Any]]:
                 "required": ["sql"],
             },
         },
+        *_desktop_ac_tools(),
     ]
+
+
+def _desktop_ac_tools() -> list[dict[str, Any]]:
+    """Схемы ported desktop-инструментов (исполнение на клиенте)."""
+    items: list[tuple[str, str, dict[str, Any]]] = [
+        ("outlook.search_mail", "Поиск писем Outlook через COM на desktop.", {
+            "folder": {"type": "string"},
+            "date": {"type": "string"},
+            "date_from": {"type": "string"},
+            "date_to": {"type": "string"},
+            "query": {"type": "string"},
+            "max_results": {"type": "integer"},
+        }),
+        ("outlook.read_calendar", "Чтение календаря Outlook через COM на desktop.", {
+            "date": {"type": "string"},
+            "date_from": {"type": "string"},
+            "date_to": {"type": "string"},
+            "days_forward": {"type": "integer"},
+            "max_results": {"type": "integer"},
+        }),
+        ("browser.list_installed_browsers", "Список установленных браузеров на desktop.", {}),
+        ("browser.open_browser", "Открыть установленный браузер (штатный профиль).", {
+            "browser_id": {"type": "string"},
+            "url": {"type": "string"},
+        }),
+        ("browser.search_web", "Веб-поиск DuckDuckGo на desktop.", {
+            "query": {"type": "string"},
+            "max_results": {"type": "integer"},
+        }),
+        ("browser.open_page", "Прочитать web-страницу через CDP на desktop.", {
+            "url": {"type": "string"},
+            "max_chars": {"type": "integer"},
+            "browser_id": {"type": "string"},
+        }),
+        ("browser.extract_table", "Извлечь таблицы со страницы на desktop.", {
+            "url": {"type": "string"},
+            "table_hint": {"type": "string"},
+        }),
+        ("browser.scroll_page", "Прокрутить страницу и прочитать текст.", {
+            "url": {"type": "string"},
+            "direction": {"type": "string"},
+            "pixels": {"type": "integer"},
+        }),
+        ("browser.click_link", "Перейти по ссылке на странице.", {
+            "url": {"type": "string"},
+            "link_text": {"type": "string"},
+            "href": {"type": "string"},
+        }),
+        ("browser.navigate", "Открыть URL в управляемом браузере (скриншот).", {
+            "url": {"type": "string"},
+            "browser_id": {"type": "string"},
+        }),
+        ("browser.screenshot", "Скриншот текущей вкладки браузера.", {
+            "browser_id": {"type": "string"},
+        }),
+        ("browser.get_page_html", "HTML текущей вкладки через CDP.", {
+            "url": {"type": "string"},
+            "max_chars": {"type": "integer"},
+        }),
+        ("browser.dump_page_source", "Выгрузить HTML+CSS страницы в папку агента.", {
+            "url": {"type": "string"},
+            "dump_name": {"type": "string"},
+        }),
+        ("browser.click", "Клик по координатам в браузере.", {
+            "x": {"type": "number"},
+            "y": {"type": "number"},
+        }),
+        ("browser.type_text", "Ввод текста в активное поле браузера.", {
+            "text": {"type": "string"},
+        }),
+        ("browser.press_key", "Нажатие клавиши в браузере.", {
+            "key": {"type": "string"},
+        }),
+        ("browser.scroll", "Прокрутка вкладки браузера (UI).", {
+            "direction": {"type": "string"},
+            "pixels": {"type": "integer"},
+        }),
+        ("onec.search_documents", "Поиск документов 1С (desktop COM/read-only).", {
+            "document_type": {"type": "string"},
+            "number": {"type": "string"},
+            "query": {"type": "string"},
+            "max_results": {"type": "integer"},
+        }),
+        ("onec.get_document_card", "Карточка документа 1С на desktop.", {
+            "document_ref": {"type": "string"},
+        }),
+        ("onec.search_tasks", "Поиск задач 1С на desktop.", {
+            "query": {"type": "string"},
+            "status": {"type": "string"},
+            "max_results": {"type": "integer"},
+        }),
+        ("onec.get_task_card", "Карточка задачи 1С на desktop.", {
+            "task_ref": {"type": "string"},
+        }),
+        ("excel.list_files", "Список файлов в рабочей папке агента.", {}),
+        ("excel.read_workbook", "Чтение .xlsx из папки агента.", {
+            "filename": {"type": "string"},
+            "sheet": {"type": "string"},
+            "max_rows": {"type": "integer"},
+        }),
+        ("excel.create_workbook", "Создать .xlsx в папке агента.", {
+            "filename": {"type": "string"},
+            "headers": {"type": "array", "items": {"type": "string"}},
+            "rows": {"type": "array"},
+        }),
+        ("excel.edit_workbook", "Изменить .xlsx в папке агента.", {
+            "filename": {"type": "string"},
+            "operations": {"type": "array"},
+        }),
+        ("workspace.powershell_run", "PowerShell только в папке агента.", {
+            "command": {"type": "string"},
+            "timeout_seconds": {"type": "integer"},
+        }),
+        ("code.write_python", "Сохранить .py в папку code агента.", {
+            "code": {"type": "string"},
+            "filename": {"type": "string"},
+        }),
+        ("code.run_python", "Запустить .py из папки агента.", {
+            "filename": {"type": "string"},
+            "code": {"type": "string"},
+            "timeout_seconds": {"type": "integer"},
+        }),
+        ("agent.wait", "Пауза агента на N секунд.", {
+            "seconds": {"type": "number"},
+        }),
+        ("report.build_task_report", "Собрать отчёт по поручениям из собранных данных.", {}),
+        ("report.build_meeting_summary", "Сводка/протокол совещания из собранных данных.", {}),
+        ("report.build_schedule_recommendations", "Рекомендации по графику из календаря.", {}),
+    ]
+    tools: list[dict[str, Any]] = []
+    for name, description, properties in items:
+        tools.append(
+            {
+                "name": name,
+                "description": description + " Исполняется на desktop пользователя.",
+                "execution": "desktop",
+                "input_schema": {"type": "object", "properties": properties},
+            }
+        )
+    return tools
 
 
 def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:

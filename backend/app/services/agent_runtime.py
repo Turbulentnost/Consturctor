@@ -97,6 +97,7 @@ def run_agent_task(
                 emit,
                 run_id=run_id,
                 user_id=user_id,
+                workflow_id=workflow_id,
                 tool="plan_export",
                 arguments=arguments,
             )
@@ -109,13 +110,48 @@ def run_agent_task(
         emit({"type": "agent_message", "text": answer})
         return {"answer": answer, "tool": "plan_export", "tool_result": result}
 
-    # Calendar / meetings: site_browser is for scraping websites, NOT Outlook.
-    # There is no Graph/Outlook connector yet — answer from the agent's own plan.
     if domain == "outlook_calendar":
-        emit({"type": "status", "text": "Разбираю задачу по правилам плана совещаний…"})
-        answer = _compose_outlook_answer(task, workflow)
+        emit({"type": "status", "text": "Читаю Outlook на этом компьютере…"})
+        outlook_tool, outlook_args = _outlook_tool_request(task)
+        try:
+            tool_result = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                tool=outlook_tool,
+                arguments=outlook_args,
+            )
+        except AgentRuntimeError as exc:
+            emit({"type": "error", "message": str(exc)})
+            raise
+        emit({"type": "tool_result", "tool": outlook_tool, "result": tool_result})
+        answer = _compose_outlook_tool_answer(task, outlook_tool, tool_result)
         emit({"type": "agent_message", "text": answer})
-        return {"answer": answer, "tool": "", "tool_result": {}}
+        return {"answer": answer, "tool": outlook_tool, "tool_result": tool_result}
+
+    if domain == "onec":
+        emit({"type": "status", "text": "Ищу документы 1С на этом компьютере…"})
+        try:
+            tool_result = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                tool="onec.search_documents",
+                arguments={"query": task, "max_results": 10},
+            )
+        except AgentRuntimeError as exc:
+            emit({"type": "error", "message": str(exc)})
+            raise
+        emit({"type": "tool_result", "tool": "onec.search_documents", "result": tool_result})
+        answer = _compose_onec_desktop_answer(tool_result)
+        emit({"type": "agent_message", "text": answer})
+        return {
+            "answer": answer,
+            "tool": "onec.search_documents",
+            "tool_result": tool_result,
+        }
 
     tool_name = ""
     tool_result: dict[str, Any] | None = None
@@ -139,6 +175,7 @@ def run_agent_task(
                 emit,
                 run_id=run_id,
                 user_id=user_id,
+                workflow_id=workflow_id,
                 tool=tool_name,
                 arguments=arguments,
             )
@@ -217,10 +254,15 @@ def _request_desktop_tool(
     tool: str,
     arguments: dict[str, Any],
     timeout_s: float = DEFAULT_TIMEOUT_S,
+    workflow_id: str = "",
 ) -> dict[str, Any]:
+    arguments = dict(arguments)
+    if workflow_id:
+        arguments.setdefault("workflow_id", workflow_id)
+        arguments.setdefault("agent_id", workflow_id)
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, arguments)
-    if tool.startswith("onec.") or tool in _ONEC_TOOLS:
+    if tool in _ONEC_TOOLS:
         return _invoke_onec_server(tool, arguments)
 
     request_id = tool_bridge.new_request_id()
@@ -303,6 +345,60 @@ def _keyword_from_task(task: str, workflow: Workflow) -> str:
 def _search_query(task: str, workflow: Workflow) -> str:
     kw = _keyword_from_task(task, workflow)
     return kw or (workflow.title or task)[:120]
+
+
+def _outlook_tool_request(task: str) -> tuple[str, dict[str, Any]]:
+    low = (task or "").casefold()
+    if any(tip in low for tip in ("письм", "почт", "mail", "inbox", "входящ", "отправлен")):
+        return "outlook.search_mail", {
+            "query": task,
+            "folder": "All",
+            "max_results": 20,
+        }
+    return "outlook.read_calendar", {"days_forward": 7, "max_results": 30}
+
+
+def _compose_outlook_tool_answer(
+    task: str, tool_name: str, tool_result: dict[str, Any]
+) -> str:
+    _ = task
+    if tool_name == "outlook.search_mail":
+        messages = tool_result.get("messages") or []
+        if not messages:
+            return "В Outlook писем по запросу не найдено."
+        lines = [f"Нашла писем: {len(messages)}"]
+        for item in messages[:10]:
+            if not isinstance(item, dict):
+                continue
+            subject = str(item.get("subject") or "Без темы")
+            sender = str(item.get("sender") or item.get("from") or "")
+            lines.append(f"• {subject}" + (f" — {sender}" if sender else ""))
+        return "\n".join(lines)
+    events = tool_result.get("events") or []
+    if not events:
+        return "В календаре Outlook событий за выбранный период нет."
+    lines = [f"События календаря: {len(events)}"]
+    for item in events[:10]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("subject") or item.get("title") or "Без названия")
+        start = str(item.get("start") or item.get("start_time") or "")
+        lines.append(f"• {title}" + (f" ({start})" if start else ""))
+    return "\n".join(lines)
+
+
+def _compose_onec_desktop_answer(tool_result: dict[str, Any]) -> str:
+    documents = tool_result.get("documents") or []
+    if not documents:
+        return "Документы 1С не найдены."
+    lines = [f"Найдено документов 1С: {len(documents)}"]
+    for item in documents[:10]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("number") or "Документ")
+        status = str(item.get("status") or "")
+        lines.append(f"• {title}" + (f" — {status}" if status else ""))
+    return "\n".join(lines)
 
 
 def _compose_outlook_answer(task: str, workflow: Workflow) -> str:
