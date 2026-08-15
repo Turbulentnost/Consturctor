@@ -2,34 +2,41 @@ from __future__ import annotations
 
 import re
 from typing import Any, Callable
-from urllib.parse import quote_plus
 
 from sqlalchemy.orm import Session
 
 from app.models.workflow import Workflow
-from app.services.local_mcp import LocalMcpError, call_tool, list_tools
+from app.services.local_mcp import list_tools
 from app.services.plan_run import (
     PlanRunError,
+    build_plan_export_arguments,
     format_plan_run_answer,
-    run_site_search_excel,
     uses_plan_export,
 )
+from app.services.tool_bridge import DEFAULT_TIMEOUT_S, tool_bridge
 
 
 AgentEventCallback = Callable[[dict[str, Any]], None]
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
-_ROSELTORG_SEARCH = "https://www.roseltorg.ru/procedures/search"
 
-_ETP_HINTS = (
-    "roseltorg",
-    "росэлторг",
-    "этп",
-    "закуп",
-    "тендер",
-    "223-фз",
-    "44-фз",
-    "площадк",
+_IMAP_TOOLS = frozenset(
+    {
+        "imap.list_unread",
+        "imap.search",
+        "imap.fetch_message",
+        "imap.fetch_attachments",
+    }
+)
+
+_ONEC_TOOLS = frozenset(
+    {
+        "onec.odata_get",
+        "onec.odata_post",
+        "onec.odata_patch",
+        "onec.attach_file",
+        "onec.sql_query",
+    }
 )
 
 
@@ -48,6 +55,7 @@ def run_agent_task(
     workflow_id: str,
     message: str,
     emit: AgentEventCallback,
+    run_id: str,
 ) -> dict[str, Any]:
     workflow = (
         db.query(Workflow)
@@ -63,8 +71,11 @@ def run_agent_task(
     emit({"type": "status", "text": "Получил задачу, готовлю запуск…"})
     emit({"type": "agent_message", "text": f"Запускаю «{workflow.title or 'ИИ-агент'}»."})
 
+    domain = _agent_domain(workflow)
+
     # Rules come from THIS agent's plan (runtime / constraints / answers), not globals.
-    if uses_plan_export(workflow):
+    # Outlook/meetings must never fall into tender Excel export or web_search.
+    if domain != "outlook_calendar" and uses_plan_export(workflow):
         emit({"type": "status", "text": "Читаю правила из паспорта этого агента…"})
         emit(
             {
@@ -75,25 +86,36 @@ def run_agent_task(
                 ),
             }
         )
-
-        def _progress(text: str) -> None:
-            # status — отдельный тип для UI (не схлопывать в «анализирует задачу»).
-            emit({"type": "status", "text": text})
-
         try:
-            result = run_site_search_excel(workflow, on_progress=_progress)
+            arguments = build_plan_export_arguments(workflow)
         except PlanRunError as exc:
             emit({"type": "error", "message": str(exc)})
             raise AgentRuntimeError(str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001
-            msg = f"Ошибка выполнения по плану: {exc}"
-            emit({"type": "error", "message": msg})
-            raise AgentRuntimeError(msg) from exc
+
+        try:
+            result = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                tool="plan_export",
+                arguments=arguments,
+            )
+        except AgentRuntimeError as exc:
+            emit({"type": "error", "message": str(exc)})
+            raise
 
         answer = format_plan_run_answer(result)
         emit({"type": "tool_result", "tool": "plan_export", "result": result})
         emit({"type": "agent_message", "text": answer})
         return {"answer": answer, "tool": "plan_export", "tool_result": result}
+
+    # Calendar / meetings: site_browser is for scraping websites, NOT Outlook.
+    # There is no Graph/Outlook connector yet — answer from the agent's own plan.
+    if domain == "outlook_calendar":
+        emit({"type": "status", "text": "Разбираю задачу по правилам плана совещаний…"})
+        answer = _compose_outlook_answer(task, workflow)
+        emit({"type": "agent_message", "text": answer})
+        return {"answer": answer, "tool": "", "tool_result": {}}
 
     tool_name = ""
     tool_result: dict[str, Any] | None = None
@@ -103,7 +125,7 @@ def run_agent_task(
     if browser_args:
         tool_name = "site_browser"
         arguments = browser_args
-        emit({"type": "thinking", "text": "Открываю площадку и собираю закупки.\n"})
+        emit({"type": "thinking", "text": "Открываю указанный сайт и собираю данные.\n"})
     else:
         query = _search_query(task, workflow)
         if query:
@@ -112,28 +134,17 @@ def run_agent_task(
             emit({"type": "thinking", "text": "Ищу информацию в интернете.\n"})
 
     if tool_name:
-        emit({"type": "tool_call", "tool": tool_name, "arguments": arguments})
         try:
-            tool_result = call_tool(tool_name, arguments)
-        except LocalMcpError as exc:
-            if tool_name == "site_browser":
-                emit({"type": "thinking", "text": "Повторяю открытие площадки…\n"})
-                retry = {
-                    "action": "open",
-                    "url": _ROSELTORG_SEARCH,
-                    "wait_ms": 2500,
-                    "max_items": 25,
-                    "headless": True,
-                }
-                try:
-                    tool_result = call_tool("site_browser", retry)
-                    arguments = retry
-                except LocalMcpError as exc2:
-                    emit({"type": "error", "message": str(exc2)})
-                    raise AgentRuntimeError(str(exc2)) from exc2
-            else:
-                emit({"type": "error", "message": str(exc)})
-                raise AgentRuntimeError(str(exc)) from exc
+            tool_result = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                tool=tool_name,
+                arguments=arguments,
+            )
+        except AgentRuntimeError as exc:
+            emit({"type": "error", "message": str(exc)})
+            raise
         emit({"type": "tool_result", "tool": tool_name, "result": tool_result})
 
     answer = _compose_answer(task, tool_name, tool_result)
@@ -141,18 +152,119 @@ def run_agent_task(
     return {"answer": answer, "tool": tool_name, "tool_result": tool_result or {}}
 
 
-def _is_etp_agent(task: str, workflow: Workflow) -> bool:
-    blob = f"{task}\n{workflow.title or ''}\n{workflow.document_name or ''}".casefold()
-    notes = ""
-    try:
-        notes = str(getattr(workflow, "notes", "") or "")
-    except Exception:
-        notes = ""
-    blob = f"{blob}\n{notes.casefold()}"
+def _agent_domain(workflow: Workflow) -> str:
     plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
-    constraints = "\n".join(str(c) for c in (plan.get("constraints") or []))
-    blob = f"{blob}\n{constraints.casefold()}"
-    return any(h in blob for h in _ETP_HINTS)
+    runtime = plan.get("runtime") if isinstance(plan.get("runtime"), dict) else {}
+    kind = str(runtime.get("kind") or "").strip().casefold()
+    if kind in {"outlook_calendar", "site_search_excel", "browser_task", "onec"}:
+        return kind
+    answered = plan.get("answered_questions") or []
+    answered_text = ""
+    if isinstance(answered, list):
+        answered_text = " ".join(
+            f"{x.get('question', '')} {x.get('answer', '')}"
+            for x in answered
+            if isinstance(x, dict)
+        )
+    elif isinstance(answered, dict):
+        answered_text = " ".join(f"{k} {v}" for k, v in answered.items())
+    open_qs = plan.get("open_questions") or []
+    open_text = ""
+    if isinstance(open_qs, list):
+        open_text = " ".join(
+            f"{x.get('question', '')} {x.get('answer', '')}"
+            for x in open_qs
+            if isinstance(x, dict)
+        )
+    blob = " ".join(
+        [
+            str(workflow.title or ""),
+            str(workflow.notes or ""),
+            str(plan.get("title") or ""),
+            str(plan.get("goal") or ""),
+            " ".join(str(x) for x in (plan.get("constraints") or [])),
+            " ".join(str(x) for x in (plan.get("test_criteria") or [])),
+            answered_text,
+            open_text,
+        ]
+    ).casefold()
+    if any(tip in blob for tip in ("1с", "1c", "onec", "odata")) and "outlook" not in blob:
+        return "onec"
+    if any(
+        tip in blob
+        for tip in (
+            "outlook",
+            "календар",
+            "совещан",
+            "встреч",
+            "занятост",
+            "confirm_slot",
+        )
+    ):
+        return "outlook_calendar"
+    if ("excel" in blob or "xlsx" in blob) and (
+        "ключев" in blob or "этп" in blob or "сайт" in blob
+    ):
+        return "site_search_excel"
+    return ""
+
+
+def _request_desktop_tool(
+    emit: AgentEventCallback,
+    *,
+    run_id: str,
+    user_id: str,
+    tool: str,
+    arguments: dict[str, Any],
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> dict[str, Any]:
+    if tool.startswith("imap.") or tool in _IMAP_TOOLS:
+        return _invoke_imap_server(tool, arguments)
+    if tool.startswith("onec.") or tool in _ONEC_TOOLS:
+        return _invoke_onec_server(tool, arguments)
+
+    request_id = tool_bridge.new_request_id()
+    tool_bridge.begin_wait(request_id=request_id, user_id=user_id)
+    emit({"type": "tool_call", "tool": tool, "arguments": arguments})
+    emit(
+        {
+            "type": "tool_request",
+            "run_id": run_id,
+            "request_id": request_id,
+            "tool": tool,
+            "arguments": arguments,
+        }
+    )
+    try:
+        payload = tool_bridge.await_result(
+            request_id=request_id,
+            timeout_s=timeout_s,
+        )
+    except TimeoutError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
+
+    if not payload.get("ok"):
+        raise AgentRuntimeError(str(payload.get("error") or f"Ошибка инструмента {tool}"))
+    result = payload.get("result")
+    return result if isinstance(result, dict) else {}
+
+
+def _invoke_imap_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.imap_tools import ImapToolError, invoke_imap
+
+    try:
+        return invoke_imap(tool, arguments)
+    except ImapToolError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
+
+
+def _invoke_onec_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.onec_tools import OnecToolError, invoke_onec
+
+    try:
+        return invoke_onec(tool, arguments)
+    except OnecToolError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
 
 
 def _extract_url(text: str) -> str:
@@ -160,30 +272,32 @@ def _extract_url(text: str) -> str:
     return m.group(0).rstrip(").,;") if m else ""
 
 
+def _plan_site_url(workflow: Workflow) -> str:
+    plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
+    runtime = plan.get("runtime") if isinstance(plan.get("runtime"), dict) else {}
+    url = str(runtime.get("site_url") or "").strip()
+    if url:
+        return url
+    for c in plan.get("constraints") or []:
+        found = _extract_url(str(c))
+        if found:
+            return found
+    return ""
+
+
 def _keyword_from_task(task: str, workflow: Workflow) -> str:
-    """Short search keyword; never the whole agent title sentence."""
+    """Short search keyword from the user task / plan keywords — no domain dictionaries."""
+    plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
+    runtime = plan.get("runtime") if isinstance(plan.get("runtime"), dict) else {}
+    keywords = runtime.get("keywords") if isinstance(runtime.get("keywords"), list) else []
+    if keywords:
+        return str(keywords[0]).strip()[:80]
+
     text = _URL_RE.sub("", task or "")
-    for junk in (
-        r"найди\s+актуальн\w*\s+закупки(?:\s+по\s+теме)?",
-        r"открой\s+сайт\s+площадки",
-        r"верни\s+список.*",
-        r"с\s+названиями\s+и\s+ссылками",
-        r"ии-агент\s*:",
-        r"осуществляет\s+поиск\s+закупок\s+на\s+этп",
-        r"поиск\s+закупок\s+на\s+\w+",
-        r"на\s+этп",
-    ):
-        text = re.sub(junk, " ", text, flags=re.IGNORECASE)
     text = re.sub(r"[«»\"']", " ", text)
     text = re.sub(r"\s+", " ", text).strip(" .-:")
-    for token in ("бумага", "лекарств", "медицин", "строитель", "мониторинг"):
-        if token in (task or "").casefold():
-            return token
-    if not text or _is_etp_agent(text, workflow) or len(text.split()) <= 2:
-        if _is_etp_agent(task, workflow):
-            return ""
-    words = [w for w in text.split() if len(w) > 3][:3]
-    return " ".join(words)[:80] if words else ""
+    words = [w for w in text.split() if len(w) > 2][:6]
+    return " ".join(words)[:120] if words else ""
 
 
 def _search_query(task: str, workflow: Workflow) -> str:
@@ -191,37 +305,112 @@ def _search_query(task: str, workflow: Workflow) -> str:
     return kw or (workflow.title or task)[:120]
 
 
-def _site_browser_args(task: str, workflow: Workflow) -> dict[str, Any] | None:
-    if not _is_etp_agent(task, workflow) and not _extract_url(task):
-        return None
-
+def _compose_outlook_answer(task: str, workflow: Workflow) -> str:
+    """Answer meeting/calendar tasks from the plan — do not call site_browser."""
     plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
-    plan_url = ""
-    for c in plan.get("constraints") or []:
-        plan_url = _extract_url(str(c))
-        if plan_url:
-            break
-    url = _extract_url(task) or plan_url or _ROSELTORG_SEARCH
-    keyword = _keyword_from_task(task, workflow)
+    goal = str(plan.get("goal") or workflow.title or "").strip()
+    constraints = [
+        str(x).strip() for x in (plan.get("constraints") or []) if str(x).strip()
+    ]
+    criteria = [
+        str(x).strip() for x in (plan.get("test_criteria") or []) if str(x).strip()
+    ]
+    answered = _answered_pairs(plan)
+    steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
 
-    if "roseltorg" in url.casefold() or url == _ROSELTORG_SEARCH:
-        base = url.split("?")[0] if "procedures/search" in url else _ROSELTORG_SEARCH
-        if keyword:
-            # Keep source filters from plan URL when present.
-            if "?" in url and "search=" not in url.casefold():
-                url = f"{url}&search={quote_plus(keyword)}"
-            elif "?" in url:
-                url = re.sub(r"([?&])search=[^&]*", rf"\1search={quote_plus(keyword)}", url)
+    lines = [
+        f"Задача: {(task or '').strip() or 'выполнить рабочий сценарий агента'}",
+        "",
+        "Работаю как агент планирования совещаний по правилам своего плана. "
+        "Календарь Outlook пока не подключён напрямую в этом чате, поэтому "
+        "не лезу в «просмотр сайта».",
+        "",
+    ]
+    if goal:
+        lines.append(f"Цель из плана: {goal}")
+    if answered:
+        lines.append("Ваши ответы при создании (обязательны):")
+        for question, answer in answered[:12]:
+            lines.append(f"• {question}: {answer}")
+    if constraints:
+        lines.append("Правила из паспорта / уточнений:")
+        for item in constraints[:8]:
+            lines.append(f"• {item}")
+    if steps:
+        lines.append("Шаги плана:")
+        for step in steps[:8]:
+            if isinstance(step, dict):
+                sid = str(step.get("id") or "").strip()
+                title = str(step.get("title") or step.get("action") or "").strip()
+                lines.append(f"• {sid + ': ' if sid else ''}{title or step}")
             else:
-                url = f"{base}?search={quote_plus(keyword)}"
-        return {
-            "action": "open",
-            "url": url,
-            "wait_ms": 2500,
-            "max_items": 25,
-            "headless": True,
-        }
+                lines.append(f"• {step}")
+    if criteria:
+        lines.append("Критерии готовности:")
+        for item in criteria[:6]:
+            lines.append(f"• {item}")
 
+    lines.extend(
+        [
+            "",
+            "Чтобы продолжить по делу, напишите в чат:",
+            "• тему встречи;",
+            "• участников;",
+            "• желаемое окно времени / длительность;",
+            "• нужно ли обязательное подтверждение человека перед созданием в Outlook.",
+            "",
+            "Интеграции из ваших ответов (1С / COM Outlook и т.п.) сохранены в плане "
+            "и должны использоваться при сборке агента; в этом чате пока только сценарий "
+            "по правилам, без живого COM.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _answered_pairs(plan: dict[str, Any]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for key in ("answered_questions", "open_questions"):
+        raw = plan.get(key) or []
+        if isinstance(raw, dict):
+            for qid, value in raw.items():
+                if isinstance(value, dict):
+                    q = str(value.get("question") or qid).strip()
+                    a = str(value.get("answer") or "").strip()
+                else:
+                    q = str(qid).strip()
+                    a = str(value).strip()
+                if a and a.casefold() not in seen:
+                    pairs.append((q or qid, a))
+                    seen.add(a.casefold())
+            continue
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            q = str(item.get("question") or item.get("id") or "").strip()
+            a = str(item.get("answer") or "").strip()
+            if a and a.casefold() not in seen:
+                pairs.append((q or str(item.get("id") or "ответ"), a))
+                seen.add(a.casefold())
+    # Legacy phantom field
+    answers = plan.get("answers")
+    if isinstance(answers, dict):
+        for key, value in answers.items():
+            a = str(value).strip() if not isinstance(value, dict) else str(value.get("answer") or "").strip()
+            q = str(key) if not isinstance(value, dict) else str(value.get("question") or key)
+            if a and a.casefold() not in seen:
+                pairs.append((q, a))
+                seen.add(a.casefold())
+    return pairs
+
+
+def _site_browser_args(task: str, workflow: Workflow) -> dict[str, Any] | None:
+    """Open site_browser only when task or plan explicitly contains a URL."""
+    url = _extract_url(task) or _plan_site_url(workflow)
+    if not url:
+        return None
     return {
         "action": "open",
         "url": url,
@@ -232,12 +421,13 @@ def _site_browser_args(task: str, workflow: Workflow) -> dict[str, Any] | None:
 
 
 def _compose_answer(task: str, tool_name: str, tool_result: dict[str, Any] | None) -> str:
+    _ = task
     if not tool_result:
         return "Не удалось получить данные. Попробуйте ещё раз или уточните задачу."
 
     if tool_name == "site_browser":
         cards = tool_result.get("cards") or []
-        lines = ["Нашла закупки на площадке:"]
+        lines = ["Нашла на сайте:"]
         if cards:
             for item in cards[:10]:
                 title = str(item.get("title") or "Без названия").strip()
@@ -252,18 +442,15 @@ def _compose_answer(task: str, tool_name: str, tool_result: dict[str, Any] | Non
             return "\n".join(lines)
         text = str(tool_result.get("text") or "").strip()
         if text:
-            return "Открыла страницу площадки, но список карточек пуст. Фрагмент страницы:\n" + text[:1200]
+            return "Открыла страницу, но список карточек пуст. Фрагмент:\n" + text[:1200]
         return (
-            "Не удалось прочитать список закупок с площадки. "
-            "Проверьте доступ в интернет и попробуйте ещё раз."
+            "Не удалось прочитать содержимое страницы. "
+            "Проверьте URL в плане агента и доступ в интернет."
         )
 
     results = tool_result.get("results") or []
     if not results:
-        return (
-            "Поиск в интернете не дал результатов. "
-            "Для закупок лучше открывать площадку напрямую — нажмите «Запустить типовую задачу» ещё раз."
-        )
+        return "Поиск в интернете не дал результатов. Уточните запрос или укажите URL в плане."
     lines = ["Нашла в интернете:"]
     for item in results[:5]:
         title = str(item.get("title") or "Без названия")
