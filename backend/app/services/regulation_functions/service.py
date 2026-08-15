@@ -145,8 +145,9 @@ def _build_prompt(result: RegulationParseResult, *, position: str, department: s
         '      "functionId": "f1",\n'
         '      "relatedFunctionIds": ["f2"],\n'
         '      "field": "trigger|inputs|system|result|recipient|conditions|deadline|errors|approval|permissions|control|kpi",\n'
-        '      "text": "точный вопрос пользователю",\n'
+        '      "text": "точный вопрос пользователю, ответа на который достаточно, чтобы ИИ-агент выполнил шаг без догадок",\n'
         '      "context": "полный нужный контекст из связанных фрагментов",\n'
+        '      "quickAnswers": ["короткий вариант 1", "вариант 2", "пока неизвестно"],\n'
         '      "sourceRefs": [{"fragmentId": "FR-...", "quote": "..."}]\n'
         "    }\n"
         "  ]\n"
@@ -159,6 +160,12 @@ def _build_prompt(result: RegulationParseResult, *, position: str, department: s
         "- action — глагол/сказуемое; object — объект в нужном падеже; recipient — отдельно, не в title.\n"
         "- Выделяй только реальные процессы/функции этой должности, которые можно оптимизировать или автоматизировать.\n"
         "- Для связанных блоков ЭТОЙ ЖЕ должности заполняй relatedFunctionIds и sharedContext.\n"
+        "- Вопросы — ключевая часть ответа: по КАЖДОЙ включённой функции сформируй набор вопросов, "
+        "который в полной мере описывает исполнимый процесс работы "
+        "(trigger, inputs, system, result, recipient, conditions, errors/escalation, approval, deadline — "
+        "где это релевантно и не закрыто однозначно текстом документа).\n"
+        "- Каждый вопрос должен быть конкретным: после ответа агент сможет выполнить шаг без догадок.\n"
+        "- В questions.context указывай связку фрагментов/связанных функций; quickAnswers — 2–4 коротких варианта.\n"
         "- Вопросы формируй только по включённым функциям, не теряя контекст.\n"
         "- sourceRefs.fragmentId должен соответствовать fragmentId из документа.\n"
         "- Если подходящих функций нет, верни пустые массивы functions и questions.\n\n"
@@ -560,6 +567,7 @@ def _normalize_questions(raw: Any, id_map: dict[str, str]) -> list[dict[str, Any
                 "targetField": field,
                 "question": _clean(item.get("text")),
                 "context": _clean(item.get("context")),
+                "quickAnswers": _list_text(item.get("quickAnswers"))[:5],
                 "sourceRefs": item.get("sourceRefs") if isinstance(item.get("sourceRefs"), list) else [],
             }
         )

@@ -267,10 +267,10 @@ class ReadinessPage(QWidget):
         )
         top.addWidget(avatar)
         title = QVBoxLayout()
-        name = QLabel("ИИ-помощник")
+        name = QLabel("Cursor Agent")
         name.setFont(app_font(13, QFont.Weight.DemiBold))
         name.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        status = QLabel("Анализирует регламент")
+        status = QLabel("Уточняет процесс по регламенту")
         status.setFont(app_font(11))
         status.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         title.addWidget(name)
@@ -715,7 +715,8 @@ class ReadinessPage(QWidget):
             for question in upcoming:
                 layout.addWidget(_topic_row(_field_title(question.target_field)))
         hint = QLabel(
-            "LLM задаёт следующий вопрос по мере необходимости; внутренний список параметров не является фиксированным сценарием."
+            "Cursor Agent задаёт следующий вопрос по мере необходимости; "
+            "внутренний список параметров не является фиксированным сценарием."
         )
         hint.setWordWrap(True)
         hint.setFont(app_font(11))

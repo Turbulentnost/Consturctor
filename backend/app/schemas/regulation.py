@@ -429,6 +429,7 @@ class AgentReadinessResult(BaseModel):
     changes: list[RegulationChangeDraft] = Field(default_factory=list)
     transactions: list[ChangeTransaction] = Field(default_factory=list)
     status: Literal["needs_answers", "needs_approval", "ready", "finalized"] = "needs_answers"
+    audit: dict = Field(default_factory=dict)
     createdAt: datetime | None = None
 
 

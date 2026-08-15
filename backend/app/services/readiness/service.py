@@ -59,7 +59,7 @@ def create_readiness_run(
         functions=functions,
         result=result,
     )
-    _prepend_cursor_questions(readiness, role_result)
+    _apply_cursor_questions_as_primary(readiness, role_result)
     run = ReadinessRun(
         id=readiness_run_id,
         regulation_id=regulation_id,
@@ -73,18 +73,42 @@ def create_readiness_run(
     return AgentReadinessResult.model_validate(run.result_json)
 
 
-def _prepend_cursor_questions(readiness: AgentReadinessResult, role_result: RoleMatchResult) -> None:
+def _apply_cursor_questions_as_primary(readiness: AgentReadinessResult, role_result: RoleMatchResult) -> None:
     audit = role_result.audit or {}
     raw_questions = audit.get("cursorQuestions") if isinstance(audit, dict) else []
-    if not isinstance(raw_questions, list) or not raw_questions:
+    cursor_agent_id = str(audit.get("cursorAgentId") or "") if isinstance(audit, dict) else ""
+    cursor_questions = _build_cursor_readiness_questions(raw_questions, role_result)
+    if cursor_questions:
+        readiness.questions = cursor_questions
+        readiness.status = "needs_answers"
+        readiness.audit = {
+            "source": "cursor_agent",
+            "cursorAgentId": cursor_agent_id,
+            "questionsFromCursor": len(cursor_questions),
+            "ruleBasedFallback": False,
+        }
         return
+    readiness.audit = {
+        "source": "rule_based",
+        "cursorAgentId": cursor_agent_id,
+        "questionsFromCursor": 0,
+        "ruleBasedFallback": True,
+    }
+
+
+def _build_cursor_readiness_questions(
+    raw_questions: object,
+    role_result: RoleMatchResult,
+) -> list[ReadinessQuestion]:
+    if not isinstance(raw_questions, list) or not raw_questions:
+        return []
     block_by_function = {
         function.functionId: function.targetBlockId
         for function in role_result.functions or []
         if function.functionId and function.targetBlockId
     }
-    existing = {(item.functionId, item.targetField, item.question.strip()) for item in readiness.questions}
     cursor_questions: list[ReadinessQuestion] = []
+    seen: set[tuple[str, str, str]] = set()
     for raw in raw_questions:
         if not isinstance(raw, dict):
             continue
@@ -94,9 +118,9 @@ def _prepend_cursor_questions(readiness: AgentReadinessResult, role_result: Role
             continue
         target_field = _readiness_field(str(raw.get("targetField") or "inputs"))
         key = (function_id, target_field, question)
-        if key in existing:
+        if key in seen:
             continue
-        existing.add(key)
+        seen.add(key)
         idx = len(cursor_questions) + 1
         source_refs = raw.get("sourceRefs") if isinstance(raw.get("sourceRefs"), list) else []
         block_id = _first_source_block(source_refs) or block_by_function.get(function_id, "")
@@ -112,9 +136,11 @@ def _prepend_cursor_questions(readiness: AgentReadinessResult, role_result: Role
             related_block = block_by_function.get(related_id)
             if related_block and related_block not in affected_blocks:
                 affected_blocks.append(related_block)
+        quick = [str(item).strip() for item in (raw.get("quickAnswers") or []) if str(item).strip()]
+        options = quick[:4] or ["указать ответ", "не требуется", "пока неизвестно"]
         cursor_questions.append(
             ReadinessQuestion(
-                questionId=f"CUR-Q-{idx:03d}",
+                questionId=str(raw.get("questionId") or f"CUR-Q-{idx:03d}"),
                 functionId=function_id,
                 targetField=target_field,
                 severity="important",
@@ -125,18 +151,11 @@ def _prepend_cursor_questions(readiness: AgentReadinessResult, role_result: Role
                     blockId=block_id,
                 ),
                 answerType=_answer_type_for_cursor(target_field),
-                options=["указать ответ", "не требуется", "пока неизвестно"],
+                options=options,
                 affectedBlocks=affected_blocks,
             )
         )
-    if not cursor_questions:
-        return
-    readiness.questions = cursor_questions + [
-        item
-        for item in readiness.questions
-        if not any(item.functionId == cur.functionId and item.question == cur.question for cur in cursor_questions)
-    ]
-    readiness.status = "needs_answers" if readiness.questions else readiness.status
+    return cursor_questions
 
 
 def _readiness_field(value: str) -> str:
