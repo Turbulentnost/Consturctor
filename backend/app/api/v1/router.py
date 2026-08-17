@@ -8,11 +8,13 @@ from app.api.v1 import (
     health,
     kpi,
     llm,
+    notifications,
     regulation_creation,
     regulations,
     runs,
     tool_sandbox,
     tools,
+    triggers,
     workflows,
 )
 
@@ -30,3 +32,5 @@ api_router.include_router(cron_jobs.router, prefix="/api/v1")
 api_router.include_router(kpi.router, prefix="/api/v1")
 api_router.include_router(regulation_creation.router, prefix="/api/v1")
 api_router.include_router(workflows.router, prefix="/api/v1")
+api_router.include_router(notifications.router, prefix="/api/v1")
+api_router.include_router(triggers.router, prefix="/api/v1")

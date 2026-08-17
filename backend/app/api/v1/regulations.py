@@ -36,6 +36,10 @@ from app.services.role_matching import (
     get_role_match_run,
     update_match_status,
 )
+from app.services.regulation_functions import (
+    RegulationFunctionExtractionError,
+    create_cursor_function_extraction,
+)
 from app.services.readiness import (
     ReadinessError,
     answer_readiness_question,
@@ -45,6 +49,7 @@ from app.services.readiness import (
     update_change_status,
 )
 from app.services.agent_passport import complete_passport, draft_passport, passport_from_dict
+from app.services.agent_passport import persist as passport_persist
 from app.services.agent_passport.from_suggestion import (
     PassportBuildError,
     draft_passport_from_function,
@@ -104,6 +109,28 @@ async def create_role_matches(
             department=department,
         )
     except RoleMatchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/{regulation_id}/function-extraction", response_model=RoleMatchResult)
+async def extract_function_blocks(
+    regulation_id: str,
+    request: RoleMatchRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RoleMatchResult:
+    user = get_app_user(auth.user_id)
+    position = (request.position or "").strip() or ((user.position if user else "") or "").strip()
+    department = (request.department or "").strip() or ((user.department if user else "") or "").strip()
+    try:
+        return create_cursor_function_extraction(
+            db,
+            user_id=auth.user_id,
+            regulation_id=regulation_id,
+            position=position,
+            department=department,
+        )
+    except RegulationFunctionExtractionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
@@ -343,6 +370,9 @@ def _passport_response(
     bp_name: str = "",
     excerpt: str = "",
     functions: list[ExtractedFunction] | None = None,
+    draft_id: str = "",
+    reused: bool = False,
+    qa_history: list[dict] | None = None,
 ) -> PassportResponse:
     data = passport.as_dict()
     return PassportResponse(
@@ -362,6 +392,10 @@ def _passport_response(
             )
             for item in (functions or [])
         ],
+        draftId=draft_id,
+        reused=reused,
+        llmError=str(data.get("llm_error") or ""),
+        qaHistory=list(qa_history or []),
     )
 
 
@@ -408,7 +442,7 @@ def create_passport_draft_from_suggestion(
     db: Session = Depends(get_db),
 ) -> PassportResponse:
     try:
-        passport, excerpt, functions = draft_passport_from_function(
+        built = draft_passport_from_function(
             db,
             user_id=auth.user_id,
             regulation_id=body.regulationId,
@@ -416,19 +450,30 @@ def create_passport_draft_from_suggestion(
             function_id=body.functionId,
             agent_title=body.agentTitle,
             agent_description=body.agentDescription,
+            draft_id=body.draftId,
+            agent_id=body.agentId,
         )
     except PassportBuildError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    bp_name = body.agentTitle.strip() or passport.name
-    return _passport_response(passport, bp_name=bp_name, excerpt=excerpt, functions=functions)
+    bp_name = body.agentTitle.strip() or built.passport.name
+    return _passport_response(
+        built.passport,
+        bp_name=bp_name,
+        excerpt=built.excerpt,
+        functions=built.functions,
+        draft_id=built.draft_id,
+        reused=built.reused,
+        qa_history=built.qa_history,
+    )
 
 
 @router.post("/passport/complete", response_model=PassportResponse)
 def complete_passport_draft(
     body: CompletePassportRequest,
-    _auth: AuthContext = Depends(get_current_user),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> PassportResponse:
     current = passport_from_dict(body.passport.model_dump())
     functions = _to_extracted(body.functions) if body.functions else []
@@ -440,9 +485,34 @@ def complete_passport_draft(
         excerpt=body.excerpt,
         functions=functions or None,
     )
+    draft = passport_persist.resolve_draft(
+        db,
+        user_id=auth.user_id,
+        draft_id=body.draftId,
+        regulation_id=body.regulationId,
+        role_match_run_id=body.roleMatchRunId,
+    )
+    draft_id = draft.id if draft is not None else ""
+    if draft is not None:
+        passport_persist.save_session(
+            db,
+            draft,
+            function_id=body.functionId,
+            agent_id=body.agentId,
+            payload=passport_persist.session_payload(
+                passport,
+                excerpt=body.excerpt,
+                functions=functions,
+                bp_name=body.bp_name,
+                qa_history=body.qaHistory,
+            ),
+        )
+        draft_id = draft.id
     return _passport_response(
         passport,
         bp_name=body.bp_name,
         excerpt=body.excerpt,
         functions=functions,
+        draft_id=draft_id,
+        qa_history=body.qaHistory,
     )

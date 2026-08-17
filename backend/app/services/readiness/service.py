@@ -12,6 +12,8 @@ from app.schemas.regulation import (
     ReadinessAnswer,
     ReadinessAnswerRequest,
     ReadinessFieldStatus,
+    ReadinessQuestion,
+    ReadinessSourceEvidence,
     RegulationParseResult,
     RegulationRevisionResult,
     RoleMatchResult,
@@ -57,6 +59,7 @@ def create_readiness_run(
         functions=functions,
         result=result,
     )
+    _apply_cursor_questions_as_primary(readiness, role_result)
     run = ReadinessRun(
         id=readiness_run_id,
         regulation_id=regulation_id,
@@ -68,6 +71,128 @@ def create_readiness_run(
     db.commit()
     db.refresh(run)
     return AgentReadinessResult.model_validate(run.result_json)
+
+
+def _apply_cursor_questions_as_primary(readiness: AgentReadinessResult, role_result: RoleMatchResult) -> None:
+    audit = role_result.audit or {}
+    raw_questions = audit.get("cursorQuestions") if isinstance(audit, dict) else []
+    cursor_agent_id = str(audit.get("cursorAgentId") or "") if isinstance(audit, dict) else ""
+    cursor_questions = _build_cursor_readiness_questions(raw_questions, role_result)
+    if cursor_questions:
+        readiness.questions = cursor_questions
+        readiness.status = "needs_answers"
+        readiness.audit = {
+            "source": "cursor_agent",
+            "cursorAgentId": cursor_agent_id,
+            "questionsFromCursor": len(cursor_questions),
+            "ruleBasedFallback": False,
+        }
+        return
+    readiness.audit = {
+        "source": "rule_based",
+        "cursorAgentId": cursor_agent_id,
+        "questionsFromCursor": 0,
+        "ruleBasedFallback": True,
+    }
+
+
+def _build_cursor_readiness_questions(
+    raw_questions: object,
+    role_result: RoleMatchResult,
+) -> list[ReadinessQuestion]:
+    if not isinstance(raw_questions, list) or not raw_questions:
+        return []
+    block_by_function = {
+        function.functionId: function.targetBlockId
+        for function in role_result.functions or []
+        if function.functionId and function.targetBlockId
+    }
+    cursor_questions: list[ReadinessQuestion] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw in raw_questions:
+        if not isinstance(raw, dict):
+            continue
+        function_id = str(raw.get("functionId") or "").strip()
+        question = str(raw.get("question") or "").strip()
+        if not function_id or not question:
+            continue
+        target_field = _readiness_field(str(raw.get("targetField") or "inputs"))
+        key = (function_id, target_field, question)
+        if key in seen:
+            continue
+        seen.add(key)
+        idx = len(cursor_questions) + 1
+        source_refs = raw.get("sourceRefs") if isinstance(raw.get("sourceRefs"), list) else []
+        block_id = _first_source_block(source_refs) or block_by_function.get(function_id, "")
+        context = str(raw.get("context") or "").strip()
+        related = [str(item) for item in raw.get("relatedFunctionIds") or [] if str(item).strip()]
+        reason_parts = []
+        if context:
+            reason_parts.append(context)
+        if related:
+            reason_parts.append("Связанные функции: " + ", ".join(related))
+        affected_blocks = [block_id] if block_id else []
+        for related_id in related:
+            related_block = block_by_function.get(related_id)
+            if related_block and related_block not in affected_blocks:
+                affected_blocks.append(related_block)
+        quick = [str(item).strip() for item in (raw.get("quickAnswers") or []) if str(item).strip()]
+        options = quick[:4] or ["указать ответ", "не требуется", "пока неизвестно"]
+        cursor_questions.append(
+            ReadinessQuestion(
+                questionId=str(raw.get("questionId") or f"CUR-Q-{idx:03d}"),
+                functionId=function_id,
+                targetField=target_field,
+                severity="important",
+                question=question,
+                reason="\n".join(reason_parts),
+                sourceEvidence=ReadinessSourceEvidence(
+                    quote=context[:1000],
+                    blockId=block_id,
+                ),
+                answerType=_answer_type_for_cursor(target_field),
+                options=options,
+                affectedBlocks=affected_blocks,
+            )
+        )
+    return cursor_questions
+
+
+def _readiness_field(value: str) -> str:
+    allowed = {
+        "trigger",
+        "inputs",
+        "system",
+        "result",
+        "recipient",
+        "conditions",
+        "deadline",
+        "errors",
+        "approval",
+        "permissions",
+        "control",
+        "kpi",
+    }
+    return value if value in allowed else "inputs"
+
+
+def _answer_type_for_cursor(field: str) -> str:
+    if field == "deadline":
+        return "duration"
+    if field in {"recipient", "approval"}:
+        return "role"
+    if field in {"system", "permissions"}:
+        return "system"
+    return "text"
+
+
+def _first_source_block(source_refs: list) -> str:
+    for ref in source_refs:
+        if isinstance(ref, dict):
+            block_id = str(ref.get("fragmentId") or "").strip()
+            if block_id:
+                return block_id
+    return ""
 
 
 def get_readiness_run(

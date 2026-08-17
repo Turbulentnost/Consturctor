@@ -8,6 +8,12 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+_last_error = ""
+
+
+def last_error() -> str:
+    return _last_error
+
 
 def generate(
     prompt: str,
@@ -17,6 +23,8 @@ def generate(
     quick: bool = False,
 ) -> str | None:
     """Совместимо с Constructor llm_service.generate: None, если LLM недоступна."""
+    global _last_error
+    _last_error = ""
     messages: list[dict[str, str]] = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -25,7 +33,8 @@ def generate(
     try:
         return _chat_completions(messages, timeout=timeout, max_tokens=max_tokens)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Passport LLM generate failed: %s", exc)
+        _last_error = str(exc).strip() or exc.__class__.__name__
+        logger.warning("Passport LLM generate failed: %s", _last_error)
         return None
 
 

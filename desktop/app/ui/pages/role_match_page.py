@@ -707,13 +707,23 @@ def _fragment_preview_text(match: RoleMatch, *, full: bool = False) -> str:
 def _function_title(match: RoleMatch) -> str:
     function = match.function
     if function is not None:
+        explicit = (getattr(function, "title", "") or "").strip()
+        if explicit:
+            cleaned = re.split(r"\s*→\s*", explicit, maxsplit=1)[0].strip()
+            title = _as_title(cleaned, max_chars=_MAX_FUNCTION_TITLE_CHARS)
+            if title and not _has_dangling_end(title):
+                return title
         title_parts = []
         if function.action:
             title_parts.append(function.action[:1].upper() + function.action[1:])
         if function.object:
-            title_parts.append(function.object)
-        if function.recipient:
-            title_parts.append(f"→ {function.recipient}")
+            obj = function.object.strip()
+            # Не дублировать title/action в object.
+            if function.action and obj.casefold().startswith(function.action.casefold()):
+                obj = obj[len(function.action) :].strip(" —-:")
+            if obj and obj.casefold() != (function.action or "").casefold():
+                title_parts.append(obj)
+        # recipient показываем в деталях, не в заголовке
         title = " ".join(part for part in title_parts if part).strip()
         if title and not _has_dangling_end(title):
             return _as_title(title, max_chars=_MAX_FUNCTION_TITLE_CHARS)

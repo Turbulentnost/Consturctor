@@ -29,7 +29,9 @@ class WorkflowPlanSchema(BaseModel):
     steps: list[PlanStepSchema] = Field(default_factory=list)
     test_criteria: list[str] = Field(default_factory=list)
     open_questions: list[OpenQuestionSchema] = Field(default_factory=list)
+    answered_questions: list[OpenQuestionSchema] = Field(default_factory=list)
     raw_text: str = ""
+    runtime: dict[str, Any] = Field(default_factory=dict)
 
 
 class AttachmentMetaSchema(BaseModel):
@@ -118,3 +120,21 @@ class WebSearchResponse(BaseModel):
     query: str
     results: list[WebSearchResultItem] = Field(default_factory=list)
     extracted_text: str = ""
+
+
+class AgentToolResultSubmit(BaseModel):
+    request_id: str
+    ok: bool = True
+    result: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+
+
+class AgentRunOut(BaseModel):
+    id: str
+    workflow_id: str
+    message: str = ""
+    status: str = "started"
+    answer: str = ""
+    source: str = "chat"
+    started_at: str = ""
+    finished_at: str = ""

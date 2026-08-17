@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -27,13 +28,27 @@ async def lifespan(_app: FastAPI):
         settings.llm_provider,
         settings.database_url.split("@")[-1] if "@" in settings.database_url else settings.database_url,
     )
+    scheduler_tasks: list[asyncio.Task] = []
     try:
         init_db()
         logger.info("App Postgres schema ready")
+        from app.api.v1.notifications import notification_scheduler
+        from app.api.v1.triggers import trigger_scheduler
+
+        scheduler_tasks = [
+            asyncio.create_task(notification_scheduler()),
+            asyncio.create_task(trigger_scheduler()),
+        ]
     except Exception:
         logger.exception("Failed to initialize app Postgres")
         raise
     yield
+    for task in scheduler_tasks:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(

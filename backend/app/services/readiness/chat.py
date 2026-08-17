@@ -25,7 +25,7 @@ from app.schemas.regulation import (
     RoleMatchResult,
 )
 from app.services.agents import sync_draft_progress
-from app.services.readiness.llm_interview import adapt_after_answer, generate_initial_question
+from app.services.readiness.cursor_interview import adapt_after_answer, generate_initial_question
 from app.services.readiness.service import ReadinessError, answer_readiness_question
 
 
@@ -48,7 +48,11 @@ def create_or_get_question_chat(
     )
     if session is None:
         context = _context(db, draft, readiness, question_id)
-        initial = generate_initial_question(context, _pending_questions(readiness, question.functionId))
+        initial = generate_initial_question(
+            context,
+            _pending_questions(readiness, question.functionId),
+            cursor_agent_id=str(context.get("cursorAgentId") or ""),
+        )
         session = QuestionChatSession(
             id=f"qchat-{uuid4().hex[:12]}",
             draft_id=draft_id,
@@ -149,12 +153,18 @@ def send_question_chat_message(
     pending_ids = [str(item.get("questionId") or "") for item in pending if item.get("questionId")]
     current_qid = session.question_id
     clarifying_prompt = _last_assistant_prompt(db, session.id)
+    cursor_agent_id = str((session.context_json or {}).get("cursorAgentId") or "")
+    if not cursor_agent_id:
+        cursor_agent_id = _cursor_agent_id(db, draft, readiness)
+        if isinstance(session.context_json, dict):
+            session.context_json = {**session.context_json, "cursorAgentId": cursor_agent_id}
     structured = adapt_after_answer(
         session.context_json,
         pending,
         answer=user_text,
         history=_message_history(db, session.id),
         turn_count=_user_turn_count(db, session.id),
+        cursor_agent_id=cursor_agent_id,
     )
     fallback_structured = _extract_structured_answer(user_text, session.context_json, readiness)
     answered = _merge_answered_question_ids(
@@ -323,7 +333,21 @@ def _context(db: Session, draft: AgentDraft, readiness: AgentReadinessResult, qu
         "blocks": blocks,
         "affectedBlocks": blocks,
         "draft": {"title": draft.title, "position": draft.position, "department": draft.department},
+        "cursorAgentId": _cursor_agent_id(db, draft, readiness),
     }
+
+
+def _cursor_agent_id(db: Session, draft: AgentDraft, readiness: AgentReadinessResult) -> str:
+    audit = readiness.audit if isinstance(getattr(readiness, "audit", None), dict) else {}
+    agent_id = str(audit.get("cursorAgentId") or "").strip()
+    if agent_id:
+        return agent_id
+    role_run = db.query(RoleMatchRun).filter(RoleMatchRun.id == draft.role_match_run_id).first()
+    if role_run is None:
+        return ""
+    role_result = RoleMatchResult.model_validate(role_run.result_json)
+    role_audit = role_result.audit if isinstance(role_result.audit, dict) else {}
+    return str(role_audit.get("cursorAgentId") or "").strip()
 
 
 def _context_blocks(

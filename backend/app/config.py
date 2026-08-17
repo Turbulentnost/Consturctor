@@ -74,6 +74,24 @@ class Settings(BaseSettings):
     allow_local_registration: bool = True
     tool_manifest_path: str = str(BACKEND_ROOT / "data" / "tool_manifest.json")
 
+    # IMAP (server-side tools only; desktop never executes imap.*)
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_username: str = ""
+    imap_password: str = ""
+    imap_mailbox: str = "INBOX"
+
+    # 1C OData (server-side tools onec.odata_*; desktop never executes onec.*)
+    odata_base_url: str = ""
+    odata_username: str = ""
+    odata_password: str = ""
+    odata_timeout_sec: float = 60.0
+    odata_incoming_doc_entity: str = "Document_ТД_ВходящаяКорреспонденция"
+    erp_login: str = ""
+    erp_password: str = ""
+    onec_sql_allowlist: str = ""
+    onec_odata_entity_allowlist: str = ""
+
     def resolved_tool_manifest_path(self) -> Path:
         raw = (self.tool_manifest_path or "").strip()
         if not raw:

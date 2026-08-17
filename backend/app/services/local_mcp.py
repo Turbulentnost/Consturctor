@@ -1,17 +1,16 @@
+"""Каталог схем инструментов для агента.
+
+Исполнение desktop-tools — на клиенте (SSE tool_request).
+IMAP — только на сервере (см. agent_runtime._invoke_imap_server).
+"""
+
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
 
 class LocalMcpError(RuntimeError):
     pass
-
-
-_TOOLS_ROOT = Path(__file__).resolve().parents[3] / "tools"
-_TOOLS_WEBSEARCH = _TOOLS_ROOT / "web_search_tool"
-_TOOLS_SITE_BROWSER = _TOOLS_ROOT / "site_browser_tool"
 
 
 def list_tools() -> list[dict[str, Any]]:
@@ -20,8 +19,9 @@ def list_tools() -> list[dict[str, Any]]:
             "name": "web_search",
             "description": (
                 "Быстрый веб-поиск (DuckDuckGo/Wikipedia) без браузера. "
-                "Не подходит для JS-площадок вроде roseltorg."
+                "Исполняется на desktop пользователя."
             ),
+            "execution": "desktop",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -36,9 +36,9 @@ def list_tools() -> list[dict[str, Any]]:
             "name": "site_browser",
             "description": (
                 "Универсальный парсер любого сайта через Playwright Chromium. "
-                "Открывает URL, умеет поиск на странице и извлечение карточек/списков "
-                "(в том числе JS-rendered)."
+                "Исполняется на desktop пользователя."
             ),
+            "execution": "desktop",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -62,102 +62,459 @@ def list_tools() -> list[dict[str, Any]]:
                 "required": ["url"],
             },
         },
+        {
+            "name": "plan_export",
+            "description": (
+                "Поиск на ЭТП по ключам из плана агента и сохранение Excel на Desktop. "
+                "Исполняется на desktop пользователя."
+            ),
+            "execution": "desktop",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "site_url": {"type": "string"},
+                    "keywords": {"type": "array", "items": {"type": "string"}},
+                    "columns": {"type": "array", "items": {"type": "string"}},
+                    "destination": {"type": "string", "default": "desktop"},
+                    "export_format": {"type": "string", "default": "xlsx"},
+                    "workflow_title": {"type": "string"},
+                },
+                "required": ["keywords"],
+            },
+        },
+        {
+            "name": "imap.list_unread",
+            "description": "Список непрочитанных писем (сервер, IMAP).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 20},
+                    "user": {"type": "string"},
+                    "query": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "imap.search",
+            "description": "Поиск писем по критериям (сервер, IMAP).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "user": {"type": "string"},
+                    "limit": {"type": "integer", "default": 50},
+                },
+            },
+        },
+        {
+            "name": "imap.fetch_message",
+            "description": "Загрузить письмо по uid (сервер, IMAP).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "uid": {"type": "integer"},
+                    "message_id": {"type": "integer"},
+                    "user": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "imap.fetch_attachments",
+            "description": "Список вложений письма по uid (сервер, IMAP).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "uid": {"type": "integer"},
+                    "message_id": {"type": "integer"},
+                    "user": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "onec.odata_catalog",
+            "description": (
+                "Список доступных сущностей 1С OData: документы, справочники/таблицы и регистры. "
+                "Сначала вызови этот инструмент, затем onec.odata_get с entity из ответа. "
+                "Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "description": (
+                            "Фильтр: document / catalog (таблицы, справочники) / register / other"
+                        ),
+                    },
+                    "search": {
+                        "type": "string",
+                        "description": "Подстрока в имени сущности (Document_, Catalog_, *Register_)",
+                    },
+                    "limit": {"type": "integer", "default": 400},
+                    "refresh": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Сбросить кэш и заново прочитать service document / $metadata",
+                    },
+                },
+            },
+        },
+        {
+            "name": "onec.odata_get",
+            "description": (
+                "Чтение сущности/пути 1С OData (сервер). "
+                "entity бери из onec.odata_catalog (documents / catalogs / registers). "
+                "Не выдумывай имена EntitySet."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "entity": {
+                        "type": "string",
+                        "description": "Имя EntitySet из onec.odata_catalog, например Document_Проект",
+                    },
+                    "path": {"type": "string"},
+                    "top": {
+                        "type": "integer",
+                        "default": 3,
+                        "description": "OData $top — сколько записей вернуть",
+                    },
+                    "skip": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "OData $skip — смещение (сколько записей пропустить)",
+                    },
+                },
+            },
+        },
+        {
+            "name": "onec.odata_post",
+            "description": "Создание объекта через 1С OData (сервер).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "entity": {"type": "string"},
+                    "body": {"type": "object"},
+                },
+                "required": ["entity"],
+            },
+        },
+        {
+            "name": "onec.odata_patch",
+            "description": "Обновление объекта через 1С OData (сервер).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "entity": {"type": "string"},
+                    "ref_key": {"type": "string"},
+                    "body": {"type": "object"},
+                },
+                "required": ["entity", "ref_key"],
+            },
+        },
+        {
+            "name": "onec.attach_file",
+            "description": "Прикрепление файла к документу 1С (пока не реализовано).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "document_ref_key": {"type": "string"},
+                    "filename": {"type": "string"},
+                },
+            },
+        },
+        {
+            "name": "onec.sql_query",
+            "description": "Только SELECT к ERP SQL (allowlist таблиц, сервер).",
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {"sql": {"type": "string"}},
+                "required": ["sql"],
+            },
+        },
+        {
+            "name": "onec.erp_tasks_current",
+            "description": (
+                "Текущие (открытые) задачи пользователя из базы 1С erp_pm. "
+                "ФИО берётся из JWT сессии Constructor; fio/user_id в аргументах не обязательны. "
+                "Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 50},
+                    "fio": {
+                        "type": "string",
+                        "description": "Необязательно: чужое ФИО. Пусто — пользователь из JWT.",
+                    },
+                    "user_id": {
+                        "type": "string",
+                        "description": "Необязательно: id пользователя 1С. Пусто — из JWT.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "onec.erp_tasks_period",
+            "description": (
+                "Задачи пользователя из erp_pm за период (дата создания). "
+                "ФИО берётся из JWT, если не переданы fio/user_id. Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date_from": {
+                        "type": "string",
+                        "description": "Начало периода YYYY-MM-DD",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "Конец периода YYYY-MM-DD",
+                    },
+                    "include_done": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Включать выполненные задачи",
+                    },
+                    "limit": {"type": "integer", "default": 100},
+                    "fio": {"type": "string"},
+                    "user_id": {"type": "string"},
+                },
+                "required": ["date_from", "date_to"],
+            },
+        },
+        {
+            "name": "onec.erp_subordinate_tasks",
+            "description": (
+                "Дерево задач подчинённых из erp_pm: сначала непосредственные "
+                "подчинённые (должность, задачи и сроки за период), затем "
+                "подчинённые каждого из них и так далее. "
+                "Только действующие назначения, без уволенных и переведённых. "
+                "Человек из JWT сессии; можно передать access_token. "
+                "Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "access_token": {
+                        "type": "string",
+                        "description": (
+                            "JWT Constructor. Если пусто — берётся токен сессии "
+                            "(Authorization Bearer)."
+                        ),
+                    },
+                    "date_from": {
+                        "type": "string",
+                        "description": "Начало периода YYYY-MM-DD. Пусто — 30 дней назад.",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "Конец периода YYYY-MM-DD. Пусто — сегодня.",
+                    },
+                    "only_open": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Только открытые задачи",
+                    },
+                    "include_done": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Включать выполненные задачи за период",
+                    },
+                    "limit_per_person": {
+                        "type": "integer",
+                        "default": 30,
+                        "description": "Максимум задач на одного человека",
+                    },
+                },
+            },
+        },
+        *_desktop_ac_tools(),
     ]
 
 
-def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if name == "web_search":
-        return _web_search(arguments)
-    if name == "site_browser":
-        return _site_browser(arguments)
-    raise LocalMcpError(f"Неизвестный инструмент: {name}")
-
-
-def _web_search(arguments: dict[str, Any]) -> dict[str, Any]:
-    query = str(arguments.get("query") or "").strip()
-    if not query:
-        raise LocalMcpError("Пустой query")
-    path = str(_TOOLS_WEBSEARCH)
-    if path not in sys.path:
-        sys.path.insert(0, path)
-    try:
-        from websearch.engine import search, search_and_extract  # type: ignore
-    except ImportError as exc:
-        raise LocalMcpError(f"web_search_tool не найден: {exc}") from exc
-    max_results = int(arguments.get("max_results") or 5)
-    fetch_top = bool(arguments.get("fetch_top"))
-    try:
-        if fetch_top:
-            payload = search_and_extract(query, max_results=max_results)
-            raw_results = list(payload.get("results") or [])
-            extracted = str(payload.get("text") or payload.get("extracted_text") or "")
-            engine = str(payload.get("engine") or "")
-        else:
-            raw_results, engine = search(query, max_results=max_results)
-            extracted = ""
-    except Exception as exc:  # noqa: BLE001
-        raise LocalMcpError(f"Ошибка web_search: {exc}") from exc
-
-    results: list[dict[str, str]] = []
-    for item in raw_results:
-        if hasattr(item, "title"):
-            results.append(
-                {
-                    "title": str(item.title or ""),
-                    "url": str(item.url or ""),
-                    "snippet": str(getattr(item, "snippet", "") or ""),
-                }
-            )
-        elif isinstance(item, dict):
-            results.append(
-                {
-                    "title": str(item.get("title") or ""),
-                    "url": str(item.get("url") or ""),
-                    "snippet": str(item.get("snippet") or ""),
-                }
-            )
-    return {
-        "query": query,
-        "engine": engine,
-        "results": results,
-        "extracted_text": extracted or "",
-    }
-
-
-def _site_browser(arguments: dict[str, Any]) -> dict[str, Any]:
-    url = str(arguments.get("url") or "").strip()
-    if not url:
-        raise LocalMcpError("Пустой url")
-    path = str(_TOOLS_SITE_BROWSER)
-    if path not in sys.path:
-        sys.path.insert(0, path)
-    try:
-        from sitebrowser.browser import SiteBrowserError, browse  # type: ignore
-    except ImportError as exc:
-        raise LocalMcpError(
-            f"site_browser_tool не найден: {exc}. "
-            "Установите: pip install -r tools/site_browser_tool/requirements.txt "
-            "&& python -m playwright install chromium"
-        ) from exc
-
-    action = str(arguments.get("action") or "open").strip().lower() or "open"
-    try:
-        # Always headless: end-user must never see a browser/terminal window.
-        return browse(
-            action=action,
-            url=url,
-            query=str(arguments.get("query") or ""),
-            headless=True,
-            wait_ms=int(arguments.get("wait_ms") or 0),
-            wait_selector=str(arguments.get("wait_selector") or "") or None,
-            input_selector=str(arguments.get("input_selector") or "") or None,
-            submit_selector=str(arguments.get("submit_selector") or "") or None,
-            item_selector=str(arguments.get("item_selector") or "") or None,
-            title_selector=str(arguments.get("title_selector") or "") or None,
-            link_selector=str(arguments.get("link_selector") or "") or None,
-            max_items=int(arguments.get("max_items") or 30),
+def _desktop_ac_tools() -> list[dict[str, Any]]:
+    """Схемы ported desktop-инструментов (исполнение на клиенте)."""
+    items: list[tuple[str, str, dict[str, Any]]] = [
+        ("outlook.search_mail", "Поиск писем Outlook через COM на desktop.", {
+            "folder": {"type": "string"},
+            "date": {"type": "string"},
+            "date_from": {"type": "string"},
+            "date_to": {"type": "string"},
+            "query": {"type": "string"},
+            "max_results": {"type": "integer"},
+        }),
+        ("outlook.read_calendar", "Чтение календаря Outlook через COM на desktop.", {
+            "date": {"type": "string"},
+            "date_from": {"type": "string"},
+            "date_to": {"type": "string"},
+            "days_forward": {"type": "integer"},
+            "max_results": {"type": "integer"},
+        }),
+        ("browser.list_installed_browsers", "Список установленных браузеров на desktop.", {}),
+        ("browser.open_browser", "Открыть установленный браузер (штатный профиль).", {
+            "browser_id": {"type": "string"},
+            "url": {"type": "string"},
+        }),
+        ("browser.search_web", "Веб-поиск DuckDuckGo на desktop.", {
+            "query": {"type": "string"},
+            "max_results": {"type": "integer"},
+        }),
+        ("browser.open_page", "Прочитать web-страницу через CDP на desktop.", {
+            "url": {"type": "string"},
+            "max_chars": {"type": "integer"},
+            "browser_id": {"type": "string"},
+        }),
+        ("browser.extract_table", "Извлечь таблицы со страницы на desktop.", {
+            "url": {"type": "string"},
+            "table_hint": {"type": "string"},
+        }),
+        ("browser.scroll_page", "Прокрутить страницу и прочитать текст.", {
+            "url": {"type": "string"},
+            "direction": {"type": "string"},
+            "pixels": {"type": "integer"},
+        }),
+        ("browser.click_link", "Перейти по ссылке на странице.", {
+            "url": {"type": "string"},
+            "link_text": {"type": "string"},
+            "href": {"type": "string"},
+        }),
+        ("browser.navigate", "Открыть URL в управляемом браузере (скриншот).", {
+            "url": {"type": "string"},
+            "browser_id": {"type": "string"},
+        }),
+        ("browser.screenshot", "Скриншот текущей вкладки браузера.", {
+            "browser_id": {"type": "string"},
+        }),
+        ("browser.get_page_html", "HTML текущей вкладки через CDP.", {
+            "url": {"type": "string"},
+            "max_chars": {"type": "integer"},
+        }),
+        ("browser.dump_page_source", "Выгрузить HTML+CSS страницы в папку агента.", {
+            "url": {"type": "string"},
+            "dump_name": {"type": "string"},
+        }),
+        ("browser.click", "Клик по координатам в браузере.", {
+            "x": {"type": "number"},
+            "y": {"type": "number"},
+        }),
+        ("browser.type_text", "Ввод текста в активное поле браузера.", {
+            "text": {"type": "string"},
+        }),
+        ("browser.press_key", "Нажатие клавиши в браузере.", {
+            "key": {"type": "string"},
+        }),
+        ("browser.scroll", "Прокрутка вкладки браузера (UI).", {
+            "direction": {"type": "string"},
+            "pixels": {"type": "integer"},
+        }),
+        ("onec.search_documents", "Поиск документов 1С (desktop COM/read-only).", {
+            "document_type": {"type": "string"},
+            "number": {"type": "string"},
+            "query": {"type": "string"},
+            "max_results": {"type": "integer"},
+        }),
+        ("onec.get_document_card", "Карточка документа 1С на desktop.", {
+            "document_ref": {"type": "string"},
+        }),
+        ("onec.search_tasks", "Поиск задач 1С на desktop.", {
+            "query": {"type": "string"},
+            "status": {"type": "string"},
+            "max_results": {"type": "integer"},
+        }),
+        ("onec.get_task_card", "Карточка задачи 1С на desktop.", {
+            "task_ref": {"type": "string"},
+        }),
+        ("excel.list_files", "Список файлов в рабочей папке агента.", {}),
+        ("excel.read_workbook", "Чтение .xlsx из папки агента.", {
+            "filename": {"type": "string"},
+            "sheet": {"type": "string"},
+            "max_rows": {"type": "integer"},
+        }),
+        ("excel.create_workbook", "Создать .xlsx в папке агента.", {
+            "filename": {"type": "string"},
+            "headers": {"type": "array", "items": {"type": "string"}},
+            "rows": {"type": "array"},
+        }),
+        ("excel.edit_workbook", "Изменить .xlsx в папке агента.", {
+            "filename": {"type": "string"},
+            "operations": {"type": "array"},
+        }),
+        ("workspace.powershell_run", "PowerShell только в папке агента.", {
+            "command": {"type": "string"},
+            "timeout_seconds": {"type": "integer"},
+        }),
+        ("code.write_python", "Сохранить .py в папку code агента.", {
+            "code": {"type": "string"},
+            "filename": {"type": "string"},
+        }),
+        ("code.run_python", "Запустить .py из папки агента.", {
+            "filename": {"type": "string"},
+            "code": {"type": "string"},
+            "timeout_seconds": {"type": "integer"},
+        }),
+        ("agent.wait", "Пауза агента на N секунд.", {
+            "seconds": {"type": "number"},
+        }),
+        ("report.build_task_report", "Собрать отчёт по поручениям из собранных данных.", {}),
+        ("report.build_meeting_summary", "Сводка/протокол совещания из собранных данных.", {}),
+        ("report.build_schedule_recommendations", "Рекомендации по графику из календаря.", {}),
+        ("users.list", "Список пользователей Constructor: id, ФИО, должность, подразделение. Вызови перед notify.send, чтобы выбрать получателя.", {
+            "query": {"type": "string"},
+        }, []),
+        ("notify.send", "Отправить уведомление пользователю (сразу или в указанное время). user_id бери из инструмента users.list — не выдумывай id.", {
+            "user_id": {"type": "string", "description": "id получателя из users.list"},
+            "title": {"type": "string"},
+            "body": {"type": "string"},
+            "send_at": {"type": "string"},
+            "workflow_id": {"type": "string"},
+        }, ["user_id", "title"]),
+        ("agent.schedule", "Запланировать запуск агента: в момент at (ISO), через after_seconds, или когда выполнится condition (свободный текст: файл, письмо, любое событие). Пустой workflow_id = текущий агент.", {
+            "workflow_id": {"type": "string"},
+            "message": {"type": "string"},
+            "at": {"type": "string"},
+            "after_seconds": {"type": "number"},
+            "condition": {"type": "string"},
+            "once": {"type": "boolean"},
+        }, []),
+        ("agent.schedule.cancel", "Отменить ранее созданный триггер agent.schedule по trigger_id.", {
+            "trigger_id": {"type": "string"},
+        }, ["trigger_id"]),
+    ]
+    tools: list[dict[str, Any]] = []
+    for item in items:
+        name, description, properties = item[0], item[1], item[2]
+        required = list(item[3]) if len(item) > 3 else []
+        schema: dict[str, Any] = {"type": "object", "properties": properties}
+        if required:
+            schema["required"] = required
+        tools.append(
+            {
+                "name": name,
+                "description": description + " Исполняется на desktop пользователя.",
+                "execution": "desktop",
+                "input_schema": schema,
+            }
         )
-    except SiteBrowserError as exc:
-        raise LocalMcpError(str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise LocalMcpError(f"Ошибка site_browser: {exc}") from exc
+    return tools
+
+
+def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    _ = arguments
+    raise LocalMcpError(
+        f"Инструмент «{name}» больше не исполняется через local_mcp.call_tool. "
+        "Desktop-tools — SSE tool_request; imap.*/onec.* — серверные сервисы."
+    )

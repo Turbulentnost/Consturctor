@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import codecs
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Callable
@@ -207,6 +208,7 @@ class RoleFunction:
     function_id: str
     target_block_id: str
     is_function: bool
+    title: str
     actor: FunctionActor
     action: str
     object: str
@@ -380,6 +382,8 @@ class AgentPassport:
     questions: list[dict] | None = None
     source: str = "heuristic"
     text: str = ""
+    autonomy_level: int = 1
+    cursor_agent_id: str = ""
 
     def to_api_dict(self) -> dict:
         return {
@@ -397,6 +401,8 @@ class AgentPassport:
             "questions": list(self.questions or []),
             "source": self.source,
             "text": self.text,
+            "autonomy_level": int(self.autonomy_level or 1),
+            "cursor_agent_id": self.cursor_agent_id,
         }
 
 
@@ -406,6 +412,10 @@ class PassportSession:
     bp_name: str
     excerpt: str
     functions: list[PassportFunction]
+    draft_id: str = ""
+    reused: bool = False
+    llm_error: str = ""
+    qa_history: list[tuple[str, str, list[str]]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,6 +515,69 @@ class WorkflowRecord:
     @property
     def name(self) -> str:
         return self.title
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunHistoryItem:
+    id: str
+    workflow_id: str
+    message: str = ""
+    status: str = ""
+    answer: str = ""
+    source: str = "chat"
+    started_at: str = ""
+    finished_at: str = ""
+
+
+@dataclass
+class ScheduleTriggerSpec:
+    kind: str = "event"
+    message: str = ""
+    interval_value: float = 0
+    interval_unit: str = "hours"
+    condition: str = ""
+    at: str = ""
+    once: bool = True
+
+
+@dataclass
+class ScheduleDraft:
+    name: str = ""
+    goal: str = ""
+    triggers: list[ScheduleTriggerSpec] = field(default_factory=list)
+
+
+def _interval_seconds(value: float, unit: str) -> int:
+    amount = max(0.0, float(value or 0))
+    factor = {"minutes": 60, "hours": 3600, "days": 86400}.get((unit or "hours").strip().casefold(), 3600)
+    return int(amount * factor)
+
+
+def _parse_schedule_draft(data: dict) -> ScheduleDraft:
+    triggers: list[ScheduleTriggerSpec] = []
+    for item in data.get("triggers") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            interval_value = float(item.get("interval_value") or 0)
+        except (TypeError, ValueError):
+            interval_value = 0.0
+        triggers.append(
+            ScheduleTriggerSpec(
+                kind=str(item.get("kind") or "event"),
+                message=str(item.get("message") or ""),
+                interval_value=interval_value,
+                interval_unit=str(item.get("interval_unit") or "hours"),
+                condition=str(item.get("condition") or ""),
+                at=str(item.get("at") or ""),
+                once=bool(item.get("once", True)),
+            )
+        )
+    return ScheduleDraft(
+        name=str(data.get("name") or ""),
+        goal=str(data.get("goal") or ""),
+        triggers=triggers,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -890,6 +963,14 @@ class ApiClient:
         )
         return self._parse_creation_session(data)
 
+    def get_regulation_creation_session(self, draft_id: str) -> RegulationCreationSession:
+        data = self._request(
+            "GET",
+            f"/api/v1/regulation-creation/sessions/{draft_id}",
+            timeout=max(self._timeout, 30.0),
+        )
+        return self._parse_creation_session(data)
+
     def send_regulation_creation_message(self, draft_id: str, message: str) -> RegulationCreationSession:
         data = self._request(
             "POST",
@@ -904,20 +985,50 @@ class ApiClient:
         draft_id: str,
         message: str,
         on_event: Callable[[str, str], None],
+        *,
+        file_paths: list[str | Path] | None = None,
     ) -> RegulationCreationSession:
         url = f"{self.base_url}/api/v1/regulation-creation/sessions/{draft_id}/messages/stream"
         final_session: RegulationCreationSession | None = None
+        paths = [Path(path) for path in (file_paths or []) if Path(path).is_file()]
+        handles: list = []
+        files: list = []
+        data = None
+        request_json: dict | None = {"message": message}
         try:
+            if paths:
+                request_json = None
+                data = {"message": message}
+                for path in paths:
+                    handle = path.open("rb")
+                    handles.append(handle)
+                    files.append(("files", (path.name, handle, "application/octet-stream")))
             with httpx.Client(timeout=None) as client:
                 with client.stream(
                     "POST",
                     url,
                     headers={**self._headers(), "Accept": "text/event-stream"},
-                    json={"message": message},
+                    json=request_json,
+                    data=data,
+                    files=files or None,
                 ) as response:
                     if response.status_code >= 400:
                         body = response.read().decode("utf-8", errors="replace")
-                        raise ApiError(body or "Ошибка создания регламента", status_code=response.status_code)
+                        detail = body
+                        try:
+                            payload = json.loads(body)
+                            value = payload.get("detail")
+                            if isinstance(value, str) and value.strip():
+                                detail = value
+                            elif isinstance(value, list) and value:
+                                first = value[0]
+                                if isinstance(first, dict):
+                                    detail = str(first.get("msg") or first.get("message") or first)
+                                else:
+                                    detail = str(first)
+                        except Exception:
+                            pass
+                        raise ApiError(detail or "Ошибка создания регламента", status_code=response.status_code)
                     event_name = "message"
                     data_lines: list[str] = []
                     for line in response.iter_lines():
@@ -941,12 +1052,33 @@ class ApiClient:
                         elif line.startswith("data:"):
                             data_lines.append(line.split(":", 1)[1].strip())
         except httpx.ConnectError as exc:
+            recovered = self._try_recover_creation_session(draft_id)
+            if recovered is not None:
+                return recovered
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
         except httpx.HTTPError as exc:
+            recovered = self._try_recover_creation_session(draft_id)
+            if recovered is not None:
+                return recovered
             raise ApiError(f"Ошибка сети: {exc}") from exc
+        finally:
+            for handle in handles:
+                handle.close()
         if final_session is None:
+            recovered = self._try_recover_creation_session(draft_id)
+            if recovered is not None:
+                return recovered
             raise ApiError("Backend не вернул итоговую сессию создания регламента")
         return final_session
+
+    def _try_recover_creation_session(self, draft_id: str) -> RegulationCreationSession | None:
+        try:
+            session = self.get_regulation_creation_session(draft_id)
+        except ApiError:
+            return None
+        if session.status == "generating":
+            return None
+        return session
 
     def terminate_regulation_creation_sessions(self) -> None:
         if not self._token:
@@ -973,6 +1105,21 @@ class ApiClient:
             f"/api/v1/regulations/{regulation_id}/role-matches",
             json={"position": position.strip(), "department": department.strip()},
             timeout=max(self._timeout, 300.0),
+        )
+        return self._parse_role_matches(data)
+
+    def extract_regulation_functions(
+        self,
+        regulation_id: str,
+        *,
+        position: str,
+        department: str,
+    ) -> RoleMatchResult:
+        data = self._request(
+            "POST",
+            f"/api/v1/regulations/{regulation_id}/function-extraction",
+            json={"position": position.strip(), "department": department.strip()},
+            timeout=max(self._timeout, 420.0),
         )
         return self._parse_role_matches(data)
 
@@ -1142,7 +1289,13 @@ class ApiClient:
             if isinstance(item, dict)
         ]
 
-    def draft_passport_from_suggestion(self, suggestion: AgentSuggestion) -> PassportSession:
+    def draft_passport_from_suggestion(
+        self,
+        suggestion: AgentSuggestion,
+        *,
+        draft_id: str = "",
+        agent_id: str = "",
+    ) -> PassportSession:
         data = self._request(
             "POST",
             "/api/v1/regulations/passport/draft-from-suggestion",
@@ -1152,6 +1305,8 @@ class ApiClient:
                 "functionId": suggestion.function_id,
                 "agentTitle": suggestion.title,
                 "agentDescription": suggestion.description,
+                "draftId": draft_id,
+                "agentId": agent_id,
             },
             timeout=max(self._timeout, 180.0),
         )
@@ -1166,6 +1321,12 @@ class ApiClient:
         excerpt: str,
         functions: list[PassportFunction],
         field_updates: dict[str, str] | None = None,
+        draft_id: str = "",
+        agent_id: str = "",
+        function_id: str = "",
+        regulation_id: str = "",
+        role_match_run_id: str = "",
+        qa_history: list[tuple[str, str, list[str]]] | None = None,
     ) -> PassportSession:
         data = self._request(
             "POST",
@@ -1186,6 +1347,15 @@ class ApiClient:
                     }
                     for item in functions
                 ],
+                "draftId": draft_id,
+                "agentId": agent_id,
+                "functionId": function_id,
+                "regulationId": regulation_id,
+                "roleMatchRunId": role_match_run_id,
+                "qaHistory": [
+                    {"prompt": prompt, "answer": answer, "files": list(files or [])}
+                    for prompt, answer, files in (qa_history or [])
+                ],
             },
             timeout=max(self._timeout, 180.0),
         )
@@ -1205,6 +1375,17 @@ class ApiClient:
             for item in data.get("functions") or []
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         ]
+        qa_history: list[tuple[str, str, list[str]]] = []
+        for item in data.get("qaHistory") or []:
+            if not isinstance(item, dict):
+                continue
+            qa_history.append(
+                (
+                    str(item.get("prompt") or ""),
+                    str(item.get("answer") or ""),
+                    [str(path) for path in (item.get("files") or []) if str(path).strip()],
+                )
+            )
         return PassportSession(
             passport=AgentPassport(
                 name=str(passport_raw.get("name") or ""),
@@ -1221,10 +1402,16 @@ class ApiClient:
                 questions=[item for item in passport_raw.get("questions") or [] if isinstance(item, dict)],
                 source=str(passport_raw.get("source") or "heuristic"),
                 text=str(passport_raw.get("text") or ""),
+                autonomy_level=int(passport_raw.get("autonomy_level") or 1) or 1,
+                cursor_agent_id=str(passport_raw.get("cursor_agent_id") or ""),
             ),
             bp_name=str(data.get("bp_name") or ""),
             excerpt=str(data.get("excerpt") or ""),
             functions=functions,
+            draft_id=str(data.get("draftId") or ""),
+            reused=bool(data.get("reused")),
+            llm_error=str(data.get("llmError") or passport_raw.get("llm_error") or ""),
+            qa_history=qa_history,
         )
 
     @staticmethod
@@ -1483,21 +1670,96 @@ class ApiClient:
         data = self._request("GET", "/api/v1/workflows/agent-tools", timeout=60.0)
         return [item for item in (data.get("tools") or []) if isinstance(item, dict)]
 
+    def _handle_sse_tool_request(self, payload: dict, *, fallback_run_id: str = "") -> None:
+        from app.tools import ToolHostError, invoke_tool
+        from app.tools.hitl import HUMAN_REJECTED, confirm_level1_tool
+
+        req_run = str(payload.get("run_id") or fallback_run_id)
+        request_id = str(payload.get("request_id") or "")
+        tool = str(payload.get("tool") or "")
+        arguments = (
+            dict(payload.get("arguments")) if isinstance(payload.get("arguments"), dict) else {}
+        )
+        workflow_id = str(arguments.get("workflow_id") or arguments.get("agent_id") or "")
+        if workflow_id and not isinstance(arguments.get("runtime_context"), dict):
+            arguments["runtime_context"] = {"workflow_id": workflow_id, "agent_id": workflow_id}
+        try:
+            if not confirm_level1_tool(tool, arguments):
+                self.post_agent_tool_result(
+                    req_run,
+                    request_id=request_id,
+                    ok=False,
+                    error=HUMAN_REJECTED,
+                )
+                return
+            tool_result = invoke_tool(tool, arguments)
+            self.post_agent_tool_result(
+                req_run,
+                request_id=request_id,
+                ok=True,
+                result=tool_result,
+            )
+        except ToolHostError as exc:
+            try:
+                self.post_agent_tool_result(
+                    req_run,
+                    request_id=request_id,
+                    ok=False,
+                    error=str(exc),
+                )
+            except ApiError:
+                raise ApiError(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            err = f"Ошибка инструмента {tool}: {exc}"
+            try:
+                self.post_agent_tool_result(
+                    req_run,
+                    request_id=request_id,
+                    ok=False,
+                    error=err,
+                )
+            except ApiError:
+                raise ApiError(err) from exc
+
+    def post_agent_tool_result(
+        self,
+        run_id: str,
+        *,
+        request_id: str,
+        ok: bool,
+        result: dict | None = None,
+        error: str = "",
+    ) -> None:
+        self._request(
+            "POST",
+            f"/api/v1/workflows/agent-runs/{run_id}/tool-results",
+            json={
+                "request_id": request_id,
+                "ok": ok,
+                "result": result or {},
+                "error": error or "",
+            },
+            timeout=120.0,
+        )
+
     def stream_workflow_agent_run(
         self,
         workflow_id: str,
         message: str,
         on_event: Callable[[dict], None],
+        *,
+        source: str = "chat",
     ) -> dict:
         url = f"{self.base_url}/api/v1/workflows/{workflow_id}/agent-runs/stream"
         final_result: dict | None = None
+        run_id = ""
         try:
             with httpx.Client(timeout=None) as client:
                 with client.stream(
                     "POST",
                     url,
                     headers={**self._headers(), "Accept": "text/event-stream"},
-                    json={"message": message},
+                    json={"message": message, "source": source or "chat"},
                 ) as response:
                     if response.status_code >= 400:
                         body = response.read().decode("utf-8", errors="replace")
@@ -1508,10 +1770,26 @@ class ApiClient:
                             if data_lines:
                                 payload = _parse_sse_payload("\n".join(data_lines))
                                 payload_type = str(payload.get("type") or "")
-                                if payload_type == "error":
+                                if payload_type == "run":
+                                    run_id = str(payload.get("run_id") or "")
+                                    on_event(payload)
+                                elif payload_type == "tool_request":
+                                    tool = str(payload.get("tool") or "")
+                                    on_event(
+                                        {
+                                            "type": "status",
+                                            "text": f"Выполняю на этом компьютере: {tool}…",
+                                        }
+                                    )
+                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
+                                elif payload_type == "error":
                                     raise ApiError(str(payload.get("message") or "Ошибка запуска агента"))
-                                if payload_type == "done":
-                                    final_result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+                                elif payload_type == "done":
+                                    final_result = (
+                                        payload.get("result")
+                                        if isinstance(payload.get("result"), dict)
+                                        else {}
+                                    )
                                 else:
                                     on_event(payload)
                             data_lines = []
@@ -1523,6 +1801,122 @@ class ApiClient:
         except httpx.HTTPError as exc:
             raise ApiError(f"Ошибка сети: {exc}") from exc
         return final_result or {}
+
+    def propose_schedule_draft(self, workflow_id: str) -> ScheduleDraft:
+        data = self._request("POST", f"/api/v1/workflows/{workflow_id}/schedule-draft", timeout=90.0)
+        return _parse_schedule_draft(data if isinstance(data, dict) else {})
+
+    def create_trigger(
+        self,
+        workflow_id: str,
+        spec: ScheduleTriggerSpec,
+        *,
+        message: str = "",
+    ) -> dict:
+        payload: dict = {
+            "workflow_id": workflow_id,
+            "message": (message or spec.message or "").strip(),
+            "once": bool(spec.once),
+        }
+        if spec.kind == "interval":
+            payload["interval_seconds"] = _interval_seconds(spec.interval_value, spec.interval_unit)
+            payload["once"] = False
+        elif spec.kind == "event":
+            payload["condition"] = spec.condition.strip()
+        elif spec.kind == "datetime":
+            payload["at"] = spec.at.strip()
+        return self._request("POST", "/api/v1/triggers", json=payload, timeout=30.0)
+
+    def list_triggers(self) -> list[dict]:
+        data = self._request("GET", "/api/v1/triggers", timeout=30.0)
+        if isinstance(data, dict):
+            items = data.get("items") or []
+            return [item for item in items if isinstance(item, dict)]
+        return []
+
+    def list_agent_runs(self, workflow_id: str) -> list[AgentRunHistoryItem]:
+        data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs", timeout=60.0)
+        items = data if isinstance(data, list) else []
+        return [
+            AgentRunHistoryItem(
+                id=str(item.get("id") or ""),
+                workflow_id=str(item.get("workflow_id") or workflow_id),
+                message=str(item.get("message") or ""),
+                status=str(item.get("status") or ""),
+                answer=str(item.get("answer") or ""),
+                source=str(item.get("source") or "chat"),
+                started_at=str(item.get("started_at") or ""),
+                finished_at=str(item.get("finished_at") or ""),
+            )
+            for item in items
+            if isinstance(item, dict)
+        ]
+
+    def stream_trigger_check(
+        self,
+        trigger_id: str,
+        on_event: Callable[[dict], None] | None = None,
+    ) -> dict:
+        url = f"{self.base_url}/api/v1/triggers/{trigger_id}/check/stream"
+        final_result: dict | None = None
+        run_id = ""
+        try:
+            with httpx.Client(timeout=None) as client:
+                with client.stream(
+                    "POST",
+                    url,
+                    headers={**self._headers(), "Accept": "text/event-stream"},
+                    json={},
+                ) as response:
+                    if response.status_code >= 400:
+                        body = response.read().decode("utf-8", errors="replace")
+                        raise ApiError(body or "Ошибка проверки триггера", status_code=response.status_code)
+                    data_lines: list[str] = []
+                    for line in response.iter_lines():
+                        if line == "":
+                            if data_lines:
+                                payload = _parse_sse_payload("\n".join(data_lines))
+                                payload_type = str(payload.get("type") or "")
+                                if payload_type == "run":
+                                    run_id = str(payload.get("run_id") or "")
+                                    if on_event:
+                                        on_event(payload)
+                                elif payload_type == "tool_request":
+                                    if on_event:
+                                        on_event(
+                                            {
+                                                "type": "status",
+                                                "text": f"Проверяю условие: {payload.get('tool') or ''}…",
+                                            }
+                                        )
+                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
+                                elif payload_type == "error":
+                                    raise ApiError(str(payload.get("message") or "Ошибка проверки триггера"))
+                                elif payload_type == "done":
+                                    final_result = (
+                                        payload.get("result")
+                                        if isinstance(payload.get("result"), dict)
+                                        else {}
+                                    )
+                                elif on_event:
+                                    on_event(payload)
+                            data_lines = []
+                            continue
+                        if line.startswith("data:"):
+                            data_lines.append(line.split(":", 1)[1].strip())
+        except httpx.ConnectError as exc:
+            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+        return final_result or {}
+
+    def ack_trigger_fired(self, trigger_id: str, *, evidence: str = "") -> None:
+        self._request(
+            "POST",
+            f"/api/v1/triggers/{trigger_id}/ack-fired",
+            json={"evidence": evidence or ""},
+            timeout=30.0,
+        )
 
     def _stream_workflow(
         self,
@@ -1537,6 +1931,7 @@ class ApiClient:
     ) -> WorkflowRecord:
         url = f"{self.base_url}{path}"
         final_record: WorkflowRecord | None = None
+        run_id = ""
         files: list = []
         handles = []
         data = None
@@ -1571,22 +1966,20 @@ class ApiClient:
                     if response.status_code >= 400:
                         body = response.read().decode("utf-8", errors="replace")
                         raise ApiError(body or "Ошибка workflow", status_code=response.status_code)
-                    data_lines: list[str] = []
-                    for line in response.iter_lines():
-                        if line == "":
-                            if data_lines:
-                                payload = _parse_sse_payload("\n".join(data_lines))
-                                payload_type = str(payload.get("type") or "")
-                                if payload_type in {"thinking", "assistant", "message", "decision", "system"}:
-                                    on_event(payload_type, str(payload.get("text") or ""))
-                                elif payload_type == "error":
-                                    raise ApiError(str(payload.get("message") or "Ошибка workflow"))
-                                elif payload_type == "workflow" and isinstance(payload.get("workflow"), dict):
-                                    final_record = self._parse_workflow(payload["workflow"])
-                            data_lines = []
-                            continue
-                        if line.startswith("data:"):
-                            data_lines.append(line.split(":", 1)[1].strip())
+                    for payload in _iter_sse_payloads(response):
+                        payload_type = str(payload.get("type") or "")
+                        if payload_type == "run":
+                            run_id = str(payload.get("run_id") or "")
+                        elif payload_type == "tool_request":
+                            tool = str(payload.get("tool") or "")
+                            on_event("decision", f"Выполняю на этом компьютере: {tool}…")
+                            self._handle_sse_tool_request(payload, fallback_run_id=run_id)
+                        elif payload_type in {"thinking", "assistant", "message", "decision", "system"}:
+                            on_event(payload_type, str(payload.get("text") or ""))
+                        elif payload_type == "error":
+                            raise ApiError(str(payload.get("message") or "Ошибка workflow"))
+                        elif payload_type == "workflow" and isinstance(payload.get("workflow"), dict):
+                            final_record = self._parse_workflow(payload["workflow"])
         except httpx.ConnectError as exc:
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
         except httpx.HTTPError as exc:
@@ -1968,6 +2361,7 @@ class ApiClient:
             function_id=str(data.get("functionId") or ""),
             target_block_id=str(data.get("targetBlockId") or ""),
             is_function=bool(data.get("isFunction")),
+            title=str(data.get("title") or ""),
             actor=actor,
             action=str(data.get("action") or ""),
             object=str(data.get("object") or ""),
@@ -2104,6 +2498,35 @@ def _extract_detail(response: httpx.Response) -> str:
     if response.status_code == 401:
         return "Неверный логин или пароль"
     return f"Ошибка сервера ({response.status_code})"
+
+
+def _iter_sse_payloads(response: httpx.Response):
+    """Разбирать SSE по байтам, чтобы think не ждал конца ответа."""
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    data_lines: list[str] = []
+    carry = ""
+
+    def feed(text: str):
+        nonlocal data_lines, carry
+        carry += text
+        while "\n" in carry:
+            line, carry = carry.split("\n", 1)
+            line = line.rstrip("\r")
+            if line == "":
+                if data_lines:
+                    yield _parse_sse_payload("\n".join(data_lines))
+                data_lines = []
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].strip())
+
+    for raw in response.iter_bytes(chunk_size=4096):
+        if not raw:
+            continue
+        yield from feed(decoder.decode(raw, final=False))
+    yield from feed(decoder.decode(b"", final=True))
+    if data_lines:
+        yield _parse_sse_payload("\n".join(data_lines))
 
 
 def _parse_sse_payload(raw: str) -> dict:

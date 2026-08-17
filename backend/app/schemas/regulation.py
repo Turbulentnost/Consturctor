@@ -229,6 +229,7 @@ class RoleFunction(BaseModel):
     functionId: str = ""
     targetBlockId: str = ""
     isFunction: bool = False
+    title: str = ""
     actor: FunctionActor = Field(default_factory=FunctionActor)
     action: str = ""
     object: str = ""
@@ -428,6 +429,7 @@ class AgentReadinessResult(BaseModel):
     changes: list[RegulationChangeDraft] = Field(default_factory=list)
     transactions: list[ChangeTransaction] = Field(default_factory=list)
     status: Literal["needs_answers", "needs_approval", "ready", "finalized"] = "needs_answers"
+    audit: dict = Field(default_factory=dict)
     createdAt: datetime | None = None
 
 
@@ -507,6 +509,9 @@ class AgentPassportModel(BaseModel):
     questions: list[dict] = Field(default_factory=list)
     source: str = "heuristic"
     text: str = ""
+    autonomy_level: int = 1
+    llm_error: str = ""
+    cursor_agent_id: str = ""
 
 
 class DraftPassportRequest(BaseModel):
@@ -522,6 +527,8 @@ class DraftPassportFromSuggestionRequest(BaseModel):
     functionId: str = Field(..., min_length=1)
     agentTitle: str = ""
     agentDescription: str = ""
+    draftId: str = ""
+    agentId: str = ""
 
 
 class CompletePassportRequest(BaseModel):
@@ -531,6 +538,12 @@ class CompletePassportRequest(BaseModel):
     bp_name: str = ""
     excerpt: str = ""
     functions: list[PassportFunctionModel] = Field(default_factory=list)
+    draftId: str = ""
+    agentId: str = ""
+    functionId: str = ""
+    regulationId: str = ""
+    roleMatchRunId: str = ""
+    qaHistory: list[dict] = Field(default_factory=list)
 
 
 class PassportResponse(BaseModel):
@@ -538,6 +551,10 @@ class PassportResponse(BaseModel):
     bp_name: str = ""
     excerpt: str = ""
     functions: list[PassportFunctionModel] = Field(default_factory=list)
+    draftId: str = ""
+    reused: bool = False
+    llmError: str = ""
+    qaHistory: list[dict] = Field(default_factory=list)
 
 
 class AgentDraftSummary(BaseModel):

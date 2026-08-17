@@ -1,16 +1,63 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
-from app.api_client import AgentDraft, AgentSuggestion, WorkflowListItem
-from app.ui.theme import app_font
+from app.api_client import AgentDraft, AgentRunHistoryItem, AgentSuggestion, WorkflowListItem
+from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 
 
 _TITLE_COL_WIDTH = 300
 _DESC_COL_WIDTH = 360
-_ACTION_COL_WIDTH = 120
+_ACTION_COL_WIDTH = 160
+_PRIMARY_ACTION_QSS = """
+QPushButton {
+    background: #08745F;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 10px;
+    padding: 0 14px;
+}
+QPushButton:hover { background: #0A8670; }
+QPushButton:pressed { background: #06483D; }
+QPushButton:disabled { background: #A8C8BF; color: #EAF7F3; }
+"""
+_DANGER_ACTION_QSS = """
+QPushButton {
+    background: #FFFFFF;
+    color: #9B1C1C;
+    border: 1px solid rgba(155,28,28,0.35);
+    border-radius: 10px;
+    padding: 0 14px;
+}
+QPushButton:hover { background: #FFF4F4; border-color: #B42318; }
+QPushButton:pressed { background: #FEE4E2; }
+QPushButton:disabled { background: #F4F7F6; color: #9DB3AD; border-color: rgba(16,24,23,0.10); }
+"""
+_SECONDARY_ACTION_QSS = """
+QPushButton {
+    background: #FFFFFF;
+    color: #06483D;
+    border: 1px solid rgba(16,24,23,0.12);
+    border-radius: 10px;
+    padding: 0 14px;
+}
+QPushButton:hover { background: #F4F7F6; }
+QPushButton:pressed { background: #EAF1EE; }
+"""
 
 
 class MyAgentsPage(QWidget):
@@ -21,6 +68,7 @@ class MyAgentsPage(QWidget):
     delete_suggestion_requested = Signal(str, str)
     delete_agent_requested = Signal(str)
     run_agent_requested = Signal(str)
+    history_requested = Signal(str, str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -148,13 +196,25 @@ class MyAgentsPage(QWidget):
             if draft.agent_suggestions:
                 for suggestion in draft.agent_suggestions:
                     rendered_suggestions.add((draft.draft_id, suggestion.agent_id))
-                    self._list.addWidget(self._suggestion_row(suggestion, draft_id=draft.draft_id))
+                    self._list.addWidget(
+                        self._suggestion_row(
+                            suggestion,
+                            draft_id=draft.draft_id,
+                            created_at=draft.created_at,
+                        )
+                    )
             else:
                 self._list.addWidget(self._row(draft))
         for suggestion in self._suggestions:
             draft_id = self._suggestion_draft_ids.get(suggestion.agent_id, "")
             if (draft_id, suggestion.agent_id) not in rendered_suggestions:
-                self._list.addWidget(self._suggestion_row(suggestion))
+                created_at = next(
+                    (item.created_at for item in self._drafts if item.draft_id == draft_id),
+                    None,
+                )
+                self._list.addWidget(
+                    self._suggestion_row(suggestion, draft_id=draft_id, created_at=created_at)
+                )
         self._list.addStretch(1)
 
     def _render_agents(self) -> None:
@@ -224,12 +284,14 @@ class MyAgentsPage(QWidget):
         description.setFixedWidth(_DESC_COL_WIDTH)
         button = QPushButton("Создать")
         button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setStyleSheet(_PRIMARY_ACTION_QSS)
         button.clicked.connect(lambda _checked=False, draft_id=draft.draft_id: self.continue_requested.emit(draft_id))
         delete = QPushButton("Удалить")
         delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete.setStyleSheet(_DANGER_ACTION_QSS)
         delete.setToolTip("Удалить")
         delete.clicked.connect(lambda _checked=False, draft_id=draft.draft_id: self.delete_requested.emit(draft_id))
-        actions = _actions_widget(button, delete)
+        actions = _actions_widget(button, delete, created_at=draft.created_at)
         layout.addWidget(title, 0, 0)
         layout.addWidget(description, 0, 1)
         layout.addWidget(actions, 0, 2)
@@ -237,7 +299,13 @@ class MyAgentsPage(QWidget):
         layout.setColumnStretch(1, 3)
         return card
 
-    def _suggestion_row(self, suggestion: AgentSuggestion, *, draft_id: str = "") -> QWidget:
+    def _suggestion_row(
+        self,
+        suggestion: AgentSuggestion,
+        *,
+        draft_id: str = "",
+        created_at: datetime | None = None,
+    ) -> QWidget:
         card = QFrame()
         card.setObjectName("AgentSuggestionRow")
         card.setStyleSheet(
@@ -264,6 +332,7 @@ class MyAgentsPage(QWidget):
         description.setFixedWidth(_DESC_COL_WIDTH)
         create = QPushButton("Создать")
         create.setCursor(Qt.CursorShape.PointingHandCursor)
+        create.setStyleSheet(_PRIMARY_ACTION_QSS)
         create.clicked.connect(
             lambda _checked=False, did=draft_id, agent_id=suggestion.agent_id: (
                 self.create_suggestion_requested.emit(did, agent_id)
@@ -273,6 +342,7 @@ class MyAgentsPage(QWidget):
         )
         delete = QPushButton("Удалить")
         delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete.setStyleSheet(_DANGER_ACTION_QSS)
         delete.setEnabled(bool(draft_id))
         delete.setToolTip("Удалить черновик" if draft_id else "Черновик можно удалить после обновления списка")
         delete.clicked.connect(
@@ -281,7 +351,7 @@ class MyAgentsPage(QWidget):
                 agent_id,
             )
         )
-        actions = _actions_widget(create, delete)
+        actions = _actions_widget(create, delete, created_at=created_at)
         layout.addWidget(title, 0, 0)
         layout.addWidget(description, 0, 1)
         layout.addWidget(actions, 0, 2)
@@ -320,18 +390,139 @@ class MyAgentsPage(QWidget):
         description.setFixedWidth(_DESC_COL_WIDTH)
         run = QPushButton("Запустить")
         run.setCursor(Qt.CursorShape.PointingHandCursor)
+        run.setStyleSheet(_PRIMARY_ACTION_QSS)
         run.clicked.connect(
             lambda _checked=False, workflow_id=agent.id: self.run_agent_requested.emit(workflow_id)
         )
+        history = QPushButton("История")
+        history.setCursor(Qt.CursorShape.PointingHandCursor)
+        history.setStyleSheet(_SECONDARY_ACTION_QSS)
+        history.clicked.connect(
+            lambda _checked=False, workflow_id=agent.id, name=agent.title: self.history_requested.emit(
+                workflow_id, name or "ИИ-агент"
+            )
+        )
         delete = QPushButton("Удалить")
         delete.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete.setStyleSheet(_DANGER_ACTION_QSS)
         delete.clicked.connect(lambda _checked=False, workflow_id=agent.id: self.delete_agent_requested.emit(workflow_id))
         layout.addWidget(title, 0, 0)
         layout.addWidget(description, 0, 1)
-        layout.addWidget(_actions_widget(run, delete), 0, 2)
+        layout.addWidget(_actions_widget(run, history, delete), 0, 2)
         layout.setColumnStretch(0, 2)
         layout.setColumnStretch(1, 3)
         return card
+
+
+class AgentHistoryDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        title: str,
+        runs: list[AgentRunHistoryItem],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("История запусков")
+        self.setModal(True)
+        self.resize(560, 520)
+        self.setStyleSheet("QDialog { background: #F4F7F6; }")
+
+        heading = QLabel(title or "ИИ-агент")
+        heading.setFont(app_font(18, QFont.Weight.DemiBold))
+        heading.setWordWrap(True)
+        heading.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        subtitle = QLabel("История запусков")
+        subtitle.setFont(app_font(12))
+        subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+
+        card = QFrame()
+        card.setObjectName("HistoryCard")
+        card.setStyleSheet(
+            """
+            QFrame#HistoryCard {
+                background: #FFFFFF;
+                border: 1px solid rgba(16,24,23,0.10);
+                border-radius: 16px;
+            }
+            """
+        )
+        list_layout = QVBoxLayout(card)
+        list_layout.setContentsMargins(16, 14, 16, 14)
+        list_layout.setSpacing(10)
+        if not runs:
+            empty = QLabel("Запусков ещё не было")
+            empty.setFont(app_font(13))
+            empty.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+            list_layout.addWidget(empty)
+        else:
+            for item in runs:
+                list_layout.addWidget(_history_row(item))
+        list_layout.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(card)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        close_btn = QPushButton("Закрыть")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setFixedHeight(36)
+        close_btn.setStyleSheet(_SECONDARY_ACTION_QSS)
+        close_btn.clicked.connect(self.accept)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(12)
+        root.addWidget(heading)
+        root.addWidget(subtitle)
+        root.addWidget(scroll, 1)
+        root.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignRight)
+
+
+def _history_row(item: AgentRunHistoryItem) -> QWidget:
+    row = QFrame()
+    row.setStyleSheet(
+        "QFrame { background: #F7FAF9; border: 1px solid #EAF1EE; border-radius: 12px; }"
+    )
+    layout = QVBoxLayout(row)
+    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setSpacing(4)
+    when = _format_iso(item.started_at) or "—"
+    source = "триггер" if item.source == "trigger" else "чат"
+    status = "готово" if item.status == "ok" else ("ошибка" if item.status == "error" else item.status or "в работе")
+    meta = QLabel(f"{when}  ·  {source}  ·  {status}")
+    meta.setFont(app_font(11, QFont.Weight.DemiBold))
+    meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+    task = QLabel(item.message.strip() or "Типовая задача агента")
+    task.setFont(app_font(13, QFont.Weight.DemiBold))
+    task.setWordWrap(True)
+    task.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+    answer = (item.answer or "").strip()
+    if len(answer) > 280:
+        answer = answer[:280].rstrip() + "…"
+    body = QLabel(answer or "Нет текста результата")
+    body.setFont(app_font(12))
+    body.setWordWrap(True)
+    body.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+    layout.addWidget(meta)
+    layout.addWidget(task)
+    layout.addWidget(body)
+    return row
+
+
+def _format_iso(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw[:19].replace("T", " ")
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone()
+    return parsed.strftime("%d.%m.%Y %H:%M")
 
 
 def _agent_title(draft: AgentDraft) -> str:
@@ -340,7 +531,7 @@ def _agent_title(draft: AgentDraft) -> str:
     return draft.title or "ИИ-агент"
 
 
-def _actions_widget(*buttons: QPushButton) -> QWidget:
+def _actions_widget(*buttons: QPushButton, created_at: datetime | None = None) -> QWidget:
     widget = QWidget()
     widget.setStyleSheet("background: transparent;")
     widget.setFixedWidth(_ACTION_COL_WIDTH)
@@ -349,7 +540,18 @@ def _actions_widget(*buttons: QPushButton) -> QWidget:
     layout.setSpacing(6)
     for button in buttons:
         button.setFixedWidth(_ACTION_COL_WIDTH)
+        button.setFixedHeight(34)
+        button.setFont(app_font(12, QFont.Weight.DemiBold))
         layout.addWidget(button)
+    stamp = _format_dt(created_at)
+    if stamp:
+        date_label = QLabel(stamp)
+        date_label.setFont(app_font(11))
+        date_label.setStyleSheet("color: #6B7773; background: transparent;")
+        date_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        date_label.setWordWrap(False)
+        date_label.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(date_label)
     layout.addStretch(1)
     return widget
 
@@ -401,4 +603,6 @@ def _status_label(status: str) -> str:
 def _format_dt(value) -> str:
     if value is None:
         return ""
+    if getattr(value, "tzinfo", None) is not None:
+        value = value.astimezone()
     return value.strftime("%d.%m.%Y %H:%M")

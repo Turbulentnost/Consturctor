@@ -86,6 +86,10 @@ def get_draft(db: Session, *, user_id: str, draft_id: str) -> AgentDraftDetail:
     return _draft_detail(db, _get_draft(db, user_id=user_id, draft_id=draft_id))
 
 
+def get_draft_row(db: Session, *, user_id: str, draft_id: str) -> AgentDraft:
+    return _get_draft(db, user_id=user_id, draft_id=draft_id)
+
+
 def delete_draft(db: Session, *, user_id: str, draft_id: str) -> None:
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     db.delete(draft)

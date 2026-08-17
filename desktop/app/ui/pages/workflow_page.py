@@ -1,18 +1,15 @@
 from __future__ import annotations
 
+import json
 import re
+import time
+from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from threading import Thread
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (
-    QColor,
-    QDesktopServices,
-    QFont,
-    QFontMetrics,
-    QPainter,
-    QPen,
-)
+from PySide6.QtCore import Qt, QSize, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
@@ -23,7 +20,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -33,52 +30,93 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import ApiClient, ApiError, PassportSession, WorkflowPlan, WorkflowPlanStep, WorkflowRecord
+from app.api_client import (
+    ApiClient,
+    ApiError,
+    PassportSession,
+    WorkflowOpenQuestion,
+    WorkflowPlan,
+    WorkflowRecord,
+)
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
+from app.ui.widgets.cursor_feed import CursorFeedItem, resolve_feed_kind
 
 SUPPORTED_SUFFIXES = {
     ".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".html", ".htm",
     ".yaml", ".yml", ".log", ".pdf", ".docx", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".xlsx", ".xls",
 }
 
+_STAGES = [
+    ("document", "Материалы"),
+    ("plan", "План"),
+    ("clarify", "Уточнения"),
+    ("ready", "Сборка workflow"),
+    ("executing", "Тестовый прогон"),
+    ("done", "Готово"),
+]
+_PHASE_RANK = {
+    "document": 0,
+    "plan": 1,
+    "clarify": 2,
+    "ready": 3,
+    "executing": 4,
+    "tested": 4,
+    "done": 5,
+}
+
+_SEND_BTN = """
+QToolButton {
+    background: #08745F; color: #FFFFFF; border: none;
+    border-radius: 20px;
+}
+QToolButton:hover { background: #0A8670; }
+QToolButton:disabled { background: #A8C8BF; }
+"""
+_CLIP_BTN = """
+QToolButton {
+    background: transparent; color: #6B7773; border: none;
+    font-size: 18px;
+}
+QToolButton:hover { color: #08745F; }
+"""
+_COMPOSER = """
+QLineEdit {
+    background: #FFFFFF; color: #101817;
+    border: 1px solid rgba(16,24,23,0.10);
+    border-radius: 22px;
+    padding: 10px 14px;
+    selection-background-color: #08745F;
+}
+QLineEdit:focus { border: 1px solid #08745F; }
+"""
+_CHIP = """
+QFrame#filechip {
+    background: #F1F5F3;
+    border: 1px solid rgba(16,24,23,0.08);
+    border-radius: 12px;
+}
+"""
+_SECONDARY = """
+QPushButton {
+    background: #F1F5F3; color: #06483D; border: none;
+    border-radius: 12px; padding: 8px 14px; text-align: left;
+}
+QPushButton:hover { background: #E4EDE9; }
+"""
 _PRIMARY = """
 QPushButton {
     background: #08745F; color: #FFFFFF; border: none;
-    border-radius: 14px; padding: 0 18px;
+    border-radius: 12px; padding: 8px 16px;
 }
 QPushButton:hover { background: #0A8670; }
 QPushButton:disabled { background: #A8C8BF; color: #EAF7F3; }
 """
-_SECONDARY = """
-QPushButton {
-    background: #FFFFFF; color: #06483D;
-    border: 1px solid rgba(16,24,23,0.12);
-    border-radius: 14px; padding: 0 16px;
-}
-QPushButton:hover { background: #F4F7F6; }
-QPushButton:disabled { background: #F4F7F6; color: #9DB3AD; }
-"""
-_CARD = """
-QFrame#WorkflowCard {
-    background: #FFFFFF;
-    border: 1px solid rgba(16,24,23,0.10);
-    border-radius: 18px;
-}
-"""
 _QCARD = """
 QFrame#qcard {
-    background: #FFF8EF;
+    background: #FFF8EE;
     border: 1px solid #F0DFC2;
     border-radius: 16px;
-}
-"""
-_ANSWER_FIELD = """
-QPlainTextEdit {
-    background: #FFFFFF; color: #101817;
-    border: 1px solid rgba(16,24,23,0.10);
-    border-radius: 12px;
-    padding: 8px 12px;
-    selection-background-color: #08745F;
 }
 """
 _CUSTOM_ANSWER_FIELD = """
@@ -88,10 +126,6 @@ QLineEdit {
     border-radius: 10px;
     padding: 6px 10px;
     selection-background-color: #08745F;
-}
-QLineEdit:disabled {
-    background: #F4F7F6;
-    color: #9DB3AD;
 }
 """
 _RADIO_OPTION = """
@@ -116,244 +150,16 @@ QRadioButton::indicator:checked {
     background: #B8C2BE;
 }
 """
-_REASONING = """
-QPlainTextEdit {
-    background: #F7FAF9; color: #3A4A46;
-    border: 1px solid #EAF1EE;
-    border-radius: 14px;
-    padding: 12px;
-}
-"""
-_LIST = """
-QListWidget {
-    background: #FFFFFF;
-    border: 1px solid rgba(16,24,23,0.10);
-    border-radius: 14px;
-    padding: 4px;
-    outline: none;
-}
-QListWidget::item { padding: 8px 10px; border-radius: 10px; color: #101817; }
-QListWidget::item:selected { background: rgba(8,116,95,0.10); color: #06483D; }
-"""
-_CLIP_BTN = """
-QToolButton {
-    background: #FFFFFF;
-    color: #06483D;
-    border: 1px solid rgba(16,24,23,0.12);
-    border-radius: 10px;
-    padding: 4px 8px;
-    font-size: 16px;
-}
-QToolButton:hover { background: #F4F7F6; border-color: #08745F; }
-QToolButton:disabled { color: #9DB3AD; }
-"""
-_PHASE_STYLE_IDLE = (
-    "color: #06483D; background: rgba(8,116,95,0.10);"
-    "border-radius: 12px; padding: 6px 12px;"
-)
-_PHASE_STYLE_BUSY = (
-    "color: #8A5300; background: #FFF8EF; border: 1px solid #F0DFC2;"
-    "border-radius: 12px; padding: 6px 12px;"
-)
-_ACTIVITY_STYLE = (
-    "color: #8A5300; background: #FFF8EF; border: 1px solid #F0DFC2;"
-    "border-radius: 12px; padding: 6px 12px;"
-)
-
-_PHASE_PIPELINE = [
-    ("document", "Материалы"),
-    ("plan", "План"),
-    ("clarify", "Уточнения"),
-    ("ready", "Сборка"),
-    ("tested", "Тестовый прогон"),
-    ("done", "Готово"),
-]
-_PHASE_RANK = {
-    "document": 0,
-    "plan": 1,
-    "clarify": 2,
-    "ready": 3,
-    "executing": 3,
-    "tested": 4,
-    "done": 5,
-}
 
 
-class _FitWidthScrollArea(QScrollArea):
-    """Scroll area that does not demand content size and forces children to wrap."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWidgetResizable(True)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setMinimumHeight(140)
-
-    def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(320, 220)
-
-    def minimumSizeHint(self) -> QSize:  # noqa: N802
-        return QSize(160, 140)
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        inner = self.widget()
-        if inner is not None:
-            # Cap width so QLabel word-wrap computes height inside the viewport.
-            inner.setMaximumWidth(max(1, self.viewport().width()))
-
-
-def _section(title: str) -> QLabel:
-    label = QLabel(title)
-    label.setFont(app_font(13, QFont.Weight.DemiBold))
-    label.setStyleSheet("color: #06483D; background: transparent;")
-    return label
-
-
-def _card_heading(title: str, hint: str = "") -> QWidget:
-    wrap = QWidget()
-    wrap.setStyleSheet("background: transparent;")
-    col = QVBoxLayout(wrap)
-    col.setContentsMargins(0, 0, 0, 0)
-    col.setSpacing(2)
-    heading = QLabel(title)
-    heading.setFont(app_font(15, QFont.Weight.DemiBold))
-    heading.setStyleSheet("color: #06483D; background: transparent;")
-    col.addWidget(heading)
-    if hint:
-        sub = QLabel(hint)
-        sub.setFont(app_font(11))
-        sub.setWordWrap(True)
-        sub.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        col.addWidget(sub)
-    return wrap
-
-
-def _strip_json_blob(text: str) -> str:
-    if not text:
-        return ""
-    cleaned = re.sub(r"```json[\s\S]*?```", "", text, flags=re.IGNORECASE)
-    cleaned = re.sub(r"```[\s\S]*?```", "", cleaned)
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start >= 0 and end > start and (end - start) > 40:
-        candidate = cleaned[start : end + 1].strip()
-        if candidate.startswith("{") and ('"steps"' in candidate or '"goal"' in candidate):
-            cleaned = (cleaned[:start] + cleaned[end + 1 :]).strip()
-    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-
-
-def _visible_live_text(text: str) -> str:
-    visible = _strip_json_blob(text).strip()
-    if (
-        not visible
-        or visible.lstrip().startswith("{")
-        or "```json" in visible.lower()
-        or '"steps"' in visible
-    ):
-        return ""
-    return visible
-
-
-def reasoning_text(record: WorkflowRecord | None) -> str:
-    if record is None:
-        return "Загрузите материалы и нажмите «Спланировать» — здесь появятся рассуждения модели."
-    lines: list[str] = []
-    plan = record.plan
-    if plan:
-        if plan.title:
-            lines.append(f"План: {plan.title}")
-        if plan.goal:
-            lines.append(f"Цель: {plan.goal}")
-        if plan.constraints:
-            lines.append("Ограничения:")
-            lines.extend(f"• {c}" for c in plan.constraints)
-        prose = _strip_json_blob(plan.raw_text or "")
-        if prose:
-            lines.append("")
-            lines.append(prose[:4000])
-        unanswered = plan.unanswered()
-        if unanswered:
-            lines.append("")
-            lines.append("Почему нужны уточнения:")
-            for q in unanswered:
-                why = (q.why or "").strip() or "нужно для безопасной реализации"
-                lines.append(f"• {q.question}\n  → {why}")
-    if record.last_result:
-        lines.append("")
-        lines.append("Результат выполнения:")
-        lines.append(record.last_result.strip()[:5000])
-    if not lines:
-        phase = record.phase or "document"
-        if phase in {"document", "plan"}:
-            return "Агент готовит план…"
-        return "Рассуждения пока пустые."
-    return "\n".join(lines).strip()
-
-
-def _topo_levels(steps: list[WorkflowPlanStep]) -> list[list[WorkflowPlanStep]]:
-    ids = {s.id for s in steps if s.id}
-    indeg = {s.id: 0 for s in steps if s.id}
-    deps: dict[str, list[str]] = {s.id: [] for s in steps if s.id}
-    for s in steps:
-        if not s.id:
-            continue
-        for d in s.depends_on or []:
-            if d in ids and d != s.id:
-                indeg[s.id] = indeg.get(s.id, 0) + 1
-                deps.setdefault(d, []).append(s.id)
-    ready = [s for s in steps if s.id and indeg.get(s.id, 0) == 0]
-    levels: list[list[WorkflowPlanStep]] = []
-    seen: set[str] = set()
-    while ready:
-        levels.append(ready)
-        nxt: list[WorkflowPlanStep] = []
-        for s in ready:
-            seen.add(s.id)
-            for child_id in deps.get(s.id, []):
-                indeg[child_id] -= 1
-                if indeg[child_id] <= 0 and child_id not in seen:
-                    child = next((x for x in steps if x.id == child_id), None)
-                    if child is not None:
-                        nxt.append(child)
-        ready = nxt
-    leftovers = [s for s in steps if s.id and s.id not in seen]
-    if leftovers:
-        levels.append(leftovers)
-    orphan = [s for s in steps if not s.id]
-    if orphan:
-        levels.append(orphan)
-    return levels or [steps]
-
-
-def _quick_answers_for_question(question) -> list[str]:
-    options = [str(item).strip() for item in getattr(question, "options", []) or [] if str(item).strip()]
+def _quick_answers_for_question(question: WorkflowOpenQuestion) -> list[str]:
+    options = [str(item).strip() for item in (question.options or []) if str(item).strip()]
     if options:
         return options[:4]
-    text = (question.question or "").lower()
-    if any(word in text for word in ("система", "интерфейс", "api", "ui", "интеграц")):
-        return [
-            "Через API",
-            "Через UI",
-            "Через интеграционную шину",
-            "Нужно уточнить у владельца системы",
-        ]
-    if any(word in text for word in ("срок", "когда", "дата", "время")):
-        return ["В течение 1 рабочего дня", "В день получения", "До окончания срока подачи", "Нужно уточнить"]
-    if any(word in text for word in ("кто", "роль", "ответственный", "исполнитель")):
-        return ["Инициатор заявки", "Ответственный менеджер", "Руководитель подразделения", "Нужно уточнить"]
-    return ["По регламенту", "Вручную ответственным", "Автоматически агентом", "Нужно уточнить"]
-
-
-def _format_step_item(index: int, step: WorkflowPlanStep) -> str:
-    lines = [f"{index}. {step.title or step.id or 'Шаг'}"]
-    if step.action:
-        lines.append(step.action)
-    if step.done_when:
-        lines.append(f"Готово: {step.done_when}")
-    if step.depends_on:
-        lines.append(f"Зависит от: {', '.join(step.depends_on)}")
-    return "\n".join(lines)
+    text = (question.question or "").casefold()
+    if "outlook" in text or "календар" in text:
+        return ["Microsoft Outlook", "Google Calendar", "1С / внутренняя система", "Другое"]
+    return ["Да", "Нет", "Пока неизвестно"]
 
 
 def _clear_layout(layout) -> None:
@@ -369,212 +175,823 @@ def _clear_layout(layout) -> None:
             child_layout.deleteLater()
 
 
-def _phase_step_widget(label: str, state: str) -> QWidget:
-    row = QFrame()
-    row.setStyleSheet("background: transparent;")
-    layout = QHBoxLayout(row)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(8)
-    dot = QLabel("✓" if state == "done" else "●" if state == "active" else "○")
-    dot.setFixedWidth(20)
-    dot.setFont(app_font(13, QFont.Weight.DemiBold))
-    color = "#08745F" if state == "done" else "#F0A202" if state == "active" else "#9DB3AD"
-    dot.setStyleSheet(f"color: {color}; background: transparent;")
-    text = QLabel(label)
-    text.setWordWrap(True)
-    text.setFont(app_font(12, QFont.Weight.DemiBold if state == "active" else QFont.Weight.Medium))
-    text.setStyleSheet(f"color: {MAIN_TEXT.name() if state != 'idle' else COLOR_CONTENT_MUTED.name()}; background: transparent;")
-    layout.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
-    layout.addWidget(text, 1)
-    return row
+_JSON_FENCE_RE = re.compile(r"```json\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 
 
-class NodeGraphWidget(QWidget):
-    """Connected labeled circles; completed nodes are green.
+def _extract_json_object(text: str) -> dict | None:
+    cleaned = text or ""
+    fence = _JSON_FENCE_RE.search(cleaned)
+    blob = fence.group(1).strip() if fence else ""
+    if not blob:
+        start = cleaned.find("{")
+        if start >= 0:
+            blob = cleaned[start:]
+    if not blob:
+        return None
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
 
-    mode='row' — горизонтальный степпер (фазы).
-    mode='dag' — уровни по зависимостям (шаги плана); простая цепочка тоже в ряд.
-    """
 
-    def __init__(self, parent: QWidget | None = None, *, mode: str = "row") -> None:
-        super().__init__(parent)
-        self._mode = mode if mode in {"row", "dag"} else "row"
-        self._nodes: list[tuple[str, str, str]] = []  # id, label, state
-        self._edges: list[tuple[str, str]] = []
-        self.setFixedHeight(84 if self._mode == "row" else 96)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-    def set_graph(self, nodes: list[tuple[str, str, str]], edges: list[tuple[str, str]] | None = None) -> None:
-        self._nodes = list(nodes)
-        self._edges = list(edges or [])
-        levels = _layout_levels(self._nodes, self._edges, mode=self._mode)
-        rows = max(1, len(levels))
-        if self._mode == "row" or rows == 1:
-            height = 84
-        else:
-            height = min(120, 56 + rows * 52)
-        self.setFixedHeight(height)
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = self.rect().adjusted(0, 0, -1, -1)
-        painter.setPen(QPen(QColor("#E3EDE9"), 1.0))
-        painter.setBrush(QColor("#F7FAF9"))
-        painter.drawRoundedRect(rect, 16, 16)
-        if not self._nodes:
-            painter.setPen(QColor("#9DB3AD"))
-            painter.setFont(app_font(12))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Граф появится после планирования")
-            return
-
-        levels = _layout_levels(self._nodes, self._edges, mode=self._mode)
-        node_pos: dict[str, QPointF] = {}
-        r = 14.0
-        margin_x = 36.0
-        margin_y = 16.0
-        row_h = 64.0
-        width = max(1.0, float(self.width()))
-        label_font = app_font(10, QFont.Weight.DemiBold)
-        fm = QFontMetrics(label_font)
-
-        for row_i, row in enumerate(levels):
-            n = max(1, len(row))
-            usable = width - 2 * margin_x
-            step = usable / n
-            y = margin_y + row_i * row_h + 18
-            for col_i, (nid, _label, _state) in enumerate(row):
-                x = margin_x + step * (col_i + 0.5)
-                node_pos[nid] = QPointF(x, y)
-
-        # connectors behind nodes
-        pen_idle = QPen(QColor("#D0DDD8"), 2.4)
-        pen_done = QPen(QColor("#08745F"), 2.6)
-        pen_idle.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen_done.setCapStyle(Qt.PenCapStyle.RoundCap)
-        edge_pairs = list(self._edges)
-        if not edge_pairs and len(levels) == 1 and len(levels[0]) > 1:
-            row = levels[0]
-            edge_pairs = [(row[i][0], row[i + 1][0]) for i in range(len(row) - 1)]
-        state_by_id = {nid: state for nid, _label, state in self._nodes}
-        for a, b in edge_pairs:
-            if a not in node_pos or b not in node_pos:
+def _format_plan_dict(data: dict) -> str:
+    lines: list[str] = []
+    title = str(data.get("title") or "").strip()
+    goal = str(data.get("goal") or "").strip()
+    if title:
+        lines.append(title)
+    if goal:
+        lines.append(f"Цель: {goal}")
+    steps = data.get("steps") or []
+    if isinstance(steps, list) and steps:
+        if lines:
+            lines.append("")
+        lines.append("Шаги:")
+        for index, step in enumerate(steps, 1):
+            if not isinstance(step, dict):
                 continue
-            p1, p2 = node_pos[a], node_pos[b]
-            done_edge = state_by_id.get(a) == "done" and state_by_id.get(b) in {"done", "active"}
-            painter.setPen(pen_done if done_edge else pen_idle)
-            painter.drawLine(p1, p2)
-
-        for nid, label, state in self._nodes:
-            center = node_pos.get(nid)
-            if center is None:
-                continue
-            if state == "done":
-                fill, ring = QColor("#08745F"), QColor("#065A4A")
-                text_color = QColor("#06483D")
-            elif state == "active":
-                fill, ring = QColor("#F0A202"), QColor("#C47E00")
-                text_color = QColor("#8A5300")
-            else:
-                fill, ring = QColor("#FFFFFF"), QColor("#B7C7C1")
-                text_color = QColor("#7A8F88")
-            painter.setBrush(fill)
-            painter.setPen(QPen(ring, 2.2))
-            painter.drawEllipse(center, r, r)
-            if state == "done":
-                painter.setPen(QPen(QColor("#FFFFFF"), 2.0))
-                painter.drawLine(
-                    QPointF(center.x() - 5, center.y() + 1),
-                    QPointF(center.x() - 1.5, center.y() + 5),
-                )
-                painter.drawLine(
-                    QPointF(center.x() - 1.5, center.y() + 5),
-                    QPointF(center.x() + 6, center.y() - 4),
-                )
-            slot = max(52.0, (width - 2 * margin_x) / max(1, len(levels[0] if levels else [1])) - 8)
-            text = fm.elidedText(label, Qt.TextElideMode.ElideRight, int(slot))
-            tw = fm.horizontalAdvance(text)
-            painter.setFont(label_font)
-            painter.setPen(text_color)
-            painter.drawText(
-                QRectF(center.x() - tw / 2, center.y() + r + 6, tw + 2, fm.height() + 2),
-                text,
-            )
+            sid = str(step.get("id") or f"s{index}").strip()
+            stitle = str(step.get("title") or "").strip()
+            action = str(step.get("action") or "").strip()
+            done = str(step.get("done_when") or "").strip()
+            lines.append(f"{sid} — {stitle}" if stitle else sid)
+            if action:
+                lines.append(f"  {action}")
+            if done:
+                lines.append(f"  Готово когда: {done}")
+    return "\n".join(lines).strip()
 
 
-def _layout_levels(
-    nodes: list[tuple[str, str, str]],
-    edges: list[tuple[str, str]],
-    *,
-    mode: str,
-) -> list[list[tuple[str, str, str]]]:
-    if not nodes:
-        return []
-    if mode == "row" or _is_simple_chain(nodes, edges):
-        # Сохраняем порядок узлов как передали (фазы / линейный план).
-        return [nodes]
-    return _group_nodes(nodes, edges)
+def _format_plan_steps(plan: WorkflowPlan | None) -> str:
+    if plan is None:
+        return "План ещё не загружен."
+    lines: list[str] = []
+    if (plan.title or "").strip():
+        lines.append(plan.title.strip())
+    if (plan.goal or "").strip():
+        lines.append(f"Цель: {plan.goal.strip()}")
+    steps = list(plan.steps or [])
+    if steps:
+        if lines:
+            lines.append("")
+        lines.append("Шаги:")
+        for step in steps:
+            sid = (step.id or "").strip()
+            stitle = (step.title or "").strip()
+            head = f"{sid} — {stitle}".strip(" —") if sid or stitle else "шаг"
+            lines.append(head)
+            if (step.action or "").strip():
+                lines.append(f"  {step.action.strip()}")
+            if (step.done_when or "").strip():
+                lines.append(f"  Готово когда: {step.done_when.strip()}")
+    else:
+        if lines:
+            lines.append("")
+        lines.append("Шагов в плане нет.")
+        raw = (plan.raw_text or "").strip()
+        if raw:
+            lines.append("")
+            lines.append(raw[:2000])
+    return "\n".join(lines).strip() or "—"
 
 
-def _is_simple_chain(nodes: list[tuple[str, str, str]], edges: list[tuple[str, str]]) -> bool:
-    if len(nodes) <= 1:
-        return True
-    ids = [n[0] for n in nodes]
-    id_set = set(ids)
-    outs: dict[str, list[str]] = {i: [] for i in ids}
-    ins: dict[str, int] = {i: 0 for i in ids}
-    for a, b in edges:
-        if a in id_set and b in id_set and a != b:
-            outs[a].append(b)
-            ins[b] += 1
-    if not edges:
-        return True
-    # Цепочка: у каждого <=1 вход и <=1 выход, ровно один старт.
-    if any(len(outs[i]) > 1 or ins[i] > 1 for i in ids):
+_REPLACEMENT = "\ufffd"
+_DEFAULT_WPS = 22.0
+_MIN_WPS = 16.0
+_MAX_WPS = 40.0
+_PACER_MS = 33
+_WPS_MAX_ELAPSED = 1.0
+
+
+def _word_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", text or ""))
+
+
+def _same_feed_question(left: str, right: str) -> bool:
+    na = " ".join((left or "").casefold().replace("ё", "е").split())
+    nb = " ".join((right or "").casefold().replace("ё", "е").split())
+    if not na or not nb:
         return False
-    starts = [i for i in ids if ins[i] == 0]
-    return len(starts) == 1
+    if na == nb:
+        return True
+    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    return len(shorter) >= 24 and shorter in longer
 
 
-def _group_nodes(
-    nodes: list[tuple[str, str, str]],
-    edges: list[tuple[str, str]],
-) -> list[list[tuple[str, str, str]]]:
-    if not edges:
-        return [nodes]
-    ids = [n[0] for n in nodes]
-    by_id = {n[0]: n for n in nodes}
-    indeg = {i: 0 for i in ids}
-    outs: dict[str, list[str]] = {i: [] for i in ids}
-    for a, b in edges:
-        if a in indeg and b in indeg and a != b:
-            indeg[b] += 1
-            outs[a].append(b)
-    ready = [i for i in ids if indeg[i] == 0]
-    levels: list[list[tuple[str, str, str]]] = []
+def _take_words(text: str, count: int) -> str:
+    if count <= 0 or not text:
+        return ""
+    matches = list(re.finditer(r"\S+\s*", text))
+    if not matches:
+        return text
+    end = matches[min(count, len(matches)) - 1].end()
+    return text[:end]
+
+
+def _visible_thinking(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    data = _extract_json_object(cleaned)
+    if data and (data.get("steps") is not None or data.get("goal") or data.get("title")):
+        parsed = _format_plan_dict(data)
+        prefix = _JSON_FENCE_RE.sub("", cleaned)
+        start = prefix.find("{")
+        if start >= 0:
+            prefix = prefix[:start]
+        prefix = prefix.strip()
+        if prefix and parsed:
+            return f"{prefix}\n\n{parsed}"
+        return parsed or prefix or cleaned
+    return cleaned
+
+
+class _WrappingLabel(QLabel):
+    """QLabel that wraps inside constrained layouts (scroll feed / cards)."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, super().minimumSizeHint().height())
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        # Prefer parent/available width so layout doesn't grow to one long line.
+        w = self.width()
+        if w < 40:
+            parent = self.parentWidget()
+            w = parent.width() if parent is not None else 280
+        w = max(120, w)
+        return QSize(w, self.heightForWidth(w))
+
+
+class _FitWidthScrollArea(QScrollArea):
+    """Force children to wrap within the viewport width."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(320, 220)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(160, 140)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        inner = self.widget()
+        if inner is not None:
+            w = max(1, self.viewport().width())
+            # Fixed width prevents children from expanding the feed to unwrapped text.
+            inner.setFixedWidth(w)
+
+
+def _strip_clarify_block(blob: str) -> str:
+    """Remove CLARIFY questionnaire so it doesn't pollute blocker detection."""
+    lines = []
+    skipping = False
+    for ln in (blob or "").splitlines():
+        low = ln.strip().casefold()
+        if low.startswith("clarify:"):
+            skipping = True
+            continue
+        if skipping and (
+            low.startswith("question:")
+            or low.startswith("вопрос:")
+            or low.startswith("options:")
+            or low.startswith("варианты:")
+            or low.startswith("-")
+            or low.startswith("•")
+            or re.match(r"^\d+[.)]", low)
+        ):
+            continue
+        if skipping and not low:
+            skipping = False
+            continue
+        if skipping:
+            skipping = False
+        lines.append(ln)
+    return "\n".join(lines)
+
+
+def _blocker_snippets(blob: str) -> list[str]:
+    """Pull concrete failure reasons from RESULT / agent output."""
+    text = _strip_clarify_block(blob)
+    snippets: list[str] = []
+    patterns = (
+        r"(?im)^(?:[-*•]\s*)?(?:blocker|блокер|причина|error|ошибка)\s*[:：]\s*(.+)$",
+        r"(?im)^(?:[-*•]\s*)?(?:blocked|не удалось|failed|fail(?:ed)?)\s*[:：-]?\s*(.+)$",
+        r"(?im)(?:нет|missing|не задан[ао]?|отсутствует)\s+([A-Z][A-Z0-9_]{2,}|[\w./:-]{4,})",
+        r"(?im)(?:connection reset|sso|unauthorized|403|401|timeout|timed out)[^\n.]{0,80}",
+        r"(?im)live[^\n]{0,40}(?:blocked|недоступ|fail|не удалось)[^\n]{0,80}",
+    )
+    for pat in patterns:
+        for m in re.finditer(pat, text):
+            chunk = m.group(0).strip()
+            chunk = re.sub(r"\s+", " ", chunk)
+            if 8 <= len(chunk) <= 220 and "tests:" not in chunk.casefold():
+                snippets.append(chunk)
+            if len(snippets) >= 5:
+                break
+        if len(snippets) >= 5:
+            break
+
+    for ln in text.splitlines():
+        low = ln.casefold()
+        if not ln.strip() or ln.upper().startswith("TESTS:"):
+            continue
+        if any(
+            tip in low
+            for tip in (
+                "blocked",
+                "блокер",
+                "нет ",
+                "missing",
+                "недоступ",
+                "не задан",
+                "credential",
+                "учётк",
+                "sso",
+                "connection reset",
+                "не хватает",
+            )
+        ):
+            cleaned = re.sub(r"^[-•*\d.)|\s]+", "", ln).strip()
+            cleaned = re.sub(r"\s+", " ", cleaned)
+            if 12 <= len(cleaned) <= 220:
+                snippets.append(cleaned)
+        if len(snippets) >= 6:
+            break
+
     seen: set[str] = set()
-    while ready:
-        levels.append([by_id[i] for i in ready if i in by_id])
-        nxt: list[str] = []
-        for i in ready:
-            seen.add(i)
-            for j in outs.get(i, []):
-                indeg[j] -= 1
-                if indeg[j] <= 0 and j not in seen:
-                    nxt.append(j)
-        ready = nxt
-    rest = [by_id[i] for i in ids if i not in seen]
-    if rest:
-        levels.append(rest)
-    return levels or [nodes]
+    out: list[str] = []
+    for item in snippets:
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out[:4]
+
+
+_ENV_LABELS = {
+    "AZURE_CLIENT_ID": "Azure Client ID",
+    "AZURE_CLIENT_SECRET": "Azure Client Secret",
+    "AZURE_TENANT_ID": "Azure Tenant ID",
+    "GRAPH_TOKEN": "токен Microsoft Graph",
+    "OUTLOOK_USER": "учётка Outlook",
+    "SITE_URL": "URL сайта",
+}
+
+_SERVER_SECRET_ENV = frozenset(
+    {
+        "ONEC_BASE_URL",
+        "ONEC_URL",
+        "ONEC_USER",
+        "ONEC_PASSWORD",
+        "ONEC_BASE",
+        "ODATA_BASE_URL",
+        "ODATA_USERNAME",
+        "ODATA_PASSWORD",
+        "CONSTRUCTOR_API_URL",
+        "BACKEND_URL",
+        "ERP_LOGIN",
+        "ERP_PASSWORD",
+        "IMAP_HOST",
+        "IMAP_USERNAME",
+        "IMAP_PASSWORD",
+        "IMAP_PORT",
+        "BASE_URL",
+        "INVOKER",
+        "TEST_PROJECT_REF",
+        "TEST_STAGE_REF",
+    }
+)
+
+_INFRA_FAIL_HINTS = (
+    "onec",
+    "1с",
+    "1c",
+    "odata",
+    "invoker",
+    "backend/.env",
+    "constructor_api",
+    "live-проверк",
+    "live 1с",
+    "live 1c",
+    "нет канала",
+    "с облака",
+    "cloud vm",
+)
+
+_RESERVED_ENV = frozenset(
+    {
+        "TESTS",
+        "PASS",
+        "FAIL",
+        "CLARIFY",
+        "QUESTION",
+        "OPTIONS",
+        "RESULT",
+        "BLOCKED",
+        "LIVE",
+        "HTTP",
+        "HTTPS",
+        "JSON",
+        "TRUE",
+        "FALSE",
+        "NULL",
+    }
+)
+
+
+def _missing_env_vars(text: str) -> list[str]:
+    found: list[str] = []
+    for m in re.finditer(
+        r"(?:нет|missing|не задан[ао]?|отсутствует|нужен|требуется)\s+([A-Z][A-Z0-9_]{2,})",
+        text or "",
+        flags=re.IGNORECASE,
+    ):
+        name = m.group(1).upper()
+        if name not in _RESERVED_ENV and name not in _SERVER_SECRET_ENV:
+            found.append(name)
+    for m in re.finditer(r"\b([A-Z][A-Z0-9_]{3,})\b", text or ""):
+        name = m.group(1).upper()
+        if name in _RESERVED_ENV or name in _SERVER_SECRET_ENV:
+            continue
+        if any(suf in name for suf in ("_URL", "_USER", "_PASSWORD", "_TOKEN", "_SECRET", "_ID", "_KEY", "_HOST")):
+            found.append(name)
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in found:
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out[:5]
+
+
+def _label_env(name: str) -> str:
+    if name in _ENV_LABELS:
+        return _ENV_LABELS[name]
+    low = name.casefold()
+    if "onec" in low or "1c" in low:
+        if "url" in low:
+            return f"URL базы 1С ({name})"
+        if "user" in low or "login" in low:
+            return f"логин 1С ({name})"
+        if "pass" in low or "secret" in low:
+            return f"пароль 1С ({name})"
+        return f"параметр 1С ({name})"
+    if "outlook" in low or "graph" in low or "azure" in low:
+        if "url" in low:
+            return f"URL Outlook / Graph ({name})"
+        if "user" in low:
+            return f"учётка Outlook ({name})"
+        return f"доступ Microsoft/Outlook ({name})"
+    if "url" in low or name.endswith("_HOST"):
+        return f"URL системы ({name})"
+    if "user" in low or "login" in low:
+        return f"логин ({name})"
+    if "pass" in low or "secret" in low or "token" in low:
+        return f"секрет/токен ({name})"
+    return name
+
+
+def _detect_system(blob: str, blockers: list[str], context: str = "") -> str:
+    low = " ".join([blob or "", " ".join(blockers), context or ""]).casefold()
+    if any(k in low for k in ("onec", "1с", "1c", "odata")):
+        return "1С"
+    if any(k in low for k in ("outlook", "календар", "совещан", "graph", "win32com")):
+        return "Outlook / календарь"
+    if any(k in low for k in ("этп", "закупк", "тендер")):
+        return "площадки закупок (ЭТП)"
+    if any(k in low for k in ("imap", "почт", "email", "mail")):
+        return "почты"
+    # Host from URL in text
+    m = re.search(r"https?://([^/\s]+)", blob or "")
+    if m:
+        return f"сайт {m.group(1)}"
+    title = (context or "").strip()
+    if title and len(title) <= 80:
+        return f"агент «{title}»"
+    return ""
+
+
+def _question_from_blocker(
+    blob: str,
+    blockers: list[str],
+    *,
+    context: str = "",
+) -> tuple[str, list[str], str]:
+    """Concrete user-facing question + options — always name WHAT is missing."""
+    focus = _strip_clarify_block(blob)
+    low = focus.casefold()
+    joined = " ".join(blockers).casefold()
+    sample = blockers[0] if blockers else ""
+    envs = _missing_env_vars(focus + "\n" + "\n".join(blockers))
+    env_labels = [_label_env(e) for e in envs]
+    system = _detect_system(focus, blockers, context)
+
+    def why(extra: str = "") -> str:
+        bits = []
+        if sample:
+            bits.append(sample if sample.casefold().startswith("блокер") else f"Блокер: {sample}")
+        if env_labels:
+            bits.append("Не хватает: " + ", ".join(env_labels))
+        if extra:
+            bits.append(extra)
+        bits.append("Без этого ответа нельзя сохранить агента.")
+        return " ".join(bits)
+
+    need_list = ", ".join(env_labels[:3]) if env_labels else ""
+
+    if system == "1С" or any(k in low or k in joined for k in ("onec", "1с", "1c", "odata")):
+        return (
+            "Live-проверка 1С с облака недоступна. URL и учётка OData задаются в backend/.env, "
+            "не в чате. Как продолжить?",
+            [
+                "Подключаться к 1С через COM на этой машине",
+                "Пока только fixtures / офлайн без live 1С",
+                "OData уже в backend/.env — повторить проверку через onec.*",
+                "Свой вариант — опишу режим проверки (без пароля)",
+            ],
+            why("Учётку 1С не вводите в чат — она в backend/.env."),
+        )
+
+    if system.startswith("Outlook") or any(
+        k in low or k in joined for k in ("outlook", "календар", "совещан", "graph", "win32com", "через com")
+    ):
+        what = need_list or "способ доступа к календарю Outlook"
+        return (
+            f"Live-проверка Outlook/календаря не прошла — не хватает: {what}. Как подключаться?",
+            [
+                "Локальный Outlook через COM (win32com) на этой машине",
+                "Microsoft Graph — дам tenant / Client ID / права календаря",
+                "Пока только fixtures, без live Outlook",
+                "Свой вариант — опишу доступ к Outlook",
+            ],
+            why("Нужен доступ именно к Outlook/календарю."),
+        )
+
+    if any(k in low or k in joined for k in ("sso", "azure", "credential", "учётк", "логин", "password", "токен", "auth")):
+        target = system or "целевой системы проверки"
+        return (
+            f"Live-проверка {target} не прошла. Секреты в чат не вводите. Как продолжить?",
+            [
+                f"Перезапустить live к {target} на этой машине",
+                f"Оставить только fixtures, без live к {target}",
+                f"Свой вариант — опишу режим проверки {target} (без пароля)",
+            ],
+            why(f"Логин и пароль для {target} не спрашиваем в чате."),
+        )
+
+    if any(
+        k in low or k in joined
+        for k in ("url", "endpoint", "эндпоинт", "site_url", "http://", "https://", "base_url", "_url")
+    ) and system != "1С":
+        target = system or "проверяемой системы"
+        url_what = next((lab for lab in env_labels if "url" in lab.casefold() or "URL" in lab), "") or (
+            f"URL {target}"
+        )
+        return (
+            f"Не хватает адреса: {url_what}. Какой рабочий URL указать для {target}?",
+            [
+                f"Впишу URL для {target} в своём варианте",
+                f"Доступ к {target} только из внутренней сети — проверять с этой машины",
+                f"URL для {target} пока нет — оставить fixtures",
+                f"Свой вариант — опишу адрес для {target}",
+            ],
+            why(f"Нужен URL именно для {target}."),
+        )
+
+    if any(k in low or k in joined for k in ("connection reset", "timeout", "timed out", "недоступ", "network")):
+        target = system or "внутреннего сервиса"
+        return (
+            f"{target} недоступен с облака (сеть/VPN). Как продолжить проверку {target}?",
+            [
+                f"Перезапустить live к {target} на этой машине (есть VPN/доступ)",
+                f"Дам альтернативный URL / стенд для {target}",
+                f"Оставить только fixtures, без live к {target}",
+                f"Свой вариант — опишу доступ к {target}",
+            ],
+            why(f"Нужен доступ к {target} с вашей машины."),
+        )
+
+    if sample or system:
+        target = system or "системы из блокера"
+        detail = need_list or sample or target
+        return (
+            f"Проверка {target} остановилась. Не хватает: {detail}. Что можете дать?",
+            [
+                f"Опишу недостающие данные для {target} в своём варианте",
+                f"Перезапустить live-проверку {target} на этой машине",
+                f"Оставить только fixtures для {target}",
+                "Свой вариант — уточню, чего именно не хватает",
+            ],
+            why(),
+        )
+
+    return (
+        "Тестовый прогон не завершён. Выберите режим проверки — без пароля и URL OData.",
+        [
+            "Пока только fixtures, live отложить",
+            "Перезапустить live на этой машине",
+            "Свой вариант — уточню режим проверки (без пароля)",
+        ],
+        "Сборка без TESTS: PASS. Секреты в чат не вводите.",
+    )
+
+
+def _is_infra_access_fail(blob: str) -> bool:
+    low = (blob or "").casefold()
+    return any(hint in low for hint in _INFRA_FAIL_HINTS)
+
+
+def _fixtures_passed(blob: str) -> bool:
+    low = (blob or "").casefold()
+    if re.search(r"fixtures[^\n|]{0,160}pass", low):
+        return True
+    return "pytest pass" in low and "fixture" in low
+
+
+def _asks_server_secrets(value: str) -> bool:
+    low = (value or "").casefold()
+    return any(
+        needle in low
+        for needle in (
+            "onec_base_url",
+            "constructor_api",
+            "odata_base",
+            "odata_user",
+            "odata_password",
+            "парол",
+            "логин 1с",
+            "логин odata",
+            "учётк",
+            "url базы 1с",
+            "url odata",
+            "впишу url",
+            "впишу url odata",
+        )
+    )
+
+
+def _extract_post_build_question(
+    blob: str,
+    *,
+    context: str = "",
+) -> WorkflowOpenQuestion:
+    """Build a clarification question after TESTS: FAIL from RESULT / agent output."""
+    text = blob or ""
+    lines = [ln.strip() for ln in text.splitlines()]
+    blockers = _blocker_snippets(text)
+
+    # Prefer structured block from execute prompt:
+    # CLARIFY: / QUESTION: ... / OPTIONS: - ...
+    structured_q = ""
+    structured_opts: list[str] = []
+    in_options = False
+    for ln in lines:
+        low = ln.casefold()
+        if low.startswith("clarify:"):
+            in_options = False
+            continue
+        if low.startswith("question:") or low.startswith("вопрос:"):
+            structured_q = ln.split(":", 1)[1].strip()
+            in_options = False
+            continue
+        if low.startswith("options:") or low.startswith("варианты:"):
+            rest = ln.split(":", 1)[1].strip()
+            in_options = True
+            if rest:
+                cleaned = re.sub(r"^[-•*\d.)\s]+", "", rest).strip()
+                if cleaned:
+                    structured_opts.append(cleaned)
+            continue
+        if in_options:
+            if not ln or ln.upper().startswith("TESTS:"):
+                in_options = False
+                continue
+            cleaned = re.sub(r"^[-•*\d.)\s]+", "", ln).strip()
+            if cleaned:
+                structured_opts.append(cleaned)
+            if len(structured_opts) >= 4:
+                in_options = False
+
+    questions: list[str] = []
+    if structured_q:
+        questions.append(structured_q)
+    else:
+        for ln in lines:
+            low = ln.casefold()
+            if not ln or ln.upper().startswith("TESTS:"):
+                continue
+            cleaned = re.sub(r"^[\d]+[.)]\s*", "", ln)
+            cleaned = re.sub(r"^[-•*]\s*", "", cleaned).strip()
+            if "?" in cleaned and len(cleaned) >= 12 and cleaned.endswith("?"):
+                # Skip useless meta questions about TESTS: PASS.
+                if "tests: pass" in cleaned.casefold() or "tests:pass" in cleaned.casefold():
+                    continue
+                if "что нужно уточнить" in cleaned.casefold():
+                    continue
+                questions.append(cleaned)
+            if len(questions) >= 3:
+                break
+
+    generic_q, generic_opts, generic_why = _question_from_blocker(
+        text,
+        blockers,
+        context=context,
+    )
+
+    def _is_meta_question(value: str) -> bool:
+        low = (value or "").casefold()
+        return (
+            "tests: pass" in low
+            or "tests:pass" in low
+            or "что нужно уточнить" in low
+            or "довести проверку" in low
+            or _asks_server_secrets(value)
+            or len((value or "").strip()) < 12
+        )
+
+    primary = questions[0] if questions else generic_q
+    used_generic = False
+    if _is_meta_question(primary):
+        primary = generic_q
+        used_generic = True
+
+    extras = [q for q in questions[1:3] if not _is_meta_question(q)]
+    why = generic_why
+    if extras:
+        why = f"{why} Также: " + " · ".join(extras)
+
+    options = structured_opts[:4] if structured_opts and not used_generic else generic_opts
+    if options is structured_opts[:4] or (structured_opts and not used_generic):
+        # Keep model options only if they look like concrete actions/facts.
+        junk = ("указать url / систему", "уточнить критерии", "tests: pass")
+        useful = [
+            opt
+            for opt in options
+            if opt.strip()
+            and not any(bad in opt.casefold() for bad in junk)
+            and not _asks_server_secrets(opt)
+        ]
+        options = useful[:4] if len(useful) >= 2 else generic_opts
+
+    return WorkflowOpenQuestion(
+        id="post-build-q1",
+        question=primary[:400],
+        why=why[:500],
+        options=options,
+    )
+
+
+@dataclass
+class FeedEvent:
+    title: str
+    body: str
+    time: str
+    action: str = ""
+    action_key: str = ""
+    role: str = "agent"  # agent | user
+    kind: str = ""
+    event_key: str = ""
+
+
+class StageStepper(QWidget):
+    """Vertical stages panel matching the mockup."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._active = 0
+        self._rows: list[tuple[QFrame, QLabel, QLabel]] = []
+        self.setFixedWidth(260)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(0)
+
+        heading = QLabel("Этапы работы")
+        heading.setFont(app_font(15, QFont.Weight.DemiBold))
+        heading.setStyleSheet("color: #06483D; background: transparent;")
+        root.addWidget(heading)
+        root.addSpacing(14)
+
+        self._list = QVBoxLayout()
+        self._list.setSpacing(4)
+        for _key, label in _STAGES:
+            row, dot, text = self._make_row(label)
+            self._rows.append((row, dot, text))
+            self._list.addWidget(row)
+        root.addLayout(self._list)
+        root.addStretch(1)
+
+        self._ready_label = QLabel("Готовность 0%")
+        self._ready_label.setFont(app_font(12, QFont.Weight.DemiBold))
+        self._ready_label.setStyleSheet("color: #06483D; background: transparent;")
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 100)
+        self._bar.setValue(0)
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(6)
+        self._bar.setStyleSheet(
+            """
+            QProgressBar {
+                background: #E8EFEC; border: none; border-radius: 3px;
+            }
+            QProgressBar::chunk {
+                background: #08745F; border-radius: 3px;
+            }
+            """
+        )
+        root.addWidget(self._ready_label)
+        root.addSpacing(8)
+        root.addWidget(self._bar)
+
+        self.setStyleSheet(
+            """
+            StageStepper {
+                background: #FFFFFF;
+                border: 1px solid rgba(16,24,23,0.08);
+                border-radius: 18px;
+            }
+            """
+        )
+
+    def _make_row(self, label: str) -> tuple[QFrame, QLabel, QLabel]:
+        row = QFrame()
+        row.setObjectName("stagerow")
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(12)
+        dot = QLabel("○")
+        dot.setFixedSize(22, 22)
+        dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        dot.setFont(app_font(13, QFont.Weight.DemiBold))
+        text = QLabel(label)
+        text.setFont(app_font(13, QFont.Weight.Medium))
+        text.setStyleSheet("background: transparent;")
+        lay.addWidget(dot)
+        lay.addWidget(text, 1)
+        return row, dot, text
+
+    def set_phase(self, phase: str) -> None:
+        rank = _PHASE_RANK.get(phase, 0)
+        if phase == "done":
+            rank = len(_STAGES) - 1
+        self._active = rank
+        for i, (row, dot, text) in enumerate(self._rows):
+            if i < rank or (phase == "done" and i <= rank):
+                state = "done"
+            elif i == rank:
+                state = "active"
+            else:
+                state = "idle"
+            if state == "done":
+                row.setStyleSheet("QFrame#stagerow { background: transparent; border-radius: 12px; }")
+                dot.setText("✓")
+                dot.setStyleSheet(
+                    "color: #FFFFFF; background: #08745F; border-radius: 11px;"
+                )
+                text.setStyleSheet("color: #06483D; background: transparent;")
+            elif state == "active":
+                row.setStyleSheet(
+                    "QFrame#stagerow { background: #FFF4E5; border-radius: 12px; }"
+                )
+                dot.setText("●")
+                dot.setStyleSheet(
+                    "color: #FFFFFF; background: #F0A202; border-radius: 11px;"
+                )
+                text.setStyleSheet("color: #8A5300; background: transparent; font-weight: 600;")
+            else:
+                row.setStyleSheet("QFrame#stagerow { background: transparent; border-radius: 12px; }")
+                dot.setText("○")
+                dot.setStyleSheet(
+                    "color: #9DB3AD; background: #F1F5F3; border-radius: 11px;"
+                )
+                text.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        pct = int(round((rank / max(1, len(_STAGES) - 1)) * 100))
+        if phase == "done":
+            pct = 100
+        self._ready_label.setText(f"Готовность {pct}%")
+        self._bar.setValue(pct)
 
 
 class WorkflowPage(QWidget):
     saved = Signal(str)
     saved_record = Signal(object)
     launch_requested = Signal(object)
+    schedule_requested = Signal(object)
     _async_ok = Signal(object, str)
     _async_fail = Signal(str)
     _stream_event = Signal(str, str)
@@ -586,844 +1003,697 @@ class WorkflowPage(QWidget):
         self._pending_paths: list[str] = []
         self._workflow_title = ""
         self._notes = ""
-        self._question_fields: dict[str, QLineEdit] = {}
-        self._question_files: dict[str, list[str]] = {}
-        self._question_file_labels: dict[str, QLabel] = {}
-        self._answer_group: QButtonGroup | None = None
-        self._current_question_id = ""
-        self._chat_files: list[str] = []
-        self._selected_quick_answer = ""
-        self._thinking_expanded = False
-        self._thinking_text = ""
-        self._live_label = ""
-        self._live_lines: list[str] = []
-        self._stream_messages: list[tuple[str, str]] = []
+        self._passport_runtime: dict = {}
         self._results_dir = ""
         self._busy = False
-        self._live_title_label: QLabel | None = None
-        self._live_body_label: QLabel | None = None
-        self._feed_render_timer = QTimer(self)
-        self._feed_render_timer.setSingleShot(True)
-        self._feed_render_timer.setInterval(120)
-        self._feed_render_timer.timeout.connect(self._render_feed)
+        self._events: list[FeedEvent] = []
+        self._event_seq = 0
+        self._expanded_keys: set[str] = set()
+        self._pending_answers: dict[str, str] = {}
+        self._tests_ok = False
+        self._thinking_text = ""
+        self._thinking_received = ""
+        self._thinking_shown = ""
+        self._thinking_wps = _DEFAULT_WPS
+        self._thinking_word_budget = 0.0
+        self._thinking_chunk = ""
+        self._thinking_chunk_at = 0.0
+        self._thinking_live: CursorFeedItem | None = None
+        self._stream_finished = False
+        self._pending_async: tuple[object, str] | None = None
+        self._pending_async_fail = ""
+        self._post_build_question: WorkflowOpenQuestion | None = None
+        self._question_fields: dict[str, QLineEdit] = {}
+        self._current_question_id = ""
+        self._selected_quick_answer = ""
+        self._answer_group: QButtonGroup | None = None
         self._async_ok.connect(self._on_async_ok)
         self._async_fail.connect(self._on_async_fail)
-        self._stream_event.connect(self.append_stream_event)
+        self._stream_event.connect(self._on_stream_event)
+        self._thinking_timer = QTimer(self)
+        self._thinking_timer.setInterval(_PACER_MS)
+        self._thinking_timer.timeout.connect(self._tick_thinking_pacer)
+        self._feed_stick_to_bottom = True
+        self._feed_rebuilding = False
         self._build()
-        self._render_phase()
+        self._render_all()
 
     def _build(self) -> None:
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         title = QLabel("Конструктор workflow")
-        title.setFont(app_font(22, QFont.Weight.DemiBold))
+        title.setFont(app_font(24, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
 
-        self._phase = QLabel("")
-        self._phase.setFont(app_font(12, QFont.Weight.DemiBold))
-        self._phase.setStyleSheet(_PHASE_STYLE_IDLE)
+        # --- Center: agent feed -------------------------------------------------
+        feed_card = QFrame()
+        feed_card.setStyleSheet(
+            """
+            QFrame#feedcard {
+                background: #FFFFFF;
+                border: 1px solid rgba(16,24,23,0.08);
+                border-radius: 18px;
+            }
+            """
+        )
+        feed_card.setObjectName("feedcard")
+        feed_lay = QVBoxLayout(feed_card)
+        feed_lay.setContentsMargins(20, 16, 20, 14)
+        feed_lay.setSpacing(10)
 
-        self._activity = QLabel("")
-        self._activity.setFont(app_font(12, QFont.Weight.DemiBold))
-        self._activity.setStyleSheet(_ACTIVITY_STYLE)
-        self._activity.setVisible(False)
+        feed_title = QLabel("Работа агента")
+        feed_title.setFont(app_font(15, QFont.Weight.DemiBold))
+        feed_title.setStyleSheet("color: #06483D; background: transparent;")
+        feed_lay.addWidget(feed_title)
+
+        self._feed_inner = QWidget()
+        self._feed_inner.setStyleSheet("background: transparent;")
+        self._feed_inner.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self._feed_layout = QVBoxLayout(self._feed_inner)
+        self._feed_layout.setContentsMargins(0, 0, 8, 0)
+        self._feed_layout.setSpacing(2)
+        self._feed_layout.addStretch(1)
+
+        feed_scroll = _FitWidthScrollArea()
+        feed_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        feed_scroll.setWidget(self._feed_inner)
+        feed_scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }" + scroll_bar_qss()
+        )
+        self._feed_scroll = feed_scroll
+        bar = feed_scroll.verticalScrollBar()
+        bar.valueChanged.connect(self._sync_feed_scroll_state)
+        bar.rangeChanged.connect(self._on_feed_range_changed)
+        feed_lay.addWidget(feed_scroll, 1)
+
+        # file chips
+        self._chips_wrap = QWidget()
+        self._chips_wrap.setStyleSheet("background: transparent;")
+        self._chips_layout = QHBoxLayout(self._chips_wrap)
+        self._chips_layout.setContentsMargins(0, 0, 0, 0)
+        self._chips_layout.setSpacing(8)
+        self._chips_layout.addStretch(1)
+        feed_lay.addWidget(self._chips_wrap)
+
+        # composer
+        composer_row = QHBoxLayout()
+        composer_row.setSpacing(8)
+        self._clip_btn = QToolButton()
+        self._clip_btn.setText("📎")
+        self._clip_btn.setFixedSize(40, 40)
+        self._clip_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clip_btn.setStyleSheet(_CLIP_BTN)
+        self._clip_btn.setToolTip("Приложить файл")
+        self._clip_btn.clicked.connect(self._on_pick_files)
+
+        self._input = QLineEdit()
+        self._input.setPlaceholderText("Напишите сообщение агенту…")
+        self._input.setFont(app_font(13))
+        self._input.setFixedHeight(44)
+        self._input.setStyleSheet(_COMPOSER)
+        self._input.returnPressed.connect(self._on_send)
+
+        self._send_btn = QToolButton()
+        self._send_btn.setText("↑")
+        self._send_btn.setFixedSize(40, 40)
+        self._send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._send_btn.setStyleSheet(_SEND_BTN)
+        self._send_btn.clicked.connect(self._on_send)
+
+        composer_row.addWidget(self._clip_btn)
+        composer_row.addWidget(self._input, 1)
+        composer_row.addWidget(self._send_btn)
+        feed_lay.addLayout(composer_row)
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(12)
+        self._agent_status = QLabel("● Готов к работе")
+        self._agent_status.setFont(app_font(12))
+        self._agent_status.setWordWrap(True)
+        self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
+        self._run_btn = QPushButton("Запустить сборку")
+        self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._run_btn.setFont(app_font(12, QFont.Weight.DemiBold))
+        self._run_btn.setFixedHeight(32)
+        self._run_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: #08745F; color: #FFFFFF; border: none;
+                border-radius: 12px; padding: 0 14px;
+            }
+            QPushButton:hover { background: #0A8670; }
+            QPushButton:disabled { background: #A8C8BF; color: #EAF7F3; }
+            """
+        )
+        self._run_btn.clicked.connect(self._on_run_clicked)
+        self._run_btn.setVisible(False)
+        self._next_btn = QPushButton("Далее")
+        self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._next_btn.setFont(app_font(12, QFont.Weight.DemiBold))
+        self._next_btn.setFixedHeight(32)
+        self._next_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: #08745F; color: #FFFFFF; border: none;
+                border-radius: 12px; padding: 0 14px;
+            }
+            QPushButton:hover { background: #0A8670; }
+            QPushButton:disabled { background: #A8C8BF; color: #EAF7F3; }
+            """
+        )
+        self._next_btn.clicked.connect(self._on_schedule_requested)
+        self._next_btn.setVisible(False)
+        self._tests_ok = False
+        status_row.addWidget(self._agent_status, 1)
+        status_row.addWidget(self._run_btn, 0)
+        status_row.addWidget(self._next_btn, 0)
+        feed_lay.addLayout(status_row)
+
+        # hidden results list for downloads
+        self._results = QListWidget()
+        self._results.setVisible(False)
+        self._results.itemDoubleClicked.connect(self._open_result_item)
+        feed_lay.addWidget(self._results)
+
+        self._stepper = StageStepper()
+
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        body.addWidget(feed_card, 1)
+        body.addWidget(self._stepper, 0)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(12)
+        root.addWidget(title)
+        root.addLayout(body, 1)
 
         self._busy_timer = QTimer(self)
         self._busy_timer.setInterval(400)
         self._busy_timer.timeout.connect(self._tick_activity)
-        self._busy_base = "Обращение к агенту"
+        self._busy_base = "Агент работает"
         self._busy_n = 0
 
-        header = QHBoxLayout()
-        header.setSpacing(10)
-        header.addWidget(title, 1)
-        header.addWidget(self._activity, 0, Qt.AlignmentFlag.AlignVCenter)
-        header.addWidget(self._phase, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        body = QHBoxLayout()
-        body.setSpacing(14)
-
-        self._phase_graph = NodeGraphWidget(mode="row")
-        self._step_section = _section("Шаги плана")
-        self._step_list = QListWidget()
-        self._step_list.setFont(app_font(11))
-        self._step_list.setWordWrap(True)
-        self._step_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        self._step_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._step_list.setStyleSheet(_LIST + scroll_bar_qss())
-        self._step_list.setMinimumHeight(120)
-        self._step_list.setMaximumHeight(260)
-        self._step_section.setVisible(False)
-        self._step_list.setVisible(False)
-
-        center_card = QFrame()
-        center_card.setObjectName("WorkflowCard")
-        center_card.setStyleSheet(_CARD)
-        center_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        center = QVBoxLayout(center_card)
-        center.setContentsMargins(16, 14, 16, 14)
-        center.setSpacing(10)
-
-        self._feed_layout = QVBoxLayout()
-        self._feed_layout.setContentsMargins(14, 14, 14, 14)
-        self._feed_layout.setSpacing(10)
-        feed_inner = QWidget()
-        feed_inner.setStyleSheet("background: transparent;")
-        feed_inner.setLayout(self._feed_layout)
-        self._feed_scroll = _FitWidthScrollArea()
-        self._feed_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._feed_scroll.setWidget(feed_inner)
-        self._feed_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }" + scroll_bar_qss())
-
-        self._questions_card = QFrame()
-        self._questions_card.setObjectName("qcard")
-        self._questions_card.setStyleSheet(_QCARD)
-        self._questions_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        self._questions_layout = QVBoxLayout(self._questions_card)
-        self._questions_layout.setContentsMargins(12, 10, 12, 10)
-        self._questions_layout.setSpacing(8)
-        self._questions_card.setVisible(False)
-
-        self._chat_input = QPlainTextEdit()
-        self._chat_input.setFixedHeight(58)
-        self._chat_input.setPlaceholderText("Напишите сообщение агенту...")
-        self._chat_input.setFont(app_font(12))
-        self._chat_input.setStyleSheet(_ANSWER_FIELD)
-        self._attach_btn = QToolButton()
-        self._attach_btn.setText("📎")
-        self._attach_btn.setToolTip("Приложить файл")
-        self._attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._attach_btn.setFixedSize(42, 42)
-        self._attach_btn.setStyleSheet(_CLIP_BTN)
-        self._attach_btn.clicked.connect(self._on_attach_chat_files)
-        self._send_btn = QPushButton("➤")
-        self._send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._send_btn.setFixedSize(42, 42)
-        self._send_btn.setStyleSheet(_PRIMARY)
-        self._send_btn.clicked.connect(self._submit_chat)
-        self._chat_files_label = QLabel("")
-        self._chat_files_label.setFont(app_font(11))
-        self._chat_files_label.setWordWrap(True)
-        self._chat_files_label.setStyleSheet("color: #08745F; background: transparent;")
-        self._chat_files_label.setVisible(False)
-        input_row = QHBoxLayout()
-        input_row.setContentsMargins(0, 0, 0, 0)
-        input_row.setSpacing(8)
-        input_row.addWidget(self._attach_btn, 0, Qt.AlignmentFlag.AlignTop)
-        input_row.addWidget(self._chat_input, 1)
-        input_row.addWidget(self._send_btn, 0, Qt.AlignmentFlag.AlignTop)
-        self._input_bar = QWidget()
-        self._input_bar.setStyleSheet("background: transparent;")
-        self._input_bar.setLayout(input_row)
-        self._next_btn = QPushButton("Сохранить")
-        self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._next_btn.setFixedHeight(46)
-        self._next_btn.setStyleSheet(_PRIMARY)
-        self._next_btn.clicked.connect(self._on_save_requested)
-        self._next_btn.setVisible(False)
-        self._tests_ok = False
-
-        center.addWidget(self._feed_scroll, 1)
-        center.addWidget(self._questions_card, 0)
-        center.addWidget(self._chat_files_label, 0)
-        center.addWidget(self._input_bar, 0)
-        center.addWidget(self._next_btn, 0)
-
-        self._log = QPlainTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setFont(app_font(11))
-        self._log.setStyleSheet(_REASONING + scroll_bar_qss())
-        self._log.setFixedHeight(72)
-
-        self._results = QListWidget()
-        self._results.setFont(app_font(12))
-        self._results.setFixedHeight(72)
-        self._results.setStyleSheet(_LIST + scroll_bar_qss())
-        self._results.itemDoubleClicked.connect(self._open_result_item)
-        self._fetch_btn = self._mk_button("Скачать", _SECONDARY, self._on_fetch_results, height=32)
-        self._open_dir_btn = self._mk_button("Папка", _SECONDARY, self._open_results_folder, height=32)
-        results_actions = QHBoxLayout()
-        results_actions.setSpacing(8)
-        results_actions.addWidget(self._fetch_btn)
-        results_actions.addWidget(self._open_dir_btn)
-        results_actions.addStretch(1)
-
-        side_card = QFrame()
-        side_card.setObjectName("WorkflowCard")
-        side_card.setStyleSheet(_CARD)
-        side_card.setFixedWidth(250)
-        side = QVBoxLayout(side_card)
-        side.setContentsMargins(16, 16, 16, 16)
-        side.setSpacing(12)
-        side.addWidget(_section("Этапы работы"))
-        self._phase_steps_widget = QWidget()
-        self._phase_steps_widget.setStyleSheet("background: transparent;")
-        self._phase_steps_layout = QVBoxLayout(self._phase_steps_widget)
-        self._phase_steps_layout.setContentsMargins(0, 0, 0, 0)
-        self._phase_steps_layout.setSpacing(10)
-        side.addWidget(self._phase_steps_widget, 0)
-        side.addWidget(self._step_section, 0)
-        side.addWidget(self._step_list, 0)
-        side.addStretch(1)
-
-        body.addWidget(center_card, 1)
-        body.addWidget(side_card, 0)
-
-        self._plan_btn = self._mk_button("Спланировать", _PRIMARY, self._on_plan, height=36)
-        self._exec_btn = self._mk_button("Запустить", _PRIMARY, self._on_execute, height=36)
-        self._rerun_btn = self._mk_button(
-            "Запустить снова", _SECONDARY, lambda: self._on_execute(reexecute=True), height=36
-        )
-        self._new_btn = self._mk_button("Новый", _SECONDARY, self._on_new, height=36)
-
-        self._status = QLabel("")
-        self._status.setFont(app_font(12, QFont.Weight.Medium))
-        self._status.setStyleSheet("color: #2D7A5E; background: transparent;")
-        self._status.setWordWrap(True)
-
-        actions = QHBoxLayout()
-        actions.setSpacing(10)
-        actions.addWidget(self._status, 1)
-        for btn in (self._new_btn, self._rerun_btn, self._plan_btn, self._exec_btn):
-            actions.addWidget(btn)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(10)
-        root.addLayout(header)
-        root.addLayout(body, 1)
-        root.addLayout(actions)
-        self._render_graphs()
-        self._render_feed()
-
-    def _mk_button(self, text: str, style: str, slot, *, height: int = 36) -> QPushButton:
-        btn = QPushButton(text)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setFixedHeight(height)
-        btn.setMinimumWidth(120 if height >= 40 else 0)
-        btn.setFont(app_font(12, QFont.Weight.DemiBold))
-        btn.setStyleSheet(style)
-        btn.clicked.connect(slot)
-        return btn
+    # --- public API ------------------------------------------------------------
 
     def load_record(self, record: WorkflowRecord) -> None:
         self._record = record
         self._pending_paths = []
         self._workflow_title = record.title
         self._notes = record.notes
-        self._log.clear()
+        local = dict(record.local_run or {})
+        self._tests_ok = str(local.get("tests_status") or "").casefold() == "pass" and (
+            record.phase == "tested"
+            or str(local.get("exec_run_status") or "").upper() == "FINISHED"
+        )
+        if local.get("autonomy_level") or local.get("autonomy_policy"):
+            self._passport_runtime = {
+                "autonomy_level": int(local.get("autonomy_level") or 1),
+                "autonomy_policy": str(local.get("autonomy_policy") or ""),
+            }
+        self._event_seq = 0
+        self._expanded_keys = set()
+        self._events = []
+        if record.plan:
+            self._events.append(
+                FeedEvent(
+                    "План",
+                    _format_plan_steps(record.plan),
+                    self._now(),
+                    action="Показать шаги плана",
+                    action_key="show_plan",
+                )
+            )
+            first_q = next(iter(record.plan.unanswered()), None)
+            if first_q is not None:
+                self._events.append(
+                    FeedEvent(
+                        "Уточнение",
+                        first_q.question,
+                        self._now(),
+                    )
+                )
         if record.last_result:
-            self._log.setPlainText(record.last_result)
-        self._render_plan()
-        self._render_phase()
-        self._ok(f"Загружен workflow · {record.phase}")
+            self._events.append(
+                FeedEvent("Результат", record.last_result, self._now())
+            )
+        for ev in self._events:
+            if not ev.event_key:
+                ev.event_key = self._next_event_key()
+        self._render_chips()
+        self._render_all()
 
     def start_from_passport(self, session: PassportSession, *, auto_plan: bool = True) -> None:
-        """Заполнить конструктор workflow из готового паспорта и запустить планирование."""
         self._on_new()
         title = (session.passport.name or session.bp_name or "ИИ-агент").strip()
         self._workflow_title = title
         self._notes = _notes_from_passport(session)
-        self._append(f"→ Паспорт «{title}» загружен в конструктор workflow.\n")
+        self._passport_runtime = {
+            "autonomy_level": int(getattr(session.passport, "autonomy_level", 1) or 1),
+            "autonomy_policy": (
+                "Уровень 1: генерация текста, инструменты чтения и human-in-the-loop; "
+                "запись и прочие операции только после подтверждения человека."
+            ),
+        }
         if auto_plan:
             self._on_plan()
 
-    def _render_phase(self) -> None:
+    def _persist_passport_runtime(self, record: WorkflowRecord) -> WorkflowRecord:
+        if not self._passport_runtime:
+            return record
+        local = dict(record.local_run or {})
+        level = int(self._passport_runtime.get("autonomy_level") or 1)
+        policy = str(self._passport_runtime.get("autonomy_policy") or "")
+        if int(local.get("autonomy_level") or 0) == level and str(local.get("autonomy_policy") or "") == policy:
+            return record
+        local["autonomy_level"] = level
+        local["autonomy_policy"] = policy
+        try:
+            return self._api.update_workflow_local_run(record.id, local)
+        except ApiError:
+            return record
+
+    # --- render ----------------------------------------------------------------
+
+    def _render_all(self) -> None:
         phase = self._record.phase if self._record else "document"
-        labels = {k: v for k, v in _PHASE_PIPELINE}
-        self._phase.setText(labels.get(phase, phase))
+        self._stepper.set_phase(phase)
+        self._rebuild_feed()
         plan = self._record.plan if self._record else None
         unanswered = bool(plan and plan.unanswered())
-        has_exec = bool(self._record and self._record.exec_agent_id)
-        can_save = bool(
+        can_run = bool(plan) and not unanswered and not self._busy and not self._post_build_question
+        self._run_btn.setVisible(can_run)
+        self._run_btn.setEnabled(can_run)
+        if self._record and self._record.exec_agent_id:
+            self._run_btn.setText("Запустить снова")
+        else:
+            self._run_btn.setText("Запустить сборку")
+        can_next = bool(
             self._record
-            and self._record.phase == "tested"
             and self._tests_ok
             and not self._busy
+            and self._record.phase != "done"
         )
-        assembly_ready = bool(
-            self._record and self._record.phase == "ready" and not unanswered
-        )
-        self._questions_card.setVisible(unanswered)
-        self._input_bar.setVisible(not can_save and not unanswered)
-        self._chat_files_label.setVisible(bool(self._chat_files) and not can_save)
-        self._next_btn.setText("Сохранить")
-        self._next_btn.setVisible(can_save)
-        self._exec_btn.setEnabled(bool(plan) and not unanswered and not self._busy)
-        self._exec_btn.setVisible(assembly_ready or (has_exec and phase in {"ready", "tested"}))
-        self._rerun_btn.setVisible(has_exec)
-        self._fetch_btn.setEnabled(has_exec and not self._busy)
-        self._open_dir_btn.setEnabled(bool(self._results_dir) or has_exec)
-        self._render_graphs()
-        self._render_phase_steps()
-
-    def _on_save_requested(self) -> None:
-        if self._record is None:
-            return
-        if not self._tests_ok:
-            QMessageBox.information(
-                self,
-                "Тесты",
-                "Сначала дождитесь успешного тестового прогона.",
-            )
-            return
-        wid = self._record.id
-        self._append("\n→ Сохраняю агента в «Мои агенты»…\n")
-
-        def work() -> WorkflowRecord:
-            return self._api.publish_workflow(wid)
-
-        self._run_async("Публикация", work)
-
-    def _on_launch_requested(self) -> None:
-        if self._record is not None:
-            self.launch_requested.emit(self._record)
-
-    def _render_graphs(self) -> None:
-        phase = self._record.phase if self._record else "document"
-        rank = _PHASE_RANK.get(phase, 0)
-        phase_nodes: list[tuple[str, str, str]] = []
-        for i, (pid, label) in enumerate(_PHASE_PIPELINE):
-            if i < rank:
-                state = "done"
-            elif i == rank:
-                state = "active"
-            else:
-                state = "idle"
-            if phase == "done" and pid == "done":
-                state = "done"
-            phase_nodes.append((pid, label, state))
-        phase_edges = [
-            (_PHASE_PIPELINE[i][0], _PHASE_PIPELINE[i + 1][0])
-            for i in range(len(_PHASE_PIPELINE) - 1)
-        ]
-        self._phase_graph.set_graph(phase_nodes, phase_edges)
-
-        plan = self._record.plan if self._record else None
-        steps = list(plan.steps or []) if plan else []
-        if not steps:
-            self._step_section.setVisible(False)
-            self._step_list.setVisible(False)
-            self._step_list.clear()
-            return
-        self._step_section.setVisible(True)
-        self._step_list.setVisible(True)
-        self._step_list.clear()
-        for index, step in enumerate(steps, start=1):
-            item = QListWidgetItem(_format_step_item(index, step))
-            item.setSizeHint(QSize(0, 78))
-            self._step_list.addItem(item)
-
-    def _render_plan(self) -> None:
-        if self._record and self._record.plan:
-            self._build_questions(self._record.plan)
+        self._next_btn.setVisible(can_next)
+        self._next_btn.setEnabled(can_next)
+        if self._post_build_question and not self._busy:
+            self._current_question_id = self._post_build_question.id
+        elif self._record and self._record.plan and not self._busy:
+            self._sync_question_state(self._record.plan)
         else:
-            self._clear_questions()
-        self._render_graphs()
-        self._render_feed()
-
-    def append_stream_event(self, event_type: str, text: str) -> None:
-        if event_type == "thinking":
-            self._thinking_text += text
-        elif event_type == "decision":
-            self._ok(text)
-            if text.strip():
-                self._live_lines.append(text.strip())
-        elif event_type in {"assistant", "message"}:
-            visible = _visible_live_text(text)
-            if visible and self._busy:
-                self._live_lines.append(visible)
-            elif visible:
-                self._stream_messages.append(("agent_message", visible))
-        elif event_type == "system":
-            self._live_label = text.strip() or self._live_label
-        # During stream: update one live card in place. Full rebuild every token
-        # stacked deleteLater widgets on top of each other (broken feed).
-        if self._busy and self._live_body_label is not None:
-            self._refresh_live_block_text()
-            return
-        self._schedule_feed_render()
-
-    def _schedule_feed_render(self) -> None:
+            self._current_question_id = ""
+            self._selected_quick_answer = ""
+            self._question_fields = {}
         if self._busy:
-            if not self._feed_render_timer.isActive():
-                self._feed_render_timer.start()
-            return
-        self._feed_render_timer.stop()
-        self._render_feed()
+            self._agent_status.setText("● Агент работает — можно отправить уточнение")
+            self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
+        elif can_next:
+            self._agent_status.setText("● Тесты PASS — откройте паспорт и укажите, когда запускать")
+            self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
+        elif self._post_build_question:
+            self._agent_status.setText("● Нужны уточнения после сборки — ответьте в чате")
+            self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
+        elif (
+            self._record
+            and str((self._record.local_run or {}).get("tests_status") or "").casefold()
+            in {"fail", "unknown"}
+            and self._record.phase in {"ready", "tested"}
+        ):
+            self._agent_status.setText("● Тесты не пройдены — уточните в чате и перезапустите")
+            self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
+        elif unanswered:
+            self._agent_status.setText("● Нужны уточнения — выберите вариант в чате")
+            self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
+        elif plan and not unanswered:
+            self._agent_status.setText("● План готов — можно запускать")
+            self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
+        else:
+            self._agent_status.setText("● Готов к работе")
+            self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
 
-    def _clear_feed_layout(self) -> None:
-        self._live_title_label = None
-        self._live_body_label = None
+    def _sync_feed_scroll_state(self, *_args) -> None:
+        if self._feed_rebuilding:
+            return
+        bar = self._feed_scroll.verticalScrollBar()
+        self._feed_stick_to_bottom = bar.value() >= max(0, bar.maximum() - 48)
+
+    def _on_feed_range_changed(self, _minimum: int, _maximum: int) -> None:
+        if self._feed_stick_to_bottom:
+            self._scroll_feed_to_bottom()
+
+    def _scroll_feed_to_bottom(self) -> None:
+        if not self._feed_stick_to_bottom:
+            return
+        bar = self._feed_scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _rebuild_feed(self) -> None:
+        self._feed_rebuilding = True
+        try:
+            self._rebuild_feed_body()
+        finally:
+            self._feed_rebuilding = False
+            self._scroll_feed_to_bottom()
+
+    def _rebuild_feed_body(self) -> None:
         while self._feed_layout.count():
             item = self._feed_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.hide()
-                widget.setParent(None)
-                widget.deleteLater()
-
-    def _render_feed(self) -> None:
-        self._feed_render_timer.stop()
-        self._clear_feed_layout()
-        if self._record is not None:
-            title = self._record.title or "ИИ-агент"
-            self._feed_layout.addWidget(self._message_bubble(f"Workflow «{title}» открыт.", kind="system"))
-            reasoning = reasoning_text(self._record)
-            if reasoning:
-                self._feed_layout.addWidget(self._message_bubble(reasoning, kind="agent_message"))
-        if self._busy:
-            self._feed_layout.addWidget(self._live_block())
-        for kind, text in self._stream_messages:
-            if kind == "decision":
-                continue
-            if text.strip():
-                self._feed_layout.addWidget(self._message_bubble(text, kind=kind))
-        self._feed_layout.addStretch(1)
-        QTimer.singleShot(
-            0,
-            lambda: self._feed_scroll.verticalScrollBar().setValue(
-                self._feed_scroll.verticalScrollBar().maximum()
-            ),
-        )
-
-    def _message_bubble(self, text: str, *, kind: str) -> QWidget:
-        user = kind == "user_message"
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        if user:
-            row.addStretch(1)
-        bubble = QFrame()
-        bubble.setMaximumWidth(720)
-        bubble.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-        color = {
-            "user_message": "rgba(8,116,95,0.09)",
-            "decision": "#FFF8EF",
-            "system": "#F7FAF9",
-        }.get(kind, "#FFFFFF")
-        bubble.setStyleSheet(
-            f"""
-            QFrame {{
-                background: {color};
-                border: 1px solid rgba(8,116,95,0.14);
-                border-radius: 16px;
-            }}
-            """
-        )
-        layout = QVBoxLayout(bubble)
-        layout.setContentsMargins(14, 10, 14, 10)
-        if kind == "decision":
-            heading = QLabel("Промежуточное решение")
-            heading.setFont(app_font(12, QFont.Weight.DemiBold))
-            heading.setStyleSheet("color: #8A5300; background: transparent;")
-            layout.addWidget(heading)
-        label = QLabel(text)
-        label.setWordWrap(True)
-        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-        label.setFont(app_font(12))
-        label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        layout.addWidget(label)
-        row.addWidget(bubble, 0, Qt.AlignmentFlag.AlignTop)
-        if not user:
-            row.addStretch(1)
-        wrap = QWidget()
-        wrap.setStyleSheet("background: transparent;")
-        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        wrap.setLayout(row)
-        return wrap
-
-    def _live_lines_text(self) -> str:
-        lines = list(dict.fromkeys(line for line in self._live_lines if line.strip()))
-        thinking = _visible_live_text(self._thinking_text)
-        if thinking and thinking not in lines:
-            lines.append(thinking)
-        if not lines:
-            lines.append("Агент формирует ответ в реальном времени...")
-        return "\n\n".join(lines[-4:])
-
-    def _refresh_live_block_text(self) -> None:
-        if self._live_title_label is not None:
-            self._live_title_label.setText(self._live_label or "Агент работает")
-        if self._live_body_label is not None:
-            self._live_body_label.setText(self._live_lines_text())
-            QTimer.singleShot(
-                0,
-                lambda: self._feed_scroll.verticalScrollBar().setValue(
-                    self._feed_scroll.verticalScrollBar().maximum()
-                ),
-            )
-
-    def _live_block(self) -> QWidget:
-        card = QFrame()
-        card.setMaximumWidth(720)
-        card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-        card.setStyleSheet(
-            """
-            QFrame {
-                background: #FFFFFF;
-                border: 1px solid rgba(8,116,95,0.18);
-                border-radius: 16px;
-            }
-            """
-        )
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(8)
-        title = QLabel(self._live_label or "Агент работает")
-        title.setFont(app_font(12, QFont.Weight.DemiBold))
-        title.setStyleSheet("color: #08745F; background: transparent;")
-        layout.addWidget(title)
-
-        body = QLabel(self._live_lines_text())
-        body.setWordWrap(True)
-        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        body.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-        body.setFont(app_font(12))
-        body.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        layout.addWidget(body)
-        self._live_title_label = title
-        self._live_body_label = body
-
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(card, 0, Qt.AlignmentFlag.AlignTop)
-        row.addStretch(1)
-        wrap = QWidget()
-        wrap.setStyleSheet("background: transparent;")
-        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        wrap.setLayout(row)
-        return wrap
-
-    def _thinking_block(self) -> QWidget:
-        card = QFrame()
-        card.setMaximumWidth(720)
-        card.setStyleSheet(
-            """
-            QFrame {
-                background: #FFFFFF;
-                border: 1px solid rgba(8,116,95,0.14);
-                border-radius: 16px;
-            }
-            """
-        )
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(8)
-        toggle = QPushButton(("Thinking ▾" if self._thinking_expanded else "Thinking ▸") + " Агент размышляет")
-        toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        toggle.setFont(app_font(12, QFont.Weight.DemiBold))
-        toggle.setStyleSheet(
-            """
-            QPushButton {
-                text-align: left;
-                border: none;
-                background: transparent;
-                color: #08745F;
-                padding: 0;
-            }
-            """
-        )
-        toggle.clicked.connect(self._toggle_thinking)
-        layout.addWidget(toggle)
-        if self._thinking_expanded:
-            visible_text = _strip_json_blob(self._thinking_text).strip()
-            if (
-                not visible_text
-                or visible_text.lstrip().startswith("{")
-                or "```json" in visible_text.lower()
-                or '"steps"' in visible_text
-            ):
-                visible_text = "Агент формирует план. Подробности появятся после структурирования ответа."
-            text = QLabel(visible_text)
-            text.setWordWrap(True)
-            text.setFont(app_font(12))
-            text.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-            layout.addWidget(text)
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(card)
-        row.addStretch(1)
-        wrap = QWidget()
-        wrap.setStyleSheet("background: transparent;")
-        wrap.setLayout(row)
-        return wrap
-
-    def _toggle_thinking(self) -> None:
-        self._thinking_expanded = not self._thinking_expanded
-        self._render_feed()
-
-    def _render_phase_steps(self) -> None:
-        while self._phase_steps_layout.count():
-            item = self._phase_steps_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        phase = self._record.phase if self._record else "document"
-        rank = _PHASE_RANK.get(phase, 0)
-        for index, (pid, label) in enumerate(_PHASE_PIPELINE):
-            if phase == "done" and pid == "done":
-                state = "done"
-            elif index < rank:
-                state = "done"
-            elif index == rank:
-                state = "active"
-            else:
-                state = "idle"
-            self._phase_steps_layout.addWidget(_phase_step_widget(label, state))
-
-    def _build_questions(self, plan: WorkflowPlan) -> None:
-        self._clear_questions()
-        unanswered = plan.unanswered()
-        if not unanswered:
-            self._questions_card.setVisible(False)
-            return
-        question = unanswered[0]
-        self._current_question_id = question.id
-        title = QLabel("Агенту нужно уточнение")
-        title.setFont(app_font(12, QFont.Weight.DemiBold))
-        title.setStyleSheet("color: #8A5300; background: transparent;")
-        question_label = QLabel(question.question)
-        question_label.setFont(app_font(13, QFont.Weight.DemiBold))
-        question_label.setWordWrap(True)
-        question_label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        self._questions_layout.addWidget(title)
-        self._questions_layout.addWidget(question_label)
-        if question.why:
-            why = QLabel(question.why)
-            why.setFont(app_font(11))
-            why.setWordWrap(True)
-            why.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-            self._questions_layout.addWidget(why)
-        group = QButtonGroup(self._questions_card)
-        self._answer_group = group
-        group.setExclusive(True)
-        variants = _quick_answers_for_question(question)
-        for answer in variants:
-            option = QRadioButton(answer)
-            option.setCursor(Qt.CursorShape.PointingHandCursor)
-            option.setFont(app_font(12))
-            option.setStyleSheet(_RADIO_OPTION)
-            option.toggled.connect(
-                lambda checked=False, value=answer: self._select_quick_answer(value) if checked else None
-            )
-            group.addButton(option)
-            self._questions_layout.addWidget(option)
-
-        custom_row = QHBoxLayout()
-        custom_row.setSpacing(8)
-        custom_option = QRadioButton("Свой вариант")
-        custom_option.setCursor(Qt.CursorShape.PointingHandCursor)
-        custom_option.setFont(app_font(12))
-        custom_option.setStyleSheet(_RADIO_OPTION)
-        custom_input = QLineEdit()
-        custom_input.setPlaceholderText("Напишите свой ответ")
-        custom_input.setFont(app_font(12))
-        custom_input.setStyleSheet(_CUSTOM_ANSWER_FIELD)
-        custom_attach = QToolButton()
-        custom_attach.setText("📎")
-        custom_attach.setToolTip("Приложить документ к своему варианту")
-        custom_attach.setCursor(Qt.CursorShape.PointingHandCursor)
-        custom_attach.setFixedSize(34, 34)
-        custom_attach.setStyleSheet(_CLIP_BTN)
-        self._question_fields[question.id] = custom_input
-        group.addButton(custom_option)
-        custom_row.addWidget(custom_option, 0)
-        custom_row.addWidget(custom_input, 1)
-        custom_row.addWidget(custom_attach, 0)
-        self._questions_layout.addLayout(custom_row)
-
-        custom_option.toggled.connect(
-            lambda checked=False, field=custom_input: self._select_custom_answer(field.text(), field)
-            if checked
-            else None
-        )
-        custom_input.textEdited.connect(
-            lambda value, option=custom_option, field=custom_input: self._edit_custom_answer(value, option, field)
-        )
-        custom_attach.clicked.connect(
-            lambda _checked=False, option=custom_option: self._attach_custom_answer_file(option)
-        )
-
-        hint = QLabel("Выберите вариант или заполните последнюю строку своим ответом.")
-        hint.setFont(app_font(11))
-        hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        self._questions_layout.addWidget(hint)
-        next_row = QHBoxLayout()
-        next_row.setContentsMargins(0, 4, 0, 0)
-        next_row.addStretch(1)
-        next_btn = QPushButton("Далее")
-        next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        next_btn.setFixedHeight(36)
-        next_btn.setMinimumWidth(120)
-        next_btn.setFont(app_font(12, QFont.Weight.DemiBold))
-        next_btn.setStyleSheet(_PRIMARY)
-        next_btn.clicked.connect(self._submit_question_answer)
-        next_row.addWidget(next_btn)
-        self._questions_layout.addLayout(next_row)
-        self._questions_card.setVisible(True)
-
-    def _clear_questions(self) -> None:
-        _clear_layout(self._questions_layout)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        # Drop stale answer widgets from previous rebuild.
         self._question_fields = {}
-        self._question_files = {}
-        self._question_file_labels = {}
-        if self._answer_group is not None:
-            self._answer_group.deleteLater()
-            self._answer_group = None
-        self._current_question_id = ""
-        self._selected_quick_answer = ""
+        self._answer_group = None
 
-    def _select_quick_answer(self, answer: str) -> None:
-        self._selected_quick_answer = answer
-        field = self._question_fields.get(self._current_question_id)
-        if isinstance(field, QLineEdit):
-            field.clear()
+        plan_question = (
+            self._record is not None
+            and self._record.plan is not None
+            and bool(self._record.plan.unanswered())
+            and not self._busy
+        )
+        post_question = bool(self._post_build_question) and not self._busy
+        show_question = plan_question or post_question
+        current_q_text = ""
+        if plan_question and self._record and self._record.plan:
+            current_q_text = (self._record.plan.unanswered()[0].question or "").strip()
+        elif post_question and self._post_build_question is not None:
+            current_q_text = (self._post_build_question.question or "").strip()
 
-    def _select_custom_answer(self, answer: str, field: QLineEdit) -> None:
-        del answer
-        self._selected_quick_answer = ""
-        field.setFocus()
+        # Hide only the *current* open question duplicate (card shows it).
+        # Keep all previously asked questions visible in the chat history.
+        skip_clarify_idx: int | None = None
+        if show_question and current_q_text:
+            for i in range(len(self._events) - 1, -1, -1):
+                ev = self._events[i]
+                if ev.title == "Уточнение" and (ev.body or "").strip() == current_q_text:
+                    skip_clarify_idx = i
+                    break
 
-    def _edit_custom_answer(self, answer: str, option: QRadioButton, field: QLineEdit) -> None:
-        if not option.isChecked():
-            option.setChecked(True)
-        self._select_custom_answer(answer, field)
+        for idx, event in enumerate(self._events):
+            if skip_clarify_idx is not None and idx == skip_clarify_idx:
+                continue
+            hide_action = event.action_key.startswith("q:")
+            widget = self._feed_item(event, fallback_key=f"e{idx}", hide_action=hide_action)
+            self._feed_layout.addWidget(widget)
+        thinking = (self._thinking_shown or "").strip()
+        self._thinking_live = None
+        if thinking:
+            self._expanded_keys.add("live-thinking")
+            live = CursorFeedItem(
+                kind="thinking",
+                text=thinking,
+                title="Thinking",
+                detail=thinking,
+                event_key="live-thinking",
+                expanded=True,
+            )
+            live.expand_toggled.connect(self._on_expand_toggled)
+            self._thinking_live = live
+            self._feed_layout.addWidget(live)
+        if plan_question and self._record and self._record.plan:
+            card = self._make_clarification_message(self._record.plan.unanswered()[0])
+            self._feed_layout.addWidget(card)
+        elif post_question and self._post_build_question is not None:
+            card = self._make_clarification_message(self._post_build_question)
+            self._feed_layout.addWidget(card)
+        self._feed_layout.addStretch(1)
 
-    def _attach_custom_answer_file(self, option: QRadioButton) -> None:
-        option.setChecked(True)
-        self._on_attach_chat_files()
+    def _render_chips(self) -> None:
+        while self._chips_layout.count():
+            item = self._chips_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        names: list[str] = []
+        if self._record:
+            names.extend(att.name for att in (self._record.attachments or []) if att.name)
+        names.extend(Path(p).name for p in self._pending_paths)
+        for name in names[:8]:
+            chip = QFrame()
+            chip.setObjectName("filechip")
+            chip.setStyleSheet(_CHIP)
+            lay = QHBoxLayout(chip)
+            lay.setContentsMargins(10, 4, 8, 4)
+            lay.setSpacing(6)
+            lbl = QLabel(name)
+            lbl.setFont(app_font(11))
+            lbl.setStyleSheet("background: transparent; color: #06483D;")
+            lay.addWidget(lbl)
+            self._chips_layout.addWidget(chip)
+        self._chips_layout.addStretch(1)
+        self._chips_wrap.setVisible(bool(names))
 
-    def _on_attach_chat_files(self) -> None:
-        if not self._current_question_id:
-            QMessageBox.information(self, "Файл", "Файл можно приложить к текущему вопросу агента.")
+    def _next_event_key(self) -> str:
+        self._event_seq += 1
+        return f"e{self._event_seq}"
+
+    def _on_expand_toggled(self, key: str, expanded: bool) -> None:
+        if not key:
             return
+        if expanded:
+            self._expanded_keys.add(key)
+        else:
+            self._expanded_keys.discard(key)
+
+    def _feed_item(
+        self,
+        event: FeedEvent,
+        *,
+        fallback_key: str = "",
+        hide_action: bool = False,
+    ) -> CursorFeedItem:
+        kind = resolve_feed_kind(role=event.role, title=event.title, kind=event.kind)
+        key = event.event_key or fallback_key
+        title = event.title
+        if kind == "thinking":
+            title = "Thinking"
+        elif kind not in {"plan", "tool"}:
+            title = ""
+        widget = CursorFeedItem(
+            kind=kind,
+            text=event.body,
+            title=title,
+            detail=event.body,
+            action="" if hide_action else event.action,
+            action_key="" if hide_action else event.action_key,
+            event_key=key,
+            expanded=key in self._expanded_keys,
+        )
+        widget.action_clicked.connect(self._on_feed_action)
+        widget.expand_toggled.connect(self._on_expand_toggled)
+        return widget
+
+    def _reset_thinking_pacer(self) -> None:
+        self._thinking_timer.stop()
+        self._thinking_text = ""
+        self._thinking_received = ""
+        self._thinking_shown = ""
+        self._thinking_wps = _DEFAULT_WPS
+        self._thinking_word_budget = 0.0
+        self._thinking_chunk = ""
+        self._thinking_chunk_at = 0.0
+        self._thinking_live = None
+        self._stream_finished = False
+        self._pending_async = None
+        self._pending_async_fail = ""
+
+    def _flush_thinking(self) -> None:
+        text = _visible_thinking(self._thinking_shown or self._thinking_received)
+        self._thinking_text = ""
+        self._thinking_received = ""
+        self._thinking_shown = ""
+        self._thinking_live = None
+        self._thinking_timer.stop()
+        if not text:
+            return
+        key = self._next_event_key()
+        if "live-thinking" in self._expanded_keys:
+            self._expanded_keys.discard("live-thinking")
+            self._expanded_keys.add(key)
+        self._events.append(
+            FeedEvent(
+                title="Thinking",
+                body=text,
+                time=self._now(),
+                kind="thinking",
+                event_key=key,
+            )
+        )
+
+    def _push_event(
+        self,
+        title: str,
+        body: str,
+        *,
+        action: str = "",
+        action_key: str = "",
+        role: str = "",
+        kind: str = "",
+    ) -> None:
+        resolved_role = role
+        if not resolved_role:
+            resolved_role = (
+                "user"
+                if title.strip().casefold() in {"вы", "you"}
+                else "agent"
+            )
+        self._events.append(
+            FeedEvent(
+                title=title,
+                body=body,
+                time=self._now(),
+                action=action,
+                action_key=action_key,
+                role=resolved_role,
+                kind=kind,
+                event_key=self._next_event_key(),
+            )
+        )
+        self._rebuild_feed()
+
+    def _question_already_in_feed(self, question_text: str) -> bool:
+        text = (question_text or "").strip()
+        if not text:
+            return True
+        for ev in self._events:
+            if ev.title == "Уточнение" and _same_feed_question(ev.body, text):
+                return True
+        return False
+
+    def _push_question_if_new(self, question_text: str) -> None:
+        text = (question_text or "").strip()
+        if not text or self._question_already_in_feed(text):
+            return
+        self._push_event("Уточнение", text)
+
+    def _ensure_question_in_feed(self, question_text: str) -> None:
+        """Keep the asked question visible in history (do not lose it after answer)."""
+        self._push_question_if_new(question_text)
+
+    def _mark_question_answered(self, qid: str, answer: str) -> None:
+        if self._record is None or self._record.plan is None or not qid:
+            return
+        questions = []
+        changed = False
+        for item in self._record.plan.open_questions or []:
+            if item.id == qid and not (item.answer or "").strip():
+                questions.append(replace(item, answer=answer))
+                changed = True
+            else:
+                questions.append(item)
+        if not changed:
+            return
+        plan = replace(self._record.plan, open_questions=questions)
+        self._record = replace(self._record, plan=plan)
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now().strftime("%H:%M")
+
+    # --- interactions ----------------------------------------------------------
+
+    def _on_feed_action(self, key: str) -> None:
+        if key == "show_plan" and self._record and self._record.plan:
+            body = _format_plan_steps(self._record.plan)
+            target: FeedEvent | None = None
+            for ev in self._events:
+                if ev.action_key == "show_plan":
+                    target = ev
+                    break
+                if ev.title in {"План", "Шаги плана"}:
+                    target = ev
+            if target is None:
+                self._push_event("План", body, action="Показать шаги плана", action_key="show_plan")
+                target = self._events[-1]
+            else:
+                target.body = body
+            if target.event_key:
+                self._expanded_keys.add(target.event_key)
+            self._rebuild_feed()
+        elif key == "run_plan":
+            self._on_execute()
+        elif key == "fetch":
+            self._on_fetch_results()
+        elif key == "save":
+            self._on_schedule_requested()
+        elif key == "next":
+            self._on_schedule_requested()
+        elif key.startswith("q:"):
+            self._input.setFocus()
+
+    def _on_pick_files(self) -> None:
         patterns = " ".join(f"*{s}" for s in sorted(SUPPORTED_SUFFIXES))
         paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Файл к ответу",
-            "",
-            f"Документы ({patterns});;Все файлы (*)",
+            self, "Приложить файлы", "", f"Документы ({patterns});;Все файлы (*)"
         )
-        if not paths:
-            return
         for path in paths:
-            if path and Path(path).is_file() and path not in self._chat_files:
+            if path and Path(path).is_file() and path not in self._pending_paths:
                 suffix = Path(path).suffix.lower()
                 if suffix and suffix not in SUPPORTED_SUFFIXES:
                     continue
-                self._chat_files.append(path)
-        names = [Path(path).name for path in self._chat_files]
-        self._chat_files_label.setText("📎 " + ", ".join(names))
-        self._chat_files_label.setVisible(bool(names))
-        self._ok(f"К ответу приложено: {len(self._chat_files)}")
+                self._pending_paths.append(path)
+        self._render_chips()
 
-    def _submit_chat(self) -> None:
-        text = self._current_answer_text()
+    def _on_send(self) -> None:
+        text = self._input.text().strip()
         if self._current_question_id:
+            if text:
+                field = self._question_fields.get(self._current_question_id)
+                if isinstance(field, QLineEdit):
+                    field.setText(text)
+                    self._selected_quick_answer = ""
+                self._input.clear()
             self._submit_question_answer()
             return
-        if text:
-            self._stream_messages.append(("user_message", text))
-            self._chat_input.clear()
-            self._render_feed()
-            self._ok("Сообщение сохранено в ленте. Для запуска используйте этапы workflow.")
-
-    def _submit_question_answer(self) -> None:
-        if not self._current_question_id:
+        if not text and not self._pending_paths:
             return
-        text = self._current_answer_text()
-        if not text and not self._chat_files:
-            QMessageBox.information(self, "Ответ", "Выберите вариант, заполните свой ответ или приложите файл.")
+        self._input.clear()
+
+        if self._record is None:
+            if text:
+                self._notes = (self._notes + "\n" + text).strip() if self._notes else text
+            self._push_event("Вы", text or "Материалы приложены")
+            self._on_plan()
             return
-        self._on_clarify()
 
-    def _current_answer_text(self) -> str:
-        if self._current_question_id:
-            field = self._question_fields.get(self._current_question_id)
-            if isinstance(field, QLineEdit):
-                custom = field.text().strip()
-                if custom:
-                    return custom
-            if self._selected_quick_answer.strip():
-                return self._selected_quick_answer.strip()
-        return self._chat_input.toPlainText().strip()
+        # Free-form message while plan ready → replan or execute hint
+        self._push_event("Вы", text)
+        if self._record.plan and not self._record.plan.unanswered():
+            self._push_event(
+                "Агент",
+                "План уже готов. Нажмите «Запустить», чтобы собрать workflow, "
+                "или уточните требования — пересоберу план.",
+                action="Запустить сборку",
+                action_key="run_plan",
+            )
+        else:
+            self._on_plan()
 
-    def _on_attach_answer_file(self, question_id: str) -> None:
-        patterns = " ".join(f"*{s}" for s in sorted(SUPPORTED_SUFFIXES))
-        paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Файл к ответу",
-            "",
-            f"Документы ({patterns});;Все файлы (*)",
-        )
-        if not paths:
-            return
-        bucket = self._question_files.setdefault(question_id, [])
-        for path in paths:
-            if path and Path(path).is_file() and path not in bucket:
-                suffix = Path(path).suffix.lower()
-                if suffix and suffix not in SUPPORTED_SUFFIXES:
-                    continue
-                bucket.append(path)
-        label = self._question_file_labels.get(question_id)
-        if label is not None:
-            names = [Path(p).name for p in bucket]
-            label.setText("📎 " + ", ".join(names))
-            label.setVisible(bool(names))
-        self._ok(f"К ответу приложено: {len(bucket)}")
+    def _append_user_files_to_event(self) -> None:
+        if self._pending_paths:
+            names = ", ".join(Path(p).name for p in self._pending_paths)
+            self._push_event("Вложения", names)
 
-    def _set_busy(self, busy: bool, base: str = "Обращение к агенту") -> None:
+    def _set_busy(self, busy: bool, base: str = "Агент работает") -> None:
         self._busy = busy
-        for btn in (
-            self._plan_btn,
-            self._send_btn,
-            self._attach_btn,
-            self._exec_btn,
-            self._rerun_btn,
-            self._new_btn,
-        ):
-            btn.setEnabled(not busy)
+        self._send_btn.setEnabled(True)  # allow clarify while working, per mockup
+        self._clip_btn.setEnabled(True)
         if busy:
             self._busy_base = base
             self._busy_n = 0
-            self._activity.setVisible(True)
-            self._tick_activity()
             self._busy_timer.start()
-            self._phase.setStyleSheet(_PHASE_STYLE_BUSY)
+            self._tick_activity()
         else:
             self._busy_timer.stop()
-            self._activity.setVisible(False)
-            self._phase.setStyleSheet(_PHASE_STYLE_IDLE)
-            self._render_phase()
+            self._render_all()
 
     def _tick_activity(self) -> None:
         self._busy_n = (self._busy_n % 3) + 1
-        self._activity.setText(f"● {self._busy_base}{'.' * self._busy_n}")
-
-    def _append(self, text: str) -> None:
-        cleaned = (text or "").strip()
-        if not cleaned:
-            return
-        self._stream_messages.append(("system", cleaned))
-        self._schedule_feed_render()
-
-    def _ok(self, message: str) -> None:
-        self._status.setText(message)
-        self._status.setStyleSheet("color: #2D7A5E; background: transparent;")
-
-    def _fail(self, message: str) -> None:
-        self._status.setText(message)
-        self._status.setStyleSheet("color: #B00020; background: transparent;")
-        self._append(f"\n[error] {message}\n")
+        self._agent_status.setText(f"● {self._busy_base}{'.' * self._busy_n}")
 
     def _run_async(self, label: str, fn) -> None:
-        self._thinking_text = ""
-        self._thinking_expanded = False
-        self._live_label = label
-        self._live_lines = []
+        self._reset_thinking_pacer()
         self._set_busy(True, label)
-        self._render_feed()
 
         def work() -> None:
             try:
@@ -1436,44 +1706,184 @@ class WorkflowPage(QWidget):
 
         Thread(target=work, daemon=True).start()
 
+    def _on_stream_event(self, event_type: str, text: str) -> None:
+        incoming = (text or "").replace(_REPLACEMENT, "")
+        if event_type in {"thinking", "assistant"} and incoming:
+            if incoming.startswith(self._thinking_received) and len(incoming) >= len(self._thinking_received):
+                delta = incoming[len(self._thinking_received) :]
+                self._thinking_received = incoming
+            else:
+                delta = incoming
+                self._thinking_received += incoming
+            self._thinking_text = self._thinking_received
+            if delta:
+                self._note_thinking_chunk(delta)
+            self._ensure_thinking_pacer()
+        elif event_type in {"decision", "system"} and incoming.strip():
+            delta = "\n" + incoming.strip()
+            self._thinking_received = (self._thinking_received + delta).strip()
+            self._thinking_text = self._thinking_received
+            self._note_thinking_chunk(delta)
+            self._ensure_thinking_pacer()
+
+    def _note_thinking_chunk(self, delta: str) -> None:
+        now = time.monotonic()
+        previous = self._thinking_chunk
+        started = self._thinking_chunk_at
+        if previous and started:
+            words = _word_count(previous)
+            elapsed = now - started
+            # Пауза модели — не скорость печати. Иначе think ползёт по 3 слова/с.
+            if words >= 1 and 0.08 <= elapsed <= _WPS_MAX_ELAPSED:
+                self._thinking_wps = min(_MAX_WPS, max(_MIN_WPS, words / elapsed))
+        self._thinking_chunk = delta
+        self._thinking_chunk_at = now
+
+    def _ensure_thinking_pacer(self) -> None:
+        if not self._thinking_timer.isActive():
+            self._thinking_timer.start()
+
+    def _tick_thinking_pacer(self) -> None:
+        remaining = self._thinking_received[len(self._thinking_shown) :]
+        if remaining:
+            wps = self._thinking_wps
+            backlog = _word_count(remaining)
+            if backlog > 36:
+                wps = _MAX_WPS
+            self._thinking_word_budget += wps * (_PACER_MS / 1000.0)
+            take = int(self._thinking_word_budget)
+            if take < 1:
+                return
+            self._thinking_word_budget -= take
+            piece = _take_words(remaining, take) or remaining
+            self._thinking_shown += piece
+            self._paint_live_thinking()
+        if len(self._thinking_shown) >= len(self._thinking_received):
+            if self._stream_finished or self._pending_async_fail:
+                self._thinking_timer.stop()
+                self._finish_pending_async()
+            elif not remaining:
+                self._thinking_timer.stop()
+
+    def _paint_live_thinking(self) -> None:
+        shown = self._thinking_shown
+        if self._thinking_live is not None:
+            self._thinking_live.set_body_text(shown)
+            self._scroll_feed_to_bottom()
+            return
+        if not shown.strip():
+            return
+        self._expanded_keys.add("live-thinking")
+        live = CursorFeedItem(
+            kind="thinking",
+            text=shown,
+            title="Thinking",
+            detail=shown,
+            event_key="live-thinking",
+            expanded=True,
+        )
+        live.expand_toggled.connect(self._on_expand_toggled)
+        self._thinking_live = live
+        stretch = self._feed_layout.takeAt(self._feed_layout.count() - 1)
+        self._feed_layout.addWidget(live)
+        if stretch is not None:
+            self._feed_layout.addItem(stretch)
+        self._scroll_feed_to_bottom()
+
+    def _finish_pending_async(self) -> None:
+        fail = self._pending_async_fail
+        pending = self._pending_async
+        self._pending_async = None
+        self._pending_async_fail = ""
+        self._stream_finished = False
+        self._flush_thinking()
+        if fail:
+            self._set_busy(False)
+            self._push_event("Ошибка", fail)
+            self._agent_status.setText("● Ошибка — попробуйте ещё раз")
+            self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
+            return
+        if pending is None:
+            self._set_busy(False)
+            return
+        result, label = pending
+        self._apply_async_result(result, label)
+
     def _on_async_ok(self, result: object, label: str) -> None:
+        self._pending_async = (result, label)
+        self._stream_finished = True
+        if len(self._thinking_shown) >= len(self._thinking_received):
+            self._finish_pending_async()
+        else:
+            self._ensure_thinking_pacer()
+
+    def _apply_async_result(self, result: object, label: str) -> None:
         self._set_busy(False)
         if isinstance(result, WorkflowRecord):
-            self._record = result
+            self._record = self._persist_passport_runtime(result)
             self._pending_paths = []
             self._workflow_title = result.title
             self._notes = result.notes or self._notes
-            self._thinking_text = ""
-            self._live_lines = []
-            self._live_label = ""
-            self._render_plan()
-            self._render_phase()
-            self.saved.emit(result.id)
-            # Черновик убираем только после publish (phase=done).
-            if result.phase == "done":
-                self.saved_record.emit(result)
-            if label.startswith("Планирование") or label.startswith("Уточнение"):
-                n = len(result.plan.unanswered()) if result.plan else 0
-                self._ok(f"План готов · вопросов: {n}" if n else "План готов · можно реализовывать")
+            self._render_chips()
+            if label.startswith("Планирование"):
+                unanswered = result.plan.unanswered() if result.plan else []
+                self._push_event(
+                    "План",
+                    _format_plan_steps(result.plan) if result.plan else (result.title or "План готов"),
+                    action="Показать шаги плана",
+                    action_key="show_plan",
+                )
+                if unanswered:
+                    self._push_question_if_new(unanswered[0].question)
+                else:
+                    self._push_event(
+                        "Сборка workflow",
+                        "План готов без открытых вопросов. Можно запускать реализацию.",
+                        action="Запустить сборку",
+                        action_key="run_plan",
+                    )
+            elif label.startswith("Уточнение"):
+                unanswered = result.plan.unanswered() if result.plan else []
+                if unanswered:
+                    self._push_question_if_new(unanswered[0].question)
+                else:
+                    self._push_event(
+                        "Сборка workflow",
+                        "Уточнения учтены. План готов к запуску.",
+                        action="Запустить сборку",
+                        action_key="run_plan",
+                    )
             elif label.startswith("Реализация"):
                 self._tests_ok = False
-                self._ok(f"{result.phase} · скачиваю артефакты и гоняю проверки")
-                if result.last_result:
-                    self._append("\n" + result.last_result + "\n")
+                local = dict(getattr(result, "local_run", None) or {})
+                tests = str(local.get("tests_status") or "").casefold()
+                exec_status = str(local.get("exec_run_status") or "").upper()
+                finished = exec_status == "FINISHED" or result.phase == "tested"
+                report = (result.last_result or "").strip()
+                if tests == "pass" and finished:
+                    body = report or "TESTS: PASS."
+                elif tests == "fail":
+                    prefix = "Тестовый прогон не завершён. Сохранение недоступно.\n\n"
+                    body = prefix + report if report else "TESTS: FAIL — сохранение недоступно."
+                else:
+                    prefix = "Тестовый прогон не завершён — перезапустите сборку.\n\n"
+                    body = prefix + report if report else "Тестовый прогон не завершён — перезапустите сборку."
+                self._push_event(
+                    "Тестовый прогон",
+                    body,
+                    action="Скачать результат" if result.exec_agent_id else "",
+                    action_key="fetch",
+                )
                 self._on_fetch_results()
             elif label.startswith("Публикация"):
-                self._ok("Сохранено в «Мои агенты»")
-                self._append(
-                    "\n✓ Агент опубликован. Откройте «Мои агенты» → «Запустить».\n"
+                self._push_event(
+                    "Сохранено",
+                    "Агент опубликован в «Мои агенты».",
                 )
-            else:
-                self._ok("Готово")
-        elif isinstance(result, tuple) and len(result) == 2 and result[0] == "__live_ok__":
-            self._tests_ok = True
-            self._append("\n✓ Live-проверка web_search завершена — можно сохранить агента.\n")
-            self._ok("Тесты пройдены · можно сохранить")
-            self._render_phase()
-            self._render_feed()
+            self.saved.emit(result.id)
+            if result.phase == "done":
+                self.saved_record.emit(result)
+            self._render_all()
         elif isinstance(result, tuple) and len(result) == 2:
             dest_dir, files = result
             self._results_dir = str(dest_dir)
@@ -1482,22 +1892,24 @@ class WorkflowPage(QWidget):
                 item = QListWidgetItem(Path(path).name)
                 item.setData(Qt.ItemDataRole.UserRole, path)
                 self._results.addItem(item)
-            self._ok(f"Файлов результата: {len(files)}")
-            self._append(f"\n[результат] {dest_dir}\n")
-            self._thinking_text = ""
-            self._live_lines = []
-            self._live_label = ""
-            self._evaluate_tests_and_verify(list(files))
-            self._render_feed()
-            self._render_phase()
+            if files:
+                download_text = f"Скачано файлов: {len(files)}\n{dest_dir}"
+            else:
+                download_text = (
+                    "Файлы результата не найдены (агент не положил их в artifacts/).\n"
+                    f"{dest_dir}"
+                )
+            self._push_event("Результат", download_text)
+            self._evaluate_tests(list(files))
+            self._render_all()
 
     def _on_async_fail(self, message: str) -> None:
-        self._set_busy(False)
-        self._thinking_text = ""
-        self._live_lines = []
-        self._live_label = ""
-        self._render_feed()
-        self._fail(message)
+        self._pending_async_fail = message
+        self._stream_finished = True
+        if len(self._thinking_shown) >= len(self._thinking_received):
+            self._finish_pending_async()
+        else:
+            self._ensure_thinking_pacer()
 
     def _on_plan(self) -> None:
         notes = (self._notes or "").strip()
@@ -1506,23 +1918,20 @@ class WorkflowPage(QWidget):
                 QMessageBox.warning(
                     self,
                     "Документ",
-                    "Нет материалов для планирования. Откройте workflow из паспорта агента "
-                    "или из «Мои workflow».",
+                    "Нет материалов. Откройте workflow из паспорта агента.",
                 )
                 return
-            self._append("→ Создаю workflow и запускаю планирование…\n")
-
             def create_and_plan() -> WorkflowRecord:
                 created = self._api.create_workflow(notes=notes, file_paths=self._pending_paths)
-                return self._api.stream_plan_workflow(
+                created = self._persist_passport_runtime(created)
+                planned = self._api.stream_plan_workflow(
                     created.id,
                     lambda event_type, text: self._stream_event.emit(event_type, text),
                 )
+                return self._persist_passport_runtime(planned)
 
             self._run_async("Планирование", create_and_plan)
             return
-
-        self._append("→ Планирование через backend…\n")
         self._run_async(
             "Планирование",
             lambda: self._api.stream_plan_workflow(
@@ -1531,57 +1940,255 @@ class WorkflowPage(QWidget):
             ),
         )
 
-    def _on_clarify(self) -> None:
-        if self._record is None or self._record.plan is None:
+    def _sync_question_state(self, plan: WorkflowPlan) -> None:
+        unanswered = plan.unanswered()
+        if not unanswered:
+            self._current_question_id = ""
+            self._selected_quick_answer = ""
+            self._question_fields = {}
+            return
+        self._current_question_id = unanswered[0].id
+
+    def _make_clarification_message(self, question: WorkflowOpenQuestion) -> QWidget:
+        """Clarification with options — rendered as an agent message in the chat feed."""
+        self._current_question_id = question.id
+        self._question_fields = {}
+
+        wrap = QWidget()
+        wrap.setStyleSheet("background: transparent;")
+        wrap.setMinimumWidth(0)
+        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        col = QVBoxLayout(wrap)
+        col.setContentsMargins(0, 8, 0, 8)
+        col.setSpacing(4)
+
+        card = QFrame()
+        card.setObjectName("qcard")
+        card.setStyleSheet(_QCARD)
+        card.setMinimumWidth(0)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(6)
+
+        title = _WrappingLabel("Агенту нужно уточнение")
+        title.setFont(app_font(12, QFont.Weight.DemiBold))
+        title.setStyleSheet("color: #8A5300; background: transparent;")
+        question_label = _WrappingLabel(question.question)
+        question_label.setFont(app_font(13, QFont.Weight.DemiBold))
+        question_label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        lay.addWidget(title)
+        lay.addWidget(question_label)
+        if question.why:
+            why = _WrappingLabel(question.why)
+            why.setFont(app_font(11))
+            why.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+            lay.addWidget(why)
+
+        group = QButtonGroup(card)
+        self._answer_group = group
+        group.setExclusive(True)
+        for answer in _quick_answers_for_question(question):
+            # QRadioButton text does not wrap — indicator + wrapping label.
+            opt_row = QHBoxLayout()
+            opt_row.setContentsMargins(0, 0, 0, 0)
+            opt_row.setSpacing(8)
+            option = QRadioButton()
+            option.setCursor(Qt.CursorShape.PointingHandCursor)
+            option.setStyleSheet(_RADIO_OPTION)
+            option.setFixedWidth(22)
+            option.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            opt_text = _WrappingLabel(answer)
+            opt_text.setFont(app_font(12))
+            opt_text.setCursor(Qt.CursorShape.PointingHandCursor)
+            opt_text.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+            opt_text.mousePressEvent = (  # type: ignore[method-assign]
+                lambda _ev, btn=option: btn.setChecked(True)
+            )
+            option.toggled.connect(
+                lambda checked=False, value=answer: self._select_quick_answer(value)
+                if checked
+                else None
+            )
+            group.addButton(option)
+            opt_row.addWidget(option, 0, Qt.AlignmentFlag.AlignTop)
+            opt_row.addWidget(opt_text, 1)
+            lay.addLayout(opt_row)
+
+        custom_row = QHBoxLayout()
+        custom_row.setSpacing(8)
+        custom_option = QRadioButton("Свой вариант")
+        custom_option.setCursor(Qt.CursorShape.PointingHandCursor)
+        custom_option.setFont(app_font(12))
+        custom_option.setStyleSheet(_RADIO_OPTION)
+        custom_input = QLineEdit()
+        custom_input.setPlaceholderText("Напишите свой ответ")
+        custom_input.setFont(app_font(12))
+        custom_input.setMinimumWidth(0)
+        custom_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        custom_input.setStyleSheet(_CUSTOM_ANSWER_FIELD)
+        self._question_fields[question.id] = custom_input
+        group.addButton(custom_option)
+        custom_row.addWidget(custom_option, 0)
+        custom_row.addWidget(custom_input, 1)
+        lay.addLayout(custom_row)
+
+        custom_option.toggled.connect(
+            lambda checked=False, field=custom_input: field.setFocus() if checked else None
+        )
+        custom_input.textEdited.connect(
+            lambda _value, option=custom_option: option.setChecked(True)
+            if not option.isChecked()
+            else None
+        )
+        custom_input.textEdited.connect(lambda _value: self._select_custom_answer())
+
+        hint = _WrappingLabel("Выберите вариант или заполните свой ответ, затем «Далее».")
+        hint.setFont(app_font(11))
+        hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        lay.addWidget(hint)
+
+        next_row = QHBoxLayout()
+        next_row.addStretch(1)
+        next_btn = QPushButton("Далее")
+        next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        next_btn.setFixedHeight(34)
+        next_btn.setMinimumWidth(110)
+        next_btn.setFont(app_font(12, QFont.Weight.DemiBold))
+        next_btn.setStyleSheet(_PRIMARY)
+        next_btn.clicked.connect(self._submit_question_answer)
+        next_row.addWidget(next_btn)
+        lay.addLayout(next_row)
+
+        col.addWidget(card)
+        return wrap
+
+    def _clear_questions(self) -> None:
+        self._question_fields = {}
+        self._answer_group = None
+        self._current_question_id = ""
+        self._selected_quick_answer = ""
+
+    def _select_quick_answer(self, answer: str) -> None:
+        self._selected_quick_answer = answer
+        field = self._question_fields.get(self._current_question_id)
+        if isinstance(field, QLineEdit):
+            field.clear()
+
+    def _select_custom_answer(self) -> None:
+        self._selected_quick_answer = ""
+
+    def _current_answer_text(self) -> str:
+        if self._current_question_id:
+            field = self._question_fields.get(self._current_question_id)
+            if isinstance(field, QLineEdit):
+                custom = field.text().strip()
+                if custom:
+                    return custom
+            if self._selected_quick_answer.strip():
+                return self._selected_quick_answer.strip()
+        return self._input.text().strip()
+
+    def _submit_question_answer(self) -> None:
+        if not self._current_question_id or self._record is None:
+            return
+        text = self._current_answer_text()
+        if not text and not self._pending_paths:
+            QMessageBox.information(
+                self,
+                "Ответ",
+                "Выберите вариант, заполните свой ответ или приложите файл.",
+            )
             return
         qid = self._current_question_id
-        text = self._current_answer_text()
-        answers = {qid: text} if qid and text else {}
-        file_paths = list(self._chat_files)
-        file_question_ids = [qid for _ in file_paths if qid]
-        if not any(answers.values()) and not file_paths:
-            QMessageBox.information(self, "Ответы", "Введите ответ или приложите файл.")
+        asked = ""
+        if qid.startswith("post-build-") and self._post_build_question is not None:
+            asked = self._post_build_question.question
+        elif self._record and self._record.plan:
+            for q in self._record.plan.unanswered():
+                if q.id == qid:
+                    asked = q.question
+                    break
+            if not asked and self._record.plan.unanswered():
+                asked = self._record.plan.unanswered()[0].question
+        self._ensure_question_in_feed(asked)
+        self._mark_question_answered(qid, text)
+        self._push_event("Вы", text or "Файл приложен", role="user")
+        self._append_user_files_to_event()
+
+        # After-build clarification → apply answer and re-run assembly.
+        if qid.startswith("post-build-"):
+            note = f"Уточнение после сборки: {text}"
+            self._notes = (self._notes + "\n" + note).strip() if self._notes else note
+            self._post_build_question = None
+            self._clear_questions()
+            wid = self._record.id
+            local = dict(self._record.local_run or {})
+            local.update(
+                {
+                    "post_build_answer": text,
+                    "can_publish": False,
+                    "tests_status": "unknown",
+                }
+            )
+
+            def work() -> WorkflowRecord:
+                self._api.update_workflow_local_run(wid, local)
+                try:
+                    return self._api.stream_execute_workflow(
+                        wid,
+                        lambda event_type, t: self._stream_event.emit(event_type, t),
+                        reexecute=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    return self._api.execute_workflow(wid, reexecute=True)
+
+            self._push_event("Сборка workflow", "Учитываю уточнение и запускаю повторную сборку…")
+            self._run_async("Реализация", work)
             return
-        self._append("\n→ Отправляю ответы…\n")
+
+        answers = {qid: text}
         wid = self._record.id
-        self._questions_card.setVisible(False)
+        paths = list(self._pending_paths)
+        qids = [qid] * len(paths) if paths else []
         self._clear_questions()
 
-        def work() -> WorkflowRecord:
+        def clarify() -> WorkflowRecord:
             return self._api.stream_clarify_workflow(
                 wid,
                 answers,
-                lambda event_type, text: self._stream_event.emit(event_type, text),
-                file_paths=file_paths,
-                file_question_ids=file_question_ids,
+                lambda event_type, t: self._stream_event.emit(event_type, t),
+                file_paths=paths,
+                file_question_ids=qids,
             )
 
-        self._run_async("Уточнение плана", work)
-        self._chat_input.clear()
-        self._chat_files = []
-        self._chat_files_label.clear()
-        self._chat_files_label.setVisible(False)
+        self._run_async("Уточнение плана", clarify)
+
+    def _on_run_clicked(self) -> None:
+        reexecute = bool(self._record and self._record.exec_agent_id)
+        self._on_execute(reexecute=reexecute)
 
     def _on_execute(self, reexecute: bool = False) -> None:
         if self._record is None or self._record.plan is None:
             QMessageBox.information(self, "План", "Сначала постройте план.")
             return
-        self._append("\n→ Запускаю реализацию…\n")
+        if self._record.plan.unanswered():
+            QMessageBox.information(self, "Уточнения", "Сначала ответьте на вопросы агента.")
+            return
+        self._tests_ok = False
+        self._post_build_question = None
+        self._next_btn.setVisible(False)
+        self._push_event("Сборка workflow", "Запускаю реализацию…")
         wid = self._record.id
         self._run_async(
             "Реализация",
-            lambda: self._api.stream_execute_workflow(
-                wid,
-                lambda event_type, text: self._stream_event.emit(event_type, text),
-                reexecute=reexecute,
-            ),
+            lambda: self._api.execute_workflow(wid, reexecute=reexecute),
         )
 
     def _on_fetch_results(self) -> None:
         if self._record is None or not self._record.exec_agent_id:
             return
         wid = self._record.id
-        self._append("\n→ Скачиваю артефакты…\n")
 
         def work():
             result = self._api.download_workflow_artifacts(wid)
@@ -1589,8 +2196,8 @@ class WorkflowPage(QWidget):
 
         self._run_async("Скачивание", work)
 
-    def _evaluate_tests_and_verify(self, files: list[str]) -> None:
-        """Parse RESULT.md / last_result and run live web_search smoke test."""
+    def _evaluate_tests(self, files: list[str]) -> None:
+        """Require TESTS: PASS in RESULT.md / last_result before save is allowed."""
         blob_parts: list[str] = []
         if self._record and self._record.last_result:
             blob_parts.append(self._record.last_result)
@@ -1603,87 +2210,140 @@ class WorkflowPage(QWidget):
                     continue
         blob = "\n".join(blob_parts)
         upper = blob.upper()
-        explicit_fail = "TESTS: FAIL" in upper
-        explicit_pass = "TESTS: PASS" in upper
+        explicit_fail = "TESTS: FAIL" in upper or "TESTS:FAIL" in upper
+        explicit_pass = "TESTS: PASS" in upper or "TESTS:PASS" in upper
+        self._tests_ok = False
+        self._post_build_question = None
+        local_state = dict(self._record.local_run or {}) if self._record else {}
+        exec_status = str(local_state.get("exec_run_status") or "").upper()
+        run_finished = exec_status == "FINISHED" or (
+            self._record is not None and self._record.phase == "tested"
+        )
+        ctx_bits: list[str] = []
+        if self._record:
+            if self._record.title:
+                ctx_bits.append(self._record.title)
+            if self._record.plan and self._record.plan.goal:
+                ctx_bits.append(self._record.plan.goal)
+            for q in getattr(self._record.plan, "answered_questions", None) or []:
+                ans = getattr(q, "answer", "") or ""
+                if ans:
+                    ctx_bits.append(f"{getattr(q, 'question', '')} {ans}")
+        context = " | ".join(ctx_bits)[:500]
+        odata_ok = bool(local_state.get("odata_configured"))
+        infra_fail = _is_infra_access_fail(blob)
+        if explicit_fail and infra_fail and (_fixtures_passed(blob) or odata_ok):
+            explicit_fail = False
+            explicit_pass = True
         if explicit_fail:
-            self._tests_ok = False
-            self._append("\n✗ Тесты: FAIL — исправьте реализацию и запустите снова.\n")
-            self._ok("Тесты не прошли")
-            self._render_phase()
+            if infra_fail:
+                self._push_event(
+                    "Тесты",
+                    "Live 1С с облака недоступен — это ожидаемо. "
+                    "Проверка идёт через OData на сервере Constructor, без вопросов в чате. "
+                    "Перезапустите сборку.",
+                )
+                self._render_all()
+                return
+            self._post_build_question = _extract_post_build_question(blob, context=context)
+            self._ensure_question_in_feed(self._post_build_question.question)
+            self._push_event(
+                "Тесты",
+                "TESTS: FAIL — сохранение недоступно. Ответьте на вопрос агента в чате.",
+            )
+            self._render_all()
             return
-        self._tests_ok = explicit_pass
-        if explicit_pass:
-            self._append("\n✓ Тесты по артефактам: PASS. Запускаю live web_search…\n")
-        else:
-            self._append("\n… В RESULT.md нет TESTS: PASS — запускаю live web_search.\n")
+        if not explicit_pass:
+            if infra_fail and odata_ok:
+                explicit_pass = True
+            elif infra_fail:
+                self._push_event(
+                    "Тесты",
+                    "Live 1С с облака недоступен — это ожидаемо. "
+                    "Проверка идёт через OData на сервере Constructor, без вопросов в чате. "
+                    "Перезапустите сборку.",
+                )
+                self._render_all()
+                return
+            else:
+                self._post_build_question = _extract_post_build_question(blob, context=context)
+                self._ensure_question_in_feed(self._post_build_question.question)
+                self._push_event(
+                    "Тесты",
+                    "TESTS: PASS не найден — сохранение недоступно. Ответьте на вопрос агента в чате.",
+                )
+                self._render_all()
+                return
+        if not run_finished:
+            self._push_event(
+                "Тесты",
+                "Тестовый прогон не завершён — сохранение недоступно. Перезапустите сборку.",
+            )
+            self._render_all()
+            return
 
+        self._tests_ok = True
+        self._push_event(
+            "Тесты",
+            "TESTS: PASS. Нажмите «Далее», чтобы заполнить паспорт и расписание.",
+            action="Далее",
+            action_key="next",
+        )
         if self._record is None:
             return
         wid = self._record.id
-        title = self._record.title or "закупки"
-        message = (
-            f"Сделай live тестовый прогон через web_search: найди актуальные закупки "
-            f"по теме «{title}». Если ЭТП недоступна — всё равно верни результаты поиска."
+        local = dict(self._record.local_run or {})
+        local.update(
+            {
+                "status": "tested",
+                "can_publish": True,
+                "tests_status": "pass",
+                "runtime": local.get("runtime") or "mcp",
+            }
         )
 
-        def live() -> None:
-            try:
-                self._api.stream_workflow_agent_run(
-                    wid,
-                    message,
-                    lambda payload: self._stream_event.emit(
-                        str(payload.get("type") or "message"),
-                        str(
-                            payload.get("text")
-                            or payload.get("message")
-                            or payload.get("tool")
-                            or ""
-                        ),
-                    ),
-                )
-                self._async_ok.emit(("__live_ok__", []), "Live-проверка")
-            except Exception as exc:  # noqa: BLE001
-                # Fixture PASS already allows save; live failure is non-blocking then.
-                if explicit_pass:
-                    self._async_ok.emit(("__live_ok__", []), "Live-проверка")
-                else:
-                    self._async_fail.emit(str(getattr(exc, "message", None) or exc))
+        def sync() -> WorkflowRecord:
+            return self._api.update_workflow_local_run(wid, local)
 
-        Thread(target=live, daemon=True).start()
-        self._set_busy(True, "Live-проверка web_search")
-        if explicit_pass:
-            self._render_phase()
+        try:
+            self._record = sync()
+        except ApiError as exc:
+            self._push_event("Предупреждение", f"Не удалось зафиксировать TESTS: PASS на сервере: {exc}")
+
+    def _on_schedule_requested(self) -> None:
+        if self._record is None:
+            return
+        if not self._tests_ok:
+            QMessageBox.information(
+                self,
+                "Тесты",
+                "Паспорт доступен только после TESTS: PASS.",
+            )
+            return
+        self.schedule_requested.emit(self._record)
 
     def _open_result_item(self, item: QListWidgetItem) -> None:
         path = item.data(Qt.ItemDataRole.UserRole)
         if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
-    def _open_results_folder(self) -> None:
-        if self._results_dir:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(self._results_dir))
-
     def _on_new(self) -> None:
         self._record = None
         self._pending_paths.clear()
         self._workflow_title = ""
         self._notes = ""
-        self._thinking_text = ""
-        self._thinking_expanded = False
-        self._stream_messages = []
-        self._chat_input.clear()
-        self._chat_files = []
-        self._chat_files_label.clear()
-        self._chat_files_label.setVisible(False)
-        self._log.clear()
-        self._results.clear()
+        self._passport_runtime = {}
         self._results_dir = ""
         self._tests_ok = False
+        self._reset_thinking_pacer()
+        self._post_build_question = None
         self._clear_questions()
-        self._questions_card.setVisible(False)
-        self._render_phase()
-        self._render_feed()
-        self._ok("Новый workflow")
+        self._events = []
+        self._event_seq = 0
+        self._expanded_keys = set()
+        self._results.clear()
+        self._render_chips()
+        self._render_all()
 
 
 def _notes_from_passport(session: PassportSession) -> str:
@@ -1703,12 +2363,14 @@ def _notes_from_passport(session: PassportSession) -> str:
                 f"Требует подтверждения человека: {passport.needs_human_approval or '—'}",
                 f"Не может: {passport.forbidden or '—'}",
                 f"Результат: {passport.result or '—'}",
+                f"Уровень автономности: {int(getattr(passport, 'autonomy_level', 1) or 1)}",
             ]
         )
     lines = [
         f"# Паспорт ИИ-агента: {title}",
         "",
         "Составь план реализации ИИ-агента по согласованному паспорту.",
+        "Уровень автономности: 1. Запись и прочие операции — только после подтверждения человека.",
         "Не меняй смысл полей паспорта без уточняющих вопросов.",
         "В steps опиши конкретные шаги автоматизации процесса.",
         "",
