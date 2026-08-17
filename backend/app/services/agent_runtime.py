@@ -7,13 +7,9 @@ from sqlalchemy.orm import Session
 
 from app.models.workflow import Workflow
 from app.services.local_mcp import list_tools
-from app.services.plan_run import (
-    PlanRunError,
-    build_plan_export_arguments,
-    format_plan_run_answer,
-    uses_plan_export,
-)
 from app.services.tool_bridge import DEFAULT_TIMEOUT_S, tool_bridge
+from app.services.workflow_tool_routing import resolve_workflow_routing
+from app.services.workflows.plan_models import WorkflowPlan
 
 
 AgentEventCallback = Callable[[dict[str, Any]], None]
@@ -72,43 +68,6 @@ def run_agent_task(
     emit({"type": "agent_message", "text": f"Запускаю «{workflow.title or 'ИИ-агент'}»."})
 
     domain = _agent_domain(workflow)
-
-    # Rules come from THIS agent's plan (runtime / constraints / answers), not globals.
-    # Outlook/meetings must never fall into tender Excel export or web_search.
-    if domain != "outlook_calendar" and uses_plan_export(workflow):
-        emit({"type": "status", "text": "Читаю правила из паспорта этого агента…"})
-        emit(
-            {
-                "type": "agent_message",
-                "text": (
-                    "Выполняю по правилам из ответов при создании: поиск по ключам, "
-                    "Excel с указанными колонками, сохранение куда указано в плане."
-                ),
-            }
-        )
-        try:
-            arguments = build_plan_export_arguments(workflow)
-        except PlanRunError as exc:
-            emit({"type": "error", "message": str(exc)})
-            raise AgentRuntimeError(str(exc)) from exc
-
-        try:
-            result = _request_desktop_tool(
-                emit,
-                run_id=run_id,
-                user_id=user_id,
-                workflow_id=workflow_id,
-                tool="plan_export",
-                arguments=arguments,
-            )
-        except AgentRuntimeError as exc:
-            emit({"type": "error", "message": str(exc)})
-            raise
-
-        answer = format_plan_run_answer(result)
-        emit({"type": "tool_result", "tool": "plan_export", "result": result})
-        emit({"type": "agent_message", "text": answer})
-        return {"answer": answer, "tool": "plan_export", "tool_result": result}
 
     if domain == "outlook_calendar":
         emit({"type": "status", "text": "Читаю Outlook на этом компьютере…"})
@@ -190,60 +149,9 @@ def run_agent_task(
 
 
 def _agent_domain(workflow: Workflow) -> str:
-    plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
-    runtime = plan.get("runtime") if isinstance(plan.get("runtime"), dict) else {}
-    kind = str(runtime.get("kind") or "").strip().casefold()
-    if kind in {"outlook_calendar", "site_search_excel", "browser_task", "onec"}:
-        return kind
-    answered = plan.get("answered_questions") or []
-    answered_text = ""
-    if isinstance(answered, list):
-        answered_text = " ".join(
-            f"{x.get('question', '')} {x.get('answer', '')}"
-            for x in answered
-            if isinstance(x, dict)
-        )
-    elif isinstance(answered, dict):
-        answered_text = " ".join(f"{k} {v}" for k, v in answered.items())
-    open_qs = plan.get("open_questions") or []
-    open_text = ""
-    if isinstance(open_qs, list):
-        open_text = " ".join(
-            f"{x.get('question', '')} {x.get('answer', '')}"
-            for x in open_qs
-            if isinstance(x, dict)
-        )
-    blob = " ".join(
-        [
-            str(workflow.title or ""),
-            str(workflow.notes or ""),
-            str(plan.get("title") or ""),
-            str(plan.get("goal") or ""),
-            " ".join(str(x) for x in (plan.get("constraints") or [])),
-            " ".join(str(x) for x in (plan.get("test_criteria") or [])),
-            answered_text,
-            open_text,
-        ]
-    ).casefold()
-    if any(tip in blob for tip in ("1с", "1c", "onec", "odata")) and "outlook" not in blob:
-        return "onec"
-    if any(
-        tip in blob
-        for tip in (
-            "outlook",
-            "календар",
-            "совещан",
-            "встреч",
-            "занятост",
-            "confirm_slot",
-        )
-    ):
-        return "outlook_calendar"
-    if ("excel" in blob or "xlsx" in blob) and (
-        "ключев" in blob or "этп" in blob or "сайт" in blob
-    ):
-        return "site_search_excel"
-    return ""
+    plan_data = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
+    plan = WorkflowPlan.from_dict(plan_data)
+    return resolve_workflow_routing(plan, workflow).kind
 
 
 def _request_desktop_tool(

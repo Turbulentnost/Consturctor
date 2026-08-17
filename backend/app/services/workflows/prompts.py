@@ -46,6 +46,7 @@ PLAN_SCHEMA_HINT = """
     "site_url": "https://...",
     "keywords": ["фраза1", "фраза2"],
     "keyword_text": "исходный перечень как у пользователя",
+    "tools": ["site_browser", "web_search"],
     "export": {
       "format": "xlsx",
       "destination": "desktop",
@@ -76,8 +77,21 @@ PLAN_SCHEMA_HINT = """
   - onec — если пользователь указал 1С / OData / COM к 1С;
   - browser_task — работа в конкретном веб-приложении по URL;
   - иначе runtime={} или опусти поле (не ставь site_search_excel «по умолчанию»).
+- tools — конкретные инструменты, которые нужны агенту, выбирай только из этого списка:
+  - site_search_excel: site_browser, web_search;
+  - outlook_calendar: outlook.read_calendar, outlook.search_mail, imap.list_unread, imap.search, imap.fetch_message;
+  - onec: onec.search_documents, onec.get_document_card, onec.odata_get, onec.sql_query;
+  - browser_task: site_browser, web_search.
 - keywords — только для site_search_excel (разбей перечисления пользователя на элементы).
 - Не пиши код реализации в этом ответе.
+""".strip()
+
+TOOL_CATALOG_HINT = """
+Доступные группы инструментов:
+  - site_search_excel: site_browser, web_search
+- outlook_calendar: outlook.read_calendar, outlook.search_mail, imap.list_unread, imap.search, imap.fetch_message
+- onec: onec.search_documents, onec.get_document_card, onec.odata_get, onec.sql_query
+- browser_task: site_browser, web_search
 """.strip()
 
 
@@ -108,6 +122,7 @@ def build_plan_prompt(
         f"Источник: {name}\n"
         f"Файлы: {names_line}\n"
         f"{vision_line}\n"
+        f"{TOOL_CATALOG_HINT}\n\n"
         "===== MATERIALS START =====\n"
         f"{body}\n"
         "===== MATERIALS END =====\n\n"
@@ -203,7 +218,7 @@ RUNTIME_NETWORK_INSTRUCTION = (
     "если пользователь так указал в ответах; "
     "НЕ DuckDuckGo/web_search и НЕ site_browser «открыть outlook.office.com»;\n"
     "  • 1С — OData/COM/учётка из ответов пользователя, не web_search;\n"
-    "  • поиск на сайте/ЭТП + Excel → site_browser / plan_export / HTTP к указанному site_url;\n"
+    "  • поиск на сайте/ЭТП → site_browser / HTTP к указанному site_url;\n"
     "  • общий веб-поиск фактов — только если это явно цель агента.\n"
     "- Фикстуры — запасной путь для тестов; live проверяет тот же сценарий, что в steps.\n"
     "- В RESULT.md опиши: какие тесты реально прогнаны, какой live-инструмент использован, "

@@ -33,6 +33,7 @@ from app.services.workflows.document import (
     load_attachment_bytes,
 )
 from app.services.workflows.plan_models import WorkflowPlan
+from app.services.workflow_tool_routing import resolve_workflow_routing
 
 
 class WorkflowError(Exception):
@@ -580,65 +581,13 @@ def _tests_status_from_text(text: str) -> str:
 
 
 def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
-    """Pick MCP tools from plan domain — never force web_search for Outlook/meetings."""
-    answered = " ".join(
-        f"{q.question} {q.answer}" for q in (plan.answered_questions or []) if q.answer
-    )
-    blob = " ".join(
-        [
-            plan.title,
-            plan.goal,
-            row.title or "",
-            row.notes or "",
-            " ".join(plan.constraints),
-            " ".join(plan.test_criteria),
-            answered,
-            str(getattr(plan.runtime, "kind", "") or ""),
-        ]
-    ).casefold()
-    kind = str(getattr(plan.runtime, "kind", "") or "").casefold()
-
-    if kind == "onec" or (
-        any(tip in blob for tip in ("1с", "1c", "onec", "odata"))
-        and not any(tip in blob for tip in ("outlook", "календар", "совещан"))
-    ):
-        return ["onec.odata_get", "onec.sql_query"]
-
-    if kind == "outlook_calendar" or any(
-        tip in blob
-        for tip in (
-            "outlook",
-            "календар",
-            "совещан",
-            "встреч",
-            "планирован",
-            "занятост",
-            "confirm_slot",
-            "через com",
-            "win32com",
-            "outlook.application",
-        )
-    ):
-        # Calendar/meeting agents: no site_browser (that's for web pages, not Outlook).
-        # IMAP only if mail is part of the flow; Graph/COM calendar connector TBD.
-        tools: list[str] = []
-        if any(tip in blob for tip in ("почт", "письм", "imap", "email", "mail")):
-            tools.extend(["imap.list_unread", "imap.search"])
-        if any(tip in blob for tip in ("1с", "1c", "onec", "odata")):
-            tools.extend(["onec.odata_get", "onec.sql_query"])
-        return tools
-
-    if kind == "site_search_excel" or (
-        ("excel" in blob or "xlsx" in blob)
-        and ("ключев" in blob or "сайт" in blob or "этп" in blob)
-    ):
-        return ["site_browser", "plan_export", "web_search"]
-
-    if kind == "browser_task" or "http://" in blob or "https://" in blob:
+    """Pick MCP tools from the shared routing resolver."""
+    route = resolve_workflow_routing(plan, row)
+    if route.tools:
+        return route.tools
+    if route.kind == "browser_task":
         return ["site_browser", "web_search"]
-
-    # Generic fallback — still allow search, but browser first.
-    return ["site_browser", "web_search", "plan_export"]
+    return []
 
 
 def list_artifacts_for_workflow(

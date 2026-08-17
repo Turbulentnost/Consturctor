@@ -50,6 +50,7 @@ class PlanRuntime:
     site_url: str = ""
     keywords: list[str] = field(default_factory=list)
     keyword_text: str = ""
+    tools: list[str] = field(default_factory=list)
     export_format: str = ""  # xlsx
     export_destination: str = ""  # desktop
     columns: list[str] = field(default_factory=list)
@@ -60,8 +61,11 @@ class PlanRuntime:
             return cls()
         export = data.get("export") if isinstance(data.get("export"), dict) else {}
         keywords = data.get("keywords") or []
+        tools = data.get("tools") or data.get("tool_requirements") or data.get("toolRequirements") or []
         if isinstance(keywords, str):
             keywords = [keywords]
+        if isinstance(tools, str):
+            tools = [tools]
         columns = data.get("columns") or export.get("columns") or []
         if isinstance(columns, str):
             columns = [columns]
@@ -70,6 +74,7 @@ class PlanRuntime:
             site_url=str(data.get("site_url") or data.get("siteUrl") or ""),
             keywords=[str(x).strip() for x in keywords if str(x).strip()],
             keyword_text=str(data.get("keyword_text") or data.get("keywordText") or ""),
+            tools=[str(x).strip() for x in tools if str(x).strip()],
             export_format=str(
                 data.get("export_format")
                 or export.get("format")
@@ -86,7 +91,7 @@ class PlanRuntime:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        if not self.kind and not self.keywords and not self.keyword_text:
+        if not self.kind and not self.keywords and not self.keyword_text and not self.tools:
             return {}
         payload: dict[str, Any] = {"kind": self.kind}
         if self.site_url:
@@ -95,6 +100,8 @@ class PlanRuntime:
             payload["keywords"] = list(self.keywords)
         if self.keyword_text:
             payload["keyword_text"] = self.keyword_text
+        if self.tools:
+            payload["tools"] = list(self.tools)
         export: dict[str, Any] = {}
         if self.export_format:
             export["format"] = self.export_format

@@ -21,6 +21,17 @@ class OpenQuestionSchema(BaseModel):
     options: list[str] = Field(default_factory=list)
 
 
+class PlanRuntimeSchema(BaseModel):
+    kind: str = ""
+    site_url: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    keyword_text: str = ""
+    tools: list[str] = Field(default_factory=list)
+    export_format: str = ""
+    export_destination: str = ""
+    columns: list[str] = Field(default_factory=list)
+
+
 class WorkflowPlanSchema(BaseModel):
     title: str = ""
     goal: str = ""
@@ -30,6 +41,7 @@ class WorkflowPlanSchema(BaseModel):
     test_criteria: list[str] = Field(default_factory=list)
     open_questions: list[OpenQuestionSchema] = Field(default_factory=list)
     answered_questions: list[OpenQuestionSchema] = Field(default_factory=list)
+    runtime: PlanRuntimeSchema | None = None
     raw_text: str = ""
 
 

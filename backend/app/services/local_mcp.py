@@ -63,26 +63,6 @@ def list_tools() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "plan_export",
-            "description": (
-                "Поиск на ЭТП по ключам из плана агента и сохранение Excel на Desktop. "
-                "Исполняется на desktop пользователя."
-            ),
-            "execution": "desktop",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "site_url": {"type": "string"},
-                    "keywords": {"type": "array", "items": {"type": "string"}},
-                    "columns": {"type": "array", "items": {"type": "string"}},
-                    "destination": {"type": "string", "default": "desktop"},
-                    "export_format": {"type": "string", "default": "xlsx"},
-                    "workflow_title": {"type": "string"},
-                },
-                "required": ["keywords"],
-            },
-        },
-        {
             "name": "imap.list_unread",
             "description": "Список непрочитанных писем (сервер, IMAP).",
             "execution": "server",

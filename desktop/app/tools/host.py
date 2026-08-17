@@ -145,16 +145,7 @@ def _site_browser(arguments: dict[str, Any]) -> dict[str, Any]:
         raise ToolHostError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise ToolHostError(f"Ошибка site_browser: {exc}") from exc
-
-
-def _plan_export(arguments: dict[str, Any]) -> dict[str, Any]:
-    from app.tools.plan_export import run_plan_export
-
-    return run_plan_export(arguments)
-
-
 _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "web_search": _web_search,
     "site_browser": _site_browser,
-    "plan_export": _plan_export,
 }
