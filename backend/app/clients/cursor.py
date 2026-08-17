@@ -189,44 +189,16 @@ def stream_run_events(
                                 f"Cursor stream HTTP {response.status_code}: {body[:1000]}",
                                 status_code=response.status_code,
                             )
-                        event_name = "message"
-                        data_lines: list[str] = []
-                        for line in response.iter_lines():
+                        for event_name, data in _iter_sse_events(response):
                             if should_cancel and should_cancel():
                                 try:
                                     cancel_run(agent_id, run_id)
                                 except CursorAgentError:
                                     pass
                                 return
-                            if line == "":
-                                if data_lines:
-                                    raw_data = "\n".join(data_lines)
-                                    try:
-                                        data = json.loads(raw_data)
-                                    except json.JSONDecodeError:
-                                        data = {"text": raw_data}
-                                    if not isinstance(data, dict):
-                                        data = {"value": data}
-                                    yield {"event": event_name, "data": data}
-                                    if event_name in {"done", "error", "result"}:
-                                        return
-                                event_name = "message"
-                                data_lines = []
-                                continue
-                            if line.startswith(":"):
-                                continue
-                            if line.startswith("event:"):
-                                event_name = line.split(":", 1)[1].strip() or "message"
-                            elif line.startswith("data:"):
-                                data_lines.append(line.split(":", 1)[1].strip())
-                        if data_lines:
-                            raw_data = "\n".join(data_lines)
-                            try:
-                                data = json.loads(raw_data)
-                            except json.JSONDecodeError:
-                                data = {"text": raw_data}
-                            if isinstance(data, dict):
-                                yield {"event": event_name, "data": data}
+                            yield {"event": event_name, "data": data}
+                            if event_name in {"done", "error", "result"}:
+                                return
                         # Поток закрылся без terminal-event — заберём результат polling'ом.
                         yield from _terminal_result_events(agent_id, run_id)
                         return
@@ -241,6 +213,47 @@ def stream_run_events(
         raise
     except httpx.HTTPError as exc:
         raise CursorAgentError(f"Ошибка stream Cursor API: {exc}", status_code=502) from exc
+
+
+def _iter_sse_events(response: httpx.Response) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Читать SSE по маленьким чанкам — иначе think приходит одним куском в конце."""
+    event_name = "message"
+    data_lines: list[str] = []
+    carry = ""
+    for raw in response.iter_bytes(chunk_size=256):
+        if not raw:
+            continue
+        carry += raw.decode("utf-8", errors="replace")
+        while "\n" in carry:
+            line, carry = carry.split("\n", 1)
+            line = line.rstrip("\r")
+            if line == "":
+                if data_lines:
+                    raw_data = "\n".join(data_lines)
+                    try:
+                        data = json.loads(raw_data)
+                    except json.JSONDecodeError:
+                        data = {"text": raw_data}
+                    if not isinstance(data, dict):
+                        data = {"value": data}
+                    yield event_name, data
+                event_name = "message"
+                data_lines = []
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event_name = line.split(":", 1)[1].strip() or "message"
+            elif line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].strip())
+    if data_lines:
+        raw_data = "\n".join(data_lines)
+        try:
+            data = json.loads(raw_data)
+        except json.JSONDecodeError:
+            data = {"text": raw_data}
+        if isinstance(data, dict):
+            yield event_name, data
 
 
 def _terminal_result_events(agent_id: str, run_id: str) -> Iterator[dict[str, Any]]:

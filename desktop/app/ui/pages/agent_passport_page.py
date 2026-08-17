@@ -34,6 +34,32 @@ _AUTONOMY_LEVEL_TEXT = (
     "Уровень 1: генерация текста, инструменты чтения и human-in-the-loop; "
     "все остальные операции выполняются только после подтверждения человека."
 )
+_SCOPE_KEYS = frozenset({"forbidden", "can_autonomous", "needs_human_approval"})
+_SCOPE_FROM_AUTONOMY = {
+    "can_autonomous": "Генерация текста и инструменты чтения — без подтверждения человека.",
+    "needs_human_approval": "Запись и прочие операции — только после подтверждения человека.",
+    "forbidden": (
+        "Выполнять запись и прочие операции без подтверждения человека. "
+        "Какие инструменты идут без подтверждения, задаёт уровень автономности 1."
+    ),
+}
+
+
+def _apply_autonomy_to_passport(passport: AgentPassport) -> AgentPassport:
+    passport.autonomy_level = _AUTONOMY_LEVEL
+    passport.can_autonomous = _SCOPE_FROM_AUTONOMY["can_autonomous"]
+    passport.needs_human_approval = _SCOPE_FROM_AUTONOMY["needs_human_approval"]
+    if not str(passport.forbidden or "").strip():
+        passport.forbidden = _SCOPE_FROM_AUTONOMY["forbidden"]
+    passport.missing_fields = [
+        key for key in (passport.missing_fields or []) if key not in _SCOPE_KEYS
+    ]
+    passport.questions = [
+        item
+        for item in (passport.questions or [])
+        if str(item.get("field") or "") not in _SCOPE_KEYS
+    ]
+    return passport
 _PRIMARY_FIELDS = (
     ("name", "Название"),
     ("goal", "Цель"),
@@ -225,6 +251,9 @@ class AgentPassportPage(QWidget):
         self._render_chat(loading=False)
 
     def _apply_passport(self, passport: AgentPassport) -> None:
+        passport = _apply_autonomy_to_passport(passport)
+        if self._session is not None:
+            self._session.passport = passport
         self._render_passport(passport)
         missing = list(passport.missing_fields or [])
         questions = list(passport.questions or [])
@@ -577,6 +606,7 @@ class AgentPassportPage(QWidget):
     def _on_finish(self) -> None:
         if self._session is None:
             return
+        _apply_autonomy_to_passport(self._session.passport)
         if self._session.passport.missing_fields:
             self._set_status("Сначала ответьте на все уточнения в чате.", error=True)
             return

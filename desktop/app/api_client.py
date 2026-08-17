@@ -1635,28 +1635,20 @@ class ApiClient:
                     if response.status_code >= 400:
                         body = response.read().decode("utf-8", errors="replace")
                         raise ApiError(body or "Ошибка workflow", status_code=response.status_code)
-                    data_lines: list[str] = []
-                    for line in response.iter_lines():
-                        if line == "":
-                            if data_lines:
-                                payload = _parse_sse_payload("\n".join(data_lines))
-                                payload_type = str(payload.get("type") or "")
-                                if payload_type == "run":
-                                    run_id = str(payload.get("run_id") or "")
-                                elif payload_type == "tool_request":
-                                    tool = str(payload.get("tool") or "")
-                                    on_event("decision", f"Выполняю на этом компьютере: {tool}…")
-                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
-                                elif payload_type in {"thinking", "assistant", "message", "decision", "system"}:
-                                    on_event(payload_type, str(payload.get("text") or ""))
-                                elif payload_type == "error":
-                                    raise ApiError(str(payload.get("message") or "Ошибка workflow"))
-                                elif payload_type == "workflow" and isinstance(payload.get("workflow"), dict):
-                                    final_record = self._parse_workflow(payload["workflow"])
-                            data_lines = []
-                            continue
-                        if line.startswith("data:"):
-                            data_lines.append(line.split(":", 1)[1].strip())
+                    for payload in _iter_sse_payloads(response):
+                        payload_type = str(payload.get("type") or "")
+                        if payload_type == "run":
+                            run_id = str(payload.get("run_id") or "")
+                        elif payload_type == "tool_request":
+                            tool = str(payload.get("tool") or "")
+                            on_event("decision", f"Выполняю на этом компьютере: {tool}…")
+                            self._handle_sse_tool_request(payload, fallback_run_id=run_id)
+                        elif payload_type in {"thinking", "assistant", "message", "decision", "system"}:
+                            on_event(payload_type, str(payload.get("text") or ""))
+                        elif payload_type == "error":
+                            raise ApiError(str(payload.get("message") or "Ошибка workflow"))
+                        elif payload_type == "workflow" and isinstance(payload.get("workflow"), dict):
+                            final_record = self._parse_workflow(payload["workflow"])
         except httpx.ConnectError as exc:
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
         except httpx.HTTPError as exc:
@@ -2175,6 +2167,28 @@ def _extract_detail(response: httpx.Response) -> str:
     if response.status_code == 401:
         return "Неверный логин или пароль"
     return f"Ошибка сервера ({response.status_code})"
+
+
+def _iter_sse_payloads(response: httpx.Response):
+    """Разбирать SSE по байтам, чтобы think не ждал конца ответа."""
+    data_lines: list[str] = []
+    carry = ""
+    for raw in response.iter_bytes(chunk_size=256):
+        if not raw:
+            continue
+        carry += raw.decode("utf-8", errors="replace")
+        while "\n" in carry:
+            line, carry = carry.split("\n", 1)
+            line = line.rstrip("\r")
+            if line == "":
+                if data_lines:
+                    yield _parse_sse_payload("\n".join(data_lines))
+                data_lines = []
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].strip())
+    if data_lines:
+        yield _parse_sse_payload("\n".join(data_lines))
 
 
 def _parse_sse_payload(raw: str) -> dict:

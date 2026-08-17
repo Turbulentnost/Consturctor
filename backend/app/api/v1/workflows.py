@@ -53,6 +53,13 @@ def _raise(exc: WorkflowError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -232,11 +239,7 @@ async def run_workflow_agent_stream(
             source=source,
         ),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=_SSE_HEADERS,
     )
 
 
@@ -361,6 +364,7 @@ async def plan_workflow_stream_endpoint(
             user_id=user_id,
         ),
         media_type="text/event-stream",
+        headers=_SSE_HEADERS,
     )
 
 
@@ -436,6 +440,7 @@ async def clarify_workflow_stream_endpoint(
             user_id=user_id,
         ),
         media_type="text/event-stream",
+        headers=_SSE_HEADERS,
     )
 
 
@@ -479,6 +484,7 @@ async def execute_workflow_stream_endpoint(
             user_id=user_id,
         ),
         media_type="text/event-stream",
+        headers=_SSE_HEADERS,
     )
 
 

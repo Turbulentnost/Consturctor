@@ -59,10 +59,8 @@ _ANSWER_SYSTEM = (
     "Если ответ ясный и достаточный — принимаешь и кратко нормализуешь. "
     "Если ответ расплывчатый, противоречивый или не по теме — не принимаешь "
     "и задаёшь один уточняющий вопрос. "
-    "Для полей ограничений (Не может / Может самостоятельно / Требует подтверждения) "
-    "ответ уровня политики достаточен: например «запрещено всё, кроме чтения», "
-    "«только чтение», «все изменения только с подтверждением». "
-    "Не требуй длинный перечень примеров, если политика уже ясна. "
+    "Поля «Может самостоятельно / Требует подтверждения / Не может» задаёт "
+    "уровень автономности 1 — не спрашивай их у пользователя. "
     "Возвращай СТРОГО JSON."
 )
 
@@ -75,18 +73,16 @@ _PASSPORT_PROMPT = """По бизнес-процессу и функциям з�
 Получает: клиент, окончательный заказ, договор.
 Проверяет: CRM → 1С → условия договора.
 Принимает решения: если ответственности нет → разрешить; если до 100 тыс. и до 7 дней → успех; если лимит выше → заблокировать и передать руководителю.
-Может самостоятельно: прочитать данные, сделать расчёт, поставить отметку.
-Требует подтверждения человека: изменение кредитного лимита.
-Не может: проводить финансовые операции; физические шаги (склад/отгрузка) —
-агент только напоминает человеку.
+Может самостоятельно / Требует подтверждения / Не может — не выдумывай:
+их заполнит сервер из уровня автономности 1 (чтение и текст без подтверждения,
+запись и прочее — только после человека).
 Результат: решение + объяснение + ссылки на исходные данные.
 
 Верни СТРОГО JSON-объект со строковыми полями:
 - "name", "goal", "trigger", "receives", "checks", "decisions",
   "can_autonomous", "needs_human_approval", "forbidden", "result"
-В "forbidden" обязательно перечисли шаги с automation_kind=physical
-(физические/внесистемные — нельзя выполнить программно).
-Если чего-то нельзя надёжно вывести из текста — поставь пустую строку "".
+Поля can_autonomous / needs_human_approval / forbidden оставь пустыми "".
+Если чего-то ещё нельзя надёжно вывести из текста — поставь пустую строку "".
 
 Бизнес-процесс: {bp_name}
 
@@ -129,6 +125,9 @@ _QUESTIONS_PROMPT = """По черновику паспорта ИИ-агент�
 
 Незаполненные поля (нужно спросить):
 {missing}
+
+Не задавай вопросы про can_autonomous / needs_human_approval / forbidden —
+их закрывает уровень автономности 1.
 
 Верни СТРОГО JSON:
 {{"questions": [{{"field": "<ключ поля>", "prompt": "<вопрос пользователю>"}}]}}
@@ -403,9 +402,8 @@ _ANSWER_PROMPT = """Оцени ответ пользователя для одн
 Критерии:
 - accepted=true, если ответ по теме и его достаточно, чтобы записать поле;
 - тогда normalized_value — краткая деловая формулировка для паспорта (1-2 фразы);
-- для forbidden / can_autonomous / needs_human_approval ответ-политика достаточен
-  («запрещено всё кроме чтения», «только чтение данных», «все write с подтверждением») —
-  accepted=true, не проси список частных запретов;
+- для forbidden / can_autonomous / needs_human_approval не переспрашивай:
+  accepted=true, политика уже задана уровнем автономности 1;
 - accepted=false, если ответ пустой по смыслу («да», «ок», «не знаю» без деталей),
   уклончивый или не по теме — тогда follow_up: один конкретный
   уточняющий вопрос на русском (без шаблона «уточните значение»).
@@ -417,6 +415,39 @@ _ANSWER_PROMPT = """Оцени ответ пользователя для одн
 
 
 _SCOPE_FIELDS = frozenset({"forbidden", "can_autonomous", "needs_human_approval"})
+_LEVEL1_CAN_AUTONOMOUS = (
+    "Генерация текста и инструменты чтения — без подтверждения человека."
+)
+_LEVEL1_NEEDS_APPROVAL = (
+    "Запись и прочие операции — только после подтверждения человека."
+)
+_LEVEL1_FORBIDDEN = (
+    "Выполнять запись и прочие операции без подтверждения человека. "
+    "Какие инструменты идут без подтверждения, задаёт уровень автономности 1."
+)
+
+
+def _apply_autonomy_scope(
+    passport: AgentPassport,
+    *,
+    functions: list[ExtractedFunction] | None = None,
+) -> AgentPassport:
+    """Поля ограничений = политика уровня автономности, не отдельный опрос."""
+    passport.autonomy_level = 1
+    passport.can_autonomous = _LEVEL1_CAN_AUTONOMOUS
+    passport.needs_human_approval = _LEVEL1_NEEDS_APPROVAL
+    physical = [
+        fn.name.strip()
+        for fn in (functions or [])
+        if getattr(fn, "is_physical", False) and str(fn.name or "").strip()
+    ]
+    forbidden = _LEVEL1_FORBIDDEN
+    if physical:
+        forbidden = (
+            f"{forbidden} Физические шаги агенту недоступны: {', '.join(physical)}."
+        )
+    passport.forbidden = forbidden
+    return passport
 
 
 @dataclass
@@ -499,7 +530,7 @@ def draft_passport(
         passport.name = agent_name.strip()
     elif not passport.name.strip():
         passport.name = (bp_name or "ИИ-агент").strip()
-    passport.autonomy_level = 1
+    _apply_autonomy_scope(passport, functions=normalized)
 
     return _with_gaps(
         passport,
@@ -544,6 +575,8 @@ def complete_passport(
     follow_ups: list[dict] = []
     agent_name = str(data.get("name") or bp_name or "агента")
     for field_name, raw_answer in answer_updates.items():
+        if field_name in _SCOPE_FIELDS:
+            continue
         answer = str(raw_answer or "").strip()
         if not answer:
             continue
@@ -607,6 +640,7 @@ def complete_passport(
         source=str(data.get("source") or passport.source),
         autonomy_level=1,
     )
+    _apply_autonomy_scope(updated, functions=functions or [])
     result = _with_gaps(
         updated,
         bp_name=bp_name or updated.name,
@@ -614,6 +648,11 @@ def complete_passport(
         functions=functions or [],
     )
 
+    follow_ups = [
+        item
+        for item in follow_ups
+        if str(item.get("field") or "") not in _SCOPE_FIELDS
+    ]
     if follow_ups:
         follow_fields = {str(item["field"]) for item in follow_ups}
         # Поля с неясным ответом остаются открытыми.
@@ -630,7 +669,9 @@ def complete_passport(
         other = [
             q
             for q in result.questions
-            if isinstance(q, dict) and str(q.get("field")) not in follow_fields
+            if isinstance(q, dict)
+            and str(q.get("field")) not in follow_fields
+            and str(q.get("field")) not in _SCOPE_FIELDS
         ]
         result.questions = follow_ups + other
 
@@ -856,11 +897,18 @@ def _with_gaps(
 ) -> AgentPassport:
     missing: list[str] = []
     for key in PASSPORT_FIELDS:
+        if key in _SCOPE_FIELDS:
+            continue
         value = str(getattr(passport, key) or "").strip()
         if not value:
             missing.append(key)
 
     passport.missing_fields = missing
+    passport.questions = [
+        q
+        for q in (passport.questions or [])
+        if isinstance(q, dict) and str(q.get("field") or "") not in _SCOPE_FIELDS
+    ]
     if not missing:
         passport.questions = []
         return passport

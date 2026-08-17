@@ -871,6 +871,18 @@ def _emit(
         on_event(event_type, text)
 
 
+def _cursor_payload_text(payload: dict) -> str:
+    for key in ("text", "delta", "message", "content", "thinking"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+        if isinstance(value, dict):
+            inner = value.get("text") or value.get("delta") or value.get("content")
+            if isinstance(inner, str) and inner:
+                return inner
+    return ""
+
+
 def _stream_run(
     agent_id: str,
     run_id: str,
@@ -880,25 +892,28 @@ def _stream_run(
     result = PhaseResult(agent_id=agent_id, run_id=run_id)
     assistant_parts: list[str] = []
     got_terminal = False
-    logged_assistant = ""
+    streamed = ""
     logger.info("Cursor stream start agent=%s run=%s", agent_id, run_id)
     try:
         for item in cursor_client.stream_run_events(agent_id, run_id):
             event = str(item.get("event") or "message")
             payload = item.get("data") if isinstance(item.get("data"), dict) else {}
-            if event == "assistant":
-                chunk = str(payload.get("text") or "")
+            if event in {"assistant", "thinking", "delta", "update"}:
+                chunk = _cursor_payload_text(payload)
                 if not chunk:
                     continue
-                assistant_parts.append(chunk)
-                _emit(on_event, "thinking", chunk)
-                # Stream may send deltas or cumulative snapshots — log only new text.
-                if chunk.startswith(logged_assistant):
-                    delta = chunk[len(logged_assistant) :]
-                    logged_assistant = chunk
+                if chunk.startswith(streamed):
+                    delta = chunk[len(streamed) :]
+                    streamed = chunk
+                elif streamed and streamed.startswith(chunk):
+                    continue
                 else:
                     delta = chunk
-                    logged_assistant += chunk
+                    streamed += chunk
+                if not delta:
+                    continue
+                assistant_parts.append(delta)
+                _emit(on_event, "thinking", delta)
                 if delta.strip():
                     logger.info("Cursor assistant [%s/%s]: %s", agent_id[-8:], run_id[-8:], delta)
             elif event == "message":

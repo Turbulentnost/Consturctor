@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -37,7 +38,7 @@ from app.api_client import (
     WorkflowRecord,
 )
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
-from app.ui.widgets.markdown_body import MarkdownBody
+from app.ui.widgets.cursor_feed import CursorFeedItem, resolve_feed_kind
 
 SUPPORTED_SUFFIXES = {
     ".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".html", ".htm",
@@ -173,16 +174,103 @@ def _clear_layout(layout) -> None:
             child_layout.deleteLater()
 
 
+_JSON_FENCE_RE = re.compile(r"```json\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+
+
+def _extract_json_object(text: str) -> dict | None:
+    cleaned = text or ""
+    fence = _JSON_FENCE_RE.search(cleaned)
+    blob = fence.group(1).strip() if fence else ""
+    if not blob:
+        start = cleaned.find("{")
+        if start >= 0:
+            blob = cleaned[start:]
+    if not blob:
+        return None
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _format_plan_dict(data: dict) -> str:
+    lines: list[str] = []
+    title = str(data.get("title") or "").strip()
+    goal = str(data.get("goal") or "").strip()
+    if title:
+        lines.append(title)
+    if goal:
+        lines.append(f"Цель: {goal}")
+    steps = data.get("steps") or []
+    if isinstance(steps, list) and steps:
+        if lines:
+            lines.append("")
+        lines.append("Шаги:")
+        for index, step in enumerate(steps, 1):
+            if not isinstance(step, dict):
+                continue
+            sid = str(step.get("id") or f"s{index}").strip()
+            stitle = str(step.get("title") or "").strip()
+            action = str(step.get("action") or "").strip()
+            done = str(step.get("done_when") or "").strip()
+            lines.append(f"{sid} — {stitle}" if stitle else sid)
+            if action:
+                lines.append(f"  {action}")
+            if done:
+                lines.append(f"  Готово когда: {done}")
+    return "\n".join(lines).strip()
+
+
+def _format_plan_steps(plan: WorkflowPlan | None) -> str:
+    if plan is None:
+        return "План ещё не загружен."
+    lines: list[str] = []
+    if (plan.title or "").strip():
+        lines.append(plan.title.strip())
+    if (plan.goal or "").strip():
+        lines.append(f"Цель: {plan.goal.strip()}")
+    steps = list(plan.steps or [])
+    if steps:
+        if lines:
+            lines.append("")
+        lines.append("Шаги:")
+        for step in steps:
+            sid = (step.id or "").strip()
+            stitle = (step.title or "").strip()
+            head = f"{sid} — {stitle}".strip(" —") if sid or stitle else "шаг"
+            lines.append(head)
+            if (step.action or "").strip():
+                lines.append(f"  {step.action.strip()}")
+            if (step.done_when or "").strip():
+                lines.append(f"  Готово когда: {step.done_when.strip()}")
+    else:
+        if lines:
+            lines.append("")
+        lines.append("Шагов в плане нет.")
+        raw = (plan.raw_text or "").strip()
+        if raw:
+            lines.append("")
+            lines.append(raw[:2000])
+    return "\n".join(lines).strip() or "—"
+
+
 def _visible_thinking(text: str) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
         return ""
-    # drop raw JSON plan blobs from live thinking
-    if cleaned.lstrip().startswith("{") and '"steps"' in cleaned:
-        return ""
-    if "```json" in cleaned.casefold():
-        return ""
-    return cleaned[-2500:]
+    data = _extract_json_object(cleaned)
+    if data and (data.get("steps") is not None or data.get("goal") or data.get("title")):
+        parsed = _format_plan_dict(data)
+        prefix = _JSON_FENCE_RE.sub("", cleaned)
+        start = prefix.find("{")
+        if start >= 0:
+            prefix = prefix[:start]
+        prefix = prefix.strip()
+        if prefix and parsed:
+            return f"{prefix}\n\n{parsed}"
+        return parsed or prefix or cleaned
+    return cleaned
 
 
 class _WrappingLabel(QLabel):
@@ -742,6 +830,8 @@ class FeedEvent:
     action: str = ""
     action_key: str = ""
     role: str = "agent"  # agent | user
+    kind: str = ""
+    event_key: str = ""
 
 
 class StageStepper(QWidget):
@@ -863,95 +953,6 @@ class StageStepper(QWidget):
         self._bar.setValue(pct)
 
 
-class FeedItem(QFrame):
-    action_clicked = Signal(str)
-
-    def __init__(self, event: FeedEvent, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setStyleSheet("background: transparent;")
-        self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 4, 0, 10)
-        row.setSpacing(12)
-
-        is_user = event.role == "user" or event.title.strip().casefold() in {"вы", "you"}
-        if is_user:
-            avatar = QLabel("👤")
-            avatar.setFixedSize(36, 36)
-            avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            avatar.setStyleSheet(
-                "background: #E8EEF5; border-radius: 18px; font-size: 16px;"
-            )
-            bubble_bg = "rgba(8,116,95,0.10)"
-            bubble_border = "rgba(8,116,95,0.16)"
-            title_color = "#08745F"
-        else:
-            avatar = QLabel("🤖")
-            avatar.setFixedSize(36, 36)
-            avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            avatar.setStyleSheet(
-                "background: #EAF7F3; border-radius: 18px; font-size: 16px;"
-            )
-            bubble_bg = "transparent"
-            bubble_border = "transparent"
-            title_color = COLOR_CONTENT_MUTED.name()
-
-        col = QVBoxLayout()
-        col.setSpacing(4)
-        title = _WrappingLabel(event.title)
-        title.setFont(app_font(12))
-        title.setStyleSheet(f"color: {title_color}; background: transparent;")
-
-        if is_user:
-            bubble = QFrame()
-            bubble.setObjectName("userbubble")
-            bubble.setMinimumWidth(0)
-            bubble.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            bubble.setStyleSheet(
-                f"""
-                QFrame#userbubble {{
-                    background: {bubble_bg};
-                    border: 1px solid {bubble_border};
-                    border-radius: 14px;
-                }}
-                """
-            )
-            bubble_lay = QVBoxLayout(bubble)
-            bubble_lay.setContentsMargins(12, 8, 12, 8)
-            bubble_lay.setSpacing(2)
-            body = _WrappingLabel(event.body)
-            body.setFont(app_font(14, QFont.Weight.Medium))
-            body.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-            bubble_lay.addWidget(body)
-            col.addWidget(title)
-            col.addWidget(bubble)
-        else:
-            body = MarkdownBody(event.body, font_size=14, weight=QFont.Weight.Medium)
-            col.addWidget(title)
-            col.addWidget(body)
-
-        if event.action:
-            btn = QPushButton(event.action)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setFont(app_font(12, QFont.Weight.DemiBold))
-            btn.setStyleSheet(_SECONDARY)
-            btn.setFixedHeight(36)
-            key = event.action_key
-            btn.clicked.connect(lambda _=False, k=key: self.action_clicked.emit(k))
-            col.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
-
-        time = QLabel(event.time)
-        time.setFont(app_font(11))
-        time.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        time.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
-
-        # Both sides stay on the left — messenger-style conversation.
-        row.addWidget(avatar, 0, Qt.AlignmentFlag.AlignTop)
-        row.addLayout(col, 1)
-        row.addWidget(time, 0, Qt.AlignmentFlag.AlignTop)
-
-
 class WorkflowPage(QWidget):
     saved = Signal(str)
     saved_record = Signal(object)
@@ -972,6 +973,8 @@ class WorkflowPage(QWidget):
         self._results_dir = ""
         self._busy = False
         self._events: list[FeedEvent] = []
+        self._event_seq = 0
+        self._expanded_keys: set[str] = set()
         self._pending_answers: dict[str, str] = {}
         self._tests_ok = False
         self._thinking_text = ""
@@ -985,7 +988,7 @@ class WorkflowPage(QWidget):
         self._stream_event.connect(self._on_stream_event)
         self._thinking_timer = QTimer(self)
         self._thinking_timer.setSingleShot(True)
-        self._thinking_timer.setInterval(120)
+        self._thinking_timer.setInterval(40)
         self._thinking_timer.timeout.connect(self._rebuild_feed)
         self._feed_stick_to_bottom = True
         self._feed_rebuilding = False
@@ -1165,18 +1168,14 @@ class WorkflowPage(QWidget):
                 "autonomy_level": int(local.get("autonomy_level") or 1),
                 "autonomy_policy": str(local.get("autonomy_policy") or ""),
             }
-        self._events = [
-            FeedEvent(
-                "Загрузка workflow",
-                f"Открыт «{record.title}» · фаза {record.phase}",
-                self._now(),
-            )
-        ]
+        self._event_seq = 0
+        self._expanded_keys = set()
+        self._events = []
         if record.plan:
             self._events.append(
                 FeedEvent(
                     "План",
-                    record.plan.goal or record.plan.title or "План загружен",
+                    _format_plan_steps(record.plan),
                     self._now(),
                     action="Показать шаги плана",
                     action_key="show_plan",
@@ -1195,6 +1194,9 @@ class WorkflowPage(QWidget):
             self._events.append(
                 FeedEvent("Результат", record.last_result, self._now())
             )
+        for ev in self._events:
+            if not ev.event_key:
+                ev.event_key = self._next_event_key()
         self._render_chips()
         self._render_all()
 
@@ -1210,10 +1212,6 @@ class WorkflowPage(QWidget):
                 "запись и прочие операции только после подтверждения человека."
             ),
         }
-        self._push_event(
-            "Анализ документа",
-            f"Загружен паспорт «{title}». Готовлю план реализации…",
-        )
         if auto_plan:
             self._on_plan()
 
@@ -1356,35 +1354,22 @@ class WorkflowPage(QWidget):
         for idx, event in enumerate(self._events):
             if skip_clarify_idx is not None and idx == skip_clarify_idx:
                 continue
-            if event.action_key.startswith("q:"):
-                widget = FeedItem(
-                    FeedEvent(
-                        event.title,
-                        event.body,
-                        event.time,
-                        action="",
-                        action_key="",
-                        role=event.role,
-                    )
-                )
-            else:
-                widget = FeedItem(event)
-            widget.action_clicked.connect(self._on_feed_action)
+            hide_action = event.action_key.startswith("q:")
+            widget = self._feed_item(event, fallback_key=f"e{idx}", hide_action=hide_action)
             self._feed_layout.addWidget(widget)
-        thinking = _visible_thinking(self._thinking_text)
+        thinking = (self._thinking_text or "").strip()
         if thinking:
-            think = QLabel(thinking)
-            think.setWordWrap(True)
-            think.setMinimumWidth(0)
-            think.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            think.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            think.setFont(app_font(12))
-            think.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            think.setStyleSheet(
-                f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent; "
-                "padding: 2px 8px 10px 8px;"
+            self._expanded_keys.add("live-thinking")
+            live = CursorFeedItem(
+                kind="thinking",
+                text=thinking,
+                title="Thinking",
+                detail=thinking,
+                event_key="live-thinking",
+                expanded=True,
             )
-            self._feed_layout.addWidget(think)
+            live.expand_toggled.connect(self._on_expand_toggled)
+            self._feed_layout.addWidget(live)
         if plan_question and self._record and self._record.plan:
             card = self._make_clarification_message(self._record.plan.unanswered()[0])
             self._feed_layout.addWidget(card)
@@ -1418,6 +1403,65 @@ class WorkflowPage(QWidget):
         self._chips_layout.addStretch(1)
         self._chips_wrap.setVisible(bool(names))
 
+    def _next_event_key(self) -> str:
+        self._event_seq += 1
+        return f"e{self._event_seq}"
+
+    def _on_expand_toggled(self, key: str, expanded: bool) -> None:
+        if not key:
+            return
+        if expanded:
+            self._expanded_keys.add(key)
+        else:
+            self._expanded_keys.discard(key)
+
+    def _feed_item(
+        self,
+        event: FeedEvent,
+        *,
+        fallback_key: str = "",
+        hide_action: bool = False,
+    ) -> CursorFeedItem:
+        kind = resolve_feed_kind(role=event.role, title=event.title, kind=event.kind)
+        key = event.event_key or fallback_key
+        title = event.title
+        if kind == "thinking":
+            title = "Thinking"
+        elif kind not in {"plan", "tool"}:
+            title = ""
+        widget = CursorFeedItem(
+            kind=kind,
+            text=event.body,
+            title=title,
+            detail=event.body,
+            action="" if hide_action else event.action,
+            action_key="" if hide_action else event.action_key,
+            event_key=key,
+            expanded=key in self._expanded_keys,
+        )
+        widget.action_clicked.connect(self._on_feed_action)
+        widget.expand_toggled.connect(self._on_expand_toggled)
+        return widget
+
+    def _flush_thinking(self) -> None:
+        text = _visible_thinking(self._thinking_text)
+        self._thinking_text = ""
+        if not text:
+            return
+        key = self._next_event_key()
+        if "live-thinking" in self._expanded_keys:
+            self._expanded_keys.discard("live-thinking")
+            self._expanded_keys.add(key)
+        self._events.append(
+            FeedEvent(
+                title="Thinking",
+                body=text,
+                time=self._now(),
+                kind="thinking",
+                event_key=key,
+            )
+        )
+
     def _push_event(
         self,
         title: str,
@@ -1426,6 +1470,7 @@ class WorkflowPage(QWidget):
         action: str = "",
         action_key: str = "",
         role: str = "",
+        kind: str = "",
     ) -> None:
         resolved_role = role
         if not resolved_role:
@@ -1442,6 +1487,8 @@ class WorkflowPage(QWidget):
                 action=action,
                 action_key=action_key,
                 role=resolved_role,
+                kind=kind,
+                event_key=self._next_event_key(),
             )
         )
         self._rebuild_feed()
@@ -1460,6 +1507,7 @@ class WorkflowPage(QWidget):
                 body=text,
                 time=self._now(),
                 role="agent",
+                event_key=self._next_event_key(),
             )
         )
 
@@ -1471,9 +1519,22 @@ class WorkflowPage(QWidget):
 
     def _on_feed_action(self, key: str) -> None:
         if key == "show_plan" and self._record and self._record.plan:
-            plan = self._record.plan
-            lines = [f"{s.id}: {s.title}" for s in (plan.steps or [])]
-            self._push_event("Шаги плана", "\n".join(lines) or plan.goal or "—")
+            body = _format_plan_steps(self._record.plan)
+            target: FeedEvent | None = None
+            for ev in self._events:
+                if ev.action_key == "show_plan":
+                    target = ev
+                    break
+                if ev.title in {"План", "Шаги плана"}:
+                    target = ev
+            if target is None:
+                self._push_event("План", body, action="Показать шаги плана", action_key="show_plan")
+                target = self._events[-1]
+            else:
+                target.body = body
+            if target.event_key:
+                self._expanded_keys.add(target.event_key)
+            self._rebuild_feed()
         elif key == "run_plan":
             self._on_execute()
         elif key == "fetch":
@@ -1571,17 +1632,20 @@ class WorkflowPage(QWidget):
         Thread(target=work, daemon=True).start()
 
     def _on_stream_event(self, event_type: str, text: str) -> None:
-        if event_type == "thinking" and text:
-            self._thinking_text += text
+        if event_type in {"thinking", "assistant"} and text:
+            if text.startswith(self._thinking_text) and len(text) >= len(self._thinking_text):
+                self._thinking_text = text
+            else:
+                self._thinking_text += text
             if not self._thinking_timer.isActive():
                 self._thinking_timer.start()
         elif event_type in {"decision", "system"} and text.strip():
-            # short status lines stay as gray thinking context, not agent cards
             self._thinking_text = (self._thinking_text + "\n" + text.strip()).strip()
             if not self._thinking_timer.isActive():
                 self._thinking_timer.start()
 
     def _on_async_ok(self, result: object, label: str) -> None:
+        self._flush_thinking()
         self._set_busy(False)
         if isinstance(result, WorkflowRecord):
             self._record = self._persist_passport_runtime(result)
@@ -1591,11 +1655,9 @@ class WorkflowPage(QWidget):
             self._render_chips()
             if label.startswith("Планирование"):
                 unanswered = result.plan.unanswered() if result.plan else []
-                goal = (result.plan.goal if result.plan else "") or result.title
-                self._thinking_text = ""
                 self._push_event(
                     "План",
-                    goal,
+                    _format_plan_steps(result.plan) if result.plan else (result.title or "План готов"),
                     action="Показать шаги плана",
                     action_key="show_plan",
                 )
@@ -1610,7 +1672,6 @@ class WorkflowPage(QWidget):
                         action_key="run_plan",
                     )
             elif label.startswith("Уточнение"):
-                self._thinking_text = ""
                 unanswered = result.plan.unanswered() if result.plan else []
                 if unanswered:
                     q = unanswered[0]
@@ -1623,7 +1684,6 @@ class WorkflowPage(QWidget):
                         action_key="run_plan",
                     )
             elif label.startswith("Реализация"):
-                self._thinking_text = ""
                 self._tests_ok = False
                 local = dict(getattr(result, "local_run", None) or {})
                 tests = str(local.get("tests_status") or "").casefold()
@@ -1646,7 +1706,6 @@ class WorkflowPage(QWidget):
                 )
                 self._on_fetch_results()
             elif label.startswith("Публикация"):
-                self._thinking_text = ""
                 self._push_event(
                     "Сохранено",
                     "Агент опубликован в «Мои агенты».",
@@ -1675,6 +1734,7 @@ class WorkflowPage(QWidget):
             self._render_all()
 
     def _on_async_fail(self, message: str) -> None:
+        self._flush_thinking()
         self._set_busy(False)
         self._push_event("Ошибка", message)
         self._agent_status.setText("● Ошибка — попробуйте ещё раз")
@@ -1690,8 +1750,6 @@ class WorkflowPage(QWidget):
                     "Нет материалов. Откройте workflow из паспорта агента.",
                 )
                 return
-            self._push_event("Анализ документа", "Создаю workflow и запускаю планирование…")
-
             def create_and_plan() -> WorkflowRecord:
                 created = self._api.create_workflow(notes=notes, file_paths=self._pending_paths)
                 created = self._persist_passport_runtime(created)
@@ -1703,7 +1761,6 @@ class WorkflowPage(QWidget):
 
             self._run_async("Планирование", create_and_plan)
             return
-        self._push_event("План", "Пересобираю план…")
         self._run_async(
             "Планирование",
             lambda: self._api.stream_plan_workflow(
@@ -1730,35 +1787,9 @@ class WorkflowPage(QWidget):
         wrap.setStyleSheet("background: transparent;")
         wrap.setMinimumWidth(0)
         wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        row = QHBoxLayout(wrap)
-        row.setContentsMargins(4, 8, 4, 8)
-        row.setSpacing(10)
-
-        avatar = QLabel("🤖")
-        avatar.setFixedSize(36, 36)
-        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        avatar.setStyleSheet(
-            """
-            background: #E8F5F1; border-radius: 18px;
-            font-size: 16px;
-            """
-        )
-        row.addWidget(avatar, 0, Qt.AlignmentFlag.AlignTop)
-
-        col = QVBoxLayout()
-        col.setContentsMargins(0, 0, 0, 0)
+        col = QVBoxLayout(wrap)
+        col.setContentsMargins(0, 8, 0, 8)
         col.setSpacing(4)
-        meta = QHBoxLayout()
-        meta.setContentsMargins(0, 0, 0, 0)
-        head = QLabel("Уточнение")
-        head.setFont(app_font(13, QFont.Weight.DemiBold))
-        head.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        time = QLabel(self._now())
-        time.setFont(app_font(11))
-        time.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        meta.addWidget(head, 1)
-        meta.addWidget(time, 0)
-        col.addLayout(meta)
 
         card = QFrame()
         card.setObjectName("qcard")
@@ -1859,7 +1890,6 @@ class WorkflowPage(QWidget):
         lay.addLayout(next_row)
 
         col.addWidget(card)
-        row.addLayout(col, 1)
         return wrap
 
     def _clear_questions(self) -> None:
@@ -2137,13 +2167,11 @@ class WorkflowPage(QWidget):
         self._post_build_question = None
         self._clear_questions()
         self._events = []
+        self._event_seq = 0
+        self._expanded_keys = set()
         self._results.clear()
         self._render_chips()
         self._render_all()
-        self._push_event(
-            "Старт",
-            "Опишите задачу или откройте паспорт агента — начну планирование.",
-        )
 
 
 def _notes_from_passport(session: PassportSession) -> str:
