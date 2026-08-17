@@ -424,9 +424,14 @@ def execute_workflow(
         prompt = prompts.build_reexecute_prompt(
             plan=plan,
             user_clarification=clarification,
+            local_run=row.local_run or {},
         )
     else:
-        prompt = prompts.build_execute_prompt(plan=plan, document_text=row.document_text)
+        prompt = prompts.build_execute_prompt(
+            plan=plan,
+            document_text=row.document_text,
+            local_run=row.local_run or {},
+        )
 
     _emit(on_event, "decision", "Запускаю реализацию workflow.")
     try:

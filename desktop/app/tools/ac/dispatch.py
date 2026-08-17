@@ -19,7 +19,9 @@ from app.tools.ac.registry import ToolRegistry
 from app.tools.ac.report_tools import register_report_tools
 from app.tools.ac.wait_tool import register_wait_tool
 from app.tools.ac.web_tools import register_web_tools
+from app.tools.ac.workers import com_availability
 from app.tools.ac.workers.onec_worker import OneCReadOnlyWorker
+from app.tools.ac.workers.onec_worker import OneCComWorker
 from app.tools.ac.workers.subprocess_com_worker import SubprocessComWorker
 
 
@@ -53,7 +55,8 @@ def build_registry() -> ToolRegistry:
     outlook_worker = SubprocessComWorker()
     registry.register(OutlookSearchMailComTool(outlook_worker))
     registry.register(OutlookReadCalendarComTool(outlook_worker))
-    register_onec_readonly_tools(registry, OneCReadOnlyWorker())
+    onec_worker = OneCComWorker() if com_availability.is_onec_com_available() else OneCReadOnlyWorker()
+    register_onec_readonly_tools(registry, onec_worker)
     register_report_tools(registry, skip_existing=True)
     register_web_tools(registry, skip_existing=True, workspace_resolver=resolver)
     register_excel_tools(registry, resolver, skip_existing=True)

@@ -249,15 +249,48 @@ RUNTIME_NETWORK_INSTRUCTION = (
     "доступен ли live, и как запускать агента локально.\n"
     "- Не подменяй предметную область агента на web_search «для галочки»."
 )
+def _desktop_runtime_hint(local_run: dict[str, Any] | None = None) -> str:
+    local = local_run if isinstance(local_run, dict) else {}
+    desktop = local.get("desktop") if isinstance(local.get("desktop"), dict) else {}
+    if not desktop:
+        return ""
+    available = bool(desktop.get("com_available"))
+    platform = str(desktop.get("platform") or "").strip() or "unknown"
+    reason = str(desktop.get("com_reason") or "").strip()
+    if available:
+        status = "COM доступен"
+    else:
+        status = "COM недоступен"
+    parts = [
+        "Текущая desktop-среда:",
+        f"- platform: {platform}",
+        f"- {status}",
+    ]
+    if reason:
+        parts.append(f"- reason: {reason}")
+    parts.append(
+        "- Если COM доступен, `live` для Outlook/1C можно использовать на этой машине."
+    )
+    parts.append(
+        "- Если COM недоступен, выбирай `fixtures`/stub и не пытайся имитировать live."
+    )
+    return "\n".join(parts)
 
 
-def build_execute_prompt(*, plan: WorkflowPlan, document_text: str) -> str:
+def build_execute_prompt(
+    *,
+    plan: WorkflowPlan,
+    document_text: str,
+    local_run: dict[str, Any] | None = None,
+) -> str:
     plan_json = json.dumps(plan.to_dict(), ensure_ascii=False, indent=2)
     doc = document_text.strip()
     if len(doc) > 40_000:
         doc = doc[:40_000] + "\n\n[...truncated...]"
     answers_block = plan.answered_block_text()
     answers_section = f"\n{answers_block}\n\n" if answers_block else "\n"
+    desktop_hint = _desktop_runtime_hint(local_run)
+    desktop_section = f"{desktop_hint}\n\n" if desktop_hint else ""
     return (
         "Реализуй сохранённый план без доступа к git/GitHub:\n"
         "опиши реализацию, артефакты, команды/проверки и результат по test_criteria.\n"
@@ -266,6 +299,7 @@ def build_execute_prompt(*, plan: WorkflowPlan, document_text: str) -> str:
         "если там 1С, COM Outlook, URL, учётка — реализуй именно это, "
         "не подменяй на web_search или site_browser.\n"
         "В финальном ответе кратко: что сделано, результаты проверок, что осталось.\n\n"
+        f"{desktop_section}"
         f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
         f"{TESTS_USER_CLARIFY_INSTRUCTION}\n\n"
         f"{ARTIFACTS_INSTRUCTION}\n"
@@ -279,7 +313,12 @@ def build_execute_prompt(*, plan: WorkflowPlan, document_text: str) -> str:
     )
 
 
-def build_reexecute_prompt(*, plan: WorkflowPlan, user_clarification: str = "") -> str:
+def build_reexecute_prompt(
+    *,
+    plan: WorkflowPlan,
+    user_clarification: str = "",
+    local_run: dict[str, Any] | None = None,
+) -> str:
     plan_json = json.dumps(plan.to_dict(), ensure_ascii=False, indent=2)
     clarify_block = ""
     note = (user_clarification or "").strip()
@@ -293,12 +332,15 @@ def build_reexecute_prompt(*, plan: WorkflowPlan, user_clarification: str = "") 
         )
     answers_block = plan.answered_block_text()
     answers_section = f"\n{answers_block}\n" if answers_block else ""
+    desktop_hint = _desktop_runtime_hint(local_run)
+    desktop_section = f"{desktop_hint}\n\n" if desktop_hint else ""
     return (
         "Повторно выполни сохранённый план (без GitHub-репозитория).\n"
         "Не ломай уже корректное. Доведи незакрытые steps и test_criteria.\n"
         "ОБЯЗАТЕЛЬНО сохрани интеграции из ответов пользователя "
         "(1С / COM Outlook / указанные URL) — не подменяй на web_search.\n"
         "В конце — статус PASS/FAIL по критериям (TESTS: PASS|FAIL в RESULT.md).\n\n"
+        f"{desktop_section}"
         f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
         f"{TESTS_USER_CLARIFY_INSTRUCTION}\n\n"
         f"{ARTIFACTS_INSTRUCTION}\n"

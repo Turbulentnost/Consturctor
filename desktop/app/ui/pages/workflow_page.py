@@ -36,6 +36,7 @@ from app.api_client import (
     WorkflowPlan,
     WorkflowRecord,
 )
+from app.tools.ac.workers import com_availability
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 
 SUPPORTED_SUFFIXES = {
@@ -1085,6 +1086,7 @@ class WorkflowPage(QWidget):
         self._notes = record.notes
         local = dict(record.local_run or {})
         self._tests_ok = str(local.get("tests_status") or "").casefold() == "pass"
+        self._sync_desktop_capability(record.id, local)
         self._events = [
             FeedEvent(
                 "Загрузка workflow",
@@ -1130,6 +1132,32 @@ class WorkflowPage(QWidget):
         if auto_plan:
             self._on_plan()
 
+    def _desktop_capability_payload(self) -> dict[str, object]:
+        capability = com_availability.describe_com_capability()
+        return {
+            "desktop": capability,
+        }
+
+    def _sync_desktop_capability(self, workflow_id: str, local: dict[str, object]) -> None:
+        if not workflow_id:
+            return
+        capability = self._desktop_capability_payload()
+        current = local.get("desktop") if isinstance(local.get("desktop"), dict) else {}
+        if current == capability["desktop"]:
+            return
+
+        def run() -> None:
+            try:
+                payload = dict(local)
+                payload.update(capability)
+                updated = self._api.update_workflow_local_run(workflow_id, payload)
+            except ApiError:
+                return
+            if self._record and self._record.id == updated.id:
+                self._record = updated
+
+        Thread(target=run, daemon=True).start()
+
     # --- render ----------------------------------------------------------------
 
     def _render_all(self) -> None:
@@ -1167,6 +1195,18 @@ class WorkflowPage(QWidget):
         elif can_save:
             self._agent_status.setText("● Тесты PASS — можно сохранить агента")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
+        elif self._record and plan and not unanswered:
+            desktop = (
+                self._record.local_run.get("desktop")
+                if isinstance(self._record.local_run, dict)
+                else {}
+            )
+            if isinstance(desktop, dict) and desktop and not bool(desktop.get("com_available")):
+                self._agent_status.setText("● Live COM недоступен — будет fixtures/stub")
+                self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
+            elif isinstance(desktop, dict) and bool(desktop.get("com_available")):
+                self._agent_status.setText("● Live COM доступен на этой машине")
+                self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         elif self._post_build_question:
             self._agent_status.setText("● Нужны уточнения после сборки — ответьте в чате")
             self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
@@ -1544,6 +1584,12 @@ class WorkflowPage(QWidget):
 
             def create_and_plan() -> WorkflowRecord:
                 created = self._api.create_workflow(notes=notes, file_paths=self._pending_paths)
+                local = dict(created.local_run or {})
+                local.update(self._desktop_capability_payload())
+                try:
+                    created = self._api.update_workflow_local_run(created.id, local)
+                except ApiError:
+                    pass
                 return self._api.stream_plan_workflow(
                     created.id,
                     lambda event_type, text: self._stream_event.emit(event_type, text),

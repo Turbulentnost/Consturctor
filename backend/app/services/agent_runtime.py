@@ -83,6 +83,21 @@ def run_agent_task(
         )
 
     if domain == "outlook_calendar":
+        live_allowed, live_reason = _desktop_com_available(workflow, domain)
+        if not live_allowed:
+            emit(
+                {
+                    "type": "status",
+                    "text": f"Live COM недоступен ({live_reason}) — использую fixtures/stub.",
+                }
+            )
+            answer = _fallback_live_answer("outlook_calendar", live_reason)
+            emit({"type": "agent_message", "text": answer})
+            return {
+                "answer": answer,
+                "tool": "fixtures",
+                "tool_result": {"fallback": True, "reason": live_reason},
+            }
         emit({"type": "status", "text": "Читаю Outlook на этом компьютере…"})
         outlook_tool, outlook_args = _outlook_tool_request(task)
         try:
@@ -103,6 +118,21 @@ def run_agent_task(
         return {"answer": answer, "tool": outlook_tool, "tool_result": tool_result}
 
     if domain == "onec":
+        live_allowed, live_reason = _desktop_com_available(workflow, domain)
+        if not live_allowed:
+            emit(
+                {
+                    "type": "status",
+                    "text": f"Live COM недоступен ({live_reason}) — использую fixtures/stub.",
+                }
+            )
+            answer = _fallback_live_answer("onec", live_reason)
+            emit({"type": "agent_message", "text": answer})
+            return {
+                "answer": answer,
+                "tool": "fixtures",
+                "tool_result": {"fallback": True, "reason": live_reason},
+            }
         emit({"type": "status", "text": "Ищу документы 1С на этом компьютере…"})
         try:
             tool_result = _request_desktop_tool(
@@ -193,11 +223,23 @@ def _run_hybrid_task(
         )
 
         if phase_kind == "onec":
+            live_allowed, live_reason = _desktop_com_available(workflow, phase_kind)
+            if not live_allowed:
+                result = {
+                    "tool": "fixtures",
+                    "result": {"fallback": True, "reason": live_reason},
+                }
+                summary = _fallback_live_answer("onec", live_reason)
+                phase_outputs.append({"kind": phase_kind, "result": result, "summary": summary})
+                phase_summaries.append(summary)
+                context = summary
+                continue
             result = _run_hybrid_onec_phase(
                 task=task,
                 context=context,
                 phase_tools=phase_tools,
                 phase_handoff=phase_handoff,
+                workflow=workflow,
                 emit=emit,
                 run_id=run_id,
                 user_id=user_id,
@@ -205,6 +247,17 @@ def _run_hybrid_task(
             )
             summary = _compose_hybrid_onec_summary(result)
         elif phase_kind == "outlook_calendar":
+            live_allowed, live_reason = _desktop_com_available(workflow, phase_kind)
+            if not live_allowed:
+                result = {
+                    "tool": "fixtures",
+                    "result": {"fallback": True, "reason": live_reason},
+                }
+                summary = _fallback_live_answer("outlook_calendar", live_reason)
+                phase_outputs.append({"kind": phase_kind, "result": result, "summary": summary})
+                phase_summaries.append(summary)
+                context = summary
+                continue
             result = _run_hybrid_outlook_phase(
                 task=task,
                 context=context,
@@ -252,11 +305,13 @@ def _run_hybrid_onec_phase(
     context: str,
     phase_tools: list[str],
     phase_handoff: str,
+    workflow: Workflow,
     emit: AgentEventCallback,
     run_id: str,
     user_id: str,
     workflow_id: str,
 ) -> dict[str, Any]:
+    _ = workflow
     query_parts = [task]
     if phase_handoff:
         query_parts.append(phase_handoff)
@@ -421,6 +476,32 @@ def _agent_domain(workflow: Workflow) -> str:
     return resolve_workflow_routing(plan, workflow).kind
 
 
+def _desktop_com_available(workflow: Workflow, domain: str) -> tuple[bool, str]:
+    local = workflow.local_run if isinstance(workflow.local_run, dict) else {}
+    desktop = local.get("desktop") if isinstance(local.get("desktop"), dict) else {}
+    if desktop:
+        if domain == "outlook_calendar":
+            if bool(desktop.get("outlook_com_available")):
+                return True, "Outlook COM доступен"
+            reason = str(desktop.get("outlook_com_reason") or "").strip()
+            return False, reason or "Outlook COM недоступен"
+        if domain == "onec":
+            if bool(desktop.get("onec_com_available")):
+                return True, "1C COM доступен"
+            reason = str(desktop.get("onec_com_reason") or "").strip()
+            return False, reason or "1C COMConnector недоступен"
+        if bool(desktop.get("com_available")):
+            return True, "COM доступен"
+        reason = str(desktop.get("com_reason") or "").strip()
+        return False, reason or "COM недоступен"
+    return False, "нет сведений о desktop COM"
+
+
+def _fallback_live_answer(domain: str, reason: str) -> str:
+    label = "Outlook" if domain == "outlook_calendar" else "1C"
+    return f"Live {label} недоступен на этой машине ({reason}). Перехожу в fixtures/stub."
+
+
 def _request_desktop_tool(
     emit: AgentEventCallback,
     *,
@@ -437,8 +518,6 @@ def _request_desktop_tool(
         arguments.setdefault("agent_id", workflow_id)
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, arguments)
-    if tool in _ONEC_TOOLS:
-        return _invoke_onec_server(tool, arguments)
 
     request_id = tool_bridge.new_request_id()
     tool_bridge.begin_wait(request_id=request_id, user_id=user_id)

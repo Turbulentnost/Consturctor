@@ -2,6 +2,7 @@
 
 import importlib
 import importlib.util
+import os
 import sys
 
 
@@ -27,6 +28,54 @@ def get_com_unavailable_reason() -> str:
     if error_message is not None:
         return error_message
     return "pywin32 не установлен или недоступен"
+
+
+def get_onec_com_unavailable_reason() -> str:
+    """Вернуть понятную причину недоступности 1С COMConnector."""
+    if not is_windows():
+        return "1C COMConnector доступен только на Windows"
+
+    available, error_message = _check_pywin32_availability()
+    if not available:
+        return error_message or "pywin32 не установлен или недоступен"
+
+    connection_string = os.environ.get("ONEC_COM_CONNECTION_STRING", "").strip()
+    server = os.environ.get("ONEC_COM_SERVER", "").strip()
+    ref = os.environ.get("ONEC_COM_REF", "").strip()
+    if not connection_string and not (server and ref):
+        return (
+            "Не заданы ONEC_COM_CONNECTION_STRING или ONEC_COM_SERVER/ONEC_COM_REF "
+            "для 1С COMConnector"
+        )
+
+    return "1C COMConnector доступен"
+
+
+def is_onec_com_available() -> bool:
+    """Проверить, достаточно ли окружения для 1C COMConnector."""
+    return get_onec_com_unavailable_reason() == "1C COMConnector доступен"
+
+
+def describe_com_capability() -> dict[str, object]:
+    """Собрать краткое описание возможностей COM для передачи в local_run."""
+    available, error_message = _check_pywin32_availability()
+    outlook_available = is_windows() and available
+    onec_available = is_onec_com_available()
+    return {
+        "platform": sys.platform,
+        "is_windows": is_windows(),
+        "pywin32_available": available,
+        "outlook_com_available": outlook_available,
+        "outlook_com_reason": "Outlook COM доступен"
+        if outlook_available
+        else (error_message or get_com_unavailable_reason()),
+        "onec_com_available": onec_available,
+        "onec_com_reason": get_onec_com_unavailable_reason(),
+        "com_available": bool(outlook_available or onec_available),
+        "com_reason": "COM доступен"
+        if (outlook_available or onec_available)
+        else (error_message or get_com_unavailable_reason()),
+    }
 
 
 def _check_pywin32_availability() -> tuple[bool, str | None]:
