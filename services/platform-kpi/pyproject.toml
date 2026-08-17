@@ -1,0 +1,26 @@
+[project]
+name = "platform-kpi"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic-settings>=2.6.0",
+    "prometheus-client>=0.21.0",
+    "sqlalchemy>=2.0.36",
+    "platform-contracts",
+    "platform-db",
+]
+
+[project.scripts]
+platform-kpi = "platform_kpi.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["platform_kpi"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

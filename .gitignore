@@ -1,25 +1,42 @@
-# Environment and secrets
+# --- Secrets / local env ---
 .env
 .env.*
 !.env.example
+*.local.env
 
-# Python
+# --- Desktop tool runtime data (local workspace) ---
+data/
+scripts/desktop_tools.local.cmd
+
+# --- infra (Docker) — keep compose + init SQL; ignore local runtime ---
+infra/.env
+infra/.env.local
+infra/.env.*.local
+infra/pgdata/
+infra/postgres/data/
+docker-compose.override.yml
+infra/docker-compose.override.yml
+
+# --- logs (local cmd-era / debug output) ---
+logs/*
+!logs/.gitkeep
+*.log
+*.out.log
+*.err.log
+
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
 .eggs/
+dist/
+build/
 .venv/
 venv/
 *.egg
 
-# Build / packaging outputs (any depth)
-build/
-dist/
-**/build/
-**/dist/
-
-# Tooling / caches
+# --- Test / tooling caches ---
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -27,8 +44,10 @@ dist/
 htmlcov/
 .tox/
 .cache/
+scripts/_test_*.py
+scripts/_scratch/
 
-# IDE / OS
+# --- IDE / OS ---
 .idea/
 .vscode/
 *.swp
@@ -36,13 +55,16 @@ htmlcov/
 Thumbs.db
 desktop.ini
 
-# Exports with password hashes
-backend/scripts/exports/*.txt
+# --- Celery / local runtime ---
+celerybeat-schedule*
+celerybeat.pid
+*.pid
+
+# --- ERP export dumps (may contain password hashes) ---
+backend/scripts/exports/*
 !backend/scripts/exports/.gitkeep
 
-# Local runtime
-*.log
-celerybeat-schedule*
+# --- App uploads (regulations, avatars) ---
 backend/storage/
 
 # Desktop packaging artifacts (rebuild via build_exe.bat / installer/build_installer.bat)

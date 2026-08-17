@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Constructor Platform — Demo Pipeline v2</title>
+  <link rel="stylesheet" href="style.css?v=30" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Constructor Platform v2</h1>
+    <p class="subtitle">
+      Gateway → Agent Runtime → RabbitMQ → Tool workers.
+      <a href="https://www.figma.com/board/d3SqK8NI5SejQtfy8yzpxF" target="_blank" rel="noopener">FigJam-диаграмма</a>
+    </p>
+  </header>
+
+  <section class="panel">
+    <h2>Проверка пайплайна</h2>
+    <div id="erpBanner" class="erp-banner">Проверка ERP SQL...</div>
+    <div class="grid-2">
+      <label>ФИО (1С) <input id="fio" placeholder="Иванов И.И." /></label>
+      <label>Пароль <input id="password" type="password" /></label>
+    </div>
+    <div class="actions">
+      <button id="btnLogin">1. Войти (JWT)</button>
+      <button id="btnHealth">2. Health сервисов</button>
+      <button id="btnRun">3. Demo run (queue imap)</button>
+      <button id="btnTool">4. Tool via Runtime</button>
+      <button id="btnKpi">5. KPI summary</button>
+    </div>
+    <ol id="pipeline" class="pipeline">
+      <li data-step="login">1. JWT login</li>
+      <li data-step="run">2. Agent run</li>
+      <li data-step="queue">3. RabbitMQ queue</li>
+      <li data-step="tool">4. Tool invoke</li>
+    </ol>
+    <div id="services" class="services-grid" aria-live="polite"></div>
+    <pre id="log" class="log"></pre>
+  </section>
+
+  <section class="panel" id="sandboxPanel">
+    <h2>Sandbox инструментов</h2>
+    <p class="hint">
+      Форма ввода параметров и вывод результата для каждого инструмента. Сначала выполните вход (кнопка 1).
+      Режим: <span id="sandboxMode">—</span>
+    </p>
+
+    <div class="sandbox-toolbar">
+      <button id="btnSandboxAll" type="button">Запустить все (real)</button>
+      <button id="btnSandboxClear" type="button" class="secondary">Очистить вывод</button>
+    </div>
+
+    <h3 class="sandbox-section-title">Инструменты в Docker</h3>
+    <div class="sandbox-forms sandbox-forms-docker">
+      <article class="sandbox-tool-form onec-sandbox" data-tool="onec">
+        <header class="sandbox-tool-head">
+          <span class="sandbox-badge">1С</span>
+          <div>
+            <strong>OData 1С — документооборот</strong>
+            <div class="hint">onec.odata_get — разделы документооборота (как в 1С ERP)</div>
+          </div>
+        </header>
+        <div class="onec-layout">
+          <nav class="onec-sidebar" id="onecTabNav" role="tablist" aria-label="Разделы документооборота"></nav>
+          <div class="onec-panel">
+            <div class="onec-panel-head">
+              <h4 id="onecTabTitle" class="onec-panel-title">Входящие</h4>
+              <p id="onecTabDesc" class="onec-tab-desc hint">Входящая корреспонденция, присоединённые файлы и задачи.</p>
+            </div>
+            <div class="onec-presets" id="onecPresetList" role="group" aria-label="Объекты раздела"></div>
+            <div class="onec-params">
+              <label>
+                Кол-во записей ($top)
+                <input id="sbOnecTop" type="number" min="1" max="100" value="3" />
+              </label>
+            </div>
+            <input type="hidden" id="sbOnecPath" value="Document_ТД_ВходящаяКорреспонденция" />
+          </div>
+        </div>
+        <div class="sandbox-row-actions">
+          <button id="btnSbOnec" type="button">Выполнить</button>
+          <span id="sbOnecStatus" class="sandbox-status"></span>
+        </div>
+        <label class="sandbox-out-label">
+          Вывод
+          <pre id="sbOnecOut" class="sandbox-io" aria-live="polite">—</pre>
+        </label>
+      </article>
+
+      <article class="sandbox-tool-form onec-sandbox" data-tool="onecCom">
+        <header class="sandbox-tool-head">
+          <span class="sandbox-badge">1С ERP</span>
+          <div>
+            <strong>COM — Мои задачи (ERP)</strong>
+            <div class="hint">onec.com.query_tasks — Задача.ЗадачаИсполнителя через COMConnector, :7831, 32-bit Python</div>
+          </div>
+        </header>
+        <div class="onec-params">
+          <label>
+            Лимит задач
+            <input id="sbOnecComLimit" type="number" min="1" max="100" value="20" />
+          </label>
+        </div>
+        <div class="sandbox-row-actions">
+          <button id="btnSbOnecCom" type="button">Мои задачи (COM)</button>
+          <span id="sbOnecComStatus" class="sandbox-status"></span>
+        </div>
+        <label class="sandbox-out-label">
+          Вывод
+          <pre id="sbOnecComOut" class="sandbox-io" aria-live="polite">—</pre>
+        </label>
+      </article>
+
+      <article class="sandbox-tool-form" data-tool="imap">
+        <header class="sandbox-tool-head">
+          <span class="sandbox-badge">IMAP</span>
+          <div>
+            <strong>Письма пользователя</strong>
+            <div class="hint">imap.search + imap.fetch_message (нужны IMAP_* в infra/.env)</div>
+          </div>
+        </header>
+        <div class="sandbox-fields">
+          <label>
+            Фильтр пользователя
+            <input id="sbImapUser" value="omto" />
+          </label>
+          <label>
+            Кол-во сообщений
+            <input id="sbImapLimit" type="number" min="1" max="50" value="3" />
+          </label>
+        </div>
+        <div class="sandbox-row-actions">
+          <button id="btnSbImap" type="button">Выполнить</button>
+          <span id="sbImapStatus" class="sandbox-status"></span>
+        </div>
+        <label class="sandbox-out-label">
+          Вывод
+          <pre id="sbImapOut" class="sandbox-io" aria-live="polite">—</pre>
+        </label>
+      </article>
+
+      <article class="sandbox-tool-form" data-tool="browser">
+        <header class="sandbox-tool-head">
+          <span class="sandbox-badge">Browser</span>
+          <div>
+            <strong>Веб-страница</strong>
+            <div class="hint">browser.extract_text — поиск (DDG → Wikipedia API) или загрузка разрешённой страницы во вкладке URL</div>
+          </div>
+        </header>
+        <div class="browser-mode-layout">
+          <nav class="browser-mode-tabs" id="browserModeNav" role="tablist" aria-label="Режим Browser">
+            <button type="button" class="browser-mode-tab active" data-mode="search" role="tab" aria-selected="true">Поиск</button>
+            <button type="button" class="browser-mode-tab" data-mode="url" role="tab" aria-selected="false">URL</button>
+          </nav>
+          <div class="browser-mode-panels">
+            <div class="browser-mode-panel" data-mode="search">
+              <label class="sandbox-field-wide">
+                Поисковый запрос
+                <input id="sbBrowserQuery" value="новости Ростова-на-Дону" placeholder="календарь праздников, rostov_news..." />
+              </label>
+              <p class="hint browser-url-hint sandbox-field-wide">
+                Поиск: DuckDuckGo, при anti-bot — Wikipedia API, затем заголовки donnews.ru / 161.ru.
+                Поле URL в этом режиме не используется — для ya.ru откройте вкладку «URL».
+              </p>
+            </div>
+            <div class="browser-mode-panel hidden" data-mode="url">
+              <label class="sandbox-field-wide">
+                URL страницы
+                <input id="sbBrowserUrl" value="" placeholder="https://donnews.ru/" />
+              </label>
+              <p class="hint browser-url-hint sandbox-field-wide">
+                Загрузка разрешённой страницы: donnews.ru, 161.ru, ria.ru, rbc.ru, yandex/ya.ru и др.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="sandbox-row-actions">
+          <button id="btnSbBrowser" type="button">Выполнить</button>
+          <span id="sbBrowserStatus" class="sandbox-status"></span>
+        </div>
+        <label class="sandbox-out-label">
+          Вывод
+          <pre id="sbBrowserOut" class="sandbox-io" aria-live="polite">—</pre>
+        </label>
+      </article>
+    </div>
+
+    <h3 class="sandbox-section-title sandbox-section-desktop">Desktop tools — Windows host</h3>
+    <p class="hint sandbox-desktop-hint">
+      COM (:7826), файловая система (:7827) и native shell (:7828). Запустите
+      <code>Consturctor\scripts\start_desktop_tools.cmd</code> на этом ПК, затем Health (кнопка 2).
+    </p>
+    <div class="sandbox-forms sandbox-forms-desktop">
+      <article class="sandbox-tool-form sandbox-tool-desktop" data-tool="shell">
+        <header class="sandbox-tool-head">
+          <span class="sandbox-badge sandbox-badge-desktop">Shell</span>
+          <div>
+            <strong>Командная строка</strong>
+            <div class="hint">shell.run — sandbox (Docker :7823) или native (единый host :7830)</div>
+          </div>
+        </header>
+        <div class="sandbox-fields">
+          <label>
+            Runtime
+            <select id="sbShellRuntime">
+              <option value="sandbox">sandbox — контейнер :7823</option>
+              <option value="native" selected>native — Windows host :7830</option>
+            </select>
+          </label>
+          <label class="sandbox-field-wide">
+            Команда
+            <input id="sbShellCmd" value="cd incoming || dir" spellcheck="false" />
+          </label>
+          <label class="sandbox-field-wide">
+            Рабочая папка (native)
+            <input id="sbShellCwd" value="" placeholder="пусто = корень allowlist" />
+          </label>
+        </div>
+        <div class="sandbox-row-actions">
+          <button id="btnSbShell" type="button">Выполнить</button>
+          <span id="sbShellStatus" class="sandbox-status"></span>
+        </div>
+        <label class="sandbox-out-label">
+          Вывод
+          <pre id="sbShellOut" class="sandbox-io" aria-live="polite">—</pre>
+        </label>
+      </article>
+
+      <article class="sandbox-tool-form sandbox-tool-desktop" data-tool="fs">
+        <header class="sandbox-tool-head">
+          <span class="sandbox-badge sandbox-badge-desktop">FS</span>
+          <div>
+            <strong>Файловая система</strong>
+            <div class="hint">fs.* — Windows host :7830. Путь внутри FS_ROOT_ALLOWLIST (data\filesystem). Запустите scripts\start_host_network_tools.cmd.</div>
+          </div>
+        </header>
+        <div class="sandbox-fields">
+          <label>
+            Операция
+            <select id="sbFsOp">
+              <option value="fs.list">list</option>
+              <option value="fs.read">read</option>
+              <option value="fs.stat">stat</option>
+              <option value="fs.write">write</option>
+              <option value="fs.move">move</option>
+              <option value="fs.copy">copy</option>
+            </select>
+          </label>
+          <label class="sandbox-field-wide">
+            Путь / from
+            <input id="sbFsPath" value="." />
+          </label>
+          <label class="sandbox-field-wide" id="sbFsPath2Wrap">
+            Путь to (move/copy)
+            <input id="sbFsPath2" value="outgoing/copied.txt" />
+          </label>
+          <label class="sandbox-field-wide" id="sbFsContentWrap">
+            Содержимое (write)
+            <input id="sbFsContent" value="sandbox test line" spellcheck="false" />
+          </label>
+        </div>
+        <div class="sandbox-row-actions">
+          <button id="btnSbFs" type="button">Выполнить</button>
+          <span id="sbFsStatus" class="sandbox-status"></span>
+        </div>
+        <label class="sandbox-out-label">
+          Вывод
+          <pre id="sbFsOut" class="sandbox-io" aria-live="polite">—</pre>
+        </label>
+      </article>
+
+      <article class="sandbox-tool-form sandbox-tool-desktop" data-tool="com">
+        <header class="sandbox-tool-head">
+          <span class="sandbox-badge sandbox-badge-desktop">COM</span>
+          <div>
+            <strong>COM-приложения</strong>
+            <div class="hint">com.* — Windows host (:7826), нужны 1С/Office</div>
+          </div>
+        </header>
+        <div class="sandbox-fields">
+          <label>
+            Приложение
+            <select id="sbComApp">
+              <option value="onec">1С (V83.Application)</option>
+              <option value="outlook">Outlook</option>
+              <option value="excel">Excel</option>
+            </select>
+          </label>
+          <label>
+            Метод
+            <input id="sbComMethod" value="Connect" />
+          </label>
+          <label class="sandbox-field-wide">
+            Args JSON
+            <input id="sbComArgs" value="[]" spellcheck="false" />
+          </label>
+          <label>
+            Calendar days
+            <input id="sbComCalDays" type="number" min="1" max="90" value="7" />
+          </label>
+          <label class="sandbox-field-wide">
+            Calendar query
+            <input id="sbComCalQuery" value="" placeholder="планерка / совещание" />
+          </label>
+        </div>
+        <div class="sandbox-row-actions">
+          <button id="btnSbComList" type="button" class="secondary">List apps</button>
+          <button id="btnSbCom" type="button">Connect + Invoke</button>
+          <button id="btnSbComOutlookCal" type="button" class="secondary">Outlook calendar</button>
+          <span id="sbComStatus" class="sandbox-status"></span>
+        </div>
+        <label class="sandbox-out-label">
+          Вывод
+          <pre id="sbComOut" class="sandbox-io" aria-live="polite">—</pre>
+        </label>
+      </article>
+    </div>
+  </section>
+
+  <section class="panel" id="agentToolsPanel">
+    <h2>Agent Tools — демо</h2>
+    <p class="hint">
+      Анимированные сценарии всех инструментов агента: локальные coding-tools (<code>agent/</code>)
+      и платформенные интеграции (1С OData, IMAP, Browser, Shell, FS, COM).
+      Работает без backend — нажмите «▶ Демо» или «▶ Повторить» на карточке.
+      Для реального вызова используйте секцию Sandbox выше.
+    </p>
+    <div class="agent-tools-toolbar">
+      <button id="btnAgentDemoAll" type="button">▶ Запустить все</button>
+      <button id="btnAgentDemoCoding" type="button" class="secondary">▶ Coding tools</button>
+      <button id="btnAgentDemoPlatform" type="button" class="secondary">▶ Platform tools</button>
+      <button id="btnAgentDemoStop" type="button" class="secondary">Стоп</button>
+    </div>
+
+    <h3 class="agent-tools-section-title">Coding tools</h3>
+    <p class="hint agent-tools-section-hint">9 инструментов локального coding-agent</p>
+    <div id="agentToolsCodingGrid" class="agent-tools-grid" aria-live="polite"></div>
+
+    <h3 class="agent-tools-section-title agent-tools-section-platform">Platform tools: 1C → Почта → …</h3>
+    <p class="hint agent-tools-section-hint">Интеграции через Tool Runtime и workers (Docker / Windows host)</p>
+    <div id="agentToolsPlatformGrid" class="agent-tools-grid agent-tools-grid-platform" aria-live="polite"></div>
+  </section>
+
+  <section class="panel" id="accessPanel">
+    <h2>KPI → уровень доступа агента</h2>
+    <p class="hint">
+      Состояние: <strong>уровень</strong> + <strong>вид изменения</strong> (0 / +1 / −1).
+      Первый нижний порог и вид&gt;−1 → вид=−1 (уровень −1, но не ниже 1).
+      KPI ↑ при вид=0 — порог выполнен, уровень не меняется до закрытия недели.
+      Закрытие недели при KPI ≥ порога и вид=0 — предложение повышения (кнопка).
+      При вид=−1 — восстановление сразу (вид→0, +1 уровень).
+      Критический нижний порог → уровень 1.
+      KPI = <strong>верные / все задачи</strong> в окне: до 100 задач — по всем с начала, далее — скользящее окно 100. KPI не сбрасывается при новой неделе.
+      Новая неделя: только вид→0, уровень и KPI сохраняются.
+    </p>
+
+    <div class="access-thresholds grid-2">
+      <label>
+        Порог повышения уровня (0–100)
+        <input id="promoteThreshold" type="number" min="0" max="100" value="80" />
+      </label>
+      <label>
+        Порог понижения уровня (0–100)
+        <input id="demoteThreshold" type="number" min="0" max="100" value="60" />
+      </label>
+    </div>
+
+    <div class="access-week-meta">
+      <span>Неделя <strong id="weekNum">1</strong></span>
+      <span id="accessAgentLabel" class="hint">Агент: demo-agent · стартовый уровень 1</span>
+    </div>
+
+    <div class="access-progress-row">
+      <div class="access-progress-wrap">
+        <div class="access-progress-label">
+          KPI: <strong id="weeklyAccuracy">—</strong>%
+          <span id="weeklyKpiFormula" class="kpi-formula">(0/0)</span>
+        </div>
+        <div class="access-progress-track" id="accuracyTrack">
+          <div id="demoteZone" class="access-zone demote"></div>
+          <div id="promoteZone" class="access-zone promote"></div>
+          <div id="accuracyBar" class="access-progress-fill"></div>
+          <div id="demoteMarker" class="access-threshold-marker demote" aria-hidden="true"></div>
+          <div id="severeMarker" class="access-threshold-marker severe" aria-hidden="true"></div>
+          <div id="promoteMarker" class="access-threshold-marker promote" aria-hidden="true"></div>
+        </div>
+        <div class="access-scale">
+          <span class="access-scale-edge left">0%</span>
+          <span id="severeScaleLabel" class="access-scale-mark severe">крит. 45%</span>
+          <span id="demoteScaleLabel" class="access-scale-mark demote">↓ 60%</span>
+          <span id="promoteScaleLabel" class="access-scale-mark promote">↑ 80%</span>
+          <span class="access-scale-edge right">100%</span>
+        </div>
+      </div>
+      <div id="accessLevelBadge" class="access-level-badge" data-level="1">
+        <div class="level-num" id="levelNum">1</div>
+        <div class="level-caption">уровень</div>
+        <div class="level-title" id="levelTitle">Наблюдатель</div>
+      </div>
+    </div>
+
+    <div class="access-actions">
+      <button id="btnTaskFail" type="button" class="secondary">+ задача (ошибка)</button>
+      <button id="btnTaskOk" type="button" class="secondary">+ задача (верно)</button>
+      <button id="btnWeekPlus" type="button">+1 неделя</button>
+      <button id="btnPromote" type="button" class="promote-btn hidden">Подтвердить повышение</button>
+    </div>
+
+    <div id="accessNotice" class="access-notice hidden"></div>
+
+    <div id="accessLevelCards" class="access-levels-grid"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Архитектура (v2)</h2>
+    <p class="hint">
+      Локальный Mermaid = FigJam v2. Gateway не ходит в tools напрямую; Celery Beat кладёт poll-задачи в очереди.
+    </p>
+    <pre class="mermaid" id="diagramSource"></pre>
+  </section>
+
+  <script src="app.js?v=30"></script>
+</body>
+</html>

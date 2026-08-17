@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,9 +17,12 @@ from app.schemas.regulation import (
     AgentReadinessResult,
     RoleMatchResult,
 )
+from app.services.agent_platform import sync_draft_to_platform_card
 from app.services.readiness.service import create_readiness_run
 from app.services.regulation import RegulationError, parse_upload
 from app.services.role_matching import RoleMatchError, create_role_match_run
+
+logger = logging.getLogger(__name__)
 
 
 class AgentDraftError(Exception):
@@ -136,6 +140,10 @@ def update_draft_status(
     db.add(draft)
     db.commit()
     db.refresh(draft)
+    try:
+        sync_draft_to_platform_card(db, draft)
+    except Exception:
+        logger.exception("Failed to sync draft %s to platform agent card", draft.id)
     return _draft_detail(db, draft)
 
 

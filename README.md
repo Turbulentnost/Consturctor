@@ -1,5 +1,7 @@
 # turbobot — конструктор ИИ-агентов
 
+> **Для агента-разработчика (карта репо, tools, API):** см. **[AGENT_BUILDER.md](AGENT_BUILDER.md)** — начните с этого файла.
+
 Платформа из двух частей:
 
 | Часть | Папка | Назначение |
@@ -78,6 +80,61 @@ Backend слушает **`http://127.0.0.1:7812`**. Desktop ходит на эт
 5. Запуск и мониторинг агента — из desktop, исполнение — на backend/worker.
 
 Сейчас реализованы пункты **1** и каркас **3** (stub). UI конструктора и реальные провайдеры моделей — следующие этапы.
+
+---
+
+## Инструменты платформы для внешнего агента
+
+Внешний ИИ-агент вызывает инструменты через Gateway (JWT):
+
+| Метод | Путь |
+|-------|------|
+| GET | `/api/v1/tools` — список разрешённых tools для отдела |
+| POST | `/api/v1/tools/{name}/invoke` — выполнение tool |
+
+Gateway проксирует вызов в Agent Runtime (orchestrator :7825), тот маршрутизирует в worker-сервисы.  
+ACL по отделу: `TOOL_MANIFEST_PATH` → [`backend/data/tool_manifest.json`](backend/data/tool_manifest.json).
+
+```mermaid
+flowchart LR
+    Agent[ExternalAgent]
+    GW[Gateway_7812]
+    RT[Orchestrator_7825]
+    DockerTools[Docker_tools]
+    DesktopTools[Windows_host]
+
+    Agent -->|"POST /api/v1/tools/name/invoke"| GW --> RT
+    RT --> DockerTools
+    RT -->|"host.docker.internal"| DesktopTools
+```
+
+### Каталог tools
+
+| Группа | Tools | Где выполняется |
+|--------|-------|-----------------|
+| **IMAP** | `imap.list_unread`, `imap.fetch_message`, `imap.fetch_attachments`, `imap.search` | Docker :7821 |
+| **1С** | `onec.odata_get`, `onec.odata_post`, `onec.odata_patch`, `onec.attach_file`, `onec.sql_query` | Docker :7822 |
+| **Browser** | `browser.open_session/close_session/navigate/snapshot/click/type/fill/wait/tabs/screenshot/extract_text` | Docker :7824 |
+| **Shell sandbox** | `shell.run` с `runtime=sandbox` | Docker :7823 |
+| **Shell native** | `shell.run` с `runtime=native`, опционально `cwd` | Windows host :7828 |
+| **Filesystem** | `fs.list`, `fs.read`, `fs.write`, `fs.stat`, `fs.move`, `fs.copy` | Windows host :7827 |
+| **COM** | `com.list_apps`, `com.connect`, `com.invoke`, `com.release`, `com.outlook.launch/close/calendar_list/calendar_get` | Windows host :7826 |
+
+Desktop tools (COM, FS, native shell) запускаются на том же ПК:
+
+```cmd
+scripts\start_desktop_tools.cmd
+```
+
+Полный стек Docker + desktop:
+
+```cmd
+scripts\start_platform_all.cmd
+```
+
+Подробнее: **[AGENT_BUILDER.md](AGENT_BUILDER.md)** (карта репо и tools), [PLATFORM.md](PLATFORM.md), [AGENT_INTERACTION.md](AGENT_INTERACTION.md).
+
+**Demo UI** для ручной проверки sandbox: [`platform-demo-ui/`](platform-demo-ui/), URL http://127.0.0.1:8790/
 
 ---
 

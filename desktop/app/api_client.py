@@ -36,6 +36,88 @@ class HealthStatus:
     erp_reachable: bool
     erp_server: str
     llm_provider: str
+    auth_stub: bool = False
+    registration_enabled: bool = False
+    platform_services: tuple[tuple[str, bool, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class KpiMetricTemplate:
+    metric_id: str
+    title: str
+    kind: str
+    source: str
+    threshold_min: float | None = None
+    threshold_max: float | None = None
+    weight: float = 1.0
+    description: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AgentKpiMetric:
+    metric_id: str
+    title: str
+    kind: str
+    source: str
+    threshold_min: float | None = None
+    threshold_max: float | None = None
+    weight: float = 1.0
+    task_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AgentCardKpi:
+    agent_id: str
+    title: str
+    department: str
+    kpi_metrics: tuple[AgentKpiMetric, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class KpiSummary:
+    total_runs: int
+    success_rate: float
+    error_rate: float
+    hitl_rate: float
+    operator_keep_rate: float | None
+    tool_failure_rate: float
+    task_success_rate: float = 0.0
+    tasks_correct: int = 0
+    tasks_total: int = 0
+    tasks_lifetime_total: int = 0
+    completed_tasks_total: int = 0
+    avg_execution_duration_sec: float = 0.0
+    tasks_failed: int = 0
+    task_error_rate: float = 0.0
+    tasks_in_progress: int = 0
+    median_execution_duration_sec: float = 0.0
+    tasks_per_day: float = 0.0
+    success_rate_delta: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionHistoryItem:
+    process_seq: int
+    started_at: str
+    is_started: bool
+    is_completed: bool
+    duration_sec: float | None = None
+    status: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AgentKpiOverview:
+    card: AgentCardKpi
+    summary: KpiSummary
+    history: tuple[ExecutionHistoryItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RunStatus:
+    run_id: str
+    agent_id: str
+    status: str
+    tool_events_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -546,13 +628,205 @@ class ApiClient:
             headers["Authorization"] = f"Bearer {self._token}"
         return headers
 
+    def set_base_url(self, base_url: str) -> None:
+        self.base_url = base_url.rstrip("/")
+
+    @staticmethod
+    def _parse_agent_kpi_metric(data: dict) -> AgentKpiMetric:
+        threshold_min = data.get("threshold_min")
+        threshold_max = data.get("threshold_max")
+        return AgentKpiMetric(
+            metric_id=str(data.get("metric_id", "")),
+            title=str(data.get("title", "")),
+            kind=str(data.get("kind", "rate")),
+            source=str(data.get("source", "")),
+            threshold_min=float(threshold_min) if threshold_min is not None else None,
+            threshold_max=float(threshold_max) if threshold_max is not None else None,
+            weight=float(data.get("weight") or 1.0),
+            task_ids=tuple(str(x) for x in (data.get("task_ids") or [])),
+        )
+
+    @staticmethod
+    def _parse_agent_card_kpi(data: dict) -> AgentCardKpi:
+        metrics = [
+            ApiClient._parse_agent_kpi_metric(metric)
+            for metric in data.get("kpi_metrics") or []
+            if isinstance(metric, dict)
+        ]
+        return AgentCardKpi(
+            agent_id=str(data.get("agent_id", "")),
+            title=str(data.get("title", "")),
+            department=str(data.get("department", "")),
+            kpi_metrics=tuple(metrics),
+        )
+
+    @staticmethod
+    def _parse_kpi_summary(data: dict) -> KpiSummary:
+        rate = data.get("operator_keep_rate")
+        delta = data.get("success_rate_delta")
+        return KpiSummary(
+            total_runs=int(data.get("total_runs") or 0),
+            success_rate=float(data.get("success_rate") or 0.0),
+            error_rate=float(data.get("error_rate") or 0.0),
+            hitl_rate=float(data.get("hitl_rate") or 0.0),
+            operator_keep_rate=float(rate) if rate is not None else None,
+            tool_failure_rate=float(data.get("tool_failure_rate") or 0.0),
+            task_success_rate=float(data.get("task_success_rate") or 0.0),
+            tasks_correct=int(data.get("tasks_correct") or 0),
+            tasks_total=int(data.get("tasks_total") or 0),
+            tasks_lifetime_total=int(data.get("tasks_lifetime_total") or 0),
+            completed_tasks_total=int(data.get("completed_tasks_total") or 0),
+            avg_execution_duration_sec=float(data.get("avg_execution_duration_sec") or 0.0),
+            tasks_failed=int(data.get("tasks_failed") or 0),
+            task_error_rate=float(data.get("task_error_rate") or 0.0),
+            tasks_in_progress=int(data.get("tasks_in_progress") or 0),
+            median_execution_duration_sec=float(data.get("median_execution_duration_sec") or 0.0),
+            tasks_per_day=float(data.get("tasks_per_day") or 0.0),
+            success_rate_delta=float(delta) if delta is not None else None,
+        )
+
+    @staticmethod
+    def _parse_execution_history(data: dict) -> tuple[ExecutionHistoryItem, ...]:
+        items: list[ExecutionHistoryItem] = []
+        for item in data.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            duration = item.get("duration_sec")
+            items.append(
+                ExecutionHistoryItem(
+                    process_seq=int(item.get("process_seq") or 0),
+                    started_at=str(item.get("started_at") or ""),
+                    is_started=bool(item.get("is_started")),
+                    is_completed=bool(item.get("is_completed")),
+                    duration_sec=float(duration) if duration is not None else None,
+                    status=str(item.get("status") or ""),
+                )
+            )
+        return tuple(items)
+
     def health(self) -> HealthStatus:
         data = self._request("GET", "/health")
+        services = []
+        for item in data.get("platform_services") or []:
+            services.append(
+                (
+                    str(item.get("name", "")),
+                    bool(item.get("reachable")),
+                    str(item.get("status", "")),
+                )
+            )
         return HealthStatus(
             status=str(data.get("status", "")),
             erp_reachable=bool(data.get("erp_reachable")),
             erp_server=str(data.get("erp_server", "")),
             llm_provider=str(data.get("llm_provider", "")),
+            auth_stub=bool(data.get("auth_stub")),
+            registration_enabled=bool(data.get("registration_enabled")),
+            platform_services=tuple(services),
+        )
+
+    def kpi_metric_templates(self) -> list[KpiMetricTemplate]:
+        data = self._request("GET", "/api/v1/kpi/metric-templates")
+        items = []
+        for item in data.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            threshold_min = item.get("threshold_min")
+            threshold_max = item.get("threshold_max")
+            items.append(
+                KpiMetricTemplate(
+                    metric_id=str(item.get("metric_id", "")),
+                    title=str(item.get("title", "")),
+                    kind=str(item.get("kind", "rate")),
+                    source=str(item.get("source", "")),
+                    threshold_min=float(threshold_min) if threshold_min is not None else None,
+                    threshold_max=float(threshold_max) if threshold_max is not None else None,
+                    weight=float(item.get("weight") or 1.0),
+                    description=str(item.get("description", "")),
+                )
+            )
+        return items
+
+    def list_agent_kpi_cards(self) -> list[AgentCardKpi]:
+        data = self._request("GET", "/api/v1/kpi/agent-cards")
+        return [
+            self._parse_agent_card_kpi(item)
+            for item in data.get("items") or []
+            if isinstance(item, dict)
+        ]
+
+    def update_agent_kpi_metrics(
+        self,
+        agent_id: str,
+        metrics: list[dict],
+    ) -> AgentCardKpi:
+        data = self._request(
+            "PUT",
+            f"/api/v1/kpi/agent-cards/{agent_id}/metrics",
+            json={"kpi_metrics": metrics},
+        )
+        return self._parse_agent_card_kpi(data)
+
+    def kpi_summary(self, *, agent_id: str = "", hours: int = 168) -> KpiSummary:
+        params: dict[str, str] = {"hours": str(hours)}
+        if agent_id:
+            params["agent_id"] = agent_id
+        data = self._request("GET", "/api/v1/kpi/summary", params=params)
+        return self._parse_kpi_summary(data)
+
+    def kpi_execution_history(
+        self,
+        agent_id: str = "",
+        *,
+        limit: int = 50,
+    ) -> tuple[ExecutionHistoryItem, ...]:
+        params: dict[str, str] = {"limit": str(limit)}
+        if agent_id:
+            params["agent_id"] = agent_id
+        data = self._request("GET", "/api/v1/kpi/execution-history", params=params)
+        return self._parse_execution_history(data)
+
+    def kpi_agent_overview(
+        self,
+        agent_id: str,
+        *,
+        hours: int = 168,
+        limit: int = 50,
+    ) -> AgentKpiOverview:
+        params: dict[str, str] = {"hours": str(hours), "limit": str(limit)}
+        data = self._request(
+            "GET", f"/api/v1/kpi/agent-overview/{agent_id}", params=params
+        )
+        return AgentKpiOverview(
+            card=self._parse_agent_card_kpi(data.get("card") or {}),
+            summary=self._parse_kpi_summary(data.get("summary") or {}),
+            history=self._parse_execution_history(data.get("history") or {}),
+        )
+
+    def start_run(self, agent_id: str, tools: list[str] | None = None) -> RunStatus:
+        data = self._request(
+            "POST",
+            "/api/v1/runs",
+            json={
+                "agent_id": agent_id,
+                "tools": tools or ["imap.list_unread"],
+                "config": {},
+            },
+        )
+        return RunStatus(
+            run_id=str(data.get("run_id", "")),
+            agent_id=str(data.get("agent_id", "")),
+            status=str(data.get("status", "")),
+            tool_events_count=int(data.get("tool_events_count") or 0),
+        )
+
+    def get_run(self, run_id: str) -> RunStatus:
+        data = self._request("GET", f"/api/v1/runs/{run_id}")
+        return RunStatus(
+            run_id=str(data.get("run_id", "")),
+            agent_id=str(data.get("agent_id", "")),
+            status=str(data.get("status", "")),
+            tool_events_count=int(data.get("tool_events_count") or 0),
         )
 
     def search_users(self, search: str = "") -> list[str]:
@@ -560,6 +834,17 @@ class ApiClient:
         data = self._request("GET", "/api/v1/auth/users", params=params)
         items = data.get("items") or []
         return [str(x) for x in items]
+
+    def register(self, fio: str, password: str, department: str = "") -> LoginResult:
+        data = self._request(
+            "POST",
+            "/api/v1/auth/register",
+            json={"fio": fio, "password": password, "department": department},
+        )
+        user = self._parse_user(data.get("user") or {})
+        token = str(data.get("access_token", ""))
+        self._token = token
+        return LoginResult(access_token=token, user=user)
 
     def login(self, fio: str, password: str) -> LoginResult:
         data = self._request(

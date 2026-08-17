@@ -31,8 +31,14 @@ if getattr(sys, "frozen", False):
     load_dotenv(DESKTOP_ROOT / ".env", override=False)
 
 
+from app.session_store import saved_backend_url
+
+
 def backend_url() -> str:
-    return os.getenv("BACKEND_URL", "http://127.0.0.1:7812").rstrip("/")
+    saved = saved_backend_url()
+    if saved:
+        return saved.rstrip("/")
+    return os.getenv("BACKEND_URL", "http://192.168.1.157:7812").rstrip("/")
 
 
 def repo_root() -> Path:

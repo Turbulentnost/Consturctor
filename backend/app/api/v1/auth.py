@@ -7,6 +7,7 @@ from app.schemas.auth import (
     DepartmentListResponse,
     LoginRequest,
     LoginResponse,
+    RegisterRequest,
     UpdateDepartmentRequest,
     UserFioListResponse,
     UserOut,
@@ -32,6 +33,14 @@ async def departments(_: AuthContext = Depends(get_current_user)) -> DepartmentL
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return DepartmentListResponse(items=items)
+
+
+@router.post("/register", response_model=LoginResponse)
+async def register(body: RegisterRequest) -> LoginResponse:
+    try:
+        return await auth_service.register(body.fio, body.password, body.department)
+    except auth_service.AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 @router.post("/login", response_model=LoginResponse)

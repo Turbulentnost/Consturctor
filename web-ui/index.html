@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>turbobot — Web Constructor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- LOGIN -->
+  <div id="screen-login" class="screen screen-login">
+    <div class="login-card">
+      <div class="brand">turbobot</div>
+      <p class="login-sub" id="login-subtitle">Вход через учётную запись 1С</p>
+      <label>ФИО</label>
+      <input id="login-fio" type="text" autocomplete="name" placeholder="Иванов Иван Иванович" />
+      <label>Пароль</label>
+      <input id="login-password" type="password" autocomplete="current-password" />
+      <div id="register-fields" class="hidden">
+        <label>Отдел</label>
+        <input id="login-department" type="text" placeholder="Необязательно" />
+      </div>
+      <label>Сервер backend</label>
+      <div class="row">
+        <input id="login-server" type="text" value="http://192.168.1.157:7812" />
+        <button type="button" class="btn ghost" id="btn-test-server">Проверить</button>
+      </div>
+      <p id="server-status" class="hint"></p>
+      <p id="login-error" class="error"></p>
+      <button type="button" class="btn primary wide" id="btn-login">Войти</button>
+      <button type="button" class="btn link" id="btn-toggle-register">Нет аккаунта? Зарегистрироваться</button>
+    </div>
+  </div>
+
+  <!-- APP -->
+  <div id="screen-app" class="screen screen-app hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand">turbobot</div>
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-page="create">+ Создать</button>
+        <button class="nav-item" data-page="agents">Мои агенты</button>
+        <button class="nav-item" data-page="kpi">KPI</button>
+      </nav>
+      <div class="sidebar-footer">
+        <button class="nav-item" data-page="settings">⚙ Настройки</button>
+        <button class="nav-item" id="btn-logout">Выйти</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="content-header">
+        <div>
+          <h1 id="page-title">Создать агента</h1>
+          <p id="page-subtitle" class="muted"></p>
+        </div>
+        <div class="user-chip" id="user-chip"></div>
+      </header>
+
+      <!-- CREATE -->
+      <section id="page-create" class="page">
+        <div class="card dropzone" id="dropzone">
+          <p class="drop-title">Загрузите регламент</p>
+          <p class="muted">PDF или DOCX — перетащите файл или выберите</p>
+          <input type="file" id="file-input" accept=".pdf,.docx,.doc" hidden />
+          <button type="button" class="btn primary" id="btn-pick-file">Выбрать файл</button>
+        </div>
+        <p id="upload-status" class="hint"></p>
+      </section>
+
+      <!-- REVIEW -->
+      <section id="page-review" class="page hidden">
+        <div class="card">
+          <h2 id="review-filename"></h2>
+          <p class="muted" id="review-meta"></p>
+          <div id="review-sections" class="tag-list"></div>
+        </div>
+        <div class="card">
+          <h3>Фрагменты</h3>
+          <div id="review-fragments" class="fragment-list"></div>
+        </div>
+        <div class="row end">
+          <button type="button" class="btn ghost" data-goto="create">Назад</button>
+          <button type="button" class="btn primary" id="btn-start-role-match">Найти функции роли</button>
+        </div>
+      </section>
+
+      <!-- ROLE MATCH -->
+      <section id="page-role-match" class="page hidden">
+        <div class="card" id="role-match-card">
+          <p class="muted">Загрузка…</p>
+        </div>
+        <div class="row end">
+          <button type="button" class="btn ghost" data-goto="review">Назад</button>
+          <button type="button" class="btn primary hidden" id="btn-finish-role-match">Создать черновик</button>
+        </div>
+      </section>
+
+      <!-- AGENTS -->
+      <section id="page-agents" class="page hidden">
+        <div class="tabs">
+          <button class="tab active" data-tab="published">Опубликованные</button>
+          <button class="tab" data-tab="drafts">Черновики</button>
+        </div>
+        <div id="agents-published" class="card-list"></div>
+        <div id="agents-drafts" class="card-list hidden"></div>
+      </section>
+
+      <!-- KPI -->
+      <section id="page-kpi" class="page hidden">
+        <h2 class="section-title">Сводка платформы</h2>
+        <div id="kpi-summary" class="kpi-grid"></div>
+        <h2 class="section-title">Показатели по агентам</h2>
+        <p id="kpi-agents-empty" class="muted hidden">Карточки агентов пока не опубликованы</p>
+        <div id="kpi-agents-wrap" class="kpi-agents-wrap hidden">
+          <div id="kpi-folder-stack" class="kpi-folder-stack" role="tablist" aria-label="Агенты KPI"></div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section id="page-settings" class="page hidden">
+        <div class="card">
+          <h2>Профиль</h2>
+          <p><strong>ФИО:</strong> <span id="settings-fio"></span></p>
+          <p><strong>Должность:</strong> <span id="settings-position"></span></p>
+          <p><strong>Отдел:</strong> <span id="settings-department"></span></p>
+          <label>Изменить отдел</label>
+          <div class="row">
+            <select id="settings-dept-select"></select>
+            <button type="button" class="btn primary" id="btn-save-dept">Сохранить</button>
+          </div>
+          <p id="settings-status" class="hint"></p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="api.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

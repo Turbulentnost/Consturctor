@@ -34,3 +34,9 @@ class DepartmentListResponse(BaseModel):
 
 class UpdateDepartmentRequest(BaseModel):
     department: str = Field(..., min_length=1, max_length=512)
+
+
+class RegisterRequest(BaseModel):
+    fio: str = Field(..., min_length=2, max_length=512, description="ФИО пользователя")
+    password: str = Field(..., min_length=4, max_length=128)
+    department: str = Field(default="", max_length=512)

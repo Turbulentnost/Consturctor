@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from pydantic import Field
@@ -48,31 +49,73 @@ class Settings(BaseSettings):
     cursor_regulation_model: str = "composer-2.5"
     cursor_workflow_model: str = "composer"
 
-    # App Postgres (users, avatars, future agent data). Not ERP.
     database_url: str = (
-        "postgresql+psycopg://constructor:constructor@192.168.1.157:5435/constructor"
+        "postgresql+psycopg://constructor:constructor@127.0.0.1:5432/constructor"
     )
     avatar_storage_dir: Path = BACKEND_ROOT / "storage" / "avatars"
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
     workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"
 
-    # IMAP (server-side tools only; desktop never executes imap.*)
-    imap_host: str = ""
-    imap_port: int = 993
-    imap_username: str = ""
-    imap_password: str = ""
-    imap_mailbox: str = "INBOX"
+    tool_imap_url: str = "http://127.0.0.1:7821"
+    tool_onec_url: str = "http://127.0.0.1:7822"
+    tool_shell_url: str = "http://127.0.0.1:7823"
+    tool_shell_native_url: str = "http://127.0.0.1:7828"
+    tool_browser_url: str = "http://127.0.0.1:7824"
+    tool_com_url: str = "http://127.0.0.1:7826"
+    tool_fs_url: str = "http://127.0.0.1:7827"
+    tool_desktop_host_url: str = "http://127.0.0.1:7830"
+    tool_desktop_launcher_url: str = "http://127.0.0.1:7829"
+    kpi_service_url: str = "http://127.0.0.1:7820"
+    orchestrator_url: str = "http://127.0.0.1:7825"
+    orchestrator_broker: str = "amqp://guest:guest@127.0.0.1:5672//"
 
-    # 1C OData (server-side tools onec.odata_*; desktop never executes onec.*)
-    odata_base_url: str = ""
-    odata_username: str = ""
-    odata_password: str = ""
-    odata_timeout_sec: float = 60.0
-    odata_incoming_doc_entity: str = "Document_ТД_ВходящаяКорреспонденция"
-    erp_login: str = ""
-    erp_password: str = ""
-    onec_sql_allowlist: str = ""
-    onec_odata_entity_allowlist: str = ""
+    use_stubs: bool = True
+    auth_stub: bool = False
+    allow_local_registration: bool = True
+    tool_manifest_path: str = str(BACKEND_ROOT / "data" / "tool_manifest.json")
+
+    def resolved_tool_manifest_path(self) -> Path:
+        raw = (self.tool_manifest_path or "").strip()
+        if not raw:
+            return BACKEND_ROOT / "data" / "tool_manifest.json"
+        path = Path(raw)
+        if not path.is_absolute():
+            path = BACKEND_ROOT / path
+        return path
+
+    def allowed_tools_for_department(self, department: str) -> set[str] | None:
+        manifest_path = self.resolved_tool_manifest_path()
+        if not manifest_path.is_file():
+            return None
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        dept = (department or "").strip()
+        if not dept:
+            return set(data.get("default", []))
+        by_dept = data.get("by_department") or {}
+        if dept in by_dept:
+            return set(by_dept[dept])
+        return set(data.get("default", []))
+
+    def tool_service_url(self, tool_name: str, payload: dict | None = None) -> str | None:
+        if tool_name.startswith("imap."):
+            return self.tool_imap_url
+        if tool_name.startswith("onec."):
+            return self.tool_onec_url
+        if tool_name.startswith("com."):
+            return self.tool_com_url
+        if tool_name.startswith("fs."):
+            return self.tool_fs_url
+        if tool_name.startswith("shell."):
+            runtime = str((payload or {}).get("runtime", "")).strip().lower()
+            if runtime == "native" and self.tool_shell_native_url:
+                return self.tool_shell_native_url
+            return self.tool_shell_url
+        if tool_name.startswith("browser."):
+            return self.tool_browser_url
+        return None
 
 
 settings = Settings()

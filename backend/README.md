@@ -2,6 +2,8 @@
 
 FastAPI-сервис между desktop и внешними системами (1С `erp_pm`, LLM/VLM).
 
+**Tools API для внешнего агента:** [AGENT_BUILDER.md](../AGENT_BUILDER.md) · **Auth и health:** этот файл.
+
 Общая схема: [корневой README](../README.md).
 
 ## Как работает

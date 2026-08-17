@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import jwt
 
@@ -24,13 +24,14 @@ def create_access_token(
     position: str = "",
 ) -> str:
     now = datetime.now(UTC)
+    issued_at = int(now.timestamp())
     payload = {
         "sub": user_id,
         "fio": fio,
         "department": department,
         "position": position,
-        "iat": now,
-        "exp": now + timedelta(minutes=settings.jwt_expire_minutes),
+        "iat": issued_at,
+        "exp": issued_at + settings.jwt_expire_minutes * 60,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
