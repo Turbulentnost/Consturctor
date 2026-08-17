@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timedelta
 from typing import Any
 
 from app.tools.ac.workers.models import WorkerResult, WorkerTask
@@ -52,7 +53,12 @@ def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
     if sys.platform != "win32":
         return _com_not_available(task, "1C COMConnector доступен только на Windows")
 
+    pythoncom = None
+    com_initialized = False
     try:
+        pythoncom, _ = _load_pywin32_modules()
+        pythoncom.CoInitialize()
+        com_initialized = True
         session = _connect_session()
         output_data = _dispatch_tool(session, task)
     except ImportError as exc:
@@ -71,6 +77,12 @@ def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
             error_type="ONEC_WORKER_ERROR",
             error_message=str(exc),
         )
+    finally:
+        if pythoncom is not None and com_initialized:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
     return WorkerResult(task_id=task.task_id, ok=True, output_data=output_data)
 
@@ -123,59 +135,252 @@ def _connection_string() -> str:
     ref = os.environ.get(ENV_REF, "").strip()
     if not server or not ref:
         return ""
-    parts = [f"Srvr={server}", f"Ref={ref}"]
+    parts = [f"Srvr={_quote_conn_value(server)}", f"Ref={_quote_conn_value(ref)}"]
     login = os.environ.get(ENV_LOGIN, "").strip()
     password = os.environ.get(ENV_PASSWORD, "").strip()
     if login and password:
-        parts.append(f"Usr={login}")
-        parts.append(f"Pwd={password}")
+        parts.append(f"Usr={_quote_conn_value(login)}")
+        parts.append(f"Pwd={_quote_conn_value(password)}")
     return ";".join(parts) + ";"
+
+
+def _quote_conn_value(value: str) -> str:
+    """Кавычить значение connection string, если в нём есть пробелы или спецсимволы."""
+    if not value:
+        return value
+    if any(ch in value for ch in (' ', ';', '"')):
+        return '"' + value.replace('"', '""') + '"'
+    return value
 
 
 def _dispatch_tool(session: Any, task: WorkerTask) -> dict[str, Any]:
     """Маршрутизировать read-only tool_name к COM-методу."""
     if task.tool_name == "onec.search_documents":
-        method_name = _method_name(ENV_SEARCH_METHOD, "SearchDocuments")
-        raw = _invoke_method(session, method_name, task.input_data)
-        documents = _normalize_collection(raw, "documents")
+        number = str(task.input_data.get("number") or task.input_data.get("query") or "").strip()
+        if not number:
+            return {
+                "documents": [],
+                "count": 0,
+                "source": "onec_com",
+                "method": "get_incoming_correspondence",
+                "note": "Укажите номер документа для поиска",
+            }
+        raw = get_incoming_correspondence(session, number=number)
+        documents = [raw] if raw.get("found") else []
         return {
             "documents": documents,
             "count": len(documents),
             "source": "onec_com",
-            "method": method_name,
+            "method": "get_incoming_correspondence",
         }
     if task.tool_name == "onec.get_document_card":
-        method_name = _method_name(
-            ENV_GET_DOCUMENT_CARD_METHOD,
-            "GetDocumentCard",
-        )
-        raw = _invoke_method(session, method_name, task.input_data)
-        document = _normalize_single_record(raw, preferred_key="document")
+        number = str(
+            task.input_data.get("number")
+            or task.input_data.get("document_number")
+            or task.input_data.get("query")
+            or ""
+        ).strip()
+        if not number:
+            raise OneCConnectionError("Для get_document_card нужен номер документа")
+        raw = get_incoming_correspondence(session, number=number)
+        document = raw.get("fields", {}) if raw.get("found") else {}
         return {
             "document": document,
             "source": "onec_com",
-            "method": method_name,
+            "method": "get_incoming_correspondence",
         }
     if task.tool_name == "onec.search_tasks":
-        method_name = _method_name(ENV_SEARCH_TASKS_METHOD, "SearchTasks")
-        raw = _invoke_method(session, method_name, task.input_data)
-        tasks = _normalize_collection(raw, "tasks")
+        mine_only = bool(task.input_data.get("mine_only", True))
+        limit = int(task.input_data.get("max_results") or task.input_data.get("limit") or 10)
+        tasks, source = query_performer_tasks(session, mine_only=mine_only, limit=limit)
         return {
             "tasks": tasks,
             "count": len(tasks),
             "source": "onec_com",
-            "method": method_name,
+            "task_source": source,
+            "method": "query_performer_tasks",
         }
     if task.tool_name == "onec.get_task_card":
-        method_name = _method_name(ENV_GET_TASK_CARD_METHOD, "GetTaskCard")
-        raw = _invoke_method(session, method_name, task.input_data)
-        task_record = _normalize_single_record(raw, preferred_key="task")
+        number = str(task.input_data.get("number") or task.input_data.get("task_number") or "").strip()
+        if not number:
+            raise OneCConnectionError("Для get_task_card нужен номер задачи")
+        raw = get_task_details(session, number=number)
+        task_record = raw.get("fields", {}) if raw.get("found") else {}
         return {
             "task": task_record,
             "source": "onec_com",
-            "method": method_name,
+            "method": "get_task_details",
         }
     raise OneCConnectionError(f"Неизвестный COM tool_name: {task.tool_name}")
+
+
+def _safe_str(value: Any, limit: int = 500) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.startswith("0001-01-01"):
+        return ""
+    if len(text) > limit:
+        return text[: limit - 3] + "..."
+    return text
+
+
+def get_current_user_name(app: Any) -> str:
+    try:
+        user = app.ПользователиИнформационнойБазы.ТекущийПользователь()
+        for attr in ("ПолноеИмя", "Name", "Имя"):
+            value = _safe_str(getattr(user, attr, ""))
+            if value:
+                return value
+        return _safe_str(user)
+    except Exception:
+        return ""
+
+
+def _rows_from_table(table: Any, *, source: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for i in range(table.Count()):
+        row = table.Get(i)
+        rows.append(
+            {
+                "number": _safe_str(getattr(row, "Number", "") or getattr(row, "Номер", "")),
+                "description": _safe_str(getattr(row, "Description", "") or getattr(row, "Наименование", "")),
+                "date": _safe_str(getattr(row, "Date", "") or getattr(row, "Дата", "")),
+                "due_date": _safe_str(getattr(row, "DueDate", "") or getattr(row, "СрокИсполнения", "")),
+                "executor": _safe_str(getattr(row, "Executor", "") or getattr(row, "Исполнитель", "")),
+                "source": source,
+            }
+        )
+    return rows
+
+
+def query_performer_tasks(app: Any, *, mine_only: bool = True, limit: int = 30) -> tuple[list[dict[str, Any]], str]:
+    limit = max(1, min(100, int(limit)))
+    user_name = get_current_user_name(app) if mine_only else ""
+    if mine_only and user_name:
+        query_text = f"""ВЫБРАТЬ ПЕРВЫЕ {limit}
+            Т.Номер КАК Number,
+            Т.Наименование КАК Description,
+            Т.Дата КАК Date,
+            Т.СрокИсполнения КАК DueDate,
+            Т.Исполнитель.Наименование КАК Executor
+            ИЗ Задача.ЗадачаИсполнителя КАК Т
+            ГДЕ НЕ Т.Выполнена
+                И Т.Исполнитель.Наименование = "{user_name.replace('"', '""')}"
+            УПОРЯДОЧИТЬ ПО Т.Дата УБЫВ"""
+        table = app.NewObject("Query", query_text).Execute().Unload()
+        rows = _rows_from_table(table, source="erp_задача_исполнителя")
+        return rows, "erp_задача_исполнителя"
+
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ {limit}
+        Т.Номер КАК Number,
+        Т.Наименование КАК Description,
+        Т.Дата КАК Date,
+        Т.СрокИсполнения КАК DueDate,
+        Т.Исполнитель.Наименование КАК Executor
+        ИЗ Задача.ЗадачаИсполнителя КАК Т
+        ГДЕ НЕ Т.Выполнена
+        УПОРЯДОЧИТЬ ПО Т.Дата УБЫВ"""
+    table = app.NewObject("Query", query_text).Execute().Unload()
+    return _rows_from_table(table, source="erp_задача_исполнителя_all"), "erp_задача_исполнителя_all"
+
+
+def get_task_details(app: Any, *, number: str) -> dict[str, Any]:
+    safe_number = number.replace('"', '""')
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ 1
+        Т.Ссылка КАК Ref,
+        Т.Номер КАК Number,
+        Т.Наименование КАК Description,
+        Т.Дата КАК Date,
+        Т.СрокИсполнения КАК DueDate,
+        Т.Исполнитель.Наименование КАК Executor,
+        Т.Автор.Наименование КАК Author,
+        Т.Выполнена КАК Done,
+        Т.РезультатВыполнения КАК Result,
+        Т.Предмет КАК Subject,
+        Т.Описание КАК Details
+        ИЗ Задача.ЗадачаИсполнителя КАК Т
+        ГДЕ Т.Номер = "{safe_number}" """
+    table = app.NewObject("Query", query_text).Execute().Unload()
+    if not table.Count():
+        return {"found": False, "number": number}
+
+    row = table.Get(0)
+    fields: dict[str, str] = {}
+    for alias, attr in (
+        ("number", "Number"),
+        ("description", "Description"),
+        ("date", "Date"),
+        ("due_date", "DueDate"),
+        ("executor", "Executor"),
+        ("author", "Author"),
+        ("done", "Done"),
+        ("result", "Result"),
+        ("details", "Details"),
+    ):
+        val = getattr(row, attr, None)
+        fields[alias] = _safe_str(getattr(val, "Наименование", None) or val, 2000)
+
+    return {
+        "found": True,
+        "number": number,
+        "fields": fields,
+        "attachments": [],
+    }
+
+
+def get_incoming_correspondence(app: Any, *, number: str) -> dict[str, Any]:
+    safe_number = number.replace('"', '""')
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ 1
+        Д.Ссылка КАК Ref,
+        Д.Номер КАК Number,
+        Д.Дата КАК DocDate,
+        Д.Комментарий КАК Comment,
+        Д.Организация.Наименование КАК Org,
+        Д.Контрагент.Наименование КАК Counterparty,
+        Д.Содержание КАК Content,
+        Д.ТемаСлужебнойЗаписки КАК MemoSubject,
+        Д.EmailОтправителяПисьма КАК EmailFrom,
+        Д.EmailПолучателяПисьма КАК EmailTo,
+        Д.Кому КАК MailTo,
+        Д.НомерИсходящий КАК OutNumber,
+        Д.ДатаИсходящая КАК OutDate,
+        Д.Ответственный.Наименование КАК Responsible,
+        Д.ТекстHTML КАК HtmlText
+        ИЗ Документ.ТД_ВходящаяКорреспонденция КАК Д
+        ГДЕ Д.Номер = "{safe_number}"
+            И НЕ Д.ПометкаУдаления"""
+    table = app.NewObject("Query", query_text).Execute().Unload()
+    if not table.Count():
+        return {"found": False, "number": number}
+
+    row = table.Get(0)
+    fields: dict[str, str] = {}
+    for alias, attr in (
+        ("number", "Number"),
+        ("date", "DocDate"),
+        ("comment", "Comment"),
+        ("org", "Org"),
+        ("counterparty", "Counterparty"),
+        ("content", "Content"),
+        ("memo_subject", "MemoSubject"),
+        ("email_from", "EmailFrom"),
+        ("email_to", "EmailTo"),
+        ("mail_to", "MailTo"),
+        ("out_number", "OutNumber"),
+        ("out_date", "OutDate"),
+        ("responsible", "Responsible"),
+        ("html_text", "HtmlText"),
+    ):
+        val = getattr(row, attr, None)
+        fields[alias] = _safe_str(getattr(val, "Наименование", None) or val, 5000)
+
+    return {
+        "found": True,
+        "number": number,
+        "fields": fields,
+        "attachments": [],
+    }
 
 
 def _method_name(env_key: str, default: str) -> str:

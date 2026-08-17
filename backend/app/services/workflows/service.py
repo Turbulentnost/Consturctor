@@ -450,6 +450,7 @@ def execute_workflow(
             prompts.build_reexecute_prompt(
                 plan=plan,
                 user_clarification=clarification,
+                local_run=row.local_run or {},
                 access_notes=access_notes,
             )
         )
@@ -460,6 +461,7 @@ def execute_workflow(
             prompts.build_execute_prompt(
                 plan=plan,
                 document_text=row.document_text,
+                local_run=row.local_run or {},
                 access_notes=access_notes,
             )
         )
