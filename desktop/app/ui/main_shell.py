@@ -47,6 +47,7 @@ from app.ui.pages.agent_run_page import AgentRunPage
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.my_agents_page import AgentHistoryDialog, MyAgentsPage
+from app.ui.pages.my_dashboard_page import MyDashboardPage
 from app.ui.pages.regulation_review_page import RegulationReviewPage
 from app.ui.pages.regulation_creation_page import RegulationCreationPage
 from app.ui.pages.readiness_page import ReadinessPage
@@ -193,6 +194,7 @@ class MainShell(QWidget):
         self._page_agent_run = AgentRunPage(self._api)
         self._page_saved_workflows = SavedWorkflowsPage(self._api)
         self._page_kpi = KpiPage()
+        self._page_dashboard = MyDashboardPage(self._api)
         self._page_settings = SettingsPage(self._api)
         self._page_review = RegulationReviewPage()
         self._page_role_match = RoleMatchPage()
@@ -209,6 +211,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_agent_run)
         self._pages.addWidget(self._page_saved_workflows)
         self._pages.addWidget(self._page_kpi)
+        self._pages.addWidget(self._page_dashboard)
         self._pages.addWidget(self._page_settings)
         self._pages.addWidget(self._page_review)
         self._pages.addWidget(self._page_role_match)
@@ -226,15 +229,16 @@ class MainShell(QWidget):
             "agent_run": 4,
             "saved_workflows": 5,
             "kpi": 6,
-            "settings": 7,
-            "review": 8,
-            "role_match": 9,
-            "readiness": 10,
-            "revision": 11,
-            "creation_chat": 12,
-            "passport": 13,
-            "schedule": 14,
-            "loading": 15,
+            "dashboard": 7,
+            "settings": 8,
+            "review": 9,
+            "role_match": 10,
+            "readiness": 11,
+            "revision": 12,
+            "creation_chat": 13,
+            "passport": 14,
+            "schedule": 15,
+            "loading": 16,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
@@ -1065,6 +1069,8 @@ class MainShell(QWidget):
         if key == "agents":
             self._page_agents.show_agents()
             self._load_agent_drafts()
+        elif key == "dashboard":
+            self._page_dashboard.refresh()
 
     def _on_open_saved_workflow(self, record: object) -> None:
         from app.api_client import WorkflowRecord as WorkflowRecordType

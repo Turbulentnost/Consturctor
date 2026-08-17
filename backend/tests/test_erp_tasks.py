@@ -12,7 +12,9 @@ from app.services.erp_tasks import (
     actor_from_jwt,
     build_subordinate_task_tree,
     from_1c_datetime,
+    merge_task_lists,
     parse_date,
+    task_is_late,
     to_1c_datetime,
     _looks_like_1c_user_id,
     resolve_actor,
@@ -29,6 +31,17 @@ def test_1c_datetime_offset() -> None:
     assert to_1c_datetime(human) == raw
     assert from_1c_datetime(datetime(2001, 1, 1)) is None
     assert from_1c_datetime(datetime(2026, 8, 14)) == datetime(2026, 8, 14)
+
+
+def test_task_is_late_needs_both_dates() -> None:
+    due = datetime(2026, 8, 1, 12, 0, 0)
+    done_late = datetime(2026, 8, 2, 9, 0, 0)
+    done_on_time = datetime(2026, 8, 1, 11, 0, 0)
+    assert task_is_late(done=True, completed_at=done_late, due_at=due)
+    assert not task_is_late(done=True, completed_at=done_on_time, due_at=due)
+    assert not task_is_late(done=False, completed_at=done_late, due_at=due)
+    assert not task_is_late(done=True, completed_at=None, due_at=due)
+    assert not task_is_late(done=True, completed_at=done_late, due_at=None)
 
 
 def test_parse_date_formats() -> None:
@@ -87,15 +100,18 @@ def test_tools_registered() -> None:
     assert "onec.erp_tasks_current" in ONEC_TOOLS
     assert "onec.erp_tasks_period" in ONEC_TOOLS
     assert "onec.erp_subordinate_tasks" in ONEC_TOOLS
+    assert "onec.docflow_tasks" in ONEC_TOOLS
     names = {item["name"] for item in list_tools()}
     assert "onec.erp_tasks_current" in names
     assert "onec.erp_tasks_period" in names
     assert "onec.erp_subordinate_tasks" in names
+    assert "onec.docflow_tasks" in names
     for item in list_tools():
         if item["name"] in {
             "onec.erp_tasks_current",
             "onec.erp_tasks_period",
             "onec.erp_subordinate_tasks",
+            "onec.docflow_tasks",
         }:
             assert item.get("execution") == "server"
 
@@ -263,6 +279,7 @@ def test_invoke_subordinate_tasks_uses_jwt_actor(monkeypatch) -> None:
     assert result["source"] == "stub"
     assert result["manager"]["fio"] == "Мангасарян Давид Каренович"
     assert result["tree"] == []
+    assert "erp_since" in result
 
 
 def test_invoke_subordinate_tasks_real_path(monkeypatch) -> None:
@@ -287,3 +304,30 @@ def test_invoke_subordinate_tasks_real_path(monkeypatch) -> None:
     )
     assert result["source"] == "erp_pm"
     assert result["manager"]["fio"] == "Мангасарян Давид Каренович"
+
+
+def test_merge_task_lists_keeps_sources_apart() -> None:
+    erp = [{"number": "1", "title": "ERP", "source": "erp_pm", "due_at": ""}]
+    doc = [
+        {"number": "1", "title": "DOC", "source": "документооборот", "due_at": ""},
+        {"number": "1", "title": "DOC dup", "source": "документооборот", "due_at": ""},
+    ]
+    merged = merge_task_lists(erp, doc, limit=10)
+    assert len(merged) == 2
+    assert merged[0]["source"] == "erp_pm"
+    assert merged[1]["title"] == "DOC"
+
+
+def test_invoke_docflow_stub(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.onec_tools._erp_sql_ready", lambda: False)
+    monkeypatch.setattr("app.services.onec_tools.odata_configured", lambda: False)
+    monkeypatch.setattr("app.services.docflow_tasks.docflow_configured", lambda: False)
+    result = invoke_onec(
+        "onec.docflow_tasks",
+        {},
+        actor_user_id="app-user",
+        actor_fio="Сидоров С.С.",
+    )
+    assert result["source"] == "stub"
+    assert result["fio"] == "Сидоров С.С."
+    assert result["count"] == 0

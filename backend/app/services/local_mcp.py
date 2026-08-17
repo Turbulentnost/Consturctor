@@ -298,7 +298,8 @@ def list_tools() -> list[dict[str, Any]]:
         {
             "name": "onec.erp_subordinate_tasks",
             "description": (
-                "Дерево задач подчинённых из erp_pm: сначала непосредственные "
+                "Дерево задач подчинённых из erp_pm и 1С:Документооборот: "
+                "сначала руководитель (если include_self), затем непосредственные "
                 "подчинённые (должность, задачи и сроки за период), затем "
                 "подчинённые каждого из них и так далее. "
                 "Только действующие назначения, без уволенных и переведённых. "
@@ -339,6 +340,42 @@ def list_tools() -> list[dict[str, Any]]:
                         "default": 30,
                         "description": "Максимум задач на одного человека",
                     },
+                    "include_self": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Включить руководителя (себя) отдельной строкой",
+                    },
+                },
+            },
+        },
+        {
+            "name": "onec.docflow_tasks",
+            "description": (
+                "Задачи пользователя из 1С:Документооборот (публикация /doc). "
+                "ФИО из JWT сессии. Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date_from": {
+                        "type": "string",
+                        "description": "Начало периода YYYY-MM-DD. Пусто — без нижней границы.",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "Конец периода YYYY-MM-DD. Пусто — без верхней границы.",
+                    },
+                    "only_open": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Только открытые задачи",
+                    },
+                    "include_done": {
+                        "type": "boolean",
+                        "description": "Включать выполненные задачи",
+                    },
+                    "limit": {"type": "integer", "default": 200},
                 },
             },
         },

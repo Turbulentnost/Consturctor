@@ -1847,6 +1847,24 @@ class ApiClient:
             department_change_available_at=available_at,
         )
 
+    def invoke_server_tool(
+        self,
+        name: str,
+        arguments: dict | None = None,
+        *,
+        timeout: float = 90.0,
+    ) -> dict:
+        data = self._request(
+            "POST",
+            f"/api/v1/tools/{name}/invoke",
+            json={"arguments": arguments or {}},
+            timeout=timeout,
+        )
+        if not isinstance(data, dict):
+            return {}
+        result = data.get("result")
+        return result if isinstance(result, dict) else {}
+
     def _request(
         self,
         method: str,

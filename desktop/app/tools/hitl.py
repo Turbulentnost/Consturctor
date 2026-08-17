@@ -30,6 +30,7 @@ _READ_EXACT = frozenset(
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
+        "onec.docflow_tasks",
         "agent.wait",
         "users.list",
         "notify.send",

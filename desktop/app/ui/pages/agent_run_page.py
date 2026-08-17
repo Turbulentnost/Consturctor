@@ -77,6 +77,7 @@ _TOOL_LABELS = {
     "onec.erp_tasks_current": "Текущие задачи 1С",
     "onec.erp_tasks_period": "Задачи 1С за период",
     "onec.erp_subordinate_tasks": "Задачи подчинённых 1С",
+    "onec.docflow_tasks": "Задачи документооборота",
     "excel.list_files": "Файлы агента",
     "excel.read_workbook": "Чтение Excel",
     "excel.create_workbook": "Создание Excel",

@@ -45,6 +45,7 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str,
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
+        "onec.docflow_tasks",
     }
     if name.startswith("imap."):
         raise ToolHostError(

@@ -13,6 +13,10 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.services.docflow_tasks import (
+    handle_docflow_tasks as _docflow_tasks,
+    stub_docflow_tasks as _stub_docflow_tasks,
+)
 from app.services.erp_tasks import (
     ErpTaskError,
     handle_current as _erp_tasks_current,
@@ -81,6 +85,7 @@ ONEC_TOOLS = frozenset(
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
+        "onec.docflow_tasks",
     }
 )
 _ERP_TASK_TOOLS = frozenset(
@@ -90,6 +95,7 @@ _ERP_TASK_TOOLS = frozenset(
         "onec.erp_subordinate_tasks",
     }
 )
+_JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {"onec.docflow_tasks"}
 
 
 class OnecToolError(RuntimeError):
@@ -131,11 +137,15 @@ def invoke_onec(
         handlers = {**STUB_HANDLERS, **extra}
     elif _erp_sql_ready():
         handlers = {**handlers, **{name: REAL_HANDLERS[name] for name in _ERP_TASK_TOOLS}}
+    from app.services.docflow_tasks import docflow_configured
+
+    if docflow_configured():
+        handlers = {**handlers, "onec.docflow_tasks": REAL_HANDLERS["onec.docflow_tasks"]}
     handler = handlers.get(tool)
     if handler is None:
         raise OnecToolError(f"Неизвестный 1С-инструмент: {tool}")
     try:
-        if tool in _ERP_TASK_TOOLS:
+        if tool in _JWT_ONEC_TOOLS:
             return handler(args, actor_fio=actor_fio, actor_user_id=actor_user_id)
         return handler(args)
     except OnecToolError:
@@ -791,6 +801,7 @@ STUB_HANDLERS = {
     "onec.erp_tasks_current": _stub_erp_tasks_current,
     "onec.erp_tasks_period": _stub_erp_tasks_period,
     "onec.erp_subordinate_tasks": _stub_erp_subordinate_tasks,
+    "onec.docflow_tasks": _stub_docflow_tasks,
 }
 
 REAL_HANDLERS = {
@@ -803,4 +814,5 @@ REAL_HANDLERS = {
     "onec.erp_tasks_current": _erp_tasks_current,
     "onec.erp_tasks_period": _erp_tasks_period,
     "onec.erp_subordinate_tasks": _erp_subordinate_tasks,
+    "onec.docflow_tasks": _docflow_tasks,
 }

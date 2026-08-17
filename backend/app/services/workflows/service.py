@@ -659,6 +659,7 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
             "onec.erp_tasks_current",
             "onec.erp_tasks_period",
             "onec.erp_subordinate_tasks",
+            "onec.docflow_tasks",
         ]
 
     if kind == "outlook_calendar" or any(
@@ -690,6 +691,7 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
                     "onec.erp_tasks_current",
                     "onec.erp_tasks_period",
                     "onec.erp_subordinate_tasks",
+                    "onec.docflow_tasks",
                 ]
             )
         return tools
