@@ -509,6 +509,7 @@ class AgentPassportModel(BaseModel):
     questions: list[dict] = Field(default_factory=list)
     source: str = "heuristic"
     text: str = ""
+    autonomy_level: int = 1
 
 
 class DraftPassportRequest(BaseModel):

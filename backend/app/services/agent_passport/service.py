@@ -436,6 +436,7 @@ class AgentPassport:
     missing_fields: list[str] = field(default_factory=list)
     questions: list[dict] = field(default_factory=list)
     source: str = "heuristic"
+    autonomy_level: int = 1
 
     def as_dict(self) -> dict:
         return {
@@ -452,6 +453,7 @@ class AgentPassport:
             "missing_fields": list(self.missing_fields),
             "questions": list(self.questions),
             "source": self.source,
+            "autonomy_level": int(self.autonomy_level or 1),
         }
 
     def format_text(self) -> str:
@@ -466,6 +468,7 @@ class AgentPassport:
             f"Требует подтверждения человека: {self.needs_human_approval or '—'}",
             f"Не может: {self.forbidden or '—'}",
             f"Результат: {self.result or '—'}",
+            f"Уровень автономности: {int(self.autonomy_level or 1)}",
         ]
         return "\n".join(lines)
 
@@ -496,6 +499,7 @@ def draft_passport(
         passport.name = agent_name.strip()
     elif not passport.name.strip():
         passport.name = (bp_name or "ИИ-агент").strip()
+    passport.autonomy_level = 1
 
     return _with_gaps(
         passport,
@@ -601,6 +605,7 @@ def complete_passport(
         forbidden=str(data.get("forbidden") or ""),
         result=str(data.get("result") or ""),
         source=str(data.get("source") or passport.source),
+        autonomy_level=1,
     )
     result = _with_gaps(
         updated,
@@ -836,6 +841,7 @@ def passport_from_dict(data: dict | None) -> AgentPassport:
         missing_fields=list(raw.get("missing_fields") or []),
         questions=list(raw.get("questions") or []),
         source=str(raw.get("source") or "heuristic"),
+        autonomy_level=int(raw.get("autonomy_level") or 1) or 1,
     )
 
 

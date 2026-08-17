@@ -11,13 +11,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from app.models.workflow import Workflow
-from app.services.workflow_tool_routing import (
-    apply_routing_to_runtime,
-    expand_keyword_text,
-    extract_columns,
-    resolve_workflow_routing,
-)
 from app.services.workflows.plan_models import PlanRuntime, WorkflowPlan
+from app.services.workflow_tool_routing import default_tools_for_kind
 
 ProgressCallback = Callable[[str], None]
 
@@ -79,8 +74,7 @@ def resolve_run_spec(workflow: Workflow) -> ResolvedRun | None:
 
 
 def uses_plan_export(workflow: Workflow) -> bool:
-    _ = workflow
-    return False
+    return resolve_run_spec(workflow) is not None
 
 
 def build_plan_export_arguments(
@@ -88,52 +82,117 @@ def build_plan_export_arguments(
     *,
     max_queries: int = 80,
 ) -> dict[str, Any]:
-    """Deprecated: the dedicated `plan_export` tool was removed."""
-    _ = workflow, max_queries
-    raise PlanRunError("Инструмент plan_export удалён из каталога и больше не используется")
+    """Arguments for desktop tool `plan_export` (no local Playwright/Excel)."""
+    spec = resolve_run_spec(workflow)
+    if spec is None:
+        raise PlanRunError("В плане агента нет правил поиска/Excel-выгрузки")
+    if spec.export_format != "xlsx":
+        raise PlanRunError(f"Формат выгрузки «{spec.export_format}» пока не поддержан")
+    queries = list(spec.keywords[:max_queries])
+    if not queries:
+        raise PlanRunError("В плане нет ключевых слов для поиска")
+    if not str(spec.site_url or "").strip():
+        raise PlanRunError(
+            "В плане агента не указан URL сайта (runtime.site_url). "
+            "Укажите площадку в ответах при создании — без подстановки по умолчанию."
+        )
+    return {
+        "site_url": spec.site_url,
+        "keywords": queries,
+        "columns": list(spec.columns),
+        "destination": spec.destination,
+        "export_format": spec.export_format,
+        "workflow_title": workflow.title or "agent",
+        "source": spec.source,
+        "max_queries": max_queries,
+    }
+
+
+_DEFAULT_AUTONOMY_POLICY = (
+    "Уровень 1: генерация текста, инструменты чтения и human-in-the-loop; "
+    "запись и прочие операции только после подтверждения человека."
+)
+
+
+def apply_autonomy(
+    plan: WorkflowPlan,
+    local_run: dict[str, Any] | None = None,
+) -> WorkflowPlan:
+    """Keep autonomy level 1 on the plan (KPI / levels 2–4 later)."""
+    local = local_run if isinstance(local_run, dict) else {}
+    level = int(local.get("autonomy_level") or plan.runtime.autonomy_level or 1) or 1
+    policy = str(
+        local.get("autonomy_policy") or plan.runtime.autonomy_policy or _DEFAULT_AUTONOMY_POLICY
+    ).strip()
+    plan.runtime.autonomy_level = level
+    plan.runtime.autonomy_policy = policy
+    return plan
 
 
 def ensure_runtime(plan: WorkflowPlan) -> WorkflowPlan:
-    """Fill plan.runtime from the shared routing resolver and normalize defaults."""
-    apply_routing_to_runtime(plan)
+    """Fill plan.runtime from answers/constraints when planner left it empty."""
     rt = plan.runtime
+    level = int(rt.autonomy_level or 1)
+    policy = str(rt.autonomy_policy or "")
     if rt.kind and not rt.keywords and rt.keyword_text:
-        rt.keywords = expand_keyword_text(rt.keyword_text)
+        rt.keywords = _expand_keyword_text(rt.keyword_text)
     if rt.kind and (rt.keywords or rt.keyword_text):
         if not rt.export_format:
             rt.export_format = "xlsx"
         if not rt.export_destination:
             rt.export_destination = "desktop"
         if not rt.columns:
-            rt.columns = extract_columns(_plan_blob(plan)) or [
+            rt.columns = _extract_columns(_plan_blob(plan)) or [
                 "название",
                 "цена",
                 "дата",
             ]
+        if not rt.tools:
+            rt.tools = default_tools_for_kind(rt.kind, blob=_plan_blob(plan))
+        apply_autonomy(plan)
+        return plan
+    inferred = infer_runtime(plan)
+    if inferred is not None:
+        inferred.autonomy_level = level
+        inferred.autonomy_policy = policy
+        plan.runtime = inferred
+    apply_autonomy(plan)
     return plan
 
 
 def infer_runtime(plan: WorkflowPlan) -> PlanRuntime | None:
-    """Backward-compatible runtime inference used only for the site-search flow."""
-    route = resolve_workflow_routing(plan)
-    if route.kind != "site_search_excel":
+    """Infer site_search_excel from free-text plan for this agent only."""
+    blob = _plan_blob(plan)
+    low = blob.casefold()
+
+    wants_excel = "excel" in low or "xlsx" in low or "выгрузк" in low
+    wants_desktop = "рабоч" in low and "стол" in low
+    has_keywords = "ключев" in low
+    if not (wants_excel and (wants_desktop or has_keywords)):
+        # Still allow Excel+keywords without explicit desktop.
+        if not (wants_excel and has_keywords):
+            return None
+
+    url = _extract_url(blob) or ""
+    if not url:
+        # Не выводим runtime без явного сайта — иначе позже подставлялась чужая площадка.
         return None
-    rt = plan.runtime
-    if not rt.site_url:
-        return None
-    keyword_text = rt.keyword_text or _extract_keyword_block(plan)
-    keywords = expand_keyword_text(keyword_text) if keyword_text else list(rt.keywords)
+    keyword_text = _extract_keyword_block(plan)
+    keywords = _expand_keyword_text(keyword_text) if keyword_text else []
     if not keywords:
         return None
+
+    columns = _extract_columns(blob)
+    destination = "desktop" if wants_desktop else "desktop"
+
     return PlanRuntime(
         kind="site_search_excel",
-        site_url=rt.site_url,
+        site_url=url,
         keywords=keywords,
         keyword_text=keyword_text,
-        tools=list(rt.tools or route.tools),
-        export_format=rt.export_format or "xlsx",
-        export_destination=rt.export_destination or "desktop",
-        columns=list(rt.columns) or extract_columns(_plan_blob(plan)),
+        export_format="xlsx",
+        export_destination=destination,
+        columns=columns,
     )
 
 

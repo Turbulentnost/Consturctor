@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.attachment_text import format_attachments_block
 from app.api_client import (
     AgentReadinessResult,
     ApiClient,
@@ -35,15 +36,17 @@ from app.api_client import (
     RegulationCreationMessage,
     RegulationCreationSession,
     UserProfile,
+    ScheduleDraft,
     WorkflowListItem,
     WorkflowRecord,
 )
 from app.ui.pages.agent_passport_page import AgentPassportPage
+from app.ui.pages.agent_schedule_page import AgentSchedulePage
 from app.ui.pages.agent_implementation_page import AgentImplementationPage
 from app.ui.pages.agent_run_page import AgentRunPage
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
-from app.ui.pages.my_agents_page import MyAgentsPage
+from app.ui.pages.my_agents_page import AgentHistoryDialog, MyAgentsPage
 from app.ui.pages.regulation_review_page import RegulationReviewPage
 from app.ui.pages.regulation_creation_page import RegulationCreationPage
 from app.ui.pages.readiness_page import ReadinessPage
@@ -163,9 +166,14 @@ class MainShell(QWidget):
     _passport_ready = Signal(object)
     _passport_failed = Signal(str)
     _published_agent_ready = Signal(object)
+    _workflow_page_ready = Signal(object)
     _chat_ready = Signal(object)
     _creation_session_ready = Signal(object)
     _creation_stream_event = Signal(str, str)
+    _agent_history_ready = Signal(object)
+    _schedule_draft_ready = Signal(object)
+    _schedule_save_ready = Signal(object)
+    _schedule_failed = Signal(str)
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -192,6 +200,7 @@ class MainShell(QWidget):
         self._page_revision = RevisionResultPage(self._api)
         self._page_creation_chat = RegulationCreationPage()
         self._page_passport = AgentPassportPage()
+        self._page_schedule = AgentSchedulePage()
         self._page_loading = LoadingPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
@@ -207,6 +216,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_revision)
         self._pages.addWidget(self._page_creation_chat)
         self._pages.addWidget(self._page_passport)
+        self._pages.addWidget(self._page_schedule)
         self._pages.addWidget(self._page_loading)
         self._page_index = {
             "create": 0,
@@ -223,11 +233,17 @@ class MainShell(QWidget):
             "revision": 11,
             "creation_chat": 12,
             "passport": 13,
-            "loading": 14,
+            "schedule": 14,
+            "loading": 15,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
         self._page_workflows.launch_requested.connect(self._on_launch_workflow_agent)
+        self._page_workflows.schedule_requested.connect(self._on_schedule_requested)
+        self._page_schedule.back_requested.connect(
+            lambda: self._pages.setCurrentIndex(self._page_index["workflows"])
+        )
+        self._page_schedule.save_requested.connect(self._on_schedule_save)
         self._page_saved_workflows.open_requested.connect(self._on_open_saved_workflow)
         self._page_implementation_agents.create_requested.connect(self._on_create_agent_from_inline_suggestion)
         self._page_settings.profile_updated.connect(self._on_profile_updated)
@@ -238,6 +254,7 @@ class MainShell(QWidget):
         self._page_agents.delete_suggestion_requested.connect(self._on_delete_agent_suggestion)
         self._page_agents.delete_agent_requested.connect(self._on_delete_published_agent)
         self._page_agents.run_agent_requested.connect(self._on_run_published_agent)
+        self._page_agents.history_requested.connect(self._on_agent_history_requested)
         self._page_passport.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["agents"]))
         self._page_passport.draft_requested.connect(self._on_passport_draft_requested)
         self._page_passport.answer_requested.connect(self._on_passport_answer_requested)
@@ -276,9 +293,14 @@ class MainShell(QWidget):
         self._passport_ready.connect(self._show_passport_result)
         self._passport_failed.connect(self._show_passport_error)
         self._published_agent_ready.connect(self._on_launch_workflow_agent)
+        self._workflow_page_ready.connect(self._on_open_saved_workflow)
         self._chat_ready.connect(self._show_chat_result)
         self._creation_session_ready.connect(self._show_creation_session)
         self._creation_stream_event.connect(self._page_creation_chat.append_stream_event)
+        self._agent_history_ready.connect(self._show_agent_history)
+        self._schedule_draft_ready.connect(self._show_schedule_page)
+        self._schedule_save_ready.connect(self._show_schedule_saved)
+        self._schedule_failed.connect(self._show_schedule_error)
         self._pages.currentChanged.connect(self._on_stack_changed)
         self._review_fullscreen = False
         self._current_regulation: RegulationParseResult | None = None
@@ -1155,12 +1177,31 @@ class MainShell(QWidget):
         session = self._page_passport.current_session()
         if session is None or not isinstance(answers, dict):
             return
+        if isinstance(answers.get("answers"), dict) or "files" in answers:
+            raw_answers = answers.get("answers") if isinstance(answers.get("answers"), dict) else {
+                key: value for key, value in answers.items() if key != "files"
+            }
+            files = [str(path) for path in (answers.get("files") or []) if str(path).strip()]
+        else:
+            raw_answers = answers
+            files = []
+        merged = {str(key): str(value) for key, value in dict(raw_answers or {}).items()}
 
         def run() -> None:
+            answers_payload = dict(merged)
+            attachment_block = format_attachments_block(files)
+            if attachment_block:
+                if answers_payload:
+                    answers_payload = {
+                        key: (value + attachment_block).strip()
+                        for key, value in answers_payload.items()
+                    }
+                else:
+                    answers_payload = {"answer": attachment_block.strip()}
             try:
                 updated = self._api.complete_passport(
                     session.passport,
-                    answers={str(key): str(value) for key, value in answers.items()},
+                    answers=answers_payload,
                     bp_name=session.bp_name,
                     excerpt=session.excerpt,
                     functions=session.functions,
@@ -1193,6 +1234,75 @@ class MainShell(QWidget):
         self.sidebar.set_active_key("agents", animate=False)
         self._page_agent_run.start(record)
         self._pages.setCurrentIndex(self._page_index["agent_run"])
+
+    def _on_schedule_requested(self, record: object) -> None:
+        if not isinstance(record, WorkflowRecord):
+            return
+
+        def run() -> None:
+            try:
+                draft = self._api.propose_schedule_draft(record.id)
+            except ApiError:
+                goal = record.plan.goal if record.plan else ""
+                draft = ScheduleDraft(name=record.title or "ИИ-агент", goal=goal or "")
+            self._schedule_draft_ready.emit((record, draft))
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_schedule_page(self, payload: object) -> None:
+        record, draft = payload if isinstance(payload, tuple) else (None, None)
+        if not isinstance(record, WorkflowRecord):
+            return
+        self._page_schedule.load(record, draft if isinstance(draft, ScheduleDraft) else ScheduleDraft())
+        self._pages.setCurrentIndex(self._page_index["schedule"])
+
+    def _on_schedule_save(self, record: object, draft: object) -> None:
+        if not isinstance(record, WorkflowRecord) or not isinstance(draft, ScheduleDraft):
+            return
+        self._page_schedule.set_busy(True)
+        wid = record.id
+
+        def run() -> None:
+            try:
+                local = dict(record.local_run or {})
+                local["schedule_draft"] = {
+                    "name": draft.name,
+                    "goal": draft.goal,
+                    "triggers": [
+                        {
+                            "kind": item.kind,
+                            "message": item.message,
+                            "interval_value": item.interval_value,
+                            "interval_unit": item.interval_unit,
+                            "condition": item.condition,
+                            "at": item.at,
+                            "once": item.once,
+                        }
+                        for item in draft.triggers
+                    ],
+                }
+                self._api.update_workflow_local_run(wid, local)
+                published = self._api.publish_workflow(wid)
+                for spec in draft.triggers:
+                    self._api.create_trigger(published.id, spec, message=spec.message or draft.goal)
+            except ApiError as exc:
+                self._schedule_failed.emit(exc.message)
+                return
+            self._schedule_save_ready.emit(published)
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_schedule_saved(self, record: object) -> None:
+        self._page_schedule.set_busy(False)
+        if isinstance(record, WorkflowRecord):
+            self._page_workflows.saved.emit(record.id)
+            self._on_workflow_record_saved(record)
+        self.sidebar.set_active_key("agents", animate=False)
+        self._pages.setCurrentIndex(self._page_index["agents"])
+
+    def _show_schedule_error(self, message: str) -> None:
+        self._page_schedule.set_busy(False)
+        QMessageBox.warning(self, "Паспорт агента", message)
 
     def _on_workflow_record_saved(self, record: object) -> None:
         if str(getattr(record, "phase", "")) != "done":
@@ -1309,16 +1419,42 @@ class MainShell(QWidget):
 
         Thread(target=run, daemon=True).start()
 
-    def _on_run_published_agent(self, workflow_id: str) -> None:
+    def navigate_to_agent_run(self, workflow_id: str) -> None:
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return
+
         def run() -> None:
             try:
-                record = self._api.get_workflow(workflow_id)
+                record = self._api.get_workflow(wid)
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._published_agent_ready.emit(record)
+            if str(getattr(record, "phase", "") or "") == "done":
+                self._published_agent_ready.emit(record)
+            else:
+                self._workflow_page_ready.emit(record)
 
         Thread(target=run, daemon=True).start()
+
+    def _on_run_published_agent(self, workflow_id: str) -> None:
+        self.navigate_to_agent_run(workflow_id)
+
+    def _on_agent_history_requested(self, workflow_id: str, title: str) -> None:
+        def run() -> None:
+            try:
+                runs = self._api.list_agent_runs(workflow_id)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._agent_history_ready.emit((title, runs))
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_agent_history(self, payload: object) -> None:
+        title, runs = payload if isinstance(payload, tuple) else ("ИИ-агент", [])
+        dialog = AgentHistoryDialog(title=str(title or "ИИ-агент"), runs=list(runs or []), parent=self)
+        dialog.exec()
 
 
 def _suggestions_from_role_match(role_match: RoleMatchResult | None) -> list[AgentSuggestion]:

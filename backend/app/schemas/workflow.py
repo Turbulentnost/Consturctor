@@ -44,6 +44,7 @@ class WorkflowPlanSchema(BaseModel):
     answered_questions: list[OpenQuestionSchema] = Field(default_factory=list)
     runtime: PlanRuntimeSchema | None = None
     raw_text: str = ""
+    runtime: dict[str, Any] = Field(default_factory=dict)
 
 
 class AttachmentMetaSchema(BaseModel):
@@ -139,3 +140,14 @@ class AgentToolResultSubmit(BaseModel):
     ok: bool = True
     result: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
+
+
+class AgentRunOut(BaseModel):
+    id: str
+    workflow_id: str
+    message: str = ""
+    status: str = "started"
+    answer: str = ""
+    source: str = "chat"
+    started_at: str = ""
+    finished_at: str = ""

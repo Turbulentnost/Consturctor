@@ -33,7 +33,6 @@ from app.services.workflows.document import (
     load_attachment_bytes,
 )
 from app.services.workflows.plan_models import WorkflowPlan
-from app.services.workflow_tool_routing import resolve_workflow_routing
 
 
 class WorkflowError(Exception):
@@ -174,7 +173,7 @@ def update_local_run(
     return _to_schema(row)
 
 
-WorkflowEventCallback = Callable[[str, str], None]
+WorkflowEventCallback = Callable[..., None]
 
 
 def plan_workflow(
@@ -193,11 +192,15 @@ def plan_workflow(
         raise WorkflowError("Нет материалов для планирования — загрузите файлы или заметки.")
 
     _emit(on_event, "decision", "Изучаю материалы и формирую структуру workflow.")
-    prompt = prompts.build_plan_prompt(
-        document_text=row.document_text,
-        document_name=row.document_name,
-        image_count=len(images),
-        attachment_names=[str(a.get("name") or "") for a in attachments],
+    from app.services.workflows.cursor_tools import with_tools_if_desktop
+
+    prompt = with_tools_if_desktop(
+        prompts.build_plan_prompt(
+            document_text=row.document_text,
+            document_name=row.document_name,
+            image_count=len(images),
+            attachment_names=[str(a.get("name") or "") for a in attachments],
+        )
     )
     model = _resolve_model()
     logger.info(
@@ -234,11 +237,14 @@ def plan_workflow(
     )
 
     _emit(on_event, "decision", "Планировщик запущен, получаю рассуждения агента.")
-    phase = _stream_run(agent_id, run_id, on_event=on_event)
+    phase = _stream_run_with_tools(
+        agent_id, run_id, on_event=on_event, workflow_id=workflow_id, mode="plan"
+    )
     plan = prompts.parse_plan_from_text(phase.text)
-    from app.services.plan_run import ensure_runtime
+    from app.services.plan_run import apply_autonomy, ensure_runtime
 
     ensure_runtime(plan)
+    apply_autonomy(plan, row.local_run)
     row.plan_json = plan.to_dict()
     row.title = plan.title or row.title
     row.phase = "clarify" if plan.unanswered() else "ready"
@@ -295,11 +301,15 @@ def clarify_workflow(
         if a.get("kind") == "image" and a.get("name")
     ][: len(images)]
     _emit(on_event, "decision", "Учитываю ответы пользователя и обновляю план.")
-    prompt = prompts.build_clarify_prompt(
-        answers=merged_answers,
-        plan=plan,
-        image_count=len(images),
-        image_names=image_names,
+    from app.services.workflows.cursor_tools import with_tools_if_desktop
+
+    prompt = with_tools_if_desktop(
+        prompts.build_clarify_prompt(
+            answers=merged_answers,
+            plan=plan,
+            image_count=len(images),
+            image_names=image_names,
+        )
     )
     logger.info(
         "Workflow clarify start id=%s answers=%s images=%s names=%s",
@@ -341,7 +351,9 @@ def clarify_workflow(
         run_id,
     )
 
-    phase = _stream_run(agent_id, run_id, on_event=on_event)
+    phase = _stream_run_with_tools(
+        agent_id, run_id, on_event=on_event, workflow_id=workflow_id, mode="plan"
+    )
     updated = prompts.parse_plan_from_text(phase.text)
     prior = {q.id: q.answer for q in plan.open_questions if q.answer}
     for q in updated.open_questions:
@@ -359,9 +371,10 @@ def clarify_workflow(
     # Keep previous runtime if planner omitted it; then normalize from answers/constraints.
     if not updated.runtime.kind and plan.runtime.kind:
         updated.runtime = plan.runtime
-    from app.services.plan_run import ensure_runtime
+    from app.services.plan_run import apply_autonomy, ensure_runtime
 
     ensure_runtime(updated)
+    apply_autonomy(updated, row.local_run)
     followups = updated.ensure_followups_for_unclear_answers(
         recent_answers=merged_answers,
         prior_questions=plan.open_questions,
@@ -402,6 +415,13 @@ def execute_workflow(
         row.title,
     )
 
+    from app.services.imap_tools import imap_configured
+    from app.services.onec_tools import odata_configured
+
+    access_notes = prompts.server_access_notes(
+        odata=odata_configured(),
+        imap=imap_configured(),
+    )
     if reexecute:
         clarification = str((row.local_run or {}).get("post_build_answer") or "").strip()
         if clarification:
@@ -419,18 +439,29 @@ def execute_workflow(
             plan.record_answers({"post-build": clarification})
             # Drop temporary open question if it was only for recording.
             plan.open_questions = [q for q in plan.open_questions if q.id != "post-build"]
+            from app.services.plan_run import apply_autonomy
+
+            apply_autonomy(plan, row.local_run)
             row.plan_json = plan.to_dict()
             db.commit()
-        prompt = prompts.build_reexecute_prompt(
-            plan=plan,
-            user_clarification=clarification,
-            local_run=row.local_run or {},
+        from app.services.workflows.cursor_tools import with_tools_if_desktop
+
+        prompt = with_tools_if_desktop(
+            prompts.build_reexecute_prompt(
+                plan=plan,
+                user_clarification=clarification,
+                access_notes=access_notes,
+            )
         )
     else:
-        prompt = prompts.build_execute_prompt(
-            plan=plan,
-            document_text=row.document_text,
-            local_run=row.local_run or {},
+        from app.services.workflows.cursor_tools import with_tools_if_desktop
+
+        prompt = with_tools_if_desktop(
+            prompts.build_execute_prompt(
+                plan=plan,
+                document_text=row.document_text,
+                access_notes=access_notes,
+            )
         )
 
     _emit(on_event, "decision", "Запускаю реализацию workflow.")
@@ -462,15 +493,20 @@ def execute_workflow(
         run_id,
     )
 
-    phase = _stream_run(agent_id, run_id, on_event=on_event)
+    phase = _stream_run_with_tools(
+        agent_id, run_id, on_event=on_event, workflow_id=workflow_id, mode="execute"
+    )
     row.last_result = phase.text
     row.branch = phase.branch or row.branch
     row.pr_url = phase.pr_url or row.pr_url
     # Не публикуем в «Мои агенты» автоматически — только после явного Save.
     # can_publish только при TESTS: PASS в результате реализации.
+    local = dict(row.local_run or {})
+    local["exec_run_status"] = phase.status or ""
+    local["odata_configured"] = odata_configured()
+    local["imap_configured"] = imap_configured()
     if phase.status == "FINISHED":
         tests = _tests_status_from_text(phase.text or "")
-        local = dict(row.local_run or {})
         if tests == "pass":
             row.phase = "tested"
             local.update(
@@ -500,7 +536,8 @@ def execute_workflow(
                 on_event,
                 "decision",
                 "TESTS: FAIL — сохранение недоступно. "
-                "Задайте пользователю вопрос в чате (варианты ответа) и после ответа перезапустите сборку.",
+                "Уточните режим проверки в чате (fixtures / COM), без пароля, "
+                "и после ответа перезапустите сборку.",
             )
         else:
             row.phase = "ready"
@@ -515,17 +552,15 @@ def execute_workflow(
             _emit(
                 on_event,
                 "decision",
-                "Реализация завершена, но TESTS: PASS не найден. "
-                "Задайте вопрос в чате (с вариантами), затем перезапустите. "
-                "Без TESTS: PASS сохранить нельзя.",
+                "Тестовый прогон завершился без TESTS: PASS. "
+                "Сохранение недоступно. Уточните в чате и перезапустите.",
             )
         row.local_run = local
     else:
         row.phase = "ready"
-        local = dict(row.local_run or {})
         local.update({"can_publish": False, "tests_status": "unknown"})
         row.local_run = local
-        _emit(on_event, "decision", "Реализация не завершена — можно запустить снова.")
+        _emit(on_event, "decision", "Тестовый прогон не завершён — можно запустить снова.")
     db.commit()
     db.refresh(row)
     return _to_schema(row)
@@ -556,6 +591,15 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     for key in ("cwd", "bat", "module", "output", "cmd", "shell"):
         local.pop(key, None)
     plan = WorkflowPlan.from_dict(row.plan_json or {})
+    draft = local.get("schedule_draft")
+    if isinstance(draft, dict):
+        name = str(draft.get("name") or "").strip()
+        if name:
+            row.title = name
+        goal = str(draft.get("goal") or "").strip()
+        if goal and not (plan.goal or "").strip():
+            plan.goal = goal
+            row.plan_json = plan.to_dict()
     local.update(
         {
             "status": "published",
@@ -586,13 +630,65 @@ def _tests_status_from_text(text: str) -> str:
 
 
 def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
-    """Pick MCP tools from the shared routing resolver."""
-    route = resolve_workflow_routing(plan, row)
-    if route.tools:
-        return route.tools
-    if route.kind == "browser_task":
+    """Pick MCP tools from plan domain — never force web_search for Outlook/meetings."""
+    answered = " ".join(
+        f"{q.question} {q.answer}" for q in (plan.answered_questions or []) if q.answer
+    )
+    blob = " ".join(
+        [
+            plan.title,
+            plan.goal,
+            row.title or "",
+            row.notes or "",
+            " ".join(plan.constraints),
+            " ".join(plan.test_criteria),
+            answered,
+            str(getattr(plan.runtime, "kind", "") or ""),
+        ]
+    ).casefold()
+    kind = str(getattr(plan.runtime, "kind", "") or "").casefold()
+
+    if kind == "onec" or (
+        any(tip in blob for tip in ("1с", "1c", "onec", "odata"))
+        and not any(tip in blob for tip in ("outlook", "календар", "совещан"))
+    ):
+        return ["onec.odata_get", "onec.sql_query"]
+
+    if kind == "outlook_calendar" or any(
+        tip in blob
+        for tip in (
+            "outlook",
+            "календар",
+            "совещан",
+            "встреч",
+            "планирован",
+            "занятост",
+            "confirm_slot",
+            "через com",
+            "win32com",
+            "outlook.application",
+        )
+    ):
+        # Calendar/meeting agents: no site_browser (that's for web pages, not Outlook).
+        # IMAP only if mail is part of the flow; Graph/COM calendar connector TBD.
+        tools: list[str] = []
+        if any(tip in blob for tip in ("почт", "письм", "imap", "email", "mail")):
+            tools.extend(["imap.list_unread", "imap.search"])
+        if any(tip in blob for tip in ("1с", "1c", "onec", "odata")):
+            tools.extend(["onec.odata_get", "onec.sql_query"])
+        return tools
+
+    if kind == "site_search_excel" or (
+        ("excel" in blob or "xlsx" in blob)
+        and ("ключев" in blob or "сайт" in blob or "этп" in blob)
+    ):
         return ["site_browser", "web_search"]
-    return []
+
+    if kind == "browser_task" or "http://" in blob or "https://" in blob:
+        return ["site_browser", "web_search"]
+
+    # Generic fallback — still allow search, but browser first.
+    return ["site_browser", "web_search"]
 
 
 def list_artifacts_for_workflow(
@@ -737,8 +833,41 @@ def _resolve_model() -> str | None:
     return chosen
 
 
-def _emit(on_event: WorkflowEventCallback | None, event_type: str, text: str) -> None:
-    if on_event is not None and text:
+def _stream_run_with_tools(
+    agent_id: str,
+    run_id: str,
+    *,
+    on_event: WorkflowEventCallback | None = None,
+    workflow_id: str = "",
+    mode: str = "plan",
+):
+    from app.services.workflows.cursor_tools import stream_cursor_with_tools
+
+    return stream_cursor_with_tools(
+        agent_id=agent_id,
+        run_id=run_id,
+        on_event=on_event,
+        workflow_id=workflow_id,
+        mode=mode,
+        stream_run=_stream_run,
+    )
+
+
+def _emit(
+    on_event: WorkflowEventCallback | None,
+    event_type: str,
+    text: str = "",
+    extra: dict | None = None,
+) -> None:
+    if on_event is None:
+        return
+    if extra:
+        try:
+            on_event(event_type, text, extra)
+            return
+        except TypeError:
+            pass
+    if text:
         on_event(event_type, text)
 
 

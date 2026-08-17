@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from queue import Queue
 from threading import Thread
 
@@ -11,7 +12,9 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.db.session import SessionLocal, get_db
+from app.schemas.trigger import ScheduleDraftOut
 from app.schemas.workflow import (
+    AgentRunOut,
     AgentToolResultSubmit,
     ArtifactItem,
     ArtifactsDownloadRequest,
@@ -21,6 +24,7 @@ from app.schemas.workflow import (
     WorkflowListItem,
     WorkflowSchema,
 )
+from app.services.agent_runs import answer_from_result, finish_agent_run, list_agent_runs, start_agent_run
 from app.services.agent_runtime import AgentRuntimeError, available_tools, run_agent_task
 from app.services.tool_bridge import ToolBridgeError, tool_bridge
 from app.services.workflows import (
@@ -38,6 +42,9 @@ from app.services.workflows import (
     update_local_run,
     workflow_health,
 )
+from app.services.workflows.schedule_draft import propose_schedule_draft
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -50,14 +57,26 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def _workflow_stream(action):
-    queue: Queue[dict | None] = Queue()
+def _workflow_stream(action, *, user_id: str = ""):
+    from app.services.workflows.cursor_tools import clear_tool_context, set_tool_context
 
-    def emit(event_type: str, text: str) -> None:
-        queue.put({"type": event_type, "text": text})
+    queue: Queue[dict | None] = Queue()
+    run_id = tool_bridge.new_run_id() if user_id else ""
+
+    def emit(event_type: str, text: str = "", extra: dict | None = None) -> None:
+        payload = {"type": event_type}
+        if text:
+            payload["text"] = text
+        if extra:
+            payload.update(extra)
+        queue.put(payload)
 
     def run() -> None:
         db = SessionLocal()
+        if run_id:
+            tool_bridge.register_run(run_id, user_id)
+            set_tool_context(run_id, user_id)
+            queue.put({"type": "run", "run_id": run_id})
         try:
             record = action(db, emit)
             queue.put({"type": "workflow", "workflow": record.model_dump(mode="json")})
@@ -66,6 +85,9 @@ def _workflow_stream(action):
         except Exception as exc:  # noqa: BLE001
             queue.put({"type": "error", "message": str(exc)})
         finally:
+            if run_id:
+                clear_tool_context()
+                tool_bridge.unregister_run(run_id)
             db.close()
             queue.put(None)
 
@@ -77,7 +99,7 @@ def _workflow_stream(action):
         yield _sse(item)
 
 
-def _agent_run_stream(*, user_id: str, workflow_id: str, message: str):
+def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: str = "chat"):
     queue: Queue[dict | None] = Queue()
     run_id = tool_bridge.new_run_id()
     tool_bridge.register_run(run_id, user_id)
@@ -87,7 +109,18 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str):
 
     def run() -> None:
         db = SessionLocal()
+        history_id = ""
+        status = "error"
+        answer = ""
         try:
+            history = start_agent_run(
+                db,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                message=message,
+                source=source,
+            )
+            history_id = history.id
             emit({"type": "run", "run_id": run_id})
             result = run_agent_task(
                 db,
@@ -97,12 +130,25 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str):
                 emit=emit,
                 run_id=run_id,
             )
+            status = "ok"
+            answer = answer_from_result(result)
             queue.put({"type": "done", "result": result})
         except AgentRuntimeError as exc:
+            answer = str(exc)
             queue.put({"type": "error", "message": str(exc)})
+        except WorkflowError as exc:
+            answer = exc.message
+            queue.put({"type": "error", "message": exc.message})
         except Exception as exc:  # noqa: BLE001
+            answer = str(exc)
             queue.put({"type": "error", "message": str(exc)})
         finally:
+            if history_id:
+                try:
+                    db.rollback()
+                    finish_agent_run(db, run_id=history_id, status=status, answer=answer)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to persist agent run history id=%s", history_id)
             tool_bridge.unregister_run(run_id)
             db.close()
             queue.put(None)
@@ -177,11 +223,13 @@ async def run_workflow_agent_stream(
 ) -> StreamingResponse:
     body = await request.json()
     message = str((body or {}).get("message") or "").strip()
+    source = str((body or {}).get("source") or "chat").strip() or "chat"
     return StreamingResponse(
         _agent_run_stream(
             user_id=auth.user_id,
             workflow_id=workflow_id,
             message=message,
+            source=source,
         ),
         media_type="text/event-stream",
         headers={
@@ -228,6 +276,32 @@ async def create_workflow_endpoint(
     except WorkflowError as exc:
         _raise(exc)
         raise  # pragma: no cover
+
+
+@router.post("/{workflow_id}/schedule-draft", response_model=ScheduleDraftOut)
+def create_schedule_draft(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ScheduleDraftOut:
+    try:
+        return propose_schedule_draft(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.get("/{workflow_id}/runs", response_model=list[AgentRunOut])
+def read_agent_runs(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[AgentRunOut]:
+    try:
+        return list_agent_runs(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
 
 
 @router.get("/{workflow_id}", response_model=WorkflowSchema)
@@ -283,7 +357,8 @@ async def plan_workflow_stream_endpoint(
                 user_id=user_id,
                 workflow_id=workflow_id,
                 on_event=emit,
-            )
+            ),
+            user_id=user_id,
         ),
         media_type="text/event-stream",
     )
@@ -357,7 +432,8 @@ async def clarify_workflow_stream_endpoint(
                 files=files,
                 file_question_ids=file_question_ids,
                 on_event=emit,
-            )
+            ),
+            user_id=user_id,
         ),
         media_type="text/event-stream",
     )
@@ -399,7 +475,8 @@ async def execute_workflow_stream_endpoint(
                 workflow_id=workflow_id,
                 reexecute=body.reexecute,
                 on_event=emit,
-            )
+            ),
+            user_id=user_id,
         ),
         media_type="text/event-stream",
     )
