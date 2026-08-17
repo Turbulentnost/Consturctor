@@ -387,25 +387,34 @@ def _label_env(name: str) -> str:
     low = name.casefold()
     if "onec" in low or "1c" in low:
         if "url" in low:
-            return f"URL базы 1С ({name})"
+            return "URL базы 1С"
         if "user" in low or "login" in low:
-            return f"логин 1С ({name})"
+            return "логин 1С"
         if "pass" in low or "secret" in low:
-            return f"пароль 1С ({name})"
-        return f"параметр 1С ({name})"
+            return "пароль 1С"
+        return "параметр 1С"
     if "outlook" in low or "graph" in low or "azure" in low:
         if "url" in low:
-            return f"URL Outlook / Graph ({name})"
+            return "URL Outlook / Graph"
         if "user" in low:
-            return f"учётка Outlook ({name})"
-        return f"доступ Microsoft/Outlook ({name})"
+            return "учётка Outlook"
+        return "доступ Microsoft/Outlook"
     if "url" in low or name.endswith("_HOST"):
-        return f"URL системы ({name})"
+        return "URL системы"
     if "user" in low or "login" in low:
-        return f"логин ({name})"
+        return "логин"
     if "pass" in low or "secret" in low or "token" in low:
-        return f"секрет/токен ({name})"
+        return "секрет/токен"
     return name
+
+
+def _access_audience_options(subject: str) -> list[str]:
+    return [
+        f"Я обычный сотрудник, доступа к {subject} не знаю — нужен ИТ/админ",
+        f"Я могу дать доступ к {subject}",
+        f"Пока только fixtures / офлайн без live {subject}",
+        f"Свой вариант — опишу, кто может дать доступ к {subject}",
+    ]
 
 
 def _detect_system(blob: str, blockers: list[str], context: str = "") -> str:
@@ -457,47 +466,40 @@ def _question_from_blocker(
     need_list = ", ".join(env_labels[:3]) if env_labels else ""
 
     if system == "1С" or any(k in low or k in joined for k in ("onec", "1с", "1c", "odata")):
-        what = need_list or "URL OData базы 1С и учётку"
+        what = need_list or "доступ к 1С"
         return (
-            f"Для live-проверки 1С не хватает: {what}. Что можете предоставить?",
+            f"Для live-проверки 1С не хватает: {what}. Кто может помочь с доступом?",
             [
-                f"Впишу URL OData базы 1С"
-                + (f" (вместо {envs[0]})" if envs else "")
-                + " и учётку",
-                "Подключаться к 1С через COM на этой машине",
+                "Использовать 1С COM-инструменты на desktop",
+                "Использовать OData-доступ к 1С через ИТ",
                 "Пока только fixtures / офлайн без live 1С",
-                "Свой вариант — опишу URL/базу/доступ к 1С",
+                "Свой вариант — опишу, кто может дать доступ к 1С",
             ],
-            why("Нужен именно доступ к 1С, не «системе вообще»."),
+            why("Нужен именно способ доступа к 1С, не общая формулировка."),
         )
 
     if system.startswith("Outlook") or any(
         k in low or k in joined for k in ("outlook", "календар", "совещан", "graph", "win32com", "через com")
     ):
-        what = need_list or "способ доступа к календарю Outlook"
+        what = need_list or "доступ к Outlook / календарю"
         return (
-            f"Live-проверка Outlook/календаря не прошла — не хватает: {what}. Как подключаться?",
+            f"Live-проверка Outlook/календаря не прошла — не хватает: {what}. Кто может помочь с доступом?",
             [
-                "Локальный Outlook через COM (win32com) на этой машине",
-                "Microsoft Graph — дам tenant / Client ID / права календаря",
+                "Использовать Outlook COM-инструменты на desktop",
+                "Использовать Microsoft Graph через ИТ",
                 "Пока только fixtures, без live Outlook",
                 "Свой вариант — опишу доступ к Outlook",
             ],
-            why("Нужен доступ именно к Outlook/календарю."),
+            why("Нужен именно способ доступа к Outlook/календарю."),
         )
 
     if any(k in low or k in joined for k in ("sso", "azure", "credential", "учётк", "логин", "password", "токен", "auth")):
         target = system or "целевой системы проверки"
-        what = need_list or f"учётка / SSO для {target}"
+        what = need_list or f"доступ к {target}"
         return (
-            f"Не хватает доступа к {target}: {what}. Что можно дать?",
-            [
-                f"Логин/пароль или токен для {target}",
-                f"SSO к {target} уже есть на этой машине — перезапустить live",
-                f"Доступа к {target} не будет — оставить только fixtures",
-                f"Свой вариант — опишу доступ к {target}",
-            ],
-            why(f"Нужна учётка именно для {target}."),
+            f"Не хватает доступа к {target}: {what}. Кто может это дать?",
+            _access_audience_options(target),
+            why(f"Нужен именно способ доступа к {target}."),
         )
 
     if any(
@@ -505,19 +507,16 @@ def _question_from_blocker(
         for k in ("url", "endpoint", "эндпоинт", "site_url", "http://", "https://", "base_url", "_url")
     ):
         target = system or "проверяемой системы"
-        url_what = next((lab for lab in env_labels if "url" in lab.casefold() or "URL" in lab), "") or (
-            f"URL {target}"
-        )
-        env_bit = f" (параметр {envs[0]})" if envs else ""
+        url_what = next((lab for lab in env_labels if "url" in lab.casefold() or "URL" in lab), "") or f"URL {target}"
         return (
-            f"Не хватает адреса: {url_what}{env_bit}. Какой рабочий URL указать для {target}?",
+            f"Не хватает адреса: {url_what}. Какой рабочий URL указать для {target}?",
             [
                 f"Впишу URL для {target} в своём варианте",
                 f"Доступ к {target} только из внутренней сети — проверять с этой машины",
                 f"URL для {target} пока нет — оставить fixtures",
                 f"Свой вариант — опишу адрес для {target}",
             ],
-            why(f"Нужен URL именно для {target}."),
+            why(f"Нужен URL именно для {target}, без внутренних названий параметров."),
         )
 
     if any(k in low or k in joined for k in ("connection reset", "timeout", "timed out", "недоступ", "network")):
