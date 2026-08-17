@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 from typing import Any
 from uuid import uuid4
@@ -29,8 +30,12 @@ from app.schemas.regulation import (
 )
 from app.services.regulation.full_text import compose_regulation_text
 from app.services.regulation.storage import get_document
+from app.services.regulation_functions.heuristic import build_heuristic_role_match
+from app.services.role_matching.service import create_role_match_run
 from app.services.role_matching.normalize import contains_phrase
 from app.services.role_matching.profile import all_candidate_terms, build_role_profile, verified_aliases
+
+logger = logging.getLogger(__name__)
 
 
 class RegulationFunctionExtractionError(Exception):
@@ -38,6 +43,50 @@ class RegulationFunctionExtractionError(Exception):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+
+
+def _fallback_role_match(
+    db: Session,
+    *,
+    user_id: str,
+    regulation_id: str,
+    position: str,
+    department: str,
+    result: RegulationParseResult,
+) -> RoleMatchResult:
+    role_result = create_role_match_run(
+        db,
+        user_id=user_id,
+        regulation_id=regulation_id,
+        position=position,
+        department=department,
+    )
+    if role_result.functions or role_result.matches:
+        return role_result
+    logger.warning(
+        "Role-match returned 0 functions — Action Tracker heuristic for regulation=%s",
+        regulation_id,
+    )
+    heuristic = build_heuristic_role_match(
+        result,
+        regulation_id=regulation_id,
+        position=position,
+        department=department,
+    )
+    if not heuristic.functions:
+        return role_result
+    run_row = RoleMatchRun(
+        id=heuristic.runId,
+        regulation_id=regulation_id,
+        user_id=user_id,
+        position=position,
+        department=department,
+        result_json=heuristic.model_dump(mode="json"),
+    )
+    run_row = db.merge(run_row)
+    db.commit()
+    db.refresh(run_row)
+    return RoleMatchResult.model_validate(run_row.result_json)
 
 
 def create_cursor_function_extraction(
@@ -59,6 +108,26 @@ def create_cursor_function_extraction(
         raise RegulationFunctionExtractionError("Регламент не найден", status_code=404)
 
     result = RegulationParseResult.model_validate(doc.result_json)
+    if not (settings.cursor_api_key or "").strip():
+        if settings.dev_mode:
+            logger.warning(
+                "CURSOR_API_KEY missing — heuristic role-match for regulation=%s position=%s",
+                regulation_id,
+                position,
+            )
+            return _fallback_role_match(
+                db,
+                user_id=user_id,
+                regulation_id=regulation_id,
+                position=position,
+                department=department,
+                result=result,
+            )
+        raise RegulationFunctionExtractionError(
+            "CURSOR_API_KEY не настроен в backend/.env или infra/.env",
+            status_code=500,
+        )
+
     prompt = _build_prompt(result, position=position, department=department)
     try:
         created = cursor_client.create_agent(
@@ -76,6 +145,20 @@ def create_cursor_function_extraction(
             raise CursorAgentError("Cursor API не вернул agent/run id")
         final = cursor_client.wait_for_run(agent_id, run_id)
     except CursorAgentError as exc:
+        if settings.dev_mode:
+            logger.warning(
+                "Cursor extraction failed (%s) — heuristic role-match for regulation=%s",
+                exc.message,
+                regulation_id,
+            )
+            return _fallback_role_match(
+                db,
+                user_id=user_id,
+                regulation_id=regulation_id,
+                position=position,
+                department=department,
+                result=result,
+            )
         raise RegulationFunctionExtractionError(exc.message, status_code=exc.status_code) from exc
 
     parsed = _parse_agent_response(str(final.get("result") or ""))
@@ -104,6 +187,17 @@ def create_cursor_function_extraction(
 
 def _build_prompt(result: RegulationParseResult, *, position: str, department: str) -> str:
     document_text = compose_regulation_text(result)
+    if settings.dev_mode:
+        return (
+            "Ты Cursor Agent, который анализирует распознанный регламент и выделяет все "
+            "автоматизируемые бизнес-функции из документа (режим разработчика платформы).\n"
+            "КРИТИЧНО: верни функции для ВСЕХ ролей и исполнителей, упомянутых в регламенте — "
+            "не ограничивайся одной должностью. Каждая функция должна иметь actor = реальная роль из документа.\n"
+            f"Профиль создателя агента (метка): «{position}», подразделение: «{department}».\n"
+            "Анализируй документ целиком: разделы, таблицы RACI, входы/выходы, контрольные операции.\n\n"
+            + _prompt_json_contract(position)
+            + f"\n\nРаспознанный документ:\n{document_text}"
+        )
     return (
         "Ты Cursor Agent, который анализирует распознанный регламент и выделяет функциональные блоки "
         "только для должности текущего пользователя.\n"
@@ -117,6 +211,13 @@ def _build_prompt(result: RegulationParseResult, *, position: str, department: s
         f"выделяй именно её функции: ориентир всегда «{position}», а не фиксированный список ролей.\n"
         "Анализируй документ целиком, чтобы не потерять связанные обязанности именно этой должности "
         "через разные разделы, таблицы, входы, выходы и контрольные операции.\n\n"
+        + _prompt_json_contract(position)
+        + f"\n\nРаспознанный документ:\n{document_text}"
+    )
+
+
+def _prompt_json_contract(position: str) -> str:
+    return (
         "Верни строго JSON без markdown и пояснений вне JSON. Контракт:\n"
         "{\n"
         '  "functions": [\n'
@@ -153,13 +254,23 @@ def _build_prompt(result: RegulationParseResult, *, position: str, department: s
         "  ]\n"
         "}\n\n"
         "Требования:\n"
-        f"- В functions.actor указывай только «{position}» или её явный алиас из документа.\n"
-        f"- Если фрагмент/заголовок явно про другую должность (не «{position}» и не её алиас), пропускай его.\n"
-        "- title — отдельное короткое название (например «Регистрация карточки инициативы»), "
+        f"- В functions.actor указывай роль исполнителя из документа"
+        + (
+            " (любая роль из RACI/таблиц)."
+            if settings.dev_mode
+            else f" — только «{position}» или её явный алиас из документа."
+        )
+        + "\n"
+        + (
+            "- Включай все роли и процессы, которые можно автоматизировать.\n"
+            if settings.dev_mode
+            else f"- Если фрагмент/заголовок явно про другую должность (не «{position}» и не её алиас), пропускай его.\n"
+        )
+        + "- title — отдельное короткое название (например «Регистрация карточки инициативы»), "
         "без стрелок «→» и без списка ролей/получателей.\n"
         "- action — глагол/сказуемое; object — объект в нужном падеже; recipient — отдельно, не в title.\n"
-        "- Выделяй только реальные процессы/функции этой должности, которые можно оптимизировать или автоматизировать.\n"
-        "- Для связанных блоков ЭТОЙ ЖЕ должности заполняй relatedFunctionIds и sharedContext.\n"
+        "- Выделяй только реальные процессы/функции, которые можно оптимизировать или автоматизировать.\n"
+        "- Для связанных блоков заполняй relatedFunctionIds и sharedContext.\n"
         "- Вопросы — ключевая часть ответа: по КАЖДОЙ включённой функции сформируй набор вопросов, "
         "который в полной мере описывает исполнимый процесс работы "
         "(trigger, inputs, system, result, recipient, conditions, errors/escalation, approval, deadline — "
@@ -168,8 +279,7 @@ def _build_prompt(result: RegulationParseResult, *, position: str, department: s
         "- В questions.context указывай связку фрагментов/связанных функций; quickAnswers — 2–4 коротких варианта.\n"
         "- Вопросы формируй только по включённым функциям, не теряя контекст.\n"
         "- sourceRefs.fragmentId должен соответствовать fragmentId из документа.\n"
-        "- Если подходящих функций нет, верни пустые массивы functions и questions.\n\n"
-        f"Распознанный документ:\n{document_text}"
+        "- Если подходящих функций нет, верни пустые массивы functions и questions.\n"
     )
 
 
@@ -188,15 +298,18 @@ def _map_agent_result(
     profile = build_role_profile(position=position, department=department, result=regulation)
     position_terms = _unique_terms([*verified_aliases(profile), *all_candidate_terms(profile)])
     raw_all = [item for item in (data.get("functions") or []) if isinstance(item, dict)]
-    raw_functions = [
-        item
-        for item in raw_all
-        if _function_belongs_to_position(
-            item,
-            position_terms=position_terms,
-            fragments=fragments,
-        )
-    ]
+    if settings.dev_mode:
+        raw_functions = raw_all
+    else:
+        raw_functions = [
+            item
+            for item in raw_all
+            if _function_belongs_to_position(
+                item,
+                position_terms=position_terms,
+                fragments=fragments,
+            )
+        ]
     matches: list[FragmentRoleMatch] = []
     role_functions: list[RoleFunction] = []
     processes: list[DocumentProcess] = []
@@ -244,8 +357,8 @@ def _map_agent_result(
             isFunction=True,
             title=title,
             actor=FunctionActor(
-                text=position,
-                canonicalPosition=position,
+                text=_clean(item.get("actor")) or position,
+                canonicalPosition=_clean(item.get("actor")) or position,
                 sourceBlockId=fragment.fragmentId,
             ),
             action=action,

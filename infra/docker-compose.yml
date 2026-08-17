@@ -261,6 +261,8 @@ services:
       API_HOST: 0.0.0.0
       API_PORT: "7812"
       AUTH_STUB: ${AUTH_STUB:-true}
+      DEV_MODE: ${DEV_MODE:-false}
+      CURSOR_API_KEY: ${CURSOR_API_KEY:-}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production-stub-key-32b}
       ERP_SQL_SERVER: ${ERP_SQL_SERVER:-host.docker.internal}
       ERP_SQL_DATABASE: ${ERP_SQL_DATABASE:-erp_pm}

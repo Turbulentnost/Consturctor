@@ -308,8 +308,9 @@ class LoginPage(QWidget):
         else:
             erp = "1С доступна" if health.erp_reachable else "1С недоступна"
             reg = "регистрация открыта" if health.registration_enabled else "только вход 1С"
+            dev = "режим разработчика" if health.dev_mode else "прод"
             self.server_status.setText(
-                f"Сервер {health.status}. {erp}. LLM: {health.llm_provider}. {reg}."
+                f"Сервер {health.status}. {erp}. LLM: {health.llm_provider}. {reg}. {dev}."
             )
             self._registration_enabled = health.registration_enabled
             if not health.registration_enabled and self._register_mode:

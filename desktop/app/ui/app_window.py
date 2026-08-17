@@ -144,6 +144,11 @@ class AppWindow(QMainWindow):
 
     def _enter_main(self, user) -> None:
         configure_runtime_api(token=self.api.token, base_url=self.api.base_url)
+        try:
+            health = self.api.health()
+            self.main_shell.set_dev_mode(health.dev_mode)
+        except ApiError:
+            self.main_shell.set_dev_mode(False)
         self.main_shell.set_user(user)
         self._stack.setCurrentWidget(self.main_shell)
         if self.api.token:

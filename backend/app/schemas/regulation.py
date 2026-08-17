@@ -267,6 +267,17 @@ class RoleMatchRequest(BaseModel):
     department: str = ""
 
 
+class RoleCompatibilityResult(BaseModel):
+    compatible: bool
+    position: str = ""
+    department: str = ""
+    fragmentsTotal: int = 0
+    candidatesTotal: int = 0
+    matchedTerms: list[str] = Field(default_factory=list)
+    suggestedRoles: list[str] = Field(default_factory=list)
+    hint: str = ""
+
+
 class RoleMatchDecisionRequest(BaseModel):
     status: Literal["accepted", "rejected"]
 

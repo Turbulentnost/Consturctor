@@ -71,22 +71,26 @@ def _erp_login_error_message(exc: ErpSqlError) -> str:
 
 
 def _stub_login(fio: str) -> LoginResponse:
+    if settings.dev_mode:
+        department = "Разработка платформы"
+        position = "Разработчик"
+    else:
+        department = "Demo (AUTH_STUB)"
+        position = ""
     token = create_access_token(
         user_id="auth-stub",
         fio=fio,
-        department="Demo (AUTH_STUB)",
-        position="",
+        department=department,
+        position=position,
     )
-    logger.info("AUTH_STUB login: fio=%s", fio)
-    return LoginResponse(
-        access_token=token,
-        user=UserOut(
-            id="auth-stub",
-            fio=fio,
-            department="Demo (AUTH_STUB)",
-            position="",
-        ),
+    logger.info("AUTH_STUB login: fio=%s dev_mode=%s", fio, settings.dev_mode)
+    user = _to_user_out(
+        user_id="auth-stub",
+        fio=fio,
+        department=department,
+        position=position,
     )
+    return LoginResponse(access_token=token, user=user)
 
 
 def _to_user_out(*, user_id: str, fio: str, department: str, position: str = "") -> UserOut:

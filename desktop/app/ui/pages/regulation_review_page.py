@@ -46,6 +46,24 @@ class RegulationReviewPage(QWidget):
         subtitle.setFont(app_font(14))
         subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
 
+        self._compat_banner = QLabel("")
+        self._compat_banner.setWordWrap(True)
+        self._compat_banner.setFont(app_font(13))
+        self._compat_banner.setVisible(False)
+        self._compat_banner.setStyleSheet(
+            "color: #5C3D00; background: #FFF8E6; border: 1px solid #F0D080; "
+            "border-radius: 12px; padding: 12px 14px;"
+        )
+
+        self._compat_ok = QLabel("")
+        self._compat_ok.setWordWrap(True)
+        self._compat_ok.setFont(app_font(13))
+        self._compat_ok.setVisible(False)
+        self._compat_ok.setStyleSheet(
+            "color: #06483D; background: #E8F5F1; border: 1px solid #9FD4C6; "
+            "border-radius: 12px; padding: 12px 14px;"
+        )
+
         self._left = QFrame()
         self._left.setObjectName("ReviewSide")
         self._left.setFixedWidth(290)
@@ -124,6 +142,8 @@ class RegulationReviewPage(QWidget):
         root.setSpacing(12)
         root.addWidget(title)
         root.addWidget(subtitle)
+        root.addWidget(self._compat_banner)
+        root.addWidget(self._compat_ok)
         root.addSpacing(12)
         root.addLayout(self._body, 1)
         root.addLayout(actions)
@@ -141,7 +161,27 @@ class RegulationReviewPage(QWidget):
     def toggle_fullscreen(self) -> None:
         self.set_fullscreen(not self._fullscreen)
 
+    def clear_compatibility_hint(self) -> None:
+        self._compat_banner.clear()
+        self._compat_banner.setVisible(False)
+        self._compat_ok.clear()
+        self._compat_ok.setVisible(False)
+
+    def set_compatibility_hint(self, text: str, *, compatible: bool) -> None:
+        if not text.strip():
+            self.clear_compatibility_hint()
+            return
+        if compatible:
+            self._compat_ok.setText(text.strip())
+            self._compat_ok.setVisible(True)
+            self._compat_banner.setVisible(False)
+        else:
+            self._compat_banner.setText(text.strip())
+            self._compat_banner.setVisible(True)
+            self._compat_ok.setVisible(False)
+
     def set_result(self, result: RegulationParseResult) -> None:
+        self.clear_compatibility_hint()
         self.set_fullscreen(False)
         _clear_layout(self._summary)
         _clear_layout(self._content)

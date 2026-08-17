@@ -25,6 +25,7 @@ from app.schemas.regulation import (
     RegulationRevisionResult,
     RoleMatchDecisionRequest,
     RoleMatchRequest,
+    RoleCompatibilityResult,
     RoleMatchResult,
 )
 from app.services.agents import AgentDraftError, create_or_get_draft
@@ -32,6 +33,7 @@ from app.services.app_users import get_app_user
 from app.services.regulation import RegulationError, get_result, parse_upload
 from app.services.role_matching import (
     RoleMatchError,
+    check_role_compatibility,
     create_role_match_run,
     get_role_match_run,
     update_match_status,
@@ -88,6 +90,25 @@ async def get_regulation(
         return get_result(db, regulation_id=regulation_id, user_id=auth.user_id)
     except RegulationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/{regulation_id}/role-compatibility", response_model=RoleCompatibilityResult)
+async def role_compatibility(
+    regulation_id: str,
+    request: RoleMatchRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RoleCompatibilityResult:
+    user = get_app_user(auth.user_id)
+    position = (request.position or "").strip() or ((user.position if user else "") or "").strip()
+    department = (request.department or "").strip() or ((user.department if user else "") or "").strip()
+    if not position:
+        raise HTTPException(status_code=400, detail="Укажите должность для проверки")
+    try:
+        doc_result = get_result(db, regulation_id=regulation_id, user_id=auth.user_id)
+    except RegulationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return check_role_compatibility(doc_result, position=position, department=department)
 
 
 @router.post("/{regulation_id}/role-matches", response_model=RoleMatchResult)

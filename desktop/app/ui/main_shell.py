@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QApplication,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -28,6 +29,7 @@ from app.api_client import (
     PassportSession,
     RegulationParseResult,
     RegulationRevisionResult,
+    RoleCompatibilityResult,
     RoleMatchResult,
     AgentDraft,
     AgentSuggestion,
@@ -154,6 +156,7 @@ class MainShell(QWidget):
     logout_requested = Signal()
     _regulation_ready = Signal(object)
     _regulation_failed = Signal(str)
+    _compat_preview_ready = Signal(object)
     _role_match_ready = Signal(object)
     _role_match_failed = Signal(str)
     _readiness_ready = Signal(object)
@@ -281,6 +284,7 @@ class MainShell(QWidget):
         self._page_creation_chat.finished_requested.connect(self._show_regulation_result)
         self._regulation_ready.connect(self._show_regulation_result)
         self._regulation_failed.connect(self._show_regulation_error)
+        self._compat_preview_ready.connect(self._show_compatibility_preview)
         self._role_match_ready.connect(self._show_role_match_result)
         self._role_match_failed.connect(self._show_role_match_error)
         self._readiness_ready.connect(self._show_readiness_result)
@@ -316,6 +320,8 @@ class MainShell(QWidget):
         self._current_passport_suggestion = None
         self._auto_finalize_running = False
         self._supplement_in_progress = False
+        self._dev_mode = False
+        self._suggested_roles: list[str] = []
 
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
@@ -420,6 +426,10 @@ class MainShell(QWidget):
         self._collapse_btn.setText("›" if collapsed else "‹")
         self._collapse_btn.setToolTip("Развернуть меню" if collapsed else "Свернуть меню")
         QTimer.singleShot(0, self._position_overlays)
+
+    def set_dev_mode(self, enabled: bool) -> None:
+        self._dev_mode = enabled
+        self._page_create.set_dev_mode(enabled)
 
     def set_user(self, user: UserProfile) -> None:
         self._apply_user(user)
@@ -556,38 +566,56 @@ class MainShell(QWidget):
         self._current_role_match = None
         self._page_review.set_result(result)
         self._pages.setCurrentIndex(self._page_index["review"])
+        self._start_compatibility_preview(result)
 
-    def _show_regulation_error(self, message: str) -> None:
-        self._page_create.set_processing(False)
-        QMessageBox.warning(self, "Создание регламента", message)
-
-    def _back_to_create(self) -> None:
-        self._page_review.set_fullscreen(False)
-        self._pages.setCurrentIndex(self._page_index["create"])
-
-    def _on_continue_after_review(self) -> None:
-        if self._current_regulation is None:
-            return
+    def _start_compatibility_preview(self, result: RegulationParseResult) -> None:
         position = (self._user.position if self._user is not None else "").strip()
         department = (self._user.department if self._user is not None else "").strip()
         if not position:
-            position, ok = QInputDialog.getText(
-                self,
-                "Выбор должности",
-                "Должность не найдена в профиле. Укажите должность для поиска фрагментов:",
-            )
-            position = position.strip()
-            if not ok or not position:
+            return
+
+        def run() -> None:
+            try:
+                preview = self._api.check_role_compatibility(
+                    result.regulation_id,
+                    position=position,
+                    department=department or "—",
+                )
+            except ApiError:
                 return
-        if not department:
-            department, ok = QInputDialog.getText(
-                self,
-                "Выбор подразделения",
-                "Подразделение не найдено в профиле. Укажите подразделение для поиска фрагментов:",
-            )
-            department = department.strip()
-            if not ok or not department:
-                return
+            self._compat_preview_ready.emit(preview)
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_compatibility_preview(self, preview: object) -> None:
+        if not isinstance(preview, RoleCompatibilityResult):
+            return
+        self._suggested_roles = list(preview.suggested_roles)
+        self._page_review.set_compatibility_hint(preview.hint, compatible=preview.compatible)
+
+    def _confirm_role_compatibility(self, compat: RoleCompatibilityResult) -> bool:
+        if self._dev_mode or compat.compatible:
+            return True
+        suggested = "\n".join(f"• {role}" for role in compat.suggested_roles[:8])
+        message = compat.hint
+        if suggested:
+            message = f"{message}\n\nРоли из документа:\n{suggested}"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Роль не найдена в регламенте")
+        box.setText(message)
+        change_btn = box.addButton("Изменить роль", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+        force_btn = box.addButton("Всё равно анализировать", QMessageBox.ButtonRole.DestructiveRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is change_btn:
+            return False
+        return clicked is force_btn
+
+    def _run_function_extraction(self, position: str, department: str) -> None:
+        if self._current_regulation is None:
+            return
         self._page_loading.set_message(
             "Cursor Agent выделяет функциональные блоки",
             (
@@ -611,6 +639,81 @@ class MainShell(QWidget):
             self._role_match_ready.emit(result)
 
         Thread(target=run, daemon=True).start()
+
+    def _show_regulation_error(self, message: str) -> None:
+        self._page_create.set_processing(False)
+        QMessageBox.warning(self, "Создание регламента", message)
+
+    def _back_to_create(self) -> None:
+        self._page_review.set_fullscreen(False)
+        self._pages.setCurrentIndex(self._page_index["create"])
+
+    def _prompt_regulation_role(self) -> tuple[str, str] | None:
+        """Role/department for function extraction — may differ from ERP profile."""
+        default_position = (self._user.position if self._user is not None else "").strip()
+        default_department = (self._user.department if self._user is not None else "").strip()
+        if self._dev_mode and self._suggested_roles and not default_position:
+            default_position = self._suggested_roles[0]
+        if "псд" in default_position.casefold() or "псд" in default_department.casefold():
+            if not default_department:
+                default_department = "ПСД"
+            for role in self._suggested_roles:
+                if "секретар" in role.casefold() or "pmo" in role.casefold():
+                    if default_position.casefold() in {"помощник псд", "помощник", "разработчик"}:
+                        default_position = role
+                    break
+        title = "Роль агента (режим разработчика)" if self._dev_mode else "Роль в регламенте"
+        prompt = (
+            "Режим разработчика: из документа будут извлечены все функции.\n"
+            "Укажите роль для профиля агента (метка, можно любую из документа)."
+            if self._dev_mode
+            else "Укажите должность из документа (как в таблице RACI или «ответственный»).\n"
+            "Это может отличаться от вашей должности в 1С — например: «помощник ПСД», «PMO»."
+        )
+        position, ok = QInputDialog.getText(
+            self,
+            title,
+            prompt,
+            text=default_position,
+        )
+        position = position.strip()
+        if not ok or not position:
+            return None
+        department, ok = QInputDialog.getText(
+            self,
+            "Подразделение в регламенте",
+            "Подразделение или блок из документа (можно оставить из профиля):",
+            text=default_department,
+        )
+        department = department.strip()
+        if not ok or not department:
+            return None
+        return position, department
+
+    def _on_continue_after_review(self) -> None:
+        if self._current_regulation is None:
+            return
+        while True:
+            role = self._prompt_regulation_role()
+            if role is None:
+                return
+            position, department = role
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                compat = self._api.check_role_compatibility(
+                    self._current_regulation.regulation_id,
+                    position=position,
+                    department=department,
+                )
+            except ApiError as exc:
+                QMessageBox.warning(self, "Проверка совместимости", exc.message)
+                return
+            finally:
+                QApplication.restoreOverrideCursor()
+            self._page_review.set_compatibility_hint(compat.hint, compatible=compat.compatible)
+            if self._confirm_role_compatibility(compat):
+                self._run_function_extraction(position, department)
+                return
 
     def _show_role_match_result(self, result: object) -> None:
         if not isinstance(result, RoleMatchResult):

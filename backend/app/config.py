@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     use_stubs: bool = True
     auth_stub: bool = False
     allow_local_registration: bool = True
+    dev_mode: bool = False
     tool_manifest_path: str = str(BACKEND_ROOT / "data" / "tool_manifest.json")
 
     # IMAP (server-side tools only; desktop never executes imap.*)
@@ -102,6 +103,8 @@ class Settings(BaseSettings):
         return path
 
     def allowed_tools_for_department(self, department: str) -> set[str] | None:
+        if self.dev_mode:
+            return None
         manifest_path = self.resolved_tool_manifest_path()
         if not manifest_path.is_file():
             return None

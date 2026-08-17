@@ -4,6 +4,7 @@ import re
 
 from app.schemas.regulation import DocumentMap, RegulationParseResult, RoleAlias, RoleProfile
 from app.services.role_matching.normalize import contains_phrase, tokens
+from app.services.role_matching.role_aliases import aliases_for_position
 
 _SENIORITY_STEMS = {"ведущ", "старш", "главн", "младш", "ген"}
 
@@ -38,6 +39,14 @@ def build_role_profile(
         )
     for alias in _generic_position_aliases(position):
         _add_alias(profile.aliases, alias, "candidate", "Вариант названия должности", [])
+    for alias in aliases_for_position(position, department):
+        _add_alias(
+            profile.aliases,
+            alias,
+            "verified",
+            f"Сопоставление должности «{position}» с ролями регламента",
+            [],
+        )
     for unit_alias in _unit_aliases_from_position(position):
         # Нужны для сопоставления карты ролей документа, но не как прямой поиск
         # по всему тексту — иначе менеджеру показывают все обязанности офиса.

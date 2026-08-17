@@ -243,6 +243,16 @@ class CreateAgentPage(QWidget):
         subtitle.setStyleSheet("color: #6B7773; background: transparent;")
         subtitle.setWordWrap(True)
 
+        self._dev_banner = QLabel(
+            "Режим разработчика: ограничения по роли отключены, извлекаются все функции документа."
+        )
+        self._dev_banner.setFont(app_font(13, QFont.Weight.DemiBold))
+        self._dev_banner.setStyleSheet(
+            "color: #06483D; background: #EEF7F3; border-radius: 10px; padding: 10px 14px;"
+        )
+        self._dev_banner.setWordWrap(True)
+        self._dev_banner.hide()
+
         self._upload_card = self._build_upload_card()
         self._create_card = self._build_create_card()
 
@@ -274,6 +284,7 @@ class CreateAgentPage(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.addWidget(title)
         layout.addWidget(subtitle)
+        layout.addWidget(self._dev_banner)
         layout.addSpacing(36)
         layout.addLayout(cards, 0)
         layout.addStretch(1)
@@ -282,6 +293,9 @@ class CreateAgentPage(QWidget):
 
     def selected_regulation_path(self) -> str | None:
         return self._drop_zone.selected_path()
+
+    def set_dev_mode(self, enabled: bool) -> None:
+        self._dev_banner.setVisible(enabled)
 
     def set_processing(self, active: bool) -> None:
         self._status.setText("Распознаём документ..." if active else "")

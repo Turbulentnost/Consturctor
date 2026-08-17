@@ -39,6 +39,7 @@ class HealthStatus:
     llm_provider: str
     auth_stub: bool = False
     registration_enabled: bool = False
+    dev_mode: bool = False
     platform_services: tuple[tuple[str, bool, str], ...] = ()
 
 
@@ -237,6 +238,18 @@ class RoleMatch:
     fragment: RegulationFragment
     signals: list[MatchSignal]
     function: RoleFunction | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RoleCompatibilityResult:
+    compatible: bool
+    position: str
+    department: str
+    fragments_total: int
+    candidates_total: int
+    matched_terms: list[str]
+    suggested_roles: list[str]
+    hint: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -729,6 +742,7 @@ class ApiClient:
             llm_provider=str(data.get("llm_provider", "")),
             auth_stub=bool(data.get("auth_stub")),
             registration_enabled=bool(data.get("registration_enabled")),
+            dev_mode=bool(data.get("dev_mode")),
             platform_services=tuple(services),
         )
 
@@ -1092,6 +1106,30 @@ class ApiClient:
     def get_regulation(self, regulation_id: str) -> RegulationParseResult:
         data = self._request("GET", f"/api/v1/regulations/{regulation_id}")
         return self._parse_regulation(data)
+
+    def check_role_compatibility(
+        self,
+        regulation_id: str,
+        *,
+        position: str,
+        department: str,
+    ) -> RoleCompatibilityResult:
+        data = self._request(
+            "POST",
+            f"/api/v1/regulations/{regulation_id}/role-compatibility",
+            json={"position": position.strip(), "department": department.strip()},
+            timeout=max(self._timeout, 45.0),
+        )
+        return RoleCompatibilityResult(
+            compatible=bool(data.get("compatible")),
+            position=str(data.get("position") or ""),
+            department=str(data.get("department") or ""),
+            fragments_total=int(data.get("fragmentsTotal") or 0),
+            candidates_total=int(data.get("candidatesTotal") or 0),
+            matched_terms=[str(x) for x in (data.get("matchedTerms") or [])],
+            suggested_roles=[str(x) for x in (data.get("suggestedRoles") or [])],
+            hint=str(data.get("hint") or ""),
+        )
 
     def create_role_matches(
         self,

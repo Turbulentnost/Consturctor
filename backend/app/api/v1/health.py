@@ -73,5 +73,6 @@ async def health() -> HealthResponse:
         llm_provider=settings.llm_provider,
         auth_stub=settings.auth_stub,
         registration_enabled=auth_service.registration_enabled(),
+        dev_mode=settings.dev_mode,
         platform_services=platform_services,
     )
