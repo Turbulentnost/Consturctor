@@ -335,15 +335,41 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("report.build_task_report", "Собрать отчёт по поручениям из собранных данных.", {}),
         ("report.build_meeting_summary", "Сводка/протокол совещания из собранных данных.", {}),
         ("report.build_schedule_recommendations", "Рекомендации по графику из календаря.", {}),
+        ("users.list", "Список пользователей Constructor: id, ФИО, должность, подразделение. Вызови перед notify.send, чтобы выбрать получателя.", {
+            "query": {"type": "string"},
+        }, []),
+        ("notify.send", "Отправить уведомление пользователю (сразу или в указанное время). user_id бери из инструмента users.list — не выдумывай id.", {
+            "user_id": {"type": "string", "description": "id получателя из users.list"},
+            "title": {"type": "string"},
+            "body": {"type": "string"},
+            "send_at": {"type": "string"},
+            "workflow_id": {"type": "string"},
+        }, ["user_id", "title"]),
+        ("agent.schedule", "Запланировать запуск агента: в момент at (ISO), через after_seconds, или когда выполнится condition (свободный текст: файл, письмо, любое событие). Пустой workflow_id = текущий агент.", {
+            "workflow_id": {"type": "string"},
+            "message": {"type": "string"},
+            "at": {"type": "string"},
+            "after_seconds": {"type": "number"},
+            "condition": {"type": "string"},
+            "once": {"type": "boolean"},
+        }, []),
+        ("agent.schedule.cancel", "Отменить ранее созданный триггер agent.schedule по trigger_id.", {
+            "trigger_id": {"type": "string"},
+        }, ["trigger_id"]),
     ]
     tools: list[dict[str, Any]] = []
-    for name, description, properties in items:
+    for item in items:
+        name, description, properties = item[0], item[1], item[2]
+        required = list(item[3]) if len(item) > 3 else []
+        schema: dict[str, Any] = {"type": "object", "properties": properties}
+        if required:
+            schema["required"] = required
         tools.append(
             {
                 "name": name,
                 "description": description + " Исполняется на desktop пользователя.",
                 "execution": "desktop",
-                "input_schema": {"type": "object", "properties": properties},
+                "input_schema": schema,
             }
         )
     return tools

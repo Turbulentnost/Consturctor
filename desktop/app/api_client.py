@@ -1276,6 +1276,57 @@ class ApiClient:
         data = self._request("GET", "/api/v1/workflows/agent-tools", timeout=60.0)
         return [item for item in (data.get("tools") or []) if isinstance(item, dict)]
 
+    def _handle_sse_tool_request(self, payload: dict, *, fallback_run_id: str = "") -> None:
+        from app.tools import ToolHostError, invoke_tool
+        from app.tools.hitl import HUMAN_REJECTED, confirm_level1_tool
+
+        req_run = str(payload.get("run_id") or fallback_run_id)
+        request_id = str(payload.get("request_id") or "")
+        tool = str(payload.get("tool") or "")
+        arguments = (
+            dict(payload.get("arguments")) if isinstance(payload.get("arguments"), dict) else {}
+        )
+        workflow_id = str(arguments.get("workflow_id") or arguments.get("agent_id") or "")
+        if workflow_id and not isinstance(arguments.get("runtime_context"), dict):
+            arguments["runtime_context"] = {"workflow_id": workflow_id, "agent_id": workflow_id}
+        try:
+            if not confirm_level1_tool(tool, arguments):
+                self.post_agent_tool_result(
+                    req_run,
+                    request_id=request_id,
+                    ok=False,
+                    error=HUMAN_REJECTED,
+                )
+                return
+            tool_result = invoke_tool(tool, arguments)
+            self.post_agent_tool_result(
+                req_run,
+                request_id=request_id,
+                ok=True,
+                result=tool_result,
+            )
+        except ToolHostError as exc:
+            try:
+                self.post_agent_tool_result(
+                    req_run,
+                    request_id=request_id,
+                    ok=False,
+                    error=str(exc),
+                )
+            except ApiError:
+                raise ApiError(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            err = f"Ошибка инструмента {tool}: {exc}"
+            try:
+                self.post_agent_tool_result(
+                    req_run,
+                    request_id=request_id,
+                    ok=False,
+                    error=err,
+                )
+            except ApiError:
+                raise ApiError(err) from exc
+
     def post_agent_tool_result(
         self,
         run_id: str,
@@ -1303,8 +1354,6 @@ class ApiClient:
         message: str,
         on_event: Callable[[dict], None],
     ) -> dict:
-        from app.tools import ToolHostError, invoke_tool
-
         url = f"{self.base_url}/api/v1/workflows/{workflow_id}/agent-runs/stream"
         final_result: dict | None = None
         run_id = ""
@@ -1329,59 +1378,14 @@ class ApiClient:
                                     run_id = str(payload.get("run_id") or "")
                                     on_event(payload)
                                 elif payload_type == "tool_request":
-                                    req_run = str(payload.get("run_id") or run_id)
-                                    request_id = str(payload.get("request_id") or "")
                                     tool = str(payload.get("tool") or "")
-                                    arguments = (
-                                        payload.get("arguments")
-                                        if isinstance(payload.get("arguments"), dict)
-                                        else {}
-                                    )
                                     on_event(
                                         {
                                             "type": "status",
                                             "text": f"Выполняю на этом компьютере: {tool}…",
                                         }
                                     )
-                                    try:
-                                        from app.tools.hitl import HUMAN_REJECTED, confirm_level1_tool
-
-                                        if not confirm_level1_tool(tool, arguments):
-                                            self.post_agent_tool_result(
-                                                req_run,
-                                                request_id=request_id,
-                                                ok=False,
-                                                error=HUMAN_REJECTED,
-                                            )
-                                            continue
-                                        tool_result = invoke_tool(tool, arguments)
-                                        self.post_agent_tool_result(
-                                            req_run,
-                                            request_id=request_id,
-                                            ok=True,
-                                            result=tool_result,
-                                        )
-                                    except ToolHostError as exc:
-                                        try:
-                                            self.post_agent_tool_result(
-                                                req_run,
-                                                request_id=request_id,
-                                                ok=False,
-                                                error=str(exc),
-                                            )
-                                        except ApiError:
-                                            raise ApiError(str(exc)) from exc
-                                    except Exception as exc:  # noqa: BLE001
-                                        err = f"Ошибка инструмента {tool}: {exc}"
-                                        try:
-                                            self.post_agent_tool_result(
-                                                req_run,
-                                                request_id=request_id,
-                                                ok=False,
-                                                error=err,
-                                            )
-                                        except ApiError:
-                                            raise ApiError(err) from exc
+                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
                                 elif payload_type == "error":
                                     raise ApiError(str(payload.get("message") or "Ошибка запуска агента"))
                                 elif payload_type == "done":
@@ -1402,6 +1406,72 @@ class ApiClient:
             raise ApiError(f"Ошибка сети: {exc}") from exc
         return final_result or {}
 
+    def stream_trigger_check(
+        self,
+        trigger_id: str,
+        on_event: Callable[[dict], None] | None = None,
+    ) -> dict:
+        url = f"{self.base_url}/api/v1/triggers/{trigger_id}/check/stream"
+        final_result: dict | None = None
+        run_id = ""
+        try:
+            with httpx.Client(timeout=None) as client:
+                with client.stream(
+                    "POST",
+                    url,
+                    headers={**self._headers(), "Accept": "text/event-stream"},
+                    json={},
+                ) as response:
+                    if response.status_code >= 400:
+                        body = response.read().decode("utf-8", errors="replace")
+                        raise ApiError(body or "Ошибка проверки триггера", status_code=response.status_code)
+                    data_lines: list[str] = []
+                    for line in response.iter_lines():
+                        if line == "":
+                            if data_lines:
+                                payload = _parse_sse_payload("\n".join(data_lines))
+                                payload_type = str(payload.get("type") or "")
+                                if payload_type == "run":
+                                    run_id = str(payload.get("run_id") or "")
+                                    if on_event:
+                                        on_event(payload)
+                                elif payload_type == "tool_request":
+                                    if on_event:
+                                        on_event(
+                                            {
+                                                "type": "status",
+                                                "text": f"Проверяю условие: {payload.get('tool') or ''}…",
+                                            }
+                                        )
+                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
+                                elif payload_type == "error":
+                                    raise ApiError(str(payload.get("message") or "Ошибка проверки триггера"))
+                                elif payload_type == "done":
+                                    final_result = (
+                                        payload.get("result")
+                                        if isinstance(payload.get("result"), dict)
+                                        else {}
+                                    )
+                                elif on_event:
+                                    on_event(payload)
+                            data_lines = []
+                            continue
+                        if line.startswith("data:"):
+                            data_lines.append(line.split(":", 1)[1].strip())
+        except httpx.ConnectError as exc:
+            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+        return final_result or {}
+
+    def ack_trigger_fired(self, trigger_id: str, *, evidence: str = "") -> None:
+        self._request(
+            "POST",
+            f"/api/v1/triggers/{trigger_id}/ack-fired",
+            json={"evidence": evidence or ""},
+            timeout=30.0,
+        )
+
     def _stream_workflow(
         self,
         method: str,
@@ -1415,6 +1485,7 @@ class ApiClient:
     ) -> WorkflowRecord:
         url = f"{self.base_url}{path}"
         final_record: WorkflowRecord | None = None
+        run_id = ""
         files: list = []
         handles = []
         data = None
@@ -1455,7 +1526,13 @@ class ApiClient:
                             if data_lines:
                                 payload = _parse_sse_payload("\n".join(data_lines))
                                 payload_type = str(payload.get("type") or "")
-                                if payload_type in {"thinking", "assistant", "message", "decision", "system"}:
+                                if payload_type == "run":
+                                    run_id = str(payload.get("run_id") or "")
+                                elif payload_type == "tool_request":
+                                    tool = str(payload.get("tool") or "")
+                                    on_event("decision", f"Выполняю на этом компьютере: {tool}…")
+                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
+                                elif payload_type in {"thinking", "assistant", "message", "decision", "system"}:
                                     on_event(payload_type, str(payload.get("text") or ""))
                                 elif payload_type == "error":
                                     raise ApiError(str(payload.get("message") or "Ошибка workflow"))

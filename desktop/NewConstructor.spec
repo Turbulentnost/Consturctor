@@ -13,7 +13,7 @@ datas = [
 ]
 
 binaries = []
-hiddenimports = ["httpx", "dotenv", "certifi"]
+hiddenimports = ["httpx", "dotenv", "certifi", "winotify", "PySide6.QtWebSockets"]
 
 tmp_ret = collect_all("PySide6")
 datas += tmp_ret[0]

@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+param([switch]$Background)
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Exe = Join-Path $Root "NewConstructor.exe"
@@ -55,4 +56,8 @@ if (-not (Test-Backend $backendUrl) -and $autostart -and $backendDir -and (Test-
 if (-not (Test-Path $Exe)) {
     throw "Missing $Exe"
 }
-Start-Process -FilePath $Exe -WorkingDirectory $Root
+$extra = @()
+if ($Background -or $args -contains "--background" -or $args -contains "-Background") {
+    $extra += "--background"
+}
+Start-Process -FilePath $Exe -ArgumentList $extra -WorkingDirectory $Root

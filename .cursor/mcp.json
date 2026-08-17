@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "constructor-desktop": {
+      "command": "python",
+      "args": ["-u", "desktop/app/tools/mcp_stdio.py"]
+    }
+  }
+}

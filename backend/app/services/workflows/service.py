@@ -173,7 +173,7 @@ def update_local_run(
     return _to_schema(row)
 
 
-WorkflowEventCallback = Callable[[str, str], None]
+WorkflowEventCallback = Callable[..., None]
 
 
 def plan_workflow(
@@ -192,11 +192,15 @@ def plan_workflow(
         raise WorkflowError("Нет материалов для планирования — загрузите файлы или заметки.")
 
     _emit(on_event, "decision", "Изучаю материалы и формирую структуру workflow.")
-    prompt = prompts.build_plan_prompt(
-        document_text=row.document_text,
-        document_name=row.document_name,
-        image_count=len(images),
-        attachment_names=[str(a.get("name") or "") for a in attachments],
+    from app.services.workflows.cursor_tools import with_tools_if_desktop
+
+    prompt = with_tools_if_desktop(
+        prompts.build_plan_prompt(
+            document_text=row.document_text,
+            document_name=row.document_name,
+            image_count=len(images),
+            attachment_names=[str(a.get("name") or "") for a in attachments],
+        )
     )
     model = _resolve_model()
     logger.info(
@@ -233,7 +237,9 @@ def plan_workflow(
     )
 
     _emit(on_event, "decision", "Планировщик запущен, получаю рассуждения агента.")
-    phase = _stream_run(agent_id, run_id, on_event=on_event)
+    phase = _stream_run_with_tools(
+        agent_id, run_id, on_event=on_event, workflow_id=workflow_id, mode="plan"
+    )
     plan = prompts.parse_plan_from_text(phase.text)
     from app.services.plan_run import apply_autonomy, ensure_runtime
 
@@ -295,11 +301,15 @@ def clarify_workflow(
         if a.get("kind") == "image" and a.get("name")
     ][: len(images)]
     _emit(on_event, "decision", "Учитываю ответы пользователя и обновляю план.")
-    prompt = prompts.build_clarify_prompt(
-        answers=merged_answers,
-        plan=plan,
-        image_count=len(images),
-        image_names=image_names,
+    from app.services.workflows.cursor_tools import with_tools_if_desktop
+
+    prompt = with_tools_if_desktop(
+        prompts.build_clarify_prompt(
+            answers=merged_answers,
+            plan=plan,
+            image_count=len(images),
+            image_names=image_names,
+        )
     )
     logger.info(
         "Workflow clarify start id=%s answers=%s images=%s names=%s",
@@ -341,7 +351,9 @@ def clarify_workflow(
         run_id,
     )
 
-    phase = _stream_run(agent_id, run_id, on_event=on_event)
+    phase = _stream_run_with_tools(
+        agent_id, run_id, on_event=on_event, workflow_id=workflow_id, mode="plan"
+    )
     updated = prompts.parse_plan_from_text(phase.text)
     prior = {q.id: q.answer for q in plan.open_questions if q.answer}
     for q in updated.open_questions:
@@ -425,12 +437,20 @@ def execute_workflow(
             apply_autonomy(plan, row.local_run)
             row.plan_json = plan.to_dict()
             db.commit()
-        prompt = prompts.build_reexecute_prompt(
-            plan=plan,
-            user_clarification=clarification,
+        from app.services.workflows.cursor_tools import with_tools_if_desktop
+
+        prompt = with_tools_if_desktop(
+            prompts.build_reexecute_prompt(
+                plan=plan,
+                user_clarification=clarification,
+            )
         )
     else:
-        prompt = prompts.build_execute_prompt(plan=plan, document_text=row.document_text)
+        from app.services.workflows.cursor_tools import with_tools_if_desktop
+
+        prompt = with_tools_if_desktop(
+            prompts.build_execute_prompt(plan=plan, document_text=row.document_text)
+        )
 
     _emit(on_event, "decision", "Запускаю реализацию workflow.")
     try:
@@ -461,7 +481,9 @@ def execute_workflow(
         run_id,
     )
 
-    phase = _stream_run(agent_id, run_id, on_event=on_event)
+    phase = _stream_run_with_tools(
+        agent_id, run_id, on_event=on_event, workflow_id=workflow_id, mode="execute"
+    )
     row.last_result = phase.text
     row.branch = phase.branch or row.branch
     row.pr_url = phase.pr_url or row.pr_url
@@ -788,8 +810,41 @@ def _resolve_model() -> str | None:
     return chosen
 
 
-def _emit(on_event: WorkflowEventCallback | None, event_type: str, text: str) -> None:
-    if on_event is not None and text:
+def _stream_run_with_tools(
+    agent_id: str,
+    run_id: str,
+    *,
+    on_event: WorkflowEventCallback | None = None,
+    workflow_id: str = "",
+    mode: str = "plan",
+):
+    from app.services.workflows.cursor_tools import stream_cursor_with_tools
+
+    return stream_cursor_with_tools(
+        agent_id=agent_id,
+        run_id=run_id,
+        on_event=on_event,
+        workflow_id=workflow_id,
+        mode=mode,
+        stream_run=_stream_run,
+    )
+
+
+def _emit(
+    on_event: WorkflowEventCallback | None,
+    event_type: str,
+    text: str = "",
+    extra: dict | None = None,
+) -> None:
+    if on_event is None:
+        return
+    if extra:
+        try:
+            on_event(event_type, text, extra)
+            return
+        except TypeError:
+            pass
+    if text:
         on_event(event_type, text)
 
 

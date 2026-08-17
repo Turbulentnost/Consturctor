@@ -50,14 +50,26 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def _workflow_stream(action):
-    queue: Queue[dict | None] = Queue()
+def _workflow_stream(action, *, user_id: str = ""):
+    from app.services.workflows.cursor_tools import clear_tool_context, set_tool_context
 
-    def emit(event_type: str, text: str) -> None:
-        queue.put({"type": event_type, "text": text})
+    queue: Queue[dict | None] = Queue()
+    run_id = tool_bridge.new_run_id() if user_id else ""
+
+    def emit(event_type: str, text: str = "", extra: dict | None = None) -> None:
+        payload = {"type": event_type}
+        if text:
+            payload["text"] = text
+        if extra:
+            payload.update(extra)
+        queue.put(payload)
 
     def run() -> None:
         db = SessionLocal()
+        if run_id:
+            tool_bridge.register_run(run_id, user_id)
+            set_tool_context(run_id, user_id)
+            queue.put({"type": "run", "run_id": run_id})
         try:
             record = action(db, emit)
             queue.put({"type": "workflow", "workflow": record.model_dump(mode="json")})
@@ -66,6 +78,9 @@ def _workflow_stream(action):
         except Exception as exc:  # noqa: BLE001
             queue.put({"type": "error", "message": str(exc)})
         finally:
+            if run_id:
+                clear_tool_context()
+                tool_bridge.unregister_run(run_id)
             db.close()
             queue.put(None)
 
@@ -283,7 +298,8 @@ async def plan_workflow_stream_endpoint(
                 user_id=user_id,
                 workflow_id=workflow_id,
                 on_event=emit,
-            )
+            ),
+            user_id=user_id,
         ),
         media_type="text/event-stream",
     )
@@ -357,7 +373,8 @@ async def clarify_workflow_stream_endpoint(
                 files=files,
                 file_question_ids=file_question_ids,
                 on_event=emit,
-            )
+            ),
+            user_id=user_id,
         ),
         media_type="text/event-stream",
     )
@@ -399,7 +416,8 @@ async def execute_workflow_stream_endpoint(
                 workflow_id=workflow_id,
                 reexecute=body.reexecute,
                 on_event=emit,
-            )
+            ),
+            user_id=user_id,
         ),
         media_type="text/event-stream",
     )

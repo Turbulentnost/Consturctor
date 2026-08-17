@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
@@ -26,11 +27,16 @@ _READ_EXACT = frozenset(
         "onec.odata_get",
         "onec.sql_query",
         "agent.wait",
+        "users.list",
+        "notify.send",
+        "agent.schedule",
+        "agent.schedule.cancel",
     }
 )
 _READ_PREFIXES = ("onec.search_", "onec.get_", "imap.")
 
 _host: "_ConfirmHost | None" = None
+_reveal: Callable[[], None] | None = None
 
 
 def is_read_tool(name: str) -> bool:
@@ -41,16 +47,23 @@ def is_read_tool(name: str) -> bool:
 
 
 def install_confirm_host(parent: QObject | None = None) -> None:
-    """Создать диалог подтверждения на GUI-потоке (вызывать из страницы запуска)."""
+    """Создать диалог подтверждения на GUI-потоке (вызывать из окна приложения)."""
     global _host
     if _host is None:
         _host = _ConfirmHost(parent)
+
+
+def set_reveal_callback(callback: Callable[[], None] | None) -> None:
+    global _reveal
+    _reveal = callback
 
 
 def confirm_level1_tool(tool: str, arguments: dict | None = None) -> bool:
     """True — можно вызывать инструмент. Read-инструменты без диалога."""
     if is_read_tool(tool):
         return True
+    if QApplication.instance() is None:
+        return False
     return _bridge().confirm(tool, arguments or {})
 
 
@@ -75,6 +88,11 @@ class _ConfirmHost(QObject):
         self._ok = self._show(tool, preview)
 
     def _show(self, tool: str, preview: str) -> bool:
+        if _reveal is not None:
+            try:
+                _reveal()
+            except Exception:  # noqa: BLE001
+                pass
         parent = _active_window()
         text = f"Агент хочет выполнить «{tool}»."
         if preview:

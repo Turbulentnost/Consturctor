@@ -88,10 +88,21 @@ if (-not $NoShortcuts) {
         "-NoProfile -ExecutionPolicy Bypass -File `"$installRoot\Uninstall-NewConstructor.ps1`"" $installRoot $exe
 }
 
+$exe = Join-Path $installRoot "NewConstructor.exe"
+$startCmd = Join-Path $installRoot "Start-NewConstructor.cmd"
+$runValue = if (Test-Path $startCmd) {
+    "`"$startCmd`" --background"
+} else {
+    "`"$exe`" --background"
+}
+Write-Step "Register Windows startup"
+New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "NewConstructor" -Value $runValue -PropertyType String -Force | Out-Null
+
 $uninstall = @'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $desk = [Environment]::GetFolderPath("Desktop")
 $programs = Join-Path ([Environment]::GetFolderPath("StartMenu")) "Programs\NewConstructor"
+Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "NewConstructor" -ErrorAction SilentlyContinue
 Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $desk "NewConstructor.lnk")
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $programs
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $root

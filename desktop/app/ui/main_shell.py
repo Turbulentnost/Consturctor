@@ -164,6 +164,7 @@ class MainShell(QWidget):
     _passport_ready = Signal(object)
     _passport_failed = Signal(str)
     _published_agent_ready = Signal(object)
+    _workflow_page_ready = Signal(object)
     _chat_ready = Signal(object)
     _creation_session_ready = Signal(object)
     _creation_stream_event = Signal(str, str)
@@ -277,6 +278,7 @@ class MainShell(QWidget):
         self._passport_ready.connect(self._show_passport_result)
         self._passport_failed.connect(self._show_passport_error)
         self._published_agent_ready.connect(self._on_launch_workflow_agent)
+        self._workflow_page_ready.connect(self._on_open_saved_workflow)
         self._chat_ready.connect(self._show_chat_result)
         self._creation_session_ready.connect(self._show_creation_session)
         self._creation_stream_event.connect(self._page_creation_chat.append_stream_event)
@@ -1329,16 +1331,26 @@ class MainShell(QWidget):
 
         Thread(target=run, daemon=True).start()
 
-    def _on_run_published_agent(self, workflow_id: str) -> None:
+    def navigate_to_agent_run(self, workflow_id: str) -> None:
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return
+
         def run() -> None:
             try:
-                record = self._api.get_workflow(workflow_id)
+                record = self._api.get_workflow(wid)
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._published_agent_ready.emit(record)
+            if str(getattr(record, "phase", "") or "") == "done":
+                self._published_agent_ready.emit(record)
+            else:
+                self._workflow_page_ready.emit(record)
 
         Thread(target=run, daemon=True).start()
+
+    def _on_run_published_agent(self, workflow_id: str) -> None:
+        self.navigate_to_agent_run(workflow_id)
 
 
 def _suggestions_from_role_match(role_match: RoleMatchResult | None) -> list[AgentSuggestion]:
