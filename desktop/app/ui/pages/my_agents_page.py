@@ -543,18 +543,15 @@ def _actions_widget(*buttons: QPushButton, created_at: datetime | None = None) -
         button.setFixedHeight(34)
         button.setFont(app_font(12, QFont.Weight.DemiBold))
         layout.addWidget(button)
-    date_text, time_text = _format_created_parts(created_at)
-    if date_text:
-        date_label = QLabel(date_text)
+    stamp = _format_dt(created_at)
+    if stamp:
+        date_label = QLabel(stamp)
         date_label.setFont(app_font(11))
         date_label.setStyleSheet("color: #6B7773; background: transparent;")
         date_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        date_label.setWordWrap(False)
+        date_label.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(date_label)
-        time_label = QLabel(time_text)
-        time_label.setFont(app_font(11))
-        time_label.setStyleSheet("color: #6B7773; background: transparent;")
-        time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(time_label)
     layout.addStretch(1)
     return widget
 
@@ -606,12 +603,6 @@ def _status_label(status: str) -> str:
 def _format_dt(value) -> str:
     if value is None:
         return ""
-    return value.strftime("%d.%m.%Y %H:%M")
-
-
-def _format_created_parts(value: datetime | None) -> tuple[str, str]:
-    if value is None:
-        return "", ""
-    if value.tzinfo is not None:
+    if getattr(value, "tzinfo", None) is not None:
         value = value.astimezone()
-    return value.strftime("%d.%m.%Y"), value.strftime("%H:%M")
+    return value.strftime("%d.%m.%Y %H:%M")

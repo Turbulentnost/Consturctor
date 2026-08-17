@@ -204,9 +204,17 @@ class CursorFeedItem(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._header: _CollapseHeader | None = None
         self._detail_frame: QFrame | None = None
+        self._detail_label: _WrapLabel | None = None
         self._preview: QWidget | None = None
         self._toggle: _ToggleLink | None = None
         self._build()
+
+    def set_body_text(self, text: str) -> None:
+        """Обновить текст без пересоздания виджета — иначе лента скачет."""
+        self._text = text or ""
+        self._detail = self._text
+        if self._detail_label is not None:
+            self._detail_label.setText(self._detail)
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
@@ -300,6 +308,7 @@ class CursorFeedItem(QFrame):
         body = _WrapLabel(text)
         body.setFont(app_font(12))
         body.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        self._detail_label = body
         lay.addWidget(body)
         return box
 

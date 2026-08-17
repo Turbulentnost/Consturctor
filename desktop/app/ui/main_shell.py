@@ -313,6 +313,7 @@ class MainShell(QWidget):
         self._implementation_draft_id = ""
         self._current_passport_draft_id = ""
         self._current_passport_agent_id = ""
+        self._current_passport_suggestion = None
         self._auto_finalize_running = False
         self._supplement_in_progress = False
 
@@ -1165,9 +1166,16 @@ class MainShell(QWidget):
 
         def run() -> None:
             try:
-                session = self._api.draft_passport_from_suggestion(suggestion)
+                session = self._api.draft_passport_from_suggestion(
+                    suggestion,
+                    draft_id=self._current_passport_draft_id,
+                    agent_id=self._current_passport_agent_id,
+                )
             except ApiError as exc:
                 self._passport_failed.emit(exc.message)
+                return
+            except Exception as exc:  # noqa: BLE001
+                self._passport_failed.emit(f"Не удалось собрать паспорт: {exc}")
                 return
             self._passport_ready.emit(session)
 
@@ -1186,6 +1194,8 @@ class MainShell(QWidget):
             raw_answers = answers
             files = []
         merged = {str(key): str(value) for key, value in dict(raw_answers or {}).items()}
+        suggestion = self._current_passport_suggestion
+        qa_history = self._page_passport.qa_history()
 
         def run() -> None:
             answers_payload = dict(merged)
@@ -1205,9 +1215,18 @@ class MainShell(QWidget):
                     bp_name=session.bp_name,
                     excerpt=session.excerpt,
                     functions=session.functions,
+                    draft_id=self._current_passport_draft_id or session.draft_id,
+                    agent_id=self._current_passport_agent_id,
+                    function_id=getattr(suggestion, "function_id", "") or "",
+                    regulation_id=getattr(suggestion, "regulation_id", "") or "",
+                    role_match_run_id=getattr(suggestion, "role_match_run_id", "") or "",
+                    qa_history=qa_history,
                 )
             except ApiError as exc:
                 self._passport_failed.emit(exc.message)
+                return
+            except Exception as exc:  # noqa: BLE001
+                self._passport_failed.emit(f"Не удалось обновить паспорт: {exc}")
                 return
             self._passport_ready.emit(updated)
 
@@ -1215,7 +1234,12 @@ class MainShell(QWidget):
 
     def _show_passport_result(self, result: object) -> None:
         if isinstance(result, PassportSession):
-            self._page_passport.apply_session(result)
+            if result.draft_id:
+                self._current_passport_draft_id = result.draft_id
+            try:
+                self._page_passport.apply_session(result)
+            except Exception as exc:  # noqa: BLE001
+                self._page_passport.show_error(f"Не удалось показать паспорт: {exc}")
             self._pages.setCurrentIndex(self._page_index["passport"])
 
     def _show_passport_error(self, message: str) -> None:

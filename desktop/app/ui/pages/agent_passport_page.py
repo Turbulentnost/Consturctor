@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QKeyEvent, QTextOption
+from PySide6.QtCore import QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QKeyEvent, QPainter, QPen, QTextOption
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -142,6 +143,42 @@ QToolButton#FileChipRemove:hover { color: #06483D; }
 """
 
 
+class _BusySpinner(QWidget):
+    """Небольшой крутящийся индикатор загрузки поля паспорта."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._angle = 0
+        self.setFixedSize(18, 18)
+        self.setStyleSheet("background: transparent;")
+        self._timer = QTimer(self)
+        self._timer.setInterval(30)
+        self._timer.timeout.connect(self._tick)
+
+    def set_active(self, active: bool) -> None:
+        self.setVisible(active)
+        if active:
+            if not self._timer.isActive():
+                self._timer.start()
+        else:
+            self._timer.stop()
+
+    def _tick(self) -> None:
+        self._angle = (self._angle + 18) % 360
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#08745F"))
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        box = QRect(2, 2, 14, 14)
+        painter.drawArc(box, self._angle * 16, 270 * 16)
+
+
 class AgentPassportPage(QWidget):
     back_requested = Signal()
     finished_requested = Signal(object)
@@ -165,7 +202,7 @@ class AgentPassportPage(QWidget):
 
         self._subtitle = QLabel("Агент уточнит пробелы в паспорте в чате слева.")
         self._subtitle.setFont(app_font(13))
-        self._subtitle.setWordWrap(True)
+        self._subtitle.setWordWrap(False)
         self._subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
 
         header_text = QVBoxLayout()
@@ -231,7 +268,9 @@ class AgentPassportPage(QWidget):
         self._sync_files_chips()
         self._busy = True
         self._title.setText(suggestion.title or "Паспорт ИИ-агента")
-        self._subtitle.setText(suggestion.description or "Собираю паспорт и уточняющие вопросы…")
+        role = _header_role_line(suggestion.description)
+        self._subtitle.setText(role)
+        self._subtitle.setVisible(bool(role))
         self._render_passport(AgentPassport(autonomy_level=_AUTONOMY_LEVEL))
         self._render_chat(loading=True, loading_text="Собираю черновик паспорта агента…")
         self._finish_btn.setEnabled(False)
@@ -241,35 +280,52 @@ class AgentPassportPage(QWidget):
     def apply_session(self, session: PassportSession) -> None:
         self._busy = False
         self._session = session
+        if session.qa_history:
+            self._qa_history = list(session.qa_history)
         self._set_composer_enabled(True)
-        self._apply_passport(session.passport)
+        self._apply_passport(session.passport, agent_error=session.llm_error)
 
     def show_error(self, message: str) -> None:
         self._busy = False
-        self._set_composer_enabled(True)
+        self._set_composer_enabled(False)
         self._set_status(message, error=True)
-        self._render_chat(loading=False)
+        if self._session is not None:
+            self._render_passport(self._session.passport)
+            prompt = ""
+            if self._current_question:
+                prompt = str(self._current_question.get("prompt") or "")
+            self._render_chat(current_prompt=prompt, error_text=message)
+        else:
+            self._render_passport(AgentPassport(autonomy_level=_AUTONOMY_LEVEL))
+            self._render_chat(error_text=message)
 
-    def _apply_passport(self, passport: AgentPassport) -> None:
+    def _apply_passport(self, passport: AgentPassport, *, agent_error: str = "") -> None:
         passport = _apply_autonomy_to_passport(passport)
         if self._session is not None:
-            self._session.passport = passport
+            self._session = replace(self._session, passport=passport)
         self._render_passport(passport)
         missing = list(passport.missing_fields or [])
         questions = list(passport.questions or [])
         ready = bool(passport.name.strip()) and not missing
+        error_text = (
+            "Не удалось получить ответ агента: " + agent_error
+            if agent_error
+            else ""
+        )
         if questions and not ready:
             self._current_question = questions[0]
             prompt = str(self._current_question.get("prompt") or "Уточните поле паспорта")
-            self._render_chat(current_prompt=prompt)
+            self._render_chat(current_prompt=prompt, error_text=error_text)
             labels = [_FIELD_LABELS.get(item, item) for item in missing[:4]]
-            self._set_status(
-                "Нужны уточнения: " + ", ".join(labels) + ("…" if len(missing) > 4 else "")
-            )
+            status = "Нужны уточнения: " + ", ".join(labels) + ("…" if len(missing) > 4 else "")
+            self._set_status(error_text or status, error=bool(agent_error))
         else:
             self._current_question = None
-            self._render_chat(current_prompt="")
-            self._set_status("Паспорт готов — можно перейти к планированию workflow.")
+            self._render_chat(current_prompt="", error_text=error_text)
+            self._set_status(
+                error_text or "Паспорт готов — можно перейти к планированию workflow.",
+                error=bool(agent_error),
+            )
         self._finish_btn.setEnabled(ready)
 
     def _build_passport_card(self) -> QWidget:
@@ -305,6 +361,7 @@ class AgentPassportPage(QWidget):
         self._fields_layout.setContentsMargins(0, 0, 0, 0)
         self._fields_layout.setSpacing(8)
         self._field_value_labels: dict[str, QLabel] = {}
+        self._field_spinners: dict[str, _BusySpinner] = {}
         self._field_row_frames: dict[str, QFrame] = {}
         for key, label in _PRIMARY_FIELDS:
             self._add_field_row(key, label, prominent=True)
@@ -334,10 +391,18 @@ class AgentPassportPage(QWidget):
         value.setWordWrap(True)
         value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         value.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        spinner = _BusySpinner()
+        spinner.set_active(False)
+        value_row = QHBoxLayout()
+        value_row.setContentsMargins(0, 0, 0, 0)
+        value_row.setSpacing(8)
+        value_row.addWidget(spinner, 0, Qt.AlignmentFlag.AlignVCenter)
+        value_row.addWidget(value, 1)
         row_layout.addWidget(title)
-        row_layout.addWidget(value)
+        row_layout.addLayout(value_row)
         self._fields_layout.addWidget(row)
         self._field_value_labels[key] = value
+        self._field_spinners[key] = spinner
         self._field_row_frames[key] = row
 
     def _add_autonomy_row(self) -> None:
@@ -465,22 +530,40 @@ class AgentPassportPage(QWidget):
             value = str(getattr(passport, key, "") or "").strip()
             label = self._field_value_labels[key]
             frame = self._field_row_frames[key]
+            spinner = self._field_spinners[key]
             if value:
+                spinner.set_active(False)
                 label.setText(value)
+                label.setVisible(True)
                 label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+            elif self._busy:
+                spinner.set_active(True)
+                label.setText("")
+                label.setVisible(False)
             else:
-                label.setText("не заполнено")
-                label.setStyleSheet("color: #B07A20; background: transparent;")
+                spinner.set_active(False)
+                label.setText("—")
+                label.setVisible(True)
+                label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
             if key in missing:
                 frame.setStyleSheet(
                     "QFrame { background: #FFF8EF; border: 1px solid #F0DFC2; border-radius: 12px; }"
+                    "QFrame QLabel { border: none; background: transparent; }"
                 )
             else:
                 frame.setStyleSheet(
                     "QFrame { background: #F7FAF9; border: 1px solid #EAF1EE; border-radius: 12px; }"
+                    "QFrame QLabel { border: none; background: transparent; }"
                 )
 
-    def _render_chat(self, *, loading: bool = False, loading_text: str = "", current_prompt: str = "") -> None:
+    def _render_chat(
+        self,
+        *,
+        loading: bool = False,
+        loading_text: str = "",
+        current_prompt: str = "",
+        error_text: str = "",
+    ) -> None:
         while self._messages_layout.count():
             item = self._messages_layout.takeAt(0)
             widget = item.widget()
@@ -494,7 +577,9 @@ class AgentPassportPage(QWidget):
             self._scroll_chat_to_bottom()
             return
 
-        if not self._qa_history and not current_prompt:
+        if error_text:
+            self._messages_layout.addWidget(self._assistant_bubble(error_text))
+        if not self._qa_history and not current_prompt and not error_text:
             self._messages_layout.addWidget(
                 self._assistant_bubble(
                     "Уточнений нет — паспорт заполнен. Можно нажать «Далее · план»."
@@ -513,12 +598,17 @@ class AgentPassportPage(QWidget):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         bubble = QFrame()
+        bubble.setObjectName("PassportBubble")
         bubble.setStyleSheet(
             """
-            QFrame {
+            QFrame#PassportBubble {
                 background: #FFFFFF;
                 border: 1px solid rgba(16,24,23,0.08);
                 border-radius: 18px;
+            }
+            QFrame#PassportBubble > QLabel {
+                background: transparent;
+                border: none;
             }
             """
         )
@@ -527,7 +617,9 @@ class AgentPassportPage(QWidget):
         label = QLabel(text)
         label.setWordWrap(True)
         label.setFont(app_font(11))
-        label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        label.setStyleSheet(
+            f"color: {MAIN_TEXT.name()}; background: transparent; border: none;"
+        )
         layout.addWidget(label)
         row.addWidget(bubble, 1)
         row.addStretch(1)
@@ -541,12 +633,17 @@ class AgentPassportPage(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.addStretch(1)
         bubble = QFrame()
+        bubble.setObjectName("PassportUserBubble")
         bubble.setStyleSheet(
             """
-            QFrame {
+            QFrame#PassportUserBubble {
                 background: rgba(8,116,95,0.09);
                 border: 1px solid rgba(8,116,95,0.14);
                 border-radius: 18px;
+            }
+            QFrame#PassportUserBubble > QLabel {
+                background: transparent;
+                border: none;
             }
             """
         )
@@ -565,7 +662,9 @@ class AgentPassportPage(QWidget):
             label = QLabel(text)
             label.setWordWrap(True)
             label.setFont(app_font(11))
-            label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+            label.setStyleSheet(
+                f"color: {MAIN_TEXT.name()}; background: transparent; border: none;"
+            )
             layout.addWidget(label)
         row.addWidget(bubble, 1)
         wrap = QWidget()
@@ -602,6 +701,9 @@ class AgentPassportPage(QWidget):
 
     def current_session(self) -> PassportSession | None:
         return self._session
+
+    def qa_history(self) -> list[tuple[str, str, list[str]]]:
+        return list(self._qa_history)
 
     def _on_finish(self) -> None:
         if self._session is None:
@@ -763,3 +865,11 @@ def _secondary_btn_qss() -> str:
         }
         QPushButton:hover { background: #F4F7F6; }
     """
+
+
+def _header_role_line(description: str) -> str:
+    for line in str(description or "").splitlines():
+        text = line.strip()
+        if text.casefold().startswith("роль:"):
+            return text
+    return ""

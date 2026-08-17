@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from threading import Thread
@@ -253,6 +254,39 @@ def _format_plan_steps(plan: WorkflowPlan | None) -> str:
             lines.append("")
             lines.append(raw[:2000])
     return "\n".join(lines).strip() or "—"
+
+
+_REPLACEMENT = "\ufffd"
+_DEFAULT_WPS = 22.0
+_MIN_WPS = 16.0
+_MAX_WPS = 40.0
+_PACER_MS = 33
+_WPS_MAX_ELAPSED = 1.0
+
+
+def _word_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", text or ""))
+
+
+def _same_feed_question(left: str, right: str) -> bool:
+    na = " ".join((left or "").casefold().replace("ё", "е").split())
+    nb = " ".join((right or "").casefold().replace("ё", "е").split())
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    return len(shorter) >= 24 and shorter in longer
+
+
+def _take_words(text: str, count: int) -> str:
+    if count <= 0 or not text:
+        return ""
+    matches = list(re.finditer(r"\S+\s*", text))
+    if not matches:
+        return text
+    end = matches[min(count, len(matches)) - 1].end()
+    return text[:end]
 
 
 def _visible_thinking(text: str) -> str:
@@ -978,6 +1012,16 @@ class WorkflowPage(QWidget):
         self._pending_answers: dict[str, str] = {}
         self._tests_ok = False
         self._thinking_text = ""
+        self._thinking_received = ""
+        self._thinking_shown = ""
+        self._thinking_wps = _DEFAULT_WPS
+        self._thinking_word_budget = 0.0
+        self._thinking_chunk = ""
+        self._thinking_chunk_at = 0.0
+        self._thinking_live: CursorFeedItem | None = None
+        self._stream_finished = False
+        self._pending_async: tuple[object, str] | None = None
+        self._pending_async_fail = ""
         self._post_build_question: WorkflowOpenQuestion | None = None
         self._question_fields: dict[str, QLineEdit] = {}
         self._current_question_id = ""
@@ -987,9 +1031,8 @@ class WorkflowPage(QWidget):
         self._async_fail.connect(self._on_async_fail)
         self._stream_event.connect(self._on_stream_event)
         self._thinking_timer = QTimer(self)
-        self._thinking_timer.setSingleShot(True)
-        self._thinking_timer.setInterval(40)
-        self._thinking_timer.timeout.connect(self._rebuild_feed)
+        self._thinking_timer.setInterval(_PACER_MS)
+        self._thinking_timer.timeout.connect(self._tick_thinking_pacer)
         self._feed_stick_to_bottom = True
         self._feed_rebuilding = False
         self._build()
@@ -1299,15 +1342,10 @@ class WorkflowPage(QWidget):
             self._scroll_feed_to_bottom()
 
     def _scroll_feed_to_bottom(self) -> None:
-        def _go() -> None:
-            if not self._feed_stick_to_bottom:
-                return
-            bar = self._feed_scroll.verticalScrollBar()
-            bar.setValue(bar.maximum())
-
-        QTimer.singleShot(0, _go)
-        QTimer.singleShot(80, _go)
-        QTimer.singleShot(200, _go)
+        if not self._feed_stick_to_bottom:
+            return
+        bar = self._feed_scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     def _rebuild_feed(self) -> None:
         self._feed_rebuilding = True
@@ -1357,7 +1395,8 @@ class WorkflowPage(QWidget):
             hide_action = event.action_key.startswith("q:")
             widget = self._feed_item(event, fallback_key=f"e{idx}", hide_action=hide_action)
             self._feed_layout.addWidget(widget)
-        thinking = (self._thinking_text or "").strip()
+        thinking = (self._thinking_shown or "").strip()
+        self._thinking_live = None
         if thinking:
             self._expanded_keys.add("live-thinking")
             live = CursorFeedItem(
@@ -1369,6 +1408,7 @@ class WorkflowPage(QWidget):
                 expanded=True,
             )
             live.expand_toggled.connect(self._on_expand_toggled)
+            self._thinking_live = live
             self._feed_layout.addWidget(live)
         if plan_question and self._record and self._record.plan:
             card = self._make_clarification_message(self._record.plan.unanswered()[0])
@@ -1443,9 +1483,27 @@ class WorkflowPage(QWidget):
         widget.expand_toggled.connect(self._on_expand_toggled)
         return widget
 
-    def _flush_thinking(self) -> None:
-        text = _visible_thinking(self._thinking_text)
+    def _reset_thinking_pacer(self) -> None:
+        self._thinking_timer.stop()
         self._thinking_text = ""
+        self._thinking_received = ""
+        self._thinking_shown = ""
+        self._thinking_wps = _DEFAULT_WPS
+        self._thinking_word_budget = 0.0
+        self._thinking_chunk = ""
+        self._thinking_chunk_at = 0.0
+        self._thinking_live = None
+        self._stream_finished = False
+        self._pending_async = None
+        self._pending_async_fail = ""
+
+    def _flush_thinking(self) -> None:
+        text = _visible_thinking(self._thinking_shown or self._thinking_received)
+        self._thinking_text = ""
+        self._thinking_received = ""
+        self._thinking_shown = ""
+        self._thinking_live = None
+        self._thinking_timer.stop()
         if not text:
             return
         key = self._next_event_key()
@@ -1493,23 +1551,40 @@ class WorkflowPage(QWidget):
         )
         self._rebuild_feed()
 
-    def _ensure_question_in_feed(self, question_text: str) -> None:
-        """Keep the asked question visible in history (do not lose it after answer)."""
+    def _question_already_in_feed(self, question_text: str) -> bool:
         text = (question_text or "").strip()
         if not text:
+            return True
+        for ev in self._events:
+            if ev.title == "Уточнение" and _same_feed_question(ev.body, text):
+                return True
+        return False
+
+    def _push_question_if_new(self, question_text: str) -> None:
+        text = (question_text or "").strip()
+        if not text or self._question_already_in_feed(text):
             return
-        for ev in reversed(self._events):
-            if ev.title == "Уточнение" and (ev.body or "").strip() == text:
-                return
-        self._events.append(
-            FeedEvent(
-                title="Уточнение",
-                body=text,
-                time=self._now(),
-                role="agent",
-                event_key=self._next_event_key(),
-            )
-        )
+        self._push_event("Уточнение", text)
+
+    def _ensure_question_in_feed(self, question_text: str) -> None:
+        """Keep the asked question visible in history (do not lose it after answer)."""
+        self._push_question_if_new(question_text)
+
+    def _mark_question_answered(self, qid: str, answer: str) -> None:
+        if self._record is None or self._record.plan is None or not qid:
+            return
+        questions = []
+        changed = False
+        for item in self._record.plan.open_questions or []:
+            if item.id == qid and not (item.answer or "").strip():
+                questions.append(replace(item, answer=answer))
+                changed = True
+            else:
+                questions.append(item)
+        if not changed:
+            return
+        plan = replace(self._record.plan, open_questions=questions)
+        self._record = replace(self._record, plan=plan)
 
     @staticmethod
     def _now() -> str:
@@ -1617,7 +1692,7 @@ class WorkflowPage(QWidget):
         self._agent_status.setText(f"● {self._busy_base}{'.' * self._busy_n}")
 
     def _run_async(self, label: str, fn) -> None:
-        self._thinking_text = ""
+        self._reset_thinking_pacer()
         self._set_busy(True, label)
 
         def work() -> None:
@@ -1632,20 +1707,117 @@ class WorkflowPage(QWidget):
         Thread(target=work, daemon=True).start()
 
     def _on_stream_event(self, event_type: str, text: str) -> None:
-        if event_type in {"thinking", "assistant"} and text:
-            if text.startswith(self._thinking_text) and len(text) >= len(self._thinking_text):
-                self._thinking_text = text
+        incoming = (text or "").replace(_REPLACEMENT, "")
+        if event_type in {"thinking", "assistant"} and incoming:
+            if incoming.startswith(self._thinking_received) and len(incoming) >= len(self._thinking_received):
+                delta = incoming[len(self._thinking_received) :]
+                self._thinking_received = incoming
             else:
-                self._thinking_text += text
-            if not self._thinking_timer.isActive():
-                self._thinking_timer.start()
-        elif event_type in {"decision", "system"} and text.strip():
-            self._thinking_text = (self._thinking_text + "\n" + text.strip()).strip()
-            if not self._thinking_timer.isActive():
-                self._thinking_timer.start()
+                delta = incoming
+                self._thinking_received += incoming
+            self._thinking_text = self._thinking_received
+            if delta:
+                self._note_thinking_chunk(delta)
+            self._ensure_thinking_pacer()
+        elif event_type in {"decision", "system"} and incoming.strip():
+            delta = "\n" + incoming.strip()
+            self._thinking_received = (self._thinking_received + delta).strip()
+            self._thinking_text = self._thinking_received
+            self._note_thinking_chunk(delta)
+            self._ensure_thinking_pacer()
+
+    def _note_thinking_chunk(self, delta: str) -> None:
+        now = time.monotonic()
+        previous = self._thinking_chunk
+        started = self._thinking_chunk_at
+        if previous and started:
+            words = _word_count(previous)
+            elapsed = now - started
+            # Пауза модели — не скорость печати. Иначе think ползёт по 3 слова/с.
+            if words >= 1 and 0.08 <= elapsed <= _WPS_MAX_ELAPSED:
+                self._thinking_wps = min(_MAX_WPS, max(_MIN_WPS, words / elapsed))
+        self._thinking_chunk = delta
+        self._thinking_chunk_at = now
+
+    def _ensure_thinking_pacer(self) -> None:
+        if not self._thinking_timer.isActive():
+            self._thinking_timer.start()
+
+    def _tick_thinking_pacer(self) -> None:
+        remaining = self._thinking_received[len(self._thinking_shown) :]
+        if remaining:
+            wps = self._thinking_wps
+            backlog = _word_count(remaining)
+            if backlog > 36:
+                wps = _MAX_WPS
+            self._thinking_word_budget += wps * (_PACER_MS / 1000.0)
+            take = int(self._thinking_word_budget)
+            if take < 1:
+                return
+            self._thinking_word_budget -= take
+            piece = _take_words(remaining, take) or remaining
+            self._thinking_shown += piece
+            self._paint_live_thinking()
+        if len(self._thinking_shown) >= len(self._thinking_received):
+            if self._stream_finished or self._pending_async_fail:
+                self._thinking_timer.stop()
+                self._finish_pending_async()
+            elif not remaining:
+                self._thinking_timer.stop()
+
+    def _paint_live_thinking(self) -> None:
+        shown = self._thinking_shown
+        if self._thinking_live is not None:
+            self._thinking_live.set_body_text(shown)
+            self._scroll_feed_to_bottom()
+            return
+        if not shown.strip():
+            return
+        self._expanded_keys.add("live-thinking")
+        live = CursorFeedItem(
+            kind="thinking",
+            text=shown,
+            title="Thinking",
+            detail=shown,
+            event_key="live-thinking",
+            expanded=True,
+        )
+        live.expand_toggled.connect(self._on_expand_toggled)
+        self._thinking_live = live
+        stretch = self._feed_layout.takeAt(self._feed_layout.count() - 1)
+        self._feed_layout.addWidget(live)
+        if stretch is not None:
+            self._feed_layout.addItem(stretch)
+        self._scroll_feed_to_bottom()
+
+    def _finish_pending_async(self) -> None:
+        fail = self._pending_async_fail
+        pending = self._pending_async
+        self._pending_async = None
+        self._pending_async_fail = ""
+        self._stream_finished = False
+        self._flush_thinking()
+        if fail:
+            self._set_busy(False)
+            self._push_event("Ошибка", fail)
+            self._agent_status.setText("● Ошибка — попробуйте ещё раз")
+            self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
+            return
+        if pending is None:
+            self._set_busy(False)
+            return
+        result, label = pending
+        self._apply_async_result(result, label)
 
     def _on_async_ok(self, result: object, label: str) -> None:
-        self._flush_thinking()
+        self._pending_async = (result, label)
+        self._stream_finished = True
+        if len(self._thinking_shown) >= len(self._thinking_received):
+            self._finish_pending_async()
+        else:
+            self._ensure_thinking_pacer()
+
+    def _apply_async_result(self, result: object, label: str) -> None:
         self._set_busy(False)
         if isinstance(result, WorkflowRecord):
             self._record = self._persist_passport_runtime(result)
@@ -1662,8 +1834,7 @@ class WorkflowPage(QWidget):
                     action_key="show_plan",
                 )
                 if unanswered:
-                    q = unanswered[0]
-                    self._push_event("Уточнение", q.question)
+                    self._push_question_if_new(unanswered[0].question)
                 else:
                     self._push_event(
                         "Сборка workflow",
@@ -1674,8 +1845,7 @@ class WorkflowPage(QWidget):
             elif label.startswith("Уточнение"):
                 unanswered = result.plan.unanswered() if result.plan else []
                 if unanswered:
-                    q = unanswered[0]
-                    self._push_event("Уточнение", q.question)
+                    self._push_question_if_new(unanswered[0].question)
                 else:
                     self._push_event(
                         "Сборка workflow",
@@ -1734,11 +1904,12 @@ class WorkflowPage(QWidget):
             self._render_all()
 
     def _on_async_fail(self, message: str) -> None:
-        self._flush_thinking()
-        self._set_busy(False)
-        self._push_event("Ошибка", message)
-        self._agent_status.setText("● Ошибка — попробуйте ещё раз")
-        self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
+        self._pending_async_fail = message
+        self._stream_finished = True
+        if len(self._thinking_shown) >= len(self._thinking_received):
+            self._finish_pending_async()
+        else:
+            self._ensure_thinking_pacer()
 
     def _on_plan(self) -> None:
         notes = (self._notes or "").strip()
@@ -1941,6 +2112,7 @@ class WorkflowPage(QWidget):
             if not asked and self._record.plan.unanswered():
                 asked = self._record.plan.unanswered()[0].question
         self._ensure_question_in_feed(asked)
+        self._mark_question_answered(qid, text)
         self._push_event("Вы", text or "Файл приложен", role="user")
         self._append_user_files_to_event()
 
@@ -2163,7 +2335,7 @@ class WorkflowPage(QWidget):
         self._passport_runtime = {}
         self._results_dir = ""
         self._tests_ok = False
-        self._thinking_text = ""
+        self._reset_thinking_pacer()
         self._post_build_question = None
         self._clear_questions()
         self._events = []

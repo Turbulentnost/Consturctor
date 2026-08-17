@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -300,6 +301,7 @@ class AgentPassport:
     source: str = "heuristic"
     text: str = ""
     autonomy_level: int = 1
+    cursor_agent_id: str = ""
 
     def to_api_dict(self) -> dict:
         return {
@@ -318,6 +320,7 @@ class AgentPassport:
             "source": self.source,
             "text": self.text,
             "autonomy_level": int(self.autonomy_level or 1),
+            "cursor_agent_id": self.cursor_agent_id,
         }
 
 
@@ -327,6 +330,10 @@ class PassportSession:
     bp_name: str
     excerpt: str
     functions: list[PassportFunction]
+    draft_id: str = ""
+    reused: bool = False
+    llm_error: str = ""
+    qa_history: list[tuple[str, str, list[str]]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -997,7 +1004,13 @@ class ApiClient:
             if isinstance(item, dict)
         ]
 
-    def draft_passport_from_suggestion(self, suggestion: AgentSuggestion) -> PassportSession:
+    def draft_passport_from_suggestion(
+        self,
+        suggestion: AgentSuggestion,
+        *,
+        draft_id: str = "",
+        agent_id: str = "",
+    ) -> PassportSession:
         data = self._request(
             "POST",
             "/api/v1/regulations/passport/draft-from-suggestion",
@@ -1007,6 +1020,8 @@ class ApiClient:
                 "functionId": suggestion.function_id,
                 "agentTitle": suggestion.title,
                 "agentDescription": suggestion.description,
+                "draftId": draft_id,
+                "agentId": agent_id,
             },
             timeout=max(self._timeout, 180.0),
         )
@@ -1021,6 +1036,12 @@ class ApiClient:
         excerpt: str,
         functions: list[PassportFunction],
         field_updates: dict[str, str] | None = None,
+        draft_id: str = "",
+        agent_id: str = "",
+        function_id: str = "",
+        regulation_id: str = "",
+        role_match_run_id: str = "",
+        qa_history: list[tuple[str, str, list[str]]] | None = None,
     ) -> PassportSession:
         data = self._request(
             "POST",
@@ -1041,6 +1062,15 @@ class ApiClient:
                     }
                     for item in functions
                 ],
+                "draftId": draft_id,
+                "agentId": agent_id,
+                "functionId": function_id,
+                "regulationId": regulation_id,
+                "roleMatchRunId": role_match_run_id,
+                "qaHistory": [
+                    {"prompt": prompt, "answer": answer, "files": list(files or [])}
+                    for prompt, answer, files in (qa_history or [])
+                ],
             },
             timeout=max(self._timeout, 180.0),
         )
@@ -1060,6 +1090,17 @@ class ApiClient:
             for item in data.get("functions") or []
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         ]
+        qa_history: list[tuple[str, str, list[str]]] = []
+        for item in data.get("qaHistory") or []:
+            if not isinstance(item, dict):
+                continue
+            qa_history.append(
+                (
+                    str(item.get("prompt") or ""),
+                    str(item.get("answer") or ""),
+                    [str(path) for path in (item.get("files") or []) if str(path).strip()],
+                )
+            )
         return PassportSession(
             passport=AgentPassport(
                 name=str(passport_raw.get("name") or ""),
@@ -1077,10 +1118,15 @@ class ApiClient:
                 source=str(passport_raw.get("source") or "heuristic"),
                 text=str(passport_raw.get("text") or ""),
                 autonomy_level=int(passport_raw.get("autonomy_level") or 1) or 1,
+                cursor_agent_id=str(passport_raw.get("cursor_agent_id") or ""),
             ),
             bp_name=str(data.get("bp_name") or ""),
             excerpt=str(data.get("excerpt") or ""),
             functions=functions,
+            draft_id=str(data.get("draftId") or ""),
+            reused=bool(data.get("reused")),
+            llm_error=str(data.get("llmError") or passport_raw.get("llm_error") or ""),
+            qa_history=qa_history,
         )
 
     @staticmethod
@@ -2171,12 +2217,13 @@ def _extract_detail(response: httpx.Response) -> str:
 
 def _iter_sse_payloads(response: httpx.Response):
     """Разбирать SSE по байтам, чтобы think не ждал конца ответа."""
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
     data_lines: list[str] = []
     carry = ""
-    for raw in response.iter_bytes(chunk_size=256):
-        if not raw:
-            continue
-        carry += raw.decode("utf-8", errors="replace")
+
+    def feed(text: str):
+        nonlocal data_lines, carry
+        carry += text
         while "\n" in carry:
             line, carry = carry.split("\n", 1)
             line = line.rstrip("\r")
@@ -2187,6 +2234,12 @@ def _iter_sse_payloads(response: httpx.Response):
                 continue
             if line.startswith("data:"):
                 data_lines.append(line.split(":", 1)[1].strip())
+
+    for raw in response.iter_bytes(chunk_size=4096):
+        if not raw:
+            continue
+        yield from feed(decoder.decode(raw, final=False))
+    yield from feed(decoder.decode(b"", final=True))
     if data_lines:
         yield _parse_sse_payload("\n".join(data_lines))
 
