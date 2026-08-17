@@ -40,7 +40,7 @@ class OnecComSettings(ServiceSettings):
 
     service_name: str = "platform-tool-onec-com"
     api_port: int = 7831
-    com_timeout_sec: int = 120
+    com_timeout_sec: int = 300
 
 
 settings = OnecComSettings()

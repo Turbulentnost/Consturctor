@@ -146,15 +146,14 @@ def main() -> int:
 
     run("onec.com.status", {})
     qt = run("onec.com.query_tasks", {"limit": 3})
-    if qt.get("ok"):
-        oc = run("onec.com.connect", {})
-        state["onec_sid"] = str(data(oc).get("session_id") or "")
-        if state["onec_sid"]:
-            run(
-                "onec.com.invoke",
-                {"session_id": state["onec_sid"], "method": "String", "args": ["probe"]},
-            )
-            run("onec.com.release", {"session_id": state["onec_sid"]})
+    if not qt.get("ok"):
+        import time
+
+        time.sleep(5)
+        qt = run("onec.com.query_tasks", {"limit": 3})
+    sid = str(data(qt).get("session_id") or "")
+    if sid:
+        run("onec.com.release", {"session_id": sid})
 
     run("browser.open_session", {})
     run("browser.navigate", {"url": PROBE_URL})
