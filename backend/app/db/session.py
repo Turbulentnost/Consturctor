@@ -18,7 +18,10 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 
 def init_db() -> None:
     # Import models so metadata is populated.
+    from app.models import agent_run as _agent_run  # noqa: F401
+    from app.models import notification as _notification  # noqa: F401
     from app.models import regulation as _regulation  # noqa: F401
+    from app.models import trigger as _trigger  # noqa: F401
     from app.models import user as _user  # noqa: F401
     from app.models import workflow as _workflow  # noqa: F401
 
@@ -43,8 +46,6 @@ def _ensure_columns() -> None:
             )
         ).fetchall()
         existing = {str(r[0]) for r in rows}
-        if not existing:
-            return
         alters: list[str] = []
         if "department_changed_at" not in existing:
             alters.append("ADD COLUMN department_changed_at TIMESTAMPTZ NULL")
@@ -58,12 +59,28 @@ def _ensure_columns() -> None:
             )
         if "department" not in existing:
             alters.append("ADD COLUMN department VARCHAR(512) NOT NULL DEFAULT ''")
-        if "fio" not in existing:
+        if existing and "fio" not in existing:
             alters.append("ADD COLUMN fio VARCHAR(512) NOT NULL DEFAULT ''")
-        if "password_hash" not in existing:
-            alters.append("ADD COLUMN password_hash VARCHAR(512) NULL")
-        for clause in alters:
-            conn.execute(text(f"ALTER TABLE users {clause}"))
+        if existing:
+            for clause in alters:
+                conn.execute(text(f"ALTER TABLE users {clause}"))
+        trigger_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'agent_triggers'
+                """
+            )
+        ).fetchall()
+        trigger_cols = {str(r[0]) for r in trigger_rows}
+        if trigger_cols and "interval_seconds" not in trigger_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE agent_triggers "
+                    "ADD COLUMN interval_seconds INTEGER NOT NULL DEFAULT 0"
+                )
+            )
 
 
 def get_db() -> Generator[Session, None, None]:

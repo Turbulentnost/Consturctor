@@ -18,7 +18,6 @@ class AppUser(Base):
     department: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     position: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     avatar_path: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)
-    password_hash: Mapped[str | None] = mapped_column(String(512), nullable=True, default=None)
     department_changed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )

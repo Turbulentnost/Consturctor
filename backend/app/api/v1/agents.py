@@ -25,7 +25,6 @@ from app.services.agents import (
     reanalyze_revision_document,
     update_draft_status,
 )
-from app.services.agent_platform import list_allowed_tools_with_metadata
 from app.services.readiness.chat import (
     create_or_get_question_chat,
     get_latest_question_chat,
@@ -194,26 +193,6 @@ async def send_question_chat(
         )
     except ReadinessError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-
-
-@router.get("/drafts/{draft_id}/tools")
-async def list_draft_tools(
-    draft_id: str,
-    auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    try:
-        draft = get_draft(db, user_id=auth.user_id, draft_id=draft_id)
-    except AgentDraftError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-    department = draft.department or auth.department or ""
-    tools = list_allowed_tools_with_metadata(department)
-    return {
-        "agent_id": draft.id,
-        "department": department,
-        "platform_agent_id": draft.id,
-        "items": tools,
-    }
 
 
 @router.post("/drafts/from-regulation/{regulation_id}/role-matches/{run_id}", response_model=AgentDraftDetail)

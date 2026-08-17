@@ -1,6 +1,0 @@
-@echo off
-rem Copy this file to scripts\desktop_tools.local.cmd (gitignored) and edit paths.
-rem Comma-separated roots for fs.* (must stay inside one of these folders):
-set "FS_ROOT_ALLOWLIST=%FS_ROOT_ALLOWLIST%,C:\Users\mdj\закупки"
-rem Optional: extra cwd roots for shell.run native runtime
-rem set "SHELL_CWD_ROOTS=%SHELL_CWD_ROOTS%,C:\Users\mdj\закупки"

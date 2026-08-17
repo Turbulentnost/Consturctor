@@ -1,7 +1,7 @@
 [project]
 name = "constructor-backend"
 version = "0.1.0"
-description = "Backend конструктора ИИ-агентов: auth 1С, LLM/VLM, platform gateway"
+description = "Backend конструктора ИИ-агентов: auth 1С, LLM/VLM"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
@@ -12,8 +12,6 @@ dependencies = [
     "pyodbc>=5.2.0",
     "python-dotenv>=1.0.0",
     "httpx>=0.28.0",
-    "platform-contracts",
-    "platform-db",
     "sqlalchemy>=2.0.0",
     "psycopg[binary]>=3.2.0",
     "python-multipart>=0.0.9",
@@ -37,9 +35,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app", "tools"]
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.ruff]
 line-length = 100

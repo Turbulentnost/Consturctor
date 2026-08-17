@@ -1,10 +1,4 @@
-from pydantic import BaseModel, Field
-
-
-class PlatformServiceHealth(BaseModel):
-    name: str
-    reachable: bool
-    status: str = "unknown"
+from pydantic import BaseModel
 
 
 class HealthResponse(BaseModel):
@@ -12,6 +6,3 @@ class HealthResponse(BaseModel):
     erp_reachable: bool
     erp_server: str
     llm_provider: str
-    auth_stub: bool = False
-    registration_enabled: bool = True
-    platform_services: list[PlatformServiceHealth] = Field(default_factory=list)
