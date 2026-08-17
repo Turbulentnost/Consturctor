@@ -903,6 +903,7 @@ class WorkflowPage(QWidget):
         self._pending_paths: list[str] = []
         self._workflow_title = ""
         self._notes = ""
+        self._passport_runtime: dict = {}
         self._results_dir = ""
         self._busy = False
         self._events: list[FeedEvent] = []
@@ -1086,6 +1087,11 @@ class WorkflowPage(QWidget):
         self._notes = record.notes
         local = dict(record.local_run or {})
         self._tests_ok = str(local.get("tests_status") or "").casefold() == "pass"
+        if local.get("autonomy_level") or local.get("autonomy_policy"):
+            self._passport_runtime = {
+                "autonomy_level": int(local.get("autonomy_level") or 1),
+                "autonomy_policy": str(local.get("autonomy_policy") or ""),
+            }
         self._events = [
             FeedEvent(
                 "Загрузка workflow",
@@ -1124,12 +1130,34 @@ class WorkflowPage(QWidget):
         title = (session.passport.name or session.bp_name or "ИИ-агент").strip()
         self._workflow_title = title
         self._notes = _notes_from_passport(session)
+        self._passport_runtime = {
+            "autonomy_level": int(getattr(session.passport, "autonomy_level", 1) or 1),
+            "autonomy_policy": (
+                "Уровень 1: генерация текста, инструменты чтения и human-in-the-loop; "
+                "запись и прочие операции только после подтверждения человека."
+            ),
+        }
         self._push_event(
             "Анализ документа",
             f"Загружен паспорт «{title}». Готовлю план реализации…",
         )
         if auto_plan:
             self._on_plan()
+
+    def _persist_passport_runtime(self, record: WorkflowRecord) -> WorkflowRecord:
+        if not self._passport_runtime:
+            return record
+        local = dict(record.local_run or {})
+        level = int(self._passport_runtime.get("autonomy_level") or 1)
+        policy = str(self._passport_runtime.get("autonomy_policy") or "")
+        if int(local.get("autonomy_level") or 0) == level and str(local.get("autonomy_policy") or "") == policy:
+            return record
+        local["autonomy_level"] = level
+        local["autonomy_policy"] = policy
+        try:
+            return self._api.update_workflow_local_run(record.id, local)
+        except ApiError:
+            return record
 
     # --- render ----------------------------------------------------------------
 
@@ -1452,7 +1480,7 @@ class WorkflowPage(QWidget):
     def _on_async_ok(self, result: object, label: str) -> None:
         self._set_busy(False)
         if isinstance(result, WorkflowRecord):
-            self._record = result
+            self._record = self._persist_passport_runtime(result)
             self._pending_paths = []
             self._workflow_title = result.title
             self._notes = result.notes or self._notes
@@ -1545,10 +1573,12 @@ class WorkflowPage(QWidget):
 
             def create_and_plan() -> WorkflowRecord:
                 created = self._api.create_workflow(notes=notes, file_paths=self._pending_paths)
-                return self._api.stream_plan_workflow(
+                created = self._persist_passport_runtime(created)
+                planned = self._api.stream_plan_workflow(
                     created.id,
                     lambda event_type, text: self._stream_event.emit(event_type, text),
                 )
+                return self._persist_passport_runtime(planned)
 
             self._run_async("Планирование", create_and_plan)
             return
@@ -1943,6 +1973,7 @@ class WorkflowPage(QWidget):
         self._pending_paths.clear()
         self._workflow_title = ""
         self._notes = ""
+        self._passport_runtime = {}
         self._results_dir = ""
         self._tests_ok = False
         self._thinking_text = ""
@@ -1975,12 +2006,14 @@ def _notes_from_passport(session: PassportSession) -> str:
                 f"Требует подтверждения человека: {passport.needs_human_approval or '—'}",
                 f"Не может: {passport.forbidden or '—'}",
                 f"Результат: {passport.result or '—'}",
+                f"Уровень автономности: {int(getattr(passport, 'autonomy_level', 1) or 1)}",
             ]
         )
     lines = [
         f"# Паспорт ИИ-агента: {title}",
         "",
         "Составь план реализации ИИ-агента по согласованному паспорту.",
+        "Уровень автономности: 1. Запись и прочие операции — только после подтверждения человека.",
         "Не меняй смысл полей паспорта без уточняющих вопросов.",
         "В steps опиши конкретные шаги автоматизации процесса.",
         "",

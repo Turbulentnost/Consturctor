@@ -31,6 +31,7 @@ class WorkflowPlanSchema(BaseModel):
     open_questions: list[OpenQuestionSchema] = Field(default_factory=list)
     answered_questions: list[OpenQuestionSchema] = Field(default_factory=list)
     raw_text: str = ""
+    runtime: dict[str, Any] = Field(default_factory=dict)
 
 
 class AttachmentMetaSchema(BaseModel):

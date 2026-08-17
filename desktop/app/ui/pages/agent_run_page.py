@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.api_client import ApiClient, ApiError, WorkflowRecord
+from app.tools.hitl import install_confirm_host
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 
 
@@ -101,6 +102,7 @@ class AgentRunPage(QWidget):
         self._event_ready.connect(self._append_event)
         self._done.connect(self._on_done)
         self.failed.connect(self._show_error)
+        install_confirm_host(self)
         self._build()
 
     def _build(self) -> None:

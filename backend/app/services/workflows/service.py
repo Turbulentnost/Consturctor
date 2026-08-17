@@ -235,9 +235,10 @@ def plan_workflow(
     _emit(on_event, "decision", "Планировщик запущен, получаю рассуждения агента.")
     phase = _stream_run(agent_id, run_id, on_event=on_event)
     plan = prompts.parse_plan_from_text(phase.text)
-    from app.services.plan_run import ensure_runtime
+    from app.services.plan_run import apply_autonomy, ensure_runtime
 
     ensure_runtime(plan)
+    apply_autonomy(plan, row.local_run)
     row.plan_json = plan.to_dict()
     row.title = plan.title or row.title
     row.phase = "clarify" if plan.unanswered() else "ready"
@@ -358,9 +359,10 @@ def clarify_workflow(
     # Keep previous runtime if planner omitted it; then normalize from answers/constraints.
     if not updated.runtime.kind and plan.runtime.kind:
         updated.runtime = plan.runtime
-    from app.services.plan_run import ensure_runtime
+    from app.services.plan_run import apply_autonomy, ensure_runtime
 
     ensure_runtime(updated)
+    apply_autonomy(updated, row.local_run)
     followups = updated.ensure_followups_for_unclear_answers(
         recent_answers=merged_answers,
         prior_questions=plan.open_questions,
@@ -418,6 +420,9 @@ def execute_workflow(
             plan.record_answers({"post-build": clarification})
             # Drop temporary open question if it was only for recording.
             plan.open_questions = [q for q in plan.open_questions if q.id != "post-build"]
+            from app.services.plan_run import apply_autonomy
+
+            apply_autonomy(plan, row.local_run)
             row.plan_json = plan.to_dict()
             db.commit()
         prompt = prompts.build_reexecute_prompt(

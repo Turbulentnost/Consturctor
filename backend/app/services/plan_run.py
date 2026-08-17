@@ -107,9 +107,32 @@ def build_plan_export_arguments(
     }
 
 
+_DEFAULT_AUTONOMY_POLICY = (
+    "Уровень 1: генерация текста, инструменты чтения и human-in-the-loop; "
+    "запись и прочие операции только после подтверждения человека."
+)
+
+
+def apply_autonomy(
+    plan: WorkflowPlan,
+    local_run: dict[str, Any] | None = None,
+) -> WorkflowPlan:
+    """Keep autonomy level 1 on the plan (KPI / levels 2–4 later)."""
+    local = local_run if isinstance(local_run, dict) else {}
+    level = int(local.get("autonomy_level") or plan.runtime.autonomy_level or 1) or 1
+    policy = str(
+        local.get("autonomy_policy") or plan.runtime.autonomy_policy or _DEFAULT_AUTONOMY_POLICY
+    ).strip()
+    plan.runtime.autonomy_level = level
+    plan.runtime.autonomy_policy = policy
+    return plan
+
+
 def ensure_runtime(plan: WorkflowPlan) -> WorkflowPlan:
     """Fill plan.runtime from answers/constraints when planner left it empty."""
     rt = plan.runtime
+    level = int(rt.autonomy_level or 1)
+    policy = str(rt.autonomy_policy or "")
     if rt.kind and not rt.keywords and rt.keyword_text:
         rt.keywords = _expand_keyword_text(rt.keyword_text)
     if rt.kind and (rt.keywords or rt.keyword_text):
@@ -123,10 +146,14 @@ def ensure_runtime(plan: WorkflowPlan) -> WorkflowPlan:
                 "цена",
                 "дата",
             ]
+        apply_autonomy(plan)
         return plan
     inferred = infer_runtime(plan)
     if inferred is not None:
+        inferred.autonomy_level = level
+        inferred.autonomy_policy = policy
         plan.runtime = inferred
+    apply_autonomy(plan)
     return plan
 
 

@@ -299,6 +299,7 @@ class AgentPassport:
     questions: list[dict] | None = None
     source: str = "heuristic"
     text: str = ""
+    autonomy_level: int = 1
 
     def to_api_dict(self) -> dict:
         return {
@@ -316,6 +317,7 @@ class AgentPassport:
             "questions": list(self.questions or []),
             "source": self.source,
             "text": self.text,
+            "autonomy_level": int(self.autonomy_level or 1),
         }
 
 
@@ -1011,6 +1013,7 @@ class ApiClient:
                 questions=[item for item in passport_raw.get("questions") or [] if isinstance(item, dict)],
                 source=str(passport_raw.get("source") or "heuristic"),
                 text=str(passport_raw.get("text") or ""),
+                autonomy_level=int(passport_raw.get("autonomy_level") or 1) or 1,
             ),
             bp_name=str(data.get("bp_name") or ""),
             excerpt=str(data.get("excerpt") or ""),
@@ -1341,6 +1344,16 @@ class ApiClient:
                                         }
                                     )
                                     try:
+                                        from app.tools.hitl import HUMAN_REJECTED, confirm_level1_tool
+
+                                        if not confirm_level1_tool(tool, arguments):
+                                            self.post_agent_tool_result(
+                                                req_run,
+                                                request_id=request_id,
+                                                ok=False,
+                                                error=HUMAN_REJECTED,
+                                            )
+                                            continue
                                         tool_result = invoke_tool(tool, arguments)
                                         self.post_agent_tool_result(
                                             req_run,

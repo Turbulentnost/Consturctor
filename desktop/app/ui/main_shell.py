@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.attachment_text import format_attachments_block
 from app.api_client import (
     AgentReadinessResult,
     ApiClient,
@@ -1155,12 +1156,31 @@ class MainShell(QWidget):
         session = self._page_passport.current_session()
         if session is None or not isinstance(answers, dict):
             return
+        if isinstance(answers.get("answers"), dict) or "files" in answers:
+            raw_answers = answers.get("answers") if isinstance(answers.get("answers"), dict) else {
+                key: value for key, value in answers.items() if key != "files"
+            }
+            files = [str(path) for path in (answers.get("files") or []) if str(path).strip()]
+        else:
+            raw_answers = answers
+            files = []
+        merged = {str(key): str(value) for key, value in dict(raw_answers or {}).items()}
 
         def run() -> None:
+            answers_payload = dict(merged)
+            attachment_block = format_attachments_block(files)
+            if attachment_block:
+                if answers_payload:
+                    answers_payload = {
+                        key: (value + attachment_block).strip()
+                        for key, value in answers_payload.items()
+                    }
+                else:
+                    answers_payload = {"answer": attachment_block.strip()}
             try:
                 updated = self._api.complete_passport(
                     session.passport,
-                    answers={str(key): str(value) for key, value in answers.items()},
+                    answers=answers_payload,
                     bp_name=session.bp_name,
                     excerpt=session.excerpt,
                     functions=session.functions,

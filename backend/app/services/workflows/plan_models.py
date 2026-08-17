@@ -53,6 +53,8 @@ class PlanRuntime:
     export_format: str = ""  # xlsx
     export_destination: str = ""  # desktop
     columns: list[str] = field(default_factory=list)
+    autonomy_level: int = 1
+    autonomy_policy: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> PlanRuntime:
@@ -83,12 +85,19 @@ class PlanRuntime:
                 or ""
             ),
             columns=[str(x).strip() for x in columns if str(x).strip()],
+            autonomy_level=int(data.get("autonomy_level") or 1) or 1,
+            autonomy_policy=str(data.get("autonomy_policy") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "autonomy_level": int(self.autonomy_level or 1),
+        }
+        if self.autonomy_policy:
+            payload["autonomy_policy"] = self.autonomy_policy
         if not self.kind and not self.keywords and not self.keyword_text:
-            return {}
-        payload: dict[str, Any] = {"kind": self.kind}
+            return payload
+        payload["kind"] = self.kind
         if self.site_url:
             payload["site_url"] = self.site_url
         if self.keywords:
