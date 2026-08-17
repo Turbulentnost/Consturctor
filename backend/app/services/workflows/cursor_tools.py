@@ -126,7 +126,9 @@ def invoke_creation_tool(
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, args)
     if tool in _ONEC_TOOLS:
-        return _invoke_onec_server(tool, args)
+        ctx = current_tool_context()
+        user_id = ctx[1] if ctx else ""
+        return _invoke_onec_server(tool, args, user_id=user_id)
 
     ctx = current_tool_context()
     if ctx is None:

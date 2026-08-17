@@ -12,7 +12,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from app.services.agent_passport import llm as llm_service
+from app.services.agent_passport import cursor_agent as cursor_service
 from app.services.agent_passport.types import ExtractedFunction
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ _FIELD_LABELS = {
 }
 
 _PASSPORT_SYSTEM = (
-    "Ты проектировщик ИИ-агентов по корпоративным регламентам. "
+    "Ты Cursor Agent — проектировщик ИИ-агентов по корпоративным регламентам. "
     "Заполняешь паспорт агента кратко и по делу. Возвращай СТРОГО JSON."
 )
 
@@ -468,6 +468,8 @@ class AgentPassport:
     questions: list[dict] = field(default_factory=list)
     source: str = "heuristic"
     autonomy_level: int = 1
+    llm_error: str = ""
+    cursor_agent_id: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -485,6 +487,8 @@ class AgentPassport:
             "questions": list(self.questions),
             "source": self.source,
             "autonomy_level": int(self.autonomy_level or 1),
+            "llm_error": self.llm_error,
+            "cursor_agent_id": self.cursor_agent_id,
         }
 
     def format_text(self) -> str:
@@ -513,18 +517,20 @@ def draft_passport(
     functions: list[ExtractedFunction],
     agent_name: str | None = None,
 ) -> AgentPassport:
-    """Собрать черновик паспорта (LLM, иначе эвристика)."""
+    """Собрать черновик паспорта через Cursor Agent (иначе эвристика)."""
     normalized = [fn.with_derived_approval() for fn in functions if fn.name.strip()]
     if not normalized:
         raise ValueError("Нужна хотя бы одна функция для паспорта агента")
 
-    llm_result = _draft_with_llm(bp_name, excerpt, normalized)
-    if llm_result is not None:
-        passport = llm_result
-        passport.source = "llm"
+    cursor_result = _draft_with_cursor(bp_name, excerpt, normalized)
+    if cursor_result is not None:
+        passport = cursor_result
+        passport.source = "cursor"
+        passport.llm_error = ""
     else:
         passport = _heuristic_draft(bp_name, excerpt, normalized)
         passport.source = "heuristic"
+        passport.llm_error = cursor_service.last_error()
 
     if agent_name and agent_name.strip():
         passport.name = agent_name.strip()
@@ -573,6 +579,7 @@ def complete_passport(
                 answer_updates[field_name] = value
 
     follow_ups: list[dict] = []
+    eval_errors: list[str] = []
     agent_name = str(data.get("name") or bp_name or "агента")
     for field_name, raw_answer in answer_updates.items():
         if field_name in _SCOPE_FIELDS:
@@ -586,8 +593,12 @@ def complete_passport(
             question=prev_prompts.get(field_name, ""),
             current=str(data.get(field_name) or ""),
             passport_data=data,
+            cursor_agent_id=str(data.get("cursor_agent_id") or passport.cursor_agent_id or ""),
         )
 
+        err = str(verdict.get("llm_error") or "").strip()
+        if err:
+            eval_errors.append(err)
         if verdict.get("accepted"):
             normalized = str(verdict.get("normalized_value") or answer).strip()
             if normalized:
@@ -639,6 +650,8 @@ def complete_passport(
         result=str(data.get("result") or ""),
         source=str(data.get("source") or passport.source),
         autonomy_level=1,
+        llm_error="; ".join(dict.fromkeys(eval_errors)) or str(data.get("llm_error") or ""),
+        cursor_agent_id=str(data.get("cursor_agent_id") or passport.cursor_agent_id or ""),
     )
     _apply_autonomy_scope(updated, functions=functions or [])
     result = _with_gaps(
@@ -761,6 +774,7 @@ def _evaluate_passport_answer(
     question: str,
     current: str,
     passport_data: dict,
+    cursor_agent_id: str = "",
 ) -> dict:
     """Принять ответ: ясные политики — без переспроса LLM."""
     heuristic = _evaluate_answer_heuristic(field, answer)
@@ -772,14 +786,18 @@ def _evaluate_passport_answer(
             "follow_up": "",
         }
 
-    llm = _evaluate_answer_with_llm(
+    llm = _evaluate_answer_with_cursor(
         field=field,
         answer=answer,
         question=question,
         current=current,
         passport_data=passport_data,
+        cursor_agent_id=cursor_agent_id,
     )
     if llm is None:
+        err = cursor_service.last_error()
+        if err:
+            heuristic = {**heuristic, "llm_error": err}
         return heuristic
     # LLM не должна заново дробить уже принятую содержательную политику.
     if (
@@ -792,20 +810,21 @@ def _evaluate_passport_answer(
     return llm
 
 
-def _evaluate_answer_with_llm(
+def _evaluate_answer_with_cursor(
     *,
     field: str,
     answer: str,
     question: str,
     current: str,
     passport_data: dict,
+    cursor_agent_id: str = "",
 ) -> dict | None:
     context_lines = []
     for key in PASSPORT_FIELDS:
         value = str(passport_data.get(key) or "").strip()
         if value:
             context_lines.append(f"- {_FIELD_LABELS[key]}: {value}")
-    raw = llm_service.generate(
+    raw, agent_id = cursor_service.generate(
         _ANSWER_PROMPT.format(
             field_label=_FIELD_LABELS.get(field, field),
             field=field,
@@ -815,7 +834,10 @@ def _evaluate_answer_with_llm(
             passport_context="\n".join(context_lines) or "(черновик почти пуст)",
         ),
         system=_ANSWER_SYSTEM,
+        cursor_agent_id=cursor_agent_id,
     )
+    if agent_id and not str(passport_data.get("cursor_agent_id") or "").strip():
+        passport_data["cursor_agent_id"] = agent_id
     if not raw:
         return None
     payload = _parse_json_object(raw)
@@ -883,6 +905,8 @@ def passport_from_dict(data: dict | None) -> AgentPassport:
         questions=list(raw.get("questions") or []),
         source=str(raw.get("source") or "heuristic"),
         autonomy_level=int(raw.get("autonomy_level") or 1) or 1,
+        llm_error=str(raw.get("llm_error") or ""),
+        cursor_agent_id=str(raw.get("cursor_agent_id") or ""),
     )
 
 
@@ -989,7 +1013,7 @@ def _questions_with_llm(
         for fn in functions
     ) or "(нет)"
 
-    raw = llm_service.generate(
+    raw, agent_id = cursor_service.generate(
         _QUESTIONS_PROMPT.format(
             bp_name=bp_name or passport.name or "Бизнес-процесс",
             excerpt=(excerpt or "")[:4000] or "(нет)",
@@ -998,7 +1022,10 @@ def _questions_with_llm(
             missing="\n".join(missing_lines),
         ),
         system=_QUESTIONS_SYSTEM,
+        cursor_agent_id=passport.cursor_agent_id,
     )
+    if agent_id and not passport.cursor_agent_id:
+        passport.cursor_agent_id = agent_id
     if not raw:
         return None
     payload = _parse_json_object(raw)
@@ -1041,7 +1068,7 @@ def _questions_with_llm(
     return questions
 
 
-def _draft_with_llm(
+def _draft_with_cursor(
     bp_name: str,
     excerpt: str,
     functions: list[ExtractedFunction],
@@ -1052,7 +1079,7 @@ def _draft_with_llm(
         + (f": {fn.description}" if fn.description else "")
         for fn in functions
     )
-    raw = llm_service.generate(
+    raw, agent_id = cursor_service.generate(
         _PASSPORT_PROMPT.format(
             bp_name=bp_name or "Бизнес-процесс",
             excerpt=(excerpt or "")[:6000],
@@ -1076,6 +1103,7 @@ def _draft_with_llm(
         needs_human_approval=str(payload.get("needs_human_approval") or "").strip(),
         forbidden=str(payload.get("forbidden") or "").strip(),
         result=str(payload.get("result") or "").strip(),
+        cursor_agent_id=agent_id,
     )
 
 

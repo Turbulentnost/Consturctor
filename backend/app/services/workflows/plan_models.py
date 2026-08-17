@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -254,6 +255,28 @@ class WorkflowPlan:
                 self.answered_questions.append(item)
 
         self._mirror_answers_into_constraints()
+        self.drop_resolved_open_questions()
+
+    def drop_resolved_open_questions(self) -> None:
+        """Не держать в open_questions то, на что пользователь уже ответил."""
+        answered_ids = {
+            q.id for q in self.answered_questions if (q.answer or "").strip()
+        }
+        answered_texts = [
+            _norm_question(q.question)
+            for q in self.answered_questions
+            if (q.answer or "").strip()
+        ]
+        kept: list[OpenQuestion] = []
+        for q in self.open_questions:
+            if (q.answer or "").strip():
+                continue
+            if q.id in answered_ids:
+                continue
+            if any(_same_question(q.question, prev) for prev in answered_texts if prev):
+                continue
+            kept.append(q)
+        self.open_questions = kept
 
     def _mirror_answers_into_constraints(self) -> None:
         """Keep a plain-text copy in constraints for older prompt/runtime paths."""
@@ -311,6 +334,22 @@ class WorkflowPlan:
             if len(created) >= 2:
                 break
         return created
+
+
+def _norm_question(text: str) -> str:
+    folded = " ".join(str(text or "").casefold().replace("ё", "е").split())
+    return re.sub(r"[«»\"'?:！!.,;()]+", "", folded).strip()
+
+
+def _same_question(left: str, right: str) -> bool:
+    na = _norm_question(left)
+    nb = _norm_question(right)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    return len(shorter) >= 24 and shorter in longer
 
 
 # Only non-answers / UI placeholders — NOT short but informative replies like «COM», «1С».

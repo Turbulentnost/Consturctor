@@ -649,10 +649,17 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
     kind = str(getattr(plan.runtime, "kind", "") or "").casefold()
 
     if kind == "onec" or (
-        any(tip in blob for tip in ("1с", "1c", "onec", "odata"))
+        any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm", "задач"))
         and not any(tip in blob for tip in ("outlook", "календар", "совещан"))
     ):
-        return ["onec.odata_catalog", "onec.odata_get", "onec.sql_query"]
+        return [
+            "onec.odata_catalog",
+            "onec.odata_get",
+            "onec.sql_query",
+            "onec.erp_tasks_current",
+            "onec.erp_tasks_period",
+            "onec.erp_subordinate_tasks",
+        ]
 
     if kind == "outlook_calendar" or any(
         tip in blob
@@ -674,8 +681,17 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
         tools: list[str] = []
         if any(tip in blob for tip in ("почт", "письм", "imap", "email", "mail")):
             tools.extend(["imap.list_unread", "imap.search"])
-        if any(tip in blob for tip in ("1с", "1c", "onec", "odata")):
-            tools.extend(["onec.odata_catalog", "onec.odata_get", "onec.sql_query"])
+        if any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm", "задач")):
+            tools.extend(
+                [
+                    "onec.odata_catalog",
+                    "onec.odata_get",
+                    "onec.sql_query",
+                    "onec.erp_tasks_current",
+                    "onec.erp_tasks_period",
+                    "onec.erp_subordinate_tasks",
+                ]
+            )
         return tools
 
     if kind == "site_search_excel" or (
@@ -899,7 +915,7 @@ def _stream_run(
             event = str(item.get("event") or "message")
             payload = item.get("data") if isinstance(item.get("data"), dict) else {}
             if event in {"assistant", "thinking", "delta", "update"}:
-                chunk = _cursor_payload_text(payload)
+                chunk = _cursor_payload_text(payload).replace("\ufffd", "")
                 if not chunk:
                     continue
                 if chunk.startswith(streamed):

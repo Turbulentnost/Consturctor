@@ -13,6 +13,15 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.services.erp_tasks import (
+    ErpTaskError,
+    handle_current as _erp_tasks_current,
+    handle_period as _erp_tasks_period,
+    handle_subordinate_tasks as _erp_subordinate_tasks,
+    stub_current as _stub_erp_tasks_current,
+    stub_period as _stub_erp_tasks_period,
+    stub_subordinate_tasks as _stub_erp_subordinate_tasks,
+)
 from app.services.onec_security import (
     default_odata_entities,
     looks_like_odata_entity,
@@ -69,6 +78,16 @@ ONEC_TOOLS = frozenset(
         "onec.odata_patch",
         "onec.attach_file",
         "onec.sql_query",
+        "onec.erp_tasks_current",
+        "onec.erp_tasks_period",
+        "onec.erp_subordinate_tasks",
+    }
+)
+_ERP_TASK_TOOLS = frozenset(
+    {
+        "onec.erp_tasks_current",
+        "onec.erp_tasks_period",
+        "onec.erp_subordinate_tasks",
     }
 )
 
@@ -86,23 +105,43 @@ def odata_configured() -> bool:
     return has_url and has_creds
 
 
-def invoke_onec(tool: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-    args = arguments if isinstance(arguments, dict) else {}
-    handlers = REAL_HANDLERS if odata_configured() else STUB_HANDLERS
-    # sql_query can run with ERP SQL even when OData URL is empty
-    if tool == "onec.sql_query" and not odata_configured():
-        if settings.erp_sql_server and (
+def _erp_sql_ready() -> bool:
+    return bool(
+        settings.erp_sql_server
+        and (
             settings.erp_sql_trusted_connection
             or (settings.erp_sql_user and settings.erp_sql_password)
-        ):
-            handlers = {**STUB_HANDLERS, "onec.sql_query": _sql_query}
+        )
+    )
+
+
+def invoke_onec(
+    tool: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    actor_user_id: str = "",
+    actor_fio: str = "",
+) -> dict[str, Any]:
+    args = arguments if isinstance(arguments, dict) else {}
+    handlers = REAL_HANDLERS if odata_configured() else STUB_HANDLERS
+    # sql_query / задачи работают от ERP SQL даже без OData URL
+    if _erp_sql_ready() and not odata_configured():
+        extra = {"onec.sql_query": _sql_query}
+        extra.update({name: REAL_HANDLERS[name] for name in _ERP_TASK_TOOLS})
+        handlers = {**STUB_HANDLERS, **extra}
+    elif _erp_sql_ready():
+        handlers = {**handlers, **{name: REAL_HANDLERS[name] for name in _ERP_TASK_TOOLS}}
     handler = handlers.get(tool)
     if handler is None:
         raise OnecToolError(f"Неизвестный 1С-инструмент: {tool}")
     try:
+        if tool in _ERP_TASK_TOOLS:
+            return handler(args, actor_fio=actor_fio, actor_user_id=actor_user_id)
         return handler(args)
     except OnecToolError:
         raise
+    except ErpTaskError as exc:
+        raise OnecToolError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise OnecToolError(str(exc)) from exc
 
@@ -749,6 +788,9 @@ STUB_HANDLERS = {
     "onec.odata_patch": _stub_odata_patch,
     "onec.attach_file": _stub_attach_file,
     "onec.sql_query": _stub_sql_query,
+    "onec.erp_tasks_current": _stub_erp_tasks_current,
+    "onec.erp_tasks_period": _stub_erp_tasks_period,
+    "onec.erp_subordinate_tasks": _stub_erp_subordinate_tasks,
 }
 
 REAL_HANDLERS = {
@@ -758,4 +800,7 @@ REAL_HANDLERS = {
     "onec.odata_patch": _odata_patch,
     "onec.attach_file": _attach_file,
     "onec.sql_query": _sql_query,
+    "onec.erp_tasks_current": _erp_tasks_current,
+    "onec.erp_tasks_period": _erp_tasks_period,
+    "onec.erp_subordinate_tasks": _erp_subordinate_tasks,
 }

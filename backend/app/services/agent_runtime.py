@@ -216,7 +216,7 @@ def _agent_domain(workflow: Workflow) -> str:
             open_text,
         ]
     ).casefold()
-    if any(tip in blob for tip in ("1с", "1c", "onec", "odata")) and "outlook" not in blob:
+    if any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm", "задач")) and "outlook" not in blob:
         return "onec"
     if any(
         tip in blob
@@ -254,7 +254,7 @@ def _request_desktop_tool(
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, arguments)
     if tool in _ONEC_TOOLS:
-        return _invoke_onec_server(tool, arguments)
+        return _invoke_onec_server(tool, arguments, user_id=user_id)
 
     request_id = tool_bridge.new_request_id()
     tool_bridge.begin_wait(request_id=request_id, user_id=user_id)
@@ -291,11 +291,22 @@ def _invoke_imap_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         raise AgentRuntimeError(str(exc)) from exc
 
 
-def _invoke_onec_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _invoke_onec_server(
+    tool: str,
+    arguments: dict[str, Any],
+    *,
+    user_id: str = "",
+) -> dict[str, Any]:
+    from app.services.app_users import get_app_user
     from app.services.onec_tools import OnecToolError, invoke_onec
 
+    fio = ""
+    if user_id:
+        user = get_app_user(user_id)
+        if user is not None:
+            fio = str(user.fio or "")
     try:
-        return invoke_onec(tool, arguments)
+        return invoke_onec(tool, arguments, actor_user_id=user_id, actor_fio=fio)
     except OnecToolError as exc:
         raise AgentRuntimeError(str(exc)) from exc
 

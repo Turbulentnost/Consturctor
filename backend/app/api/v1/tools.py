@@ -67,7 +67,6 @@ async def invoke_tool(
     body: ToolInvokeBody,
     auth: AuthContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    _ = auth
     if tool_name not in _SERVER_TOOLS:
         raise HTTPException(
             status_code=400,
@@ -80,7 +79,12 @@ async def invoke_tool(
         if tool_name in _IMAP_TOOLS:
             result = invoke_imap(tool_name, body.arguments)
         else:
-            result = invoke_onec(tool_name, body.arguments)
+            result = invoke_onec(
+                tool_name,
+                body.arguments,
+                actor_user_id=auth.user_id,
+                actor_fio=auth.fio or "",
+            )
     except (ImapToolError, OnecToolError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"ok": True, "tool": tool_name, "result": result}

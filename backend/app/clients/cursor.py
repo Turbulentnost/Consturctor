@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import json
 import time
 from collections.abc import Callable, Iterator
@@ -217,26 +218,20 @@ def stream_run_events(
 
 def _iter_sse_events(response: httpx.Response) -> Iterator[tuple[str, dict[str, Any]]]:
     """Читать SSE по маленьким чанкам — иначе think приходит одним куском в конце."""
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
     event_name = "message"
     data_lines: list[str] = []
     carry = ""
-    for raw in response.iter_bytes(chunk_size=256):
-        if not raw:
-            continue
-        carry += raw.decode("utf-8", errors="replace")
+
+    def feed(text: str) -> Iterator[tuple[str, dict[str, Any]]]:
+        nonlocal event_name, data_lines, carry
+        carry += text
         while "\n" in carry:
             line, carry = carry.split("\n", 1)
             line = line.rstrip("\r")
             if line == "":
                 if data_lines:
-                    raw_data = "\n".join(data_lines)
-                    try:
-                        data = json.loads(raw_data)
-                    except json.JSONDecodeError:
-                        data = {"text": raw_data}
-                    if not isinstance(data, dict):
-                        data = {"value": data}
-                    yield event_name, data
+                    yield event_name, _parse_sse_data("\n".join(data_lines))
                 event_name = "message"
                 data_lines = []
                 continue
@@ -246,14 +241,26 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[tuple[str, dict[str, 
                 event_name = line.split(":", 1)[1].strip() or "message"
             elif line.startswith("data:"):
                 data_lines.append(line.split(":", 1)[1].strip())
+
+    for raw in response.iter_bytes(chunk_size=4096):
+        if not raw:
+            continue
+        # final=False: неполная кириллица на границе чанка ждёт следующий байт,
+        # а не превращается в U+FFFD.
+        yield from feed(decoder.decode(raw, final=False))
+    yield from feed(decoder.decode(b"", final=True))
     if data_lines:
-        raw_data = "\n".join(data_lines)
-        try:
-            data = json.loads(raw_data)
-        except json.JSONDecodeError:
-            data = {"text": raw_data}
-        if isinstance(data, dict):
-            yield event_name, data
+        yield event_name, _parse_sse_data("\n".join(data_lines))
+
+
+def _parse_sse_data(raw_data: str) -> dict[str, Any]:
+    try:
+        data = json.loads(raw_data)
+    except json.JSONDecodeError:
+        data = {"text": raw_data}
+    if not isinstance(data, dict):
+        return {"value": data}
+    return data
 
 
 def _terminal_result_events(agent_id: str, run_id: str) -> Iterator[dict[str, Any]]:

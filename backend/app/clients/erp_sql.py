@@ -90,6 +90,21 @@ class ErpUserProfile:
     position: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ErpOrgDept:
+    id: str
+    name: str
+    parent_id: str
+    is_root: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ErpSubordinate:
+    fio: str
+    position: str
+    department: str
+
+
 class ErpSqlError(Exception):
     pass
 
@@ -475,5 +490,163 @@ def list_departments(limit: int = 500) -> list[str]:
         return [(row.Dept or "").strip() for row in cur.fetchall() if (row.Dept or "").strip()]
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to list departments: {exc}") from exc
+    finally:
+        conn.close()
+
+
+def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], list[ErpSubordinate]]:
+    """Active people under departments headed by FIO (erp_pm org + staffing).
+
+    Skips dismissed/transferred: only the latest open staffing assignment
+    (DateTo >= 5999, DateFrom after 2002) still inside the headed subtree.
+    Co-holders of the manager's own staff unit are excluded.
+    """
+    fio = fio.strip()
+    if not fio:
+        return ErpUserProfile(fio=""), [], []
+
+    profile = get_user_profile_by_fio(fio)
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        cur.execute(
+            """
+            ;WITH headed AS (
+                SELECT d._IDRRef, d._Description, d._ParentIDRRef
+                FROM dbo._Reference513 d WITH (NOLOCK)
+                INNER JOIN dbo._Reference596 p WITH (NOLOCK)
+                    ON d._Fld14523RRef = p._IDRRef
+                WHERE LTRIM(RTRIM(p._Description)) = ?
+                  AND d._Marked = 0x00
+                  AND LTRIM(RTRIM(d._Description)) <> N''
+            ),
+            tree AS (
+                SELECT _IDRRef, _Description, _ParentIDRRef, CAST(1 AS int) AS IsRoot
+                FROM headed
+                UNION ALL
+                SELECT c._IDRRef, c._Description, c._ParentIDRRef, 0
+                FROM dbo._Reference513 c WITH (NOLOCK)
+                INNER JOIN tree t ON c._ParentIDRRef = t._IDRRef
+                WHERE c._Marked = 0x00
+                  AND LTRIM(RTRIM(c._Description)) <> N''
+            )
+            SELECT
+                CONVERT(varchar(64), _IDRRef, 2) AS DeptId,
+                CAST(_Description AS nvarchar(256)) AS Dept,
+                CONVERT(varchar(64), _ParentIDRRef, 2) AS ParentId,
+                IsRoot
+            FROM tree
+            OPTION (MAXRECURSION 32)
+            """,
+            (fio,),
+        )
+        departments: list[ErpOrgDept] = []
+        dept_names: list[str] = []
+        seen_depts: set[str] = set()
+        for row in cur.fetchall():
+            name = (row.Dept or "").strip()
+            dept_id = (row.DeptId or "").strip().upper()
+            if not name or dept_id in seen_depts:
+                continue
+            seen_depts.add(dept_id)
+            departments.append(
+                ErpOrgDept(
+                    id=dept_id,
+                    name=name,
+                    parent_id=(row.ParentId or "").strip().upper(),
+                    is_root=int(row.IsRoot or 0) == 1,
+                )
+            )
+            if name not in dept_names:
+                dept_names.append(name)
+
+        if not dept_names:
+            return profile, [], []
+
+        cur.execute(
+            """
+            SELECT TOP 1 CONVERT(varchar(64), t._Fld43767RRef, 2) AS StaffId
+            FROM dbo._Reference596 p WITH (NOLOCK)
+            INNER JOIN dbo._InfoRg43757 t WITH (NOLOCK)
+                ON t._Fld43761RRef = p._IDRRef
+            INNER JOIN dbo._Reference613X1 s WITH (NOLOCK)
+                ON t._Fld43767RRef = s._IDRRef
+            WHERE LTRIM(RTRIM(p._Description)) = ?
+              AND t._Fld43775 >= '5999-01-01'
+              AND t._Fld43774 > '2002-01-01'
+              AND LTRIM(RTRIM(s._Description)) <> N''
+            ORDER BY t._Fld43774 DESC
+            """,
+            (fio,),
+        )
+        staff_row = cur.fetchone()
+        manager_staff_id = ((staff_row.StaffId or "").strip().upper() if staff_row else "")
+
+        placeholders = ",".join("?" * len(dept_names))
+        cur.execute(
+            f"""
+            ;WITH latest AS (
+                SELECT
+                    CAST(p._Description AS nvarchar(256)) AS Person,
+                    CAST(pos._Description AS nvarchar(256)) AS Position,
+                    CAST(hr._Description AS nvarchar(256)) AS HrDept,
+                    CAST(folder._Description AS nvarchar(256)) AS StaffFolder,
+                    CONVERT(varchar(64), t._Fld43767RRef, 2) AS StaffId,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY p._IDRRef
+                        ORDER BY t._Fld43774 DESC
+                    ) AS rn
+                FROM dbo._InfoRg43757 t WITH (NOLOCK)
+                INNER JOIN dbo._Reference596 p WITH (NOLOCK)
+                    ON t._Fld43761RRef = p._IDRRef
+                INNER JOIN dbo._Reference613X1 s WITH (NOLOCK)
+                    ON t._Fld43767RRef = s._IDRRef
+                LEFT JOIN dbo._Reference613X1 folder WITH (NOLOCK)
+                    ON s._ParentIDRRef = folder._IDRRef
+                LEFT JOIN dbo._Reference164 pos WITH (NOLOCK)
+                    ON t._Fld43766RRef = pos._IDRRef
+                LEFT JOIN dbo._Reference358 hr WITH (NOLOCK)
+                    ON t._Fld43765RRef = hr._IDRRef
+                WHERE t._Fld43775 >= '5999-01-01'
+                  AND t._Fld43774 > '2002-01-01'
+                  AND LTRIM(RTRIM(ISNULL(s._Description, N''))) <> N''
+            )
+            SELECT Person, Position, HrDept, StaffFolder, StaffId
+            FROM latest
+            WHERE rn = 1
+              AND LTRIM(RTRIM(Person)) <> ?
+              AND (
+                    LTRIM(RTRIM(ISNULL(HrDept, N''))) IN ({placeholders})
+                 OR LTRIM(RTRIM(ISNULL(StaffFolder, N''))) IN ({placeholders})
+              )
+            ORDER BY Person
+            """,
+            [fio, *dept_names, *dept_names],
+        )
+        name_set = set(dept_names)
+        people: list[ErpSubordinate] = []
+        seen_people: set[str] = set()
+        for row in cur.fetchall():
+            person = (row.Person or "").strip()
+            staff_id = (row.StaffId or "").strip().upper()
+            if not person or person in seen_people:
+                continue
+            if manager_staff_id and staff_id == manager_staff_id:
+                continue
+            hr_dept = (row.HrDept or "").strip()
+            folder = (row.StaffFolder or "").strip()
+            department = hr_dept if hr_dept in name_set else (folder if folder in name_set else hr_dept or folder)
+            seen_people.add(person)
+            people.append(
+                ErpSubordinate(
+                    fio=person,
+                    position=(row.Position or "").strip(),
+                    department=department,
+                )
+            )
+        return profile, departments, people
+    except pyodbc.Error as exc:
+        raise ErpSqlError(f"Failed to load subordinates: {exc}") from exc
     finally:
         conn.close()

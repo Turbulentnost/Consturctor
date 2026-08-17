@@ -42,6 +42,9 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str,
         "onec.odata_patch",
         "onec.attach_file",
         "onec.sql_query",
+        "onec.erp_tasks_current",
+        "onec.erp_tasks_period",
+        "onec.erp_subordinate_tasks",
     }
     if name.startswith("imap."):
         raise ToolHostError(

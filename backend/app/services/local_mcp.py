@@ -242,6 +242,97 @@ def list_tools() -> list[dict[str, Any]]:
                 "required": ["sql"],
             },
         },
+        {
+            "name": "onec.erp_tasks_current",
+            "description": (
+                "Текущие (открытые) задачи пользователя из базы 1С erp_pm. "
+                "ФИО берётся из JWT сессии Constructor; fio/user_id в аргументах не обязательны. "
+                "Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 50},
+                    "fio": {
+                        "type": "string",
+                        "description": "Необязательно: чужое ФИО. Пусто — пользователь из JWT.",
+                    },
+                    "user_id": {
+                        "type": "string",
+                        "description": "Необязательно: id пользователя 1С. Пусто — из JWT.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "onec.erp_tasks_period",
+            "description": (
+                "Задачи пользователя из erp_pm за период (дата создания). "
+                "ФИО берётся из JWT, если не переданы fio/user_id. Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date_from": {
+                        "type": "string",
+                        "description": "Начало периода YYYY-MM-DD",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "Конец периода YYYY-MM-DD",
+                    },
+                    "include_done": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Включать выполненные задачи",
+                    },
+                    "limit": {"type": "integer", "default": 100},
+                    "fio": {"type": "string"},
+                    "user_id": {"type": "string"},
+                },
+                "required": ["date_from", "date_to"],
+            },
+        },
+        {
+            "name": "onec.erp_subordinate_tasks",
+            "description": (
+                "Дерево задач подчинённых руководителя из erp_pm: оргструктура, "
+                "действующие люди на штатке (без уволенных и переведённых), "
+                "должность и сроки задач. "
+                "Человек берётся из JWT сессии Constructor; можно передать access_token. "
+                "Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "access_token": {
+                        "type": "string",
+                        "description": (
+                            "JWT Constructor. Если пусто — берётся токен сессии "
+                            "(Authorization Bearer)."
+                        ),
+                    },
+                    "only_open": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Только открытые задачи",
+                    },
+                    "include_done": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Включать выполненные задачи",
+                    },
+                    "limit_per_person": {
+                        "type": "integer",
+                        "default": 30,
+                        "description": "Максимум задач на одного подчинённого",
+                    },
+                },
+            },
+        },
         *_desktop_ac_tools(),
     ]
 
