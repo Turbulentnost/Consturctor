@@ -135,9 +135,13 @@ def normalize_tools(tools: list[str] | None) -> list[str]:
 
 def infer_kind_from_tools(tools: list[str]) -> str:
     toolset = {tool.casefold() for tool in tools}
-    if any(tool.startswith("onec.") for tool in toolset):
+    has_onec = any(tool.startswith("onec.") for tool in toolset)
+    has_outlook = any(tool.startswith("imap.") or tool.startswith("outlook.") for tool in toolset)
+    if has_onec and has_outlook:
+        return "hybrid"
+    if has_onec:
         return "onec"
-    if any(tool.startswith("imap.") or tool.startswith("outlook.") for tool in toolset):
+    if has_outlook:
         return "outlook_calendar"
     if "site_browser" in toolset or "web_search" in toolset:
         return "browser_task"
@@ -146,9 +150,8 @@ def infer_kind_from_tools(tools: list[str]) -> str:
 
 def infer_kind_from_blob(blob: str) -> str:
     low = blob.casefold()
-    if any(tip in low for tip in ("1с", "1c", "onec", "odata")):
-        return "onec"
-    if any(
+    has_onec = any(tip in low for tip in ("1с", "1c", "onec", "odata"))
+    has_outlook = any(
         tip in low
         for tip in (
             "outlook",
@@ -160,7 +163,12 @@ def infer_kind_from_blob(blob: str) -> str:
             "win32com",
             "outlook.application",
         )
-    ):
+    )
+    if has_onec and has_outlook:
+        return "hybrid"
+    if has_onec:
+        return "onec"
+    if has_outlook:
         return "outlook_calendar"
     if ("excel" in low or "xlsx" in low or "выгрузк" in low) and (
         "ключев" in low or "этп" in low or "сайт" in low
@@ -196,8 +204,18 @@ def resolve_workflow_routing(plan: "WorkflowPlan", workflow: Workflow | None = N
     rt = getattr(plan, "runtime", None)
     if rt is None:
         rt = type("Runtime", (), {"kind": "", "tools": []})()
+    phases = list(getattr(rt, "phases", []) or [])
     explicit_kind = str(rt.kind or "").strip().casefold()
     explicit_tools = normalize_tools(rt.tools)
+    phase_tools = normalize_tools([tool for phase in phases for tool in getattr(phase, "tools", []) or []])
+    if phases:
+        kind = "hybrid"
+        tools = normalize_tools(explicit_tools + phase_tools) or phase_tools or explicit_tools
+        source = "runtime"
+        if not tools:
+            tools = phase_tools
+        return WorkflowRouting(kind=kind, tools=tools, source=source)
+
     kind = explicit_kind or infer_kind_from_tools(explicit_tools) or infer_kind_from_blob(blob)
 
     tools = explicit_tools or default_tools_for_kind(kind, blob=blob)

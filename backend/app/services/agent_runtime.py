@@ -67,7 +67,20 @@ def run_agent_task(
     emit({"type": "status", "text": "Получил задачу, готовлю запуск…"})
     emit({"type": "agent_message", "text": f"Запускаю «{workflow.title or 'ИИ-агент'}»."})
 
+    plan_data = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
+    plan = WorkflowPlan.from_dict(plan_data)
     domain = _agent_domain(workflow)
+
+    if domain == "hybrid":
+        return _run_hybrid_task(
+            plan=plan,
+            workflow=workflow,
+            task=task,
+            emit=emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+        )
 
     if domain == "outlook_calendar":
         emit({"type": "status", "text": "Читаю Outlook на этом компьютере…"})
@@ -148,9 +161,263 @@ def run_agent_task(
     return {"answer": answer, "tool": tool_name, "tool_result": tool_result or {}}
 
 
+def _run_hybrid_task(
+    *,
+    plan: WorkflowPlan,
+    workflow: Workflow,
+    task: str,
+    emit: AgentEventCallback,
+    run_id: str,
+    user_id: str,
+    workflow_id: str,
+) -> dict[str, Any]:
+    phases = list(getattr(plan.runtime, "phases", []) or [])
+    if not phases:
+        raise AgentRuntimeError("Hybrid plan не содержит phases")
+
+    phase_summaries: list[str] = []
+    phase_outputs: list[dict[str, Any]] = []
+    context = ""
+    total = len(phases)
+
+    for idx, phase in enumerate(phases, start=1):
+        phase_kind = str(getattr(phase, "kind", "") or "").strip().casefold()
+        phase_handoff = str(getattr(phase, "handoff", "") or "").strip()
+        phase_tools = [str(x) for x in (getattr(phase, "tools", []) or []) if str(x).strip()]
+        phase_label = phase_kind or f"phase_{idx}"
+        emit(
+            {
+                "type": "status",
+                "text": f"Фаза {idx}/{total}: {phase_label}…",
+            }
+        )
+
+        if phase_kind == "onec":
+            result = _run_hybrid_onec_phase(
+                task=task,
+                context=context,
+                phase_tools=phase_tools,
+                phase_handoff=phase_handoff,
+                emit=emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+            )
+            summary = _compose_hybrid_onec_summary(result)
+        elif phase_kind == "outlook_calendar":
+            result = _run_hybrid_outlook_phase(
+                task=task,
+                context=context,
+                phase_tools=phase_tools,
+                phase_handoff=phase_handoff,
+                workflow=workflow,
+                emit=emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+            )
+            summary = _compose_hybrid_outlook_summary(result)
+        elif phase_kind in {"browser_task", "site_search_excel", "web_search"}:
+            result = _run_hybrid_browser_phase(
+                task=task,
+                context=context,
+                phase_tools=phase_tools,
+                phase_handoff=phase_handoff,
+                workflow=workflow,
+                emit=emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+            )
+            summary = _compose_hybrid_browser_summary(task, result)
+        else:
+            raise AgentRuntimeError(f"Неизвестная фаза hybrid: {phase_kind or 'empty'}")
+
+        phase_outputs.append({"kind": phase_kind, "result": result, "summary": summary})
+        phase_summaries.append(summary)
+        context = summary
+
+    answer = "\n\n".join(s for s in phase_summaries if s.strip()) or "Hybrid flow completed."
+    emit({"type": "agent_message", "text": answer})
+    return {
+        "answer": answer,
+        "tool": "hybrid",
+        "tool_result": {"phases": phase_outputs},
+    }
+
+
+def _run_hybrid_onec_phase(
+    *,
+    task: str,
+    context: str,
+    phase_tools: list[str],
+    phase_handoff: str,
+    emit: AgentEventCallback,
+    run_id: str,
+    user_id: str,
+    workflow_id: str,
+) -> dict[str, Any]:
+    query_parts = [task]
+    if phase_handoff:
+        query_parts.append(phase_handoff)
+    if context:
+        query_parts.append(context)
+    query = "\n".join(p for p in query_parts if p).strip()
+    emit({"type": "thinking", "text": "Ищу данные в 1С и читаю карточку документа…"})
+
+    search_result = _request_desktop_tool(
+        emit,
+        run_id=run_id,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        tool="onec.search_documents",
+        arguments={"query": query, "max_results": 10},
+    )
+    emit({"type": "tool_result", "tool": "onec.search_documents", "result": search_result})
+
+    card_result: dict[str, Any] = {}
+    if "onec.get_document_card" in {t.casefold() for t in phase_tools}:
+        documents = search_result.get("documents") or []
+        if documents and isinstance(documents[0], dict):
+            doc_ref = str(documents[0].get("ref") or "").strip()
+            if doc_ref:
+                card_result = _request_desktop_tool(
+                    emit,
+                    run_id=run_id,
+                    user_id=user_id,
+                    workflow_id=workflow_id,
+                    tool="onec.get_document_card",
+                    arguments={"document_ref": doc_ref},
+                )
+                emit({"type": "tool_result", "tool": "onec.get_document_card", "result": card_result})
+
+    return {"search": search_result, "card": card_result}
+
+
+def _run_hybrid_outlook_phase(
+    *,
+    task: str,
+    context: str,
+    phase_tools: list[str],
+    phase_handoff: str,
+    workflow: Workflow,
+    emit: AgentEventCallback,
+    run_id: str,
+    user_id: str,
+    workflow_id: str,
+) -> dict[str, Any]:
+    phase_task = task
+    parts = [context, phase_handoff]
+    if any(part.strip() for part in parts):
+        phase_task = "\n\n".join([task] + [part for part in parts if part.strip()])
+
+    outlook_tool, outlook_args = _outlook_tool_request(phase_task)
+    if "outlook.search_mail" in {t.casefold() for t in phase_tools}:
+        outlook_tool = "outlook.search_mail"
+    elif "outlook.read_calendar" in {t.casefold() for t in phase_tools}:
+        outlook_tool = "outlook.read_calendar"
+
+    emit({"type": "thinking", "text": "Проверяю Outlook по данным из 1С…"})
+    tool_result = _request_desktop_tool(
+        emit,
+        run_id=run_id,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        tool=outlook_tool,
+        arguments=outlook_args,
+    )
+    emit({"type": "tool_result", "tool": outlook_tool, "result": tool_result})
+    _ = workflow
+    return {"tool": outlook_tool, "result": tool_result}
+
+
+def _run_hybrid_browser_phase(
+    *,
+    task: str,
+    context: str,
+    phase_tools: list[str],
+    phase_handoff: str,
+    workflow: Workflow,
+    emit: AgentEventCallback,
+    run_id: str,
+    user_id: str,
+    workflow_id: str,
+) -> dict[str, Any]:
+    phase_task = task
+    parts = [context, phase_handoff]
+    if any(part.strip() for part in parts):
+        phase_task = "\n\n".join([task] + [part for part in parts if part.strip()])
+
+    browser_args = _site_browser_args(phase_task, workflow)
+    tool_name = "site_browser" if browser_args else "web_search"
+    if "site_browser" in {t.casefold() for t in phase_tools} and browser_args:
+        tool_name = "site_browser"
+    elif "web_search" in {t.casefold() for t in phase_tools}:
+        tool_name = "web_search"
+
+    arguments = browser_args or {"query": _search_query(phase_task, workflow), "max_results": 8, "fetch_top": False}
+    emit({"type": "thinking", "text": "Обрабатываю browser/web-search фазу…"})
+    tool_result = _request_desktop_tool(
+        emit,
+        run_id=run_id,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        tool=tool_name,
+        arguments=arguments,
+    )
+    emit({"type": "tool_result", "tool": tool_name, "result": tool_result})
+    _ = phase_handoff
+    return {"tool": tool_name, "result": tool_result}
+
+
+def _compose_hybrid_onec_summary(result: dict[str, Any]) -> str:
+    lines: list[str] = ["1C: данные получены."]
+    search = result.get("search") if isinstance(result.get("search"), dict) else {}
+    docs = search.get("documents") or []
+    if docs:
+        first = docs[0] if isinstance(docs[0], dict) else {}
+        title = str(first.get("title") or first.get("number") or "документ").strip()
+        status = str(first.get("status") or "").strip()
+        lines.append(f"Найден документ: {title}" + (f" ({status})" if status else ""))
+    card = result.get("card") if isinstance(result.get("card"), dict) else {}
+    doc = card.get("document") if isinstance(card.get("document"), dict) else {}
+    if doc:
+        preview = str(doc.get("content_preview") or "").strip()
+        responsible = str(doc.get("responsible") or "").strip()
+        author = str(doc.get("author") or "").strip()
+        if responsible or author:
+            bits = []
+            if author:
+                bits.append(f"автор: {author}")
+            if responsible:
+                bits.append(f"ответственный: {responsible}")
+            lines.append(", ".join(bits))
+        if preview:
+            lines.append(f"Суть: {preview}")
+    return "\n".join(lines)
+
+
+def _compose_hybrid_browser_summary(task: str, result: dict[str, Any]) -> str:
+    tool_name = str(result.get("tool") or "")
+    tool_result = result.get("result") if isinstance(result.get("result"), dict) else {}
+    return _compose_answer(task, tool_name, tool_result)
+
+
+def _compose_hybrid_outlook_summary(result: dict[str, Any]) -> str:
+    tool_name = str(result.get("tool") or "")
+    tool_result = result.get("result") if isinstance(result.get("result"), dict) else {}
+    if not tool_result:
+        return "Outlook: данных не получил."
+    if tool_name == "outlook.search_mail":
+        return _compose_outlook_tool_answer("контекст из 1С", tool_name, tool_result)
+    return _compose_outlook_tool_answer("контекст из 1С", tool_name, tool_result)
+
+
 def _agent_domain(workflow: Workflow) -> str:
     plan_data = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
     plan = WorkflowPlan.from_dict(plan_data)
+    if getattr(plan.runtime, "phases", []):
+        return "hybrid"
     return resolve_workflow_routing(plan, workflow).kind
 
 

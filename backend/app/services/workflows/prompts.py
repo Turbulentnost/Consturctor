@@ -42,11 +42,27 @@ PLAN_SCHEMA_HINT = """
     }
   ],
   "runtime": {
-    "kind": "site_search_excel | outlook_calendar | browser_task | onec | \"\"",
+    "kind": "site_search_excel | outlook_calendar | browser_task | onec | hybrid | \"\"",
     "site_url": "https://...",
     "keywords": ["фраза1", "фраза2"],
     "keyword_text": "исходный перечень как у пользователя",
     "tools": ["site_browser", "web_search"],
+    "phases": [
+      {
+        "id": "p1",
+        "kind": "onec",
+        "tools": ["onec.search_documents", "onec.get_document_card"],
+        "depends_on": [],
+        "handoff": "кратко опиши, какие данные нужно передать в следующую фазу"
+      },
+      {
+        "id": "p2",
+        "kind": "outlook_calendar",
+        "tools": ["outlook.read_calendar"],
+        "depends_on": ["p1"],
+        "handoff": "используй данные из 1C для проверки календаря Outlook"
+      }
+    ],
     "export": {
       "format": "xlsx",
       "destination": "desktop",
@@ -76,12 +92,15 @@ PLAN_SCHEMA_HINT = """
     (если пользователь сказал COM/Outlook — отрази это в constraints и steps, не подменяй на web_search/site_browser);
   - onec — если пользователь указал 1С / OData / COM к 1С;
   - browser_task — работа в конкретном веб-приложении по URL;
+  - hybrid — если задача требует 2+ доменов в любом фиксированном порядке, заполни phases и опиши порядок зависимостей;
   - иначе runtime={} или опусти поле (не ставь site_search_excel «по умолчанию»).
 - tools — конкретные инструменты, которые нужны агенту, выбирай только из этого списка:
   - site_search_excel: site_browser, web_search;
   - outlook_calendar: outlook.read_calendar, outlook.search_mail, imap.list_unread, imap.search, imap.fetch_message;
   - onec: onec.search_documents, onec.get_document_card, onec.odata_get, onec.sql_query;
   - browser_task: site_browser, web_search.
+- phases — используй для смешанных сценариев; порядок фаз должен отражать execution order.
+- Если доменов несколько, kind ставь `hybrid`, а runtime.phases делай главным машиночитаемым порядком.
 - keywords — только для site_search_excel (разбей перечисления пользователя на элементы).
 - Не пиши код реализации в этом ответе.
 """.strip()
@@ -167,7 +186,8 @@ def build_clarify_prompt(
         "open_questions оставляй пустым, если ответы достаточны для steps/runtime. "
         "Перенеси понятные ответы в constraints и steps: интеграция должна совпадать "
         "с ответами (COM Outlook, 1С/OData и т.п. — не подменяй на web_search/site_browser). "
-        "runtime.kind ставь по ответам: outlook_calendar / onec / site_search_excel / browser_task."
+        "Если домен один — ставь runtime.kind как outlook_calendar / onec / site_search_excel / browser_task. "
+        "Если доменов несколько и есть порядок выполнения — ставь runtime.kind = hybrid и заполняй runtime.phases."
     )
     lines.append(PLAN_SCHEMA_HINT)
     return "\n".join(lines)

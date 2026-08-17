@@ -27,6 +27,7 @@ class PlanRuntimeSchema(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     keyword_text: str = ""
     tools: list[str] = Field(default_factory=list)
+    phases: list[dict[str, Any]] = Field(default_factory=list)
     export_format: str = ""
     export_destination: str = ""
     columns: list[str] = Field(default_factory=list)
