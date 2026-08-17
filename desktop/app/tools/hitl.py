@@ -24,6 +24,7 @@ _READ_EXACT = frozenset(
         "outlook.read_calendar",
         "excel.list_files",
         "excel.read_workbook",
+        "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
         "agent.wait",

@@ -36,6 +36,7 @@ def _ensure_path(subdir: str) -> Path:
 def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     args = arguments if isinstance(arguments, dict) else {}
     _SERVER_ONEC = {
+        "onec.odata_catalog",
         "onec.odata_get",
         "onec.odata_post",
         "onec.odata_patch",

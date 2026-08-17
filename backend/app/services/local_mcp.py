@@ -135,13 +135,50 @@ def list_tools() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "onec.odata_get",
-            "description": "Чтение сущности/пути 1С OData (сервер).",
+            "name": "onec.odata_catalog",
+            "description": (
+                "Список доступных сущностей 1С OData: документы, справочники/таблицы и регистры. "
+                "Сначала вызови этот инструмент, затем onec.odata_get с entity из ответа. "
+                "Исполняется на сервере."
+            ),
             "execution": "server",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "entity": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "description": (
+                            "Фильтр: document / catalog (таблицы, справочники) / register / other"
+                        ),
+                    },
+                    "search": {
+                        "type": "string",
+                        "description": "Подстрока в имени сущности (Document_, Catalog_, *Register_)",
+                    },
+                    "limit": {"type": "integer", "default": 400},
+                    "refresh": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Сбросить кэш и заново прочитать service document / $metadata",
+                    },
+                },
+            },
+        },
+        {
+            "name": "onec.odata_get",
+            "description": (
+                "Чтение сущности/пути 1С OData (сервер). "
+                "entity бери из onec.odata_catalog (documents / catalogs / registers). "
+                "Не выдумывай имена EntitySet."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "entity": {
+                        "type": "string",
+                        "description": "Имя EntitySet из onec.odata_catalog, например Document_Проект",
+                    },
                     "path": {"type": "string"},
                     "top": {
                         "type": "integer",

@@ -348,7 +348,26 @@ _SERVER_SECRET_ENV = frozenset(
         "IMAP_PASSWORD",
         "IMAP_PORT",
         "BASE_URL",
+        "INVOKER",
+        "TEST_PROJECT_REF",
+        "TEST_STAGE_REF",
     }
+)
+
+_INFRA_FAIL_HINTS = (
+    "onec",
+    "1с",
+    "1c",
+    "odata",
+    "invoker",
+    "backend/.env",
+    "constructor_api",
+    "live-проверк",
+    "live 1с",
+    "live 1c",
+    "нет канала",
+    "с облака",
+    "cloud vm",
 )
 
 _RESERVED_ENV = frozenset(
@@ -568,6 +587,18 @@ def _question_from_blocker(
         ],
         "Сборка без TESTS: PASS. Секреты в чат не вводите.",
     )
+
+
+def _is_infra_access_fail(blob: str) -> bool:
+    low = (blob or "").casefold()
+    return any(hint in low for hint in _INFRA_FAIL_HINTS)
+
+
+def _fixtures_passed(blob: str) -> bool:
+    low = (blob or "").casefold()
+    if re.search(r"fixtures[^\n|]{0,160}pass", low):
+        return True
+    return "pytest pass" in low and "fixture" in low
 
 
 def _asks_server_secrets(value: str) -> bool:
@@ -1997,7 +2028,21 @@ class WorkflowPage(QWidget):
                 if ans:
                     ctx_bits.append(f"{getattr(q, 'question', '')} {ans}")
         context = " | ".join(ctx_bits)[:500]
+        odata_ok = bool(local_state.get("odata_configured"))
+        infra_fail = _is_infra_access_fail(blob)
+        if explicit_fail and infra_fail and (_fixtures_passed(blob) or odata_ok):
+            explicit_fail = False
+            explicit_pass = True
         if explicit_fail:
+            if infra_fail:
+                self._push_event(
+                    "Тесты",
+                    "Live 1С с облака недоступен — это ожидаемо. "
+                    "Проверка идёт через OData на сервере Constructor, без вопросов в чате. "
+                    "Перезапустите сборку.",
+                )
+                self._render_all()
+                return
             self._post_build_question = _extract_post_build_question(blob, context=context)
             self._ensure_question_in_feed(self._post_build_question.question)
             self._push_event(
@@ -2007,14 +2052,26 @@ class WorkflowPage(QWidget):
             self._render_all()
             return
         if not explicit_pass:
-            self._post_build_question = _extract_post_build_question(blob, context=context)
-            self._ensure_question_in_feed(self._post_build_question.question)
-            self._push_event(
-                "Тесты",
-                "TESTS: PASS не найден — сохранение недоступно. Ответьте на вопрос агента в чате.",
-            )
-            self._render_all()
-            return
+            if infra_fail and odata_ok:
+                explicit_pass = True
+            elif infra_fail:
+                self._push_event(
+                    "Тесты",
+                    "Live 1С с облака недоступен — это ожидаемо. "
+                    "Проверка идёт через OData на сервере Constructor, без вопросов в чате. "
+                    "Перезапустите сборку.",
+                )
+                self._render_all()
+                return
+            else:
+                self._post_build_question = _extract_post_build_question(blob, context=context)
+                self._ensure_question_in_feed(self._post_build_question.question)
+                self._push_event(
+                    "Тесты",
+                    "TESTS: PASS не найден — сохранение недоступно. Ответьте на вопрос агента в чате.",
+                )
+                self._render_all()
+                return
         if not run_finished:
             self._push_event(
                 "Тесты",

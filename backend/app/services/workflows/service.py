@@ -652,7 +652,7 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
         any(tip in blob for tip in ("1с", "1c", "onec", "odata"))
         and not any(tip in blob for tip in ("outlook", "календар", "совещан"))
     ):
-        return ["onec.odata_get", "onec.sql_query"]
+        return ["onec.odata_catalog", "onec.odata_get", "onec.sql_query"]
 
     if kind == "outlook_calendar" or any(
         tip in blob
@@ -675,7 +675,7 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
         if any(tip in blob for tip in ("почт", "письм", "imap", "email", "mail")):
             tools.extend(["imap.list_unread", "imap.search"])
         if any(tip in blob for tip in ("1с", "1c", "onec", "odata")):
-            tools.extend(["onec.odata_get", "onec.sql_query"])
+            tools.extend(["onec.odata_catalog", "onec.odata_get", "onec.sql_query"])
         return tools
 
     if kind == "site_search_excel" or (

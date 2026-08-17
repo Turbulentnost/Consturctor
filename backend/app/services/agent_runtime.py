@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.workflow import Workflow
 from app.services.local_mcp import list_tools
+from app.services.onec_tools import ONEC_TOOLS as _ONEC_TOOLS
 from app.services.plan_run import (
     PlanRunError,
     build_plan_export_arguments,
@@ -26,16 +27,6 @@ _IMAP_TOOLS = frozenset(
         "imap.search",
         "imap.fetch_message",
         "imap.fetch_attachments",
-    }
-)
-
-_ONEC_TOOLS = frozenset(
-    {
-        "onec.odata_get",
-        "onec.odata_post",
-        "onec.odata_patch",
-        "onec.attach_file",
-        "onec.sql_query",
     }
 )
 
