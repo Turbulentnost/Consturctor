@@ -99,6 +99,351 @@ def get_current_user_name(app: Any) -> str:
     return str(user)
 
 
+def _safe_str(value: Any, limit: int = 500) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.startswith("0001-01-01"):
+        return ""
+    if len(text) > limit:
+        return text[: limit - 3] + "..."
+    return text
+
+
+def _ref_metadata_name(ref: Any) -> str:
+    if ref is None:
+        return ""
+    try:
+        md = ref.Метаданные()
+        return str(getattr(md, "Имя", "") or getattr(md, "Name", "") or "")
+    except Exception:
+        return ""
+
+
+def resolve_ref_info(ref: Any) -> dict[str, str]:
+    if ref is None:
+        return {}
+    info: dict[str, str] = {"type": _ref_metadata_name(ref)}
+    for attr in ("Номер", "Number", "Наименование", "Description", "Дата", "Date"):
+        try:
+            val = getattr(ref, attr, None)
+            if val is None or val is False:
+                continue
+            if hasattr(val, "Наименование"):
+                info[attr.lower()] = _safe_str(val.Наименование)
+            else:
+                info[attr.lower()] = _safe_str(val)
+        except Exception:
+            continue
+    return info
+
+
+def query_attached_files(app: Any, owner_ref: Any, *, metadata_name: str = "") -> list[dict[str, str]]:
+    """Read attached files via catalog {MetadataName}ПрисоединенныеФайлы."""
+    if owner_ref is None:
+        return []
+
+    meta = metadata_name or _ref_metadata_name(owner_ref)
+    if not meta:
+        return []
+
+    catalog = f"{meta}ПрисоединенныеФайлы"
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ 50
+        Ф.Наименование КАК Name,
+        Ф.Расширение КАК Ext,
+        Ф.Размер КАК Size,
+        Ф.Описание КАК Description,
+        Ф.ДатаСоздания КАК Created,
+        Ф.ТипХраненияФайла КАК StorageType,
+        Ф.ПутьКФайлу КАК Path
+        ИЗ Справочник.{catalog} КАК Ф
+        ГДЕ Ф.ВладелецФайла = &Ref"""
+    try:
+        query = app.NewObject("Query", query_text)
+        query.SetParameter("Ref", owner_ref)
+        table = query.Execute().Unload()
+    except Exception:
+        return []
+
+    files: list[dict[str, str]] = []
+    for i in range(table.Count()):
+        row = table.Get(i)
+        files.append(
+            {
+                "name": _safe_str(getattr(row, "Name", "") or getattr(row, "Наименование", "")),
+                "extension": _safe_str(getattr(row, "Ext", "") or getattr(row, "Расширение", "")),
+                "size": _safe_str(getattr(row, "Size", "") or getattr(row, "Размер", "")),
+                "description": _safe_str(getattr(row, "Description", "") or getattr(row, "Описание", ""), 1000),
+                "created": _safe_str(getattr(row, "Created", "") or getattr(row, "ДатаСоздания", "")),
+                "storage_type": _safe_str(getattr(row, "StorageType", "") or getattr(row, "ТипХраненияФайла", "")),
+                "path": _safe_str(getattr(row, "Path", "") or getattr(row, "ПутьКФайлу", "")),
+                "catalog": catalog,
+            }
+        )
+    return files
+
+
+def query_tasks_period(
+    app: Any,
+    *,
+    date_from: str,
+    date_to: str,
+    mine_only: bool = True,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Query Задача.ЗадачаИсполнителя for [date_from, date_to) ISO dates."""
+    from datetime import datetime
+
+    limit = max(1, min(200, int(limit)))
+    start = datetime.fromisoformat(date_from)
+    end = datetime.fromisoformat(date_to)
+    user_filter = ""
+    if mine_only:
+        user_name = get_current_user_name(app).replace('"', '""')
+        user_filter = f'И Т.Исполнитель.Наименование = "{user_name}"'
+
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ {limit}
+        Т.Ссылка КАК Ref,
+        Т.Номер КАК Number,
+        Т.Наименование КАК Description,
+        Т.Дата КАК Date,
+        Т.СрокИсполнения КАК DueDate,
+        Т.Исполнитель.Наименование КАК Executor,
+        Т.Автор.Наименование КАК Author,
+        Т.Выполнена КАК Done,
+        Т.РезультатВыполнения КАК Result,
+        Т.Предмет КАК Subject
+        ИЗ Задача.ЗадачаИсполнителя КАК Т
+        ГДЕ Т.Дата >= ДАТАВРЕМЯ({start.year}, {start.month}, {start.day})
+            И Т.Дата < ДАТАВРЕМЯ({end.year}, {end.month}, {end.day})
+            {user_filter}
+        УПОРЯДОЧИТЬ ПО Т.Дата УБЫВ"""
+    table = app.NewObject("Query", query_text).Execute().Unload()
+    rows: list[dict[str, Any]] = []
+    for i in range(table.Count()):
+        row = table.Get(i)
+        subject_ref = getattr(row, "Subject", None) or getattr(row, "Предмет", None)
+        subject_info = resolve_ref_info(subject_ref)
+        item: dict[str, Any] = {
+            "number": _safe_str(getattr(row, "Number", "") or getattr(row, "Номер", "")),
+            "description": _safe_str(getattr(row, "Description", "") or getattr(row, "Наименование", "")),
+            "date": _safe_str(getattr(row, "Date", "") or getattr(row, "Дата", "")),
+            "due_date": _safe_str(getattr(row, "DueDate", "") or getattr(row, "СрокИсполнения", "")),
+            "executor": _safe_str(getattr(row, "Executor", "") or getattr(row, "Исполнитель", "")),
+            "author": _safe_str(getattr(row, "Author", "") or getattr(row, "Автор", "")),
+            "done": _safe_str(getattr(row, "Done", "") or getattr(row, "Выполнена", "")),
+            "result": _safe_str(getattr(row, "Result", "") or getattr(row, "РезультатВыполнения", "")),
+            "subject": subject_info,
+            "source": "erp_задача_исполнителя",
+        }
+        attachments: list[dict[str, str]] = []
+        try:
+            task_ref = getattr(row, "Ref", None)
+            attachments.extend(query_attached_files(app, task_ref, metadata_name="ЗадачаИсполнителя"))
+        except Exception:
+            pass
+        if subject_ref is not None and subject_info.get("type"):
+            try:
+                attachments.extend(query_attached_files(app, subject_ref, metadata_name=subject_info["type"]))
+            except Exception:
+                pass
+        item["attachments"] = attachments
+        rows.append(item)
+    return rows
+
+
+def get_task_details(app: Any, *, number: str) -> dict[str, Any]:
+    safe_number = number.replace('"', '""')
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ 1
+        Т.Ссылка КАК Ref,
+        Т.Номер КАК Number,
+        Т.Наименование КАК Description,
+        Т.Дата КАК Date,
+        Т.СрокИсполнения КАК DueDate,
+        Т.Исполнитель.Наименование КАК Executor,
+        Т.Автор.Наименование КАК Author,
+        Т.Выполнена КАК Done,
+        Т.РезультатВыполнения КАК Result,
+        Т.Предмет КАК Subject,
+        Т.Описание КАК Details
+        ИЗ Задача.ЗадачаИсполнителя КАК Т
+        ГДЕ Т.Номер = "{safe_number}\""""
+    table = app.NewObject("Query", query_text).Execute().Unload()
+    if not table.Count():
+        return {"found": False, "number": number}
+
+    row = table.Get(0)
+    subject_ref = getattr(row, "Subject", None) or getattr(row, "Предмет", None)
+    subject_info = resolve_ref_info(subject_ref)
+    task_ref = getattr(row, "Ref", None)
+
+    fields: dict[str, str] = {}
+    for alias, attr in (
+        ("number", "Number"),
+        ("description", "Description"),
+        ("date", "Date"),
+        ("due_date", "DueDate"),
+        ("executor", "Executor"),
+        ("author", "Author"),
+        ("done", "Done"),
+        ("result", "Result"),
+        ("details", "Details"),
+    ):
+        val = getattr(row, attr, None)
+        if hasattr(val, "Наименование"):
+            fields[alias] = _safe_str(val.Наименование)
+        else:
+            fields[alias] = _safe_str(val, 2000)
+
+    attachments = query_attached_files(app, task_ref, metadata_name="ЗадачаИсполнителя")
+    if subject_ref is not None and subject_info.get("type"):
+        attachments.extend(query_attached_files(app, subject_ref, metadata_name=subject_info["type"]))
+
+    return {
+        "found": True,
+        "number": number,
+        "fields": fields,
+        "subject": subject_info,
+        "attachments": attachments,
+    }
+
+
+def read_attached_file_bytes(app: Any, file_ref: Any) -> bytes | None:
+    """Read binary via server call; works when file volume is accessible to 1C server."""
+    if file_ref is None:
+        return None
+    try:
+        svc = app.РаботаСФайламиСлужебныйВызовСервера
+        for method in ("ПолучитьДанныеФайла", "ДанныеФайла"):
+            if not hasattr(svc, method):
+                continue
+            result = getattr(svc, method)(file_ref)
+            for field in ("Данные", "ДвоичныеДанные", "BinaryData"):
+                try:
+                    val = getattr(result, field, None)
+                    if val is not None and hasattr(val, "Получить"):
+                        return bytes(val.Получить())
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return None
+
+
+def read_extracted_file_text(app: Any, file_ref: Any) -> str:
+    """Fallback: indexed text from ТекстХранилище when binary volume is unavailable."""
+    if file_ref is None:
+        return ""
+    try:
+        obj = file_ref.ПолучитьОбъект()
+        store = getattr(obj, "ТекстХранилище", None)
+        if store is None:
+            return ""
+        store_obj = store.ПолучитьОбъект()
+        for attr in ("Текст", "Text", "Value", "Данные"):
+            val = getattr(store_obj, attr, None)
+            if val:
+                return _safe_str(val, 50000)
+    except Exception:
+        pass
+    return ""
+
+
+def get_incoming_correspondence(app: Any, *, number: str) -> dict[str, Any]:
+    safe_number = number.replace('"', '""')
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ 1
+        Д.Ссылка КАК Ref,
+        Д.Номер КАК Number,
+        Д.Дата КАК DocDate,
+        Д.Комментарий КАК Comment,
+        Д.Организация.Наименование КАК Org,
+        Д.Контрагент.Наименование КАК Counterparty,
+        Д.Содержание КАК Content,
+        Д.ТемаСлужебнойЗаписки КАК MemoSubject,
+        Д.EmailОтправителяПисьма КАК EmailFrom,
+        Д.EmailПолучателяПисьма КАК EmailTo,
+        Д.Кому КАК MailTo,
+        Д.НомерИсходящий КАК OutNumber,
+        Д.ДатаИсходящая КАК OutDate,
+        Д.Ответственный.Наименование КАК Responsible,
+        Д.ТекстHTML КАК HtmlText
+        ИЗ Документ.ТД_ВходящаяКорреспонденция КАК Д
+        ГДЕ Д.Номер = "{safe_number}"
+            И НЕ Д.ПометкаУдаления"""
+    table = app.NewObject("Query", query_text).Execute().Unload()
+    if not table.Count():
+        return {"found": False, "number": number}
+
+    row = table.Get(0)
+    doc_ref = getattr(row, "Ref", None)
+    fields: dict[str, str] = {}
+    for alias, attr in (
+        ("number", "Number"),
+        ("date", "DocDate"),
+        ("comment", "Comment"),
+        ("org", "Org"),
+        ("counterparty", "Counterparty"),
+        ("content", "Content"),
+        ("memo_subject", "MemoSubject"),
+        ("email_from", "EmailFrom"),
+        ("email_to", "EmailTo"),
+        ("mail_to", "MailTo"),
+        ("out_number", "OutNumber"),
+        ("out_date", "OutDate"),
+        ("responsible", "Responsible"),
+        ("html_text", "HtmlText"),
+    ):
+        val = getattr(row, attr, None)
+        if hasattr(val, "Наименование"):
+            fields[alias] = _safe_str(val.Наименование, 5000)
+        else:
+            fields[alias] = _safe_str(val, 5000)
+
+    attachments: list[dict[str, Any]] = []
+    files_query = """ВЫБРАТЬ
+        Ф.Ссылка КАК Ref,
+        Ф.Наименование КАК Name,
+        Ф.Расширение КАК Ext,
+        Ф.Размер КАК Size,
+        Ф.Описание КАК Description,
+        Ф.ДатаСоздания КАК Created,
+        Ф.ПутьКФайлу КАК Path,
+        Ф.Том.ПолныйПутьWindows КАК VolumePath
+        ИЗ Справочник.ТД_ВходящаяКорреспонденцияПрисоединенныеФайлы КАК Ф
+        ГДЕ Ф.ВладелецФайла = &Ref"""
+    fq = app.NewObject("Query", files_query)
+    fq.SetParameter("Ref", doc_ref)
+    ft = fq.Execute().Unload()
+    for i in range(ft.Count()):
+        frow = ft.Get(i)
+        file_ref = getattr(frow, "Ref", None)
+        name = _safe_str(getattr(frow, "Name", ""))
+        ext = _safe_str(getattr(frow, "Ext", "")).lstrip(".")
+        item: dict[str, Any] = {
+            "name": name,
+            "extension": ext,
+            "size": _safe_str(getattr(frow, "Size", "")),
+            "description": _safe_str(getattr(frow, "Description", "")),
+            "created": _safe_str(getattr(frow, "Created", "")),
+            "path": _safe_str(getattr(frow, "Path", "")),
+            "volume_path": _safe_str(getattr(frow, "VolumePath", "")),
+        }
+        data = read_attached_file_bytes(app, file_ref)
+        if data:
+            item["binary_size"] = len(data)
+        extracted = read_extracted_file_text(app, file_ref)
+        if extracted:
+            item["extracted_text"] = extracted
+        attachments.append(item)
+
+    return {
+        "found": True,
+        "number": number,
+        "fields": fields,
+        "attachments": attachments,
+    }
+
+
 def _rows_from_table(table: Any, *, source: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for i in range(table.Count()):

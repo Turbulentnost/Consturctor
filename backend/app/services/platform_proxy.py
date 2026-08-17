@@ -41,6 +41,8 @@ def _tool_invoke_timeout(tool_name: str) -> float:
     name = (tool_name or "").strip().lower()
     if name.startswith("imap."):
         return 180.0
+    if name.startswith("onec.com."):
+        return 300.0
     if name.startswith("onec."):
         return 120.0
     if name.startswith("com."):

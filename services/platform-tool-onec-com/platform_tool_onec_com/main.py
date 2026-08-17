@@ -16,7 +16,9 @@ from platform_tool_onec_com.onec_com import (
     build_connection_string,
     connect_session,
     get_current_user_name,
+    get_task_details,
     query_performer_tasks,
+    query_tasks_period,
     require_32bit_python,
     service_status,
 )
@@ -198,6 +200,106 @@ def _query_tasks(req: ToolInvokeRequest) -> dict[str, Any]:
     return com_call(_do, timeout=float(settings.com_timeout_sec))
 
 
+def _query_assignments(req: ToolInvokeRequest) -> dict[str, Any]:
+    if not _is_windows():
+        raise RuntimeError("onec.com is only available on Windows")
+
+    session_id = str(req.payload.get("session_id", "")).strip()
+    date_from = str(req.payload.get("date_from", "")).strip()
+    date_to = str(req.payload.get("date_to", "")).strip()
+    mine_only = bool(req.payload.get("mine_only", True))
+    limit = int(req.payload.get("limit") or 100)
+
+    if not date_from or not date_to:
+        from datetime import date, datetime, timedelta
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday() + 7)
+        week_end = week_start + timedelta(days=7)
+        date_from = datetime.combine(week_start, datetime.min.time()).date().isoformat()
+        date_to = datetime.combine(week_end, datetime.min.time()).date().isoformat()
+
+    def _do() -> dict[str, Any]:
+        nonlocal session_id
+        created = False
+        if not session_id:
+            session = connect_session()
+            session_id = session["session_id"]
+            with _lock:
+                _sessions[session_id] = session
+            created = True
+
+        with _lock:
+            stored = _sessions.get(session_id)
+            if not stored:
+                raise ValueError("session not found")
+            app = stored["object"]
+
+        rows = query_tasks_period(
+            app,
+            date_from=date_from,
+            date_to=date_to,
+            mine_only=mine_only,
+            limit=limit,
+        )
+        current_user = stored.get("current_user") or get_current_user_name(app)
+        return {
+            "summary": f"COM assignments {date_from}..{date_to} for {current_user}",
+            "session_id": session_id,
+            "current_user": current_user,
+            "date_from": date_from,
+            "date_to": date_to,
+            "count": len(rows),
+            "assignments": rows,
+            "mine_only": mine_only,
+            "session_created": created,
+            "transport": "com-connector",
+            "source": "onec-com",
+        }
+
+    return com_call(_do, timeout=float(settings.com_timeout_sec))
+
+
+def _task_details(req: ToolInvokeRequest) -> dict[str, Any]:
+    if not _is_windows():
+        raise RuntimeError("onec.com is only available on Windows")
+
+    session_id = str(req.payload.get("session_id", "")).strip()
+    number = str(req.payload.get("number", "")).strip()
+    if not number:
+        raise ValueError("number required")
+
+    def _do() -> dict[str, Any]:
+        nonlocal session_id
+        created = False
+        if not session_id:
+            session = connect_session()
+            session_id = session["session_id"]
+            with _lock:
+                _sessions[session_id] = session
+            created = True
+
+        with _lock:
+            stored = _sessions.get(session_id)
+            if not stored:
+                raise ValueError("session not found")
+            app = stored["object"]
+
+        details = get_task_details(app, number=number)
+        details.update(
+            {
+                "summary": f"task details {number}",
+                "session_id": session_id,
+                "session_created": created,
+                "transport": "com-connector",
+                "source": "onec-com",
+            }
+        )
+        return details
+
+    return com_call(_do, timeout=float(settings.com_timeout_sec))
+
+
 def _release(req: ToolInvokeRequest) -> dict[str, Any]:
     session_id = str(req.payload.get("session_id", "")).strip()
     if not session_id:
@@ -279,6 +381,8 @@ REAL_HANDLERS = {
     "onec.com.connect": _connect,
     "onec.com.invoke": _invoke,
     "onec.com.query_tasks": _query_tasks,
+    "onec.com.query_assignments": _query_assignments,
+    "onec.com.task_details": _task_details,
     "onec.com.release": _release,
 }
 

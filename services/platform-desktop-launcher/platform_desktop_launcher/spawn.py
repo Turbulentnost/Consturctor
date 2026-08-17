@@ -30,6 +30,28 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def apply_infra_env(env: dict[str, str], root: Path | None = None) -> None:
+    """Load IMAP/ERP/COM settings from infra/.env into host process env."""
+    env_file = (root or repo_root()) / "infra" / ".env"
+    if not env_file.is_file():
+        return
+    for raw in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"')
+        if (
+            key.startswith("IMAP_")
+            or key.startswith("ERP_")
+            or key.startswith("ONEC_COM_")
+            or key.startswith("ODATA_")
+            or key in ("USE_STUBS", "URL_WHITELIST", "DATABASE_URL")
+        ):
+            env.setdefault(key, value)
+
+
 def load_specs(root: Path) -> dict[int, DesktopServiceSpec]:
     from platform_tool_filesystem.desktop_paths import default_fs_allowlist
 
@@ -122,6 +144,14 @@ def ensure_desktop_service(
     env["API_PORT"] = str(spec.port)
     env["USE_STUBS"] = (os.environ.get("USE_STUBS") or "false").strip().lower() or "false"
     env["CONSTRUCTOR_ROOT"] = str(root)
+    apply_infra_env(env, root)
+    env.setdefault(
+        "URL_WHITELIST",
+        "localhost,127.0.0.1,example.com,www.example.com,turbo-don.ru,161.ru,ria.ru,"
+        "don24.ru,donnews.ru,yandex.ru,ya.ru,google.com,duckduckgo.com,wikipedia.org,"
+        "ru.wikipedia.org,en.wikipedia.org,calend.ru,www.calend.ru,vseinstrumenti.ru,"
+        "rbc.ru,kommersant.ru,lenta.ru,gazeta.ru,mail.ru,vodokanalrnd.ru,rostov-zkh.ru",
+    )
     env.update(spec.extra_env)
 
     log_stem = "desktop-host" if spec.port == DESKTOP_HOST_PORT else spec.tag

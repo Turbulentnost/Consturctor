@@ -5,13 +5,16 @@ cd /d "%~dp0.."
 echo === Desktop tools preflight ===
 echo.
 
-rem Propagate USE_STUBS from infra/.env when present (sandbox-friendly desktop host).
+rem Propagate host env from infra/.env when present.
 if exist "infra\.env" (
-  for /f "usebackq tokens=1,* delims==" %%A in (`findstr /B /I "USE_STUBS=" "infra\.env"`) do (
-    set "USE_STUBS=%%B"
+  for /f "usebackq tokens=1,* delims==" %%A in (`findstr /B /I "USE_STUBS= IMAP_HOST= IMAP_PORT= IMAP_USERNAME= IMAP_PASSWORD= IMAP_MAILBOX= IMAP_CONNECT_TIMEOUT_SEC= ERP_LOGIN= ERP_PASSWORD= ODATA_BASE_URL= ONEC_COM_SERVER= ONEC_COM_REF= URL_WHITELIST=" "infra\.env"`) do (
+    set "%%A=%%B"
   )
 )
 if not defined USE_STUBS set "USE_STUBS=false"
+if not defined IMAP_MAILBOX set "IMAP_MAILBOX=INBOX"
+if not defined IMAP_CONNECT_TIMEOUT_SEC set "IMAP_CONNECT_TIMEOUT_SEC=120"
+set "CONSTRUCTOR_ROOT=%CD%"
 echo USE_STUBS=%USE_STUBS%
 echo.
 
@@ -36,6 +39,12 @@ if errorlevel 1 (
 
 echo.
 echo [2/3] Ensuring unified desktop host :7830 via launcher ...
+call :port_up 7830
+if not errorlevel 1 (
+  echo Restarting desktop-host :7830 to apply infra/.env ...
+  powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 7830 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"
+  timeout /t 2 /nobreak >nul
+)
 call :port_up 7830
 if errorlevel 1 (
   py -3.12 -c "import json,urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:7829/api/v1/ensure', data=json.dumps({'port':7830,'tool_name':'com.list_apps','wait_seconds':60}).encode(), headers={'Content-Type':'application/json'}, method='POST'), timeout=90).read()"

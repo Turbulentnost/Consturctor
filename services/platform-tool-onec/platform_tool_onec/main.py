@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -45,6 +46,7 @@ class OnecSettings(ServiceSettings):
 
 
 settings = OnecSettings()
+logger = logging.getLogger(__name__)
 _stub_counter = 0
 
 _INCOMING_DOC_MARKERS = (
@@ -377,17 +379,26 @@ def _build_connection_string() -> str:
 
 def _sql_query(req: ToolInvokeRequest) -> dict[str, Any]:
     sql = validate_sql_query(str(req.payload.get("sql", "")), allowlist=_sql_allowlist())
-    conn = pyodbc.connect(_build_connection_string(), autocommit=True)
     try:
-        cur = conn.cursor()
-        cur.execute(sql)
-        columns = [col[0] for col in cur.description] if cur.description else []
-        rows = []
-        for row in cur.fetchmany(100):
-            rows.append({columns[i]: row[i] for i in range(len(columns))})
-    finally:
-        conn.close()
-    return {"summary": f"rows={len(rows)}", "rows": rows}
+        conn = pyodbc.connect(_build_connection_string(), autocommit=True)
+        try:
+            cur = conn.cursor()
+            cur.execute(sql)
+            columns = [col[0] for col in cur.description] if cur.description else []
+            rows = []
+            for row in cur.fetchmany(100):
+                rows.append({columns[i]: row[i] for i in range(len(columns))})
+        finally:
+            conn.close()
+        return {"summary": f"rows={len(rows)}", "rows": rows, "source": "sql"}
+    except pyodbc.Error as exc:
+        if settings.use_stubs:
+            return _stub_sql_query(req)
+        logger.warning("SQL query failed, returning stub fallback: %s", exc)
+        data = _stub_sql_query(req)
+        data["warning"] = str(exc)[:500]
+        data["source"] = "stub-fallback"
+        return data
 
 
 STUB_HANDLERS = {

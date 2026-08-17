@@ -515,7 +515,7 @@ def _tool_http_timeout(tool_name: str) -> float:
     if name.startswith("imap."):
         return 180.0
     if name.startswith("onec.com."):
-        return 120.0
+        return 300.0
     if name.startswith("onec."):
         return 120.0
     if name.startswith("com."):

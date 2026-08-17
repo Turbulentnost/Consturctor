@@ -137,7 +137,11 @@ def _stub_events_for_range(start: datetime, end: datetime) -> list[dict[str, Any
 def _launch_real(*, visible: bool) -> dict[str, Any]:
     import win32com.client
 
-    outlook = win32com.client.Dispatch("Outlook.Application")
+    outlook = None
+    try:
+        outlook = win32com.client.GetActiveObject("Outlook.Application")
+    except Exception:
+        outlook = win32com.client.Dispatch("Outlook.Application")
     namespace = outlook.GetNamespace("MAPI")
     try:
         namespace.Logon("", "", False, False)
@@ -172,6 +176,19 @@ def _launch_real(*, visible: bool) -> dict[str, Any]:
 
 
 def launch_outlook(*, visible: bool = True, stub: bool = False) -> dict[str, Any]:
+    if not stub and _is_windows() and _outlook_sessions:
+        session_id = next(reversed(_outlook_sessions))
+        return {
+            "summary": "Outlook session reused",
+            "session_id": session_id,
+            "app": "outlook",
+            "progid": "Outlook.Application",
+            "visible": visible,
+            "mode": "real",
+            "source": "com",
+            "platform": sys.platform,
+        }
+
     if stub or not _is_windows():
         session_id = str(uuid.uuid4())
         _stub_sessions[session_id] = {"created_at": datetime.now(timezone.utc).isoformat(), "visible": visible}
@@ -381,6 +398,26 @@ def calendar_list(
             timeout=90.0,
         )
     except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        if "CALENDAR_UNAVAILABLE" in msg:
+            launched = launch_outlook(visible=False, stub=True)
+            session_id = launched["session_id"]
+            events = _stub_events_for_range(start_dt, end_dt)
+            if query:
+                events = [
+                    e for e in events if query in e["subject"].lower() or query in e["location"].lower()
+                ]
+            events = events[:limit]
+            return {
+                "summary": f"stub calendar fallback events={len(events)}",
+                "session_id": session_id,
+                "start": start_dt.isoformat(),
+                "end": end_dt.isoformat(),
+                "count": len(events),
+                "events": events,
+                "source": "stub",
+                "warning": msg[:500],
+            }
         raise RuntimeError(f"COM_ERROR: calendar list failed: {exc}") from exc
 
 

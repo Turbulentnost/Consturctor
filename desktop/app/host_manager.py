@@ -39,7 +39,7 @@ def _apply_infra_env(env: dict[str, str]) -> None:
 
 
 _DEFAULT_URL_WHITELIST = (
-    "localhost,127.0.0.1,turbo-don.ru,161.ru,ria.ru,don24.ru,donnews.ru,"
+    "localhost,127.0.0.1,example.com,www.example.com,turbo-don.ru,161.ru,ria.ru,don24.ru,donnews.ru,"
     "yandex.ru,ya.ru,google.com,duckduckgo.com,wikipedia.org,ru.wikipedia.org,"
     "en.wikipedia.org,calend.ru,www.calend.ru,vseinstrumenti.ru,rbc.ru,"
     "kommersant.ru,lenta.ru,gazeta.ru,mail.ru,vodokanalrnd.ru,rostov-zkh.ru"

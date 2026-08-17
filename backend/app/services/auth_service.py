@@ -169,6 +169,16 @@ async def login(fio: str, password: str) -> LoginResponse:
             return _stub_login(fio)
         logger.exception("ERP SQL error during login")
         raise AuthError(_erp_login_error_message(exc), status_code=503) from exc
+    except Exception as exc:
+        if settings.auth_stub:
+            logger.warning(
+                "ERP SQL unavailable (%s), using AUTH_STUB login for %s",
+                exc,
+                fio,
+            )
+            return _stub_login(fio)
+        logger.exception("Unexpected ERP SQL error during login")
+        raise AuthError("Сервис авторизации временно недоступен", status_code=503) from exc
 
     data = erp_user.data or b""
     if not data or not verify_password(data, password):

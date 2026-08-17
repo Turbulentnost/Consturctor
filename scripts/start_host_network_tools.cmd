@@ -15,7 +15,7 @@ if not defined IMAP_MAILBOX set "IMAP_MAILBOX=INBOX"
 if not defined IMAP_CONNECT_TIMEOUT_SEC set "IMAP_CONNECT_TIMEOUT_SEC=120"
 
 set "DATABASE_URL=postgresql+psycopg://constructor:constructor@127.0.0.1:5432/constructor"
-set "URL_WHITELIST=localhost,127.0.0.1,turbo-don.ru,161.ru,ria.ru,don24.ru,donnews.ru,yandex.ru,ya.ru,google.com,duckduckgo.com,wikipedia.org,ru.wikipedia.org,en.wikipedia.org,calend.ru,www.calend.ru,vseinstrumenti.ru,rbc.ru,kommersant.ru,lenta.ru,gazeta.ru,mail.ru,vodokanalrnd.ru,rostov-zkh.ru"
+set "URL_WHITELIST=localhost,127.0.0.1,example.com,www.example.com,turbo-don.ru,161.ru,ria.ru,don24.ru,donnews.ru,yandex.ru,ya.ru,google.com,duckduckgo.com,wikipedia.org,ru.wikipedia.org,en.wikipedia.org,calend.ru,www.calend.ru,vseinstrumenti.ru,rbc.ru,kommersant.ru,lenta.ru,gazeta.ru,mail.ru,vodokanalrnd.ru,rostov-zkh.ru"
 set "CONSTRUCTOR_ROOT=%CD%"
 
 echo [1] Stop Docker IMAP/browser workers ...

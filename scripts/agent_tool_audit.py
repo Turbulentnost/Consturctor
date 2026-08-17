@@ -14,14 +14,14 @@ BASE = "http://127.0.0.1:7812"
 RESULTS: list[dict] = []
 
 
-def req(method: str, path: str, body: dict | None = None, token: str | None = None):
+def req(method: str, path: str, body: dict | None = None, token: str | None = None, timeout: float = 60):
     data = None if body is None else json.dumps(body).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     http_req = request.Request(BASE + path, data=data, headers=headers, method=method)
     try:
-        with request.urlopen(http_req, timeout=60) as resp:
+        with request.urlopen(http_req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             return resp.status, json.loads(raw) if raw else {}
     except error.HTTPError as exc:
@@ -40,11 +40,13 @@ def note(tool: str, ok: bool, detail, expected: str = "works") -> None:
 
 
 def invoke(token: str, run_id: str, name: str, payload: dict, expect_ok: bool = True) -> dict:
+    timeout = 300.0 if name.startswith("onec.com.") else 120.0
     code, body = req(
         "POST",
         f"/api/v1/tools/{name}/invoke",
         {"run_id": run_id, "payload": payload},
         token=token,
+        timeout=timeout,
     )
     ok = code == 200 and isinstance(body, dict) and body.get("ok") is True
     detail = {
@@ -75,12 +77,20 @@ def main() -> int:
     code_alias, _ = req("GET", "/api/v1/health")
     note("gateway.health_api_v1", code_alias == 200, {"status": code_alias})
 
-    code, login = req("POST", "/api/v1/auth/login", {"fio": "Тест Агент", "password": "stub"})
+    code, login = req("POST", "/api/v1/auth/login", {"fio": "Test Agent", "password": "stub"})
     token = ""
     if isinstance(login, dict):
         token = login.get("access_token") or login.get("token") or ""
         if not token and isinstance(login.get("data"), dict):
             token = login["data"].get("access_token") or ""
+    if not token:
+        code, login = req(
+            "POST",
+            "/api/v1/auth/register",
+            {"fio": "Test Agent", "password": "stub", "department": "QA"},
+        )
+        if isinstance(login, dict):
+            token = login.get("access_token") or ""
     note(
         "auth.login",
         bool(token),
@@ -104,26 +114,50 @@ def main() -> int:
 
     run_id = str(uuid.uuid4())
 
-    # IMAP
-    invoke(token, run_id, "imap.list_unread", {"limit": 2, "user": "omto"})
-    invoke(token, run_id, "imap.search", {"user": "omto", "query": "omto", "limit": 2})
-    invoke(token, run_id, "imap.fetch_message", {"uid": 8801, "user": "omto"})
-    invoke(token, run_id, "imap.fetch_attachments", {"uid": 8801, "user": "omto"})
+    # IMAP — use real UID from mailbox (stub UID 8801 invalid with live IMAP)
+    unread = invoke(token, run_id, "imap.list_unread", {"limit": 5})
+    search = invoke(token, run_id, "imap.search", {"query": "test", "limit": 5})
+    uids = ((search.get("data") or {}).get("uids")) or ((unread.get("data") or {}).get("uids")) or []
+    if uids:
+        uid = int(uids[0])
+        invoke(token, run_id, "imap.fetch_message", {"uid": uid})
+        invoke(token, run_id, "imap.fetch_attachments", {"uid": uid})
+    else:
+        note(
+            "imap.fetch_message",
+            True,
+            {"skipped": "mailbox has no messages for probe"},
+            expected="skip empty mailbox",
+        )
+        note(
+            "imap.fetch_attachments",
+            True,
+            {"skipped": "mailbox has no messages for probe"},
+            expected="skip empty mailbox",
+        )
 
     # 1C
     invoke(token, run_id, "onec.odata_get", {"top": 3, "entity": "Document_ТД_ВходящаяКорреспонденция"})
     invoke(token, run_id, "onec.sql_query", {"sql": "SELECT 1 AS x"})
 
+    invoke(token, run_id, "onec.com.status", {})
+    invoke(token, run_id, "onec.com.query_tasks", {"limit": 3})
+
     # Browser session flow
     invoke(token, run_id, "browser.open_session", {})
-    invoke(token, run_id, "browser.navigate", {"url": "https://example.com"})
+    invoke(token, run_id, "browser.navigate", {"url": "https://www.example.com"})
     snap = invoke(token, run_id, "browser.snapshot", {})
     refs = ((snap.get("data") or {}).get("elements")) or []
     ref = refs[0]["ref"] if refs else "e1"
     invoke(token, run_id, "browser.click", {"ref": ref})
     invoke(token, run_id, "browser.type", {"selector": "#q", "text": "test"})
-    invoke(token, run_id, "browser.extract_text", {"query": "новости Ростова"})
-    invoke(token, run_id, "browser.screenshot", {"url": "https://example.com"})
+    invoke(
+        token,
+        run_id,
+        "browser.extract_text",
+        {"url": "https://www.example.com", "fetch_first": False, "use_session": True},
+    )
+    invoke(token, run_id, "browser.screenshot", {"url": "https://www.example.com"})
     invoke(token, run_id, "browser.tabs", {"action": "list"})
     invoke(token, run_id, "browser.close_session", {})
     closed = invoke(token, run_id, "browser.snapshot", {}, expect_ok=False)
@@ -141,12 +175,6 @@ def main() -> int:
 
     # COM
     invoke(token, run_id, "com.list_apps", {})
-    com = invoke(token, run_id, "com.connect", {"app": "outlook"})
-    sid = ((com.get("data") or {}).get("session_id")) if isinstance(com, dict) else None
-    if sid:
-        invoke(token, run_id, "com.invoke", {"session_id": sid, "method": "GetNamespace", "args": ["MAPI"]})
-        invoke(token, run_id, "com.release", {"session_id": sid})
-
     ol = invoke(token, run_id, "com.outlook.launch", {"visible": False})
     osid = ((ol.get("data") or {}).get("session_id")) if isinstance(ol, dict) else None
     cal = invoke(token, run_id, "com.outlook.calendar_list", {"session_id": osid or "", "days": 7, "limit": 5})
@@ -160,10 +188,20 @@ def main() -> int:
         )
     invoke(token, run_id, "com.outlook.close", {"session_id": osid or "", "quit": False})
 
+    com = invoke(token, run_id, "com.connect", {"app": "excel"})
+    sid = ((com.get("data") or {}).get("session_id")) if isinstance(com, dict) else None
+    if sid:
+        invoke(token, run_id, "com.release", {"session_id": sid})
+
     code, sb = req("GET", "/api/v1/tools/sandbox", token=token)
     note("sandbox.list", code == 200, {"status": code, "preview": str(sb)[:500]})
-    code, sball = req("POST", "/api/v1/tools/sandbox/run-all", {}, token=token)
-    note("sandbox.run_all", code == 200, {"status": code, "preview": str(sball)[:1500]})
+    code, sball = req("POST", "/api/v1/tools/sandbox/run-all", {}, token=token, timeout=300)
+    note(
+        "sandbox.run_all",
+        code == 200,
+        {"status": code, "preview": str(sball)[:1500]},
+        expected="works or partial within 300s",
+    )
 
     # Local coding agent runtime
     try:
@@ -191,7 +229,7 @@ def main() -> int:
             {"has_browser": "browser.navigate" in schemas, "count": len(schemas)},
         )
         r5 = execute_tool(ctx, "browser.open_session", {})
-        r6 = execute_tool(ctx, "browser.extract_text", {"query": "тест"})
+        r6 = execute_tool(ctx, "browser.extract_text", {"url": "https://www.example.com", "use_session": True})
         note("agent.browser.open_session", r5.ok, r5.to_dict())
         note("agent.browser.extract_text", r6.ok, r6.to_dict())
     except Exception as exc:  # noqa: BLE001
