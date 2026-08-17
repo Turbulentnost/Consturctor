@@ -41,6 +41,7 @@ def _to_out(row: AgentTrigger) -> TriggerOut:
         message=row.message or "",
         condition_text=row.condition_text or "",
         fire_at=row.fire_at,
+        interval_seconds=int(row.interval_seconds or 0),
         once=bool(row.once),
         enabled=bool(row.enabled),
         last_checked_at=row.last_checked_at,
@@ -65,6 +66,14 @@ def create_trigger(db: Session, *, owner_user_id: str, payload: TriggerCreate) -
     condition = (payload.condition or "").strip()
     now = datetime.now(timezone.utc)
     fire_at = _as_utc(payload.at)
+    interval_seconds = 0
+    if payload.interval_seconds is not None:
+        try:
+            interval_seconds = int(float(payload.interval_seconds))
+        except (TypeError, ValueError) as exc:
+            raise TriggerError("interval_seconds должен быть числом") from exc
+        if interval_seconds < 0:
+            raise TriggerError("interval_seconds не может быть отрицательным")
     if fire_at is None and payload.after_seconds is not None:
         try:
             seconds = float(payload.after_seconds)
@@ -73,10 +82,13 @@ def create_trigger(db: Session, *, owner_user_id: str, payload: TriggerCreate) -
         if seconds < 0:
             raise TriggerError("after_seconds не может быть отрицательным")
         fire_at = now + timedelta(seconds=seconds)
-    if fire_at is None and not condition:
-        raise TriggerError("Укажи at, after_seconds или condition")
+    if interval_seconds > 0 and fire_at is None:
+        fire_at = now + timedelta(seconds=interval_seconds)
+    if fire_at is None and not condition and interval_seconds <= 0:
+        raise TriggerError("Укажи at, after_seconds, interval_seconds или condition")
     if fire_at is None:
         fire_at = now
+    once = False if interval_seconds > 0 else bool(payload.once)
     row = AgentTrigger(
         id=str(uuid.uuid4()),
         owner_user_id=owner_user_id,
@@ -85,7 +97,8 @@ def create_trigger(db: Session, *, owner_user_id: str, payload: TriggerCreate) -
         message=(payload.message or "").strip(),
         condition_text=condition,
         fire_at=fire_at,
-        once=bool(payload.once),
+        interval_seconds=interval_seconds,
+        once=once,
         enabled=True,
     )
     db.add(row)
@@ -155,7 +168,13 @@ def mark_fired(db: Session, *, user_id: str, trigger_id: str, evidence: str = ""
     row.last_fired_at = now
     row.last_evidence = (evidence or "").strip()
     row.last_checked_at = now
-    if row.once:
+    interval = int(row.interval_seconds or 0)
+    if interval > 0:
+        row.once = False
+        row.enabled = True
+        row.fire_at = now + timedelta(seconds=interval)
+        row.cooldown_until = now + FIRE_COOLDOWN
+    elif row.once:
         row.enabled = False
     else:
         row.cooldown_until = now + FIRE_COOLDOWN

@@ -96,7 +96,9 @@ class HeadlessRunner(QObject):
                     "и покажи понятный результат."
                 )
             self._toast("Агент запущен по триггеру", message[:180], workflow_id)
-            self._api.stream_workflow_agent_run(workflow_id, message, lambda _payload: None)
+            self._api.stream_workflow_agent_run(
+                workflow_id, message, lambda _payload: None, source="trigger"
+            )
             if trigger_id and not payload.get("acked"):
                 self._api.ack_trigger_fired(trigger_id, evidence=str(payload.get("evidence") or "запущен"))
             self._toast("Агент завершил работу", "Нажмите, чтобы открыть ход", workflow_id)

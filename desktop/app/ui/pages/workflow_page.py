@@ -37,6 +37,7 @@ from app.api_client import (
     WorkflowRecord,
 )
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
+from app.ui.widgets.markdown_body import MarkdownBody
 
 SUPPORTED_SUFFIXES = {
     ".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".html", ".htm",
@@ -320,19 +321,35 @@ def _blocker_snippets(blob: str) -> list[str]:
 
 
 _ENV_LABELS = {
-    "ONEC_BASE_URL": "URL базы 1С (OData)",
-    "ONEC_URL": "URL базы 1С",
-    "ONEC_USER": "логин 1С",
-    "ONEC_PASSWORD": "пароль 1С",
-    "ONEC_BASE": "база 1С",
     "AZURE_CLIENT_ID": "Azure Client ID",
     "AZURE_CLIENT_SECRET": "Azure Client Secret",
     "AZURE_TENANT_ID": "Azure Tenant ID",
     "GRAPH_TOKEN": "токен Microsoft Graph",
     "OUTLOOK_USER": "учётка Outlook",
     "SITE_URL": "URL сайта",
-    "BASE_URL": "базовый URL системы",
 }
+
+_SERVER_SECRET_ENV = frozenset(
+    {
+        "ONEC_BASE_URL",
+        "ONEC_URL",
+        "ONEC_USER",
+        "ONEC_PASSWORD",
+        "ONEC_BASE",
+        "ODATA_BASE_URL",
+        "ODATA_USERNAME",
+        "ODATA_PASSWORD",
+        "CONSTRUCTOR_API_URL",
+        "BACKEND_URL",
+        "ERP_LOGIN",
+        "ERP_PASSWORD",
+        "IMAP_HOST",
+        "IMAP_USERNAME",
+        "IMAP_PASSWORD",
+        "IMAP_PORT",
+        "BASE_URL",
+    }
+)
 
 _RESERVED_ENV = frozenset(
     {
@@ -363,11 +380,11 @@ def _missing_env_vars(text: str) -> list[str]:
         flags=re.IGNORECASE,
     ):
         name = m.group(1).upper()
-        if name not in _RESERVED_ENV:
+        if name not in _RESERVED_ENV and name not in _SERVER_SECRET_ENV:
             found.append(name)
     for m in re.finditer(r"\b([A-Z][A-Z0-9_]{3,})\b", text or ""):
         name = m.group(1).upper()
-        if name in _RESERVED_ENV:
+        if name in _RESERVED_ENV or name in _SERVER_SECRET_ENV:
             continue
         if any(suf in name for suf in ("_URL", "_USER", "_PASSWORD", "_TOKEN", "_SECRET", "_ID", "_KEY", "_HOST")):
             found.append(name)
@@ -457,18 +474,16 @@ def _question_from_blocker(
     need_list = ", ".join(env_labels[:3]) if env_labels else ""
 
     if system == "1С" or any(k in low or k in joined for k in ("onec", "1с", "1c", "odata")):
-        what = need_list or "URL OData базы 1С и учётку"
         return (
-            f"Для live-проверки 1С не хватает: {what}. Что можете предоставить?",
+            "Live-проверка 1С с облака недоступна. URL и учётка OData задаются в backend/.env, "
+            "не в чате. Как продолжить?",
             [
-                f"Впишу URL OData базы 1С"
-                + (f" (вместо {envs[0]})" if envs else "")
-                + " и учётку",
                 "Подключаться к 1С через COM на этой машине",
                 "Пока только fixtures / офлайн без live 1С",
-                "Свой вариант — опишу URL/базу/доступ к 1С",
+                "OData уже в backend/.env — повторить проверку через onec.*",
+                "Свой вариант — опишу режим проверки (без пароля)",
             ],
-            why("Нужен именно доступ к 1С, не «системе вообще»."),
+            why("Учётку 1С не вводите в чат — она в backend/.env."),
         )
 
     if system.startswith("Outlook") or any(
@@ -488,29 +503,26 @@ def _question_from_blocker(
 
     if any(k in low or k in joined for k in ("sso", "azure", "credential", "учётк", "логин", "password", "токен", "auth")):
         target = system or "целевой системы проверки"
-        what = need_list or f"учётка / SSO для {target}"
         return (
-            f"Не хватает доступа к {target}: {what}. Что можно дать?",
+            f"Live-проверка {target} не прошла. Секреты в чат не вводите. Как продолжить?",
             [
-                f"Логин/пароль или токен для {target}",
-                f"SSO к {target} уже есть на этой машине — перезапустить live",
-                f"Доступа к {target} не будет — оставить только fixtures",
-                f"Свой вариант — опишу доступ к {target}",
+                f"Перезапустить live к {target} на этой машине",
+                f"Оставить только fixtures, без live к {target}",
+                f"Свой вариант — опишу режим проверки {target} (без пароля)",
             ],
-            why(f"Нужна учётка именно для {target}."),
+            why(f"Логин и пароль для {target} не спрашиваем в чате."),
         )
 
     if any(
         k in low or k in joined
         for k in ("url", "endpoint", "эндпоинт", "site_url", "http://", "https://", "base_url", "_url")
-    ):
+    ) and system != "1С":
         target = system or "проверяемой системы"
         url_what = next((lab for lab in env_labels if "url" in lab.casefold() or "URL" in lab), "") or (
             f"URL {target}"
         )
-        env_bit = f" (параметр {envs[0]})" if envs else ""
         return (
-            f"Не хватает адреса: {url_what}{env_bit}. Какой рабочий URL указать для {target}?",
+            f"Не хватает адреса: {url_what}. Какой рабочий URL указать для {target}?",
             [
                 f"Впишу URL для {target} в своём варианте",
                 f"Доступ к {target} только из внутренней сети — проверять с этой машины",
@@ -548,15 +560,35 @@ def _question_from_blocker(
         )
 
     return (
-        "Чего не хватило для проверки? Напишите конкретно: URL какой системы, "
-        "доступ к чему (1С / Outlook / сайт), учётка или «только fixtures».",
+        "Тестовый прогон не завершён. Выберите режим проверки — без пароля и URL OData.",
         [
-            "Укажу URL конкретной системы в своём варианте",
-            "Дам доступ / учётку к конкретной системе",
             "Пока только fixtures, live отложить",
             "Перезапустить live на этой машине",
+            "Свой вариант — уточню режим проверки (без пароля)",
         ],
-        "Сборка без TESTS: PASS. Нужен факт с указанием системы, не общая фраза.",
+        "Сборка без TESTS: PASS. Секреты в чат не вводите.",
+    )
+
+
+def _asks_server_secrets(value: str) -> bool:
+    low = (value or "").casefold()
+    return any(
+        needle in low
+        for needle in (
+            "onec_base_url",
+            "constructor_api",
+            "odata_base",
+            "odata_user",
+            "odata_password",
+            "парол",
+            "логин 1с",
+            "логин odata",
+            "учётк",
+            "url базы 1с",
+            "url odata",
+            "впишу url",
+            "впишу url odata",
+        )
     )
 
 
@@ -635,6 +667,7 @@ def _extract_post_build_question(
             or "tests:pass" in low
             or "что нужно уточнить" in low
             or "довести проверку" in low
+            or _asks_server_secrets(value)
             or len((value or "").strip()) < 12
         )
 
@@ -656,7 +689,9 @@ def _extract_post_build_question(
         useful = [
             opt
             for opt in options
-            if opt.strip() and not any(bad in opt.casefold() for bad in junk)
+            if opt.strip()
+            and not any(bad in opt.casefold() for bad in junk)
+            and not _asks_server_secrets(opt)
         ]
         options = useful[:4] if len(useful) >= 2 else generic_opts
 
@@ -861,9 +896,7 @@ class FeedItem(QFrame):
             col.addWidget(title)
             col.addWidget(bubble)
         else:
-            body = _WrappingLabel(event.body)
-            body.setFont(app_font(14, QFont.Weight.Medium))
-            body.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+            body = MarkdownBody(event.body, font_size=14, weight=QFont.Weight.Medium)
             col.addWidget(title)
             col.addWidget(body)
 
@@ -892,6 +925,7 @@ class WorkflowPage(QWidget):
     saved = Signal(str)
     saved_record = Signal(object)
     launch_requested = Signal(object)
+    schedule_requested = Signal(object)
     _async_ok = Signal(object, str)
     _async_fail = Signal(str)
     _stream_event = Signal(str, str)
@@ -922,6 +956,8 @@ class WorkflowPage(QWidget):
         self._thinking_timer.setSingleShot(True)
         self._thinking_timer.setInterval(120)
         self._thinking_timer.timeout.connect(self._rebuild_feed)
+        self._feed_stick_to_bottom = True
+        self._feed_rebuilding = False
         self._build()
         self._render_all()
 
@@ -968,6 +1004,9 @@ class WorkflowPage(QWidget):
             "QScrollArea { background: transparent; border: none; }" + scroll_bar_qss()
         )
         self._feed_scroll = feed_scroll
+        bar = feed_scroll.verticalScrollBar()
+        bar.valueChanged.connect(self._sync_feed_scroll_state)
+        bar.rangeChanged.connect(self._on_feed_range_changed)
         feed_lay.addWidget(feed_scroll, 1)
 
         # file chips
@@ -1031,11 +1070,11 @@ class WorkflowPage(QWidget):
         )
         self._run_btn.clicked.connect(self._on_run_clicked)
         self._run_btn.setVisible(False)
-        self._save_btn = QPushButton("Сохранить")
-        self._save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._save_btn.setFont(app_font(12, QFont.Weight.DemiBold))
-        self._save_btn.setFixedHeight(32)
-        self._save_btn.setStyleSheet(
+        self._next_btn = QPushButton("Далее")
+        self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._next_btn.setFont(app_font(12, QFont.Weight.DemiBold))
+        self._next_btn.setFixedHeight(32)
+        self._next_btn.setStyleSheet(
             """
             QPushButton {
                 background: #08745F; color: #FFFFFF; border: none;
@@ -1045,12 +1084,12 @@ class WorkflowPage(QWidget):
             QPushButton:disabled { background: #A8C8BF; color: #EAF7F3; }
             """
         )
-        self._save_btn.clicked.connect(self._on_save_requested)
-        self._save_btn.setVisible(False)
+        self._next_btn.clicked.connect(self._on_schedule_requested)
+        self._next_btn.setVisible(False)
         self._tests_ok = False
         status_row.addWidget(self._agent_status, 1)
         status_row.addWidget(self._run_btn, 0)
-        status_row.addWidget(self._save_btn, 0)
+        status_row.addWidget(self._next_btn, 0)
         feed_lay.addLayout(status_row)
 
         # hidden results list for downloads
@@ -1086,7 +1125,10 @@ class WorkflowPage(QWidget):
         self._workflow_title = record.title
         self._notes = record.notes
         local = dict(record.local_run or {})
-        self._tests_ok = str(local.get("tests_status") or "").casefold() == "pass"
+        self._tests_ok = str(local.get("tests_status") or "").casefold() == "pass" and (
+            record.phase == "tested"
+            or str(local.get("exec_run_status") or "").upper() == "FINISHED"
+        )
         if local.get("autonomy_level") or local.get("autonomy_policy"):
             self._passport_runtime = {
                 "autonomy_level": int(local.get("autonomy_level") or 1),
@@ -1120,7 +1162,7 @@ class WorkflowPage(QWidget):
                 )
         if record.last_result:
             self._events.append(
-                FeedEvent("Результат", record.last_result[:500], self._now())
+                FeedEvent("Результат", record.last_result, self._now())
             )
         self._render_chips()
         self._render_all()
@@ -1174,14 +1216,14 @@ class WorkflowPage(QWidget):
             self._run_btn.setText("Запустить снова")
         else:
             self._run_btn.setText("Запустить сборку")
-        can_save = bool(
+        can_next = bool(
             self._record
             and self._tests_ok
             and not self._busy
             and self._record.phase != "done"
         )
-        self._save_btn.setVisible(can_save)
-        self._save_btn.setEnabled(can_save)
+        self._next_btn.setVisible(can_next)
+        self._next_btn.setEnabled(can_next)
         if self._post_build_question and not self._busy:
             self._current_question_id = self._post_build_question.id
         elif self._record and self._record.plan and not self._busy:
@@ -1193,8 +1235,8 @@ class WorkflowPage(QWidget):
         if self._busy:
             self._agent_status.setText("● Агент работает — можно отправить уточнение")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
-        elif can_save:
-            self._agent_status.setText("● Тесты PASS — можно сохранить агента")
+        elif can_next:
+            self._agent_status.setText("● Тесты PASS — откройте паспорт и укажите, когда запускать")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         elif self._post_build_question:
             self._agent_status.setText("● Нужны уточнения после сборки — ответьте в чате")
@@ -1217,7 +1259,36 @@ class WorkflowPage(QWidget):
             self._agent_status.setText("● Готов к работе")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
 
+    def _sync_feed_scroll_state(self, *_args) -> None:
+        if self._feed_rebuilding:
+            return
+        bar = self._feed_scroll.verticalScrollBar()
+        self._feed_stick_to_bottom = bar.value() >= max(0, bar.maximum() - 48)
+
+    def _on_feed_range_changed(self, _minimum: int, _maximum: int) -> None:
+        if self._feed_stick_to_bottom:
+            self._scroll_feed_to_bottom()
+
+    def _scroll_feed_to_bottom(self) -> None:
+        def _go() -> None:
+            if not self._feed_stick_to_bottom:
+                return
+            bar = self._feed_scroll.verticalScrollBar()
+            bar.setValue(bar.maximum())
+
+        QTimer.singleShot(0, _go)
+        QTimer.singleShot(80, _go)
+        QTimer.singleShot(200, _go)
+
     def _rebuild_feed(self) -> None:
+        self._feed_rebuilding = True
+        try:
+            self._rebuild_feed_body()
+        finally:
+            self._feed_rebuilding = False
+            self._scroll_feed_to_bottom()
+
+    def _rebuild_feed_body(self) -> None:
         while self._feed_layout.count():
             item = self._feed_layout.takeAt(0)
             w = item.widget()
@@ -1377,7 +1448,9 @@ class WorkflowPage(QWidget):
         elif key == "fetch":
             self._on_fetch_results()
         elif key == "save":
-            self._on_save_requested()
+            self._on_schedule_requested()
+        elif key == "next":
+            self._on_schedule_requested()
         elif key.startswith("q:"):
             self._input.setFocus()
 
@@ -1521,9 +1594,22 @@ class WorkflowPage(QWidget):
             elif label.startswith("Реализация"):
                 self._thinking_text = ""
                 self._tests_ok = False
+                local = dict(getattr(result, "local_run", None) or {})
+                tests = str(local.get("tests_status") or "").casefold()
+                exec_status = str(local.get("exec_run_status") or "").upper()
+                finished = exec_status == "FINISHED" or result.phase == "tested"
+                report = (result.last_result or "").strip()
+                if tests == "pass" and finished:
+                    body = report or "TESTS: PASS."
+                elif tests == "fail":
+                    prefix = "Тестовый прогон не завершён. Сохранение недоступно.\n\n"
+                    body = prefix + report if report else "TESTS: FAIL — сохранение недоступно."
+                else:
+                    prefix = "Тестовый прогон не завершён — перезапустите сборку.\n\n"
+                    body = prefix + report if report else "Тестовый прогон не завершён — перезапустите сборку."
                 self._push_event(
                     "Тестовый прогон",
-                    (result.last_result or "Реализация завершена.")[:800],
+                    body,
                     action="Скачать результат" if result.exec_agent_id else "",
                     action_key="fetch",
                 )
@@ -1546,10 +1632,14 @@ class WorkflowPage(QWidget):
                 item = QListWidgetItem(Path(path).name)
                 item.setData(Qt.ItemDataRole.UserRole, path)
                 self._results.addItem(item)
-            self._push_event(
-                "Результат",
-                f"Скачано файлов: {len(files)}\n{dest_dir}",
-            )
+            if files:
+                download_text = f"Скачано файлов: {len(files)}\n{dest_dir}"
+            else:
+                download_text = (
+                    "Файлы результата не найдены (агент не положил их в artifacts/).\n"
+                    f"{dest_dir}"
+                )
+            self._push_event("Результат", download_text)
             self._evaluate_tests(list(files))
             self._render_all()
 
@@ -1854,7 +1944,7 @@ class WorkflowPage(QWidget):
             return
         self._tests_ok = False
         self._post_build_question = None
-        self._save_btn.setVisible(False)
+        self._next_btn.setVisible(False)
         self._push_event("Сборка workflow", "Запускаю реализацию…")
         wid = self._record.id
         self._run_async(
@@ -1891,6 +1981,11 @@ class WorkflowPage(QWidget):
         explicit_pass = "TESTS: PASS" in upper or "TESTS:PASS" in upper
         self._tests_ok = False
         self._post_build_question = None
+        local_state = dict(self._record.local_run or {}) if self._record else {}
+        exec_status = str(local_state.get("exec_run_status") or "").upper()
+        run_finished = exec_status == "FINISHED" or (
+            self._record is not None and self._record.phase == "tested"
+        )
         ctx_bits: list[str] = []
         if self._record:
             if self._record.title:
@@ -1920,13 +2015,20 @@ class WorkflowPage(QWidget):
             )
             self._render_all()
             return
+        if not run_finished:
+            self._push_event(
+                "Тесты",
+                "Тестовый прогон не завершён — сохранение недоступно. Перезапустите сборку.",
+            )
+            self._render_all()
+            return
 
         self._tests_ok = True
         self._push_event(
             "Тесты",
-            "TESTS: PASS — можно сохранить агента в «Мои агенты».",
-            action="Сохранить",
-            action_key="save",
+            "TESTS: PASS. Нажмите «Далее», чтобы заполнить паспорт и расписание.",
+            action="Далее",
+            action_key="next",
         )
         if self._record is None:
             return
@@ -1949,19 +2051,17 @@ class WorkflowPage(QWidget):
         except ApiError as exc:
             self._push_event("Предупреждение", f"Не удалось зафиксировать TESTS: PASS на сервере: {exc}")
 
-    def _on_save_requested(self) -> None:
+    def _on_schedule_requested(self) -> None:
         if self._record is None:
             return
         if not self._tests_ok:
             QMessageBox.information(
                 self,
                 "Тесты",
-                "Сохранение возможно только после TESTS: PASS.",
+                "Паспорт доступен только после TESTS: PASS.",
             )
             return
-        wid = self._record.id
-        self._push_event("Публикация", "Сохраняю агента в «Мои агенты»…")
-        self._run_async("Публикация", lambda: self._api.publish_workflow(wid))
+        self.schedule_requested.emit(self._record)
 
     def _open_result_item(self, item: QListWidgetItem) -> None:
         path = item.data(Qt.ItemDataRole.UserRole)

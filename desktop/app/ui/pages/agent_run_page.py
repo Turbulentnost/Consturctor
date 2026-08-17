@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from app.api_client import ApiClient, ApiError, WorkflowRecord
 from app.tools.hitl import install_confirm_host
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
+from app.ui.widgets.markdown_body import MarkdownBody
 
 
 _PRIMARY = """
@@ -439,11 +440,16 @@ def _event_card(event: dict) -> tuple[QWidget, QLabel | None]:
     title = QLabel(heading)
     title.setFont(app_font(12, QFont.Weight.DemiBold))
     title.setStyleSheet("color: #08745F; background: transparent;")
-    body = QLabel(text)
-    body.setWordWrap(True)
-    body.setFont(app_font(12))
-    body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    body.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+    if event_type in {"agent_message", "system"}:
+        body = MarkdownBody(text, font_size=12)
+        status_label = None
+    else:
+        body = QLabel(text)
+        body.setWordWrap(True)
+        body.setFont(app_font(12))
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        status_label = body if event_type == "status" else None
     layout.addWidget(title)
     layout.addWidget(body)
     row.addWidget(card)
@@ -452,4 +458,4 @@ def _event_card(event: dict) -> tuple[QWidget, QLabel | None]:
     wrap = QWidget()
     wrap.setStyleSheet("background: transparent;")
     wrap.setLayout(row)
-    return wrap, (body if event_type == "status" else None)
+    return wrap, status_label

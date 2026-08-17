@@ -415,6 +415,13 @@ def execute_workflow(
         row.title,
     )
 
+    from app.services.imap_tools import imap_configured
+    from app.services.onec_tools import odata_configured
+
+    access_notes = prompts.server_access_notes(
+        odata=odata_configured(),
+        imap=imap_configured(),
+    )
     if reexecute:
         clarification = str((row.local_run or {}).get("post_build_answer") or "").strip()
         if clarification:
@@ -443,13 +450,18 @@ def execute_workflow(
             prompts.build_reexecute_prompt(
                 plan=plan,
                 user_clarification=clarification,
+                access_notes=access_notes,
             )
         )
     else:
         from app.services.workflows.cursor_tools import with_tools_if_desktop
 
         prompt = with_tools_if_desktop(
-            prompts.build_execute_prompt(plan=plan, document_text=row.document_text)
+            prompts.build_execute_prompt(
+                plan=plan,
+                document_text=row.document_text,
+                access_notes=access_notes,
+            )
         )
 
     _emit(on_event, "decision", "Запускаю реализацию workflow.")
@@ -489,9 +501,12 @@ def execute_workflow(
     row.pr_url = phase.pr_url or row.pr_url
     # Не публикуем в «Мои агенты» автоматически — только после явного Save.
     # can_publish только при TESTS: PASS в результате реализации.
+    local = dict(row.local_run or {})
+    local["exec_run_status"] = phase.status or ""
+    local["odata_configured"] = odata_configured()
+    local["imap_configured"] = imap_configured()
     if phase.status == "FINISHED":
         tests = _tests_status_from_text(phase.text or "")
-        local = dict(row.local_run or {})
         if tests == "pass":
             row.phase = "tested"
             local.update(
@@ -521,7 +536,8 @@ def execute_workflow(
                 on_event,
                 "decision",
                 "TESTS: FAIL — сохранение недоступно. "
-                "Задайте пользователю вопрос в чате (варианты ответа) и после ответа перезапустите сборку.",
+                "Уточните режим проверки в чате (fixtures / COM), без пароля, "
+                "и после ответа перезапустите сборку.",
             )
         else:
             row.phase = "ready"
@@ -536,17 +552,15 @@ def execute_workflow(
             _emit(
                 on_event,
                 "decision",
-                "Реализация завершена, но TESTS: PASS не найден. "
-                "Задайте вопрос в чате (с вариантами), затем перезапустите. "
-                "Без TESTS: PASS сохранить нельзя.",
+                "Тестовый прогон завершился без TESTS: PASS. "
+                "Сохранение недоступно. Уточните в чате и перезапустите.",
             )
         row.local_run = local
     else:
         row.phase = "ready"
-        local = dict(row.local_run or {})
         local.update({"can_publish": False, "tests_status": "unknown"})
         row.local_run = local
-        _emit(on_event, "decision", "Реализация не завершена — можно запустить снова.")
+        _emit(on_event, "decision", "Тестовый прогон не завершён — можно запустить снова.")
     db.commit()
     db.refresh(row)
     return _to_schema(row)
@@ -577,6 +591,15 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     for key in ("cwd", "bat", "module", "output", "cmd", "shell"):
         local.pop(key, None)
     plan = WorkflowPlan.from_dict(row.plan_json or {})
+    draft = local.get("schedule_draft")
+    if isinstance(draft, dict):
+        name = str(draft.get("name") or "").strip()
+        if name:
+            row.title = name
+        goal = str(draft.get("goal") or "").strip()
+        if goal and not (plan.goal or "").strip():
+            plan.goal = goal
+            row.plan_json = plan.to_dict()
     local.update(
         {
             "status": "published",

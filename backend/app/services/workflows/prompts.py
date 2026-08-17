@@ -56,14 +56,20 @@ PLAN_SCHEMA_HINT = """
 Правила:
 - steps — конкретные шаги реализации, по порядку зависимостей.
 - open_questions — только НЕотвеченные блокеры; иначе [].
+- Если агент про 1С / почту / календарь — на ЭТОМ этапе (план) задай минимум
+  один вопрос с options: live или только fixtures; способ доступа
+  (OData уже на сервере Constructor / COM на машине пользователя / офлайн).
+  Не откладывай это на тестовый прогон.
+- ЗАПРЕЩЕНО спрашивать URL, логин, пароль OData/IMAP и выдумывать
+  ONEC_BASE_URL / CONSTRUCTOR_API_URL — учётка только в backend/.env сервера.
 - Если ответ пользователя неясен, противоречив или недостаточен для реализации —
   НЕ делай вид, что понял. Задай 1 уточняющий вопрос в open_questions + 2–4 options.
   Оценивай по смыслу и достаточности для steps/runtime, а НЕ по длине:
-  короткий ответ («COM», «Graph», «1С ERP») может быть вполне информативным.
+  короткий ответ («COM», «Graph», «1С ERP», «только fixtures») может быть достаточным.
   Переспрашивай только если не хватает факта для реализации (способ доступа,
-  URL, права, критерий, противоречие). Не переспрашивай «на всякий случай».
-  Не переходи к пустым open_questions, пока критичный ответ реально размыт
-  («как обычно», «ок», пусто, противоречие без выбора).
+  live vs fixtures, критерий, противоречие). Не переспрашивай «на всякий случай»
+  и не проси секреты. Не переходи к пустым open_questions, пока критичный ответ
+  реально размыт («как обычно», «ок», пусто, противоречие без выбора).
 - answered_questions — ВСЕ уже данные ответы пользователя (id/question/answer). Никогда не удаляй и не забывай прошлые ответы.
   Даже короткий ответ сохраняй как есть; если нужен follow-up — новым вопросом.
 - options — 2-4 логичных варианта ответа на вопрос; не используй общие «Да/Нет», если нужен фактический источник, система, роль или срок.
@@ -145,9 +151,11 @@ def build_clarify_prompt(
         "(1С, COM, Outlook, URL, учётки, критерии). "
         "Если ответ НЕДОСТАТОЧЕН для реализации по смыслу — задай уточняющий вопрос "
         "в open_questions (один главный, с options). Оценивай достаточность, не длину: "
-        "«COM», «Graph», «1С» могут быть нормальным ответом на вопрос «какой способ». "
-        "Переспрашивай, только если не хватает конкретного факта "
-        "(какая база 1С, OData URL, чья учётка, confirm перед записью и т.п.). "
+        "«COM», «Graph», «1С», «только fixtures» могут быть нормальным ответом на вопрос «какой способ». "
+        "Переспрашивай, только если не хватает режима (live/fixtures) или способа доступа "
+        "(OData на сервере / COM / офлайн), критерия или есть противоречие. "
+        "НЕ спрашивай URL, логин, пароль OData/IMAP и не выдумывай "
+        "ONEC_BASE_URL / CONSTRUCTOR_API_URL — учётка в backend/.env. "
         "Не принимай молча заглушки вроде «ок» / «как обычно» / пусто. "
         "open_questions оставляй пустым, если ответы достаточны для steps/runtime. "
         "Перенеси понятные ответы в constraints и steps: интеграция должна совпадать "
@@ -160,37 +168,47 @@ def build_clarify_prompt(
 
 ARTIFACTS_INSTRUCTION = (
     "ВАЖНО (доставка результата без git): создай в рабочем пространстве каталог "
-    "`artifacts/` и скопируй туда ВСЕ итоговые файлы, чтобы их можно было скачать:\n"
-    "- `artifacts/solution.zip` — архив всего написанного кода/проекта;\n"
-    "- сгенерированные выходные файлы (например, .xlsx/.csv/.pdf), если они есть;\n"
-    "- `artifacts/RESULT.md` — краткое описание: что сделано, как запустить, что внутри;\n"
+    "`artifacts/` и скопируй туда ВСЕ итоговые файлы. Без файлов в `artifacts/` "
+    "пользователь скачает пустую папку — текст в чате не считается файлом.\n"
+    "- `artifacts/RESULT.md` — обязателен: статус прогона и как запускать;\n"
     "  в RESULT.md обязательно итоговая строка `TESTS: PASS` или `TESTS: FAIL`.\n"
-    "Клади готовые файлы именно в `artifacts/` (пути должны быть относительными)."
+    "- `artifacts/solution.zip` — архив написанного кода/проекта;\n"
+    "- сгенерированные выходные файлы (.xlsx/.csv/.pdf и т.п.), если они есть.\n"
+    "Клади готовые файлы именно в `artifacts/` (пути относительные)."
+)
+
+RESULT_STATUS_INSTRUCTION = (
+    "Статус в RESULT.md и финальном ответе:\n"
+    "- Не пиши «агент сформирован», «реализация завершена», «можно сохранить», "
+    "пока нет `TESTS: PASS` по полному прогону.\n"
+    "- `TESTS: PASS` — только если проверки из test_criteria реально дошли до конца. "
+    "Если в плане был live, а прогнан только `--fixtures` — это не PASS для сохранения.\n"
+    "- При `TESTS: FAIL` или незавершённом прогоне заголовок: "
+    "«Тестовый прогон не завершён». Дальше блокеры и что осталось. "
+    "Не делай раздел «Что сделано» так, будто агент готов."
 )
 
 TESTS_USER_CLARIFY_INSTRUCTION = (
     "Тесты и тупики:\n"
-    "- Если что-то не получается (нет доступа, SSO, неизвестный URL/учётка, "
-    "неясный критерий, не хватает данных) — НЕ маскируй это под PASS и НЕ уходи "
-    "в чужой инструмент «для галочки».\n"
-    "- В RESULT.md поставь `TESTS: FAIL`, коротко опиши БЛОКЕР человеческим языком "
-    "и в конце добавь блок для чата конструктора.\n"
-    "- QUESTION обязан называть объект: URL *чего*, доступ *к чему*, учётка *какой системы*. "
-    "Плохо: «дайте доступ», «укажите URL». "
-    "Хорошо: «Укажите URL OData базы 1С (ONEC_BASE_URL)» / "
-    "«Как дать доступ к Outlook: COM или Graph?».\n"
-    "- В why/блокере покажи, ЧЕГО не хватило (цитата из ошибки / missing env).\n"
+    "- Если что-то не получается (нет сети до внутренней системы, неясный критерий) — "
+    "НЕ маскируй это под PASS и НЕ уходи в чужой инструмент «для галочки».\n"
+    "- В RESULT.md поставь `TESTS: FAIL`, коротко опиши БЛОКЕР и блок CLARIFY.\n"
+    "- ЗАПРЕЩЕНО просить у пользователя URL/логин/пароль OData, IMAP, "
+    "ONEC_BASE_URL, CONSTRUCTOR_API_URL — они на сервере Constructor (backend/.env). "
+    "1С читай через tools `onec.*`. API конструктора уже подключён с десктопа.\n"
+    "- Если live с облака недоступен — спроси режим: fixtures / COM на машине пользователя. "
+    "Хорошо: «Live 1С с облака недоступен. Продолжить fixtures или COM на этой машине?».\n"
+    "- В why/блокере покажи, ЧЕГО не хватило (цитата из ошибки), без просьбы вписать пароль.\n"
     "Формат:\n"
     "CLARIFY:\n"
-    "QUESTION: <конкретный вопрос фактом>\n"
+    "QUESTION: <режим проверки, не секрет>\n"
     "OPTIONS:\n"
-    "- <вариант 1 — действие/факт>\n"
+    "- <вариант 1 — fixtures / COM / повтор через onec.*>\n"
     "- <вариант 2>\n"
     "- <вариант 3>\n"
     "- Если пользователь уже отвечал, но ответ размытый — задай УТОЧНЯЮЩИЙ вопрос "
-    "(что именно непонятно), а не повторяй тот же общий вопрос.\n"
-    "- Пользователь ответит в чате конструктора (радиокнопки / свой вариант) — "
-    "после ответа реализацию можно доработать. Уточнения — нормальный шаг теста, не провал."
+    "про режим, а не повторяй запрос учётки.\n"
+    "- Уточнения на тесте — запасной путь; режим live/fixtures должен быть закрыт на плане."
 )
 
 RUNTIME_NETWORK_INSTRUCTION = (
@@ -202,7 +220,7 @@ RUNTIME_NETWORK_INSTRUCTION = (
     "  • совещания / Outlook / календарь → CLI/фикстуры / COM Outlook / Graph, "
     "если пользователь так указал в ответах; "
     "НЕ DuckDuckGo/web_search и НЕ site_browser «открыть outlook.office.com»;\n"
-    "  • 1С — OData/COM/учётка из ответов пользователя, не web_search;\n"
+    "  • 1С — tools `onec.*` (OData с сервера) или COM на машине пользователя, не web_search;\n"
     "  • поиск на сайте/ЭТП + Excel → site_browser / plan_export / HTTP к указанному site_url;\n"
     "  • общий веб-поиск фактов — только если это явно цель агента.\n"
     "- Фикстуры — запасной путь для тестов; live проверяет тот же сценарий, что в steps.\n"
@@ -212,21 +230,54 @@ RUNTIME_NETWORK_INSTRUCTION = (
 )
 
 
-def build_execute_prompt(*, plan: WorkflowPlan, document_text: str) -> str:
+def server_access_notes(*, odata: bool, imap: bool) -> str:
+    odata_line = (
+        "1С OData (tools onec.*): настроен в backend/.env. "
+        "Не спрашивай URL/логин/пароль. Ходи в 1С через onec.*"
+        if odata
+        else (
+            "1С OData: в backend/.env нет ODATA_BASE_URL+учётки — live OData со сервера недоступен. "
+            "Используй --fixtures или COM на машине пользователя. Не проси пароль в чате."
+        )
+    )
+    imap_line = (
+        "IMAP (tools imap.*): настроен в backend/.env."
+        if imap
+        else "IMAP: в backend/.env не настроен — не проси логин/пароль почты в чате."
+    )
+    return (
+        "Доступы Constructor (не спрашивай секреты у пользователя):\n"
+        f"- {odata_line}\n"
+        f"- {imap_line}\n"
+        "- API конструктора уже доступен с десктопа (BACKEND_URL). "
+        "Не выдумывай CONSTRUCTOR_API_URL и не проси его у пользователя.\n"
+        "- Имена ONEC_BASE_URL / CONSTRUCTOR_API_URL в проекте нет — это ODATA_* и BACKEND_URL."
+    )
+
+
+def build_execute_prompt(
+    *,
+    plan: WorkflowPlan,
+    document_text: str,
+    access_notes: str = "",
+) -> str:
     plan_json = json.dumps(plan.to_dict(), ensure_ascii=False, indent=2)
     doc = document_text.strip()
     if len(doc) > 40_000:
         doc = doc[:40_000] + "\n\n[...truncated...]"
     answers_block = plan.answered_block_text()
     answers_section = f"\n{answers_block}\n\n" if answers_block else "\n"
+    access_section = f"{access_notes.strip()}\n\n" if access_notes.strip() else ""
     return (
         "Реализуй сохранённый план без доступа к git/GitHub:\n"
         "опиши реализацию, артефакты, команды/проверки и результат по test_criteria.\n"
         "Следуй steps по порядку зависимостей. Не расширяй scope.\n"
         "ОБЯЗАТЕЛЬНО учти все ответы пользователя (answered_questions / уточнения): "
-        "если там 1С, COM Outlook, URL, учётка — реализуй именно это, "
+        "если там 1С, COM Outlook, fixtures/live — реализуй именно это, "
         "не подменяй на web_search или site_browser.\n"
-        "В финальном ответе кратко: что сделано, результаты проверок, что осталось.\n\n"
+        "В финальном ответе не называй агента готовым без TESTS: PASS.\n\n"
+        f"{access_section}"
+        f"{RESULT_STATUS_INSTRUCTION}\n\n"
         f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
         f"{TESTS_USER_CLARIFY_INSTRUCTION}\n\n"
         f"{ARTIFACTS_INSTRUCTION}\n"
@@ -240,7 +291,12 @@ def build_execute_prompt(*, plan: WorkflowPlan, document_text: str) -> str:
     )
 
 
-def build_reexecute_prompt(*, plan: WorkflowPlan, user_clarification: str = "") -> str:
+def build_reexecute_prompt(
+    *,
+    plan: WorkflowPlan,
+    user_clarification: str = "",
+    access_notes: str = "",
+) -> str:
     plan_json = json.dumps(plan.to_dict(), ensure_ascii=False, indent=2)
     clarify_block = ""
     note = (user_clarification or "").strip()
@@ -254,12 +310,16 @@ def build_reexecute_prompt(*, plan: WorkflowPlan, user_clarification: str = "") 
         )
     answers_block = plan.answered_block_text()
     answers_section = f"\n{answers_block}\n" if answers_block else ""
+    access_section = f"{access_notes.strip()}\n\n" if access_notes.strip() else ""
     return (
         "Повторно выполни сохранённый план (без GitHub-репозитория).\n"
         "Не ломай уже корректное. Доведи незакрытые steps и test_criteria.\n"
         "ОБЯЗАТЕЛЬНО сохрани интеграции из ответов пользователя "
-        "(1С / COM Outlook / указанные URL) — не подменяй на web_search.\n"
-        "В конце — статус PASS/FAIL по критериям (TESTS: PASS|FAIL в RESULT.md).\n\n"
+        "(1С / COM Outlook / fixtures/live) — не подменяй на web_search.\n"
+        "В конце — статус PASS/FAIL по критериям (TESTS: PASS|FAIL в RESULT.md). "
+        "Не пиши, что агент готов, без TESTS: PASS.\n\n"
+        f"{access_section}"
+        f"{RESULT_STATUS_INSTRUCTION}\n\n"
         f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
         f"{TESTS_USER_CLARIFY_INSTRUCTION}\n\n"
         f"{ARTIFACTS_INSTRUCTION}\n"

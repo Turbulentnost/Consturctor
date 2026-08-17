@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Callable
@@ -426,6 +426,69 @@ class WorkflowRecord:
     @property
     def name(self) -> str:
         return self.title
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunHistoryItem:
+    id: str
+    workflow_id: str
+    message: str = ""
+    status: str = ""
+    answer: str = ""
+    source: str = "chat"
+    started_at: str = ""
+    finished_at: str = ""
+
+
+@dataclass
+class ScheduleTriggerSpec:
+    kind: str = "event"
+    message: str = ""
+    interval_value: float = 0
+    interval_unit: str = "hours"
+    condition: str = ""
+    at: str = ""
+    once: bool = True
+
+
+@dataclass
+class ScheduleDraft:
+    name: str = ""
+    goal: str = ""
+    triggers: list[ScheduleTriggerSpec] = field(default_factory=list)
+
+
+def _interval_seconds(value: float, unit: str) -> int:
+    amount = max(0.0, float(value or 0))
+    factor = {"minutes": 60, "hours": 3600, "days": 86400}.get((unit or "hours").strip().casefold(), 3600)
+    return int(amount * factor)
+
+
+def _parse_schedule_draft(data: dict) -> ScheduleDraft:
+    triggers: list[ScheduleTriggerSpec] = []
+    for item in data.get("triggers") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            interval_value = float(item.get("interval_value") or 0)
+        except (TypeError, ValueError):
+            interval_value = 0.0
+        triggers.append(
+            ScheduleTriggerSpec(
+                kind=str(item.get("kind") or "event"),
+                message=str(item.get("message") or ""),
+                interval_value=interval_value,
+                interval_unit=str(item.get("interval_unit") or "hours"),
+                condition=str(item.get("condition") or ""),
+                at=str(item.get("at") or ""),
+                once=bool(item.get("once", True)),
+            )
+        )
+    return ScheduleDraft(
+        name=str(data.get("name") or ""),
+        goal=str(data.get("goal") or ""),
+        triggers=triggers,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1353,6 +1416,8 @@ class ApiClient:
         workflow_id: str,
         message: str,
         on_event: Callable[[dict], None],
+        *,
+        source: str = "chat",
     ) -> dict:
         url = f"{self.base_url}/api/v1/workflows/{workflow_id}/agent-runs/stream"
         final_result: dict | None = None
@@ -1363,7 +1428,7 @@ class ApiClient:
                     "POST",
                     url,
                     headers={**self._headers(), "Accept": "text/event-stream"},
-                    json={"message": message},
+                    json={"message": message, "source": source or "chat"},
                 ) as response:
                     if response.status_code >= 400:
                         body = response.read().decode("utf-8", errors="replace")
@@ -1405,6 +1470,56 @@ class ApiClient:
         except httpx.HTTPError as exc:
             raise ApiError(f"Ошибка сети: {exc}") from exc
         return final_result or {}
+
+    def propose_schedule_draft(self, workflow_id: str) -> ScheduleDraft:
+        data = self._request("POST", f"/api/v1/workflows/{workflow_id}/schedule-draft", timeout=90.0)
+        return _parse_schedule_draft(data if isinstance(data, dict) else {})
+
+    def create_trigger(
+        self,
+        workflow_id: str,
+        spec: ScheduleTriggerSpec,
+        *,
+        message: str = "",
+    ) -> dict:
+        payload: dict = {
+            "workflow_id": workflow_id,
+            "message": (message or spec.message or "").strip(),
+            "once": bool(spec.once),
+        }
+        if spec.kind == "interval":
+            payload["interval_seconds"] = _interval_seconds(spec.interval_value, spec.interval_unit)
+            payload["once"] = False
+        elif spec.kind == "event":
+            payload["condition"] = spec.condition.strip()
+        elif spec.kind == "datetime":
+            payload["at"] = spec.at.strip()
+        return self._request("POST", "/api/v1/triggers", json=payload, timeout=30.0)
+
+    def list_triggers(self) -> list[dict]:
+        data = self._request("GET", "/api/v1/triggers", timeout=30.0)
+        if isinstance(data, dict):
+            items = data.get("items") or []
+            return [item for item in items if isinstance(item, dict)]
+        return []
+
+    def list_agent_runs(self, workflow_id: str) -> list[AgentRunHistoryItem]:
+        data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs", timeout=60.0)
+        items = data if isinstance(data, list) else []
+        return [
+            AgentRunHistoryItem(
+                id=str(item.get("id") or ""),
+                workflow_id=str(item.get("workflow_id") or workflow_id),
+                message=str(item.get("message") or ""),
+                status=str(item.get("status") or ""),
+                answer=str(item.get("answer") or ""),
+                source=str(item.get("source") or "chat"),
+                started_at=str(item.get("started_at") or ""),
+                finished_at=str(item.get("finished_at") or ""),
+            )
+            for item in items
+            if isinstance(item, dict)
+        ]
 
     def stream_trigger_check(
         self,

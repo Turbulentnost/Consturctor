@@ -127,3 +127,14 @@ class AgentToolResultSubmit(BaseModel):
     ok: bool = True
     result: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
+
+
+class AgentRunOut(BaseModel):
+    id: str
+    workflow_id: str
+    message: str = ""
+    status: str = "started"
+    answer: str = ""
+    source: str = "chat"
+    started_at: str = ""
+    finished_at: str = ""
