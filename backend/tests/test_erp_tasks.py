@@ -176,40 +176,61 @@ def test_actor_from_jwt_falls_back_to_session() -> None:
 
 def test_subordinate_task_tree_nests_people_and_due_dates() -> None:
     manager = ErpUserProfile(
-        fio="Мангасарян Давид Каренович",
-        department="Сектор по внедрению искусственного интеллекта",
-        position="Руководитель сектора",
+        fio="Соломичева Светлана Викторовна",
+        department="Служба развития",
+        position="Начальник службы развития",
     )
     parent = ErpOrgDept(
         id="A",
-        name="Сектор по внедрению искусственного интеллекта",
+        name="Служба развития",
         parent_id="PARENT",
         is_root=True,
+        head_fio="Соломичева Светлана Викторовна",
     )
-    child = ErpOrgDept(id="B", name="Группа разметки", parent_id="A", is_root=False)
+    child = ErpOrgDept(
+        id="B",
+        name="Сектор по внедрению искусственного интеллекта",
+        parent_id="A",
+        is_root=False,
+        head_fio="Мангасарян Давид Каренович",
+    )
     people = [
+        ErpSubordinate(
+            fio="Гарипова Екатерина Сергеевна",
+            position="Начальник службы развития",
+            department="Служба развития",
+        ),
+        ErpSubordinate(
+            fio="Мангасарян Давид Каренович",
+            position="Руководитель сектора",
+            department="Сектор по внедрению искусственного интеллекта",
+        ),
         ErpSubordinate(
             fio="Давлетов Руслан Игоревич",
             position="Промпт-инженер 1 категории",
             department="Сектор по внедрению искусственного интеллекта",
         ),
-        ErpSubordinate(
-            fio="Петров Сергей Сергеевич",
-            position="Промпт-инженер",
-            department="Группа разметки",
-        ),
     ]
     tasks = {
-        "Давлетов Руслан Игоревич": [
+        "Мангасарян Давид Каренович": [
             {
                 "number": "1",
-                "title": "Проверить промпт",
+                "title": "План сектора",
                 "due_at": "2026-08-20 18:00:00",
                 "created_at": "2026-08-10 10:00:00",
                 "status": "открыта",
             }
         ],
-        "Петров Сергей Сергеевич": [],
+        "Давлетов Руслан Игоревич": [
+            {
+                "number": "2",
+                "title": "Проверить промпт",
+                "due_at": "2026-08-18 12:00:00",
+                "created_at": "2026-08-11 09:00:00",
+                "status": "открыта",
+            }
+        ],
+        "Гарипова Екатерина Сергеевна": [],
     }
     tree = build_subordinate_task_tree(
         manager=manager,
@@ -217,13 +238,17 @@ def test_subordinate_task_tree_nests_people_and_due_dates() -> None:
         people=people,
         tasks_by_fio=tasks,
     )
-    assert len(tree) == 1
-    assert tree[0]["department"] == "Сектор по внедрению искусственного интеллекта"
-    assert tree[0]["people"][0]["fio"] == "Давлетов Руслан Игоревич"
-    assert tree[0]["people"][0]["position"] == "Промпт-инженер 1 категории"
-    assert tree[0]["people"][0]["tasks"][0]["due_at"] == "2026-08-20 18:00:00"
-    assert tree[0]["children"][0]["department"] == "Группа разметки"
-    assert tree[0]["children"][0]["people"][0]["fio"] == "Петров Сергей Сергеевич"
+    assert [node["fio"] for node in tree] == [
+        "Мангасарян Давид Каренович",
+        "Гарипова Екатерина Сергеевна",
+    ]
+    assert tree[0]["level"] == 1
+    assert tree[0]["position"] == "Руководитель сектора"
+    assert tree[0]["tasks"][0]["due_at"] == "2026-08-20 18:00:00"
+    assert tree[0]["subordinates"][0]["fio"] == "Давлетов Руслан Игоревич"
+    assert tree[0]["subordinates"][0]["level"] == 2
+    assert tree[0]["subordinates"][0]["tasks"][0]["due_at"] == "2026-08-18 12:00:00"
+    assert tree[1]["subordinates"] == []
 
 
 def test_invoke_subordinate_tasks_uses_jwt_actor(monkeypatch) -> None:

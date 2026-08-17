@@ -298,10 +298,11 @@ def list_tools() -> list[dict[str, Any]]:
         {
             "name": "onec.erp_subordinate_tasks",
             "description": (
-                "Дерево задач подчинённых руководителя из erp_pm: оргструктура, "
-                "действующие люди на штатке (без уволенных и переведённых), "
-                "должность и сроки задач. "
-                "Человек берётся из JWT сессии Constructor; можно передать access_token. "
+                "Дерево задач подчинённых из erp_pm: сначала непосредственные "
+                "подчинённые (должность, задачи и сроки за период), затем "
+                "подчинённые каждого из них и так далее. "
+                "Только действующие назначения, без уволенных и переведённых. "
+                "Человек из JWT сессии; можно передать access_token. "
                 "Исполняется на сервере."
             ),
             "execution": "server",
@@ -315,20 +316,28 @@ def list_tools() -> list[dict[str, Any]]:
                             "(Authorization Bearer)."
                         ),
                     },
+                    "date_from": {
+                        "type": "string",
+                        "description": "Начало периода YYYY-MM-DD. Пусто — 30 дней назад.",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "Конец периода YYYY-MM-DD. Пусто — сегодня.",
+                    },
                     "only_open": {
                         "type": "boolean",
-                        "default": True,
+                        "default": False,
                         "description": "Только открытые задачи",
                     },
                     "include_done": {
                         "type": "boolean",
-                        "default": False,
-                        "description": "Включать выполненные задачи",
+                        "default": True,
+                        "description": "Включать выполненные задачи за период",
                     },
                     "limit_per_person": {
                         "type": "integer",
                         "default": 30,
-                        "description": "Максимум задач на одного подчинённого",
+                        "description": "Максимум задач на одного человека",
                     },
                 },
             },

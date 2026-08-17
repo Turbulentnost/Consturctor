@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Sequence
 
 from app.clients import erp_sql
@@ -142,6 +142,7 @@ def _query_tasks(
     limit: int = 50,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    match_due: bool = False,
 ) -> list[dict[str, Any]]:
     names = [item.strip() for item in (*(fios or ()), fio) if item and item.strip()]
     unique_names: list[str] = []
@@ -165,12 +166,23 @@ def _query_tasks(
         params.extend(unique_names)
     if only_open:
         clauses.append("t._Executed = 0x00")
-    if date_from is not None:
-        clauses.append("t._Date_Time >= ?")
-        params.append(to_1c_datetime(date_from))
-    if date_to is not None:
-        clauses.append("t._Date_Time <= ?")
-        params.append(to_1c_datetime(date_to))
+    if date_from is not None and date_to is not None and match_due:
+        clauses.append(
+            "("
+            "(t._Date_Time >= ? AND t._Date_Time <= ?)"
+            " OR (t._Fld2515 > '2001-01-02' AND t._Fld2515 >= ? AND t._Fld2515 <= ?)"
+            ")"
+        )
+        start_1c = to_1c_datetime(date_from)
+        finish_1c = to_1c_datetime(date_to)
+        params.extend([start_1c, finish_1c, start_1c, finish_1c])
+    else:
+        if date_from is not None:
+            clauses.append("t._Date_Time >= ?")
+            params.append(to_1c_datetime(date_from))
+        if date_to is not None:
+            clauses.append("t._Date_Time <= ?")
+            params.append(to_1c_datetime(date_to))
     where = " AND ".join(clauses)
     sql_parts = [
         f"""
@@ -273,14 +285,55 @@ def actor_from_jwt(
     return fio, user_id
 
 
-def _person_node(person: ErpSubordinate, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+def _person_node(
+    person: ErpSubordinate,
+    tasks: list[dict[str, Any]],
+    *,
+    level: int,
+    subordinates: list[dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "fio": person.fio,
         "position": person.position,
         "department": person.department,
+        "level": level,
         "task_count": len(tasks),
         "tasks": tasks,
+        "subordinates": subordinates,
     }
+
+
+def _direct_reports(
+    manager_fio: str,
+    *,
+    departments: list[ErpOrgDept],
+    people: list[ErpSubordinate],
+    person_by_fio: dict[str, ErpSubordinate],
+) -> list[ErpSubordinate]:
+    headed = [dept for dept in departments if dept.head_fio == manager_fio]
+    if not headed:
+        return []
+    headed_ids = {dept.id for dept in headed}
+    headed_names = {dept.name for dept in headed}
+    head_fios = {dept.head_fio for dept in departments if dept.head_fio}
+    result: list[ErpSubordinate] = []
+    seen = {manager_fio}
+    for dept in departments:
+        head = dept.head_fio
+        if dept.parent_id not in headed_ids or not head or head in seen:
+            continue
+        seen.add(head)
+        result.append(
+            person_by_fio.get(head)
+            or ErpSubordinate(fio=head, position="", department=dept.name)
+        )
+    for person in people:
+        if person.fio in seen:
+            continue
+        if person.department in headed_names and person.fio not in head_fios:
+            seen.add(person.fio)
+            result.append(person)
+    return result
 
 
 def build_subordinate_task_tree(
@@ -290,54 +343,64 @@ def build_subordinate_task_tree(
     people: list[ErpSubordinate],
     tasks_by_fio: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
-    """Org tree: headed departments → people (position + tasks) → child departments."""
-    by_parent: dict[str, list[ErpOrgDept]] = {}
+    """Person tree: direct reports first, then their reports, and so on."""
+    person_by_fio = {person.fio: person for person in people}
     for dept in departments:
-        if dept.is_root:
-            continue
-        by_parent.setdefault(dept.parent_id, []).append(dept)
-    people_by_dept: dict[str, list[ErpSubordinate]] = {}
-    leftovers: list[ErpSubordinate] = []
-    dept_names = {item.name for item in departments}
-    for person in people:
-        if person.department in dept_names:
-            people_by_dept.setdefault(person.department, []).append(person)
-        else:
-            leftovers.append(person)
+        if dept.head_fio and dept.head_fio not in person_by_fio:
+            person_by_fio[dept.head_fio] = ErpSubordinate(
+                fio=dept.head_fio,
+                position="",
+                department=dept.name,
+            )
 
-    def render(dept: ErpOrgDept) -> dict[str, Any]:
-        members = [
-            _person_node(person, tasks_by_fio.get(person.fio, []))
-            for person in people_by_dept.get(dept.name, [])
-        ]
-        children = [render(child) for child in by_parent.get(dept.id, [])]
-        return {
-            "department": dept.name,
-            "people": members,
-            "children": children,
-        }
-
-    tree = [render(dept) for dept in departments if dept.is_root]
-    if leftovers:
-        tree.append(
-            {
-                "department": "",
-                "people": [
-                    _person_node(person, tasks_by_fio.get(person.fio, []))
-                    for person in leftovers
-                ],
-                "children": [],
-            }
+    def render(person: ErpSubordinate, level: int, trail: frozenset[str]) -> dict[str, Any]:
+        if person.fio in trail or level > 8:
+            return _person_node(
+                person,
+                tasks_by_fio.get(person.fio, []),
+                level=level,
+                subordinates=[],
+            )
+        kids = _direct_reports(
+            person.fio,
+            departments=departments,
+            people=people,
+            person_by_fio=person_by_fio,
         )
-    return tree
+        return _person_node(
+            person,
+            tasks_by_fio.get(person.fio, []),
+            level=level,
+            subordinates=[
+                render(child, level + 1, trail | {person.fio}) for child in kids
+            ],
+        )
+
+    roots = _direct_reports(
+        manager.fio,
+        departments=departments,
+        people=people,
+        person_by_fio=person_by_fio,
+    )
+    return [render(person, 1, frozenset({manager.fio})) for person in roots]
+
+
+def _count_tree_people(nodes: list[dict[str, Any]]) -> int:
+    total = 0
+    for node in nodes:
+        total += 1
+        total += _count_tree_people(list(node.get("subordinates") or []))
+    return total
 
 
 def list_subordinate_tasks(
     *,
     fio: str = "",
     user_id: str = "",
-    only_open: bool = True,
+    only_open: bool = False,
     limit_per_person: int = 30,
+    date_from: str = "",
+    date_to: str = "",
 ) -> dict[str, Any]:
     actor_fio, actor_id = resolve_actor(fio=fio, user_id=user_id)
     try:
@@ -346,13 +409,28 @@ def list_subordinate_tasks(
         raise ErpTaskError(str(exc)) from exc
     if not manager.fio:
         manager = ErpUserProfile(fio=actor_fio)
+    start = parse_date(date_from) if (date_from or "").strip() else None
+    finish = parse_date(date_to, end=True) if (date_to or "").strip() else None
+    if start and finish and finish < start:
+        raise ErpTaskError("date_to раньше date_from")
+    if start is None or finish is None:
+        today = date.today()
+        finish = datetime.combine(today, datetime.max.time()).replace(microsecond=0)
+        start = datetime.combine(today - timedelta(days=30), datetime.min.time())
     per_person = max(1, min(int(limit_per_person or 30), 100))
-    tasks_by_fio: dict[str, list[dict[str, Any]]] = {person.fio: [] for person in people}
-    if people:
+    fios = [person.fio for person in people]
+    for dept in departments:
+        if dept.head_fio and dept.head_fio != manager.fio and dept.head_fio not in fios:
+            fios.append(dept.head_fio)
+    tasks_by_fio: dict[str, list[dict[str, Any]]] = {name: [] for name in fios}
+    if fios:
         raw = _query_tasks(
-            fios=[person.fio for person in people],
+            fios=fios,
             only_open=only_open,
-            limit=min(400, per_person * len(people)),
+            date_from=start,
+            date_to=finish,
+            match_due=True,
+            limit=min(400, per_person * len(fios)),
         )
         for task in raw:
             owner = str(task.get("performer") or "").strip()
@@ -367,9 +445,12 @@ def list_subordinate_tasks(
         tasks_by_fio=tasks_by_fio,
     )
     task_count = sum(len(items) for items in tasks_by_fio.values())
+    period_from = start.date().isoformat()
+    period_to = finish.date().isoformat()
     return {
         "summary": (
-            f"Задачи подчинённых: {task_count} у {len(people)} чел. ({manager.fio or actor_fio})"
+            f"Задачи подчинённых {period_from}…{period_to}: "
+            f"{task_count} у {_count_tree_people(tree)} чел. ({manager.fio or actor_fio})"
         ),
         "manager": {
             "fio": manager.fio or actor_fio,
@@ -377,7 +458,9 @@ def list_subordinate_tasks(
             "department": manager.department,
             "user_id": actor_id,
         },
-        "subordinate_count": len(people),
+        "date_from": period_from,
+        "date_to": period_to,
+        "subordinate_count": _count_tree_people(tree),
         "task_count": task_count,
         "tree": tree,
         "source": "erp_pm",
@@ -406,7 +489,7 @@ def handle_subordinate_tasks(
 ) -> dict[str, Any]:
     fio, user_id = actor_from_jwt(args, actor_fio=actor_fio, actor_user_id=actor_user_id)
     include_done = args.get("include_done")
-    only_open = True if include_done is None else not bool(include_done)
+    only_open = False if include_done is None else not bool(include_done)
     if "only_open" in args:
         only_open = bool(args.get("only_open"))
     return list_subordinate_tasks(
@@ -414,6 +497,8 @@ def handle_subordinate_tasks(
         user_id=user_id,
         only_open=only_open,
         limit_per_person=int(args.get("limit_per_person") or args.get("limit") or 30),
+        date_from=str(args.get("date_from") or args.get("dateFrom") or ""),
+        date_to=str(args.get("date_to") or args.get("dateTo") or ""),
     )
 
 
@@ -482,6 +567,8 @@ def stub_subordinate_tasks(
         },
         "subordinate_count": 0,
         "task_count": 0,
+        "date_from": str(args.get("date_from") or args.get("dateFrom") or ""),
+        "date_to": str(args.get("date_to") or args.get("dateTo") or ""),
         "tree": [],
         "source": "stub",
     }

@@ -96,6 +96,7 @@ class ErpOrgDept:
     name: str
     parent_id: str
     is_root: bool = False
+    head_fio: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,6 +495,67 @@ def list_departments(limit: int = 500) -> list[str]:
         conn.close()
 
 
+def _append_missing_heads(
+    cur,
+    manager_fio: str,
+    departments: list[ErpOrgDept],
+    people: list[ErpSubordinate],
+    seen_people: set[str],
+) -> list[ErpSubordinate]:
+    missing = []
+    for dept in departments:
+        head = dept.head_fio
+        if not head or head == manager_fio or head in seen_people:
+            continue
+        if head not in missing:
+            missing.append(head)
+    if not missing:
+        return people
+    placeholders = ",".join("?" * len(missing))
+    cur.execute(
+        f"""
+        ;WITH latest AS (
+            SELECT
+                CAST(p._Description AS nvarchar(256)) AS Person,
+                CAST(pos._Description AS nvarchar(256)) AS Position,
+                CAST(hr._Description AS nvarchar(256)) AS HrDept,
+                ROW_NUMBER() OVER (
+                    PARTITION BY p._IDRRef
+                    ORDER BY t._Fld43774 DESC
+                ) AS rn
+            FROM dbo._InfoRg43757 t WITH (NOLOCK)
+            INNER JOIN dbo._Reference596 p WITH (NOLOCK)
+                ON t._Fld43761RRef = p._IDRRef
+            LEFT JOIN dbo._Reference164 pos WITH (NOLOCK)
+                ON t._Fld43766RRef = pos._IDRRef
+            LEFT JOIN dbo._Reference358 hr WITH (NOLOCK)
+                ON t._Fld43765RRef = hr._IDRRef
+            WHERE t._Fld43775 >= '5999-01-01'
+              AND t._Fld43774 > '2002-01-01'
+              AND LTRIM(RTRIM(p._Description)) IN ({placeholders})
+        )
+        SELECT Person, Position, HrDept
+        FROM latest
+        WHERE rn = 1
+        """,
+        missing,
+    )
+    found: dict[str, tuple[str, str]] = {}
+    for row in cur.fetchall():
+        found[(row.Person or "").strip()] = (
+            (row.Position or "").strip(),
+            (row.HrDept or "").strip(),
+        )
+    extra: list[ErpSubordinate] = []
+    for head in missing:
+        position, department = found.get(head, ("", ""))
+        if not department:
+            department = next((d.name for d in departments if d.head_fio == head), "")
+        extra.append(ErpSubordinate(fio=head, position=position, department=department))
+        seen_people.add(head)
+    return people + extra
+
+
 def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], list[ErpSubordinate]]:
     """Active people under departments headed by FIO (erp_pm org + staffing).
 
@@ -513,7 +575,7 @@ def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], li
         cur.execute(
             """
             ;WITH headed AS (
-                SELECT d._IDRRef, d._Description, d._ParentIDRRef
+                SELECT d._IDRRef, d._Description, d._ParentIDRRef, d._Fld14523RRef
                 FROM dbo._Reference513 d WITH (NOLOCK)
                 INNER JOIN dbo._Reference596 p WITH (NOLOCK)
                     ON d._Fld14523RRef = p._IDRRef
@@ -522,21 +584,24 @@ def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], li
                   AND LTRIM(RTRIM(d._Description)) <> N''
             ),
             tree AS (
-                SELECT _IDRRef, _Description, _ParentIDRRef, CAST(1 AS int) AS IsRoot
+                SELECT _IDRRef, _Description, _ParentIDRRef, _Fld14523RRef, CAST(1 AS int) AS IsRoot
                 FROM headed
                 UNION ALL
-                SELECT c._IDRRef, c._Description, c._ParentIDRRef, 0
+                SELECT c._IDRRef, c._Description, c._ParentIDRRef, c._Fld14523RRef, 0
                 FROM dbo._Reference513 c WITH (NOLOCK)
                 INNER JOIN tree t ON c._ParentIDRRef = t._IDRRef
                 WHERE c._Marked = 0x00
                   AND LTRIM(RTRIM(c._Description)) <> N''
             )
             SELECT
-                CONVERT(varchar(64), _IDRRef, 2) AS DeptId,
-                CAST(_Description AS nvarchar(256)) AS Dept,
-                CONVERT(varchar(64), _ParentIDRRef, 2) AS ParentId,
-                IsRoot
-            FROM tree
+                CONVERT(varchar(64), t._IDRRef, 2) AS DeptId,
+                CAST(t._Description AS nvarchar(256)) AS Dept,
+                CONVERT(varchar(64), t._ParentIDRRef, 2) AS ParentId,
+                t.IsRoot,
+                CAST(hp._Description AS nvarchar(256)) AS HeadFio
+            FROM tree t
+            LEFT JOIN dbo._Reference596 hp WITH (NOLOCK)
+                ON t._Fld14523RRef = hp._IDRRef
             OPTION (MAXRECURSION 32)
             """,
             (fio,),
@@ -556,6 +621,7 @@ def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], li
                     name=name,
                     parent_id=(row.ParentId or "").strip().upper(),
                     is_root=int(row.IsRoot or 0) == 1,
+                    head_fio=(row.HeadFio or "").strip(),
                 )
             )
             if name not in dept_names:
@@ -645,6 +711,7 @@ def load_subordinate_org(fio: str) -> tuple[ErpUserProfile, list[ErpOrgDept], li
                     department=department,
                 )
             )
+        people = _append_missing_heads(cur, fio, departments, people, seen_people)
         return profile, departments, people
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to load subordinates: {exc}") from exc
