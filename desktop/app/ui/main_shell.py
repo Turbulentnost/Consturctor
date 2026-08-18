@@ -56,6 +56,7 @@ from app.ui.pages.readiness_page import ReadinessPage
 from app.ui.pages.revision_result_page import RevisionResultPage
 from app.ui.pages.role_match_page import RoleMatchPage
 from app.ui.pages.saved_workflows_page import SavedWorkflowsPage
+from app.ui.pages.notifications_page import NotificationsPage
 from app.ui.pages.settings_page import SettingsPage
 from app.ui.pages.workflow_page import WorkflowPage
 from app.ui.theme import (
@@ -208,6 +209,7 @@ class MainShell(QWidget):
         self._page_schedule = AgentSchedulePage()
         self._page_kpi_preview = AgentKpiPreviewPage(self._api)
         self._page_loading = LoadingPage()
+        self._page_notifications = NotificationsPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_implementation_agents)
@@ -226,6 +228,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_schedule)
         self._pages.addWidget(self._page_loading)
         self._pages.addWidget(self._page_kpi_preview)
+        self._pages.addWidget(self._page_notifications)
         self._page_index = {
             "create": 0,
             "agents": 1,
@@ -245,6 +248,7 @@ class MainShell(QWidget):
             "schedule": 15,
             "loading": 16,
             "kpi_preview": 17,
+            "notifications": 18,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
@@ -265,6 +269,7 @@ class MainShell(QWidget):
         self._page_agents.delete_requested.connect(self._on_delete_agent_draft)
         self._page_agents.delete_suggestion_requested.connect(self._on_delete_agent_suggestion)
         self._page_agents.delete_agent_requested.connect(self._on_delete_published_agent)
+        self._page_agents.stop_auto_run_requested.connect(self._on_stop_published_agent)
         self._page_agents.run_agent_requested.connect(self._on_run_published_agent)
         self._page_agents.history_requested.connect(self._on_agent_history_requested)
         self._page_passport.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["agents"]))
@@ -333,6 +338,13 @@ class MainShell(QWidget):
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
         self.user_menu.settings_requested.connect(self._open_settings)
+        self.user_menu.notifications_requested.connect(self._open_notifications)
+        self._page_notifications.mark_all_requested.connect(self._mark_all_notifications_read)
+        self._page_notifications.item_opened.connect(self._on_notification_opened)
+        self._page_notifications.open_workflow_requested.connect(self._on_launch_workflow_from_inbox)
+        self._notify_timer = QTimer(self)
+        self._notify_timer.setInterval(20000)
+        self._notify_timer.timeout.connect(self.refresh_notification_badge)
 
         self._content = MainContentWidget()
         content_layout = QVBoxLayout(self._content)
@@ -446,6 +458,9 @@ class MainShell(QWidget):
         self._load_avatar(user)
         pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap
         self._page_settings.set_user(user, pixmap)
+        if not self._notify_timer.isActive():
+            self._notify_timer.start()
+        QTimer.singleShot(0, self.refresh_notification_badge)
 
     def _load_avatar(self, user: UserProfile) -> None:
         if not user.avatar_url:
@@ -472,6 +487,54 @@ class MainShell(QWidget):
             self._apply_user(profile)
         except ApiError:
             pass
+
+    def refresh_notification_badge(self) -> None:
+        try:
+            count = self._api.unread_notification_count()
+        except ApiError:
+            return
+        self.user_menu.set_unread_count(count)
+        if self._pages.currentIndex() == self._page_index.get("notifications"):
+            self._reload_notifications_page()
+
+    def _open_notifications(self) -> None:
+        self._reload_notifications_page()
+        self._pages.setCurrentIndex(self._page_index["notifications"])
+
+    def _reload_notifications_page(self) -> None:
+        try:
+            items, unread = self._api.list_inbox()
+        except ApiError as exc:
+            QMessageBox.information(self, "Уведомления", exc.message)
+            return
+        self._page_notifications.set_items(items)
+        self.user_menu.set_unread_count(unread)
+
+    def _mark_all_notifications_read(self) -> None:
+        try:
+            self._api.mark_all_notifications_read()
+        except ApiError as exc:
+            QMessageBox.information(self, "Уведомления", exc.message)
+            return
+        self._reload_notifications_page()
+
+    def _on_notification_opened(self, notification_id: str) -> None:
+        try:
+            self._api.mark_notification_read(notification_id)
+        except ApiError:
+            return
+        self.refresh_notification_badge()
+
+    def _on_launch_workflow_from_inbox(self, workflow_id: str) -> None:
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return
+        try:
+            record = self._api.get_workflow(wid)
+        except ApiError as exc:
+            QMessageBox.information(self, "Уведомления", exc.message)
+            return
+        self._on_launch_workflow_agent(record)
 
     def _open_settings(self) -> None:
         if self._user is not None:
@@ -1467,6 +1530,27 @@ class MainShell(QWidget):
         def run() -> None:
             try:
                 self._api.delete_agent_draft_suggestion(draft_id, agent_id)
+                drafts = self._api.list_agent_drafts()
+                workflows = self._api.list_workflows()
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._drafts_ready.emit((drafts, workflows))
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_stop_published_agent(self, workflow_id: str) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Остановить автозапуск",
+            "Остановить автозапуск этого агента? Расписание больше не будет запускать его само.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def run() -> None:
+            try:
+                self._api.stop_workflow_auto_run(workflow_id)
                 drafts = self._api.list_agent_drafts()
                 workflows = self._api.list_workflows()
             except ApiError as exc:

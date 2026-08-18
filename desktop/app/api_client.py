@@ -468,6 +468,18 @@ class ScheduleDraft:
 
 
 @dataclass
+class InboxNotification:
+    id: str
+    title: str
+    body: str = ""
+    workflow_id: str = ""
+    sender_fio: str = ""
+    unread: bool = True
+    created_at: str = ""
+    send_at: str = ""
+
+
+@dataclass
 class KpiSide:
     label: str = ""
     value: float | None = None
@@ -483,12 +495,37 @@ class KpiMeasure:
 
 
 @dataclass
+class KpiSchedule:
+    kind: str = "interval"
+    interval_seconds: int = 3600
+    at: str = ""
+
+
+@dataclass
+class KpiMethod:
+    how: str = ""
+    when: str = ""
+    plan_update: str = ""
+    fact_update: str = ""
+    percent_formula: str = ""
+    green_min: float = 90
+    yellow_min: float = 70
+    schedule: KpiSchedule = field(default_factory=KpiSchedule)
+
+
+@dataclass
 class KpiTile:
     id: str = ""
     name: str = ""
     plan: KpiSide = field(default_factory=KpiSide)
     fact: KpiSide = field(default_factory=KpiSide)
     measure: KpiMeasure = field(default_factory=KpiMeasure)
+    score_percent: float | None = None
+    color: str = "none"
+    updated_at: str = ""
+    next_run_at: str = ""
+    evidence: str = ""
+    method: KpiMethod = field(default_factory=KpiMethod)
 
 
 @dataclass
@@ -553,12 +590,52 @@ def _parse_kpi_side(data: dict | None) -> KpiSide:
     )
 
 
+def _parse_kpi_method(data: dict | None) -> KpiMethod:
+    raw = data if isinstance(data, dict) else {}
+    sched = raw.get("schedule") if isinstance(raw.get("schedule"), dict) else {}
+    try:
+        interval = int(float(sched.get("interval_seconds") or 3600))
+    except (TypeError, ValueError):
+        interval = 3600
+    try:
+        green = float(raw.get("green_min") if raw.get("green_min") is not None else 90)
+    except (TypeError, ValueError):
+        green = 90.0
+    try:
+        yellow = float(raw.get("yellow_min") if raw.get("yellow_min") is not None else 70)
+    except (TypeError, ValueError):
+        yellow = 70.0
+    return KpiMethod(
+        how=str(raw.get("how") or ""),
+        when=str(raw.get("when") or ""),
+        plan_update=str(raw.get("plan_update") or ""),
+        fact_update=str(raw.get("fact_update") or ""),
+        percent_formula=str(raw.get("percent_formula") or ""),
+        green_min=green,
+        yellow_min=yellow,
+        schedule=KpiSchedule(
+            kind=str(sched.get("kind") or "interval"),
+            interval_seconds=interval,
+            at=str(sched.get("at") or ""),
+        ),
+    )
+
+
 def _parse_agent_kpi(data: dict) -> AgentKpi:
     tiles: list[KpiTile] = []
     for item in data.get("tiles") or []:
         if not isinstance(item, dict):
             continue
         measure = item.get("measure") if isinstance(item.get("measure"), dict) else {}
+        score = item.get("score_percent")
+        parsed_score: float | None
+        if score is None or score == "":
+            parsed_score = None
+        else:
+            try:
+                parsed_score = float(score)
+            except (TypeError, ValueError):
+                parsed_score = None
         tiles.append(
             KpiTile(
                 id=str(item.get("id") or ""),
@@ -572,6 +649,12 @@ def _parse_agent_kpi(data: dict) -> AgentKpi:
                     else {},
                     formula=str(measure.get("formula") or ""),
                 ),
+                score_percent=parsed_score,
+                color=str(item.get("color") or "none"),
+                updated_at=str(item.get("updated_at") or ""),
+                next_run_at=str(item.get("next_run_at") or ""),
+                evidence=str(item.get("evidence") or ""),
+                method=_parse_kpi_method(item.get("method") if isinstance(item.get("method"), dict) else {}),
             )
         )
     return AgentKpi(
@@ -592,6 +675,7 @@ class WorkflowListItem:
     document_name: str = ""
     updated_at: str = ""
     has_local_run: bool = False
+    auto_run: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1289,6 +1373,7 @@ class ApiClient:
                 document_name=str(x.get("document_name") or ""),
                 updated_at=str(x.get("updated_at") or ""),
                 has_local_run=bool(x.get("has_local_run")),
+                auto_run=bool(x.get("auto_run")),
             )
             for x in items
             if isinstance(x, dict)
@@ -1352,6 +1437,19 @@ class ApiClient:
     def delete_workflow(self, workflow_id: str) -> None:
         self._request("DELETE", f"/api/v1/workflows/{workflow_id}", timeout=60.0)
 
+    def stop_workflow_auto_run(self, workflow_id: str) -> int:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/stop-auto-run",
+            timeout=30.0,
+        )
+        if isinstance(data, dict):
+            try:
+                return int(data.get("stopped") or 0)
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
     def plan_workflow(self, workflow_id: str) -> WorkflowRecord:
         data = self._request(
             "POST",
@@ -1365,9 +1463,16 @@ class ApiClient:
         workflow_id: str,
         on_event: Callable[[str, str], None],
     ) -> WorkflowRecord:
+        return self.stream_demo_workflow(workflow_id, on_event)
+
+    def stream_demo_workflow(
+        self,
+        workflow_id: str,
+        on_event: Callable[[str, str], None],
+    ) -> WorkflowRecord:
         return self._stream_workflow(
             "POST",
-            f"/api/v1/workflows/{workflow_id}/plan/stream",
+            f"/api/v1/workflows/{workflow_id}/demo/stream",
             on_event=on_event,
         )
 
@@ -1616,6 +1721,46 @@ class ApiClient:
         except httpx.HTTPError as exc:
             raise ApiError(f"Ошибка сети: {exc}") from exc
         return final_result or {}
+
+    def list_inbox(self) -> tuple[list[InboxNotification], int]:
+        data = self._request("GET", "/api/v1/notifications", timeout=20.0)
+        raw = data if isinstance(data, dict) else {}
+        items: list[InboxNotification] = []
+        for item in raw.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            items.append(
+                InboxNotification(
+                    id=str(item.get("id") or ""),
+                    title=str(item.get("title") or "Уведомление"),
+                    body=str(item.get("body") or ""),
+                    workflow_id=str(item.get("workflow_id") or ""),
+                    sender_fio=str(item.get("sender_fio") or ""),
+                    unread=bool(item.get("unread", item.get("read_at") in (None, ""))),
+                    created_at=str(item.get("created_at") or ""),
+                    send_at=str(item.get("send_at") or ""),
+                )
+            )
+        try:
+            unread = int(raw.get("unread_count") or sum(1 for item in items if item.unread))
+        except (TypeError, ValueError):
+            unread = sum(1 for item in items if item.unread)
+        return items, unread
+
+    def unread_notification_count(self) -> int:
+        data = self._request("GET", "/api/v1/notifications/unread-count", timeout=15.0)
+        if isinstance(data, dict):
+            try:
+                return int(data.get("count") or 0)
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
+    def mark_notification_read(self, notification_id: str) -> None:
+        self._request("POST", f"/api/v1/notifications/{notification_id}/read", timeout=15.0)
+
+    def mark_all_notifications_read(self) -> None:
+        self._request("POST", "/api/v1/notifications/read-all", timeout=15.0)
 
     def propose_schedule_draft(self, workflow_id: str) -> ScheduleDraft:
         data = self._request("POST", f"/api/v1/workflows/{workflow_id}/schedule-draft", timeout=90.0)

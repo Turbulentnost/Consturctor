@@ -8,11 +8,14 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDateTimeEdit,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -57,6 +60,26 @@ QLineEdit, QTextEdit, QComboBox, QDateTimeEdit, QDoubleSpinBox {
     padding: 6px 10px;
 }
 """
+_CHIP = """
+QFrame#TriggerChip {
+    background: #E8F3FB;
+    border: 1px solid #B7D4E8;
+    border-radius: 14px;
+}
+QFrame#TriggerChip:hover {
+    background: #D9ECF8;
+}
+QPushButton#ChipClose {
+    background: transparent;
+    color: #1A4A6B;
+    border: none;
+    border-radius: 10px;
+    padding: 0;
+}
+QPushButton#ChipClose:hover {
+    background: rgba(26,74,107,0.10);
+}
+"""
 
 
 class AgentSchedulePage(QWidget):
@@ -66,7 +89,7 @@ class AgentSchedulePage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._record: WorkflowRecord | None = None
-        self._cards: list[_TriggerCard] = []
+        self._cards: list[_TriggerChip] = []
 
         title = QLabel("Паспорт агента")
         title.setFont(app_font(28, QFont.Weight.DemiBold))
@@ -93,14 +116,14 @@ class AgentSchedulePage(QWidget):
         self._goal.setStyleSheet(_FIELD)
 
         self._list = QVBoxLayout()
-        self._list.setSpacing(10)
+        self._list.setSpacing(8)
         self._list.setContentsMargins(0, 0, 0, 0)
 
         add = QPushButton("Добавить триггер")
         add.setCursor(Qt.CursorShape.PointingHandCursor)
         add.setFixedHeight(36)
         add.setStyleSheet(_SECONDARY)
-        add.clicked.connect(lambda: self._add_card(ScheduleTriggerSpec(kind="interval", interval_value=1, interval_unit="hours", once=False)))
+        add.clicked.connect(self._on_add_menu)
 
         self._save = QPushButton("Сохранить")
         self._save.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -151,6 +174,8 @@ class AgentSchedulePage(QWidget):
         self._record = record
         draft = draft or ScheduleDraft()
         name = (draft.name or record.title or "ИИ-агент").strip()
+        if name.casefold() in {"notes", "notes.txt"}:
+            name = (record.title or "ИИ-агент").strip()
         goal = (draft.goal or (record.plan.goal if record.plan else "") or "").strip()
         self._name.setText(name)
         self._goal.setPlainText(goal)
@@ -172,13 +197,42 @@ class AgentSchedulePage(QWidget):
         self._save.setEnabled(not busy)
         self._save.setText("Сохраняю…" if busy else "Сохранить")
 
-    def _add_card(self, spec: ScheduleTriggerSpec) -> None:
-        card = _TriggerCard(spec)
+    def _on_add_menu(self) -> None:
+        menu = QMenu(self)
+        menu.addAction("Каждые 15 мин", lambda: self._add_card(
+            ScheduleTriggerSpec(kind="interval", interval_value=15, interval_unit="minutes", once=False)
+        ))
+        menu.addAction("Ежедневно в 12:00", lambda: self._add_card(
+            ScheduleTriggerSpec(kind="datetime", at="12:00", once=False)
+        ))
+        menu.addAction("По событию", lambda: self._add_and_edit(
+            ScheduleTriggerSpec(kind="event", condition="изменён файл или получено сообщение", once=False)
+        ))
+        sender = self.sender()
+        if isinstance(sender, QPushButton):
+            menu.exec(sender.mapToGlobal(sender.rect().bottomLeft()))
+        else:
+            menu.exec()
+
+    def _add_and_edit(self, spec: ScheduleTriggerSpec) -> None:
+        chip = self._add_card(spec)
+        if chip is not None:
+            self._edit_card(chip)
+
+    def _add_card(self, spec: ScheduleTriggerSpec) -> _TriggerChip:
+        card = _TriggerChip(spec)
         card.remove_requested.connect(lambda c=card: self._remove_card(c))
+        card.edit_requested.connect(lambda c=card: self._edit_card(c))
         self._cards.append(card)
         self._list.addWidget(card)
+        return card
 
-    def _remove_card(self, card: _TriggerCard) -> None:
+    def _edit_card(self, card: _TriggerChip) -> None:
+        dialog = _TriggerEditDialog(card.spec(), self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            card.set_spec(dialog.spec())
+
+    def _remove_card(self, card: _TriggerChip) -> None:
         if card in self._cards:
             self._cards.remove(card)
         card.setParent(None)
@@ -205,52 +259,99 @@ class AgentSchedulePage(QWidget):
         self.save_requested.emit(self._record, draft)
 
 
-class _TriggerCard(QFrame):
+class _TriggerChip(QFrame):
     remove_requested = Signal(object)
+    edit_requested = Signal(object)
 
     def __init__(self, spec: ScheduleTriggerSpec, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName("ScheduleCard")
-        self.setStyleSheet(_CARD + _FIELD)
+        self.setObjectName("TriggerChip")
+        self.setStyleSheet(_CHIP)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._spec = spec
+        self._label = QLabel(trigger_chip_label(spec))
+        self._label.setFont(app_font(13, QFont.Weight.Medium))
+        self._label.setWordWrap(True)
+        self._label.setStyleSheet("color: #1A4A6B; background: transparent;")
+        close = QPushButton("×")
+        close.setObjectName("ChipClose")
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setFixedSize(22, 22)
+        close.setToolTip("Убрать")
+        close.clicked.connect(lambda: self.remove_requested.emit(self))
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(8)
+        top.addWidget(self._label, 1)
+        top.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 8, 8, 8)
+        layout.addLayout(top)
+
+    def spec(self) -> ScheduleTriggerSpec:
+        return self._spec
+
+    def set_spec(self, spec: ScheduleTriggerSpec) -> None:
+        self._spec = spec
+        self._label.setText(trigger_chip_label(spec))
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            child = self.childAt(event.position().toPoint()) if hasattr(event, "position") else None
+            if child is None or not isinstance(child, QPushButton):
+                self.edit_requested.emit(self)
+                return
+        super().mousePressEvent(event)
+
+
+class _TriggerEditDialog(QDialog):
+    def __init__(self, spec: ScheduleTriggerSpec, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Когда запускается")
         self._kind = QComboBox()
         self._kind.addItem("Через время после последнего запуска", "interval")
         self._kind.addItem("Событие (файл, сообщение)", "event")
         self._kind.addItem("В определённое время", "datetime")
         self._kind.setCurrentIndex(max(0, self._kind.findData(spec.kind)))
+        self._kind.setStyleSheet(_FIELD)
 
         self._interval_value = QDoubleSpinBox()
         self._interval_value.setRange(0.1, 10_000)
         self._interval_value.setDecimals(1)
         self._interval_value.setValue(spec.interval_value or 1)
+        self._interval_value.setStyleSheet(_FIELD)
         self._interval_unit = QComboBox()
         self._interval_unit.addItem("мин.", "minutes")
         self._interval_unit.addItem("час.", "hours")
         self._interval_unit.addItem("дн.", "days")
         unit_index = self._interval_unit.findData(spec.interval_unit or "hours")
         self._interval_unit.setCurrentIndex(max(0, unit_index))
+        self._interval_unit.setStyleSheet(_FIELD)
 
         self._condition = QLineEdit()
-        self._condition.setPlaceholderText("Например: изменён файл на шаре или получено письмо")
+        self._condition.setPlaceholderText("Например: изменён файл на шаре")
         self._condition.setText(spec.condition)
+        self._condition.setStyleSheet(_FIELD)
 
         self._at = QDateTimeEdit()
         self._at.setCalendarPopup(True)
         self._at.setDisplayFormat("dd.MM.yyyy HH:mm")
         parsed = _parse_dt(spec.at)
         self._at.setDateTime(parsed or QDateTime.currentDateTime().addDays(1))
+        self._at.setStyleSheet(_FIELD)
         self._once = QCheckBox("Один раз")
         self._once.setChecked(bool(spec.once) if spec.kind == "datetime" else False)
 
         self._message = QLineEdit()
         self._message.setPlaceholderText("Задача при запуске (кратко)")
         self._message.setText(spec.message)
+        self._message.setStyleSheet(_FIELD)
 
         interval_row = QWidget()
         interval_lay = QHBoxLayout(interval_row)
         interval_lay.setContentsMargins(0, 0, 0, 0)
         interval_lay.addWidget(self._interval_value)
         interval_lay.addWidget(self._interval_unit)
-        interval_lay.addStretch(1)
 
         event_row = QWidget()
         event_lay = QVBoxLayout(event_row)
@@ -262,7 +363,6 @@ class _TriggerCard(QFrame):
         dt_lay.setContentsMargins(0, 0, 0, 0)
         dt_lay.addWidget(self._at)
         dt_lay.addWidget(self._once)
-        dt_lay.addStretch(1)
 
         self._stack = QStackedWidget()
         self._stack.addWidget(interval_row)
@@ -271,22 +371,17 @@ class _TriggerCard(QFrame):
         self._kind.currentIndexChanged.connect(self._sync_stack)
         self._sync_stack()
 
-        remove = QPushButton("Удалить")
-        remove.setCursor(Qt.CursorShape.PointingHandCursor)
-        remove.setFixedHeight(32)
-        remove.setStyleSheet(_SECONDARY)
-        remove.clicked.connect(lambda: self.remove_requested.emit(self))
-
-        top = QHBoxLayout()
-        top.addWidget(self._kind, 1)
-        top.addWidget(remove, 0)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(8)
-        layout.addLayout(top)
+        layout.addWidget(self._kind)
         layout.addWidget(self._stack)
         layout.addWidget(self._message)
+        layout.addWidget(buttons)
 
     def _sync_stack(self) -> None:
         kind = str(self._kind.currentData() or "interval")
@@ -294,9 +389,13 @@ class _TriggerCard(QFrame):
 
     def spec(self) -> ScheduleTriggerSpec:
         kind = str(self._kind.currentData() or "interval")
-        at = ""
+        at = spec_at = ""
         if kind == "datetime":
-            at = self._at.dateTime().toUTC().toString(Qt.DateFormat.ISODate)
+            if not self._once.isChecked():
+                spec_at = self._at.dateTime().toString("HH:mm")
+            else:
+                spec_at = self._at.dateTime().toUTC().toString(Qt.DateFormat.ISODate)
+            at = spec_at
         return ScheduleTriggerSpec(
             kind=kind,
             message=self._message.text().strip(),
@@ -306,6 +405,29 @@ class _TriggerCard(QFrame):
             at=at,
             once=self._once.isChecked() if kind == "datetime" else False,
         )
+
+
+def trigger_chip_label(spec: ScheduleTriggerSpec) -> str:
+    kind = (spec.kind or "").strip().casefold()
+    if kind == "interval":
+        value = spec.interval_value or 0
+        unit = (spec.interval_unit or "hours").strip().casefold()
+        amount = int(value) if float(value).is_integer() else value
+        if unit == "minutes":
+            return "каждую минуту" if amount == 1 else f"каждые {amount} мин"
+        if unit == "days":
+            return "ежедневно" if amount == 1 else f"каждые {amount} дн."
+        return "каждый час" if amount == 1 else f"каждые {amount} ч"
+    if kind == "datetime":
+        clock = _time_from_at(spec.at)
+        if (not spec.once or not _has_date(spec.at)) and clock:
+            return f"ежедневно в {clock}"
+        pretty = _pretty_datetime(spec.at)
+        return pretty or "в указанное время"
+    condition = (spec.condition or spec.message or "").strip()
+    if len(condition) > 60:
+        condition = condition[:57].rsplit(" ", 1)[0].strip() + "…"
+    return f"при событии: {condition}" if condition else "по событию"
 
 
 def _field_label(text: str) -> QLabel:
@@ -319,8 +441,53 @@ def _parse_dt(value: str) -> QDateTime | None:
     raw = (value or "").strip()
     if not raw:
         return None
+    clock = _time_from_at(raw)
+    if clock and not _has_date(raw):
+        hour, minute = clock.split(":")
+        now = QDateTime.currentDateTime()
+        now.setTime(now.time())
+        parsed = QDateTime(now.date(), now.time())
+        parsed.setTime(now.time())
+        from PySide6.QtCore import QTime
+        parsed.setTime(QTime(int(hour), int(minute)))
+        return parsed
     try:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
     return QDateTime.fromSecsSinceEpoch(int(parsed.timestamp()))
+
+
+def _time_from_at(value: str) -> str:
+    import re
+
+    match = re.search(r"(\d{1,2})[:.](\d{2})", value or "")
+    if not match:
+        return ""
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour > 23 or minute > 59:
+        return ""
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _has_date(value: str) -> bool:
+    import re
+
+    return bool(re.search(r"\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4}", value or ""))
+
+
+def _pretty_datetime(value: str) -> str:
+    import re
+
+    raw = (value or "").strip()
+    clock = _time_from_at(raw)
+    match = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if match:
+        return f"{match.group(3)}.{match.group(2)}.{match.group(1)}" + (f" {clock}" if clock else "")
+    match = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", raw)
+    if match:
+        return f"{int(match.group(1)):02d}.{int(match.group(2)):02d}.{match.group(3)}" + (
+            f" {clock}" if clock else ""
+        )
+    return clock or raw[:40]

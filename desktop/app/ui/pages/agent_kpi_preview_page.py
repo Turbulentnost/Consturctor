@@ -24,8 +24,10 @@ from app.api_client import (
     WorkflowRecord,
     _parse_agent_kpi,
 )
-from app.ui.pages.kpi_page import PlanFactTile
+from app.ui.pages.kpi_page import PlanFactTile, format_tiles_frequency
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
+
+_USER_MENU_RESERVE = 320
 
 
 _PRIMARY = """
@@ -146,6 +148,8 @@ class AgentKpiPreviewPage(QWidget):
         scroll.setWidget(inner)
 
         header = QHBoxLayout()
+        header.setContentsMargins(0, 0, _USER_MENU_RESERVE, 0)
+        header.setSpacing(12)
         header.addWidget(title, 1)
         header.addWidget(self._back, 0, Qt.AlignmentFlag.AlignRight)
 
@@ -332,7 +336,7 @@ class AgentKpiPreviewPage(QWidget):
             self._summary.setText("Не удалось собрать KPI. Назад — к паспорту, либо сохраните базовый набор позже.")
             self._summary.show()
             return
-        self._summary.setText(kpi.summary or "План и факт по этому агенту.")
+        self._summary.setText(format_tiles_frequency(kpi.tiles))
         self._summary.show()
         for index, tile in enumerate(kpi.tiles):
             self._tiles.addWidget(PlanFactTile(tile), index // 2, index % 2)

@@ -58,20 +58,18 @@ SUPPORTED_SUFFIXES = {
 
 _STAGES = [
     ("document", "Материалы", "Файлы загружены", "Добавляем материалы"),
-    ("plan", "План", "Структура готова", "Агент строит план"),
-    ("clarify", "Уточнения", "Ответы получены", "Нужны уточнения"),
-    ("ready", "Сборка workflow", "Workflow собран", "Агент формирует шаги, условия и связи."),
-    ("executing", "Тестовый прогон", "Прогон пройден", "Проверка на реальных данных"),
+    ("executing", "Пробный прогон", "Задача выполнена", "Агент делает задачу как Cursor"),
+    ("tested", "Инструкция", "Инструкция готова", "Пишем правило для следующих запусков"),
     ("done", "Готово", "Агент сохранён", "Можно запускать агента"),
 ]
 _PHASE_RANK = {
     "document": 0,
     "plan": 1,
-    "clarify": 2,
-    "ready": 3,
-    "executing": 4,
-    "tested": 4,
-    "done": 5,
+    "clarify": 1,
+    "ready": 1,
+    "executing": 1,
+    "tested": 2,
+    "done": 3,
 }
 
 _SEND_BTN = """
@@ -1125,7 +1123,7 @@ class StageStepper(QWidget):
         root.setContentsMargins(18, 18, 16, 18)
         root.setSpacing(0)
 
-        heading = QLabel("Создание workflow")
+        heading = QLabel("Создание агента")
         heading.setFont(app_font(15, QFont.Weight.DemiBold))
         heading.setStyleSheet("color: #06483D; background: transparent;")
         self._meta = QLabel("Этап 1 из 6 · 0%")
@@ -1230,6 +1228,7 @@ class WorkflowPage(QWidget):
         self._thinking_chunk = ""
         self._thinking_chunk_at = 0.0
         self._thinking_live: CursorFeedItem | None = None
+        self._assistant_live: CursorFeedItem | None = None
         self._stream_finished = False
         self._pending_async: tuple[object, str] | None = None
         self._pending_async_fail = ""
@@ -1239,6 +1238,7 @@ class WorkflowPage(QWidget):
         self._last_stream_error = ""
         self._last_exec_report = ""
         self._live_tools: list[dict] = []
+        self._live_tool_widgets: dict[str, CursorFeedItem] = {}
         self._activity_banner: QLabel | None = None
         self._busy_frames = ("◐", "◓", "◑", "◒")
         self._question_fields: dict[str, QLineEdit] = {}
@@ -1498,20 +1498,23 @@ class WorkflowPage(QWidget):
 
     # --- render ----------------------------------------------------------------
 
+    def _playbook(self) -> dict:
+        local = (self._record.local_run if self._record else None) or {}
+        playbook = local.get("playbook")
+        return playbook if isinstance(playbook, dict) else {}
+
     def _update_run_button(self, *, plan, unanswered: bool) -> None:
-        plan_ready = bool(plan) and not unanswered and not self._post_build_question
-        self._run_btn.setVisible(plan_ready)
-        if not plan_ready:
+        del plan, unanswered
+        show = bool(self._record) and not self._post_build_question
+        self._run_btn.setVisible(show)
+        if not show:
             return
         if self._busy:
             self._run_btn.setEnabled(False)
-            self._run_btn.setText("Идёт сборка…")
+            self._run_btn.setText("Идёт прогон…")
             return
         self._run_btn.setEnabled(True)
-        if self._record and (self._record.exec_agent_id or self._execute_started):
-            self._run_btn.setText("Запустить снова")
-        else:
-            self._run_btn.setText("Запустить сборку")
+        self._run_btn.setText("Запустить снова")
 
     def _should_hide_run_plan_action(self) -> bool:
         if self._busy or self._execute_started:
@@ -1536,9 +1539,9 @@ class WorkflowPage(QWidget):
         self._update_run_button(plan=plan, unanswered=unanswered)
         can_next = bool(
             self._record
-            and self._tests_ok
             and not self._busy
             and self._record.phase != "done"
+            and (self._tests_ok or self._playbook().get("demo_ok"))
         )
         self._next_btn.setVisible(can_next)
         self._next_btn.setEnabled(can_next)
@@ -1557,24 +1560,19 @@ class WorkflowPage(QWidget):
             self._agent_status.setText("● Предыдущий запуск завершился ошибкой — можно запустить снова")
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
         elif can_next:
-            self._agent_status.setText("● Тесты PASS — откройте паспорт и укажите, когда запускать")
+            self._agent_status.setText("● Инструкция готова — нажмите «Далее», чтобы сохранить агента")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         elif self._post_build_question:
             self._agent_status.setText("● Нужны уточнения после сборки — ответьте в чате")
             self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
-        elif (
-            self._record
-            and str((self._record.local_run or {}).get("tests_status") or "").casefold()
-            in {"fail", "unknown"}
-            and self._record.phase in {"ready", "tested"}
-        ):
-            self._agent_status.setText("● Тесты не пройдены — уточните в чате и перезапустите")
-            self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
+        elif self._record and self._record.phase in {"ready", "tested", "executing"}:
+            self._agent_status.setText("● Можно запустить пробный прогон снова")
+            self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         elif unanswered:
-            self._agent_status.setText("● Нужны уточнения — выберите вариант в чате")
+            self._agent_status.setText("● Нужен ответ по смыслу задачи — без этого неясен объём работы")
             self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
         elif plan and not unanswered:
-            self._agent_status.setText("● План готов — можно запускать")
+            self._agent_status.setText("● Можно запускать пробный прогон")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         else:
             self._agent_status.setText("● Готов к работе")
@@ -1614,10 +1612,10 @@ class WorkflowPage(QWidget):
         self._question_fields = {}
         self._answer_group = None
 
-        plan_question = (
-            self._record is not None
-            and self._record.plan is not None
-            and bool(self._record.plan.unanswered())
+        plan_question = bool(
+            self._record
+            and self._record.plan
+            and self._record.plan.unanswered()
             and not self._busy
         )
         post_question = bool(self._post_build_question) and not self._busy
@@ -1640,6 +1638,8 @@ class WorkflowPage(QWidget):
 
         hide_run_plan = self._should_hide_run_plan_action()
         self._feed_layout.addStretch(1)
+        self._assistant_live = None
+        self._live_tool_widgets = {}
         for idx, event in enumerate(self._events):
             if skip_clarify_idx is not None and idx == skip_clarify_idx:
                 continue
@@ -1648,6 +1648,8 @@ class WorkflowPage(QWidget):
             )
             widget = self._feed_item(event, fallback_key=f"e{idx}", hide_action=hide_action)
             self._feed_layout.addWidget(widget)
+            if event.title == "Агент" and event.kind == "agent":
+                self._assistant_live = widget
         thinking = (self._thinking_shown or "").strip()
         self._thinking_live = None
         if thinking:
@@ -1677,8 +1679,6 @@ class WorkflowPage(QWidget):
                 title = f"Инструмент: {name}"
                 body = detail or "Ошибка"
             key = str(tool.get("key") or f"live-tool-{name}")
-            if key not in self._collapsed_keys:
-                self._expanded_keys.add(key)
             widget = CursorFeedItem(
                 kind="tool",
                 text=body,
@@ -1688,6 +1688,7 @@ class WorkflowPage(QWidget):
                 expanded=key in self._expanded_keys,
             )
             widget.expand_toggled.connect(self._on_expand_toggled)
+            self._live_tool_widgets[key] = widget
             self._feed_layout.addWidget(widget)
         self._activity_banner = None
         if self._busy:
@@ -1760,8 +1761,6 @@ class WorkflowPage(QWidget):
             title = "Thinking"
         elif kind not in {"plan", "tool"}:
             title = ""
-        if kind == "tool" and key and key not in self._collapsed_keys:
-            self._expanded_keys.add(key)
         widget = CursorFeedItem(
             kind=kind,
             text=event.body,
@@ -1980,6 +1979,7 @@ class WorkflowPage(QWidget):
             self._busy_base = base
             self._busy_n = 0
             self._live_tools = []
+            self._live_tool_widgets = {}
             if not (self._last_stream_phrase or "").strip():
                 self._last_stream_phrase = base
             self._busy_timer.start()
@@ -2043,39 +2043,78 @@ class WorkflowPage(QWidget):
         if target is not None:
             target["status"] = status
             target["detail"] = self._merge_tool_detail(str(target.get("detail") or ""), incoming, status)
-            self._rebuild_feed()
+            self._refresh_live_tool_widget(target)
             return
         if status == "running":
             for item in self._live_tools:
                 if item.get("status") == "running":
                     item["status"] = "ok"
                     item["detail"] = item.get("detail") or "Готово"
+                    self._refresh_live_tool_widget(item)
             key = self._next_event_key()
-            if key not in self._collapsed_keys:
-                self._expanded_keys.add(key)
-            self._live_tools.append(
-                {
-                    "name": tool_name,
-                    "status": "running",
-                    "detail": incoming or "Выполняется…",
-                    "key": key,
-                }
-            )
-            self._last_stream_phrase = f"вызываю {tool_name}"
-            self._rebuild_feed()
-            return
-        key = self._next_event_key()
-        if key not in self._collapsed_keys:
-            self._expanded_keys.add(key)
-        self._live_tools.append(
-            {
+            tool = {
                 "name": tool_name,
-                "status": status,
-                "detail": incoming or ("Готово" if status == "ok" else "Ошибка"),
+                "status": "running",
+                "detail": incoming or "Выполняется…",
                 "key": key,
             }
+            self._live_tools.append(tool)
+            self._last_stream_phrase = f"вызываю {tool_name}"
+            self._append_live_tool_widget(tool)
+            return
+        key = self._next_event_key()
+        tool = {
+            "name": tool_name,
+            "status": status,
+            "detail": incoming or ("Готово" if status == "ok" else "Ошибка"),
+            "key": key,
+        }
+        self._live_tools.append(tool)
+        self._append_live_tool_widget(tool)
+
+    def _tool_card_body(self, tool: dict) -> tuple[str, str]:
+        name = str(tool.get("name") or "инструмент")
+        status = str(tool.get("status") or "running")
+        detail = str(tool.get("detail") or "")
+        title = f"Инструмент: {name}"
+        if status == "running":
+            return title, detail or "Выполняется…"
+        if status == "ok":
+            return title, detail or "Готово"
+        return title, detail or "Ошибка"
+
+    def _refresh_live_tool_widget(self, tool: dict) -> None:
+        key = str(tool.get("key") or "")
+        widget = self._live_tool_widgets.get(key)
+        if widget is None:
+            self._append_live_tool_widget(tool)
+            return
+        _title, body = self._tool_card_body(tool)
+        widget.set_tool_detail(body)
+
+    def _append_live_tool_widget(self, tool: dict) -> None:
+        key = str(tool.get("key") or self._next_event_key())
+        tool["key"] = key
+        title, body = self._tool_card_body(tool)
+        widget = CursorFeedItem(
+            kind="tool",
+            text=body,
+            title=title,
+            detail=body,
+            event_key=key,
+            expanded=key in self._expanded_keys,
         )
-        self._rebuild_feed()
+        widget.expand_toggled.connect(self._on_expand_toggled)
+        self._live_tool_widgets[key] = widget
+        banner = self._activity_banner
+        if banner is not None:
+            index = self._feed_layout.indexOf(banner)
+            if index >= 0:
+                self._feed_layout.insertWidget(index, widget)
+                self._scroll_feed_to_bottom()
+                return
+        self._feed_layout.addWidget(widget)
+        self._scroll_feed_to_bottom()
 
     def _merge_tool_detail(self, previous: str, incoming: str, status: str) -> str:
         placeholders = {
@@ -2109,8 +2148,6 @@ class WorkflowPage(QWidget):
             else:
                 body = detail or "Вызов завершён"
             key = str(tool.get("key") or self._next_event_key())
-            if key not in self._collapsed_keys:
-                self._expanded_keys.add(key)
             self._events.append(
                 FeedEvent(
                     title=f"Инструмент: {name}",
@@ -2121,6 +2158,7 @@ class WorkflowPage(QWidget):
                 )
             )
         self._live_tools = []
+        self._live_tool_widgets = {}
 
     def _parse_tool_activity(self, text: str) -> bool:
         """Return True if text was handled as tool activity (not Thinking)."""
@@ -2177,6 +2215,7 @@ class WorkflowPage(QWidget):
     def _run_async(self, label: str, fn) -> None:
         self._reset_thinking_pacer()
         self._live_tools = []
+        self._live_tool_widgets = {}
         self._set_busy(True, label)
 
         def work() -> None:
@@ -2225,11 +2264,23 @@ class WorkflowPage(QWidget):
             if self._parse_tool_activity(incoming):
                 self._tick_activity()
                 return
-            # Короткие служебные фразы — в ленту сразу, не в Thinking.
-            if len(incoming.strip()) < 180 and not incoming.strip().startswith("```"):
-                self._push_event("Система", incoming.strip(), kind="system")
-                return
-        if event_type in {"thinking", "assistant"} and incoming:
+            self._push_event("Система", incoming.strip(), kind="system")
+            return
+        if event_type == "assistant" and incoming:
+            shown = incoming.replace("\ufffd", "")
+            if shown.strip():
+                last = self._events[-1] if self._events else None
+                if last is not None and last.title == "Агент" and last.kind == "agent":
+                    last.body = (last.body or "") + shown
+                    if self._assistant_live is not None:
+                        self._assistant_live.set_body_text(last.body)
+                        self._scroll_feed_to_bottom()
+                    else:
+                        self._rebuild_feed()
+                else:
+                    self._push_event("Агент", shown, kind="agent")
+            return
+        if event_type == "thinking" and incoming:
             if incoming.startswith(self._thinking_received) and len(incoming) >= len(self._thinking_received):
                 delta = incoming[len(self._thinking_received) :]
                 self._thinking_received = incoming
@@ -2239,12 +2290,6 @@ class WorkflowPage(QWidget):
             self._thinking_text = self._thinking_received
             if delta:
                 self._note_thinking_chunk(delta)
-            self._ensure_thinking_pacer()
-        elif event_type in {"decision", "system", "status", "message"} and incoming.strip():
-            delta = "\n" + incoming.strip()
-            self._thinking_received = (self._thinking_received + delta).strip()
-            self._thinking_text = self._thinking_received
-            self._note_thinking_chunk(delta)
             self._ensure_thinking_pacer()
 
     def _note_thinking_chunk(self, delta: str) -> None:
@@ -2347,47 +2392,22 @@ class WorkflowPage(QWidget):
             self._workflow_title = result.title
             self._notes = result.notes or self._notes
             self._render_chips()
-            if label.startswith("Планирование"):
+            if label.startswith("Планирование") or label.startswith("Пробный"):
                 unanswered = result.plan.unanswered() if result.plan else []
                 if unanswered:
-                    extra = f" ({len(unanswered)} вопросов)" if len(unanswered) > 1 else ""
-                    self._push_event(
-                        "Агент",
-                        "Сначала уточню детали по очереди, потом соберу план." + extra,
-                    )
+                    self._push_event("Агент", unanswered[0].question)
                     self._push_question_if_new(unanswered[0].question)
                 else:
-                    self._push_event(
-                        "План",
-                        _format_plan_steps(result.plan) if result.plan else (result.title or "План готов"),
-                        action="Показать шаги плана",
-                        action_key="show_plan",
-                    )
-                    self._push_event(
-                        "Сборка workflow",
-                        "План готов без открытых вопросов. Можно запускать реализацию.",
-                        action="Запустить сборку",
-                        action_key="run_plan",
-                    )
+                    self._show_demo_result(result)
             elif label.startswith("Уточнение"):
                 unanswered = result.plan.unanswered() if result.plan else []
                 if unanswered:
                     self._push_event("Агент", "Принял ответ, следующий вопрос.")
                     self._push_question_if_new(unanswered[0].question)
                 else:
-                    self._push_event(
-                        "Сборка workflow",
-                        "Уточнения учтены. План готов к запуску.",
-                        action="Запустить сборку",
-                        action_key="run_plan",
-                    )
+                    self._show_demo_result(result)
             elif label.startswith("Реализация"):
-                self._tests_ok = False
-                self._last_exec_report = (result.last_result or "").strip()
-                if result.exec_agent_id:
-                    self._on_fetch_results()
-                else:
-                    self._show_test_run_result(files=[], dest_dir="")
+                self._show_demo_result(result)
             elif label.startswith("Публикация"):
                 self._push_event(
                     "Сохранено",
@@ -2416,6 +2436,43 @@ class WorkflowPage(QWidget):
         else:
             self._ensure_thinking_pacer()
 
+    def _show_demo_result(self, result: WorkflowRecord) -> None:
+        self._last_exec_report = (result.last_result or "").strip()
+        playbook = (result.local_run or {}).get("playbook") or {}
+        if not isinstance(playbook, dict):
+            playbook = {}
+        work = (result.local_run or {}).get("work_result") or {}
+        if not isinstance(work, dict):
+            work = {}
+        report = str(work.get("text") or result.last_result or "").strip()
+        extras: list[str] = []
+        for item in work.get("files") or []:
+            extras.append(f"Файл: {item}")
+        for item in work.get("actions") or []:
+            extras.append(f"Действие: {item}")
+        for item in work.get("notifications") or []:
+            extras.append(f"Уведомление: {item}")
+        if extras:
+            report = (report + "\n\n" + "\n".join(extras)).strip()
+        if report:
+            self._push_event("Результат", report[:4000])
+        instructions = str(playbook.get("instructions") or "").strip()
+        example = str(playbook.get("example_run") or "").strip()
+        if instructions:
+            self._push_event("Инструкция", instructions)
+        if example:
+            self._push_event("Пример прогона", example[:2000])
+        self._tests_ok = bool(playbook.get("demo_ok") or instructions)
+        if self._tests_ok:
+            self._push_event(
+                "Сохранение",
+                "Инструкция готова. Нажмите «Далее», чтобы сохранить агента в «Мои агенты».",
+                action="Далее",
+                action_key="next",
+            )
+        else:
+            self._push_event("Агент", "Прогон завершён. Можно запустить снова.")
+
     def _on_plan(self) -> None:
         notes = (self._notes or "").strip()
         if self._record is None:
@@ -2423,23 +2480,23 @@ class WorkflowPage(QWidget):
                 QMessageBox.warning(
                     self,
                     "Документ",
-                    "Нет материалов. Откройте workflow из паспорта агента.",
+                    "Нет материалов. Откройте агента из паспорта.",
                 )
                 return
-            def create_and_plan() -> WorkflowRecord:
+            def create_and_demo() -> WorkflowRecord:
                 created = self._api.create_workflow(notes=notes, file_paths=self._pending_paths)
                 created = self._persist_passport_runtime(created)
-                planned = self._api.stream_plan_workflow(
+                demoed = self._api.stream_demo_workflow(
                     created.id,
                     lambda event_type, text: self._stream_event.emit(event_type, text),
                 )
-                return self._persist_passport_runtime(planned)
+                return self._persist_passport_runtime(demoed)
 
-            self._run_async("Планирование", create_and_plan)
+            self._run_async("Пробный прогон", create_and_demo)
             return
         self._run_async(
-            "Планирование",
-            lambda: self._api.stream_plan_workflow(
+            "Пробный прогон",
+            lambda: self._api.stream_demo_workflow(
                 self._record.id,  # type: ignore[union-attr]
                 lambda event_type, text: self._stream_event.emit(event_type, text),
             ),
@@ -2684,15 +2741,12 @@ class WorkflowPage(QWidget):
             return self._api.execute_workflow(workflow_id, reexecute=reexecute)
 
     def _on_run_clicked(self) -> None:
-        reexecute = bool(self._record and self._record.exec_agent_id)
-        self._on_execute(reexecute=reexecute)
+        self._on_execute()
 
     def _on_execute(self, reexecute: bool = False) -> None:
-        if self._record is None or self._record.plan is None:
-            QMessageBox.information(self, "План", "Сначала постройте план.")
-            return
-        if self._record.plan.unanswered():
-            QMessageBox.information(self, "Уточнения", "Сначала ответьте на вопросы агента.")
+        del reexecute
+        if self._record is None:
+            self._on_plan()
             return
         self._tests_ok = False
         self._post_build_question = None
@@ -2701,17 +2755,9 @@ class WorkflowPage(QWidget):
         self._last_stream_error = ""
         self._next_btn.setVisible(False)
         self._run_btn.setEnabled(False)
-        self._run_btn.setText("Идёт сборка…")
-        self._push_event("Сборка workflow", "Запускаю реализацию…")
-        self._last_stream_phrase = "создаю агента Cursor"
-        self._push_event(
-            "Система",
-            "Создаю агента Cursor. Дальше в ленте появятся Thinking и вызовы инструментов "
-            "(например turboproject). Пока идёт вызов — статус внизу мигает.",
-            kind="system",
-        )
-        wid = self._record.id
-        self._run_async("Реализация", lambda: self._execute_with_stream(wid, reexecute))
+        self._run_btn.setText("Идёт прогон…")
+        self._push_event("Пробный прогон", "Запускаю задачу по описанию бизнес-процесса…")
+        self._on_plan()
 
     def _show_test_run_result(self, *, files: list[str], dest_dir: str) -> None:
         result_md = _result_md_from_files(files)
@@ -2866,11 +2912,11 @@ class WorkflowPage(QWidget):
     def _on_schedule_requested(self) -> None:
         if self._record is None:
             return
-        if not self._tests_ok:
+        if not (self._tests_ok or self._playbook().get("demo_ok")):
             QMessageBox.information(
                 self,
-                "Тесты",
-                "Паспорт доступен только после TESTS: PASS.",
+                "Прогон",
+                "Сначала дождитесь успешного пробного прогона.",
             )
             return
         self.schedule_requested.emit(self._record)
@@ -2895,6 +2941,7 @@ class WorkflowPage(QWidget):
         self._last_stream_error = ""
         self._last_exec_report = ""
         self._live_tools = []
+        self._live_tool_widgets = {}
         self._activity_banner = None
         self._clear_questions()
         self._events = []

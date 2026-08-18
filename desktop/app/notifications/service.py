@@ -26,6 +26,7 @@ class NotificationService(QObject):
     open_workflow_requested = Signal(str)
     toast_requested = Signal(str, str, str)
     command_received = Signal(dict)
+    inbox_changed = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -140,6 +141,7 @@ class NotificationService(QObject):
         workflow_id = str(payload.get("workflow_id") or "")
         if not show_windows_toast(title, body, workflow_id):
             self.toast_requested.emit(title, body, workflow_id)
+        self.inbox_changed.emit()
         return True
 
 
