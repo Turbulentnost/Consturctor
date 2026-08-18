@@ -22,8 +22,11 @@ _TOOL_BLOCK_RE = re.compile(
     r"```(?:constructor_tool|tool)\s*\n(\{.*?\})\s*```",
     re.DOTALL,
 )
-_MAX_ROUNDS = 6
+_MAX_ROUNDS_PLAN = 6
+_MAX_ROUNDS_EXECUTE = 10
 _MAX_CALLS_PER_ROUND = 3
+_MAX_TOOL_FAILURES = 2
+_MAX_NUDGES = 2
 
 
 def set_tool_context(run_id: str, user_id: str) -> None:
@@ -40,13 +43,16 @@ def current_tool_context() -> tuple[str, str] | None:
 
 def tools_prompt_block() -> str:
     lines = [
-        "Доступные инструменты Constructor — реальные вызовы на компьютере пользователя.",
-        "Чтобы вызвать инструмент, верни ТОЛЬКО один блок (без плана вокруг):",
+        "Реестр Constructor. ```constructor_tool — markdown в ответе, не tool Cursor. "
+        "Backend перехватывает блок и вызывает tool на сервере. "
+        "Не пиши «нет доступа к constructor_tool».",
+        "Первый ответ — ТОЛЬКО один блок (без плана и кода вокруг):",
         "```constructor_tool",
-        '{"name": "outlook.search_mail", "arguments": {"query": "совещание"}}',
+        '{"name": "turboproject", "arguments": {}}',
         "```",
-        "Не выдумывай результат. Дождись ответа системы и только потом продолжи.",
-        "Когда данных достаточно — верни финальный ответ (JSON плана или RESULT) "
+        "Не вызывай BACKEND_URL, curl и HTTP с Cloud VM. Не выдумывай результат. "
+        "Дождись ответа системы и только потом продолжи.",
+        "Когда Constructor tool уже ответил — верни финальный ответ (JSON плана или RESULT) "
         "без блока constructor_tool.",
         "Каталог:",
     ]
@@ -100,9 +106,78 @@ def should_run_tool_calls(text: str, *, mode: str) -> list[dict[str, Any]]:
         if plan.title.strip() and plan.steps:
             return []
         return calls
-    if "TESTS: PASS" in (text or "") or "TESTS: FAIL" in (text or ""):
-        return []
+    # execute: не глушить цикл из-за TESTS: FAIL — в тексте ещё может быть constructor_tool
     return calls
+
+
+def tool_family(name: str) -> str:
+    raw = (name or "").strip().casefold()
+    if not raw:
+        return ""
+    return raw.split(".", 1)[0]
+
+
+_LIVE_FAMILIES = frozenset({"turboproject", "onec", "imap", "outlook"})
+
+
+def required_live_tools_from_plan(plan: Any) -> list[str]:
+    """Families from plan (runtime.kind / steps / answers), not hardcoded field lists."""
+    parts: list[str] = [
+        str(getattr(plan, "title", "") or ""),
+        str(getattr(plan, "goal", "") or ""),
+        str(getattr(getattr(plan, "runtime", None), "kind", "") or ""),
+        str(getattr(plan, "raw_text", "") or ""),
+    ]
+    for step in getattr(plan, "steps", None) or []:
+        parts.extend(
+            [
+                str(getattr(step, "title", "") or ""),
+                str(getattr(step, "action", "") or ""),
+                str(getattr(step, "done_when", "") or ""),
+            ]
+        )
+    for group in (
+        getattr(plan, "answered_questions", None) or [],
+        getattr(plan, "open_questions", None) or [],
+    ):
+        for item in group:
+            parts.extend(
+                [
+                    str(getattr(item, "question", "") or ""),
+                    str(getattr(item, "answer", "") or ""),
+                    str(getattr(item, "why", "") or ""),
+                ]
+            )
+    for bucket in (
+        getattr(plan, "constraints", None) or [],
+        getattr(plan, "test_criteria", None) or [],
+    ):
+        parts.extend(str(x) for x in bucket)
+    blob = " ".join(parts).casefold()
+    families: list[str] = []
+
+    def add(family: str) -> None:
+        key = (family or "").strip().casefold()
+        if key in _LIVE_FAMILIES and key not in families:
+            families.append(key)
+
+    kind = str(getattr(getattr(plan, "runtime", None), "kind", "") or "").casefold()
+    if "turbo" in kind or "turboproject" in blob or "ms project" in blob:
+        add("turboproject")
+    if kind == "onec" or any(tip in blob for tip in ("onec.", "1с", "odata", "erp_pm")):
+        add("onec")
+    if "imap" in kind or any(tip in blob for tip in ("imap.", "imap ")):
+        add("imap")
+    if kind == "outlook_calendar" or any(
+        tip in blob for tip in ("календар", "совещан", "outlook.application", "win32com")
+    ):
+        add("outlook")
+    return families
+
+
+def _covers_required(required: str, successful: set[str]) -> bool:
+    req = (required or "").casefold()
+    return any(item == req or item.startswith(req) for item in successful)
 
 
 def invoke_creation_tool(
@@ -129,6 +204,10 @@ def invoke_creation_tool(
         ctx = current_tool_context()
         user_id = ctx[1] if ctx else ""
         return _invoke_onec_server(tool, args, user_id=user_id)
+    if tool in {"turboproject", "turboproject.projects"} or tool.startswith("turboproject"):
+        from app.services.agent_runtime import _invoke_turboproject_server
+
+        return _invoke_turboproject_server(tool, args)
 
     ctx = current_tool_context()
     if ctx is None:
@@ -162,18 +241,54 @@ def stream_cursor_with_tools(
     workflow_id: str = "",
     mode: str = "plan",
     stream_run,
+    required_live_tools: list[str] | None = None,
 ) -> Any:
     """Stream a Cursor run; if it asks for constructor_tool, execute and continue."""
     last = stream_run(agent_id, run_id, on_event=on_event)
     if current_tool_context() is None:
-        return last
-    for round_n in range(_MAX_ROUNDS):
-        calls = should_run_tool_calls(last.text or "", mode=mode)
+        return _attach_live_ok(last, set())
+    required = [tool_family(name) for name in (required_live_tools or []) if tool_family(name)]
+    successful: set[str] = set()
+    fail_counts: dict[str, int] = {}
+    unreachable: set[str] = set()
+    last_errors: dict[str, str] = {}
+    nudge_without_call = 0
+    max_rounds = _MAX_ROUNDS_EXECUTE if mode == "execute" else _MAX_ROUNDS_PLAN
+
+    def missing_required() -> list[str]:
+        return [
+            name
+            for name in required
+            if not _covers_required(name, successful) and name not in unreachable
+        ]
+
+    for _round_n in range(max_rounds):
+        calls = should_run_tool_calls(getattr(last, "text", None) or "", mode=mode)
+        if not calls and mode == "execute":
+            pending = missing_required()
+            if pending and nudge_without_call < _MAX_NUDGES:
+                nudge_without_call += 1
+                _emit(
+                    on_event,
+                    "decision",
+                    "Жду вызов Constructor tool: " + ", ".join(pending),
+                )
+                follow = _nudge_live_tools_prompt(pending)
+                run = cursor_client.create_run(agent_id, prompt=follow, mode="agent")
+                next_id = str(run.get("id") or "")
+                if not next_id:
+                    return _attach_live_ok(last, successful)
+                last = stream_run(agent_id, next_id, on_event=on_event)
+                continue
+            return _attach_live_ok(last, successful)
         if not calls:
-            return last
+            return _attach_live_ok(last, successful)
+
+        nudge_without_call = 0
         results: list[dict[str, Any]] = []
         for call in calls[:_MAX_CALLS_PER_ROUND]:
             name = str(call.get("name") or "")
+            family = tool_family(name)
             _emit(on_event, "decision", f"Cursor вызывает «{name}»…")
             try:
                 result = invoke_creation_tool(
@@ -183,22 +298,62 @@ def stream_cursor_with_tools(
                     workflow_id=workflow_id,
                 )
                 results.append({"name": name, "ok": True, "result": _clip_result(result)})
+                if family:
+                    successful.add(family)
+                    fail_counts[family] = 0
+                    unreachable.discard(family)
                 _emit(on_event, "decision", f"«{name}»: готово.")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Creation tool %s failed: %s", name, exc)
                 results.append({"name": name, "ok": False, "error": str(exc)})
+                if family:
+                    fail_counts[family] = fail_counts.get(family, 0) + 1
+                    last_errors[family] = str(exc)
+                    if fail_counts[family] >= _MAX_TOOL_FAILURES:
+                        unreachable.add(family)
                 _emit(on_event, "decision", f"«{name}»: {exc}")
-        follow = _followup_prompt(results, mode=mode)
+        pending = missing_required()
+        follow = _followup_prompt(
+            results,
+            mode=mode,
+            pending=pending,
+            unreachable=sorted(unreachable),
+            last_errors=last_errors,
+        )
         run = cursor_client.create_run(agent_id, prompt=follow, mode="agent")
-        run_id = str(run.get("id") or "")
-        if not run_id:
-            return last
-        last = stream_run(agent_id, run_id, on_event=on_event)
-        _ = round_n
+        next_id = str(run.get("id") or "")
+        if not next_id:
+            return _attach_live_ok(last, successful)
+        last = stream_run(agent_id, next_id, on_event=on_event)
+    return _attach_live_ok(last, successful)
+
+
+def _attach_live_ok(last: Any, successful: set[str]) -> Any:
+    names = sorted(successful)
+    if last is not None and hasattr(last, "successful_live_tools"):
+        last.successful_live_tools = names
     return last
 
 
-def _followup_prompt(results: list[dict[str, Any]], *, mode: str) -> str:
+def _nudge_live_tools_prompt(pending: list[str]) -> str:
+    names = ", ".join(pending)
+    return (
+        "Ты ещё не получил ответ Constructor tool для: "
+        f"{names}.\n"
+        "Не используй BACKEND_URL, curl и HTTP с Cloud VM — на VM их нет, это не FAIL.\n"
+        "Верни ТОЛЬКО один блок ```constructor_tool с name из каталога Constructor "
+        f"(сейчас нужен {names}). Дождись фактов от backend, не останавливайся."
+    )
+
+
+def _followup_prompt(
+    results: list[dict[str, Any]],
+    *,
+    mode: str,
+    pending: list[str] | None = None,
+    unreachable: list[str] | None = None,
+    last_errors: dict[str, str] | None = None,
+) -> str:
     blob = json.dumps(results, ensure_ascii=False, indent=2, default=str)
     if mode == "plan":
         tail = (
@@ -206,14 +361,31 @@ def _followup_prompt(results: list[dict[str, Any]], *, mode: str) -> str:
             "Если нужно ещё проверить — снова верни только ```constructor_tool. "
             "Иначе верни финальный JSON плана по схеме, без блока constructor_tool."
         )
+    elif pending:
+        tail = (
+            "Это факты Constructor, не Cloud VM. "
+            "Ещё нет успешного ответа для: "
+            f"{', '.join(pending)}. "
+            "Снова верни только ```constructor_tool. "
+            "Не пиши TESTS: FAIL из-за BACKEND_URL / Cloud VM."
+        )
+    elif unreachable:
+        errors = last_errors or {}
+        detail = "; ".join(f"{name}: {errors.get(name) or 'ошибка'}" for name in unreachable)
+        tail = (
+            "Constructor tool повторно вернул ошибку. "
+            f"Цель недостижима: {detail}. "
+            "Запиши это в RESULT.md и TESTS: FAIL. Не вини Cloud VM / BACKEND_URL."
+        )
     else:
         tail = (
-            "Учти результаты инструментов и продолжи реализацию. "
-            "Если нужно ещё вызвать инструмент — только ```constructor_tool. "
-            "Иначе заверши работу (artifacts / RESULT.md / TESTS: PASS|FAIL)."
+            "Учти результаты Constructor tools и продолжи реализацию. "
+            "Если данных достаточно — RESULT.md с предметным выводом и TESTS: PASS. "
+            "Если нужен ещё вызов — только ```constructor_tool. "
+            "Не ставь FAIL из-за отсутствия BACKEND_URL на Cloud VM."
         )
     return (
-        "Результаты вызовов инструментов Constructor (это факты с компьютера пользователя):\n"
+        "Результаты вызовов инструментов Constructor (факты с сервера/desktop, не с VM):\n"
         f"{blob}\n\n{tail}"
     )
 

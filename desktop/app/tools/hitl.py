@@ -32,6 +32,7 @@ _READ_EXACT = frozenset(
         "onec.erp_subordinate_tasks",
         "onec.docflow_tasks",
         "agent.wait",
+        "turboproject",
         "users.list",
         "notify.send",
         "agent.schedule",

@@ -379,6 +379,43 @@ def list_tools() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "name": "turboproject",
+            "description": (
+                "Проекты TurboProject с синхронизацией 1С. "
+                "Карточка: имя, даты MSP/1С, статистика задач, просроченные задачи и вехи, "
+                "ресурсы (ФИО), руководитель/куратор/заказчик и весь блок data_1c. "
+                "Фильтры: query (имя/номер), manager (руководитель 1С), file_id, "
+                "overdue_only, limit. Учётка на сервере. Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Поиск по названию проекта, имени MPP или номеру 1С",
+                    },
+                    "manager": {
+                        "type": "string",
+                        "description": "ФИО руководителя проекта из 1С (data_1c.rukovoditel)",
+                    },
+                    "file_id": {
+                        "type": "string",
+                        "description": "ID файла проекта (ProjectFile.id)",
+                    },
+                    "overdue_only": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Только проекты с просроченными задачами или вехами",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Максимум проектов в ответе (пусто — все, не больше 200)",
+                    },
+                },
+            },
+        },
         *_desktop_ac_tools(),
     ]
 

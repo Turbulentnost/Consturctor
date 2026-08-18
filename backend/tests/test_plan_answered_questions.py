@@ -21,6 +21,20 @@ def test_record_answers_drops_same_question_with_new_id() -> None:
     assert plan.unanswered() == []
 
 
+def test_answer_first_keeps_remaining_queue() -> None:
+    plan = WorkflowPlan(
+        open_questions=[
+            OpenQuestion(id="q1", question="Откуда читать проекты?"),
+            OpenQuestion(id="q2", question="Как часто запускать агента?"),
+            OpenQuestion(id="q3", question="Куда класть отчёт?"),
+        ]
+    )
+    plan.record_answers({"q1": "TurboProject"})
+    assert [q.id for q in plan.unanswered()] == ["q2", "q3"]
+    plan.record_answers({"q2": "каждый день"})
+    assert [q.id for q in plan.unanswered()] == ["q3"]
+
+
 def test_record_answers_keeps_new_topic() -> None:
     plan = WorkflowPlan(
         open_questions=[

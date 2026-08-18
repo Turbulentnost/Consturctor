@@ -52,6 +52,7 @@ class PhaseResult:
     pr_url: str = ""
     error: str = ""
     git: dict[str, Any] = field(default_factory=dict)
+    successful_live_tools: list[str] = field(default_factory=list)
 
 
 def workflow_health() -> WorkflowHealth:
@@ -282,6 +283,20 @@ def clarify_workflow(
 
     plan = WorkflowPlan.from_dict(row.plan_json)
     plan.record_answers(merged_answers)
+    # Несколько вопросов из одного хода — отвечаем по одному, без повторного анализа.
+    if plan.unanswered():
+        row.plan_json = plan.to_dict()
+        row.title = plan.title or row.title
+        row.phase = "clarify"
+        db.commit()
+        db.refresh(row)
+        nxt = plan.unanswered()[0]
+        _emit(
+            on_event,
+            "decision",
+            f"Ответ учтён. Следующий вопрос: {nxt.question}",
+        )
+        return _to_schema(row)
 
     all_attachments = _load_attachments_payload(workflow_id)
     # Prefer images just attached in this clarify turn; else any stored images.
@@ -417,10 +432,12 @@ def execute_workflow(
 
     from app.services.imap_tools import imap_configured
     from app.services.onec_tools import odata_configured
+    from app.services.turboproject import turboproject_configured
 
     access_notes = prompts.server_access_notes(
         odata=odata_configured(),
         imap=imap_configured(),
+        turboproject=turboproject_configured(),
     )
     if reexecute:
         clarification = str((row.local_run or {}).get("post_build_answer") or "").strip()
@@ -493,8 +510,16 @@ def execute_workflow(
         run_id,
     )
 
+    from app.services.workflows.cursor_tools import required_live_tools_from_plan
+
+    required_live = required_live_tools_from_plan(plan)
     phase = _stream_run_with_tools(
-        agent_id, run_id, on_event=on_event, workflow_id=workflow_id, mode="execute"
+        agent_id,
+        run_id,
+        on_event=on_event,
+        workflow_id=workflow_id,
+        mode="execute",
+        required_live_tools=required_live,
     )
     row.last_result = phase.text
     row.branch = phase.branch or row.branch
@@ -505,8 +530,10 @@ def execute_workflow(
     local["exec_run_status"] = phase.status or ""
     local["odata_configured"] = odata_configured()
     local["imap_configured"] = imap_configured()
+    local["live_tools_invoked"] = list(phase.successful_live_tools or [])
+    live_ok = bool(phase.successful_live_tools)
     if phase.status == "FINISHED":
-        tests = _tests_status_from_text(phase.text or "")
+        tests = _tests_status_from_text(phase.text or "", live_tools_ok=live_ok)
         if tests == "pass":
             row.phase = "tested"
             local.update(
@@ -549,12 +576,20 @@ def execute_workflow(
                     "runtime": "mcp",
                 }
             )
-            _emit(
-                on_event,
-                "decision",
-                "Тестовый прогон завершился без TESTS: PASS. "
-                "Сохранение недоступно. Уточните в чате и перезапустите.",
-            )
+            if required_live and not live_ok:
+                _emit(
+                    on_event,
+                    "decision",
+                    "Инструмент Constructor ещё не вернул данные. "
+                    "Запустите снова — агент должен вызвать constructor_tool, не HTTP с Cloud VM.",
+                )
+            else:
+                _emit(
+                    on_event,
+                    "decision",
+                    "Тестовый прогон завершился без TESTS: PASS. "
+                    "Сохранение недоступно. Уточните в чате и перезапустите.",
+                )
         row.local_run = local
     else:
         row.phase = "ready"
@@ -619,12 +654,30 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     return _to_schema(row)
 
 
-def _tests_status_from_text(text: str) -> str:
+_VM_INFRA_FAIL_HINTS = (
+    "backend_url",
+    "constructor_api",
+    "cloud vm",
+    "нет `backend_url`",
+    "нет backend_url",
+)
+
+
+def _is_vm_infra_fail_text(text: str) -> bool:
+    low = (text or "").casefold()
+    return any(hint in low for hint in _VM_INFRA_FAIL_HINTS)
+
+
+def _tests_status_from_text(text: str, *, live_tools_ok: bool = False) -> str:
     """Return pass|fail|unknown from RESULT / agent output."""
     upper = (text or "").upper()
-    if "TESTS: FAIL" in upper or "TESTS:FAIL" in upper:
+    has_fail = "TESTS: FAIL" in upper or "TESTS:FAIL" in upper
+    has_pass = "TESTS: PASS" in upper or "TESTS:PASS" in upper
+    if has_fail and _is_vm_infra_fail_text(text) and not live_tools_ok:
+        return "unknown"
+    if has_fail:
         return "fail"
-    if "TESTS: PASS" in upper or "TESTS:PASS" in upper:
+    if has_pass:
         return "pass"
     return "unknown"
 
@@ -660,7 +713,19 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
             "onec.erp_tasks_period",
             "onec.erp_subordinate_tasks",
             "onec.docflow_tasks",
+            "turboproject",
         ]
+
+    if kind == "turboproject" or any(
+        tip in blob
+        for tip in (
+            "turboproject",
+            "ms project",
+            "mpp",
+            "портфел проект",
+        )
+    ):
+        return ["turboproject"]
 
     if kind == "outlook_calendar" or any(
         tip in blob
@@ -692,6 +757,7 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
                     "onec.erp_tasks_period",
                     "onec.erp_subordinate_tasks",
                     "onec.docflow_tasks",
+                    "turboproject",
                 ]
             )
         return tools
@@ -858,6 +924,7 @@ def _stream_run_with_tools(
     on_event: WorkflowEventCallback | None = None,
     workflow_id: str = "",
     mode: str = "plan",
+    required_live_tools: list[str] | None = None,
 ):
     from app.services.workflows.cursor_tools import stream_cursor_with_tools
 
@@ -868,6 +935,7 @@ def _stream_run_with_tools(
         workflow_id=workflow_id,
         mode=mode,
         stream_run=_stream_run,
+        required_live_tools=required_live_tools,
     )
 
 

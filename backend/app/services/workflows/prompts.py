@@ -55,15 +55,19 @@ PLAN_SCHEMA_HINT = """
 }
 Правила:
 - steps — конкретные шаги реализации, по порядку зависимостей.
-- open_questions — только НЕотвеченные блокеры; иначе [].
-- Если агент про 1С / почту / календарь — на ЭТОМ этапе (план) задай минимум
-  один вопрос с options: live или только fixtures; способ доступа
+- open_questions — все НЕотвеченные блокеры СРАЗУ (по одному факту на вопрос);
+  иначе []. Пользователь ответит по очереди. Не оставляй «ещё спрошу потом».
+- Пока open_questions не пуст: не анализируй реализацию подробно и не пиши
+  готовые steps/test_criteria — только черновик названия/цели и список вопросов.
+- Если агент про 1С / почту / календарь — на ЭТОМ этапе (план) сразу включи
+  в open_questions вопросы с options: live или только fixtures; способ доступа
   (OData уже на сервере Constructor / COM на машине пользователя / офлайн).
-  Не откладывай это на тестовый прогон.
+  Не откладывай это на тестовый прогон и не совмещай с анализом.
 - ЗАПРЕЩЕНО спрашивать URL, логин, пароль OData/IMAP и выдумывать
   ONEC_BASE_URL / CONSTRUCTOR_API_URL — учётка только в backend/.env сервера.
 - Если ответ пользователя неясен, противоречив или недостаточен для реализации —
-  НЕ делай вид, что понял. Задай 1 уточняющий вопрос в open_questions + 2–4 options.
+  НЕ делай вид, что понял. Добавь все недостающие уточнения в open_questions
+  (каждый вопрос — один факт, 2–4 options). Не анализируй, пока есть вопросы.
   Оценивай по смыслу и достаточности для steps/runtime, а НЕ по длине:
   короткий ответ («COM», «Graph», «1С ERP», «только fixtures») может быть достаточным.
   Переспрашивай только если не хватает факта для реализации (способ доступа,
@@ -149,15 +153,17 @@ def build_clarify_prompt(
         "answered_questions — полный список ВСЕХ ответов пользователя (прошлые + новые); "
         "не выкидывай и не перефразируй ответы так, чтобы пропали факты "
         "(1С, COM, Outlook, URL, учётки, критерии). "
-        "Если ответ НЕДОСТАТОЧЕН для реализации по смыслу — задай уточняющий вопрос "
-        "в open_questions (один главный, с options). Оценивай достаточность, не длину: "
+        "Если после ВСЕХ ответов этого хода всё ещё не хватает фактов — "
+        "верни новые вопросы в open_questions (сразу все, по одному факту, с options) "
+        "и не анализируй реализацию. Оценивай достаточность, не длину: "
         "«COM», «Graph», «1С», «только fixtures» могут быть нормальным ответом на вопрос «какой способ». "
         "Переспрашивай, только если не хватает режима (live/fixtures) или способа доступа "
         "(OData на сервере / COM / офлайн), критерия или есть противоречие. "
         "НЕ спрашивай URL, логин, пароль OData/IMAP и не выдумывай "
         "ONEC_BASE_URL / CONSTRUCTOR_API_URL — учётка в backend/.env. "
         "Не принимай молча заглушки вроде «ок» / «как обычно» / пусто. "
-        "open_questions оставляй пустым, если ответы достаточны для steps/runtime. "
+        "open_questions оставляй пустым ТОЛЬКО если ответы достаточны для steps/runtime — "
+        "тогда обнови план. Пока есть вопросы, не пиши подробный анализ. "
         "Не повторяй вопрос, на который пользователь уже ответил по существу "
         "(даже другими словами или с новым id). "
         "Перенеси понятные ответы в constraints и steps: интеграция должна совпадать "
@@ -172,24 +178,49 @@ ARTIFACTS_INSTRUCTION = (
     "ВАЖНО (доставка результата без git): создай в рабочем пространстве каталог "
     "`artifacts/` и скопируй туда ВСЕ итоговые файлы. Без файлов в `artifacts/` "
     "пользователь скачает пустую папку — текст в чате не считается файлом.\n"
-    "- `artifacts/RESULT.md` — обязателен: статус прогона и как запускать;\n"
-    "  в RESULT.md обязательно итоговая строка `TESTS: PASS` или `TESTS: FAIL`.\n"
+    "- `artifacts/RESULT.md` — обязателен: предметный вывод live-инструментов плана "
+    "(таблица или список того, что вернул tool; поля — из ответа инструмента / плана, "
+    "не выдумывай колонки) и итоговая строка `TESTS: PASS` или `TESTS: FAIL`.\n"
     "- `artifacts/solution.zip` — архив написанного кода/проекта;\n"
     "- сгенерированные выходные файлы (.xlsx/.csv/.pdf и т.п.), если они есть.\n"
     "Клади готовые файлы именно в `artifacts/` (пути относительные)."
+)
+
+LIVE_TOOLS_TEST_INSTRUCTION = (
+    "Тестовый прогон (обязательно):\n"
+    "- ```constructor_tool — это НЕ инструмент Cursor и НЕ HTTP с VM. "
+    "Это markdown-блок в твоём сообщении. Constructor перехватывает блок и "
+    "сам вызывает tool на сервере. Писать «не могу вызвать constructor_tool» запрещено.\n"
+    "- ПЕРВЫЙ ответ в execute — ТОЛЬКО один блок (без кода, fixtures, RESULT.md):\n"
+    "```constructor_tool\n"
+    '{"name": "turboproject", "arguments": {}}\n'
+    "```\n"
+    "Подставь `name` из каталога/плана. Дождись фактов, потом пиши код.\n"
+    "- ЗАПРЕЩЕНО: `BACKEND_URL`, curl, прямой HTTP с Cloud VM. "
+    "Нет `BACKEND_URL` на VM — норма, не FAIL.\n"
+    "- `artifacts/RESULT.md` — предметный вывод того, что вернул tool "
+    "(поля из ответа / плана) + `TESTS: PASS|FAIL`.\n"
+    "- `TESTS: PASS` только после ответа Constructor tool. "
+    "Запрещено PASS за код/fixtures без вызова tool.\n"
+    "- После пустого/ошибочного ответа — снова только ```constructor_tool.\n"
+    "- `TESTS: FAIL` только если tool дважды вернул ошибку или его нет в каталоге."
 )
 
 RESULT_STATUS_INSTRUCTION = (
     "Статус в RESULT.md и финальном ответе:\n"
     "- Не пиши «агент сформирован», «реализация завершена», «можно сохранить», "
     "пока нет `TESTS: PASS` по полному прогону.\n"
-    "- Live 1С с Cursor Cloud VM к внутренней сети НЕ достучится — это ожидаемо, не FAIL. "
-    "Рекомендованный live: tools `onec.*` на сервере Constructor (OData уже в backend/.env). "
-    "Если `--fixtures` прошли и/или `onec.*` ответил — ставь `TESTS: PASS`.\n"
-    "- `TESTS: FAIL` только если сломана сама реализация (нет кода, падают юнит-тесты, "
-    "неясна предметная задача). Не за сеть до 1С, не за INVOKER, не за отсутствие URL в чате.\n"
-    "- При настоящем FAIL: заголовок «Тестовый прогон не завершён», блокеры, что осталось. "
-    "Не делай раздел «Что сделано» так, будто агент готов."
+    "- Если в плане есть live-источник — вызови его через ```constructor_tool. "
+    "`TESTS: PASS` без вызова tool и без предметного вывода в RESULT.md запрещён.\n"
+    "- Нет `BACKEND_URL` на Cloud VM — ожидаемо, не FAIL. Не ходи в 1С/TurboProject "
+    "с VM по HTTP. Live = Constructor tools на сервере.\n"
+    "- Если live-инструмент плана ответил (данные или честная пустая выборка) — "
+    "`TESTS: PASS`.\n"
+    "- `TESTS: FAIL` только после ошибки Constructor tool (повторы исчерпаны) "
+    "или если инструмента нет в каталоге. Не за сеть Cloud VM, не за INVOKER, "
+    "не за отсутствие URL в чате.\n"
+    "- При настоящем FAIL: заголовок «Тестовый прогон не завершён», почему "
+    "цель недостижима. Не делай раздел «Что сделано», будто агент готов."
 )
 
 TESTS_USER_CLARIFY_INSTRUCTION = (
@@ -202,41 +233,45 @@ TESTS_USER_CLARIFY_INSTRUCTION = (
     "Задачи пользователя из erp_pm и документооборота: `onec.erp_tasks_current` "
     "(открытые сейчас) и `onec.erp_tasks_period` (за период, date_from/date_to YYYY-MM-DD). "
     "Только документооборот: `onec.docflow_tasks`. "
+    "Проекты MS Project + 1С: `turboproject` (поля — из ответа инструмента). "
     "Задачи подчинённых руководителя: `onec.erp_subordinate_tasks` "
     "(сначала прямые подчинённые и их задачи/сроки за date_from…date_to, "
     "затем подчинённые каждого из них; человек из JWT). "
     "ФИО берётся из JWT сессии — не спрашивай ФИО и не передавай его, "
     "если не нужна чужая карточка. "
-    "Учётка уже на сервере. Не ходи в 1С прямым HTTP с облачной VM.\n"
-    "- Если `onec.*` недоступен в этом раунде — прогони `--fixtures` и поставь "
-    "`TESTS: PASS`: live 1С будет через Constructor при запуске агента.\n"
+    "Учётка уже на сервере. Не ходи в 1С/TurboProject прямым HTTP с облачной VM.\n"
+    "- Если `constructor_tool` вернул ошибку — вызови его ещё раз. "
+    "Не подменяй live-вызов `--fixtures` и не ставь FAIL из-за Cloud VM.\n"
     "- CLARIFY допустим ТОЛЬКО по смыслу задачи (какой проект, какой отчёт), "
     "не по инфраструктуре. Не выдумывай INVOKER и не проси GUID/стенд у пользователя."
 )
 
 RUNTIME_NETWORK_INSTRUCTION = (
     "Сеть и прогоны:\n"
-    "- Cloud VM часто НЕ достучится до закрытых площадок / внутренних сайтов "
-    "(Connection reset) — это ожидаемо, не считай задачу проваленной только из‑за этого.\n"
-    "- Реализуй ДВА режима: `--fixtures` (офлайн/CI) и `--live` (боевой).\n"
+    "- Cloud VM часто НЕ достучится до закрытых площадок — это ожидаемо. "
+    "Не ставь FAIL и не останавливайся: live идёт через ```constructor_tool, "
+    "не через сеть VM и не через BACKEND_URL.\n"
+    "- Реализуй ДВА режима в коде агента: `--fixtures` (офлайн/CI) и `--live` (боевой). "
+    "Тестовый прогон в конструкторе = live через Constructor tools, не fixtures вместо tool.\n"
     "- Live-режим должен соответствовать ДОМЕНУ плана, а не универсальному web_search:\n"
     "  • совещания / Outlook / календарь → CLI/фикстуры / COM Outlook / Graph, "
     "если пользователь так указал в ответах; "
     "НЕ DuckDuckGo/web_search и НЕ site_browser «открыть outlook.office.com»;\n"
     "  • 1С — tools `onec.*` (OData/SQL с сервера) или COM на машине пользователя, не web_search; "
     "задачи erp_pm и документооборота — `onec.erp_tasks_current` / `onec.erp_tasks_period` "
-    "/ `onec.erp_subordinate_tasks` / `onec.docflow_tasks` (ФИО из JWT);\n"
+    "/ `onec.erp_subordinate_tasks` / `onec.docflow_tasks` (ФИО из JWT); "
+    "проекты TurboProject — `turboproject`;\n"
     "  • поиск на сайте/ЭТП + Excel → site_browser / plan_export / HTTP к указанному site_url;\n"
     "  • общий веб-поиск фактов — только если это явно цель агента.\n"
-    "- Фикстуры — нормальный путь тестового прогона на Cloud VM. "
-    "Live 1С = onec.* на сервере Constructor, не прямой доступ с VM.\n"
+    "- Фикстуры — для CLI/CI после публикации. Сейчас live = onec.* / turboproject / "
+    "imap.* через Constructor, не прямой доступ с VM.\n"
     "- В RESULT.md опиши: какие тесты реально прогнаны, какой live-инструмент использован, "
     "доступен ли live, и как запускать агента локально.\n"
     "- Не подменяй предметную область агента на web_search «для галочки»."
 )
 
 
-def server_access_notes(*, odata: bool, imap: bool) -> str:
+def server_access_notes(*, odata: bool, imap: bool, turboproject: bool = False) -> str:
     odata_line = (
         "1С OData (tools onec.*): настроен в backend/.env. "
         "Не спрашивай пользователя. Live = onec.*, не HTTP с Cloud VM. "
@@ -251,13 +286,19 @@ def server_access_notes(*, odata: bool, imap: bool) -> str:
         if imap
         else "IMAP: в backend/.env не настроен — не проси логин/пароль почты в чате."
     )
+    turbo_line = (
+        "TurboProject (tool turboproject): настроен в backend/.env."
+        if turboproject
+        else "TurboProject: в backend/.env не настроен — не проси логин API в чате."
+    )
     return (
         "Доступы Constructor (не спрашивай секреты у пользователя):\n"
         f"- {odata_line}\n"
         f"- {imap_line}\n"
-        "- API конструктора уже доступен с десктопа (BACKEND_URL). "
-        "Не выдумывай CONSTRUCTOR_API_URL и не проси его у пользователя.\n"
-        "- Имена ONEC_BASE_URL / CONSTRUCTOR_API_URL в проекте нет — это ODATA_* и BACKEND_URL."
+        f"- {turbo_line}\n"
+        "- Не вызывай BACKEND_URL / CONSTRUCTOR_API_URL / curl с Cloud VM — "
+        "на VM их нет, это не FAIL. Live только через ```constructor_tool.\n"
+        "- Имена ONEC_BASE_URL / CONSTRUCTOR_API_URL в проекте нет — это ODATA_* на сервере."
     )
 
 
@@ -275,14 +316,15 @@ def build_execute_prompt(
     answers_section = f"\n{answers_block}\n\n" if answers_block else "\n"
     access_section = f"{access_notes.strip()}\n\n" if access_notes.strip() else ""
     return (
-        "Реализуй сохранённый план без доступа к git/GitHub:\n"
-        "опиши реализацию, артефакты, команды/проверки и результат по test_criteria.\n"
-        "Следуй steps по порядку зависимостей. Не расширяй scope.\n"
-        "ОБЯЗАТЕЛЬНО учти все ответы пользователя (answered_questions / уточнения): "
-        "если там 1С, COM Outlook, fixtures/live — реализуй именно это, "
-        "не подменяй на web_search или site_browser.\n"
+        "СНАЧАЛА live через Constructor, потом код.\n"
+        "constructor_tool — markdown-блок в ответе, не tool Cursor. "
+        "Первое сообщение: только ```constructor_tool с name из плана, без Python и fixtures.\n"
+        "Реализуй сохранённый план без git/GitHub. Не расширяй scope.\n"
+        "ОБЯЗАТЕЛЬНО учти answered_questions: если там 1С / TurboProject / COM — "
+        "это live через Constructor tools, не web_search.\n"
         "В финальном ответе не называй агента готовым без TESTS: PASS.\n\n"
         f"{access_section}"
+        f"{LIVE_TOOLS_TEST_INSTRUCTION}\n\n"
         f"{RESULT_STATUS_INSTRUCTION}\n\n"
         f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
         f"{TESTS_USER_CLARIFY_INSTRUCTION}\n\n"
@@ -318,13 +360,14 @@ def build_reexecute_prompt(
     answers_section = f"\n{answers_block}\n" if answers_block else ""
     access_section = f"{access_notes.strip()}\n\n" if access_notes.strip() else ""
     return (
-        "Повторно выполни сохранённый план (без GitHub-репозитория).\n"
-        "Не ломай уже корректное. Доведи незакрытые steps и test_criteria.\n"
-        "ОБЯЗАТЕЛЬНО сохрани интеграции из ответов пользователя "
-        "(1С / COM Outlook / fixtures/live) — не подменяй на web_search.\n"
+        "СНАЧАЛА live: только markdown ```constructor_tool (это не tool Cursor). "
+        "Не пиши, что нет доступа к constructor_tool.\n"
+        "Потом доведи план без GitHub. Не ломай уже корректное.\n"
+        "Интеграции из ответов (1С / TurboProject / COM) — через Constructor tools, не web_search.\n"
         "В конце — статус PASS/FAIL по критериям (TESTS: PASS|FAIL в RESULT.md). "
         "Не пиши, что агент готов, без TESTS: PASS.\n\n"
         f"{access_section}"
+        f"{LIVE_TOOLS_TEST_INSTRUCTION}\n\n"
         f"{RESULT_STATUS_INSTRUCTION}\n\n"
         f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
         f"{TESTS_USER_CLARIFY_INSTRUCTION}\n\n"

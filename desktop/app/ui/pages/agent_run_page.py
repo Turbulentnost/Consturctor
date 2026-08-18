@@ -89,6 +89,7 @@ _TOOL_LABELS = {
     "report.build_task_report": "Отчёт по поручениям",
     "report.build_meeting_summary": "Сводка совещания",
     "report.build_schedule_recommendations": "Рекомендации по графику",
+    "turboproject": "Проекты TurboProject",
     "users.list": "Список пользователей",
     "notify.send": "Уведомление",
     "agent.schedule": "Расписание агента",

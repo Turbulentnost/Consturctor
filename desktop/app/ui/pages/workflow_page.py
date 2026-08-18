@@ -484,6 +484,8 @@ _INFRA_FAIL_HINTS = (
     "invoker",
     "backend/.env",
     "constructor_api",
+    "backend_url",
+    "turboproject",
     "live-проверк",
     "live 1с",
     "live 1c",
@@ -721,6 +723,27 @@ def _fixtures_passed(blob: str) -> bool:
     if re.search(r"fixtures[^\n|]{0,160}pass", low):
         return True
     return "pytest pass" in low and "fixture" in low
+
+
+def _result_md_from_files(files: list[str]) -> str:
+    for path in files:
+        if Path(path).name.lower() in {"result.md", "results.md"}:
+            try:
+                return Path(path).read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+    return ""
+
+
+def _has_subject_result(text: str) -> bool:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    meaningful = [
+        ln
+        for ln in lines
+        if not ln.upper().replace(" ", "").startswith("TESTS:")
+        and ln.casefold() not in {"pass", "fail"}
+    ]
+    return bool(meaningful)
 
 
 def _asks_server_secrets(value: str) -> bool:
@@ -1023,6 +1046,10 @@ class WorkflowPage(QWidget):
         self._pending_async: tuple[object, str] | None = None
         self._pending_async_fail = ""
         self._post_build_question: WorkflowOpenQuestion | None = None
+        self._execute_started = False
+        self._last_stream_phrase = ""
+        self._last_stream_error = ""
+        self._last_exec_report = ""
         self._question_fields: dict[str, QLineEdit] = {}
         self._current_question_id = ""
         self._selected_quick_answer = ""
@@ -1072,7 +1099,7 @@ class WorkflowPage(QWidget):
         self._feed_layout = QVBoxLayout(self._feed_inner)
         self._feed_layout.setContentsMargins(0, 0, 8, 0)
         self._feed_layout.setSpacing(2)
-        self._feed_layout.addStretch(1)
+        self._feed_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         feed_scroll = _FitWidthScrollArea()
         feed_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -1214,6 +1241,10 @@ class WorkflowPage(QWidget):
         self._event_seq = 0
         self._expanded_keys = set()
         self._events = []
+        self._execute_started = bool(record.exec_agent_id or record.last_result)
+        self._last_stream_phrase = ""
+        self._last_stream_error = ""
+        self._last_exec_report = (record.last_result or "").strip()
         if record.plan:
             self._events.append(
                 FeedEvent(
@@ -1235,7 +1266,7 @@ class WorkflowPage(QWidget):
                 )
         if record.last_result:
             self._events.append(
-                FeedEvent("Результат", record.last_result, self._now())
+                FeedEvent("Результат тестового прогона", record.last_result, self._now())
             )
         for ev in self._events:
             if not ev.event_key:
@@ -1275,19 +1306,42 @@ class WorkflowPage(QWidget):
 
     # --- render ----------------------------------------------------------------
 
+    def _update_run_button(self, *, plan, unanswered: bool) -> None:
+        plan_ready = bool(plan) and not unanswered and not self._post_build_question
+        self._run_btn.setVisible(plan_ready)
+        if not plan_ready:
+            return
+        if self._busy:
+            self._run_btn.setEnabled(False)
+            self._run_btn.setText("Идёт сборка…")
+            return
+        self._run_btn.setEnabled(True)
+        if self._record and (self._record.exec_agent_id or self._execute_started):
+            self._run_btn.setText("Запустить снова")
+        else:
+            self._run_btn.setText("Запустить сборку")
+
+    def _should_hide_run_plan_action(self) -> bool:
+        if self._busy or self._execute_started:
+            return True
+        if self._record and self._record.exec_agent_id:
+            return True
+        return any(
+            ev.title in {"Результат тестового прогона", "Тестовый прогон"}
+            or (
+                ev.title == "Сборка workflow"
+                and "реализац" in (ev.body or "").casefold()
+            )
+            for ev in self._events
+        )
+
     def _render_all(self) -> None:
         phase = self._record.phase if self._record else "document"
         self._stepper.set_phase(phase)
         self._rebuild_feed()
         plan = self._record.plan if self._record else None
         unanswered = bool(plan and plan.unanswered())
-        can_run = bool(plan) and not unanswered and not self._busy and not self._post_build_question
-        self._run_btn.setVisible(can_run)
-        self._run_btn.setEnabled(can_run)
-        if self._record and self._record.exec_agent_id:
-            self._run_btn.setText("Запустить снова")
-        else:
-            self._run_btn.setText("Запустить сборку")
+        self._update_run_button(plan=plan, unanswered=unanswered)
         can_next = bool(
             self._record
             and self._tests_ok
@@ -1305,8 +1359,8 @@ class WorkflowPage(QWidget):
             self._selected_quick_answer = ""
             self._question_fields = {}
         if self._busy:
-            self._agent_status.setText("● Агент работает — можно отправить уточнение")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
+            self._tick_activity()
         elif can_next:
             self._agent_status.setText("● Тесты PASS — откройте паспорт и укажите, когда запускать")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
@@ -1389,10 +1443,13 @@ class WorkflowPage(QWidget):
                     skip_clarify_idx = i
                     break
 
+        hide_run_plan = self._should_hide_run_plan_action()
         for idx, event in enumerate(self._events):
             if skip_clarify_idx is not None and idx == skip_clarify_idx:
                 continue
-            hide_action = event.action_key.startswith("q:")
+            hide_action = event.action_key.startswith("q:") or (
+                event.action_key == "run_plan" and hide_run_plan
+            )
             widget = self._feed_item(event, fallback_key=f"e{idx}", hide_action=hide_action)
             self._feed_layout.addWidget(widget)
         thinking = (self._thinking_shown or "").strip()
@@ -1416,7 +1473,6 @@ class WorkflowPage(QWidget):
         elif post_question and self._post_build_question is not None:
             card = self._make_clarification_message(self._post_build_question)
             self._feed_layout.addWidget(card)
-        self._feed_layout.addStretch(1)
 
     def _render_chips(self) -> None:
         while self._chips_layout.count():
@@ -1657,6 +1713,11 @@ class WorkflowPage(QWidget):
             return
 
         # Free-form message while plan ready → replan or execute hint
+        if self._record.plan and self._record.plan.unanswered():
+            self._current_question_id = self._record.plan.unanswered()[0].id
+            self._selected_quick_answer = text
+            self._submit_question_answer()
+            return
         self._push_event("Вы", text)
         if self._record.plan and not self._record.plan.unanswered():
             self._push_event(
@@ -1683,12 +1744,25 @@ class WorkflowPage(QWidget):
             self._busy_n = 0
             self._busy_timer.start()
             self._tick_activity()
+            plan = self._record.plan if self._record else None
+            unanswered = bool(plan and plan.unanswered())
+            self._update_run_button(plan=plan, unanswered=unanswered)
+            self._rebuild_feed()
         else:
             self._busy_timer.stop()
             self._render_all()
 
     def _tick_activity(self) -> None:
         self._busy_n = (self._busy_n % 3) + 1
+        if (self._busy_base or "").startswith("Реализация"):
+            phrase = (self._last_stream_phrase or "").strip()
+            if len(phrase) > 80:
+                phrase = phrase[:77] + "…"
+            if phrase:
+                self._agent_status.setText(f"● Реализация… {phrase}")
+            else:
+                self._agent_status.setText(f"● Реализация{'.' * self._busy_n}")
+            return
         self._agent_status.setText(f"● {self._busy_base}{'.' * self._busy_n}")
 
     def _run_async(self, label: str, fn) -> None:
@@ -1708,6 +1782,18 @@ class WorkflowPage(QWidget):
 
     def _on_stream_event(self, event_type: str, text: str) -> None:
         incoming = (text or "").replace(_REPLACEMENT, "")
+        if incoming.strip():
+            last_line = incoming.strip().splitlines()[-1].strip()
+            if last_line:
+                self._last_stream_phrase = last_line
+        if event_type == "error" and incoming.strip():
+            self._last_stream_error = incoming.strip()
+            delta = "\n" + incoming.strip()
+            self._thinking_received = (self._thinking_received + delta).strip()
+            self._thinking_text = self._thinking_received
+            self._note_thinking_chunk(delta)
+            self._ensure_thinking_pacer()
+            return
         if event_type in {"thinking", "assistant"} and incoming:
             if incoming.startswith(self._thinking_received) and len(incoming) >= len(self._thinking_received):
                 delta = incoming[len(self._thinking_received) :]
@@ -1719,7 +1805,7 @@ class WorkflowPage(QWidget):
             if delta:
                 self._note_thinking_chunk(delta)
             self._ensure_thinking_pacer()
-        elif event_type in {"decision", "system"} and incoming.strip():
+        elif event_type in {"decision", "system", "status", "message"} and incoming.strip():
             delta = "\n" + incoming.strip()
             self._thinking_received = (self._thinking_received + delta).strip()
             self._thinking_text = self._thinking_received
@@ -1784,10 +1870,7 @@ class WorkflowPage(QWidget):
         )
         live.expand_toggled.connect(self._on_expand_toggled)
         self._thinking_live = live
-        stretch = self._feed_layout.takeAt(self._feed_layout.count() - 1)
         self._feed_layout.addWidget(live)
-        if stretch is not None:
-            self._feed_layout.addItem(stretch)
         self._scroll_feed_to_bottom()
 
     def _finish_pending_async(self) -> None:
@@ -1798,6 +1881,7 @@ class WorkflowPage(QWidget):
         self._stream_finished = False
         self._flush_thinking()
         if fail:
+            self._last_stream_error = fail
             self._set_busy(False)
             self._push_event("Ошибка", fail)
             self._agent_status.setText("● Ошибка — попробуйте ещё раз")
@@ -1827,15 +1911,20 @@ class WorkflowPage(QWidget):
             self._render_chips()
             if label.startswith("Планирование"):
                 unanswered = result.plan.unanswered() if result.plan else []
-                self._push_event(
-                    "План",
-                    _format_plan_steps(result.plan) if result.plan else (result.title or "План готов"),
-                    action="Показать шаги плана",
-                    action_key="show_plan",
-                )
                 if unanswered:
+                    extra = f" ({len(unanswered)} вопросов)" if len(unanswered) > 1 else ""
+                    self._push_event(
+                        "Агент",
+                        "Сначала уточню детали по очереди, потом соберу план." + extra,
+                    )
                     self._push_question_if_new(unanswered[0].question)
                 else:
+                    self._push_event(
+                        "План",
+                        _format_plan_steps(result.plan) if result.plan else (result.title or "План готов"),
+                        action="Показать шаги плана",
+                        action_key="show_plan",
+                    )
                     self._push_event(
                         "Сборка workflow",
                         "План готов без открытых вопросов. Можно запускать реализацию.",
@@ -1845,6 +1934,7 @@ class WorkflowPage(QWidget):
             elif label.startswith("Уточнение"):
                 unanswered = result.plan.unanswered() if result.plan else []
                 if unanswered:
+                    self._push_event("Агент", "Принял ответ, следующий вопрос.")
                     self._push_question_if_new(unanswered[0].question)
                 else:
                     self._push_event(
@@ -1855,26 +1945,11 @@ class WorkflowPage(QWidget):
                     )
             elif label.startswith("Реализация"):
                 self._tests_ok = False
-                local = dict(getattr(result, "local_run", None) or {})
-                tests = str(local.get("tests_status") or "").casefold()
-                exec_status = str(local.get("exec_run_status") or "").upper()
-                finished = exec_status == "FINISHED" or result.phase == "tested"
-                report = (result.last_result or "").strip()
-                if tests == "pass" and finished:
-                    body = report or "TESTS: PASS."
-                elif tests == "fail":
-                    prefix = "Тестовый прогон не завершён. Сохранение недоступно.\n\n"
-                    body = prefix + report if report else "TESTS: FAIL — сохранение недоступно."
+                self._last_exec_report = (result.last_result or "").strip()
+                if result.exec_agent_id:
+                    self._on_fetch_results()
                 else:
-                    prefix = "Тестовый прогон не завершён — перезапустите сборку.\n\n"
-                    body = prefix + report if report else "Тестовый прогон не завершён — перезапустите сборку."
-                self._push_event(
-                    "Тестовый прогон",
-                    body,
-                    action="Скачать результат" if result.exec_agent_id else "",
-                    action_key="fetch",
-                )
-                self._on_fetch_results()
+                    self._show_test_run_result(files=[], dest_dir="")
             elif label.startswith("Публикация"):
                 self._push_event(
                     "Сохранено",
@@ -1892,18 +1967,10 @@ class WorkflowPage(QWidget):
                 item = QListWidgetItem(Path(path).name)
                 item.setData(Qt.ItemDataRole.UserRole, path)
                 self._results.addItem(item)
-            if files:
-                download_text = f"Скачано файлов: {len(files)}\n{dest_dir}"
-            else:
-                download_text = (
-                    "Файлы результата не найдены (агент не положил их в artifacts/).\n"
-                    f"{dest_dir}"
-                )
-            self._push_event("Результат", download_text)
-            self._evaluate_tests(list(files))
-            self._render_all()
+            self._show_test_run_result(files=list(files), dest_dir=str(dest_dir))
 
     def _on_async_fail(self, message: str) -> None:
+        self._last_stream_error = message
         self._pending_async_fail = message
         self._stream_finished = True
         if len(self._thinking_shown) >= len(self._thinking_received):
@@ -2134,16 +2201,14 @@ class WorkflowPage(QWidget):
 
             def work() -> WorkflowRecord:
                 self._api.update_workflow_local_run(wid, local)
-                try:
-                    return self._api.stream_execute_workflow(
-                        wid,
-                        lambda event_type, t: self._stream_event.emit(event_type, t),
-                        reexecute=True,
-                    )
-                except Exception:  # noqa: BLE001
-                    return self._api.execute_workflow(wid, reexecute=True)
+                return self._execute_with_stream(wid, True)
 
             self._push_event("Сборка workflow", "Учитываю уточнение и запускаю повторную сборку…")
+            self._execute_started = True
+            self._last_stream_phrase = ""
+            self._last_stream_error = ""
+            self._run_btn.setEnabled(False)
+            self._run_btn.setText("Идёт сборка…")
             self._run_async("Реализация", work)
             return
 
@@ -2164,6 +2229,22 @@ class WorkflowPage(QWidget):
 
         self._run_async("Уточнение плана", clarify)
 
+    def _execute_with_stream(self, workflow_id: str, reexecute: bool) -> WorkflowRecord:
+        try:
+            return self._api.stream_execute_workflow(
+                workflow_id,
+                lambda event_type, t: self._stream_event.emit(event_type, t),
+                reexecute=reexecute,
+            )
+        except ApiError as exc:
+            low = (exc.message or "").casefold()
+            retryable = exc.status_code in {404, 405} or "подключ" in low or "сети" in low
+            if not retryable:
+                raise
+            return self._api.execute_workflow(workflow_id, reexecute=reexecute)
+        except Exception:  # noqa: BLE001
+            return self._api.execute_workflow(workflow_id, reexecute=reexecute)
+
     def _on_run_clicked(self) -> None:
         reexecute = bool(self._record and self._record.exec_agent_id)
         self._on_execute(reexecute=reexecute)
@@ -2177,13 +2258,40 @@ class WorkflowPage(QWidget):
             return
         self._tests_ok = False
         self._post_build_question = None
+        self._execute_started = True
+        self._last_stream_phrase = ""
+        self._last_stream_error = ""
         self._next_btn.setVisible(False)
+        self._run_btn.setEnabled(False)
+        self._run_btn.setText("Идёт сборка…")
         self._push_event("Сборка workflow", "Запускаю реализацию…")
         wid = self._record.id
-        self._run_async(
-            "Реализация",
-            lambda: self._api.execute_workflow(wid, reexecute=reexecute),
-        )
+        self._run_async("Реализация", lambda: self._execute_with_stream(wid, reexecute))
+
+    def _show_test_run_result(self, *, files: list[str], dest_dir: str) -> None:
+        result_md = _result_md_from_files(files)
+        report = (self._last_exec_report or "").strip()
+        if self._record and (self._record.last_result or "").strip():
+            report = (self._record.last_result or "").strip() or report
+        parts: list[str] = []
+        if report:
+            parts.append(report)
+        if result_md and result_md not in report:
+            parts.append(result_md)
+        combined = "\n\n".join(parts).strip()
+        if not _has_subject_result(combined):
+            body = "Инструмент не вернул данные."
+            if self._last_stream_error:
+                body += "\n\n" + self._last_stream_error
+            elif dest_dir and not files:
+                body += "\nФайлы результата не найдены в artifacts/."
+            self._tests_ok = False
+            self._push_event("Результат тестового прогона", body)
+            self._render_all()
+            return
+        self._push_event("Результат тестового прогона", combined)
+        self._evaluate_tests(list(files))
+        self._render_all()
 
     def _on_fetch_results(self) -> None:
         if self._record is None or not self._record.exec_agent_id:
@@ -2337,6 +2445,10 @@ class WorkflowPage(QWidget):
         self._tests_ok = False
         self._reset_thinking_pacer()
         self._post_build_question = None
+        self._execute_started = False
+        self._last_stream_phrase = ""
+        self._last_stream_error = ""
+        self._last_exec_report = ""
         self._clear_questions()
         self._events = []
         self._event_seq = 0

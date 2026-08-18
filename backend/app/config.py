@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     imap_password: str = ""
     imap_mailbox: str = "INBOX"
 
+    # TurboProject API (server-side tool turboproject; desktop only proxies)
+    turboproject_api_base: str = ""
+    turboproject_email: str = ""
+    turboproject_password: str = ""
+    turboproject_timeout_sec: float = 60.0
+
     # 1C OData (server-side tools onec.odata_*; desktop never executes onec.*)
     odata_base_url: str = ""
     odata_username: str = ""

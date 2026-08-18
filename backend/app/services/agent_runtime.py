@@ -29,6 +29,7 @@ _IMAP_TOOLS = frozenset(
         "imap.fetch_attachments",
     }
 )
+_TURBOPROJECT_TOOLS = frozenset({"turboproject", "turboproject.projects"})
 
 
 class AgentRuntimeError(RuntimeError):
@@ -255,6 +256,8 @@ def _request_desktop_tool(
         return _invoke_imap_server(tool, arguments)
     if tool in _ONEC_TOOLS:
         return _invoke_onec_server(tool, arguments, user_id=user_id)
+    if tool in _TURBOPROJECT_TOOLS or tool.startswith("turboproject"):
+        return _invoke_turboproject_server(tool, arguments)
 
     request_id = tool_bridge.new_request_id()
     tool_bridge.begin_wait(request_id=request_id, user_id=user_id)
@@ -280,6 +283,15 @@ def _request_desktop_tool(
         raise AgentRuntimeError(str(payload.get("error") or f"Ошибка инструмента {tool}"))
     result = payload.get("result")
     return result if isinstance(result, dict) else {}
+
+
+def _invoke_turboproject_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.turboproject import TurboProjectError, invoke_turboproject
+
+    try:
+        return invoke_turboproject(tool, arguments)
+    except TurboProjectError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
 
 
 def _invoke_imap_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:

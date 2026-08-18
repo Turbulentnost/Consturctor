@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -1668,35 +1669,51 @@ class ApiClient:
                 request_json = None
             else:
                 request_json = {"answers": answers}
+        last_connect: httpx.ConnectError | None = None
         try:
-            with httpx.Client(timeout=None) as client:
-                with client.stream(
-                    method,
-                    url,
-                    headers={**self._headers(), "Accept": "text/event-stream"},
-                    json=request_json,
-                    data=data,
-                    files=files or None,
-                ) as response:
-                    if response.status_code >= 400:
-                        body = response.read().decode("utf-8", errors="replace")
-                        raise ApiError(body or "Ошибка workflow", status_code=response.status_code)
-                    for payload in _iter_sse_payloads(response):
-                        payload_type = str(payload.get("type") or "")
-                        if payload_type == "run":
-                            run_id = str(payload.get("run_id") or "")
-                        elif payload_type == "tool_request":
-                            tool = str(payload.get("tool") or "")
-                            on_event("decision", f"Выполняю на этом компьютере: {tool}…")
-                            self._handle_sse_tool_request(payload, fallback_run_id=run_id)
-                        elif payload_type in {"thinking", "assistant", "message", "decision", "system"}:
-                            on_event(payload_type, str(payload.get("text") or ""))
-                        elif payload_type == "error":
-                            raise ApiError(str(payload.get("message") or "Ошибка workflow"))
-                        elif payload_type == "workflow" and isinstance(payload.get("workflow"), dict):
-                            final_record = self._parse_workflow(payload["workflow"])
-        except httpx.ConnectError as exc:
-            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+            for attempt in range(3):
+                try:
+                    with httpx.Client(timeout=None) as client:
+                        with client.stream(
+                            method,
+                            url,
+                            headers={**self._headers(), "Accept": "text/event-stream"},
+                            json=request_json,
+                            data=data,
+                            files=files or None,
+                        ) as response:
+                            if response.status_code >= 400:
+                                body = response.read().decode("utf-8", errors="replace")
+                                raise ApiError(body or "Ошибка workflow", status_code=response.status_code)
+                            for payload in _iter_sse_payloads(response):
+                                payload_type = str(payload.get("type") or "")
+                                if payload_type == "run":
+                                    run_id = str(payload.get("run_id") or "")
+                                elif payload_type == "tool_request":
+                                    tool = str(payload.get("tool") or "")
+                                    on_event("decision", f"Выполняю на этом компьютере: {tool}…")
+                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
+                                elif payload_type in {"thinking", "assistant", "message", "decision", "system"}:
+                                    on_event(payload_type, str(payload.get("text") or ""))
+                                elif payload_type == "error":
+                                    err = str(payload.get("message") or "Ошибка workflow")
+                                    on_event("error", err)
+                                    raise ApiError(err)
+                                elif payload_type == "workflow" and isinstance(payload.get("workflow"), dict):
+                                    final_record = self._parse_workflow(payload["workflow"])
+                    last_connect = None
+                    break
+                except httpx.ConnectError as exc:
+                    last_connect = exc
+                    if attempt == 2:
+                        raise ApiError(
+                            f"Не удалось подключиться к backend ({self.base_url})"
+                        ) from exc
+                    time.sleep(0.4 * (attempt + 1))
+            if last_connect is not None:
+                raise ApiError(
+                    f"Не удалось подключиться к backend ({self.base_url})"
+                ) from last_connect
         except httpx.HTTPError as exc:
             raise ApiError(f"Ошибка сети: {exc}") from exc
         finally:
@@ -1875,23 +1892,34 @@ class ApiClient:
         timeout: float | None = None,
     ):
         url = f"{self.base_url}{path}"
-        try:
-            with httpx.Client(timeout=timeout or self._timeout) as client:
-                response = client.request(
-                    method,
-                    url,
-                    json=json,
-                    params=params,
-                    headers=self._headers(),
-                )
-        except httpx.ConnectError as exc:
+        last_connect: httpx.ConnectError | None = None
+        for attempt in range(3):
+            try:
+                with httpx.Client(timeout=timeout or self._timeout) as client:
+                    response = client.request(
+                        method,
+                        url,
+                        json=json,
+                        params=params,
+                        headers=self._headers(),
+                    )
+                last_connect = None
+                break
+            except httpx.ConnectError as exc:
+                last_connect = exc
+                if attempt == 2:
+                    raise ApiError(
+                        f"Не удалось подключиться к backend ({self.base_url})"
+                    ) from exc
+                time.sleep(0.4 * (attempt + 1))
+            except httpx.TimeoutException as exc:
+                raise ApiError("Превышено время ожидания ответа backend") from exc
+            except httpx.HTTPError as exc:
+                raise ApiError(f"Ошибка сети: {exc}") from exc
+        if last_connect is not None:
             raise ApiError(
                 f"Не удалось подключиться к backend ({self.base_url})"
-            ) from exc
-        except httpx.TimeoutException as exc:
-            raise ApiError("Превышено время ожидания ответа backend") from exc
-        except httpx.HTTPError as exc:
-            raise ApiError(f"Ошибка сети: {exc}") from exc
+            ) from last_connect
 
         if response.status_code >= 400:
             detail = _extract_detail(response)
