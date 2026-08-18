@@ -15,6 +15,7 @@ from app.clients.cursor import CursorAgentError
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+from app.models.agent_run import AgentRun
 from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.schemas.workflow import (
@@ -27,7 +28,12 @@ from app.schemas.workflow import (
     WorkflowPlanSchema,
     WorkflowSchema,
 )
-from app.services.triggers.service import cancel_triggers_for_workflow, delete_triggers_for_workflow
+from app.services.notifications.service import delete_notifications_for_workflow
+from app.services.triggers.service import (
+    cancel_triggers_for_workflow,
+    delete_triggers_for_workflow,
+    is_workflow_paused,
+)
 from app.services.workflows import prompts
 from app.services.workflows.document import (
     DocumentError,
@@ -98,7 +104,8 @@ def list_workflows(db: Session, *, user_id: str) -> list[WorkflowListItem]:
             document_name=row.document_name,
             updated_at=_iso(row.updated_at),
             has_local_run=bool(row.local_run),
-            auto_run=row.id in enabled_ids,
+            auto_run=row.id in enabled_ids and not is_workflow_paused(row.local_run),
+            paused=is_workflow_paused(row.local_run),
         )
         for row in rows
     ]
@@ -179,14 +186,22 @@ def create_workflow(
 def delete_workflow(db: Session, *, user_id: str, workflow_id: str) -> None:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     delete_triggers_for_workflow(db, user_id=user_id, workflow_id=workflow_id)
+    delete_notifications_for_workflow(db, workflow_id=workflow_id)
+    db.query(AgentRun).filter(AgentRun.workflow_id == workflow_id).delete(synchronize_session=False)
     db.delete(row)
     db.commit()
     shutil.rmtree(_workflow_dir(workflow_id), ignore_errors=True)
 
 
 def stop_auto_run(db: Session, *, user_id: str, workflow_id: str) -> AutoRunStopResult:
-    _get_owned(db, user_id=user_id, workflow_id=workflow_id)
-    stopped = cancel_triggers_for_workflow(db, user_id=user_id, workflow_id=workflow_id)
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    stopped = cancel_triggers_for_workflow(
+        db, user_id=user_id, workflow_id=workflow_id, commit=False
+    )
+    local = dict(row.local_run or {})
+    local["paused"] = True
+    row.local_run = local
+    db.commit()
     return AutoRunStopResult(ok=True, stopped=stopped)
 
 

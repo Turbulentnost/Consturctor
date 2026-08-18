@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.api_client import ApiClient, ApiError, WorkflowRecord
-from app.tools.hitl import install_confirm_host
+from app.tools.hitl import install_confirm_host, register_inline_host
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 from app.ui.widgets.cursor_feed import CursorFeedItem, format_collection_result, format_tool_detail
 
@@ -115,8 +115,10 @@ class AgentRunPage(QWidget):
         self._event_ready.connect(self._append_event)
         self._done.connect(self._on_done)
         self.failed.connect(self._show_error)
+        self._hitl_cards: list[QWidget] = []
         install_confirm_host(self)
         self._build()
+        register_inline_host(self)
 
     def _build(self) -> None:
         self._title = QLabel("Агент")
@@ -212,6 +214,7 @@ class AgentRunPage(QWidget):
         self._subtitle.setText("Агент готов. Нажмите «Запустить типовую задачу» или напишите свою.")
         self._event_seq = 0
         self._expanded_keys = set()
+        self._hitl_cards = []
         self._events = [
             {
                 "type": "system",
@@ -379,12 +382,29 @@ class AgentRunPage(QWidget):
         self._status.setText("Ошибка")
         self._append_event({"type": "error", "message": message})
 
+    def attach_hitl_card(self, card: QWidget) -> None:
+        if card not in self._hitl_cards:
+            self._hitl_cards.append(card)
+        stretch = None
+        if self._feed_layout.count():
+            last = self._feed_layout.itemAt(self._feed_layout.count() - 1)
+            if last is not None and last.widget() is None and last.spacerItem() is not None:
+                stretch = self._feed_layout.takeAt(self._feed_layout.count() - 1)
+        self._feed_layout.addWidget(card)
+        if stretch is not None:
+            self._feed_layout.addItem(stretch)
+        else:
+            self._feed_layout.addStretch(1)
+        self._scroll_feed()
+
     def _clear_feed(self) -> None:
         self._live_thinking = None
         self._live_assistant = None
         while self._feed_layout.count():
             item = self._feed_layout.takeAt(0)
             widget = item.widget()
+            if widget is not None and widget in self._hitl_cards:
+                continue
             if widget is not None:
                 widget.hide()
                 widget.setParent(None)
@@ -428,6 +448,8 @@ class AgentRunPage(QWidget):
                 self._live_thinking = card
             elif str(event.get("type") or "") == "agent_message":
                 self._live_assistant = card
+        for card in self._hitl_cards:
+            self._feed_layout.addWidget(card)
         self._feed_layout.addStretch(1)
         self._scroll_feed()
 

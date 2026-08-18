@@ -18,6 +18,8 @@ from app.api_client import InboxNotification
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 
 
+_USER_MENU_RESERVE = 360
+
 _CARD = """
 QFrame#NotifyCard {
     background: #FFFFFF;
@@ -61,8 +63,11 @@ class NotificationsPage(QWidget):
         self._mark_all.clicked.connect(self.mark_all_requested.emit)
 
         header = QHBoxLayout()
-        header.addWidget(title, 1)
-        header.addWidget(self._mark_all, 0)
+        header.setContentsMargins(0, 0, _USER_MENU_RESERVE, 0)
+        header.setSpacing(16)
+        header.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+        header.addWidget(self._mark_all, 0, Qt.AlignmentFlag.AlignVCenter)
+        header.addStretch(1)
 
         self._list = QVBoxLayout()
         self._list.setSpacing(10)
@@ -102,7 +107,11 @@ class NotificationsPage(QWidget):
         card.setObjectName("NotifyCard")
         card.setProperty("unread", "true" if item.unread else "false")
         card.setStyleSheet(_CARD)
-        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.setCursor(
+            Qt.CursorShape.PointingHandCursor
+            if item.workflow_id
+            else Qt.CursorShape.ArrowCursor
+        )
         title = QLabel(item.title)
         title.setFont(app_font(15, QFont.Weight.DemiBold))
         title.setWordWrap(True)
@@ -129,7 +138,7 @@ class NotificationsPage(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         self.item_opened.emit(notification_id)
-        if workflow_id:
+        if (workflow_id or "").strip():
             self.open_workflow_requested.emit(workflow_id)
 
 

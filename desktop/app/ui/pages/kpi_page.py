@@ -119,11 +119,22 @@ def format_tiles_frequency(tiles: list[KpiTile]) -> str:
 
 
 class PlanFactTile(QFrame):
-    def __init__(self, tile: KpiTile, parent: QWidget | None = None) -> None:
+    def __init__(self, tile: KpiTile, parent: QWidget | None = None, *, paused: bool = False) -> None:
         super().__init__(parent)
         self._tile = tile
+        self._paused = paused
         self.setObjectName("KpiTile")
-        self.setStyleSheet(_CARD)
+        self.setStyleSheet(
+            """
+            QFrame#KpiTile {
+                background: #E6E9E8;
+                border: 1px solid rgba(16,24,23,0.08);
+                border-radius: 16px;
+            }
+            """
+            if paused
+            else _CARD
+        )
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self.setMinimumHeight(188)
@@ -424,17 +435,31 @@ class KpiPage(QWidget):
             row.setCursor(Qt.CursorShape.PointingHandCursor)
             row.setCheckable(True)
             row.setChecked(agent.id == self._selected_id)
-            row.setStyleSheet(
-                """
-                QPushButton {
-                    background: #FFFFFF; color: #101817; text-align: left;
-                    border: 1px solid rgba(16,24,23,0.10); border-radius: 14px;
-                    padding: 12px 14px;
-                }
-                QPushButton:hover { border-color: rgba(8,116,95,0.45); }
-                QPushButton:checked { border: 1px solid #08745F; background: #F3FAF7; }
-                """
-            )
+            if agent.paused:
+                row.setText(f"{agent.title or 'ИИ-агент'} · остановлен")
+                row.setStyleSheet(
+                    """
+                    QPushButton {
+                        background: #E6E9E8; color: #7A8682; text-align: left;
+                        border: 1px solid rgba(16,24,23,0.08); border-radius: 14px;
+                        padding: 12px 14px;
+                    }
+                    QPushButton:hover { border-color: rgba(16,24,23,0.16); }
+                    QPushButton:checked { border: 1px solid #9AA6A2; background: #DEE2E1; }
+                    """
+                )
+            else:
+                row.setStyleSheet(
+                    """
+                    QPushButton {
+                        background: #FFFFFF; color: #101817; text-align: left;
+                        border: 1px solid rgba(16,24,23,0.10); border-radius: 14px;
+                        padding: 12px 14px;
+                    }
+                    QPushButton:hover { border-color: rgba(8,116,95,0.45); }
+                    QPushButton:checked { border: 1px solid #08745F; background: #F3FAF7; }
+                    """
+                )
             row.setFont(app_font(13, QFont.Weight.Medium))
             row.clicked.connect(lambda _=False, wid=agent.id: self._select_agent(wid))
             self._list.addWidget(row)
@@ -470,7 +495,11 @@ class KpiPage(QWidget):
         if payload.workflow_id and payload.workflow_id != self._selected_id:
             return
         self._detail_title.setText(payload.title or self._detail_title.text())
-        self._detail_summary.setText(format_tiles_frequency(payload.tiles))
+        agent = next((item for item in self._agents if item.id == payload.workflow_id), None)
+        if agent is not None and agent.paused:
+            self._detail_summary.setText("KPI приостановлены — агент остановлен.")
+        else:
+            self._detail_summary.setText(format_tiles_frequency(payload.tiles))
         self._clear_tiles()
         if not payload.tiles:
             empty = QLabel("Для этого агента KPI ещё не сформированы.")
@@ -479,8 +508,9 @@ class KpiPage(QWidget):
             empty.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
             self._tiles.addWidget(empty, 0, 0)
             return
+        paused = bool(agent is not None and agent.paused)
         for index, tile in enumerate(payload.tiles):
-            self._tiles.addWidget(PlanFactTile(tile), index // 2, index % 2)
+            self._tiles.addWidget(PlanFactTile(tile, paused=paused), index // 2, index % 2)
 
     def _show_kpi_error(self, message: str) -> None:
         self._clear_detail(self._detail_title.text() or "KPI агента", message or "Не удалось загрузить KPI.")

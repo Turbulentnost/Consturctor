@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.notification import Notification
 from app.models.user import AppUser
+from app.models.workflow import Workflow
 from app.schemas.notification import DirectoryUser, NotificationCreate, NotificationOut
 from app.services.notifications.hub import hub
 
@@ -161,7 +162,30 @@ def list_inbox(db: Session, *, user_id: str, limit: int = 80) -> list[Notificati
         item.id: (item.fio or "")
         for item in db.execute(select(AppUser).where(AppUser.id.in_(sender_ids))).scalars().all()
     } if sender_ids else {}
-    return [_to_out(row, sender_fio=senders.get(row.sender_user_id, "")) for row in rows]
+    linked_ids = {str(row.workflow_id) for row in rows if (row.workflow_id or "").strip()}
+    alive_ids = {
+        str(wid)
+        for (wid,) in db.query(Workflow.id).filter(Workflow.id.in_(linked_ids)).all()
+    } if linked_ids else set()
+    items: list[NotificationOut] = []
+    for row in rows:
+        item = _to_out(row, sender_fio=senders.get(row.sender_user_id, ""))
+        if item.workflow_id and item.workflow_id not in alive_ids:
+            item = item.model_copy(update={"workflow_id": ""})
+        items.append(item)
+    return items
+
+
+def delete_notifications_for_workflow(db: Session, *, workflow_id: str) -> int:
+    wid = (workflow_id or "").strip()
+    if not wid:
+        return 0
+    count = (
+        db.query(Notification)
+        .filter(Notification.workflow_id == wid)
+        .delete(synchronize_session=False)
+    )
+    return int(count or 0)
 
 
 def unread_count(db: Session, *, user_id: str) -> int:

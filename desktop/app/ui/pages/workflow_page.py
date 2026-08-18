@@ -47,6 +47,7 @@ from app.api_client import (
     WorkflowPlan,
     WorkflowRecord,
 )
+from app.tools.hitl import register_inline_host
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 from app.ui.widgets.cursor_feed import CursorFeedItem, resolve_feed_kind
 
@@ -1239,6 +1240,7 @@ class WorkflowPage(QWidget):
         self._last_exec_report = ""
         self._live_tools: list[dict] = []
         self._live_tool_widgets: dict[str, CursorFeedItem] = {}
+        self._hitl_cards: list[QWidget] = []
         self._activity_banner: QLabel | None = None
         self._busy_frames = ("◐", "◓", "◑", "◒")
         self._question_fields: dict[str, QLineEdit] = {}
@@ -1255,6 +1257,7 @@ class WorkflowPage(QWidget):
         self._feed_rebuilding = False
         self._build()
         self._render_all()
+        register_inline_host(self)
 
     def _build(self) -> None:
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -1606,6 +1609,8 @@ class WorkflowPage(QWidget):
         while self._feed_layout.count():
             item = self._feed_layout.takeAt(0)
             w = item.widget()
+            if w is not None and w in self._hitl_cards:
+                continue
             if w is not None:
                 w.deleteLater()
         # Drop stale answer widgets from previous rebuild.
@@ -1706,6 +1711,8 @@ class WorkflowPage(QWidget):
             self._feed_layout.addWidget(card)
         elif post_question and self._post_build_question is not None:
             card = self._make_clarification_message(self._post_build_question)
+            self._feed_layout.addWidget(card)
+        for card in self._hitl_cards:
             self._feed_layout.addWidget(card)
 
     def _render_chips(self) -> None:
@@ -2502,6 +2509,12 @@ class WorkflowPage(QWidget):
             ),
         )
 
+    def attach_hitl_card(self, card: QWidget) -> None:
+        if card not in self._hitl_cards:
+            self._hitl_cards.append(card)
+        self._feed_layout.addWidget(card)
+        self._scroll_feed_to_bottom()
+
     def _sync_question_state(self, plan: WorkflowPlan) -> None:
         unanswered = plan.unanswered()
         if not unanswered:
@@ -2943,6 +2956,7 @@ class WorkflowPage(QWidget):
         self._live_tools = []
         self._live_tool_widgets = {}
         self._activity_banner = None
+        self._hitl_cards = []
         self._clear_questions()
         self._events = []
         self._event_seq = 0

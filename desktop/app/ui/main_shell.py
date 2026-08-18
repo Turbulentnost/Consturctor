@@ -532,7 +532,14 @@ class MainShell(QWidget):
         try:
             record = self._api.get_workflow(wid)
         except ApiError as exc:
-            QMessageBox.information(self, "Уведомления", exc.message)
+            QMessageBox.information(
+                self,
+                "Уведомления",
+                "Этот агент удалён. Перейти к нему больше нельзя."
+                if exc.status_code == 404
+                else exc.message,
+            )
+            self._reload_notifications_page()
             return
         self._on_launch_workflow_agent(record)
 
@@ -1176,6 +1183,7 @@ class MainShell(QWidget):
             )
             self._page_agents.set_agents(workflows)
             self._page_agents.set_drafts(drafts)
+            self.refresh_notification_badge()
             return
         if isinstance(result, list):
             self._page_agents.set_drafts([item for item in result if isinstance(item, AgentDraft)])
@@ -1543,7 +1551,7 @@ class MainShell(QWidget):
         answer = QMessageBox.question(
             self,
             "Остановить автозапуск",
-            "Остановить автозапуск этого агента? Расписание больше не будет запускать его само.",
+            "Остановить этого агента? Автозапуск и пересчёт KPI будут приостановлены, строка станет серой.",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return

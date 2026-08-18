@@ -24,6 +24,11 @@ class TriggerError(RuntimeError):
         self.status_code = status_code
 
 
+def is_workflow_paused(local_run: object) -> bool:
+    data = local_run if isinstance(local_run, dict) else {}
+    return bool(data.get("paused"))
+
+
 def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -178,7 +183,7 @@ def due_commands(db: Session, *, user_id: str | None = None) -> list[AgentTrigge
     now = datetime.now(timezone.utc)
     stale_before = now - CHECK_INTERVAL
     stmt = (
-        select(AgentTrigger)
+        select(AgentTrigger, Workflow)
         .join(Workflow, Workflow.id == AgentTrigger.workflow_id)
         .where(
             AgentTrigger.enabled.is_(True),
@@ -190,7 +195,12 @@ def due_commands(db: Session, *, user_id: str | None = None) -> list[AgentTrigge
     if user_id:
         stmt = stmt.where(AgentTrigger.owner_user_id == user_id)
     stmt = stmt.order_by(AgentTrigger.created_at.asc()).limit(50)
-    return list(db.execute(stmt).scalars().all())
+    due: list[AgentTrigger] = []
+    for trigger, workflow in db.execute(stmt).all():
+        if is_workflow_paused(workflow.local_run):
+            continue
+        due.append(trigger)
+    return due
 
 
 def mark_dispatched(db: Session, trigger_id: str) -> None:

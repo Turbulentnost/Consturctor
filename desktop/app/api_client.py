@@ -676,6 +676,7 @@ class WorkflowListItem:
     updated_at: str = ""
     has_local_run: bool = False
     auto_run: bool = False
+    paused: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1374,6 +1375,7 @@ class ApiClient:
                 updated_at=str(x.get("updated_at") or ""),
                 has_local_run=bool(x.get("has_local_run")),
                 auto_run=bool(x.get("auto_run")),
+                paused=bool(x.get("paused")),
             )
             for x in items
             if isinstance(x, dict)

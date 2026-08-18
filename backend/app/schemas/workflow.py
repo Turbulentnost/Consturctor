@@ -71,6 +71,7 @@ class WorkflowListItem(BaseModel):
     updated_at: str = ""
     has_local_run: bool = False
     auto_run: bool = False
+    paused: bool = False
 
 
 class AutoRunStopResult(BaseModel):
