@@ -275,10 +275,11 @@ def list_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
     file_id = payload.get("file_id") or payload.get("fileId")
     overdue_only = bool(payload.get("overdue_only") or payload.get("overdueOnly"))
     raw_limit = payload.get("limit")
-    limit = int(raw_limit) if raw_limit not in (None, "") else 0
-    if limit < 0:
-        limit = 0
-    limit = min(limit, 200) if limit else 0
+    # Без limit агент на планировании тянет все ~200 карточек по одной — UI «зависает».
+    limit = int(raw_limit) if raw_limit not in (None, "") else 20
+    if limit <= 0:
+        limit = 20
+    limit = min(limit, 200)
 
     token = _login()
     if file_id:

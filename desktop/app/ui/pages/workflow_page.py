@@ -1050,6 +1050,9 @@ class WorkflowPage(QWidget):
         self._last_stream_phrase = ""
         self._last_stream_error = ""
         self._last_exec_report = ""
+        self._live_tools: list[dict] = []
+        self._activity_banner: QLabel | None = None
+        self._busy_frames = ("◐", "◓", "◑", "◒")
         self._question_fields: dict[str, QLineEdit] = {}
         self._current_question_id = ""
         self._selected_quick_answer = ""
@@ -1361,6 +1364,9 @@ class WorkflowPage(QWidget):
         if self._busy:
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
             self._tick_activity()
+        elif self._last_stream_error and not can_next:
+            self._agent_status.setText("● Предыдущий запуск завершился ошибкой — можно запустить снова")
+            self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
         elif can_next:
             self._agent_status.setText("● Тесты PASS — откройте паспорт и укажите, когда запускать")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
@@ -1467,6 +1473,42 @@ class WorkflowPage(QWidget):
             live.expand_toggled.connect(self._on_expand_toggled)
             self._thinking_live = live
             self._feed_layout.addWidget(live)
+        for tool in self._live_tools:
+            name = str(tool.get("name") or "инструмент")
+            status = str(tool.get("status") or "running")
+            detail = str(tool.get("detail") or "")
+            if status == "running":
+                title = f"Инструмент: {name}"
+                body = detail or "Выполняется…"
+            elif status == "ok":
+                title = f"Инструмент: {name}"
+                body = detail or "Готово"
+            else:
+                title = f"Инструмент: {name}"
+                body = detail or "Ошибка"
+            key = str(tool.get("key") or f"live-tool-{name}")
+            widget = CursorFeedItem(
+                kind="tool",
+                text=body,
+                title=title,
+                detail=body,
+                event_key=key,
+                expanded=status == "running",
+            )
+            widget.expand_toggled.connect(self._on_expand_toggled)
+            self._feed_layout.addWidget(widget)
+        self._activity_banner = None
+        if self._busy:
+            frame = self._busy_frames[self._busy_n % len(self._busy_frames)]
+            phrase = (self._last_stream_phrase or self._busy_base or "Агент работает").strip()
+            if len(phrase) > 100:
+                phrase = phrase[:97] + "…"
+            banner = QLabel(f"{frame} Система работает — {phrase}")
+            banner.setFont(app_font(12, QFont.Weight.Medium))
+            banner.setWordWrap(True)
+            banner.setStyleSheet("color: #08745F; background: #EAF7F3; border-radius: 10px; padding: 8px 10px;")
+            self._activity_banner = banner
+            self._feed_layout.addWidget(banner)
         if plan_question and self._record and self._record.plan:
             card = self._make_clarification_message(self._record.plan.unanswered()[0])
             self._feed_layout.addWidget(card)
@@ -1742,6 +1784,9 @@ class WorkflowPage(QWidget):
         if busy:
             self._busy_base = base
             self._busy_n = 0
+            self._live_tools = []
+            if not (self._last_stream_phrase or "").strip():
+                self._last_stream_phrase = base
             self._busy_timer.start()
             self._tick_activity()
             plan = self._record.plan if self._record else None
@@ -1753,20 +1798,146 @@ class WorkflowPage(QWidget):
             self._render_all()
 
     def _tick_activity(self) -> None:
-        self._busy_n = (self._busy_n % 3) + 1
-        if (self._busy_base or "").startswith("Реализация"):
-            phrase = (self._last_stream_phrase or "").strip()
-            if len(phrase) > 80:
-                phrase = phrase[:77] + "…"
-            if phrase:
-                self._agent_status.setText(f"● Реализация… {phrase}")
-            else:
-                self._agent_status.setText(f"● Реализация{'.' * self._busy_n}")
+        self._busy_n = (self._busy_n % 4) + 1
+        frame = self._busy_frames[(self._busy_n - 1) % len(self._busy_frames)]
+        running = next((t for t in self._live_tools if t.get("status") == "running"), None)
+        if running:
+            name = str(running.get("name") or "инструмент")
+            self._agent_status.setText(f"{frame} Вызываю {name}…")
+            self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
+            self._refresh_activity_banner(f"Вызываю {name}…")
             return
-        self._agent_status.setText(f"● {self._busy_base}{'.' * self._busy_n}")
+        phrase = (self._last_stream_phrase or self._busy_base or "Агент работает").strip()
+        if len(phrase) > 80:
+            phrase = phrase[:77] + "…"
+        if (self._busy_base or "").startswith("Реализация"):
+            self._agent_status.setText(f"{frame} Реализация… {phrase}" if phrase else f"{frame} Реализация…")
+        else:
+            self._agent_status.setText(f"{frame} {self._busy_base}{'.' * min(self._busy_n, 3)}")
+        self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
+        self._refresh_activity_banner(phrase)
+
+    def _refresh_activity_banner(self, phrase: str) -> None:
+        if self._activity_banner is None or not self._busy:
+            return
+        frame = self._busy_frames[(self._busy_n - 1) % len(self._busy_frames)]
+        text = (phrase or self._busy_base or "Агент работает").strip()
+        if len(text) > 100:
+            text = text[:97] + "…"
+        self._activity_banner.setText(f"{frame} Система работает — {text}")
+
+    def _upsert_live_tool(self, name: str, *, status: str, detail: str = "") -> None:
+        tool_name = (name or "").strip() or "инструмент"
+        for item in self._live_tools:
+            if item.get("name") == tool_name and item.get("status") == "running":
+                item["status"] = status
+                item["detail"] = detail
+                self._rebuild_feed()
+                return
+        if status == "running":
+            # Close previous running tools visually if a new one starts.
+            for item in self._live_tools:
+                if item.get("status") == "running":
+                    item["status"] = "ok"
+                    item["detail"] = item.get("detail") or "Готово"
+            self._live_tools.append(
+                {
+                    "name": tool_name,
+                    "status": "running",
+                    "detail": detail or "Выполняется на сервере Constructor…",
+                    "key": self._next_event_key(),
+                }
+            )
+            self._last_stream_phrase = f"вызываю {tool_name}"
+            self._rebuild_feed()
+            return
+        self._live_tools.append(
+            {
+                "name": tool_name,
+                "status": status,
+                "detail": detail,
+                "key": self._next_event_key(),
+            }
+        )
+        self._rebuild_feed()
+
+    def _commit_live_tools_to_feed(self) -> None:
+        for tool in self._live_tools:
+            name = str(tool.get("name") or "инструмент")
+            status = str(tool.get("status") or "")
+            detail = str(tool.get("detail") or "").strip()
+            if status == "ok":
+                body = detail or "Готово"
+            elif status == "error":
+                body = detail or "Ошибка"
+            else:
+                body = detail or "Вызов завершён"
+            self._events.append(
+                FeedEvent(
+                    title=f"Инструмент: {name}",
+                    body=body,
+                    time=self._now(),
+                    kind="tool",
+                    event_key=str(tool.get("key") or self._next_event_key()),
+                )
+            )
+        self._live_tools = []
+
+    def _parse_tool_activity(self, text: str) -> bool:
+        """Return True if text was handled as tool activity (not Thinking)."""
+        raw = (text or "").strip()
+        if not raw:
+            return False
+        low = raw.casefold()
+        call = re.search(
+            r"(?:Cursor вызывает|Выполняю на этом компьютере|Выполняю на компьютере)\s*[:«\"]?\s*«?([^\n»]+)»?",
+            raw,
+            re.IGNORECASE,
+        )
+        if call and ("вызывает" in low or "выполняю" in low):
+            name = call.group(1).strip(" «»\"'.,;")
+            detail = "Выполняется на сервере Constructor…"
+            if "компьютере" in low:
+                detail = "Выполняется на этом компьютере…"
+            self._upsert_live_tool(name, status="running", detail=detail)
+            return True
+        if "жду вызов constructor tool" in low:
+            names = raw.split(":", 1)[-1].strip() if ":" in raw else raw
+            self._last_stream_phrase = f"жду вызов {names}"
+            self._push_event("Система", f"Жду вызов Constructor tool: {names}", kind="system")
+            return True
+        progress = re.search(r"«([^»]+)»\s*:\s*(читаю|загружаю|ожидаю)\b(.+)$", raw, re.IGNORECASE)
+        if progress:
+            name = progress.group(1).strip()
+            detail = (progress.group(2) + progress.group(3)).strip()
+            self._upsert_live_tool(name, status="running", detail=detail)
+            self._last_stream_phrase = f"{name}: {detail}"
+            return True
+        done = re.search(r"«([^»]+)»\s*:\s*готово\.?", raw, re.IGNORECASE)
+        if done:
+            self._upsert_live_tool(done.group(1).strip(), status="ok", detail="Готово")
+            self._last_stream_phrase = f"{done.group(1).strip()} готово"
+            return True
+        failed = re.search(r"«([^»]+)»\s*:\s*(.+)$", raw)
+        if failed and "готово" not in failed.group(2).casefold():
+            detail = failed.group(2).strip()
+            # Прогресс/подсказка, не ошибка.
+            if any(hint in detail.casefold() for hint in ("читаю", "загружаю", "может занять", "ожидаю")):
+                self._upsert_live_tool(failed.group(1).strip(), status="running", detail=detail)
+                self._last_stream_phrase = f"{failed.group(1).strip()}: {detail}"
+                return True
+            self._upsert_live_tool(
+                failed.group(1).strip(),
+                status="error",
+                detail=detail,
+            )
+            self._last_stream_phrase = f"ошибка {failed.group(1).strip()}"
+            return True
+        return False
 
     def _run_async(self, label: str, fn) -> None:
         self._reset_thinking_pacer()
+        self._live_tools = []
         self._set_busy(True, label)
 
         def work() -> None:
@@ -1788,12 +1959,18 @@ class WorkflowPage(QWidget):
                 self._last_stream_phrase = last_line
         if event_type == "error" and incoming.strip():
             self._last_stream_error = incoming.strip()
-            delta = "\n" + incoming.strip()
-            self._thinking_received = (self._thinking_received + delta).strip()
-            self._thinking_text = self._thinking_received
-            self._note_thinking_chunk(delta)
-            self._ensure_thinking_pacer()
+            self._push_event("Ошибка", incoming.strip(), kind="error")
+            self._agent_status.setText("● Ошибка — смотрите карточку в ленте")
+            self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
             return
+        if event_type in {"decision", "system", "status", "message"} and incoming.strip():
+            if self._parse_tool_activity(incoming):
+                self._tick_activity()
+                return
+            # Короткие служебные фразы — в ленту сразу, не в Thinking.
+            if len(incoming.strip()) < 180 and not incoming.strip().startswith("```"):
+                self._push_event("Система", incoming.strip(), kind="system")
+                return
         if event_type in {"thinking", "assistant"} and incoming:
             if incoming.startswith(self._thinking_received) and len(incoming) >= len(self._thinking_received):
                 delta = incoming[len(self._thinking_received) :]
@@ -1882,15 +2059,18 @@ class WorkflowPage(QWidget):
         self._flush_thinking()
         if fail:
             self._last_stream_error = fail
+            self._commit_live_tools_to_feed()
             self._set_busy(False)
-            self._push_event("Ошибка", fail)
-            self._agent_status.setText("● Ошибка — попробуйте ещё раз")
+            self._push_event("Ошибка", fail, kind="error")
+            self._agent_status.setText("● Ошибка — предыдущий запуск не завершён")
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
             return
         if pending is None:
+            self._commit_live_tools_to_feed()
             self._set_busy(False)
             return
         result, label = pending
+        self._commit_live_tools_to_feed()
         self._apply_async_result(result, label)
 
     def _on_async_ok(self, result: object, label: str) -> None:
@@ -2265,6 +2445,13 @@ class WorkflowPage(QWidget):
         self._run_btn.setEnabled(False)
         self._run_btn.setText("Идёт сборка…")
         self._push_event("Сборка workflow", "Запускаю реализацию…")
+        self._last_stream_phrase = "создаю агента Cursor"
+        self._push_event(
+            "Система",
+            "Создаю агента Cursor. Дальше в ленте появятся Thinking и вызовы инструментов "
+            "(например turboproject). Пока идёт вызов — статус внизу мигает.",
+            kind="system",
+        )
         wid = self._record.id
         self._run_async("Реализация", lambda: self._execute_with_stream(wid, reexecute))
 
@@ -2449,6 +2636,8 @@ class WorkflowPage(QWidget):
         self._last_stream_phrase = ""
         self._last_stream_error = ""
         self._last_exec_report = ""
+        self._live_tools = []
+        self._activity_banner = None
         self._clear_questions()
         self._events = []
         self._event_seq = 0

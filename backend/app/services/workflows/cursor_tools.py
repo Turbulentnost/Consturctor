@@ -290,6 +290,13 @@ def stream_cursor_with_tools(
             name = str(call.get("name") or "")
             family = tool_family(name)
             _emit(on_event, "decision", f"Cursor вызывает «{name}»…")
+            if name.startswith("turboproject") or name == "turboproject":
+                _emit(
+                    on_event,
+                    "decision",
+                    "«turboproject»: читаю проекты на сервере Constructor "
+                    "(это может занять до минуты)…",
+                )
             try:
                 result = invoke_creation_tool(
                     tool=name,

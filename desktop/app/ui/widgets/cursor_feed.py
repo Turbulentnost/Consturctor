@@ -70,6 +70,8 @@ def resolve_feed_kind(*, role: str = "", title: str = "", kind: str = "") -> str
         return "error"
     if folded in {"thinking", "планирование"}:
         return "thinking"
+    if folded in {"инструмент", "tool"} or folded.startswith("инструмент:"):
+        return "tool"
     if folded in {"предупреждение", "система"}:
         return "system"
     return "agent"
