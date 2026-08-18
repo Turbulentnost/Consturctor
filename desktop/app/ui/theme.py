@@ -42,6 +42,7 @@ CONTENT_PADDING_X = 36
 CONTENT_PADDING_TOP = 30
 
 FONT_FAMILY = "Manrope"
+_FALLBACK_FAMILY = "Segoe UI"
 
 try:
     from app.config import bundle_path
@@ -81,11 +82,15 @@ def load_fonts() -> str:
             return FONT_FAMILY
     if preferred:
         FONT_FAMILY = preferred[0]
+        return FONT_FAMILY
+    FONT_FAMILY = _FALLBACK_FAMILY
     return FONT_FAMILY
 
 
 def app_font(size: int = 14, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
     font = QFont(FONT_FAMILY)
+    if FONT_FAMILY == "Manrope":
+        QFont.insertSubstitutions("Manrope", [_FALLBACK_FAMILY, "Arial"])
     font.setPixelSize(size)
     font.setWeight(weight)
     # Full hinting keeps glyphs sharp under Windows ClearType / fractional DPI.

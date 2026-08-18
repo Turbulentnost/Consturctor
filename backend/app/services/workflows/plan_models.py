@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -301,6 +302,51 @@ class WorkflowPlan:
                 self.answered_questions.append(item)
 
         self._mirror_answers_into_constraints()
+        self.sanitize_open_questions()
+
+    def drop_resolved_open_questions(self) -> None:
+        """Не держать в open_questions то, на что пользователь уже ответил."""
+        answered_ids = {
+            q.id for q in self.answered_questions if (q.answer or "").strip()
+        }
+        answered_texts = [
+            _norm_question(q.question)
+            for q in self.answered_questions
+            if (q.answer or "").strip()
+        ]
+        kept: list[OpenQuestion] = []
+        for q in self.open_questions:
+            if (q.answer or "").strip():
+                continue
+            if q.id in answered_ids:
+                continue
+            if any(_same_question(q.question, prev) for prev in answered_texts if prev):
+                continue
+            kept.append(q)
+        self.open_questions = kept
+
+    def sanitize_open_questions(self) -> None:
+        """Keep only human-facing blockers; drop tool/impl loops after prior answers."""
+        self.drop_resolved_open_questions()
+        delegated = [
+            q for q in self.answered_questions if _is_delegate_answer(q.answer)
+        ]
+        answered = [q for q in self.answered_questions if (q.answer or "").strip()]
+        kept: list[OpenQuestion] = []
+        for q in self.open_questions:
+            if (q.answer or "").strip():
+                continue
+            if _is_implementation_question(q):
+                continue
+            if any(_same_topic(q.question, prev.question) for prev in answered):
+                continue
+            if any(_same_topic(q.question, prev.question) for prev in delegated):
+                continue
+            q.options = [opt for opt in q.options if not _looks_like_tool_option(opt)]
+            kept.append(q)
+        if len(answered) >= _MAX_ANSWERED_BEFORE_STOP:
+            kept = [q for q in kept if _is_business_question(q.question)]
+        self.open_questions = kept[:_MAX_OPEN_QUESTIONS]
 
     def _mirror_answers_into_constraints(self) -> None:
         """Keep a plain-text copy in constraints for older prompt/runtime paths."""
@@ -348,6 +394,8 @@ class WorkflowPlan:
                 None,
             )
             question = (meta.question if meta else "") or qid
+            if _is_delegate_answer(ans):
+                continue
             follow = _followup_for_placeholder_answer(qid, question, ans)
             if follow is None:
                 continue
@@ -360,15 +408,129 @@ class WorkflowPlan:
         return created
 
 
+def _norm_question(text: str) -> str:
+    folded = " ".join(str(text or "").casefold().replace("ё", "е").split())
+    return re.sub(r"[«»\"'?:！!.,;()]+", "", folded).strip()
+
+
+def _same_question(left: str, right: str) -> bool:
+    na = _norm_question(left)
+    nb = _norm_question(right)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    return len(shorter) >= 24 and shorter in longer
+
+
 # Only non-answers / UI placeholders — NOT short but informative replies like «COM», «1С».
+_MAX_OPEN_QUESTIONS = 3
+_MAX_ANSWERED_BEFORE_STOP = 5
+
+_DELEGATE_HINTS = (
+    "выясни сам",
+    "определи сам",
+    "посмотри сам",
+    "найди сам",
+    "узнай сам",
+    "разберись",
+    "сам как",
+    "сами найд",
+    "точные не знаю",
+    "точно не знаю",
+    "не знаю точн",
+    "не знаю, выясни",
+    "не знаю выясни",
+)
+
+_IMPL_HINTS = (
+    "constructor_tool",
+    "odata",
+    "imap.",
+    "onec.",
+    "turboproject",
+    "fixtures",
+    "backend_url",
+    "invoker",
+    "constructor_api",
+    "guid",
+    "entity",
+    "resheniya",
+    "значение n",
+    "значение n ",
+    "live или только",
+    "способ доступа",
+)
+
+_TOOL_OPTION_HINTS = (
+    "odata",
+    "imap",
+    "constructor",
+    "onec.",
+    "turboproject",
+    "fixtures",
+    "com ",
+    "graph api",
+    "notify_tools",
+    "constructor_tool",
+)
+
+_BUSINESS_HINTS = (
+    "уведом",
+    "отчёт",
+    "отчет",
+    "как часто",
+    "кому",
+    "куда",
+    "срок",
+    "расписан",
+    "результат",
+    "проект",
+    "период",
+    "сотрудник",
+    "отдел",
+    "адресат",
+)
+
+_STOP_WORDS = frozenset(
+    {
+        "какой",
+        "какое",
+        "какие",
+        "какая",
+        "значение",
+        "для",
+        "чтобы",
+        "этот",
+        "этого",
+        "нужно",
+        "агент",
+        "агенту",
+        "правила",
+        "правило",
+        "если",
+        "или",
+        "как",
+        "что",
+        "чем",
+        "при",
+        "без",
+        "есть",
+        "было",
+        "будет",
+        "вопрос",
+        "ответе",
+        "выбран",
+    }
+)
+
 _PLACEHOLDER_ANSWERS = frozenset(
     {
         "ок",
         "окей",
         "хорошо",
         "ладно",
-        "не знаю",
-        "пока неизвестно",
         "другое",
         "свой вариант",
         "как обычно",
@@ -384,6 +546,50 @@ _PLACEHOLDER_ANSWERS = frozenset(
         "tbd",
     }
 )
+
+
+def _is_delegate_answer(answer: str) -> bool:
+    folded = (answer or "").casefold().replace("ё", "е")
+    if not folded.strip():
+        return False
+    if folded.strip() in {"не знаю", "пока неизвестно"}:
+        return True
+    return any(hint in folded for hint in _DELEGATE_HINTS)
+
+
+def _looks_like_tool_option(option: str) -> bool:
+    folded = (option or "").casefold()
+    return any(hint in folded for hint in _TOOL_OPTION_HINTS)
+
+
+def _is_implementation_question(question: OpenQuestion | str) -> bool:
+    text = question.question if isinstance(question, OpenQuestion) else str(question or "")
+    folded = text.casefold().replace("ё", "е")
+    if any(hint in folded for hint in _IMPL_HINTS):
+        return True
+    if re.search(r"\bq\d+\b", folded):
+        return True
+    options = question.options if isinstance(question, OpenQuestion) else []
+    if options and all(_looks_like_tool_option(opt) for opt in options):
+        return True
+    return False
+
+
+def _is_business_question(text: str) -> bool:
+    folded = (text or "").casefold().replace("ё", "е")
+    return any(hint in folded for hint in _BUSINESS_HINTS)
+
+
+def _topic_words(text: str) -> set[str]:
+    words = re.findall(r"[a-zа-я0-9]{4,}", _norm_question(text))
+    return {w for w in words if w not in _STOP_WORDS}
+
+
+def _same_topic(left: str, right: str) -> bool:
+    if _same_question(left, right):
+        return True
+    a, b = _topic_words(left), _topic_words(right)
+    return len(a & b) >= 2
 
 
 def _followup_for_placeholder_answer(

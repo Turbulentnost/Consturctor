@@ -36,11 +36,16 @@ def _ensure_path(subdir: str) -> Path:
 def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     args = arguments if isinstance(arguments, dict) else {}
     _SERVER_ONEC = {
+        "onec.odata_catalog",
         "onec.odata_get",
         "onec.odata_post",
         "onec.odata_patch",
         "onec.attach_file",
         "onec.sql_query",
+        "onec.erp_tasks_current",
+        "onec.erp_tasks_period",
+        "onec.erp_subordinate_tasks",
+        "onec.docflow_tasks",
     }
     if name.startswith("imap."):
         raise ToolHostError(

@@ -33,4 +33,12 @@ class NotificationOut(BaseModel):
     workflow_id: str = ""
     send_at: datetime
     delivered_at: datetime | None = None
+    read_at: datetime | None = None
     created_at: datetime | None = None
+    sender_fio: str = ""
+    unread: bool = True
+
+
+class NotificationInbox(BaseModel):
+    items: list[NotificationOut] = Field(default_factory=list)
+    unread_count: int = 0

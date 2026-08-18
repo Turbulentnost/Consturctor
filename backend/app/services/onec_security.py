@@ -14,6 +14,23 @@ _FORBIDDEN_SQL = re.compile(
 _FROM_RE = re.compile(r"\bFROM\s+(\[[\w.]+\]|[\w.]+)", re.IGNORECASE)
 _JOIN_RE = re.compile(r"\bJOIN\s+(\[[\w.]+\]|[\w.]+)", re.IGNORECASE)
 
+ODATA_ENTITY_PREFIXES = (
+    "Document_",
+    "Catalog_",
+    "InformationRegister_",
+    "AccumulationRegister_",
+    "AccountingRegister_",
+    "CalculationRegister_",
+    "BusinessProcess_",
+    "Task_",
+    "Constant_",
+    "ChartOfCharacteristicTypes_",
+    "ChartOfAccounts_",
+    "ChartOfCalculationTypes_",
+    "ExchangePlan_",
+    "Enum_",
+)
+
 _DEFAULT_ODATA_ENTITIES = (
     "Document_ТД_ВходящаяКорреспонденция",
     "Document_ТД_ИсходящаяКорреспонденция",
@@ -38,10 +55,20 @@ def _split_csv(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
-def odata_entity_allowlist(raw: str = "") -> set[str]:
+def default_odata_entities() -> tuple[str, ...]:
+    return _DEFAULT_ODATA_ENTITIES
+
+
+def looks_like_odata_entity(entity: str) -> bool:
+    name = normalize_entity_name(entity)
+    return bool(name) and name.startswith(ODATA_ENTITY_PREFIXES)
+
+
+def odata_entity_allowlist(raw: str = "") -> set[str] | None:
+    """Явный CSV-allowlist или None: без ограничения, кроме префикса 1С и каталога."""
     source = (raw or os.environ.get("ONEC_ODATA_ENTITY_ALLOWLIST") or "").strip()
     if not source:
-        return set(_DEFAULT_ODATA_ENTITIES)
+        return None
     return set(_split_csv(source))
 
 
@@ -88,23 +115,43 @@ def normalize_entity_name(entity: str) -> str:
     return entity.strip().lstrip("/").split("?", 1)[0]
 
 
-def validate_odata_entity(entity: str, *, allowlist: set[str] | None = None) -> str:
+def validate_odata_entity(
+    entity: str,
+    *,
+    allowlist: set[str] | None = None,
+    extra_allowed: set[str] | None = None,
+) -> str:
     normalized = normalize_entity_name(entity)
     if not normalized:
         raise ValueError("entity required")
-    allowed = allowlist or odata_entity_allowlist()
-    if normalized not in allowed:
-        raise ValueError(f"OData entity not allowed: {normalized}")
-    return normalized
+    extras = extra_allowed or set()
+    if allowlist is None:
+        if looks_like_odata_entity(normalized) or normalized in extras:
+            return normalized
+        raise ValueError(
+            f"OData entity not allowed: {normalized}. "
+            "Возьми имя из onec.odata_catalog (Document_/Catalog_/*Register_)."
+        )
+    if normalized in allowlist or normalized in extras:
+        return normalized
+    raise ValueError(
+        f"OData entity not allowed: {normalized}. "
+        "Возьми имя из onec.odata_catalog или ONEC_ODATA_ENTITY_ALLOWLIST."
+    )
 
 
-def validate_odata_path(path: str, *, allowlist: set[str] | None = None) -> str:
+def validate_odata_path(
+    path: str,
+    *,
+    allowlist: set[str] | None = None,
+    extra_allowed: set[str] | None = None,
+) -> str:
     cleaned = path.strip().lstrip("/")
     if not cleaned:
         raise ValueError("path required")
     head = cleaned.split("?", 1)[0]
     entity_head = head.split("(", 1)[0] if "(" in head else head
-    validate_odata_entity(entity_head, allowlist=allowlist)
+    validate_odata_entity(entity_head, allowlist=allowlist, extra_allowed=extra_allowed)
     return cleaned
 
 

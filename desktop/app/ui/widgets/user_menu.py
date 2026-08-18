@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 
 _AVATAR_SIZE = 42
-_HEADER_WIDTH = 300
+_BELL_SIZE = 36
+_HEADER_WIDTH = 348
 _DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
 _HEADER_POSITION_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("комарков", "помощник председателя совета директоров"),
@@ -114,14 +115,63 @@ class RoundAvatarButton(QToolButton):
         p.end()
 
 
-class UserMenuHeader(QWidget):
-    """Avatar + FIO; avatar opens Настроить / Выйти menu."""
-
-    logout_requested = Signal()
-    settings_requested = Signal()
+class BellButton(QToolButton):
+    """Колокольчик слева от аватара; сверху справа — число непрочитанных."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._count = 0
+        self.setFixedSize(_BELL_SIZE, _BELL_SIZE)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Уведомления")
+        self.setStyleSheet(
+            """
+            QToolButton {
+                border: none;
+                background: transparent;
+                padding: 0;
+            }
+            QToolButton:hover { background: rgba(16,24,23,0.06); border-radius: 18px; }
+            """
+        )
+
+    def set_count(self, count: int) -> None:
+        self._count = max(0, int(count))
+        self.setToolTip("Уведомления" if self._count == 0 else f"Уведомления · {self._count}")
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        cx, cy = self.width() / 2, self.height() / 2 + 1
+        p.setPen(QColor("#06483D"))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setFont(app_font(18, QFont.Weight.Medium))
+        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "🔔")
+        if self._count > 0:
+            badge = QRectF(self.width() - 16, 1, 15, 15)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor("#C62828"))
+            p.drawEllipse(badge)
+            p.setPen(QColor("#FFFFFF"))
+            p.setFont(app_font(8, QFont.Weight.DemiBold))
+            label = "9+" if self._count > 9 else str(self._count)
+            p.drawText(badge, Qt.AlignmentFlag.AlignCenter, label)
+        _ = (cx, cy)
+        p.end()
+
+
+class UserMenuHeader(QWidget):
+    """Bell + avatar + FIO; avatar opens Настроить / Выйти menu."""
+
+    logout_requested = Signal()
+    settings_requested = Signal()
+    notifications_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.bell = BellButton(self)
+        self.bell.clicked.connect(self.notifications_requested.emit)
         self.avatar = RoundAvatarButton(self)
         menu = QMenu(self.avatar)
         menu.setFont(app_font(13))
@@ -171,7 +221,8 @@ class UserMenuHeader(QWidget):
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(12)
+        root.setSpacing(10)
+        root.addWidget(self.bell, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addWidget(self.avatar, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(text_col, 1)
         self.setFixedWidth(_HEADER_WIDTH)
@@ -186,3 +237,6 @@ class UserMenuHeader(QWidget):
             self.avatar.set_default_logo()
         else:
             self.avatar.set_pixmap(pixmap)
+
+    def set_unread_count(self, count: int) -> None:
+        self.bell.set_count(count)

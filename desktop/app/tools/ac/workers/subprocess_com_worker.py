@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from app.tools.ac.workers.base import BaseWorker
 from app.tools.ac.workers.models import WorkerResult, WorkerTask
 
@@ -22,7 +24,7 @@ class SubprocessComWorker(BaseWorker):
 
     def execute(self, task: WorkerTask) -> WorkerResult:
         """Выполнить WorkerTask в дочернем процессе и вернуть WorkerResult."""
-        command = _build_worker_command(self._module_name, task)
+        command = _build_worker_command(self._module_name)
         try:
             completed = subprocess.run(
                 command,
@@ -35,6 +37,7 @@ class SubprocessComWorker(BaseWorker):
                 check=False,
                 cwd=_desktop_root(),
                 env=_worker_env(),
+                **_hidden_run_kwargs(),
             )
         except subprocess.TimeoutExpired as exc:
             stderr = _safe_process_text(exc.stderr)
@@ -79,7 +82,7 @@ def _parse_worker_result(task_id: str, stdout: str) -> WorkerResult | None:
     """Попытаться распарсить stdout дочернего процесса как WorkerResult."""
     try:
         return WorkerResult.model_validate_json(stdout)
-    except Exception:
+    except (ValueError, ValidationError):
         return None
 
 
@@ -92,22 +95,25 @@ def _worker_env() -> dict[str, str]:
     desktop = str(_desktop_root())
     current = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = desktop if not current else f"{desktop}{os.pathsep}{current}"
-    env.setdefault("PYTHONUTF8", "1")
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    env.setdefault("PYTHONLEGACYWINDOWSSTDIO", "0")
     return env
 
 
-def _build_worker_command(module_name: str, task: WorkerTask) -> list[str]:
+def _hidden_run_kwargs() -> dict:
+    """Keep the COM worker from flashing a console window on Windows."""
+    if sys.platform != "win32":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    }
+
+
+def _build_worker_command(module_name: str) -> list[str]:
     """Собрать команду запуска COM-worker для обычного Python и frozen exe."""
     if getattr(sys, "frozen", False):
         return [sys.executable, "--com-worker"]
-    if task.tool_name.startswith("onec."):
-        helper = os.environ.get("ONEC_COM_PYTHON", "").strip()
-        if helper:
-            return [helper, "-m", module_name]
-        if sys.platform == "win32" and os.environ.get("ONEC_COM_USE_32BIT", "1") == "1":
-            return ["py", "-3.12-32", "-m", module_name]
     return [sys.executable, "-m", module_name]
 
 

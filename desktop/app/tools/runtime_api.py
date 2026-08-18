@@ -18,12 +18,19 @@ def configure(*, token: str | None, base_url: str = "") -> None:
     _base_url = (base_url or backend_url()).rstrip("/")
 
 
-def request(method: str, path: str, *, json: dict | None = None, params: dict | None = None) -> Any:
+def request(
+    method: str,
+    path: str,
+    *,
+    json: dict | None = None,
+    params: dict | None = None,
+    timeout: float = 30.0,
+) -> Any:
     if not _token:
         raise RuntimeError("Нет сессии пользователя — войдите в Constructor.")
     url = f"{_base_url}{path}"
     headers = {"Authorization": f"Bearer {_token}", "Accept": "application/json"}
-    with httpx.Client(timeout=30.0) as client:
+    with httpx.Client(timeout=timeout) as client:
         response = client.request(method, url, headers=headers, json=json, params=params)
     if response.status_code >= 400:
         detail = response.text

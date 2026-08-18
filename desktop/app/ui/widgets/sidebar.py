@@ -51,6 +51,7 @@ _ICON_STEMS = {
     "plus": "плюс",
     "home": "главная",
     "kpi": "кпи",
+    "dashboard": "дашборд",
 }
 
 
@@ -222,6 +223,7 @@ class GlassSidebar(QWidget):
             NavItem("create", "Создать", "plus"),
             NavItem("agents", "Мои агенты", "home"),
             NavItem("kpi", "KPI", "kpi"),
+            NavItem("dashboard", "Мой дашборд", "dashboard"),
         ]
         self._active_key = "create"
         self._collapsed = False

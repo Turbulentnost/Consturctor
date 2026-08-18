@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from sqlalchemy.orm import Session
 
 from app.schemas.regulation import RoleFunction, RoleMatchResult
-from app.services.agent_passport.service import AgentPassport, draft_passport
+from app.services.agent_passport import persist as passport_persist
+from app.services.agent_passport.service import (
+    AgentPassport,
+    _apply_autonomy_scope,
+    _with_gaps,
+    draft_passport,
+)
 from app.services.agent_passport.types import ExtractedFunction
 from app.services.regulation.storage import get_document
 from app.services.role_matching.service import RoleMatchError, get_role_match_run
@@ -16,6 +24,16 @@ class PassportBuildError(Exception):
         self.status_code = status_code
 
 
+@dataclass
+class PassportBuildResult:
+    passport: AgentPassport
+    excerpt: str
+    functions: list[ExtractedFunction]
+    draft_id: str = ""
+    reused: bool = False
+    qa_history: list[dict] | None = None
+
+
 def draft_passport_from_function(
     db: Session,
     *,
@@ -25,8 +43,44 @@ def draft_passport_from_function(
     function_id: str,
     agent_title: str = "",
     agent_description: str = "",
-) -> tuple[AgentPassport, str, list[ExtractedFunction]]:
+    draft_id: str = "",
+    agent_id: str = "",
+) -> PassportBuildResult:
     """Собрать паспорт по функции из role-match + текст фрагмента регламента."""
+    draft = passport_persist.resolve_draft(
+        db,
+        user_id=user_id,
+        draft_id=draft_id,
+        regulation_id=regulation_id,
+        role_match_run_id=role_match_run_id,
+    )
+    if draft is not None:
+        saved = passport_persist.load_saved_session(
+            draft, function_id=function_id, agent_id=agent_id
+        )
+        if saved:
+            passport = passport_persist.passport_from_payload(saved)
+            functions = passport_persist.functions_from_payload(saved)
+            if passport is not None and functions:
+                excerpt = str(saved.get("excerpt") or "")
+                bp_name = str(saved.get("bp_name") or passport.name)
+                _apply_autonomy_scope(passport, functions=functions)
+                passport = _with_gaps(
+                    passport,
+                    bp_name=bp_name,
+                    excerpt=excerpt,
+                    functions=functions,
+                )
+                passport.source = str(passport.source or "saved")
+                return PassportBuildResult(
+                    passport=passport,
+                    excerpt=excerpt,
+                    functions=functions,
+                    draft_id=draft.id,
+                    reused=True,
+                    qa_history=list(saved.get("qa_history") or []),
+                )
+
     try:
         role_result = get_role_match_run(
             db,
@@ -55,7 +109,28 @@ def draft_passport_from_function(
         functions=extracted,
         agent_name=bp_name,
     )
-    return passport, excerpt, extracted
+    resolved_draft_id = draft.id if draft is not None else ""
+    if draft is not None:
+        passport_persist.save_session(
+            db,
+            draft,
+            function_id=function_id,
+            agent_id=agent_id,
+            payload=passport_persist.session_payload(
+                passport,
+                excerpt=excerpt,
+                functions=extracted,
+                bp_name=bp_name,
+            ),
+        )
+        resolved_draft_id = draft.id
+    return PassportBuildResult(
+        passport=passport,
+        excerpt=excerpt,
+        functions=extracted,
+        draft_id=resolved_draft_id,
+        reused=False,
+    )
 
 
 def _find_function(role_result: RoleMatchResult, function_id: str) -> RoleFunction | None:

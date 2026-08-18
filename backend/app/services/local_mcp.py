@@ -115,13 +115,50 @@ def list_tools() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "onec.odata_get",
-            "description": "Чтение сущности/пути 1С OData (сервер).",
+            "name": "onec.odata_catalog",
+            "description": (
+                "Список доступных сущностей 1С OData: документы, справочники/таблицы и регистры. "
+                "Сначала вызови этот инструмент, затем onec.odata_get с entity из ответа. "
+                "Исполняется на сервере."
+            ),
             "execution": "server",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "entity": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "description": (
+                            "Фильтр: document / catalog (таблицы, справочники) / register / other"
+                        ),
+                    },
+                    "search": {
+                        "type": "string",
+                        "description": "Подстрока в имени сущности (Document_, Catalog_, *Register_)",
+                    },
+                    "limit": {"type": "integer", "default": 400},
+                    "refresh": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Сбросить кэш и заново прочитать service document / $metadata",
+                    },
+                },
+            },
+        },
+        {
+            "name": "onec.odata_get",
+            "description": (
+                "Чтение сущности/пути 1С OData (сервер). "
+                "entity бери из onec.odata_catalog (documents / catalogs / registers). "
+                "Не выдумывай имена EntitySet."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "entity": {
+                        "type": "string",
+                        "description": "Имя EntitySet из onec.odata_catalog, например Document_Проект",
+                    },
                     "path": {"type": "string"},
                     "top": {
                         "type": "integer",
@@ -183,6 +220,180 @@ def list_tools() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {"sql": {"type": "string"}},
                 "required": ["sql"],
+            },
+        },
+        {
+            "name": "onec.erp_tasks_current",
+            "description": (
+                "Текущие (открытые) задачи пользователя из базы 1С erp_pm. "
+                "ФИО берётся из JWT сессии Constructor; fio/user_id в аргументах не обязательны. "
+                "Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 50},
+                    "fio": {
+                        "type": "string",
+                        "description": "Необязательно: чужое ФИО. Пусто — пользователь из JWT.",
+                    },
+                    "user_id": {
+                        "type": "string",
+                        "description": "Необязательно: id пользователя 1С. Пусто — из JWT.",
+                    },
+                },
+            },
+        },
+        {
+            "name": "onec.erp_tasks_period",
+            "description": (
+                "Задачи пользователя из erp_pm за период (дата создания). "
+                "ФИО берётся из JWT, если не переданы fio/user_id. Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date_from": {
+                        "type": "string",
+                        "description": "Начало периода YYYY-MM-DD",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "Конец периода YYYY-MM-DD",
+                    },
+                    "include_done": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Включать выполненные задачи",
+                    },
+                    "limit": {"type": "integer", "default": 100},
+                    "fio": {"type": "string"},
+                    "user_id": {"type": "string"},
+                },
+                "required": ["date_from", "date_to"],
+            },
+        },
+        {
+            "name": "onec.erp_subordinate_tasks",
+            "description": (
+                "Дерево задач подчинённых из erp_pm и 1С:Документооборот: "
+                "сначала руководитель (если include_self), затем непосредственные "
+                "подчинённые (должность, задачи и сроки за период), затем "
+                "подчинённые каждого из них и так далее. "
+                "Только действующие назначения, без уволенных и переведённых. "
+                "Человек из JWT сессии; можно передать access_token. "
+                "Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "access_token": {
+                        "type": "string",
+                        "description": (
+                            "JWT Constructor. Если пусто — берётся токен сессии "
+                            "(Authorization Bearer)."
+                        ),
+                    },
+                    "date_from": {
+                        "type": "string",
+                        "description": "Начало периода YYYY-MM-DD. Пусто — 30 дней назад.",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "Конец периода YYYY-MM-DD. Пусто — сегодня.",
+                    },
+                    "only_open": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Только открытые задачи",
+                    },
+                    "include_done": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Включать выполненные задачи за период",
+                    },
+                    "limit_per_person": {
+                        "type": "integer",
+                        "default": 30,
+                        "description": "Максимум задач на одного человека",
+                    },
+                    "include_self": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Включить руководителя (себя) отдельной строкой",
+                    },
+                },
+            },
+        },
+        {
+            "name": "onec.docflow_tasks",
+            "description": (
+                "Задачи пользователя из 1С:Документооборот (публикация /doc). "
+                "ФИО из JWT сессии. Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date_from": {
+                        "type": "string",
+                        "description": "Начало периода YYYY-MM-DD. Пусто — без нижней границы.",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "Конец периода YYYY-MM-DD. Пусто — без верхней границы.",
+                    },
+                    "only_open": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Только открытые задачи",
+                    },
+                    "include_done": {
+                        "type": "boolean",
+                        "description": "Включать выполненные задачи",
+                    },
+                    "limit": {"type": "integer", "default": 200},
+                },
+            },
+        },
+        {
+            "name": "turboproject",
+            "description": (
+                "Проекты TurboProject с синхронизацией 1С. "
+                "Карточка: имя, даты MSP/1С, статистика задач, просроченные задачи и вехи, "
+                "ресурсы (ФИО), руководитель/куратор/заказчик и весь блок data_1c. "
+                "Фильтры: query (имя/номер), manager (руководитель 1С), file_id, "
+                "overdue_only, limit. Учётка на сервере. Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Поиск по названию проекта, имени MPP или номеру 1С",
+                    },
+                    "manager": {
+                        "type": "string",
+                        "description": "ФИО руководителя проекта из 1С (data_1c.rukovoditel)",
+                    },
+                    "file_id": {
+                        "type": "string",
+                        "description": "ID файла проекта (ProjectFile.id)",
+                    },
+                    "overdue_only": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Только проекты с просроченными задачами или вехами",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Максимум проектов в ответе (пусто — все, не больше 200)",
+                    },
+                },
             },
         },
         *_desktop_ac_tools(),
@@ -318,7 +529,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("users.list", "Список пользователей Constructor: id, ФИО, должность, подразделение. Вызови перед notify.send, чтобы выбрать получателя.", {
             "query": {"type": "string"},
         }, []),
-        ("notify.send", "Отправить уведомление пользователю (сразу или в указанное время). user_id бери из инструмента users.list — не выдумывай id.", {
+        ("notify.send", "Отправить уведомление на компьютер получателя (Windows-тост + inbox). user_id бери из users.list — не выдумывай id. Если человек просил уведомления — вызови этот tool до RESULT.", {
             "user_id": {"type": "string", "description": "id получателя из users.list"},
             "title": {"type": "string"},
             "body": {"type": "string"},
@@ -337,6 +548,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "trigger_id": {"type": "string"},
         }, ["trigger_id"]),
     ]
+    server_tools = {"users.list", "notify.send"}
     tools: list[dict[str, Any]] = []
     for item in items:
         name, description, properties = item[0], item[1], item[2]
@@ -344,11 +556,17 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         schema: dict[str, Any] = {"type": "object", "properties": properties}
         if required:
             schema["required"] = required
+        if name in server_tools:
+            suffix = " Исполняется на сервере Constructor."
+            execution = "server"
+        else:
+            suffix = " Исполняется на desktop пользователя."
+            execution = "desktop"
         tools.append(
             {
                 "name": name,
-                "description": description + " Исполняется на desktop пользователя.",
-                "execution": "desktop",
+                "description": description + suffix,
+                "execution": execution,
                 "input_schema": schema,
             }
         )

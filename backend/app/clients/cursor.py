@@ -1,10 +1,8 @@
 from __future__ import annotations
 
+import codecs
 import json
-import logging
-import os
 import time
-import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -12,23 +10,6 @@ from typing import Any
 import httpx
 
 from app.config import settings
-
-logger = logging.getLogger(__name__)
-
-
-def _trace(message: str) -> None:
-    os.write(sys.stdout.fileno(), (message + "\n").encode("utf-8", errors="replace"))
-    logger.info(message)
-
-
-def _preview(value: Any, limit: int = 4000) -> str:
-    try:
-        text = json.dumps(value, ensure_ascii=False, default=str, indent=2)
-    except TypeError:
-        text = str(value)
-    if len(text) > limit:
-        return text[:limit] + "…"
-    return text
 
 
 class CursorAgentError(RuntimeError):
@@ -42,12 +23,10 @@ TERMINAL_RUN_STATUSES = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED", "FAILED"}
 
 
 def get_me() -> dict[str, Any]:
-    _trace("Cursor -> GET /v1/me")
     return _request("GET", "/v1/me", timeout=30.0)
 
 
 def list_models() -> list[dict[str, Any]]:
-    _trace("Cursor -> GET /v1/models")
     data = _request("GET", "/v1/models", timeout=45.0)
     if isinstance(data, list):
         return data
@@ -86,12 +65,6 @@ def create_agent(
     if repo_url:
         body["repos"] = [{"url": repo_url, "startingRef": starting_ref or "main"}]
         body["autoCreatePR"] = auto_create_pr
-    _trace(
-        "Cursor -> POST /v1/agents "
-        f"mode={mode} model={model_id or '-'} name={name or '-'} "
-        f"prompt_len={len(prompt or '')} images={len(images or [])}"
-    )
-    _trace(f"Cursor request body /v1/agents:\n{_preview(body)}")
     return _request("POST", "/v1/agents", json=body, timeout=180.0)
 
 
@@ -108,28 +81,74 @@ def create_run(
     body: dict[str, Any] = {"prompt": prompt_body}
     if mode:
         body["mode"] = mode
-    _trace(
-        "Cursor -> POST /v1/agents/{}/runs mode={} prompt_len={} images={}".format(
-            agent_id,
-            mode or "-",
-            len(prompt or ""),
-            len(images or []),
-        )
-    )
-    _trace(f"Cursor request body /v1/agents/{agent_id}/runs:\n{_preview(body)}")
     data = _request("POST", f"/v1/agents/{agent_id}/runs", json=body, timeout=180.0)
     if isinstance(data, dict) and isinstance(data.get("run"), dict):
         return data["run"]
     return data
 
 
+def wait_until_run_idle(
+    agent_id: str,
+    run_id: str,
+    *,
+    timeout_seconds: float = 90.0,
+) -> dict[str, Any]:
+    """Wait until a run reaches any terminal status (not only FINISHED)."""
+    started = time.monotonic()
+    last: dict[str, Any] = {}
+    while True:
+        last = get_run(agent_id, run_id)
+        if str(last.get("status") or "") in TERMINAL_RUN_STATUSES:
+            return last
+        if time.monotonic() - started > timeout_seconds:
+            raise CursorAgentError(
+                "Cursor Agent занят, дождитесь завершения текущего ответа",
+                status_code=409,
+            )
+        time.sleep(1.5)
+
+
+def create_run_when_ready(
+    agent_id: str,
+    *,
+    prompt: str,
+    mode: str | None = "agent",
+    images: list[dict[str, str]] | None = None,
+    previous_run_id: str = "",
+    retries: int = 6,
+) -> dict[str, Any]:
+    """Create a follow-up run after the previous one is no longer active.
+
+    Cursor Cloud returns HTTP 409 if the same agent still has an open run.
+    Streaming can finish (we already have constructor_tool text) a few seconds
+    before the run status becomes FINISHED.
+    """
+    if previous_run_id:
+        try:
+            wait_until_run_idle(agent_id, previous_run_id, timeout_seconds=90.0)
+        except CursorAgentError:
+            pass
+    delay = 1.0
+    last_error: CursorAgentError | None = None
+    for _ in range(max(1, retries)):
+        try:
+            return create_run(agent_id, prompt=prompt, mode=mode, images=images)
+        except CursorAgentError as exc:
+            last_error = exc
+            if exc.status_code != 409:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 1.6, 8.0)
+    if last_error is not None:
+        raise last_error
+    raise CursorAgentError("Cursor Agent занят, дождитесь завершения текущего ответа", status_code=409)
+
+
 def get_run(agent_id: str, run_id: str) -> dict[str, Any]:
-    _trace(f"Cursor -> GET /v1/agents/{agent_id}/runs/{run_id}")
     return _request("GET", f"/v1/agents/{agent_id}/runs/{run_id}", timeout=45.0)
 
 
 def wait_for_run(agent_id: str, run_id: str, *, timeout_seconds: float = 300.0) -> dict[str, Any]:
-    _trace(f"Cursor wait start agent={agent_id[-8:]} run={run_id[-8:]}")
     started = time.monotonic()
     while True:
         data = get_run(agent_id, run_id)
@@ -145,17 +164,14 @@ def wait_for_run(agent_id: str, run_id: str, *, timeout_seconds: float = 300.0) 
 
 
 def cancel_run(agent_id: str, run_id: str) -> dict[str, Any]:
-    _trace(f"Cursor -> POST /v1/agents/{agent_id}/runs/{run_id}/cancel")
     return _request("POST", f"/v1/agents/{agent_id}/runs/{run_id}/cancel", timeout=45.0)
 
 
 def archive_agent(agent_id: str) -> dict[str, Any]:
-    _trace(f"Cursor -> POST /v1/agents/{agent_id}/archive")
     return _request("POST", f"/v1/agents/{agent_id}/archive", timeout=45.0)
 
 
 def list_artifacts(agent_id: str) -> list[dict[str, Any]]:
-    _trace(f"Cursor -> GET /v1/agents/{agent_id}/artifacts")
     data = _request("GET", f"/v1/agents/{agent_id}/artifacts", timeout=60.0)
     if isinstance(data, list):
         return data
@@ -163,7 +179,6 @@ def list_artifacts(agent_id: str) -> list[dict[str, Any]]:
 
 
 def artifact_download_url(agent_id: str, path: str) -> str:
-    _trace(f"Cursor -> GET /v1/agents/{agent_id}/artifacts/download path={path}")
     data = _request(
         "GET",
         f"/v1/agents/{agent_id}/artifacts/download",
@@ -178,7 +193,6 @@ def download_artifact_to(agent_id: str, path: str, dest: str | Path) -> None:
     if not url:
         raise CursorAgentError(f"Не удалось получить ссылку на артефакт: {path}")
     try:
-        _trace(f"Cursor -> download artifact {path} -> {dest}")
         with httpx.Client(timeout=120.0, follow_redirects=True) as raw:
             with raw.stream("GET", url) as resp:
                 if resp.status_code >= 400:
@@ -191,7 +205,6 @@ def download_artifact_to(agent_id: str, path: str, dest: str | Path) -> None:
                 with open(dest, "wb") as fh:
                     for chunk in resp.iter_bytes():
                         fh.write(chunk)
-        _trace(f"Cursor <- download artifact ok {path}")
     except CursorAgentError:
         raise
     except httpx.HTTPError as exc:
@@ -213,7 +226,6 @@ def stream_run_events(
     if not settings.cursor_api_key.strip():
         raise CursorAgentError("CURSOR_API_KEY не настроен в backend/.env", status_code=500)
     url = f"{settings.cursor_api_base_url.rstrip('/')}/v1/agents/{agent_id}/runs/{run_id}/stream"
-    _trace(f"Cursor -> GET {url}")
     timeout = httpx.Timeout(None, connect=30.0, read=idle_timeout_seconds, write=30.0, pool=30.0)
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -235,55 +247,16 @@ def stream_run_events(
                                 f"Cursor stream HTTP {response.status_code}: {body[:1000]}",
                                 status_code=response.status_code,
                             )
-                        _trace(f"Cursor <- GET stream {response.status_code} agent={agent_id[-8:]} run={run_id[-8:]}")
-                        event_name = "message"
-                        data_lines: list[str] = []
-                        for line in response.iter_lines():
+                        for event_name, data in _iter_sse_events(response):
                             if should_cancel and should_cancel():
                                 try:
                                     cancel_run(agent_id, run_id)
                                 except CursorAgentError:
                                     pass
                                 return
-                            if line == "":
-                                if data_lines:
-                                    raw_data = "\n".join(data_lines)
-                                    try:
-                                        data = json.loads(raw_data)
-                                    except json.JSONDecodeError:
-                                        data = {"text": raw_data}
-                                    if not isinstance(data, dict):
-                                        data = {"value": data}
-                                    _trace(
-                                        "Cursor SSE event "
-                                        f"{event_name} agent={agent_id[-8:]} run={run_id[-8:]}\n"
-                                        f"{_preview(data, 2000)}"
-                                    )
-                                    yield {"event": event_name, "data": data}
-                                    if event_name in {"done", "error", "result"}:
-                                        return
-                                event_name = "message"
-                                data_lines = []
-                                continue
-                            if line.startswith(":"):
-                                continue
-                            if line.startswith("event:"):
-                                event_name = line.split(":", 1)[1].strip() or "message"
-                            elif line.startswith("data:"):
-                                data_lines.append(line.split(":", 1)[1].strip())
-                        if data_lines:
-                            raw_data = "\n".join(data_lines)
-                            try:
-                                data = json.loads(raw_data)
-                            except json.JSONDecodeError:
-                                data = {"text": raw_data}
-                            if isinstance(data, dict):
-                                _trace(
-                                    "Cursor SSE event "
-                                    f"{event_name} agent={agent_id[-8:]} run={run_id[-8:]}\n"
-                                    f"{_preview(data, 2000)}"
-                                )
-                                yield {"event": event_name, "data": data}
+                            yield {"event": event_name, "data": data}
+                            if event_name in {"done", "error", "result"}:
+                                return
                         # Поток закрылся без terminal-event — заберём результат polling'ом.
                         yield from _terminal_result_events(agent_id, run_id)
                         return
@@ -300,15 +273,58 @@ def stream_run_events(
         raise CursorAgentError(f"Ошибка stream Cursor API: {exc}", status_code=502) from exc
 
 
+def _iter_sse_events(response: httpx.Response) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Читать SSE по маленьким чанкам — иначе think приходит одним куском в конце."""
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    event_name = "message"
+    data_lines: list[str] = []
+    carry = ""
+
+    def feed(text: str) -> Iterator[tuple[str, dict[str, Any]]]:
+        nonlocal event_name, data_lines, carry
+        carry += text
+        while "\n" in carry:
+            line, carry = carry.split("\n", 1)
+            line = line.rstrip("\r")
+            if line == "":
+                if data_lines:
+                    yield event_name, _parse_sse_data("\n".join(data_lines))
+                event_name = "message"
+                data_lines = []
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event_name = line.split(":", 1)[1].strip() or "message"
+            elif line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].strip())
+
+    for raw in response.iter_bytes(chunk_size=4096):
+        if not raw:
+            continue
+        # final=False: неполная кириллица на границе чанка ждёт следующий байт,
+        # а не превращается в U+FFFD.
+        yield from feed(decoder.decode(raw, final=False))
+    yield from feed(decoder.decode(b"", final=True))
+    if data_lines:
+        yield event_name, _parse_sse_data("\n".join(data_lines))
+
+
+def _parse_sse_data(raw_data: str) -> dict[str, Any]:
+    try:
+        data = json.loads(raw_data)
+    except json.JSONDecodeError:
+        data = {"text": raw_data}
+    if not isinstance(data, dict):
+        return {"value": data}
+    return data
+
+
 def _terminal_result_events(agent_id: str, run_id: str) -> Iterator[dict[str, Any]]:
     data = get_run(agent_id, run_id)
     status = str(data.get("status") or "")
     if status not in TERMINAL_RUN_STATUSES:
         return
-    _trace(
-        f"Cursor terminal poll agent={agent_id[-8:]} run={run_id[-8:]} "
-        f"status={status}\n{_preview(data, 2000)}"
-    )
     yield {
         "event": "result",
         "data": {
@@ -329,11 +345,6 @@ def _request(
     if not settings.cursor_api_key.strip():
         raise CursorAgentError("CURSOR_API_KEY не настроен в backend/.env", status_code=500)
     url = f"{settings.cursor_api_base_url.rstrip('/')}{path}"
-    _trace(f"Cursor -> {method} {url}")
-    if json is not None:
-        _trace(f"Cursor request json {method} {path}:\n{_preview(json)}")
-    if params is not None:
-        _trace(f"Cursor request params {method} {path}:\n{_preview(params)}")
     try:
         with httpx.Client(timeout=timeout) as client:
             response = client.request(
@@ -345,18 +356,9 @@ def _request(
                 headers={"Content-Type": "application/json"},
             )
     except httpx.TimeoutException as exc:
-        _trace(f"Cursor ✖ {method} {path} timeout")
         raise CursorAgentError("Превышено время ожидания Cursor API", status_code=504) from exc
     except httpx.HTTPError as exc:
-        _trace(f"Cursor ✖ {method} {path} {exc}")
         raise CursorAgentError(f"Ошибка сети Cursor API: {exc}", status_code=502) from exc
-    _trace(f"Cursor <- {method} {path} {response.status_code}")
-    if response.content:
-        try:
-            response_body = response.json()
-        except ValueError:
-            response_body = response.text
-        _trace(f"Cursor response body {method} {path}:\n{_preview(response_body)}")
     if response.status_code == 409:
         raise CursorAgentError(
             "Cursor Agent занят, дождитесь завершения текущего ответа", status_code=409

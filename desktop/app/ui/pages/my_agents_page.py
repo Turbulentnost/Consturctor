@@ -67,6 +67,7 @@ class MyAgentsPage(QWidget):
     delete_requested = Signal(str)
     delete_suggestion_requested = Signal(str, str)
     delete_agent_requested = Signal(str)
+    stop_auto_run_requested = Signal(str)
     run_agent_requested = Signal(str)
     history_requested = Signal(str, str)
 
@@ -381,6 +382,7 @@ class MyAgentsPage(QWidget):
         title.setFixedWidth(_TITLE_COL_WIDTH)
         description = QLabel(
             "Опубликован"
+            + ("\nАвтозапуск включён" if agent.auto_run else "\nАвтозапуск выключен")
             + (f"\nДокумент: {agent.document_name}" if agent.document_name else "")
             + (f"\nОбновлён: {agent.updated_at[:19]}" if agent.updated_at else "")
         )
@@ -393,6 +395,18 @@ class MyAgentsPage(QWidget):
         run.setStyleSheet(_PRIMARY_ACTION_QSS)
         run.clicked.connect(
             lambda _checked=False, workflow_id=agent.id: self.run_agent_requested.emit(workflow_id)
+        )
+        stop = QPushButton("Остановить")
+        stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        stop.setStyleSheet(_SECONDARY_ACTION_QSS)
+        stop.setEnabled(bool(agent.auto_run))
+        stop.setToolTip(
+            "Остановить автозапуск по расписанию"
+            if agent.auto_run
+            else "Автозапуск не настроен или уже остановлен"
+        )
+        stop.clicked.connect(
+            lambda _checked=False, workflow_id=agent.id: self.stop_auto_run_requested.emit(workflow_id)
         )
         history = QPushButton("История")
         history.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -408,7 +422,7 @@ class MyAgentsPage(QWidget):
         delete.clicked.connect(lambda _checked=False, workflow_id=agent.id: self.delete_agent_requested.emit(workflow_id))
         layout.addWidget(title, 0, 0)
         layout.addWidget(description, 0, 1)
-        layout.addWidget(_actions_widget(run, history, delete), 0, 2)
+        layout.addWidget(_actions_widget(run, stop, history, delete), 0, 2)
         layout.setColumnStretch(0, 2)
         layout.setColumnStretch(1, 3)
         return card
@@ -543,18 +557,15 @@ def _actions_widget(*buttons: QPushButton, created_at: datetime | None = None) -
         button.setFixedHeight(34)
         button.setFont(app_font(12, QFont.Weight.DemiBold))
         layout.addWidget(button)
-    date_text, time_text = _format_created_parts(created_at)
-    if date_text:
-        date_label = QLabel(date_text)
+    stamp = _format_dt(created_at)
+    if stamp:
+        date_label = QLabel(stamp)
         date_label.setFont(app_font(11))
         date_label.setStyleSheet("color: #6B7773; background: transparent;")
         date_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        date_label.setWordWrap(False)
+        date_label.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(date_label)
-        time_label = QLabel(time_text)
-        time_label.setFont(app_font(11))
-        time_label.setStyleSheet("color: #6B7773; background: transparent;")
-        time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(time_label)
     layout.addStretch(1)
     return widget
 
@@ -606,12 +617,6 @@ def _status_label(status: str) -> str:
 def _format_dt(value) -> str:
     if value is None:
         return ""
-    return value.strftime("%d.%m.%Y %H:%M")
-
-
-def _format_created_parts(value: datetime | None) -> tuple[str, str]:
-    if value is None:
-        return "", ""
-    if value.tzinfo is not None:
+    if getattr(value, "tzinfo", None) is not None:
         value = value.astimezone()
-    return value.strftime("%d.%m.%Y"), value.strftime("%H:%M")
+    return value.strftime("%d.%m.%Y %H:%M")

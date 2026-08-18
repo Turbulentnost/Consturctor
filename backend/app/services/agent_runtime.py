@@ -7,9 +7,14 @@ from sqlalchemy.orm import Session
 
 from app.models.workflow import Workflow
 from app.services.local_mcp import list_tools
+from app.services.onec_tools import ONEC_TOOLS as _ONEC_TOOLS
+from app.services.plan_run import (
+    PlanRunError,
+    build_plan_export_arguments,
+    format_plan_run_answer,
+    uses_plan_export,
+)
 from app.services.tool_bridge import DEFAULT_TIMEOUT_S, tool_bridge
-from app.services.workflow_tool_routing import resolve_workflow_routing
-from app.services.workflows.plan_models import WorkflowPlan
 
 
 AgentEventCallback = Callable[[dict[str, Any]], None]
@@ -24,16 +29,7 @@ _IMAP_TOOLS = frozenset(
         "imap.fetch_attachments",
     }
 )
-
-_ONEC_TOOLS = frozenset(
-    {
-        "onec.odata_get",
-        "onec.odata_post",
-        "onec.odata_patch",
-        "onec.attach_file",
-        "onec.sql_query",
-    }
-)
+_TURBOPROJECT_TOOLS = frozenset({"turboproject", "turboproject.projects"})
 
 
 class AgentRuntimeError(RuntimeError):
@@ -67,37 +63,60 @@ def run_agent_task(
     emit({"type": "status", "text": "Получил задачу, готовлю запуск…"})
     emit({"type": "agent_message", "text": f"Запускаю «{workflow.title or 'ИИ-агент'}»."})
 
-    plan_data = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
-    plan = WorkflowPlan.from_dict(plan_data)
-    domain = _agent_domain(workflow)
+    from app.services.workflows.service import playbook_of
 
-    if domain == "hybrid":
-        return _run_hybrid_task(
-            plan=plan,
+    playbook = playbook_of(workflow)
+    if str(playbook.get("instructions") or "").strip():
+        return _run_with_playbook(
+            db,
             workflow=workflow,
-            task=task,
+            user_id=user_id,
+            message=task,
             emit=emit,
             run_id=run_id,
-            user_id=user_id,
-            workflow_id=workflow_id,
+            playbook=playbook,
         )
 
-    if domain == "outlook_calendar":
-        live_allowed, live_reason = _desktop_com_available(workflow, domain)
-        if not live_allowed:
-            emit(
-                {
-                    "type": "status",
-                    "text": f"Live COM недоступен ({live_reason}) — использую fixtures/stub.",
-                }
-            )
-            answer = _fallback_live_answer("outlook_calendar", live_reason)
-            emit({"type": "agent_message", "text": answer})
-            return {
-                "answer": answer,
-                "tool": "fixtures",
-                "tool_result": {"fallback": True, "reason": live_reason},
+    domain = _agent_domain(workflow)
+
+    # Rules come from THIS agent's plan (runtime / constraints / answers), not globals.
+    # Outlook/meetings must never fall into tender Excel export or web_search.
+    if domain != "outlook_calendar" and uses_plan_export(workflow):
+        emit({"type": "status", "text": "Читаю правила из паспорта этого агента…"})
+        emit(
+            {
+                "type": "agent_message",
+                "text": (
+                    "Выполняю по правилам из ответов при создании: поиск по ключам, "
+                    "Excel с указанными колонками, сохранение куда указано в плане."
+                ),
             }
+        )
+        try:
+            arguments = build_plan_export_arguments(workflow)
+        except PlanRunError as exc:
+            emit({"type": "error", "message": str(exc)})
+            raise AgentRuntimeError(str(exc)) from exc
+
+        try:
+            result = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                tool="plan_export",
+                arguments=arguments,
+            )
+        except AgentRuntimeError as exc:
+            emit({"type": "error", "message": str(exc)})
+            raise
+
+        answer = format_plan_run_answer(result)
+        emit({"type": "tool_result", "tool": "plan_export", "result": result})
+        emit({"type": "agent_message", "text": answer})
+        return {"answer": answer, "tool": "plan_export", "tool_result": result}
+
+    if domain == "outlook_calendar":
         emit({"type": "status", "text": "Читаю Outlook на этом компьютере…"})
         outlook_tool, outlook_args = _outlook_tool_request(task)
         try:
@@ -118,21 +137,6 @@ def run_agent_task(
         return {"answer": answer, "tool": outlook_tool, "tool_result": tool_result}
 
     if domain == "onec":
-        live_allowed, live_reason = _desktop_com_available(workflow, domain)
-        if not live_allowed:
-            emit(
-                {
-                    "type": "status",
-                    "text": f"Live COM недоступен ({live_reason}) — использую fixtures/stub.",
-                }
-            )
-            answer = _fallback_live_answer("onec", live_reason)
-            emit({"type": "agent_message", "text": answer})
-            return {
-                "answer": answer,
-                "tool": "fixtures",
-                "tool_result": {"fallback": True, "reason": live_reason},
-            }
         emit({"type": "status", "text": "Ищу документы 1С на этом компьютере…"})
         try:
             tool_result = _request_desktop_tool(
@@ -191,337 +195,168 @@ def run_agent_task(
     return {"answer": answer, "tool": tool_name, "tool_result": tool_result or {}}
 
 
-def _run_hybrid_task(
+def _run_with_playbook(
+    db: Session,
     *,
-    plan: WorkflowPlan,
     workflow: Workflow,
-    task: str,
+    user_id: str,
+    message: str,
     emit: AgentEventCallback,
     run_id: str,
-    user_id: str,
-    workflow_id: str,
+    playbook: dict[str, Any],
 ) -> dict[str, Any]:
-    phases = [
-        phase
-        for phase in (list(getattr(plan.runtime, "phases", []) or []))
-        if str(getattr(phase, "kind", "") or "").strip()
-    ]
-    if not phases:
-        raise AgentRuntimeError("Hybrid plan не содержит phases")
+    from app.clients import cursor as cursor_client
+    from app.clients.cursor import CursorAgentError
+    from app.services.workflows import prompts
+    from app.services.workflows.cursor_tools import (
+        set_tool_context,
+        stream_cursor_with_tools,
+        wants_notifications,
+        with_tools_if_desktop,
+    )
+    from app.services.workflows.service import _create_exec_agent, _stream_run
 
-    phase_summaries: list[str] = []
-    phase_outputs: list[dict[str, Any]] = []
-    context = ""
-    total = len(phases)
-
-    for idx, phase in enumerate(phases, start=1):
-        phase_kind = str(getattr(phase, "kind", "") or "").strip().casefold()
-        phase_handoff = str(getattr(phase, "handoff", "") or "").strip()
-        phase_tools = [str(x) for x in (getattr(phase, "tools", []) or []) if str(x).strip()]
-        phase_label = phase_kind or f"phase_{idx}"
-        emit(
-            {
-                "type": "status",
-                "text": f"Фаза {idx}/{total}: {phase_label}…",
-            }
+    set_tool_context(run_id, user_id)
+    prompt = with_tools_if_desktop(
+        prompts.build_published_run_prompt(
+            instructions=str(playbook.get("instructions") or ""),
+            example_run=str(playbook.get("example_run") or ""),
+            user_message=message,
+            title=workflow.title or "",
         )
+    )
+    emit({"type": "status", "text": "Запускаю Cursor по инструкции и примеру прогона…"})
 
-        if phase_kind == "onec":
-            live_allowed, live_reason = _desktop_com_available(workflow, phase_kind)
-            if not live_allowed:
-                result = {
-                    "tool": "fixtures",
-                    "result": {"fallback": True, "reason": live_reason},
-                }
-                summary = _fallback_live_answer("onec", live_reason)
-                phase_outputs.append({"kind": phase_kind, "result": result, "summary": summary})
-                phase_summaries.append(summary)
-                context = summary
-                continue
-            result = _run_hybrid_onec_phase(
-                task=task,
-                context=context,
-                phase_tools=phase_tools,
-                phase_handoff=phase_handoff,
-                workflow=workflow,
-                emit=emit,
-                run_id=run_id,
-                user_id=user_id,
-                workflow_id=workflow_id,
-            )
-            summary = _compose_hybrid_onec_summary(result)
-        elif phase_kind == "outlook_calendar":
-            live_allowed, live_reason = _desktop_com_available(workflow, phase_kind)
-            if not live_allowed:
-                result = {
-                    "tool": "fixtures",
-                    "result": {"fallback": True, "reason": live_reason},
-                }
-                summary = _fallback_live_answer("outlook_calendar", live_reason)
-                phase_outputs.append({"kind": phase_kind, "result": result, "summary": summary})
-                phase_summaries.append(summary)
-                context = summary
-                continue
-            result = _run_hybrid_outlook_phase(
-                task=task,
-                context=context,
-                phase_tools=phase_tools,
-                phase_handoff=phase_handoff,
-                workflow=workflow,
-                emit=emit,
-                run_id=run_id,
-                user_id=user_id,
-                workflow_id=workflow_id,
-            )
-            summary = _compose_hybrid_outlook_summary(result)
-        elif phase_kind in {"browser_task", "site_search_excel", "web_search"}:
-            result = _run_hybrid_browser_phase(
-                task=task,
-                context=context,
-                phase_tools=phase_tools,
-                phase_handoff=phase_handoff,
-                workflow=workflow,
-                emit=emit,
-                run_id=run_id,
-                user_id=user_id,
-                workflow_id=workflow_id,
-            )
-            summary = _compose_hybrid_browser_summary(task, result)
+    def on_event(event_type: str, text: str = "", extra: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {"type": event_type}
+        if text:
+            payload["text"] = text
+        if extra:
+            payload.update(extra)
+        emit(payload)
+
+    try:
+        agent_id = str(workflow.exec_agent_id or "")
+        if agent_id:
+            try:
+                run = cursor_client.create_run_when_ready(
+                    agent_id,
+                    prompt=prompt,
+                    mode="agent",
+                    previous_run_id=str(workflow.exec_run_id or ""),
+                )
+                cursor_run_id = str(run.get("id") or "")
+            except CursorAgentError:
+                agent_id, cursor_run_id = _create_exec_agent(workflow.title or "агент", prompt)
+                workflow.exec_agent_id = agent_id
+                db.commit()
         else:
-            raise AgentRuntimeError(f"Неизвестная фаза hybrid: {phase_kind or 'empty'}")
+            agent_id, cursor_run_id = _create_exec_agent(workflow.title or "агент", prompt)
+            workflow.exec_agent_id = agent_id
+            db.commit()
+        if not agent_id or not cursor_run_id:
+            raise AgentRuntimeError("Cursor не вернул agent/run")
+        required = ["notify"] if wants_notifications(
+            str(playbook.get("instructions") or ""),
+            message,
+            str(workflow.notes or ""),
+        ) else []
+        phase = stream_cursor_with_tools(
+            agent_id=agent_id,
+            run_id=cursor_run_id,
+            on_event=on_event,
+            workflow_id=workflow.id,
+            mode="execute",
+            stream_run=_stream_run,
+            required_live_tools=required,
+        )
+    except CursorAgentError as exc:
+        emit({"type": "error", "message": exc.message})
+        raise AgentRuntimeError(exc.message) from exc
+    finally:
+        from app.services.workflows.cursor_tools import clear_tool_context
 
-        phase_outputs.append({"kind": phase_kind, "result": result, "summary": summary})
-        phase_summaries.append(summary)
-        context = summary
+        clear_tool_context()
 
-    answer = "\n\n".join(s for s in phase_summaries if s.strip()) or "Hybrid flow completed."
-    emit({"type": "agent_message", "text": answer})
+    work = prompts.parse_work_result(phase.text or "")
+    answer = (work.get("text") or "").strip() or "Прогон завершён."
+    emit(
+        {
+            "type": "work_result",
+            "text": answer,
+            "files": work.get("files") or [],
+            "actions": work.get("actions") or [],
+            "notifications": work.get("notifications") or [],
+        }
+    )
+    local = dict(workflow.local_run or {})
+    local["work_result"] = work
+    workflow.local_run = local
+    workflow.last_result = answer
+    db.commit()
     return {
         "answer": answer,
-        "tool": "hybrid",
-        "tool_result": {"phases": phase_outputs},
+        "work_result": work,
+        "tool": "cursor",
+        "tool_result": {"tools": list(phase.successful_live_tools or [])},
     }
 
 
-def _run_hybrid_onec_phase(
-    *,
-    task: str,
-    context: str,
-    phase_tools: list[str],
-    phase_handoff: str,
-    workflow: Workflow,
-    emit: AgentEventCallback,
-    run_id: str,
-    user_id: str,
-    workflow_id: str,
-) -> dict[str, Any]:
-    _ = workflow
-    query_parts = [task]
-    if phase_handoff:
-        query_parts.append(phase_handoff)
-    if context:
-        query_parts.append(context)
-    query = "\n".join(p for p in query_parts if p).strip()
-    emit({"type": "thinking", "text": "Ищу данные в 1С и читаю карточку документа…"})
-
-    search_result = _request_desktop_tool(
-        emit,
-        run_id=run_id,
-        user_id=user_id,
-        workflow_id=workflow_id,
-        tool="onec.search_documents",
-        arguments={"query": query, "max_results": 10},
-    )
-    emit({"type": "tool_result", "tool": "onec.search_documents", "result": search_result})
-
-    card_result: dict[str, Any] = {}
-    documents = search_result.get("documents") if isinstance(search_result, dict) else []
-    first_doc = documents[0] if documents and isinstance(documents[0], dict) else {}
-
-    if len(documents) == 1 and first_doc:
-        card_result = {
-            "document": first_doc,
-            "source": "onec.search_documents",
-            "method": "search_result_fallback",
-        }
-        emit({"type": "tool_result", "tool": "onec.get_document_card", "result": card_result})
-    elif "onec.get_document_card" in {t.casefold() for t in phase_tools}:
-        search_query = str(search_result.get("query") or query).strip()
-        document_type = str(search_result.get("document_type") or "").strip()
-        if search_query or document_type:
-            card_result = _request_desktop_tool(
-                emit,
-                run_id=run_id,
-                user_id=user_id,
-                workflow_id=workflow_id,
-                tool="onec.get_document_card",
-                arguments={
-                    "query": search_query or document_type,
-                    "document_type": document_type,
-                },
-            )
-            emit({"type": "tool_result", "tool": "onec.get_document_card", "result": card_result})
-
-    return {"search": search_result, "card": card_result}
-
-
-def _run_hybrid_outlook_phase(
-    *,
-    task: str,
-    context: str,
-    phase_tools: list[str],
-    phase_handoff: str,
-    workflow: Workflow,
-    emit: AgentEventCallback,
-    run_id: str,
-    user_id: str,
-    workflow_id: str,
-) -> dict[str, Any]:
-    phase_task = task
-    parts = [context, phase_handoff]
-    if any(part.strip() for part in parts):
-        phase_task = "\n\n".join([task] + [part for part in parts if part.strip()])
-
-    outlook_tool, outlook_args = _outlook_tool_request(phase_task)
-    if "outlook.search_mail" in {t.casefold() for t in phase_tools}:
-        outlook_tool = "outlook.search_mail"
-    elif "outlook.read_calendar" in {t.casefold() for t in phase_tools}:
-        outlook_tool = "outlook.read_calendar"
-
-    emit({"type": "thinking", "text": "Проверяю Outlook по данным из 1С…"})
-    tool_result = _request_desktop_tool(
-        emit,
-        run_id=run_id,
-        user_id=user_id,
-        workflow_id=workflow_id,
-        tool=outlook_tool,
-        arguments=outlook_args,
-    )
-    emit({"type": "tool_result", "tool": outlook_tool, "result": tool_result})
-    _ = workflow
-    return {"tool": outlook_tool, "result": tool_result}
-
-
-def _run_hybrid_browser_phase(
-    *,
-    task: str,
-    context: str,
-    phase_tools: list[str],
-    phase_handoff: str,
-    workflow: Workflow,
-    emit: AgentEventCallback,
-    run_id: str,
-    user_id: str,
-    workflow_id: str,
-) -> dict[str, Any]:
-    phase_task = task
-    parts = [context, phase_handoff]
-    if any(part.strip() for part in parts):
-        phase_task = "\n\n".join([task] + [part for part in parts if part.strip()])
-
-    browser_args = _site_browser_args(phase_task, workflow)
-    tool_name = "site_browser" if browser_args else "web_search"
-    if "site_browser" in {t.casefold() for t in phase_tools} and browser_args:
-        tool_name = "site_browser"
-    elif "web_search" in {t.casefold() for t in phase_tools}:
-        tool_name = "web_search"
-
-    arguments = browser_args or {"query": _search_query(phase_task, workflow), "max_results": 8, "fetch_top": False}
-    emit({"type": "thinking", "text": "Обрабатываю browser/web-search фазу…"})
-    tool_result = _request_desktop_tool(
-        emit,
-        run_id=run_id,
-        user_id=user_id,
-        workflow_id=workflow_id,
-        tool=tool_name,
-        arguments=arguments,
-    )
-    emit({"type": "tool_result", "tool": tool_name, "result": tool_result})
-    _ = phase_handoff
-    return {"tool": tool_name, "result": tool_result}
-
-
-def _compose_hybrid_onec_summary(result: dict[str, Any]) -> str:
-    lines: list[str] = ["1C: данные получены."]
-    search = result.get("search") if isinstance(result.get("search"), dict) else {}
-    docs = search.get("documents") or []
-    if docs:
-        first = docs[0] if isinstance(docs[0], dict) else {}
-        title = str(first.get("title") or first.get("number") or "документ").strip()
-        status = str(first.get("status") or "").strip()
-        lines.append(f"Найден документ: {title}" + (f" ({status})" if status else ""))
-    card = result.get("card") if isinstance(result.get("card"), dict) else {}
-    doc = card.get("document") if isinstance(card.get("document"), dict) else {}
-    if doc:
-        preview = str(doc.get("content_preview") or "").strip()
-        responsible = str(doc.get("responsible") or "").strip()
-        author = str(doc.get("author") or "").strip()
-        if responsible or author:
-            bits = []
-            if author:
-                bits.append(f"автор: {author}")
-            if responsible:
-                bits.append(f"ответственный: {responsible}")
-            lines.append(", ".join(bits))
-        if preview:
-            lines.append(f"Суть: {preview}")
-    return "\n".join(lines)
-
-
-def _compose_hybrid_browser_summary(task: str, result: dict[str, Any]) -> str:
-    tool_name = str(result.get("tool") or "")
-    tool_result = result.get("result") if isinstance(result.get("result"), dict) else {}
-    return _compose_answer(task, tool_name, tool_result)
-
-
-def _compose_hybrid_outlook_summary(result: dict[str, Any]) -> str:
-    tool_name = str(result.get("tool") or "")
-    tool_result = result.get("result") if isinstance(result.get("result"), dict) else {}
-    if not tool_result:
-        return "Outlook: данных не получил."
-    if tool_name == "outlook.search_mail":
-        return _compose_outlook_tool_answer("контекст из 1С", tool_name, tool_result)
-    return _compose_outlook_tool_answer("контекст из 1С", tool_name, tool_result)
-
-
 def _agent_domain(workflow: Workflow) -> str:
-    plan_data = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
-    plan = WorkflowPlan.from_dict(plan_data)
-    if getattr(plan.runtime, "phases", []):
-        return "hybrid"
-    return resolve_workflow_routing(plan, workflow).kind
-
-
-def _desktop_com_available(workflow: Workflow, domain: str) -> tuple[bool, str]:
-    local = workflow.local_run if isinstance(workflow.local_run, dict) else {}
-    desktop = local.get("desktop") if isinstance(local.get("desktop"), dict) else {}
-    if desktop:
-        if domain == "outlook_calendar":
-            if bool(desktop.get("outlook_com_available")):
-                return True, "Outlook COM доступен"
-            if bool(desktop.get("com_available")):
-                reason = str(desktop.get("com_reason") or "").strip()
-                return True, reason or "COM доступен"
-            reason = str(desktop.get("outlook_com_reason") or "").strip()
-            return False, reason or "Outlook COM недоступен"
-        if domain == "onec":
-            if bool(desktop.get("onec_com_available")):
-                return True, "1C COM доступен"
-            if bool(desktop.get("com_available")):
-                reason = str(desktop.get("com_reason") or "").strip()
-                return True, reason or "COM доступен"
-            reason = str(desktop.get("onec_com_reason") or "").strip()
-            return False, reason or "1C COMConnector недоступен"
-        if bool(desktop.get("com_available")):
-            return True, "COM доступен"
-        reason = str(desktop.get("com_reason") or "").strip()
-        return False, reason or "COM недоступен"
-    return False, "нет сведений о desktop COM"
-
-
-def _fallback_live_answer(domain: str, reason: str) -> str:
-    label = "Outlook" if domain == "outlook_calendar" else "1C"
-    return f"Live {label} недоступен на этой машине ({reason}). Перехожу в fixtures/stub."
+    plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
+    runtime = plan.get("runtime") if isinstance(plan.get("runtime"), dict) else {}
+    kind = str(runtime.get("kind") or "").strip().casefold()
+    if kind in {"outlook_calendar", "site_search_excel", "browser_task", "onec"}:
+        return kind
+    answered = plan.get("answered_questions") or []
+    answered_text = ""
+    if isinstance(answered, list):
+        answered_text = " ".join(
+            f"{x.get('question', '')} {x.get('answer', '')}"
+            for x in answered
+            if isinstance(x, dict)
+        )
+    elif isinstance(answered, dict):
+        answered_text = " ".join(f"{k} {v}" for k, v in answered.items())
+    open_qs = plan.get("open_questions") or []
+    open_text = ""
+    if isinstance(open_qs, list):
+        open_text = " ".join(
+            f"{x.get('question', '')} {x.get('answer', '')}"
+            for x in open_qs
+            if isinstance(x, dict)
+        )
+    blob = " ".join(
+        [
+            str(workflow.title or ""),
+            str(workflow.notes or ""),
+            str(plan.get("title") or ""),
+            str(plan.get("goal") or ""),
+            " ".join(str(x) for x in (plan.get("constraints") or [])),
+            " ".join(str(x) for x in (plan.get("test_criteria") or [])),
+            answered_text,
+            open_text,
+        ]
+    ).casefold()
+    if any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm", "задач")) and "outlook" not in blob:
+        return "onec"
+    if any(
+        tip in blob
+        for tip in (
+            "outlook",
+            "календар",
+            "совещан",
+            "встреч",
+            "занятост",
+            "confirm_slot",
+        )
+    ):
+        return "outlook_calendar"
+    if ("excel" in blob or "xlsx" in blob) and (
+        "ключев" in blob or "этп" in blob or "сайт" in blob
+    ):
+        return "site_search_excel"
+    return ""
 
 
 def _request_desktop_tool(
@@ -540,6 +375,10 @@ def _request_desktop_tool(
         arguments.setdefault("agent_id", workflow_id)
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, arguments)
+    if tool in _ONEC_TOOLS:
+        return _invoke_onec_server(tool, arguments, user_id=user_id)
+    if tool in _TURBOPROJECT_TOOLS or tool.startswith("turboproject"):
+        return _invoke_turboproject_server(tool, arguments)
 
     request_id = tool_bridge.new_request_id()
     tool_bridge.begin_wait(request_id=request_id, user_id=user_id)
@@ -567,6 +406,15 @@ def _request_desktop_tool(
     return result if isinstance(result, dict) else {}
 
 
+def _invoke_turboproject_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.turboproject import TurboProjectError, invoke_turboproject
+
+    try:
+        return invoke_turboproject(tool, arguments)
+    except TurboProjectError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
+
+
 def _invoke_imap_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     from app.services.imap_tools import ImapToolError, invoke_imap
 
@@ -576,11 +424,22 @@ def _invoke_imap_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         raise AgentRuntimeError(str(exc)) from exc
 
 
-def _invoke_onec_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _invoke_onec_server(
+    tool: str,
+    arguments: dict[str, Any],
+    *,
+    user_id: str = "",
+) -> dict[str, Any]:
+    from app.services.app_users import get_app_user
     from app.services.onec_tools import OnecToolError, invoke_onec
 
+    fio = ""
+    if user_id:
+        user = get_app_user(user_id)
+        if user is not None:
+            fio = str(user.fio or "")
     try:
-        return invoke_onec(tool, arguments)
+        return invoke_onec(tool, arguments, actor_user_id=user_id, actor_fio=fio)
     except OnecToolError as exc:
         raise AgentRuntimeError(str(exc)) from exc
 

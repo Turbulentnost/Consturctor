@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from app.api_client import ApiClient, ApiError, WorkflowRecord
 from app.tools.hitl import install_confirm_host
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
-from app.ui.widgets.markdown_body import MarkdownBody
+from app.ui.widgets.cursor_feed import CursorFeedItem, format_collection_result, format_tool_detail
 
 
 _PRIMARY = """
@@ -73,6 +73,10 @@ _TOOL_LABELS = {
     "onec.get_document_card": "Карточка документа 1С",
     "onec.search_tasks": "Поиск задач 1С",
     "onec.get_task_card": "Карточка задачи 1С",
+    "onec.erp_tasks_current": "Текущие задачи 1С",
+    "onec.erp_tasks_period": "Задачи 1С за период",
+    "onec.erp_subordinate_tasks": "Задачи подчинённых 1С",
+    "onec.docflow_tasks": "Задачи документооборота",
     "excel.list_files": "Файлы агента",
     "excel.read_workbook": "Чтение Excel",
     "excel.create_workbook": "Создание Excel",
@@ -84,6 +88,7 @@ _TOOL_LABELS = {
     "report.build_task_report": "Отчёт по поручениям",
     "report.build_meeting_summary": "Сводка совещания",
     "report.build_schedule_recommendations": "Рекомендации по графику",
+    "turboproject": "Проекты TurboProject",
     "users.list": "Список пользователей",
     "notify.send": "Уведомление",
     "agent.schedule": "Расписание агента",
@@ -101,8 +106,11 @@ class AgentRunPage(QWidget):
         self._api = api
         self._workflow: WorkflowRecord | None = None
         self._events: list[dict] = []
+        self._event_seq = 0
+        self._expanded_keys: set[str] = set()
         self._busy = False
-        self._progress_body: QLabel | None = None
+        self._live_thinking: CursorFeedItem | None = None
+        self._live_assistant: CursorFeedItem | None = None
         self._event_ready.connect(self._append_event)
         self._done.connect(self._on_done)
         self.failed.connect(self._show_error)
@@ -201,10 +209,13 @@ class AgentRunPage(QWidget):
         name = workflow.title or "ИИ-агент"
         self._title.setText(name)
         self._subtitle.setText("Агент готов. Нажмите «Запустить типовую задачу» или напишите свою.")
+        self._event_seq = 0
+        self._expanded_keys = set()
         self._events = [
             {
                 "type": "system",
                 "text": f"Агент «{name}» готов к работе. Код и терминал не нужны — всё выполняется внутри приложения.",
+                "event_key": self._next_event_key(),
             }
         ]
         self._busy = False
@@ -219,8 +230,8 @@ class AgentRunPage(QWidget):
         title = (self._workflow.title if self._workflow else "") or "агент"
         # Без хардкода конкретной площадки — задача из цели агента.
         return (
-            f"Выполни рабочую задачу агента «{title}» по правилам из его плана "
-            "и покажи понятный результат."
+            f"Выполни рабочую задачу агента «{title}» по инструкции "
+            "и примеру тестового прогона. Покажи понятный результат."
         )
 
     def _run_default_task(self) -> None:
@@ -257,6 +268,18 @@ class AgentRunPage(QWidget):
 
         Thread(target=run, daemon=True).start()
 
+    def _next_event_key(self) -> str:
+        self._event_seq += 1
+        return f"e{self._event_seq}"
+
+    def _on_expand_toggled(self, key: str, expanded: bool) -> None:
+        if not key:
+            return
+        if expanded:
+            self._expanded_keys.add(key)
+        else:
+            self._expanded_keys.discard(key)
+
     def _append_event(self, event: object) -> None:
         if not isinstance(event, dict):
             return
@@ -264,27 +287,89 @@ class AgentRunPage(QWidget):
         if friendly is None:
             return
         text = str(friendly.get("text") or friendly.get("message") or "").strip()
-        if friendly.get("type") == "status":
+        event_type = str(friendly.get("type") or "")
+        if event_type == "status":
             self._status.setText(text or "Агент работает…")
-            # One live progress card — update in place, do not stack clones.
-            if self._events and self._events[-1].get("type") == "status":
-                self._events[-1] = friendly
-                if self._progress_body is not None:
-                    self._progress_body.setText(text)
+            return
+        if event_type == "thinking":
+            if self._events and self._events[-1].get("type") == "thinking":
+                prev = self._events[-1]
+                prev["text"] = (str(prev.get("text") or "") + text).rstrip()
+                if self._live_thinking is not None:
+                    self._live_thinking.set_body_text(str(prev.get("text") or ""))
+                    self._scroll_feed()
                     return
-            else:
-                self._events.append(friendly)
+            friendly["event_key"] = self._next_event_key()
+            self._events.append(friendly)
+            self._add_feed_card(friendly)
+            return
+        if event_type == "agent_message":
+            if self._events and self._events[-1].get("type") == "agent_message":
+                prev = self._events[-1]
+                prev_text = str(prev.get("text") or "")
+                if text == prev_text or (text and text in prev_text):
+                    return
+                if prev_text and prev_text in text:
+                    prev["text"] = text
+                else:
+                    prev["text"] = (prev_text + text).rstrip()
+                if self._live_assistant is not None:
+                    self._live_assistant.set_body_text(str(prev.get("text") or ""))
+                    self._scroll_feed()
+                    return
+            friendly["event_key"] = self._next_event_key()
+            self._events.append(friendly)
+            self._add_feed_card(friendly)
+            return
+        if event_type == "work_result":
+            if "event_key" not in friendly:
+                friendly["event_key"] = self._next_event_key()
+            self._events.append(friendly)
+            self._add_feed_card(friendly)
+            return
+        if event_type == "tool_result":
+            tool = str(friendly.get("tool") or "")
+            for prev in reversed(self._events):
+                if (
+                    prev.get("type") == "tool"
+                    and str(prev.get("tool") or "") == tool
+                    and prev.get("result") is None
+                ):
+                    prev["result"] = friendly.get("result")
+                    prev["summary"] = text
+                    self._render()
+                    return
+            friendly["type"] = "tool"
+            friendly["arguments"] = {}
+            friendly["event_key"] = self._next_event_key()
+            self._events.append(friendly)
             self._render()
             return
+        if "event_key" not in friendly:
+            friendly["event_key"] = self._next_event_key()
         self._events.append(friendly)
         self._render()
 
-    def _on_done(self, _result: object) -> None:
+    def _on_done(self, result: object) -> None:
         self._busy = False
         self._send.setEnabled(True)
         self._quick.setEnabled(True)
         self._status.setText("Готово")
-        self._append_event({"type": "system", "text": "Готово. Можно дать следующую задачу."})
+        work = result.get("work_result") if isinstance(result, dict) else None
+        if not isinstance(work, dict):
+            work = {}
+        text = str(work.get("text") or (result.get("answer") if isinstance(result, dict) else "") or "").strip()
+        already = any(
+            ev.get("type") in {"work_result", "agent_message"}
+            and text
+            and text in str(ev.get("text") or "")
+            for ev in self._events
+        )
+        if text and not already:
+            self._append_event(_work_result_event(work, text))
+        elif not text:
+            self._append_event({"type": "system", "text": "Прогон завершён. Результат не получен."})
+        self._append_event({"type": "system", "text": "Можно дать следующую задачу."})
 
     def _show_error(self, message: str) -> None:
         self._busy = False
@@ -294,7 +379,8 @@ class AgentRunPage(QWidget):
         self._append_event({"type": "error", "message": message})
 
     def _clear_feed(self) -> None:
-        self._progress_body = None
+        self._live_thinking = None
+        self._live_assistant = None
         while self._feed_layout.count():
             item = self._feed_layout.takeAt(0)
             widget = item.widget()
@@ -303,14 +389,27 @@ class AgentRunPage(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
 
-    def _render(self) -> None:
-        self._clear_feed()
-        for event in self._events:
-            card, progress_body = _event_card(event)
-            if event.get("type") == "status" and progress_body is not None:
-                self._progress_body = progress_body
-            self._feed_layout.addWidget(card)
-        self._feed_layout.addStretch(1)
+    def _add_feed_card(self, event: dict) -> None:
+        # Drop trailing stretch, append card, put stretch back — no full rebuild.
+        stretch = None
+        if self._feed_layout.count():
+            last = self._feed_layout.itemAt(self._feed_layout.count() - 1)
+            if last is not None and last.widget() is None and last.spacerItem() is not None:
+                stretch = self._feed_layout.takeAt(self._feed_layout.count() - 1)
+        card = _event_card(event, expanded=str(event.get("event_key") or "") in self._expanded_keys)
+        card.expand_toggled.connect(self._on_expand_toggled)
+        self._feed_layout.addWidget(card)
+        if str(event.get("type") or "") == "thinking":
+            self._live_thinking = card
+        elif str(event.get("type") or "") == "agent_message":
+            self._live_assistant = card
+        if stretch is not None:
+            self._feed_layout.addItem(stretch)
+        else:
+            self._feed_layout.addStretch(1)
+        self._scroll_feed()
+
+    def _scroll_feed(self) -> None:
         QTimer.singleShot(
             0,
             lambda: self._feed_scroll.verticalScrollBar().setValue(
@@ -318,9 +417,22 @@ class AgentRunPage(QWidget):
             ),
         )
 
+    def _render(self) -> None:
+        self._clear_feed()
+        for event in self._events:
+            card = _event_card(event, expanded=str(event.get("event_key") or "") in self._expanded_keys)
+            card.expand_toggled.connect(self._on_expand_toggled)
+            self._feed_layout.addWidget(card)
+            if str(event.get("type") or "") == "thinking":
+                self._live_thinking = card
+            elif str(event.get("type") or "") == "agent_message":
+                self._live_assistant = card
+        self._feed_layout.addStretch(1)
+        self._scroll_feed()
+
 
 def _friendly_event(event: dict) -> dict | None:
-    """Hide raw tool payloads / code; keep only user-facing messages."""
+    """Keep user-facing messages plus expandable thinking/tool blocks."""
     event_type = str(event.get("type") or "system")
     if event_type == "run":
         return None
@@ -328,23 +440,47 @@ def _friendly_event(event: dict) -> dict | None:
         tool = str(event.get("tool") or "")
         label = _TOOL_LABELS.get(tool, tool or "инструмент")
         return {"type": "status", "text": f"Выполняю на этом ПК: «{label}»…"}
-    if event_type == "status":
+    if event_type in {"status", "decision", "progress"}:
         text = str(event.get("text") or "").strip()
-        return {"type": "status", "text": text[:280] or "Агент работает…"}
+        return {"type": "status", "text": text or "Агент работает…"}
     if event_type == "thinking":
         text = str(event.get("text") or "").strip()
-        if text and not text.startswith("{") and "traceback" not in text.casefold():
-            return {"type": "status", "text": text[:280]}
-        return {"type": "status", "text": "Агент анализирует задачу…"}
+        if text and (text.startswith("{") or "traceback" in text.casefold()):
+            text = "Агент анализирует задачу…"
+        return {"type": "thinking", "text": text or "Агент анализирует задачу…"}
+    if event_type == "assistant":
+        text = _visible_assistant_text(str(event.get("text") or ""))
+        return {"type": "agent_message", "text": text} if text else None
     if event_type == "tool_call":
         tool = str(event.get("tool") or "")
-        label = _TOOL_LABELS.get(tool, "внешний источник")
-        return {"type": "status", "text": f"Смотрю данные через «{label}»…"}
+        label = _TOOL_LABELS.get(tool, tool or "внешний источник")
+        arguments = event.get("arguments") if isinstance(event.get("arguments"), dict) else {}
+        return {
+            "type": "tool",
+            "tool": tool,
+            "title": label,
+            "arguments": arguments,
+            "result": None,
+            "text": f"Смотрю данные через «{label}»",
+        }
     if event_type == "tool_result":
         tool = str(event.get("tool") or "")
         result = event.get("result") if isinstance(event.get("result"), dict) else {}
-        summary = _summarize_tool_result(tool, result)
-        return {"type": "system", "text": summary} if summary else None
+        label = _TOOL_LABELS.get(tool, tool or "внешний источник")
+        return {
+            "type": "tool_result",
+            "tool": tool,
+            "title": label,
+            "result": result,
+            "text": _summarize_tool_result(tool, result),
+        }
+    if event_type == "work_result":
+        text = str(event.get("text") or "").strip()
+        payload = _work_result_event(event, text) if text else None
+        if payload is None:
+            return None
+        payload["type"] = "work_result"
+        return payload
     if event_type == "agent_message":
         text = str(event.get("text") or "").strip()
         return {"type": "agent_message", "text": text} if text else None
@@ -356,11 +492,44 @@ def _friendly_event(event: dict) -> dict | None:
         return event
     if event_type == "done":
         return None
-    # Drop unknown technical events.
     return None
 
 
+def _visible_assistant_text(text: str) -> str:
+    """Show the agent's written answer, not constructor_tool fences."""
+    cleaned = (text or "").replace("\ufffd", "")
+    if "```constructor_tool" in cleaned or "```tool" in cleaned:
+        parts: list[str] = []
+        skip = False
+        for line in cleaned.splitlines():
+            fence = line.strip()
+            if fence.startswith("```constructor_tool") or fence.startswith("```tool"):
+                skip = True
+                continue
+            if skip and fence.startswith("```"):
+                skip = False
+                continue
+            if not skip:
+                parts.append(line)
+        cleaned = "\n".join(parts)
+    return cleaned.strip()
+
+
+def _work_result_event(work: dict, text: str) -> dict:
+    extras: list[str] = [text]
+    for item in work.get("files") or []:
+        extras.append(f"Файл: {item}")
+    for item in work.get("actions") or []:
+        extras.append(f"Действие: {item}")
+    for item in work.get("notifications") or []:
+        extras.append(f"Уведомление: {item}")
+    return {"type": "agent_message", "text": "\n".join(extras).strip()}
+
+
 def _summarize_tool_result(tool: str, result: dict) -> str:
+    friendly = format_collection_result(result)
+    if friendly:
+        return friendly
     if tool == "site_browser":
         n = int(result.get("cards_count") or len(result.get("cards") or []) or 0)
         title = str(result.get("title") or "").strip()
@@ -398,57 +567,42 @@ def _side_item(text: str) -> QLabel:
     return label
 
 
-def _event_card(event: dict) -> tuple[QWidget, QLabel | None]:
+def _event_card(event: dict, *, expanded: bool = False) -> CursorFeedItem:
     event_type = str(event.get("type") or "system")
+    key = str(event.get("event_key") or "")
     text = str(event.get("text") or event.get("message") or "")
-    heading = {
-        "status": "Прогресс",
-        "agent_message": "Агент",
-        "user_message": "Вы",
-        "error": "Ошибка",
-        "system": "Система",
-    }.get(event_type, "Система")
-    row = QHBoxLayout()
-    row.setContentsMargins(0, 0, 0, 0)
-    if event_type == "user_message":
-        row.addStretch(1)
-    card = QFrame()
-    card.setMaximumWidth(720)
-    bg = {
-        "user_message": "rgba(8,116,95,0.09)",
-        "status": "#F7FAF9",
-        "error": "#FFF5F5",
-    }.get(event_type, "#FFFFFF")
-    card.setStyleSheet(
-        f"""
-        QFrame {{
-            background: {bg};
-            border: 1px solid rgba(8,116,95,0.14);
-            border-radius: 16px;
-        }}
-        """
+    if event_type == "tool":
+        return CursorFeedItem(
+            kind="tool",
+            text=text,
+            title=str(event.get("title") or event.get("tool") or "Инструмент"),
+            detail=format_tool_detail(event.get("arguments"), event.get("result")),
+            event_key=key,
+            expanded=expanded,
+            arguments=event.get("arguments"),
+            result=event.get("result"),
+        )
+    if event_type == "thinking":
+        return CursorFeedItem(
+            kind="thinking",
+            text=text,
+            title="Thinking",
+            detail=text,
+            event_key=key,
+            expanded=expanded,
+        )
+    kind = {
+        "user_message": "user",
+        "agent_message": "agent",
+        "work_result": "agent",
+        "error": "error",
+        "system": "system",
+    }.get(event_type, "system")
+    return CursorFeedItem(
+        kind=kind,
+        text=text,
+        title="",
+        detail=text,
+        event_key=key,
+        expanded=expanded,
     )
-    layout = QVBoxLayout(card)
-    layout.setContentsMargins(14, 10, 14, 10)
-    title = QLabel(heading)
-    title.setFont(app_font(12, QFont.Weight.DemiBold))
-    title.setStyleSheet("color: #08745F; background: transparent;")
-    if event_type in {"agent_message", "system"}:
-        body = MarkdownBody(text, font_size=12)
-        status_label = None
-    else:
-        body = QLabel(text)
-        body.setWordWrap(True)
-        body.setFont(app_font(12))
-        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        body.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        status_label = body if event_type == "status" else None
-    layout.addWidget(title)
-    layout.addWidget(body)
-    row.addWidget(card)
-    if event_type != "user_message":
-        row.addStretch(1)
-    wrap = QWidget()
-    wrap.setStyleSheet("background: transparent;")
-    wrap.setLayout(row)
-    return wrap, status_label

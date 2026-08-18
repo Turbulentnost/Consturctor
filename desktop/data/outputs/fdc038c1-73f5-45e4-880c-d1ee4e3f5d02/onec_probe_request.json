@@ -1,0 +1,7 @@
+{
+  "name": "onec.odata_get",
+  "arguments": {
+    "entity": "InformationRegister_СтатусыЭтаповПроектов",
+    "top": 3
+  }
+}

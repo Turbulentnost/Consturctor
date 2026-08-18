@@ -12,6 +12,12 @@ from app.core.jwt import AuthContext
 from app.schemas.workflow import WebSearchRequest, WebSearchResponse, WebSearchResultItem
 from app.services.imap_tools import ImapToolError, imap_configured, invoke_imap
 from app.services.onec_tools import ONEC_TOOLS, OnecToolError, invoke_onec, odata_configured
+from app.services.turboproject import (
+    TOOL_NAME as TURBOPROJECT_TOOL,
+    TurboProjectError,
+    invoke_turboproject,
+    turboproject_configured,
+)
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -28,7 +34,8 @@ _IMAP_TOOLS = frozenset(
     }
 )
 
-_SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS
+_TURBOPROJECT_TOOLS = frozenset({TURBOPROJECT_TOOL, "turboproject.projects"})
+_SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS | _TURBOPROJECT_TOOLS
 
 
 class ToolInvokeBody(BaseModel):
@@ -51,6 +58,16 @@ async def imap_status(auth: AuthContext = Depends(get_current_user)) -> dict[str
     }
 
 
+@router.get("/turboproject/status")
+async def turboproject_status(auth: AuthContext = Depends(get_current_user)) -> dict[str, Any]:
+    _ = auth
+    return {
+        "configured": turboproject_configured(),
+        "mode": "real" if turboproject_configured() else "stub",
+        "tools": sorted(_TURBOPROJECT_TOOLS),
+    }
+
+
 @router.get("/onec/status")
 async def onec_status(auth: AuthContext = Depends(get_current_user)) -> dict[str, Any]:
     _ = auth
@@ -67,21 +84,27 @@ async def invoke_tool(
     body: ToolInvokeBody,
     auth: AuthContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    _ = auth
     if tool_name not in _SERVER_TOOLS:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Инструмент «{tool_name}» через этот endpoint только для "
-                "imap.* / onec.*. Desktop-tools идут через agent-runs SSE."
+                "imap.* / onec.* / turboproject. Desktop-tools идут через agent-runs SSE."
             ),
         )
     try:
         if tool_name in _IMAP_TOOLS:
             result = invoke_imap(tool_name, body.arguments)
+        elif tool_name in _TURBOPROJECT_TOOLS:
+            result = invoke_turboproject(tool_name, body.arguments)
         else:
-            result = invoke_onec(tool_name, body.arguments)
-    except (ImapToolError, OnecToolError) as exc:
+            result = invoke_onec(
+                tool_name,
+                body.arguments,
+                actor_user_id=auth.user_id,
+                actor_fio=auth.fio or "",
+            )
+    except (ImapToolError, OnecToolError, TurboProjectError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"ok": True, "tool": tool_name, "result": result}
 

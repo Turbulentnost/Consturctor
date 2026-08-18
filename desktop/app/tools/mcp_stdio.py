@@ -57,7 +57,14 @@ def _call_tool(name: str, arguments: dict) -> dict:
     from app.tools import ToolHostError, invoke_tool
     from app.tools.hitl import confirm_level1_tool, is_read_tool
 
-    if name.startswith("imap.") or name.startswith("onec.odata") or name == "onec.sql_query":
+    if (
+        name.startswith("imap.")
+        or name.startswith("onec.odata")
+        or name.startswith("onec.erp_tasks")
+        or name == "onec.erp_subordinate_tasks"
+        or name == "onec.docflow_tasks"
+        or name == "onec.sql_query"
+    ):
         raise ToolHostError(
             f"«{name}» выполняется на backend Constructor, не в MCP-процессе Cursor."
         )

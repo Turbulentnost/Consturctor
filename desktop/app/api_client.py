@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import codecs
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Callable
+from threading import Thread
 from urllib.parse import quote
 
 import httpx
@@ -300,6 +303,7 @@ class AgentPassport:
     source: str = "heuristic"
     text: str = ""
     autonomy_level: int = 1
+    cursor_agent_id: str = ""
 
     def to_api_dict(self) -> dict:
         return {
@@ -318,6 +322,7 @@ class AgentPassport:
             "source": self.source,
             "text": self.text,
             "autonomy_level": int(self.autonomy_level or 1),
+            "cursor_agent_id": self.cursor_agent_id,
         }
 
 
@@ -327,6 +332,10 @@ class PassportSession:
     bp_name: str
     excerpt: str
     functions: list[PassportFunction]
+    draft_id: str = ""
+    reused: bool = False
+    llm_error: str = ""
+    qa_history: list[tuple[str, str, list[str]]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,6 +467,77 @@ class ScheduleDraft:
     triggers: list[ScheduleTriggerSpec] = field(default_factory=list)
 
 
+@dataclass
+class InboxNotification:
+    id: str
+    title: str
+    body: str = ""
+    workflow_id: str = ""
+    sender_fio: str = ""
+    unread: bool = True
+    created_at: str = ""
+    send_at: str = ""
+
+
+@dataclass
+class KpiSide:
+    label: str = ""
+    value: float | None = None
+    unit: str = ""
+    description: str = ""
+
+
+@dataclass
+class KpiMeasure:
+    kind: str = ""
+    params: dict = field(default_factory=dict)
+    formula: str = ""
+
+
+@dataclass
+class KpiSchedule:
+    kind: str = "interval"
+    interval_seconds: int = 3600
+    at: str = ""
+
+
+@dataclass
+class KpiMethod:
+    how: str = ""
+    when: str = ""
+    plan_update: str = ""
+    fact_update: str = ""
+    percent_formula: str = ""
+    green_min: float = 90
+    yellow_min: float = 70
+    schedule: KpiSchedule = field(default_factory=KpiSchedule)
+
+
+@dataclass
+class KpiTile:
+    id: str = ""
+    name: str = ""
+    plan: KpiSide = field(default_factory=KpiSide)
+    fact: KpiSide = field(default_factory=KpiSide)
+    measure: KpiMeasure = field(default_factory=KpiMeasure)
+    score_percent: float | None = None
+    color: str = "none"
+    updated_at: str = ""
+    next_run_at: str = ""
+    evidence: str = ""
+    method: KpiMethod = field(default_factory=KpiMethod)
+
+
+@dataclass
+class AgentKpi:
+    status: str = "draft"
+    generated_at: str = ""
+    summary: str = ""
+    tiles: list[KpiTile] = field(default_factory=list)
+    workflow_id: str = ""
+    title: str = ""
+
+
 def _interval_seconds(value: float, unit: str) -> int:
     amount = max(0.0, float(value or 0))
     factor = {"minutes": 60, "hours": 3600, "days": 86400}.get((unit or "hours").strip().casefold(), 3600)
@@ -491,6 +571,102 @@ def _parse_schedule_draft(data: dict) -> ScheduleDraft:
     )
 
 
+def _parse_kpi_side(data: dict | None) -> KpiSide:
+    raw = data if isinstance(data, dict) else {}
+    value = raw.get("value")
+    parsed: float | None
+    if value is None or value == "":
+        parsed = None
+    else:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = None
+    return KpiSide(
+        label=str(raw.get("label") or ""),
+        value=parsed,
+        unit=str(raw.get("unit") or ""),
+        description=str(raw.get("description") or ""),
+    )
+
+
+def _parse_kpi_method(data: dict | None) -> KpiMethod:
+    raw = data if isinstance(data, dict) else {}
+    sched = raw.get("schedule") if isinstance(raw.get("schedule"), dict) else {}
+    try:
+        interval = int(float(sched.get("interval_seconds") or 3600))
+    except (TypeError, ValueError):
+        interval = 3600
+    try:
+        green = float(raw.get("green_min") if raw.get("green_min") is not None else 90)
+    except (TypeError, ValueError):
+        green = 90.0
+    try:
+        yellow = float(raw.get("yellow_min") if raw.get("yellow_min") is not None else 70)
+    except (TypeError, ValueError):
+        yellow = 70.0
+    return KpiMethod(
+        how=str(raw.get("how") or ""),
+        when=str(raw.get("when") or ""),
+        plan_update=str(raw.get("plan_update") or ""),
+        fact_update=str(raw.get("fact_update") or ""),
+        percent_formula=str(raw.get("percent_formula") or ""),
+        green_min=green,
+        yellow_min=yellow,
+        schedule=KpiSchedule(
+            kind=str(sched.get("kind") or "interval"),
+            interval_seconds=interval,
+            at=str(sched.get("at") or ""),
+        ),
+    )
+
+
+def _parse_agent_kpi(data: dict) -> AgentKpi:
+    tiles: list[KpiTile] = []
+    for item in data.get("tiles") or []:
+        if not isinstance(item, dict):
+            continue
+        measure = item.get("measure") if isinstance(item.get("measure"), dict) else {}
+        score = item.get("score_percent")
+        parsed_score: float | None
+        if score is None or score == "":
+            parsed_score = None
+        else:
+            try:
+                parsed_score = float(score)
+            except (TypeError, ValueError):
+                parsed_score = None
+        tiles.append(
+            KpiTile(
+                id=str(item.get("id") or ""),
+                name=str(item.get("name") or ""),
+                plan=_parse_kpi_side(item.get("plan") if isinstance(item.get("plan"), dict) else {}),
+                fact=_parse_kpi_side(item.get("fact") if isinstance(item.get("fact"), dict) else {}),
+                measure=KpiMeasure(
+                    kind=str(measure.get("kind") or ""),
+                    params=dict(measure.get("params") or {})
+                    if isinstance(measure.get("params"), dict)
+                    else {},
+                    formula=str(measure.get("formula") or ""),
+                ),
+                score_percent=parsed_score,
+                color=str(item.get("color") or "none"),
+                updated_at=str(item.get("updated_at") or ""),
+                next_run_at=str(item.get("next_run_at") or ""),
+                evidence=str(item.get("evidence") or ""),
+                method=_parse_kpi_method(item.get("method") if isinstance(item.get("method"), dict) else {}),
+            )
+        )
+    return AgentKpi(
+        status=str(data.get("status") or "draft"),
+        generated_at=str(data.get("generated_at") or ""),
+        summary=str(data.get("summary") or ""),
+        tiles=tiles,
+        workflow_id=str(data.get("workflow_id") or ""),
+        title=str(data.get("title") or ""),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class WorkflowListItem:
     id: str
@@ -499,6 +675,7 @@ class WorkflowListItem:
     document_name: str = ""
     updated_at: str = ""
     has_local_run: bool = False
+    auto_run: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -997,7 +1174,13 @@ class ApiClient:
             if isinstance(item, dict)
         ]
 
-    def draft_passport_from_suggestion(self, suggestion: AgentSuggestion) -> PassportSession:
+    def draft_passport_from_suggestion(
+        self,
+        suggestion: AgentSuggestion,
+        *,
+        draft_id: str = "",
+        agent_id: str = "",
+    ) -> PassportSession:
         data = self._request(
             "POST",
             "/api/v1/regulations/passport/draft-from-suggestion",
@@ -1007,6 +1190,8 @@ class ApiClient:
                 "functionId": suggestion.function_id,
                 "agentTitle": suggestion.title,
                 "agentDescription": suggestion.description,
+                "draftId": draft_id,
+                "agentId": agent_id,
             },
             timeout=max(self._timeout, 180.0),
         )
@@ -1021,6 +1206,12 @@ class ApiClient:
         excerpt: str,
         functions: list[PassportFunction],
         field_updates: dict[str, str] | None = None,
+        draft_id: str = "",
+        agent_id: str = "",
+        function_id: str = "",
+        regulation_id: str = "",
+        role_match_run_id: str = "",
+        qa_history: list[tuple[str, str, list[str]]] | None = None,
     ) -> PassportSession:
         data = self._request(
             "POST",
@@ -1041,6 +1232,15 @@ class ApiClient:
                     }
                     for item in functions
                 ],
+                "draftId": draft_id,
+                "agentId": agent_id,
+                "functionId": function_id,
+                "regulationId": regulation_id,
+                "roleMatchRunId": role_match_run_id,
+                "qaHistory": [
+                    {"prompt": prompt, "answer": answer, "files": list(files or [])}
+                    for prompt, answer, files in (qa_history or [])
+                ],
             },
             timeout=max(self._timeout, 180.0),
         )
@@ -1060,6 +1260,17 @@ class ApiClient:
             for item in data.get("functions") or []
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         ]
+        qa_history: list[tuple[str, str, list[str]]] = []
+        for item in data.get("qaHistory") or []:
+            if not isinstance(item, dict):
+                continue
+            qa_history.append(
+                (
+                    str(item.get("prompt") or ""),
+                    str(item.get("answer") or ""),
+                    [str(path) for path in (item.get("files") or []) if str(path).strip()],
+                )
+            )
         return PassportSession(
             passport=AgentPassport(
                 name=str(passport_raw.get("name") or ""),
@@ -1077,10 +1288,15 @@ class ApiClient:
                 source=str(passport_raw.get("source") or "heuristic"),
                 text=str(passport_raw.get("text") or ""),
                 autonomy_level=int(passport_raw.get("autonomy_level") or 1) or 1,
+                cursor_agent_id=str(passport_raw.get("cursor_agent_id") or ""),
             ),
             bp_name=str(data.get("bp_name") or ""),
             excerpt=str(data.get("excerpt") or ""),
             functions=functions,
+            draft_id=str(data.get("draftId") or ""),
+            reused=bool(data.get("reused")),
+            llm_error=str(data.get("llmError") or passport_raw.get("llm_error") or ""),
+            qa_history=qa_history,
         )
 
     @staticmethod
@@ -1157,6 +1373,7 @@ class ApiClient:
                 document_name=str(x.get("document_name") or ""),
                 updated_at=str(x.get("updated_at") or ""),
                 has_local_run=bool(x.get("has_local_run")),
+                auto_run=bool(x.get("auto_run")),
             )
             for x in items
             if isinstance(x, dict)
@@ -1220,6 +1437,19 @@ class ApiClient:
     def delete_workflow(self, workflow_id: str) -> None:
         self._request("DELETE", f"/api/v1/workflows/{workflow_id}", timeout=60.0)
 
+    def stop_workflow_auto_run(self, workflow_id: str) -> int:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/stop-auto-run",
+            timeout=30.0,
+        )
+        if isinstance(data, dict):
+            try:
+                return int(data.get("stopped") or 0)
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
     def plan_workflow(self, workflow_id: str) -> WorkflowRecord:
         data = self._request(
             "POST",
@@ -1233,9 +1463,16 @@ class ApiClient:
         workflow_id: str,
         on_event: Callable[[str, str], None],
     ) -> WorkflowRecord:
+        return self.stream_demo_workflow(workflow_id, on_event)
+
+    def stream_demo_workflow(
+        self,
+        workflow_id: str,
+        on_event: Callable[[str, str], None],
+    ) -> WorkflowRecord:
         return self._stream_workflow(
             "POST",
-            f"/api/v1/workflows/{workflow_id}/plan/stream",
+            f"/api/v1/workflows/{workflow_id}/demo/stream",
             on_event=on_event,
         )
 
@@ -1399,17 +1636,22 @@ class ApiClient:
         result: dict | None = None,
         error: str = "",
     ) -> None:
-        self._request(
-            "POST",
-            f"/api/v1/workflows/agent-runs/{run_id}/tool-results",
-            json={
-                "request_id": request_id,
-                "ok": ok,
-                "result": result or {},
-                "error": error or "",
-            },
-            timeout=120.0,
-        )
+        try:
+            self._request(
+                "POST",
+                f"/api/v1/workflows/agent-runs/{run_id}/tool-results",
+                json={
+                    "request_id": request_id,
+                    "ok": ok,
+                    "result": result or {},
+                    "error": error or "",
+                },
+                timeout=120.0,
+            )
+        except ApiError as exc:
+            if exc.status_code == 404:
+                return
+            raise
 
     def stream_workflow_agent_run(
         self,
@@ -1450,7 +1692,16 @@ class ApiClient:
                                             "text": f"Выполняю на этом компьютере: {tool}…",
                                         }
                                     )
-                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
+                                    Thread(
+                                        target=self._handle_sse_tool_request,
+                                        kwargs={
+                                            "payload": payload,
+                                            "fallback_run_id": run_id,
+                                        },
+                                        daemon=True,
+                                    ).start()
+                                elif payload_type in {"heartbeat", "ping"}:
+                                    continue
                                 elif payload_type == "error":
                                     raise ApiError(str(payload.get("message") or "Ошибка запуска агента"))
                                 elif payload_type == "done":
@@ -1470,6 +1721,46 @@ class ApiClient:
         except httpx.HTTPError as exc:
             raise ApiError(f"Ошибка сети: {exc}") from exc
         return final_result or {}
+
+    def list_inbox(self) -> tuple[list[InboxNotification], int]:
+        data = self._request("GET", "/api/v1/notifications", timeout=20.0)
+        raw = data if isinstance(data, dict) else {}
+        items: list[InboxNotification] = []
+        for item in raw.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            items.append(
+                InboxNotification(
+                    id=str(item.get("id") or ""),
+                    title=str(item.get("title") or "Уведомление"),
+                    body=str(item.get("body") or ""),
+                    workflow_id=str(item.get("workflow_id") or ""),
+                    sender_fio=str(item.get("sender_fio") or ""),
+                    unread=bool(item.get("unread", item.get("read_at") in (None, ""))),
+                    created_at=str(item.get("created_at") or ""),
+                    send_at=str(item.get("send_at") or ""),
+                )
+            )
+        try:
+            unread = int(raw.get("unread_count") or sum(1 for item in items if item.unread))
+        except (TypeError, ValueError):
+            unread = sum(1 for item in items if item.unread)
+        return items, unread
+
+    def unread_notification_count(self) -> int:
+        data = self._request("GET", "/api/v1/notifications/unread-count", timeout=15.0)
+        if isinstance(data, dict):
+            try:
+                return int(data.get("count") or 0)
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
+    def mark_notification_read(self, notification_id: str) -> None:
+        self._request("POST", f"/api/v1/notifications/{notification_id}/read", timeout=15.0)
+
+    def mark_all_notifications_read(self) -> None:
+        self._request("POST", "/api/v1/notifications/read-all", timeout=15.0)
 
     def propose_schedule_draft(self, workflow_id: str) -> ScheduleDraft:
         data = self._request("POST", f"/api/v1/workflows/{workflow_id}/schedule-draft", timeout=90.0)
@@ -1558,7 +1849,16 @@ class ApiClient:
                                                 "text": f"Проверяю условие: {payload.get('tool') or ''}…",
                                             }
                                         )
-                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
+                                    Thread(
+                                        target=self._handle_sse_tool_request,
+                                        kwargs={
+                                            "payload": payload,
+                                            "fallback_run_id": run_id,
+                                        },
+                                        daemon=True,
+                                    ).start()
+                                elif payload_type in {"heartbeat", "ping"}:
+                                    continue
                                 elif payload_type == "error":
                                     raise ApiError(str(payload.get("message") or "Ошибка проверки триггера"))
                                 elif payload_type == "done":
@@ -1622,43 +1922,72 @@ class ApiClient:
                 request_json = None
             else:
                 request_json = {"answers": answers}
+        last_connect: httpx.ConnectError | None = None
         try:
-            with httpx.Client(timeout=None) as client:
-                with client.stream(
-                    method,
-                    url,
-                    headers={**self._headers(), "Accept": "text/event-stream"},
-                    json=request_json,
-                    data=data,
-                    files=files or None,
-                ) as response:
-                    if response.status_code >= 400:
-                        body = response.read().decode("utf-8", errors="replace")
-                        raise ApiError(body or "Ошибка workflow", status_code=response.status_code)
-                    data_lines: list[str] = []
-                    for line in response.iter_lines():
-                        if line == "":
-                            if data_lines:
-                                payload = _parse_sse_payload("\n".join(data_lines))
+            for attempt in range(3):
+                try:
+                    with httpx.Client(timeout=None) as client:
+                        with client.stream(
+                            method,
+                            url,
+                            headers={**self._headers(), "Accept": "text/event-stream"},
+                            json=request_json,
+                            data=data,
+                            files=files or None,
+                        ) as response:
+                            if response.status_code >= 400:
+                                body = response.read().decode("utf-8", errors="replace")
+                                raise ApiError(body or "Ошибка workflow", status_code=response.status_code)
+                            for payload in _iter_sse_payloads(response):
                                 payload_type = str(payload.get("type") or "")
                                 if payload_type == "run":
                                     run_id = str(payload.get("run_id") or "")
                                 elif payload_type == "tool_request":
                                     tool = str(payload.get("tool") or "")
                                     on_event("decision", f"Выполняю на этом компьютере: {tool}…")
-                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
-                                elif payload_type in {"thinking", "assistant", "message", "decision", "system"}:
+                                    Thread(
+                                        target=self._handle_sse_tool_request,
+                                        kwargs={
+                                            "payload": payload,
+                                            "fallback_run_id": run_id,
+                                        },
+                                        daemon=True,
+                                    ).start()
+                                elif payload_type == "tool_result":
+                                    tool = str(payload.get("tool") or "").strip()
+                                    text = str(payload.get("text") or "").strip() or "Готово"
+                                    on_event("tool_result", f"{tool}\n{text}" if tool else text)
+                                elif payload_type in {
+                                    "thinking",
+                                    "assistant",
+                                    "message",
+                                    "decision",
+                                    "system",
+                                    "progress",
+                                    "status",
+                                }:
                                     on_event(payload_type, str(payload.get("text") or ""))
+                                elif payload_type in {"heartbeat", "ping"}:
+                                    continue
                                 elif payload_type == "error":
-                                    raise ApiError(str(payload.get("message") or "Ошибка workflow"))
+                                    err = str(payload.get("message") or "Ошибка workflow")
+                                    on_event("error", err)
+                                    raise ApiError(err)
                                 elif payload_type == "workflow" and isinstance(payload.get("workflow"), dict):
                                     final_record = self._parse_workflow(payload["workflow"])
-                            data_lines = []
-                            continue
-                        if line.startswith("data:"):
-                            data_lines.append(line.split(":", 1)[1].strip())
-        except httpx.ConnectError as exc:
-            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+                    last_connect = None
+                    break
+                except httpx.ConnectError as exc:
+                    last_connect = exc
+                    if attempt == 2:
+                        raise ApiError(
+                            f"Не удалось подключиться к backend ({self.base_url})"
+                        ) from exc
+                    time.sleep(0.4 * (attempt + 1))
+            if last_connect is not None:
+                raise ApiError(
+                    f"Не удалось подключиться к backend ({self.base_url})"
+                ) from last_connect
         except httpx.HTTPError as exc:
             raise ApiError(f"Ошибка сети: {exc}") from exc
         finally:
@@ -1717,6 +2046,29 @@ class ApiClient:
         data = self._request(
             "POST",
             f"/api/v1/workflows/{workflow_id}/publish",
+            timeout=180.0,
+        )
+        return self._parse_workflow(data)
+
+    def stream_generate_workflow_kpi(
+        self,
+        workflow_id: str,
+        on_event: Callable[[str, str], None],
+    ) -> WorkflowRecord:
+        return self._stream_workflow(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/kpi/generate/stream",
+            on_event=on_event,
+        )
+
+    def get_workflow_kpi(self, workflow_id: str) -> AgentKpi:
+        data = self._request("GET", f"/api/v1/workflows/{workflow_id}/kpi", timeout=60.0)
+        return _parse_agent_kpi(data if isinstance(data, dict) else {})
+
+    def confirm_workflow_kpi(self, workflow_id: str) -> WorkflowRecord:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/kpi/confirm",
             timeout=180.0,
         )
         return self._parse_workflow(data)
@@ -1809,6 +2161,24 @@ class ApiClient:
             department_change_available_at=available_at,
         )
 
+    def invoke_server_tool(
+        self,
+        name: str,
+        arguments: dict | None = None,
+        *,
+        timeout: float = 90.0,
+    ) -> dict:
+        data = self._request(
+            "POST",
+            f"/api/v1/tools/{name}/invoke",
+            json={"arguments": arguments or {}},
+            timeout=timeout,
+        )
+        if not isinstance(data, dict):
+            return {}
+        result = data.get("result")
+        return result if isinstance(result, dict) else {}
+
     def _request(
         self,
         method: str,
@@ -1819,23 +2189,34 @@ class ApiClient:
         timeout: float | None = None,
     ):
         url = f"{self.base_url}{path}"
-        try:
-            with httpx.Client(timeout=timeout or self._timeout) as client:
-                response = client.request(
-                    method,
-                    url,
-                    json=json,
-                    params=params,
-                    headers=self._headers(),
-                )
-        except httpx.ConnectError as exc:
+        last_connect: httpx.ConnectError | None = None
+        for attempt in range(3):
+            try:
+                with httpx.Client(timeout=timeout or self._timeout) as client:
+                    response = client.request(
+                        method,
+                        url,
+                        json=json,
+                        params=params,
+                        headers=self._headers(),
+                    )
+                last_connect = None
+                break
+            except httpx.ConnectError as exc:
+                last_connect = exc
+                if attempt == 2:
+                    raise ApiError(
+                        f"Не удалось подключиться к backend ({self.base_url})"
+                    ) from exc
+                time.sleep(0.4 * (attempt + 1))
+            except httpx.TimeoutException as exc:
+                raise ApiError("Превышено время ожидания ответа backend") from exc
+            except httpx.HTTPError as exc:
+                raise ApiError(f"Ошибка сети: {exc}") from exc
+        if last_connect is not None:
             raise ApiError(
                 f"Не удалось подключиться к backend ({self.base_url})"
-            ) from exc
-        except httpx.TimeoutException as exc:
-            raise ApiError("Превышено время ожидания ответа backend") from exc
-        except httpx.HTTPError as exc:
-            raise ApiError(f"Ошибка сети: {exc}") from exc
+            ) from last_connect
 
         if response.status_code >= 400:
             detail = _extract_detail(response)
@@ -2177,6 +2558,35 @@ def _extract_detail(response: httpx.Response) -> str:
     if response.status_code == 401:
         return "Неверный логин или пароль"
     return f"Ошибка сервера ({response.status_code})"
+
+
+def _iter_sse_payloads(response: httpx.Response):
+    """Разбирать SSE по байтам, чтобы think не ждал конца ответа."""
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    data_lines: list[str] = []
+    carry = ""
+
+    def feed(text: str):
+        nonlocal data_lines, carry
+        carry += text
+        while "\n" in carry:
+            line, carry = carry.split("\n", 1)
+            line = line.rstrip("\r")
+            if line == "":
+                if data_lines:
+                    yield _parse_sse_payload("\n".join(data_lines))
+                data_lines = []
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].strip())
+
+    for raw in response.iter_bytes(chunk_size=4096):
+        if not raw:
+            continue
+        yield from feed(decoder.decode(raw, final=False))
+    yield from feed(decoder.decode(b"", final=True))
+    if data_lines:
+        yield _parse_sse_payload("\n".join(data_lines))
 
 
 def _parse_sse_payload(raw: str) -> dict:

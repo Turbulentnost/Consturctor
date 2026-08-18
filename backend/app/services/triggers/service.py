@@ -132,6 +132,41 @@ def cancel_trigger(db: Session, *, user_id: str, trigger_id: str) -> TriggerOut:
     return _to_out(row)
 
 
+def cancel_triggers_for_workflow(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    commit: bool = True,
+) -> int:
+    rows = list(
+        db.execute(
+            select(AgentTrigger).where(
+                AgentTrigger.owner_user_id == user_id,
+                AgentTrigger.workflow_id == workflow_id,
+                AgentTrigger.enabled.is_(True),
+            )
+        ).scalars()
+    )
+    for row in rows:
+        row.enabled = False
+    if commit and rows:
+        db.commit()
+    return len(rows)
+
+
+def delete_triggers_for_workflow(db: Session, *, user_id: str, workflow_id: str) -> int:
+    count = (
+        db.query(AgentTrigger)
+        .filter(
+            AgentTrigger.owner_user_id == user_id,
+            AgentTrigger.workflow_id == workflow_id,
+        )
+        .delete(synchronize_session=False)
+    )
+    return int(count or 0)
+
+
 def get_trigger(db: Session, *, user_id: str, trigger_id: str) -> AgentTrigger:
     row = db.get(AgentTrigger, trigger_id)
     if row is None or row.owner_user_id != user_id:
@@ -142,11 +177,15 @@ def get_trigger(db: Session, *, user_id: str, trigger_id: str) -> AgentTrigger:
 def due_commands(db: Session, *, user_id: str | None = None) -> list[AgentTrigger]:
     now = datetime.now(timezone.utc)
     stale_before = now - CHECK_INTERVAL
-    stmt = select(AgentTrigger).where(
-        AgentTrigger.enabled.is_(True),
-        or_(AgentTrigger.fire_at.is_(None), AgentTrigger.fire_at <= now),
-        or_(AgentTrigger.cooldown_until.is_(None), AgentTrigger.cooldown_until <= now),
-        or_(AgentTrigger.last_checked_at.is_(None), AgentTrigger.last_checked_at <= stale_before),
+    stmt = (
+        select(AgentTrigger)
+        .join(Workflow, Workflow.id == AgentTrigger.workflow_id)
+        .where(
+            AgentTrigger.enabled.is_(True),
+            or_(AgentTrigger.fire_at.is_(None), AgentTrigger.fire_at <= now),
+            or_(AgentTrigger.cooldown_until.is_(None), AgentTrigger.cooldown_until <= now),
+            or_(AgentTrigger.last_checked_at.is_(None), AgentTrigger.last_checked_at <= stale_before),
+        )
     )
     if user_id:
         stmt = stmt.where(AgentTrigger.owner_user_id == user_id)

@@ -12,7 +12,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from app.services.agent_passport import llm as llm_service
+from app.services.agent_passport import cursor_agent as cursor_service
 from app.services.agent_passport.types import ExtractedFunction
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ _FIELD_LABELS = {
 }
 
 _PASSPORT_SYSTEM = (
-    "Ты проектировщик ИИ-агентов по корпоративным регламентам. "
+    "Ты Cursor Agent — проектировщик ИИ-агентов по корпоративным регламентам. "
     "Заполняешь паспорт агента кратко и по делу. Возвращай СТРОГО JSON."
 )
 
@@ -59,10 +59,8 @@ _ANSWER_SYSTEM = (
     "Если ответ ясный и достаточный — принимаешь и кратко нормализуешь. "
     "Если ответ расплывчатый, противоречивый или не по теме — не принимаешь "
     "и задаёшь один уточняющий вопрос. "
-    "Для полей ограничений (Не может / Может самостоятельно / Требует подтверждения) "
-    "ответ уровня политики достаточен: например «запрещено всё, кроме чтения», "
-    "«только чтение», «все изменения только с подтверждением». "
-    "Не требуй длинный перечень примеров, если политика уже ясна. "
+    "Поля «Может самостоятельно / Требует подтверждения / Не может» задаёт "
+    "уровень автономности 1 — не спрашивай их у пользователя. "
     "Возвращай СТРОГО JSON."
 )
 
@@ -75,18 +73,16 @@ _PASSPORT_PROMPT = """По бизнес-процессу и функциям з�
 Получает: клиент, окончательный заказ, договор.
 Проверяет: CRM → 1С → условия договора.
 Принимает решения: если ответственности нет → разрешить; если до 100 тыс. и до 7 дней → успех; если лимит выше → заблокировать и передать руководителю.
-Может самостоятельно: прочитать данные, сделать расчёт, поставить отметку.
-Требует подтверждения человека: изменение кредитного лимита.
-Не может: проводить финансовые операции; физические шаги (склад/отгрузка) —
-агент только напоминает человеку.
+Может самостоятельно / Требует подтверждения / Не может — не выдумывай:
+их заполнит сервер из уровня автономности 1 (чтение и текст без подтверждения,
+запись и прочее — только после человека).
 Результат: решение + объяснение + ссылки на исходные данные.
 
 Верни СТРОГО JSON-объект со строковыми полями:
 - "name", "goal", "trigger", "receives", "checks", "decisions",
   "can_autonomous", "needs_human_approval", "forbidden", "result"
-В "forbidden" обязательно перечисли шаги с automation_kind=physical
-(физические/внесистемные — нельзя выполнить программно).
-Если чего-то нельзя надёжно вывести из текста — поставь пустую строку "".
+Поля can_autonomous / needs_human_approval / forbidden оставь пустыми "".
+Если чего-то ещё нельзя надёжно вывести из текста — поставь пустую строку "".
 
 Бизнес-процесс: {bp_name}
 
@@ -129,6 +125,9 @@ _QUESTIONS_PROMPT = """По черновику паспорта ИИ-агент�
 
 Незаполненные поля (нужно спросить):
 {missing}
+
+Не задавай вопросы про can_autonomous / needs_human_approval / forbidden —
+их закрывает уровень автономности 1.
 
 Верни СТРОГО JSON:
 {{"questions": [{{"field": "<ключ поля>", "prompt": "<вопрос пользователю>"}}]}}
@@ -403,9 +402,8 @@ _ANSWER_PROMPT = """Оцени ответ пользователя для одн
 Критерии:
 - accepted=true, если ответ по теме и его достаточно, чтобы записать поле;
 - тогда normalized_value — краткая деловая формулировка для паспорта (1-2 фразы);
-- для forbidden / can_autonomous / needs_human_approval ответ-политика достаточен
-  («запрещено всё кроме чтения», «только чтение данных», «все write с подтверждением») —
-  accepted=true, не проси список частных запретов;
+- для forbidden / can_autonomous / needs_human_approval не переспрашивай:
+  accepted=true, политика уже задана уровнем автономности 1;
 - accepted=false, если ответ пустой по смыслу («да», «ок», «не знаю» без деталей),
   уклончивый или не по теме — тогда follow_up: один конкретный
   уточняющий вопрос на русском (без шаблона «уточните значение»).
@@ -417,6 +415,39 @@ _ANSWER_PROMPT = """Оцени ответ пользователя для одн
 
 
 _SCOPE_FIELDS = frozenset({"forbidden", "can_autonomous", "needs_human_approval"})
+_LEVEL1_CAN_AUTONOMOUS = (
+    "Генерация текста и инструменты чтения — без подтверждения человека."
+)
+_LEVEL1_NEEDS_APPROVAL = (
+    "Запись и прочие операции — только после подтверждения человека."
+)
+_LEVEL1_FORBIDDEN = (
+    "Выполнять запись и прочие операции без подтверждения человека. "
+    "Какие инструменты идут без подтверждения, задаёт уровень автономности 1."
+)
+
+
+def _apply_autonomy_scope(
+    passport: AgentPassport,
+    *,
+    functions: list[ExtractedFunction] | None = None,
+) -> AgentPassport:
+    """Поля ограничений = политика уровня автономности, не отдельный опрос."""
+    passport.autonomy_level = 1
+    passport.can_autonomous = _LEVEL1_CAN_AUTONOMOUS
+    passport.needs_human_approval = _LEVEL1_NEEDS_APPROVAL
+    physical = [
+        fn.name.strip()
+        for fn in (functions or [])
+        if getattr(fn, "is_physical", False) and str(fn.name or "").strip()
+    ]
+    forbidden = _LEVEL1_FORBIDDEN
+    if physical:
+        forbidden = (
+            f"{forbidden} Физические шаги агенту недоступны: {', '.join(physical)}."
+        )
+    passport.forbidden = forbidden
+    return passport
 
 
 @dataclass
@@ -437,6 +468,8 @@ class AgentPassport:
     questions: list[dict] = field(default_factory=list)
     source: str = "heuristic"
     autonomy_level: int = 1
+    llm_error: str = ""
+    cursor_agent_id: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -454,6 +487,8 @@ class AgentPassport:
             "questions": list(self.questions),
             "source": self.source,
             "autonomy_level": int(self.autonomy_level or 1),
+            "llm_error": self.llm_error,
+            "cursor_agent_id": self.cursor_agent_id,
         }
 
     def format_text(self) -> str:
@@ -482,24 +517,26 @@ def draft_passport(
     functions: list[ExtractedFunction],
     agent_name: str | None = None,
 ) -> AgentPassport:
-    """Собрать черновик паспорта (LLM, иначе эвристика)."""
+    """Собрать черновик паспорта через Cursor Agent (иначе эвристика)."""
     normalized = [fn.with_derived_approval() for fn in functions if fn.name.strip()]
     if not normalized:
         raise ValueError("Нужна хотя бы одна функция для паспорта агента")
 
-    llm_result = _draft_with_llm(bp_name, excerpt, normalized)
-    if llm_result is not None:
-        passport = llm_result
-        passport.source = "llm"
+    cursor_result = _draft_with_cursor(bp_name, excerpt, normalized)
+    if cursor_result is not None:
+        passport = cursor_result
+        passport.source = "cursor"
+        passport.llm_error = ""
     else:
         passport = _heuristic_draft(bp_name, excerpt, normalized)
         passport.source = "heuristic"
+        passport.llm_error = cursor_service.last_error()
 
     if agent_name and agent_name.strip():
         passport.name = agent_name.strip()
     elif not passport.name.strip():
         passport.name = (bp_name or "ИИ-агент").strip()
-    passport.autonomy_level = 1
+    _apply_autonomy_scope(passport, functions=normalized)
 
     return _with_gaps(
         passport,
@@ -542,8 +579,11 @@ def complete_passport(
                 answer_updates[field_name] = value
 
     follow_ups: list[dict] = []
+    eval_errors: list[str] = []
     agent_name = str(data.get("name") or bp_name or "агента")
     for field_name, raw_answer in answer_updates.items():
+        if field_name in _SCOPE_FIELDS:
+            continue
         answer = str(raw_answer or "").strip()
         if not answer:
             continue
@@ -553,8 +593,12 @@ def complete_passport(
             question=prev_prompts.get(field_name, ""),
             current=str(data.get(field_name) or ""),
             passport_data=data,
+            cursor_agent_id=str(data.get("cursor_agent_id") or passport.cursor_agent_id or ""),
         )
 
+        err = str(verdict.get("llm_error") or "").strip()
+        if err:
+            eval_errors.append(err)
         if verdict.get("accepted"):
             normalized = str(verdict.get("normalized_value") or answer).strip()
             if normalized:
@@ -606,7 +650,10 @@ def complete_passport(
         result=str(data.get("result") or ""),
         source=str(data.get("source") or passport.source),
         autonomy_level=1,
+        llm_error="; ".join(dict.fromkeys(eval_errors)) or str(data.get("llm_error") or ""),
+        cursor_agent_id=str(data.get("cursor_agent_id") or passport.cursor_agent_id or ""),
     )
+    _apply_autonomy_scope(updated, functions=functions or [])
     result = _with_gaps(
         updated,
         bp_name=bp_name or updated.name,
@@ -614,6 +661,11 @@ def complete_passport(
         functions=functions or [],
     )
 
+    follow_ups = [
+        item
+        for item in follow_ups
+        if str(item.get("field") or "") not in _SCOPE_FIELDS
+    ]
     if follow_ups:
         follow_fields = {str(item["field"]) for item in follow_ups}
         # Поля с неясным ответом остаются открытыми.
@@ -630,7 +682,9 @@ def complete_passport(
         other = [
             q
             for q in result.questions
-            if isinstance(q, dict) and str(q.get("field")) not in follow_fields
+            if isinstance(q, dict)
+            and str(q.get("field")) not in follow_fields
+            and str(q.get("field")) not in _SCOPE_FIELDS
         ]
         result.questions = follow_ups + other
 
@@ -720,6 +774,7 @@ def _evaluate_passport_answer(
     question: str,
     current: str,
     passport_data: dict,
+    cursor_agent_id: str = "",
 ) -> dict:
     """Принять ответ: ясные политики — без переспроса LLM."""
     heuristic = _evaluate_answer_heuristic(field, answer)
@@ -731,14 +786,18 @@ def _evaluate_passport_answer(
             "follow_up": "",
         }
 
-    llm = _evaluate_answer_with_llm(
+    llm = _evaluate_answer_with_cursor(
         field=field,
         answer=answer,
         question=question,
         current=current,
         passport_data=passport_data,
+        cursor_agent_id=cursor_agent_id,
     )
     if llm is None:
+        err = cursor_service.last_error()
+        if err:
+            heuristic = {**heuristic, "llm_error": err}
         return heuristic
     # LLM не должна заново дробить уже принятую содержательную политику.
     if (
@@ -751,20 +810,21 @@ def _evaluate_passport_answer(
     return llm
 
 
-def _evaluate_answer_with_llm(
+def _evaluate_answer_with_cursor(
     *,
     field: str,
     answer: str,
     question: str,
     current: str,
     passport_data: dict,
+    cursor_agent_id: str = "",
 ) -> dict | None:
     context_lines = []
     for key in PASSPORT_FIELDS:
         value = str(passport_data.get(key) or "").strip()
         if value:
             context_lines.append(f"- {_FIELD_LABELS[key]}: {value}")
-    raw = llm_service.generate(
+    raw, agent_id = cursor_service.generate(
         _ANSWER_PROMPT.format(
             field_label=_FIELD_LABELS.get(field, field),
             field=field,
@@ -774,7 +834,10 @@ def _evaluate_answer_with_llm(
             passport_context="\n".join(context_lines) or "(черновик почти пуст)",
         ),
         system=_ANSWER_SYSTEM,
+        cursor_agent_id=cursor_agent_id,
     )
+    if agent_id and not str(passport_data.get("cursor_agent_id") or "").strip():
+        passport_data["cursor_agent_id"] = agent_id
     if not raw:
         return None
     payload = _parse_json_object(raw)
@@ -842,6 +905,8 @@ def passport_from_dict(data: dict | None) -> AgentPassport:
         questions=list(raw.get("questions") or []),
         source=str(raw.get("source") or "heuristic"),
         autonomy_level=int(raw.get("autonomy_level") or 1) or 1,
+        llm_error=str(raw.get("llm_error") or ""),
+        cursor_agent_id=str(raw.get("cursor_agent_id") or ""),
     )
 
 
@@ -856,11 +921,18 @@ def _with_gaps(
 ) -> AgentPassport:
     missing: list[str] = []
     for key in PASSPORT_FIELDS:
+        if key in _SCOPE_FIELDS:
+            continue
         value = str(getattr(passport, key) or "").strip()
         if not value:
             missing.append(key)
 
     passport.missing_fields = missing
+    passport.questions = [
+        q
+        for q in (passport.questions or [])
+        if isinstance(q, dict) and str(q.get("field") or "") not in _SCOPE_FIELDS
+    ]
     if not missing:
         passport.questions = []
         return passport
@@ -941,7 +1013,7 @@ def _questions_with_llm(
         for fn in functions
     ) or "(нет)"
 
-    raw = llm_service.generate(
+    raw, agent_id = cursor_service.generate(
         _QUESTIONS_PROMPT.format(
             bp_name=bp_name or passport.name or "Бизнес-процесс",
             excerpt=(excerpt or "")[:4000] or "(нет)",
@@ -950,7 +1022,10 @@ def _questions_with_llm(
             missing="\n".join(missing_lines),
         ),
         system=_QUESTIONS_SYSTEM,
+        cursor_agent_id=passport.cursor_agent_id,
     )
+    if agent_id and not passport.cursor_agent_id:
+        passport.cursor_agent_id = agent_id
     if not raw:
         return None
     payload = _parse_json_object(raw)
@@ -993,7 +1068,7 @@ def _questions_with_llm(
     return questions
 
 
-def _draft_with_llm(
+def _draft_with_cursor(
     bp_name: str,
     excerpt: str,
     functions: list[ExtractedFunction],
@@ -1004,7 +1079,7 @@ def _draft_with_llm(
         + (f": {fn.description}" if fn.description else "")
         for fn in functions
     )
-    raw = llm_service.generate(
+    raw, agent_id = cursor_service.generate(
         _PASSPORT_PROMPT.format(
             bp_name=bp_name or "Бизнес-процесс",
             excerpt=(excerpt or "")[:6000],
@@ -1028,6 +1103,7 @@ def _draft_with_llm(
         needs_human_approval=str(payload.get("needs_human_approval") or "").strip(),
         forbidden=str(payload.get("forbidden") or "").strip(),
         result=str(payload.get("result") or "").strip(),
+        cursor_agent_id=agent_id,
     )
 
 
