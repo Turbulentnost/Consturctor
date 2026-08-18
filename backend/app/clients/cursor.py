@@ -87,6 +87,63 @@ def create_run(
     return data
 
 
+def wait_until_run_idle(
+    agent_id: str,
+    run_id: str,
+    *,
+    timeout_seconds: float = 90.0,
+) -> dict[str, Any]:
+    """Wait until a run reaches any terminal status (not only FINISHED)."""
+    started = time.monotonic()
+    last: dict[str, Any] = {}
+    while True:
+        last = get_run(agent_id, run_id)
+        if str(last.get("status") or "") in TERMINAL_RUN_STATUSES:
+            return last
+        if time.monotonic() - started > timeout_seconds:
+            raise CursorAgentError(
+                "Cursor Agent занят, дождитесь завершения текущего ответа",
+                status_code=409,
+            )
+        time.sleep(1.5)
+
+
+def create_run_when_ready(
+    agent_id: str,
+    *,
+    prompt: str,
+    mode: str | None = "agent",
+    images: list[dict[str, str]] | None = None,
+    previous_run_id: str = "",
+    retries: int = 6,
+) -> dict[str, Any]:
+    """Create a follow-up run after the previous one is no longer active.
+
+    Cursor Cloud returns HTTP 409 if the same agent still has an open run.
+    Streaming can finish (we already have constructor_tool text) a few seconds
+    before the run status becomes FINISHED.
+    """
+    if previous_run_id:
+        try:
+            wait_until_run_idle(agent_id, previous_run_id, timeout_seconds=90.0)
+        except CursorAgentError:
+            pass
+    delay = 1.0
+    last_error: CursorAgentError | None = None
+    for _ in range(max(1, retries)):
+        try:
+            return create_run(agent_id, prompt=prompt, mode=mode, images=images)
+        except CursorAgentError as exc:
+            last_error = exc
+            if exc.status_code != 409:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 1.6, 8.0)
+    if last_error is not None:
+        raise last_error
+    raise CursorAgentError("Cursor Agent занят, дождитесь завершения текущего ответа", status_code=409)
+
+
 def get_run(agent_id: str, run_id: str) -> dict[str, Any]:
     return _request("GET", f"/v1/agents/{agent_id}/runs/{run_id}", timeout=45.0)
 

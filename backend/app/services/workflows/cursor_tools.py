@@ -28,6 +28,28 @@ _MAX_CALLS_PER_ROUND = 3
 _MAX_TOOL_FAILURES = 2
 _MAX_NUDGES = 2
 
+_GENERIC_USER_QUERIES = (
+    "все",
+    "всех",
+    "получатель",
+    "получатели",
+    "пользователь",
+    "пользователи",
+    "сотрудник",
+    "сотрудники",
+    "человек",
+    "люди",
+    "адресат",
+    "адресаты",
+    "список",
+    "users",
+    "user",
+    "кто",
+    "кому",
+    "директор",
+    "руководител",
+)
+
 
 def set_tool_context(run_id: str, user_id: str) -> None:
     _tool_ctx.set((run_id, user_id))
@@ -46,14 +68,16 @@ def tools_prompt_block() -> str:
         "Реестр Constructor. ```constructor_tool — markdown в ответе, не tool Cursor. "
         "Backend перехватывает блок и вызывает tool на сервере. "
         "Не пиши «нет доступа к constructor_tool».",
-        "Первый ответ — ТОЛЬКО один блок (без плана и кода вокруг):",
+        "Если в ТЗ не сказано, кого/что брать, когда запускать и в каком виде отдавать — "
+        "сначала CLARIFY, не вызывай tool на весь каталог и не ставь default «все».",
+        "Когда объём ясен, вызов выглядит так (без кода вокруг):",
         "```constructor_tool",
-        '{"name": "turboproject", "arguments": {}}',
+        '{"name": "имя_из_каталога", "arguments": {}}',
         "```",
         "Не вызывай BACKEND_URL, curl и HTTP с Cloud VM. Не выдумывай результат. "
         "Дождись ответа системы и только потом продолжи.",
-        "Когда Constructor tool уже ответил — верни финальный ответ (JSON плана или RESULT) "
-        "без блока constructor_tool.",
+        "Когда Constructor tool уже ответил и объём ясен — финальный ответ "
+        "без блока constructor_tool. Если объём всё ещё неясен — CLARIFY, не RESULT.",
         "Каталог:",
     ]
     for item in list_tools():
@@ -73,8 +97,11 @@ def tools_prompt_block() -> str:
 
 
 def with_tools_if_desktop(prompt: str) -> str:
-    if current_tool_context() is None:
-        return prompt
+    """Always attach the Constructor catalog.
+
+    The published agent used to skip this when tool context was not set yet,
+    so Cursor Cloud tried MCP / OIDC / curl on the VM instead of constructor_tool.
+    """
     return prompt.rstrip() + "\n\n" + tools_prompt_block() + "\n"
 
 
@@ -93,6 +120,12 @@ def extract_tool_calls(text: str) -> list[dict[str, Any]]:
         arguments = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
         calls.append({"name": name, "arguments": arguments})
     return calls
+
+
+def _should_pause_for_clarify(text: str) -> bool:
+    from app.services.workflows.prompts import parse_clarify_from_text
+
+    return bool(parse_clarify_from_text(text))
 
 
 def should_run_tool_calls(text: str, *, mode: str) -> list[dict[str, Any]]:
@@ -117,7 +150,21 @@ def tool_family(name: str) -> str:
     return raw.split(".", 1)[0]
 
 
-_LIVE_FAMILIES = frozenset({"turboproject", "onec", "imap", "outlook"})
+_LIVE_FAMILIES = frozenset({"turboproject", "onec", "imap", "outlook", "notify"})
+
+_NOTIFY_HINTS = (
+    "уведом",
+    "notify",
+    "прислать",
+    "написать получател",
+    "колокольчик",
+    "тост",
+)
+
+
+def wants_notifications(*blobs: str) -> bool:
+    text = " ".join(blobs).casefold().replace("ё", "е")
+    return any(hint in text for hint in _NOTIFY_HINTS)
 
 
 def required_live_tools_from_plan(plan: Any) -> list[str]:
@@ -172,6 +219,8 @@ def required_live_tools_from_plan(plan: Any) -> list[str]:
         tip in blob for tip in ("календар", "совещан", "outlook.application", "win32com")
     ):
         add("outlook")
+    if wants_notifications(blob):
+        add("notify")
     return families
 
 
@@ -210,6 +259,8 @@ def invoke_creation_tool(
         return _invoke_turboproject_server(tool, args)
     if tool in {"users.list", "users"}:
         return _invoke_users_list(args)
+    if tool in {"notify.send", "notify"}:
+        return _invoke_notify_send(args)
 
     ctx = current_tool_context()
     if ctx is None:
@@ -244,17 +295,18 @@ def stream_cursor_with_tools(
     mode: str = "plan",
     stream_run,
     required_live_tools: list[str] | None = None,
+    assumption_check: bool = False,
 ) -> Any:
     """Stream a Cursor run; if it asks for constructor_tool, execute and continue."""
     last = stream_run(agent_id, run_id, on_event=on_event)
-    if current_tool_context() is None:
-        return _attach_live_ok(last, set())
     required = [tool_family(name) for name in (required_live_tools or []) if tool_family(name)]
     successful: set[str] = set()
     fail_counts: dict[str, int] = {}
     unreachable: set[str] = set()
     last_errors: dict[str, str] = {}
     nudge_without_call = 0
+    did_assumption_check = False
+    result_cache: dict[str, dict[str, Any]] = {}
     max_rounds = _MAX_ROUNDS_EXECUTE if mode == "execute" else _MAX_ROUNDS_PLAN
 
     def missing_required() -> list[str]:
@@ -265,7 +317,10 @@ def stream_cursor_with_tools(
         ]
 
     for _round_n in range(max_rounds):
-        calls = should_run_tool_calls(getattr(last, "text", None) or "", mode=mode)
+        last_text = getattr(last, "text", None) or ""
+        if _should_pause_for_clarify(last_text):
+            return _attach_live_ok(last, successful)
+        calls = should_run_tool_calls(last_text, mode=mode)
         if not calls and mode == "execute":
             pending = missing_required()
             if pending and nudge_without_call < _MAX_NUDGES:
@@ -276,7 +331,12 @@ def stream_cursor_with_tools(
                     "Жду вызов Constructor tool: " + ", ".join(pending),
                 )
                 follow = _nudge_live_tools_prompt(pending)
-                run = cursor_client.create_run(agent_id, prompt=follow, mode="agent")
+                run = cursor_client.create_run_when_ready(
+                    agent_id,
+                    prompt=follow,
+                    mode="agent",
+                    previous_run_id=str(getattr(last, "run_id", "") or run_id),
+                )
                 next_id = str(run.get("id") or "")
                 if not next_id:
                     return _attach_live_ok(last, successful)
@@ -286,11 +346,38 @@ def stream_cursor_with_tools(
         if not calls:
             return _attach_live_ok(last, successful)
 
+        if did_assumption_check:
+            fresh: list[dict[str, Any]] = []
+            for call in calls:
+                name = str(call.get("name") or "")
+                family = tool_family(name)
+                cache_key = _tool_cache_key(name, call.get("arguments") or {})
+                if family and family in successful:
+                    continue
+                if cache_key in result_cache:
+                    continue
+                fresh.append(call)
+            if not fresh:
+                return _attach_live_ok(last, successful)
+            calls = fresh
+
         nudge_without_call = 0
         results: list[dict[str, Any]] = []
         for call in calls[:_MAX_CALLS_PER_ROUND]:
             name = str(call.get("name") or "")
             family = tool_family(name)
+            arguments = call.get("arguments") or {}
+            cache_key = _tool_cache_key(name, arguments)
+            cached = result_cache.get(cache_key)
+            if cached is not None:
+                results.append({**cached, "cached": True})
+                summary = _format_tool_output(
+                    name,
+                    cached.get("result") if isinstance(cached.get("result"), dict) else {},
+                )
+                _emit(on_event, "tool_result", f"{name}\n{summary} (уже было)")
+                _emit(on_event, "decision", f"«{name}»: уже есть, повтор не нужен.")
+                continue
             _emit(on_event, "decision", f"Cursor вызывает «{name}»…")
             if name.startswith("turboproject") or name == "turboproject":
                 _emit(
@@ -305,15 +392,23 @@ def stream_cursor_with_tools(
                     "decision",
                     "«users.list»: читаю справочник пользователей…",
                 )
+            if name in {"notify.send", "notify"}:
+                _emit(
+                    on_event,
+                    "decision",
+                    "«notify.send»: отправляю уведомление на компьютер…",
+                )
             try:
                 result = invoke_creation_tool(
                     tool=name,
-                    arguments=call.get("arguments") or {},
+                    arguments=arguments,
                     on_event=on_event,
                     workflow_id=workflow_id,
                 )
                 clipped = _clip_result(result)
-                results.append({"name": name, "ok": True, "result": clipped})
+                packed = {"name": name, "ok": True, "result": clipped}
+                results.append(packed)
+                result_cache[cache_key] = packed
                 if family:
                     successful.add(family)
                     fail_counts[family] = 0
@@ -322,7 +417,7 @@ def stream_cursor_with_tools(
                 _emit(
                     on_event,
                     "tool_result",
-                    summary,
+                    f"{name}\n{summary}",
                     {"tool": name, "result": clipped},
                 )
                 _emit(on_event, "decision", f"«{name}»: готово.")
@@ -337,19 +432,35 @@ def stream_cursor_with_tools(
                 _emit(
                     on_event,
                     "tool_result",
-                    str(exc),
+                    f"{name}\n{exc}",
                     {"tool": name, "ok": False},
                 )
                 _emit(on_event, "decision", f"«{name}»: {exc}")
         pending = missing_required()
-        follow = _followup_prompt(
-            results,
-            mode=mode,
-            pending=pending,
-            unreachable=sorted(unreachable),
-            last_errors=last_errors,
+        any_ok = any(item.get("ok") for item in results)
+        if (
+            assumption_check
+            and mode == "execute"
+            and not did_assumption_check
+            and any_ok
+            and not pending
+        ):
+            did_assumption_check = True
+            follow = _assumption_check_prompt(results)
+        else:
+            follow = _followup_prompt(
+                results,
+                mode=mode,
+                pending=pending,
+                unreachable=sorted(unreachable),
+                last_errors=last_errors,
+            )
+        run = cursor_client.create_run_when_ready(
+            agent_id,
+            prompt=follow,
+            mode="agent",
+            previous_run_id=str(getattr(last, "run_id", "") or run_id),
         )
-        run = cursor_client.create_run(agent_id, prompt=follow, mode="agent")
         next_id = str(run.get("id") or "")
         if not next_id:
             return _attach_live_ok(last, successful)
@@ -407,10 +518,22 @@ def _followup_prompt(
             "Запиши это в RESULT.md и TESTS: FAIL. Не вини Cloud VM / BACKEND_URL."
         )
     else:
+        done = [str(item.get("name") or "") for item in results if item.get("ok")]
+        done_line = ", ".join(name for name in done if name)
         tail = (
-            "Учти результаты Constructor tools и продолжи реализацию. "
-            "Если данных достаточно — RESULT.md с предметным выводом и TESTS: PASS. "
-            "Если нужен ещё вызов — только ```constructor_tool. "
+            "Учти результаты Constructor tools. "
+            + (
+                f"Уже получены данные от: {done_line}. "
+                "Не вызывай эти tools снова с теми же или пустыми args. "
+                if done_line
+                else ""
+            )
+            + "Если решение (кого/что брать, когда/как часто, в каком виде отдавать) "
+            "не сказано в ТЗ — верни CLARIFY и остановись, не обрабатывай весь каталог. "
+            "Если это уже явно в ТЗ или человек ответил — предметный RESULT: текст обязателен, "
+            "плюс файлы/действия/уведомления если они были. "
+            "Не вызывай users.list / turboproject «на всякий случай». "
+            "Если нужен ДРУГОЙ tool — только ```constructor_tool. "
             "Не ставь FAIL из-за отсутствия BACKEND_URL на Cloud VM."
         )
     return (
@@ -419,20 +542,131 @@ def _followup_prompt(
     )
 
 
+def _assumption_check_prompt(results: list[dict[str, Any]]) -> str:
+    blob = json.dumps(results, ensure_ascii=False, indent=2, default=str)
+    return (
+        "Результаты вызовов инструментов Constructor (факты с сервера/desktop, не с VM):\n"
+        f"{blob}\n\n"
+        "Это только подсмотр. Не разбирай весь каталог и не считай итог.\n"
+        "Перечисли допущения, которых не было в ТЗ и которые меняют расчёт: "
+        "кого/что брать, когда и как часто запускать, в каком виде и кому отдавать, "
+        "что считать успехом.\n"
+        "Если хотя бы одно такое допущение ты только что принял сам — верни ТОЛЬКО CLARIFY "
+        "и остановись. Не вызывай constructor_tool в этом ответе и не повторяй уже успешный tool.\n"
+        "Если каждое из этих решений уже явно сказано в материалах — напиши это "
+        "и продолжи с указанным объёмом, без default «все».\n"
+        "Не спрашивай про поля, OData, COM и имена tools."
+    )
+
+
+def is_directory_search_query(query: str) -> bool:
+    """True if query looks like ФИО / email / id, not a role or «все»."""
+    raw = (query or "").strip()
+    if len(raw) < 3:
+        return False
+    if "@" in raw:
+        return True
+    if any(ch.isdigit() for ch in raw) and len(raw) >= 4:
+        return True
+    words = [part for part in re.split(r"\s+", raw) if part]
+    if len(words) >= 2:
+        return True
+    low = raw.casefold()
+    if any(hint in low for hint in _GENERIC_USER_QUERIES):
+        return False
+    return len(raw) >= 4
+
+
+def normalize_users_list_query(arguments: dict[str, Any] | None) -> tuple[str, str]:
+    query = str((arguments or {}).get("query") or (arguments or {}).get("search") or "").strip()
+    if not query:
+        return "", ""
+    if is_directory_search_query(query):
+        return query, ""
+    return "", query
+
+
+def _tool_cache_key(name: str, arguments: dict[str, Any] | None) -> str:
+    args = dict(arguments or {})
+    args.pop("workflow_id", None)
+    args.pop("agent_id", None)
+    if name in {"users.list", "users"}:
+        search, _ignored = normalize_users_list_query(args)
+        args = {"query": search} if search else {}
+    try:
+        return json.dumps({"name": name, "args": args}, sort_keys=True, ensure_ascii=False)
+    except TypeError:
+        return f"{name}:{args}"
+
+
+def _invoke_notify_send(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.db.session import SessionLocal
+    from app.schemas.notification import NotificationCreate
+    from app.services.notifications.service import create_notification
+
+    ctx = current_tool_context()
+    sender = ctx[1] if ctx else ""
+    if not sender:
+        raise RuntimeError("Нет пользователя сессии для notify.send")
+    recipient = str(
+        arguments.get("user_id")
+        or arguments.get("recipient_user_id")
+        or arguments.get("recipient")
+        or arguments.get("fio")
+        or ""
+    ).strip()
+    title = str(arguments.get("title") or "").strip()
+    if not recipient or not title:
+        raise RuntimeError("Для notify.send нужны user_id (из users.list) и title")
+    payload = NotificationCreate(
+        recipient_user_id=recipient,
+        title=title,
+        body=str(arguments.get("body") or ""),
+        workflow_id=str(arguments.get("workflow_id") or arguments.get("agent_id") or ""),
+    )
+    send_at = str(arguments.get("send_at") or "").strip()
+    if send_at:
+        from datetime import datetime
+
+        try:
+            payload.send_at = datetime.fromisoformat(send_at.replace("Z", "+00:00"))
+        except ValueError:
+            payload.send_at = None
+    db = SessionLocal()
+    try:
+        from app.services.notifications.service import NotificationError
+
+        item = create_notification(db, sender_user_id=sender, payload=payload)
+    except NotificationError as exc:
+        raise RuntimeError(exc.message) from exc
+    finally:
+        db.close()
+    return {
+        "id": item.id,
+        "ok": True,
+        "delivered": "на компьютер получателя",
+        "recipient_user_id": item.recipient_user_id,
+        "title": item.title,
+    }
+
+
 def _invoke_users_list(arguments: dict[str, Any]) -> dict[str, Any]:
     from app.db.session import SessionLocal
     from app.services.notifications.service import list_directory_users
 
-    query = str(arguments.get("query") or arguments.get("search") or "")
+    search, ignored = normalize_users_list_query(arguments)
     db = SessionLocal()
     try:
-        items = list_directory_users(db, search=query)
+        items = list_directory_users(db, search=search)
     finally:
         db.close()
-    return {
+    payload: dict[str, Any] = {
         "users": [item.model_dump(mode="json") for item in items],
         "count": len(items),
     }
+    if ignored:
+        payload["ignored_query"] = ignored
+    return payload
 
 
 def _row_title(row: Any) -> str:
@@ -450,6 +684,11 @@ def _row_title(row: Any) -> str:
 def _format_tool_output(_name: str, result: dict[str, Any], *, limit: int = 1600) -> str:
     if not result:
         return "Готово"
+    if result.get("delivered") or (
+        _name in {"notify.send", "notify"} and result.get("ok") and result.get("id")
+    ):
+        title = str(result.get("title") or "").strip()
+        return f"Готово · уведомление на компьютер" + (f": {title}" if title else "")
     labels = {
         "projects": "проектов",
         "users": "пользователей",
@@ -463,7 +702,7 @@ def _format_tool_output(_name: str, result: dict[str, Any], *, limit: int = 1600
     }
     for key, label in labels.items():
         value = result.get(key)
-        if not isinstance(value, list) or not value:
+        if not isinstance(value, list):
             continue
         count = result.get("count", len(value))
         lines = [f"Готово · {count} {label}"]

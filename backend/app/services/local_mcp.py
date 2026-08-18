@@ -549,7 +549,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("users.list", "Список пользователей Constructor: id, ФИО, должность, подразделение. Вызови перед notify.send, чтобы выбрать получателя.", {
             "query": {"type": "string"},
         }, []),
-        ("notify.send", "Отправить уведомление пользователю (сразу или в указанное время). user_id бери из инструмента users.list — не выдумывай id.", {
+        ("notify.send", "Отправить уведомление на компьютер получателя (Windows-тост + inbox). user_id бери из users.list — не выдумывай id. Если человек просил уведомления — вызови этот tool до RESULT.", {
             "user_id": {"type": "string", "description": "id получателя из users.list"},
             "title": {"type": "string"},
             "body": {"type": "string"},
@@ -568,7 +568,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "trigger_id": {"type": "string"},
         }, ["trigger_id"]),
     ]
-    server_tools = {"users.list"}
+    server_tools = {"users.list", "notify.send"}
     tools: list[dict[str, Any]] = []
     for item in items:
         name, description, properties = item[0], item[1], item[2]

@@ -15,16 +15,19 @@ from app.clients.cursor import CursorAgentError
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.schemas.workflow import (
     ArtifactItem,
     ArtifactsDownloadResult,
     AttachmentMetaSchema,
+    AutoRunStopResult,
     WorkflowHealth,
     WorkflowListItem,
     WorkflowPlanSchema,
     WorkflowSchema,
 )
+from app.services.triggers.service import cancel_triggers_for_workflow, delete_triggers_for_workflow
 from app.services.workflows import prompts
 from app.services.workflows.document import (
     DocumentError,
@@ -77,6 +80,16 @@ def list_workflows(db: Session, *, user_id: str) -> list[WorkflowListItem]:
         .order_by(Workflow.updated_at.desc())
         .all()
     )
+    enabled_ids = {
+        str(wid)
+        for (wid,) in db.query(AgentTrigger.workflow_id)
+        .filter(
+            AgentTrigger.owner_user_id == user_id,
+            AgentTrigger.enabled.is_(True),
+        )
+        .distinct()
+        .all()
+    }
     return [
         WorkflowListItem(
             id=row.id,
@@ -85,6 +98,7 @@ def list_workflows(db: Session, *, user_id: str) -> list[WorkflowListItem]:
             document_name=row.document_name,
             updated_at=_iso(row.updated_at),
             has_local_run=bool(row.local_run),
+            auto_run=row.id in enabled_ids,
         )
         for row in rows
     ]
@@ -138,7 +152,12 @@ def create_workflow(
     # Persist image base64 in sidecar JSON for later plan calls
     _save_attachments_payload(workflow_id, attachments)
 
-    title = document_name or "Без названия"
+    title = prompts.title_from_materials(
+        notes=notes or "",
+        document_text=document_text,
+        document_name=document_name,
+        fallback="ИИ-агент",
+    )
     row = Workflow(
         id=workflow_id,
         user_id=user_id,
@@ -159,9 +178,16 @@ def create_workflow(
 
 def delete_workflow(db: Session, *, user_id: str, workflow_id: str) -> None:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    delete_triggers_for_workflow(db, user_id=user_id, workflow_id=workflow_id)
     db.delete(row)
     db.commit()
     shutil.rmtree(_workflow_dir(workflow_id), ignore_errors=True)
+
+
+def stop_auto_run(db: Session, *, user_id: str, workflow_id: str) -> AutoRunStopResult:
+    _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    stopped = cancel_triggers_for_workflow(db, user_id=user_id, workflow_id=workflow_id)
+    return AutoRunStopResult(ok=True, stopped=stopped)
 
 
 def update_local_run(
@@ -177,6 +203,64 @@ def update_local_run(
 WorkflowEventCallback = Callable[..., None]
 
 
+def demo_workflow(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
+    """Cursor-first: do the business task, then store a playbook for later runs."""
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    attachments = _load_attachments_payload(workflow_id)
+    images = collect_prompt_images(attachments)
+    has_text = bool((row.document_text or "").strip() or (row.notes or "").strip())
+    if not has_text and not images:
+        raise WorkflowError("Нет материалов — загрузите описание бизнес-процесса или файлы.")
+
+    from app.services.workflows.cursor_tools import with_tools_if_desktop
+
+    prompt = with_tools_if_desktop(
+        prompts.build_demo_prompt(
+            document_text=row.document_text,
+            title=row.title,
+            notes=row.notes or "",
+            document_name=row.document_name,
+        )
+    )
+    _emit(on_event, "decision", "Запускаю пробный прогон по описанию бизнес-процесса.")
+    _emit(on_event, "progress", "создаю агента Cursor")
+    try:
+        if row.exec_agent_id:
+            try:
+                run = cursor_client.create_run(row.exec_agent_id, prompt=prompt, mode="agent")
+                agent_id = row.exec_agent_id
+                run_id = str(run.get("id") or "")
+            except CursorAgentError:
+                agent_id, run_id = _create_exec_agent(row.title, prompt)
+        else:
+            agent_id, run_id = _create_exec_agent(row.title, prompt)
+    except CursorAgentError as exc:
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
+
+    row.exec_agent_id = agent_id
+    row.exec_run_id = run_id
+    row.phase = "executing"
+    db.commit()
+    logger.info("Workflow demo start id=%s agent=%s run=%s", workflow_id, agent_id, run_id)
+
+    phase = _stream_run_with_tools(
+        agent_id,
+        run_id,
+        on_event=on_event,
+        workflow_id=workflow_id,
+        mode="execute",
+        assumption_check=True,
+        required_live_tools=_required_demo_tools(row),
+    )
+    return _finish_demo_stream(db, row=row, phase=phase, on_event=on_event)
+
+
 def plan_workflow(
     db: Session,
     *,
@@ -184,77 +268,9 @@ def plan_workflow(
     workflow_id: str,
     on_event: WorkflowEventCallback | None = None,
 ) -> WorkflowSchema:
-    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
-    logger.info("Workflow plan start id=%s title=%s", workflow_id, row.title)
-    attachments = _load_attachments_payload(workflow_id)
-    images = collect_prompt_images(attachments)
-    has_text = bool((row.document_text or "").strip())
-    if not has_text and not images:
-        raise WorkflowError("Нет материалов для планирования — загрузите файлы или заметки.")
-
-    _emit(on_event, "decision", "Изучаю материалы и формирую структуру workflow.")
-    _emit(on_event, "progress", "создаю агента Cursor")
-    from app.services.workflows.cursor_tools import with_tools_if_desktop
-
-    prompt = with_tools_if_desktop(
-        prompts.build_plan_prompt(
-            document_text=row.document_text,
-            document_name=row.document_name,
-            image_count=len(images),
-            attachment_names=[str(a.get("name") or "") for a in attachments],
-        )
+    return demo_workflow(
+        db, user_id=user_id, workflow_id=workflow_id, on_event=on_event
     )
-    model = _resolve_model()
-    logger.info(
-        "Workflow plan creating Cursor agent id=%s model=%s prompt_len=%s images=%s",
-        workflow_id,
-        model or "-",
-        len(prompt or ""),
-        len(images),
-    )
-    try:
-        created = cursor_client.create_agent(
-            prompt=prompt,
-            model_id=model,
-            mode="agent",
-            name=row.title,
-            images=images or None,
-        )
-    except CursorAgentError as exc:
-        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
-
-    agent = created.get("agent") or {}
-    run = created.get("run") or {}
-    agent_id = str(agent.get("id") or "")
-    run_id = str(run.get("id") or "")
-    row.plan_agent_id = agent_id
-    row.plan_run_id = run_id
-    row.phase = "plan"
-    db.commit()
-    logger.info(
-        "Workflow plan agent created id=%s agent=%s run=%s — waiting for stream text",
-        workflow_id,
-        agent_id,
-        run_id,
-    )
-
-    _emit(on_event, "decision", "Планировщик запущен, получаю рассуждения агента.")
-    phase = _stream_run_with_tools(
-        agent_id, run_id, on_event=on_event, workflow_id=workflow_id, mode="plan"
-    )
-    plan = prompts.parse_plan_from_text(phase.text)
-    plan.sanitize_open_questions()
-    from app.services.plan_run import apply_autonomy, ensure_runtime
-
-    ensure_runtime(plan)
-    apply_autonomy(plan, row.local_run)
-    row.plan_json = plan.to_dict()
-    row.title = plan.title or row.title
-    row.phase = "clarify" if plan.unanswered() else "ready"
-    db.commit()
-    db.refresh(row)
-    _emit(on_event, "decision", "План разобран и сохранён.")
-    return _to_schema(row)
 
 
 def clarify_workflow(
@@ -299,6 +315,13 @@ def clarify_workflow(
             f"Ответ учтён. Следующий вопрос: {nxt.question}",
         )
         return _to_schema(row)
+
+    local = dict(row.local_run or {})
+    if local.get("awaiting_demo_answers"):
+        row.plan_json = plan.to_dict()
+        db.commit()
+        db.refresh(row)
+        return _continue_demo_after_answers(db, row=row, plan=plan, on_event=on_event)
 
     all_attachments = _load_attachments_payload(workflow_id)
     # Prefer images just attached in this clarify turn; else any stored images.
@@ -611,20 +634,24 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     if row.phase == "done" and (row.local_run or {}).get("published"):
         return _to_schema(row)
-    if row.phase not in {"tested", "ready", "done"}:
-        raise WorkflowError("Сначала завершите реализацию и тесты")
-    if not row.exec_agent_id:
-        raise WorkflowError("Нет результата реализации для публикации")
+    playbook = playbook_of(row)
+    has_demo = bool(playbook.get("instructions") and playbook.get("demo_ok"))
+    if row.phase not in {"tested", "ready", "done", "executing"}:
+        raise WorkflowError("Сначала завершите пробный прогон")
+    if not row.exec_agent_id and not has_demo:
+        raise WorkflowError("Нет результата пробного прогона для публикации")
 
     local = dict(row.local_run or {})
+    if has_demo:
+        local["tests_status"] = "pass"
     tests = str(local.get("tests_status") or "").casefold()
-    if tests != "pass":
+    if tests != "pass" and not has_demo:
         tests = _tests_status_from_text(row.last_result or "")
-    if tests == "fail":
+    if tests == "fail" and not has_demo:
         raise WorkflowError("Нельзя сохранить агента: TESTS: FAIL")
-    if tests != "pass":
+    if tests != "pass" and not has_demo:
         raise WorkflowError(
-            "Нельзя сохранить агента без прохождения тестов (нужен TESTS: PASS)"
+            "Нельзя сохранить агента без успешного пробного прогона"
         )
 
     # Published agents run only via in-app MCP runtime (no bat/terminal/code UI).
@@ -646,9 +673,10 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
             "can_publish": False,
             "published": True,
             "tests_status": "pass",
-            "runtime": "mcp",
+            "runtime": "cursor" if has_demo else "mcp",
             "tools": _tools_for_published_plan(plan, row),
             "ui_mode": "chat",
+            "playbook": playbook or local.get("playbook") or {},
         }
     )
     row.local_run = local
@@ -697,12 +725,10 @@ def generate_agent_kpi(
         _emit(on_event, "decision", "Куратор недоступен — собрал KPI по паспорту и расписанию.")
     parsed = agent_kpi.parse_kpi_payload(text)
     if parsed:
-        _emit(on_event, "decision", "KPI готовы — считаю факт по истории прогонов.")
+        _emit(on_event, "decision", "KPI готовы — методика записана, факт посчитает фоновый расчёт.")
     else:
-        _emit(on_event, "decision", "Собрал стандартные KPI по расписанию и цели агента.")
+        _emit(on_event, "decision", "Собрал стандартные KPI и методику по расписанию и цели агента.")
     kpi = agent_kpi.build_kpi_record(parsed, title=title, goal=goal, schedule=draft, status="draft")
-    runs = agent_kpi.list_runs_for_kpi(db, user_id=user_id, workflow_id=workflow_id)
-    kpi = agent_kpi.apply_facts(kpi, runs, draft)
     local["kpi"] = kpi
     row.local_run = local
     db.commit()
@@ -728,12 +754,11 @@ def get_agent_kpi(db: Session, *, user_id: str, workflow_id: str):
             schedule=draft,
             status=str(stored.get("status") or "draft"),
             generated_at=str(stored.get("generated_at") or ""),
+            preserve_runtime=True,
         )
         kpi["summary"] = str(stored.get("summary") or kpi["summary"])
     else:
         kpi = agent_kpi.build_kpi_record(None, title=title, goal=goal, schedule=draft, status="draft")
-    runs = agent_kpi.list_runs_for_kpi(db, user_id=user_id, workflow_id=workflow_id)
-    kpi = agent_kpi.apply_facts(kpi, runs, draft)
     return agent_kpi.kpi_to_schema(kpi, workflow_id=workflow_id, title=title)
 
 
@@ -772,6 +797,271 @@ _VM_INFRA_FAIL_HINTS = (
 def _is_vm_infra_fail_text(text: str) -> bool:
     low = (text or "").casefold()
     return any(hint in low for hint in _VM_INFRA_FAIL_HINTS)
+
+
+def playbook_of(row: Workflow | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(row, dict):
+        local = row.get("local_run") if isinstance(row.get("local_run"), dict) else {}
+        plan = row.get("plan_json") if isinstance(row.get("plan_json"), dict) else {}
+    else:
+        local = row.local_run if isinstance(row.local_run, dict) else {}
+        plan = row.plan_json if isinstance(row.plan_json, dict) else {}
+    playbook = local.get("playbook") if isinstance(local.get("playbook"), dict) else {}
+    if not playbook.get("instructions"):
+        alt = plan.get("playbook") if isinstance(plan.get("playbook"), dict) else {}
+        if alt.get("instructions"):
+            playbook = alt
+    return dict(playbook)
+
+
+def _required_demo_tools(row: Workflow, plan: WorkflowPlan | None = None) -> list[str]:
+    from app.services.workflows.cursor_tools import wants_notifications
+
+    parts = [row.notes or "", row.document_text or "", row.last_result or ""]
+    if plan is None and isinstance(row.plan_json, dict):
+        plan = WorkflowPlan.from_dict(row.plan_json)
+    if plan is not None:
+        parts.append(prompts._answered_scope_lines(plan))
+        parts.append(plan.goal or "")
+    playbook = playbook_of(row)
+    parts.append(str(playbook.get("instructions") or ""))
+    return ["notify"] if wants_notifications(*parts) else []
+
+
+def _answered_scope_of(row: Workflow) -> str:
+    if not isinstance(row.plan_json, dict):
+        return ""
+    plan = WorkflowPlan.from_dict(row.plan_json)
+    return prompts._answered_scope_lines(plan)
+
+
+def _finish_demo_stream(
+    db: Session,
+    *,
+    row: Workflow,
+    phase: PhaseResult,
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
+    work = prompts.parse_work_result(phase.text or "")
+    row.last_result = work.get("text") or (phase.text or "")[:4000]
+    row.branch = phase.branch or row.branch
+    questions = prompts.parse_clarify_from_text(phase.text or "")
+    if questions:
+        return _pause_demo_for_questions(
+            db, row=row, phase=phase, questions=questions, on_event=on_event
+        )
+    tools = list(phase.successful_live_tools or [])
+    playbook = _distill_playbook(
+        row,
+        demo_text=phase.text or "",
+        tools=tools,
+        on_event=on_event,
+    )
+    local = dict(row.local_run or {})
+    local["playbook"] = playbook
+    local["demo_ok"] = bool(playbook.get("demo_ok"))
+    local["can_publish"] = bool(playbook.get("instructions"))
+    local["tests_status"] = "pass" if playbook.get("demo_ok") else "unknown"
+    local["live_tools_invoked"] = tools
+    local["runtime"] = "cursor"
+    local["awaiting_demo_answers"] = False
+    local["work_result"] = work
+    name = str(playbook.get("name") or "").strip()
+    if name and not prompts.is_placeholder_title(name):
+        row.title = name
+    elif prompts.is_placeholder_title(row.title):
+        row.title = prompts.title_from_materials(
+            notes=row.notes or "",
+            document_text=row.document_text or "",
+            document_name=row.document_name or "",
+            fallback=row.title or "ИИ-агент",
+        )
+    from app.services.workflows.schedule_draft import draft_after_demo
+
+    local["schedule_draft"] = draft_after_demo(
+        title=row.title,
+        notes=row.notes or "",
+        playbook=playbook,
+        last_result=row.last_result or "",
+        work=work,
+    ).model_dump()
+    row.local_run = local
+    plan_data = dict(row.plan_json) if isinstance(row.plan_json, dict) else {}
+    if playbook.get("instructions") and not plan_data.get("title"):
+        plan_data["title"] = row.title
+        plan_data["goal"] = (row.notes or row.title or "")[:400]
+    plan_data["playbook"] = playbook
+    row.plan_json = plan_data
+    row.phase = "tested" if playbook.get("demo_ok") else "ready"
+    db.commit()
+    db.refresh(row)
+    if playbook.get("demo_ok"):
+        _emit(on_event, "decision", "Пробный прогон готов. Сохранил инструкцию для следующих запусков.")
+    else:
+        _emit(on_event, "decision", "Прогон завершился без устойчивой инструкции — можно запустить снова.")
+    return _to_schema(row)
+
+
+def _pause_demo_for_questions(
+    db: Session,
+    *,
+    row: Workflow,
+    phase: PhaseResult,
+    questions: list[Any],
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
+    from app.services.workflows.plan_models import OpenQuestion
+
+    plan = (
+        WorkflowPlan.from_dict(row.plan_json)
+        if isinstance(row.plan_json, dict)
+        else WorkflowPlan()
+    )
+    plan.title = plan.title or row.title
+    plan.goal = plan.goal or (row.notes or row.title or "")[:400]
+    plan.raw_text = phase.text or plan.raw_text
+    answered_keep = [q for q in plan.open_questions if (q.answer or "").strip()]
+    plan.open_questions = answered_keep
+    used_ids = {q.id for q in plan.open_questions} | {q.id for q in plan.answered_questions}
+    for i, item in enumerate(questions, start=1):
+        if not isinstance(item, OpenQuestion):
+            continue
+        qid = (item.id or "").strip() or f"demo-q{i}"
+        if qid in used_ids:
+            qid = f"demo-q{len(used_ids) + i}"
+        item.id = qid
+        plan.open_questions.append(item)
+        used_ids.add(qid)
+    row.plan_json = plan.to_dict()
+    row.phase = "clarify"
+    local = dict(row.local_run or {})
+    local["awaiting_demo_answers"] = True
+    local["demo_ok"] = False
+    local["can_publish"] = False
+    local["runtime"] = "cursor"
+    row.local_run = local
+    db.commit()
+    db.refresh(row)
+    first = plan.unanswered()[0] if plan.unanswered() else questions[0]
+    _emit(on_event, "decision", f"Уточнение: {getattr(first, 'question', first)}")
+    return _to_schema(row)
+
+
+def _continue_demo_after_answers(
+    db: Session,
+    *,
+    row: Workflow,
+    plan: WorkflowPlan,
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
+    from app.services.workflows.cursor_tools import with_tools_if_desktop
+
+    prompt = with_tools_if_desktop(
+        prompts.build_demo_continue_prompt(
+            document_text=row.document_text,
+            title=row.title,
+            notes=row.notes or "",
+            document_name=row.document_name,
+            plan=plan,
+        )
+    )
+    _emit(on_event, "decision", "Учитываю ответы и продолжаю пробный прогон.")
+    _emit(on_event, "progress", "продолжаю прогон")
+    try:
+        if row.exec_agent_id:
+            run = cursor_client.create_run(row.exec_agent_id, prompt=prompt, mode="agent")
+            agent_id = row.exec_agent_id
+            run_id = str(run.get("id") or "")
+        else:
+            agent_id, run_id = _create_exec_agent(row.title, prompt)
+    except CursorAgentError as exc:
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
+
+    row.exec_agent_id = agent_id
+    row.exec_run_id = run_id
+    row.phase = "executing"
+    db.commit()
+    phase = _stream_run_with_tools(
+        agent_id,
+        run_id,
+        on_event=on_event,
+        workflow_id=row.id,
+        mode="execute",
+        required_live_tools=_required_demo_tools(row, plan),
+    )
+    return _finish_demo_stream(db, row=row, phase=phase, on_event=on_event)
+
+
+def _local_playbook(*, title: str, demo_text: str, tools: list[str], answered_scope: str = "") -> dict[str, Any]:
+    summary = (demo_text or "").strip()
+    if len(summary) > 2500:
+        summary = summary[:2500] + "…"
+    tools_line = ", ".join(tools) if tools else "Constructor tools"
+    scope = (answered_scope or "").strip()
+    scope_line = f"Объём, который выбрал человек:\n{scope}\n" if scope else ""
+    instructions = (
+        f"Цель: {title or 'выполнить задачу из бизнес-процесса'}.\n"
+        f"{scope_line}"
+        f"Инструменты, которые уже сработали: {tools_line}.\n"
+        "Повтори тот же подход и тот же объём: сначала вызови нужные Constructor tools, "
+        "затем дай понятный результат. Не спрашивай про поля и протоколы. "
+        "Не расширяй объём до «все», если человек указал конкретное."
+    )
+    return {
+        "instructions": instructions,
+        "example_run": summary or "Прогон завершён.",
+        "demo_ok": bool(summary or tools),
+        "tools": list(tools),
+        "name": title or "",
+        "expected_result": "",
+        "triggers": [],
+    }
+
+
+def _distill_playbook(
+    row: Workflow,
+    *,
+    demo_text: str,
+    tools: list[str],
+    on_event: WorkflowEventCallback | None = None,
+) -> dict[str, Any]:
+    scope = _answered_scope_of(row)
+    fallback = _local_playbook(
+        title=row.title, demo_text=demo_text, tools=tools, answered_scope=scope
+    )
+    if not (demo_text or "").strip() and not tools:
+        fallback["demo_ok"] = False
+        return fallback
+    if not row.exec_agent_id:
+        return fallback
+    _emit(on_event, "progress", "пишу инструкцию по прогону")
+    try:
+        prompt = prompts.build_playbook_prompt(
+            title=row.title,
+            demo_text=demo_text,
+            tools=tools,
+            answered_scope=scope,
+        )
+        run = cursor_client.create_run(row.exec_agent_id, prompt=prompt, mode="agent")
+        run_id = str(run.get("id") or "")
+        if not run_id:
+            return fallback
+        result = _stream_run(row.exec_agent_id, run_id, on_event=on_event)
+        parsed = prompts.parse_playbook_from_text(result.text or "")
+        if parsed.get("instructions"):
+            fallback["instructions"] = parsed["instructions"]
+        if parsed.get("example_run"):
+            fallback["example_run"] = parsed["example_run"]
+        if parsed.get("name") and not prompts.is_placeholder_title(str(parsed.get("name") or "")):
+            fallback["name"] = parsed["name"]
+        if parsed.get("expected_result"):
+            fallback["expected_result"] = parsed["expected_result"]
+        if parsed.get("triggers"):
+            fallback["triggers"] = parsed["triggers"]
+        fallback["demo_ok"] = True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Playbook distill failed id=%s: %s", row.id, exc)
+    return fallback
 
 
 def _tests_status_from_text(text: str, *, live_tools_ok: bool = False) -> str:
@@ -1031,6 +1321,7 @@ def _stream_run_with_tools(
     workflow_id: str = "",
     mode: str = "plan",
     required_live_tools: list[str] | None = None,
+    assumption_check: bool = False,
 ):
     from app.services.workflows.cursor_tools import stream_cursor_with_tools
 
@@ -1042,6 +1333,7 @@ def _stream_run_with_tools(
         mode=mode,
         stream_run=_stream_run,
         required_live_tools=required_live_tools,
+        assumption_check=assumption_check,
     )
 
 
@@ -1075,6 +1367,40 @@ def _cursor_payload_text(payload: dict) -> str:
     return ""
 
 
+def _payload_field_text(payload: dict, *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.replace("\ufffd", "")
+        if isinstance(value, dict):
+            inner = value.get("text") or value.get("delta") or value.get("content")
+            if isinstance(inner, str) and inner.strip():
+                return inner.replace("\ufffd", "")
+    return ""
+
+
+def _cursor_chunks(event: str, payload: dict) -> list[tuple[str, str]]:
+    """Split one Cursor SSE event into thinking and/or assistant text."""
+    ptype = str(payload.get("type") or payload.get("kind") or "").casefold()
+    think = _payload_field_text(payload, "thinking", "reasoning")
+    assist = _payload_field_text(payload, "text", "delta", "message", "content")
+    event_think = event == "thinking" or ptype in {"thinking", "reasoning"}
+    chunks: list[tuple[str, str]] = []
+    if think:
+        chunks.append(("thinking", think))
+        if assist and assist != think:
+            chunks.append(("assistant", assist))
+        return chunks
+    if event_think:
+        text = assist or think
+        if text:
+            chunks.append(("thinking", text))
+        return chunks
+    if event in {"assistant", "delta", "update", "interaction_update"} and assist:
+        chunks.append(("assistant", assist))
+    return chunks
+
+
 def _stream_run(
     agent_id: str,
     run_id: str,
@@ -1083,31 +1409,36 @@ def _stream_run(
 ) -> PhaseResult:
     result = PhaseResult(agent_id=agent_id, run_id=run_id)
     assistant_parts: list[str] = []
+    thinking_parts: list[str] = []
     got_terminal = False
-    streamed = ""
+    streamed_by_kind = {"thinking": "", "assistant": ""}
     logger.info("Cursor stream start agent=%s run=%s", agent_id, run_id)
     try:
         for item in cursor_client.stream_run_events(agent_id, run_id):
             event = str(item.get("event") or "message")
             payload = item.get("data") if isinstance(item.get("data"), dict) else {}
-            if event in {"assistant", "thinking", "delta", "update"}:
-                chunk = _cursor_payload_text(payload).replace("\ufffd", "")
-                if not chunk:
-                    continue
-                if chunk.startswith(streamed):
-                    delta = chunk[len(streamed) :]
-                    streamed = chunk
-                elif streamed and streamed.startswith(chunk):
-                    continue
-                else:
-                    delta = chunk
-                    streamed += chunk
-                if not delta:
-                    continue
-                assistant_parts.append(delta)
-                _emit(on_event, "thinking", delta)
-                if delta.strip():
-                    logger.info("Cursor assistant [%s/%s]: %s", agent_id[-8:], run_id[-8:], delta)
+            if event in {"assistant", "thinking", "delta", "update", "interaction_update"}:
+                for kind, chunk in _cursor_chunks(event, payload):
+                    if not chunk:
+                        continue
+                    streamed = streamed_by_kind[kind]
+                    if chunk.startswith(streamed):
+                        delta = chunk[len(streamed) :]
+                        streamed_by_kind[kind] = chunk
+                    elif streamed and streamed.startswith(chunk):
+                        continue
+                    else:
+                        delta = chunk
+                        streamed_by_kind[kind] = streamed + chunk
+                    if not delta:
+                        continue
+                    if kind == "thinking":
+                        thinking_parts.append(delta)
+                    else:
+                        assistant_parts.append(delta)
+                    _emit(on_event, kind, delta)
+                    if delta.strip():
+                        logger.info("Cursor %s [%s/%s]: %s", kind, agent_id[-8:], run_id[-8:], delta)
             elif event == "message":
                 _emit(on_event, "message", str(payload.get("text") or payload.get("message") or ""))
             elif event == "result":
@@ -1150,7 +1481,12 @@ def _stream_run(
         )
 
     if not result.text:
-        result.text = "".join(assistant_parts).strip()
+        assist = "".join(assistant_parts).strip()
+        think = "".join(thinking_parts).strip()
+        if "constructor_tool" in think and "constructor_tool" not in assist:
+            result.text = f"{assist}\n{think}".strip()
+        else:
+            result.text = assist or think
     if not got_terminal:
         logger.info(
             "Cursor stream incomplete — polling agent=%s run=%s",
@@ -1159,15 +1495,16 @@ def _stream_run(
         )
         result = _poll_until_terminal(agent_id, run_id, base=result, on_event=on_event)
         polled = (result.text or "").strip()
+        already = streamed_by_kind["assistant"] or "".join(assistant_parts)
         if polled:
-            if not streamed:
-                _emit(on_event, "thinking", polled)
-            elif polled.startswith(streamed):
-                tail = polled[len(streamed) :]
+            if not already:
+                _emit(on_event, "assistant", polled)
+            elif polled.startswith(already):
+                tail = polled[len(already) :]
                 if tail:
-                    _emit(on_event, "thinking", tail)
-            else:
-                _emit(on_event, "thinking", polled)
+                    _emit(on_event, "assistant", tail)
+            elif already not in polled:
+                _emit(on_event, "assistant", polled)
     logger.info(
         "Cursor stream end agent=%s run=%s status=%s text_len=%s",
         agent_id,

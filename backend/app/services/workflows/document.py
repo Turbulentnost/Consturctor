@@ -99,9 +99,13 @@ def compose_document(attachments: list[dict], notes: str = "") -> tuple[str, str
     if not parts and not names:
         return "", ""
     if names:
-        document_name = names[0] if len(names) == 1 else f"{len(names)} файлов"
+        real = [name for name in names if name.casefold() not in {"notes.txt", "notes", "file"}]
+        if real:
+            document_name = real[0] if len(real) == 1 else f"{len(real)} файлов"
+        else:
+            document_name = "материалы"
     else:
-        document_name = "notes"
+        document_name = "материалы"
     return document_name, "\n\n".join(parts)
 
 

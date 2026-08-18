@@ -70,6 +70,12 @@ class WorkflowListItem(BaseModel):
     document_name: str = ""
     updated_at: str = ""
     has_local_run: bool = False
+    auto_run: bool = False
+
+
+class AutoRunStopResult(BaseModel):
+    ok: bool = True
+    stopped: int = 0
 
 
 class ClarifyRequest(BaseModel):
@@ -153,12 +159,35 @@ class KpiSideSchema(BaseModel):
     description: str = ""
 
 
+class KpiScheduleSchema(BaseModel):
+    kind: str = "interval"
+    interval_seconds: int = 3600
+    at: str = ""
+
+
+class KpiMethodSchema(BaseModel):
+    how: str = ""
+    when: str = ""
+    plan_update: str = ""
+    fact_update: str = ""
+    percent_formula: str = ""
+    green_min: float = 90
+    yellow_min: float = 70
+    schedule: KpiScheduleSchema = Field(default_factory=KpiScheduleSchema)
+
+
 class KpiTileSchema(BaseModel):
     id: str = ""
     name: str = ""
     plan: KpiSideSchema = Field(default_factory=KpiSideSchema)
     fact: KpiSideSchema = Field(default_factory=KpiSideSchema)
     measure: KpiMeasureSchema = Field(default_factory=KpiMeasureSchema)
+    score_percent: float | None = None
+    color: str = "none"
+    updated_at: str = ""
+    next_run_at: str = ""
+    evidence: str = ""
+    method: KpiMethodSchema = Field(default_factory=KpiMethodSchema)
 
 
 class AgentKpiSchema(BaseModel):

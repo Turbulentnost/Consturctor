@@ -30,7 +30,7 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
-def _to_out(row: Notification) -> NotificationOut:
+def _to_out(row: Notification, *, sender_fio: str = "") -> NotificationOut:
     return NotificationOut(
         id=row.id,
         sender_user_id=row.sender_user_id,
@@ -40,7 +40,10 @@ def _to_out(row: Notification) -> NotificationOut:
         workflow_id=row.workflow_id or "",
         send_at=row.send_at,
         delivered_at=row.delivered_at,
+        read_at=row.read_at,
         created_at=row.created_at,
+        sender_fio=sender_fio,
+        unread=row.read_at is None,
     )
 
 
@@ -69,13 +72,35 @@ def list_directory_users(db: Session, *, search: str = "") -> list[DirectoryUser
     ]
 
 
+def resolve_directory_user(db: Session, value: str) -> AppUser | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    found = db.get(AppUser, raw)
+    if found is not None:
+        return found
+    like = f"%{raw}%"
+    return db.execute(
+        select(AppUser)
+        .where(
+            or_(
+                AppUser.fio.ilike(like),
+                AppUser.id.ilike(like),
+                AppUser.position.ilike(like),
+            )
+        )
+        .order_by(AppUser.fio)
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 def create_notification(
     db: Session,
     *,
     sender_user_id: str,
     payload: NotificationCreate,
 ) -> NotificationOut:
-    recipient = db.get(AppUser, payload.recipient_user_id.strip())
+    recipient = resolve_directory_user(db, payload.recipient_user_id)
     if recipient is None:
         raise NotificationError("Получатель не найден среди пользователей Constructor", 404)
     now = datetime.now(timezone.utc)
@@ -114,6 +139,70 @@ def list_pending(db: Session, *, user_id: str) -> list[NotificationOut]:
         .all()
     )
     return [_to_out(row) for row in rows]
+
+
+def list_inbox(db: Session, *, user_id: str, limit: int = 80) -> list[NotificationOut]:
+    now = datetime.now(timezone.utc)
+    rows = (
+        db.execute(
+            select(Notification)
+            .where(
+                Notification.recipient_user_id == user_id,
+                Notification.send_at <= now,
+            )
+            .order_by(Notification.created_at.desc())
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    sender_ids = {row.sender_user_id for row in rows}
+    senders = {
+        item.id: (item.fio or "")
+        for item in db.execute(select(AppUser).where(AppUser.id.in_(sender_ids))).scalars().all()
+    } if sender_ids else {}
+    return [_to_out(row, sender_fio=senders.get(row.sender_user_id, "")) for row in rows]
+
+
+def unread_count(db: Session, *, user_id: str) -> int:
+    now = datetime.now(timezone.utc)
+    rows = db.execute(
+        select(Notification.id).where(
+            Notification.recipient_user_id == user_id,
+            Notification.send_at <= now,
+            Notification.read_at.is_(None),
+        )
+    ).all()
+    return len(rows)
+
+
+def mark_read(db: Session, *, user_id: str, notification_id: str) -> None:
+    row = db.get(Notification, notification_id)
+    if row is None or row.recipient_user_id != user_id:
+        raise NotificationError("Уведомление не найдено", 404)
+    if row.read_at is None:
+        row.read_at = datetime.now(timezone.utc)
+        db.commit()
+
+
+def mark_all_read(db: Session, *, user_id: str) -> int:
+    now = datetime.now(timezone.utc)
+    rows = (
+        db.execute(
+            select(Notification).where(
+                Notification.recipient_user_id == user_id,
+                Notification.read_at.is_(None),
+                Notification.send_at <= now,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        row.read_at = now
+    if rows:
+        db.commit()
+    return len(rows)
 
 
 def mark_delivered(db: Session, notification_id: str) -> None:

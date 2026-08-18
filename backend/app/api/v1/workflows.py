@@ -19,6 +19,7 @@ from app.schemas.workflow import (
     AgentToolResultSubmit,
     ArtifactItem,
     ArtifactsDownloadRequest,
+    AutoRunStopResult,
     ExecuteRequest,
     LocalRunUpdate,
     WorkflowHealth,
@@ -35,6 +36,7 @@ from app.services.workflows import (
     confirm_agent_kpi,
     create_workflow,
     delete_workflow,
+    demo_workflow,
     execute_workflow,
     generate_agent_kpi,
     get_agent_kpi,
@@ -43,6 +45,7 @@ from app.services.workflows import (
     list_workflows,
     plan_workflow,
     publish_workflow,
+    stop_auto_run,
     update_local_run,
     workflow_health,
 )
@@ -349,6 +352,53 @@ async def remove_workflow(
         _raise(exc)
         raise
     return {"ok": True}
+
+
+@router.post("/{workflow_id}/stop-auto-run", response_model=AutoRunStopResult)
+async def stop_workflow_auto_run(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AutoRunStopResult:
+    try:
+        return stop_auto_run(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/demo", response_model=WorkflowSchema)
+async def demo_workflow_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowSchema:
+    try:
+        return demo_workflow(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/demo/stream")
+async def demo_workflow_stream_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+) -> StreamingResponse:
+    user_id = auth.user_id
+    return StreamingResponse(
+        _workflow_stream(
+            lambda db, emit: demo_workflow(
+                db,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                on_event=emit,
+            ),
+            user_id=user_id,
+        ),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
 
 
 @router.post("/{workflow_id}/plan", response_model=WorkflowSchema)

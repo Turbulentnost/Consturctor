@@ -17,6 +17,74 @@ logger = logging.getLogger(__name__)
 _UNITS = ("minutes", "hours", "days")
 
 
+def trigger_chip_label(spec: ScheduleTriggerSpec) -> str:
+    kind = (spec.kind or "").strip().casefold()
+    if kind == "interval":
+        value = spec.interval_value or 0
+        unit = (spec.interval_unit or "hours").strip().casefold()
+        amount = int(value) if float(value).is_integer() else value
+        if unit == "minutes":
+            if amount == 1:
+                return "каждую минуту"
+            return f"каждые {amount} мин"
+        if unit == "days":
+            if amount == 1:
+                return "ежедневно"
+            return f"каждые {amount} дн."
+        if amount == 1:
+            return "каждый час"
+        return f"каждые {amount} ч"
+    if kind == "datetime":
+        clock = _time_from_at(spec.at)
+        if not spec.once and clock:
+            return f"ежедневно в {clock}"
+        if clock and not _has_date(spec.at):
+            return f"ежедневно в {clock}"
+        pretty = _pretty_datetime(spec.at)
+        return pretty or "в указанное время"
+    condition = _short_event_condition(spec.condition or spec.message)
+    if condition:
+        return f"при событии: {condition}"
+    return "по событию"
+
+
+def draft_after_demo(
+    *,
+    title: str,
+    notes: str,
+    playbook: dict[str, Any],
+    last_result: str = "",
+    work: dict[str, Any] | None = None,
+) -> ScheduleDraftOut:
+    from app.services.workflows.prompts import title_from_materials
+
+    name = str(playbook.get("name") or "").strip() or title_from_materials(
+        notes=notes, fallback=title or "ИИ-агент"
+    )
+    goal = str(playbook.get("expected_result") or playbook.get("instructions") or "").strip()
+    if len(goal) > 280:
+        goal = goal[:280].rsplit(" ", 1)[0].strip()
+    triggers: list[ScheduleTriggerSpec] = []
+    raw_triggers = playbook.get("triggers") if isinstance(playbook.get("triggers"), list) else []
+    for item in raw_triggers:
+        if not isinstance(item, dict):
+            continue
+        spec = _normalize_spec(item)
+        if spec is not None:
+            triggers.append(spec)
+    work = work or {}
+    for line in work.get("schedule") or []:
+        parsed = _parse_trigger_hint(str(line))
+        if parsed is not None and not _same_trigger(parsed, triggers):
+            triggers.append(parsed)
+    if not triggers:
+        hint = _passport_trigger_line(notes)
+        parsed = _parse_trigger_hint(hint) if hint else None
+        if parsed is not None:
+            triggers.append(parsed)
+    return ScheduleDraftOut(name=name or title or "ИИ-агент", goal=goal, triggers=triggers)
+
+
 def propose_schedule_draft(
     db: Session,
     *,
@@ -25,7 +93,23 @@ def propose_schedule_draft(
 ) -> ScheduleDraftOut:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     plan = WorkflowPlan.from_dict(row.plan_json or {})
+    local = dict(row.local_run or {})
+    existing_raw = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+    existing = _normalize_draft(existing_raw, ScheduleDraftOut()) if existing_raw else None
+    if existing is not None and existing.triggers:
+        if (row.title or "").strip() and existing.name in {"", "ИИ-агент", "notes.txt", "notes"}:
+            existing = existing.model_copy(update={"name": row.title})
+        local["schedule_draft"] = existing.model_dump()
+        row.local_run = local
+        db.commit()
+        return existing
     fallback = _heuristic_draft(row.title or "", plan, row.notes or "", row.last_result or "")
+    if existing is not None:
+        fallback = ScheduleDraftOut(
+            name=existing.name or fallback.name,
+            goal=existing.goal or fallback.goal,
+            triggers=existing.triggers or fallback.triggers,
+        )
     draft = _llm_draft(
         title=row.title or "",
         plan=plan,
@@ -33,7 +117,6 @@ def propose_schedule_draft(
         last_result=row.last_result or "",
         fallback=fallback,
     )
-    local = dict(row.local_run or {})
     local["schedule_draft"] = draft.model_dump()
     row.local_run = local
     db.commit()
@@ -41,7 +124,11 @@ def propose_schedule_draft(
 
 
 def _heuristic_draft(title: str, plan: WorkflowPlan, notes: str, last_result: str) -> ScheduleDraftOut:
-    name = (title or plan.title or "ИИ-агент").strip() or "ИИ-агент"
+    from app.services.workflows.prompts import is_placeholder_title, title_from_materials
+
+    name = (title or plan.title or "").strip()
+    if not name or is_placeholder_title(name):
+        name = title_from_materials(notes=notes, fallback=plan.title or "ИИ-агент")
     goal = (plan.goal or "").strip()
     trigger_line = _passport_trigger_line(notes)
     triggers: list[ScheduleTriggerSpec] = []
@@ -72,18 +159,28 @@ def _parse_trigger_hint(text: str) -> ScheduleTriggerSpec | None:
         value, unit = interval
         return ScheduleTriggerSpec(
             kind="interval",
-            message=raw,
+            message="",
             interval_value=value,
             interval_unit=unit,
             once=False,
         )
+    daily = re.search(r"(?:ежедневн|каждый день|раз в день).{0,20}(\d{1,2})[:.](\d{2})", low)
+    if daily:
+        clock = f"{int(daily.group(1)):02d}:{int(daily.group(2)):02d}"
+        return ScheduleTriggerSpec(kind="datetime", message="", at=clock, once=False)
     if re.search(r"\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4}", raw):
         return ScheduleTriggerSpec(kind="datetime", message=raw, at=raw, once=True)
-    return ScheduleTriggerSpec(kind="event", message=raw, condition=raw, once=False)
+    condition = _short_event_condition(raw)
+    if not condition:
+        return None
+    return ScheduleTriggerSpec(kind="event", message="", condition=condition, once=False)
 
 
 def _parse_interval(low: str) -> tuple[float, str] | None:
-    match = re.search(r"(\d+(?:[.,]\d+)?)\s*(минут|мин|час|дня|дней|день|сутк)", low)
+    match = re.search(
+        r"(?:каждые|каждый|каждую|раз в)?\s*(\d+(?:[.,]\d+)?)\s*(минут|мин|час|дня|дней|день|сутк)",
+        low,
+    )
     if not match:
         return None
     value = float(match.group(1).replace(",", "."))
@@ -123,11 +220,13 @@ def _llm_draft(
         "}\n"
         "Правила:\n"
         "- Не выдумывай доступы, URL и пароли.\n"
+        "- name — человеческое имя агента из паспорта, не имя файла (notes.txt).\n"
         "- Если в материалах нет расписания — triggers: []. Тогда агент только вручную из чата.\n"
         "- Можно несколько триггеров.\n"
-        "- interval — через N минут/часов/дней после последнего запуска.\n"
-        "- event — условие (файл, письмо, сообщение).\n"
-        "- datetime — конкретные дата и время.\n\n"
+        "- interval — каждые N минут/часов/дней.\n"
+        "- event — короткая фраза до 80 символов, не копируй абзац ТЗ.\n"
+        "- datetime — конкретные дата и время; once=false значит ежедневно в это время.\n"
+        "- message не дублируй condition.\n\n"
         f"Название: {title or fallback.name}\n"
         f"Цель плана: {plan.goal or fallback.goal}\n"
         f"Заметки/паспорт:\n{(notes or '')[:4000]}\n\n"
@@ -209,18 +308,74 @@ def _normalize_spec(item: dict[str, Any]) -> ScheduleTriggerSpec | None:
         value = 0
     if kind == "interval" and value <= 0:
         return None
-    condition = str(item.get("condition") or "").strip()
+    condition = _short_event_condition(str(item.get("condition") or "").strip())
     at = str(item.get("at") or "").strip()
     if kind == "event" and not condition:
         return None
     if kind == "datetime" and not at:
         return None
+    message = str(item.get("message") or "").strip()
+    if kind == "event" and (message == condition or len(message) > 160):
+        message = ""
     return ScheduleTriggerSpec(
         kind=kind,
-        message=str(item.get("message") or "").strip(),
+        message=message,
         interval_value=value,
         interval_unit=unit,
         condition=condition,
         at=at,
         once=bool(item.get("once", kind == "datetime")),
     )
+
+
+def _short_event_condition(text: str) -> str:
+    raw = re.sub(r"\s+", " ", (text or "").strip())
+    if not raw:
+        return ""
+    if len(raw) > 80:
+        cut = raw[:80].rsplit(" ", 1)[0].strip()
+        return (cut or raw[:80]).rstrip(".,;") 
+    return raw
+
+
+def _same_trigger(spec: ScheduleTriggerSpec, existing: list[ScheduleTriggerSpec]) -> bool:
+    for item in existing:
+        if item.kind == spec.kind and item.interval_value == spec.interval_value and item.interval_unit == spec.interval_unit:
+            if spec.kind != "event" or item.condition == spec.condition:
+                return True
+        if item.kind == spec.kind == "datetime" and item.at == spec.at:
+            return True
+    return False
+
+
+def _time_from_at(value: str) -> str:
+    raw = (value or "").strip()
+    match = re.search(r"(\d{1,2})[:.](\d{2})", raw)
+    if not match:
+        return ""
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour > 23 or minute > 59:
+        return ""
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _has_date(value: str) -> bool:
+    raw = (value or "").strip()
+    return bool(re.search(r"\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4}", raw))
+
+
+def _pretty_datetime(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    clock = _time_from_at(raw)
+    match = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if match:
+        return f"{match.group(3)}.{match.group(2)}.{match.group(1)}" + (f" {clock}" if clock else "")
+    match = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", raw)
+    if match:
+        return f"{int(match.group(1)):02d}.{int(match.group(2)):02d}.{match.group(3)}" + (
+            f" {clock}" if clock else ""
+        )
+    return clock or raw[:40]
