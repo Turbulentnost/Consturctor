@@ -107,6 +107,81 @@ def test_parse_odata_service_document_and_metadata() -> None:
     ]
 
 
+def test_normalize_odata_keeps_meeting_fields() -> None:
+    from app.services.onec_tools import _normalize_odata_rows
+
+    payload = {
+        "odata.metadata": "meta",
+        "value": [
+            {
+                "Ref_Key": "ac01f5f5-9ad9-11f1-9866-6cb31113810e",
+                "Number": "000013155",
+                "Date": "2026-08-18T10:51:00",
+                "Posted": True,
+                "ТемаСлужебнойЗаписки": "cad8df76-73cc-11ea-8341-ac1f6b05524d",
+                "ТемаСовещания": "Планерка по проекту",
+                "Инициатор": "Иванов",
+                "Длительность": 60,
+                "ФорматСовещания": "очно",
+            }
+        ],
+    }
+
+    rows = _normalize_odata_rows(payload)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["Number"] == "000013155"
+    assert row["Subject"] == "Планерка по проекту"
+    assert row["ТемаСлужебнойЗаписки"] == "cad8df76-73cc-11ea-8341-ac1f6b05524d"
+    assert row["ТемаСовещания"] == "Планерка по проекту"
+    assert row["Инициатор"] == "Иванов"
+    assert row["Длительность"] == 60
+    assert row["ФорматСовещания"] == "очно"
+
+
+def test_subject_prefers_memo_topic_over_meeting_title() -> None:
+    from app.services.onec_tools import _catalog_entity_from_type, _normalize_odata_rows
+
+    rows = _normalize_odata_rows(
+        {
+            "value": [
+                {
+                    "Ref_Key": "ac01f5f5-9ad9-11f1-9866-6cb31113810e",
+                    "Number": "000013155",
+                    "ТемаСлужебнойЗаписки": "Организация совещаний (регл.)",
+                    "ТемаСовещания": "Тест, не создавайте совещание",
+                }
+            ]
+        }
+    )
+
+    assert rows[0]["Subject"] == "Организация совещаний (регл.)"
+    assert (
+        _catalog_entity_from_type("StandardODATA.Catalog_ТД_ТемыСлужебныхЗаписок")
+        == "Catalog_ТД_ТемыСлужебныхЗаписок"
+    )
+
+
+def test_normalize_odata_single_entity_without_value_array() -> None:
+    from app.services.onec_tools import _entity_set_name, _normalize_odata_rows
+
+    payload = {
+        "Ref_Key": "ac01f5f5-9ad9-11f1-9866-6cb31113810e",
+        "Number": "000013155",
+        "Posted": True,
+        "Тема": "Совещание",
+    }
+
+    rows = _normalize_odata_rows(payload)
+
+    assert len(rows) == 1
+    assert rows[0]["Subject"] == "Совещание"
+    assert _entity_set_name("Document_ПланСовещания(guid'ac01f5f5-9ad9-11f1-9866-6cb31113810e')") == (
+        "Document_ПланСовещания"
+    )
+
+
 def test_onec_unknown_tool() -> None:
     try:
         invoke_onec("onec.unknown", {})

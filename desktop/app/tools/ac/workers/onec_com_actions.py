@@ -37,44 +37,6 @@ ENV_GET_DOCUMENT_CARD_METHOD = "ONEC_COM_GET_DOCUMENT_CARD_METHOD"
 ENV_SEARCH_TASKS_METHOD = "ONEC_COM_SEARCH_TASKS_METHOD"
 ENV_GET_TASK_CARD_METHOD = "ONEC_COM_GET_TASK_CARD_METHOD"
 
-SELECTABLE_FIELD_HINTS = (
-    "номер",
-    "наимен",
-    "код",
-    "коммент",
-    "содерж",
-    "тема",
-    "описан",
-    "статус",
-    "текст",
-    "соглаш",
-    "договор",
-    "вид",
-    "тип",
-    "партнер",
-    "ответствен",
-    "организац",
-    "контрагент",
-    "клиент",
-    "поставщик",
-    "сумм",
-    "дата",
-)
-
-TEXT_SEARCH_FIELD_HINTS = (
-    "номер",
-    "наимен",
-    "код",
-    "коммент",
-    "содерж",
-    "тема",
-    "описан",
-    "статус",
-    "текст",
-    "соглаш",
-    "договор",
-)
-
 
 def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
     """Выполнить read-only задачу 1С через COMConnector."""
@@ -258,6 +220,8 @@ def _dispatch_tool(session: Any, task: WorkerTask) -> dict[str, Any]:
         raw = _search_documents_across_specs(session, query=query, limit=1, document_type=document_type)
         documents = raw.get("documents") if isinstance(raw.get("documents"), list) else []
         document = documents[0] if documents and isinstance(documents[0], dict) else {}
+        if document:
+            document = _attach_com_tabular_parts(session, document)
         return {
             "document": document,
             "source": "onec_com",
@@ -333,6 +297,16 @@ SELECTABLE_FIELD_HINTS = (
     "договор",
     "вид",
     "тип",
+    "участник",
+    "инициатор",
+    "автор",
+    "организатор",
+    "длительн",
+    "формат",
+    "время",
+    "совеща",
+    "место",
+    "планир",
 )
 TEXT_SEARCH_FIELD_HINTS = (
     "номер",
@@ -346,6 +320,9 @@ TEXT_SEARCH_FIELD_HINTS = (
     "текст",
     "соглаш",
     "договор",
+    "участник",
+    "инициатор",
+    "совеща",
 )
 
 
@@ -412,6 +389,28 @@ def _metadata_requisite_names(item: Any) -> list[str]:
     return []
 
 
+def _metadata_tabular_sections(item: Any) -> list[dict[str, Any]]:
+    for attr in ("ТабличныеЧасти", "TabularSections"):
+        collection = getattr(item, attr, None)
+        if collection is None:
+            continue
+        sections: list[dict[str, Any]] = []
+        for section in _iter_metadata_collection_items(collection):
+            name = _metadata_name(section)
+            if not name:
+                continue
+            sections.append(
+                {
+                    "name": name,
+                    "synonym": _metadata_synonym(section),
+                    "fields": _metadata_requisite_names(section),
+                }
+            )
+        if sections:
+            return sections
+    return []
+
+
 def _is_browse_query(query: str, candidate_name: str, candidate_synonym: str) -> bool:
     query_stems = _stem_set(query)
     if not query_stems:
@@ -467,6 +466,7 @@ def _discover_metadata_candidates(session: Any, query: str, document_type: str |
                     "score": score,
                     "browse_only": _is_browse_query(normalized_query, name, synonym),
                     "requisites": _metadata_requisite_names(item),
+                    "tabular_sections": _metadata_tabular_sections(item),
                 }
             )
     candidates.sort(key=lambda candidate: candidate["score"], reverse=True)
@@ -479,7 +479,7 @@ def _pick_select_fields(candidate: dict[str, Any]) -> list[tuple[str, str]]:
 
     if requisites:
         for field_name in (name for name in requisites if _is_selectable_field_name(name)):
-            if len(fields) >= 8:
+            if len(fields) >= 24:
                 break
             if all(existing_name != field_name for _, existing_name in fields):
                 fields.append((_field_alias(field_name), field_name))
@@ -557,13 +557,77 @@ def _collect_metadata_rows(table: Any, candidate: dict[str, Any], select_fields:
             {
                 "found": True,
                 "document_type": candidate["synonym"] or candidate["name"],
+                "metadata_name": candidate["name"],
+                "kind": candidate["kind"],
                 "ref": _safe_str(getattr(row, "Ref", "") or getattr(row, "Ссылка", "")),
                 "number": _safe_str(getattr(row, "Number", "") or getattr(row, "Номер", "")),
                 "fields": fields,
+                "tabular_sections": candidate.get("tabular_sections") or [],
                 "attachments": [],
             }
         )
     return rows
+
+
+def _object_expr(candidate_kind: str, metadata_name: str) -> str:
+    if candidate_kind == "catalog":
+        return f"Справочник.{metadata_name}"
+    return f"Документ.{metadata_name}"
+
+
+def _attach_com_tabular_parts(session: Any, document: dict[str, Any]) -> dict[str, Any]:
+    """Дочитать табличные части карточки (участники совещания и т.п.)."""
+    if not isinstance(document, dict):
+        return document
+    number = str(document.get("number") or "").strip()
+    metadata_name = str(document.get("metadata_name") or "").strip()
+    kind = str(document.get("kind") or "document")
+    sections = document.get("tabular_sections") or []
+    if not number or not metadata_name or not isinstance(sections, list):
+        return document
+    safe_number = number.replace('"', '""')
+    object_expr = _object_expr(kind, metadata_name)
+    parts: dict[str, list[dict[str, str]]] = {}
+    for section in sections[:8]:
+        if not isinstance(section, dict):
+            continue
+        section_name = str(section.get("name") or "").strip()
+        if not section_name:
+            continue
+        field_names = [str(name) for name in (section.get("fields") or []) if str(name).strip()]
+        select_fields = field_names[:12] or ["НомерСтроки"]
+        select_clause = ",\n        ".join(
+            f"Т.{field_name} КАК {_field_alias(field_name)}" for field_name in select_fields
+        )
+        query_text = (
+            f"ВЫБРАТЬ ПЕРВЫЕ 50\n        {select_clause}\n"
+            f"        ИЗ {object_expr}.{section_name} КАК Т\n"
+            f"        ГДЕ Т.Ссылка.Номер = \"{safe_number}\""
+        )
+        try:
+            table = session.NewObject("Query", query_text).Execute().Unload()
+        except Exception:
+            continue
+        rows_out: list[dict[str, str]] = []
+        for index in range(table.Count()):
+            row = table.Get(index)
+            item: dict[str, str] = {}
+            for field_name in select_fields:
+                alias = _field_alias(field_name)
+                val = getattr(row, alias, None)
+                if val is None:
+                    val = getattr(row, field_name, None)
+                item[field_name] = _safe_str(getattr(val, "Наименование", None) or val, 2000)
+            if any(item.values()):
+                rows_out.append(item)
+        if rows_out:
+            label = str(section.get("synonym") or section_name)
+            parts[label] = rows_out
+    document = dict(document)
+    if parts:
+        document["tabular_parts"] = parts
+    document.pop("tabular_sections", None)
+    return document
 
 
 def _search_documents_across_specs(
@@ -599,6 +663,8 @@ def _search_documents_across_specs(
             table = session.NewObject("Query", query_text).Execute().Unload()
             documents = _collect_metadata_rows(table, candidate, select_fields)
             if documents:
+                if limit == 1:
+                    documents = [_attach_com_tabular_parts(session, documents[0])]
                 return {
                     "found": True,
                     "query": query,
