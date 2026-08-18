@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Callable
+from threading import Thread
 from urllib.parse import quote
 
 import httpx
@@ -1530,17 +1531,22 @@ class ApiClient:
         result: dict | None = None,
         error: str = "",
     ) -> None:
-        self._request(
-            "POST",
-            f"/api/v1/workflows/agent-runs/{run_id}/tool-results",
-            json={
-                "request_id": request_id,
-                "ok": ok,
-                "result": result or {},
-                "error": error or "",
-            },
-            timeout=120.0,
-        )
+        try:
+            self._request(
+                "POST",
+                f"/api/v1/workflows/agent-runs/{run_id}/tool-results",
+                json={
+                    "request_id": request_id,
+                    "ok": ok,
+                    "result": result or {},
+                    "error": error or "",
+                },
+                timeout=120.0,
+            )
+        except ApiError as exc:
+            if exc.status_code == 404:
+                return
+            raise
 
     def stream_workflow_agent_run(
         self,
@@ -1581,7 +1587,16 @@ class ApiClient:
                                             "text": f"Выполняю на этом компьютере: {tool}…",
                                         }
                                     )
-                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
+                                    Thread(
+                                        target=self._handle_sse_tool_request,
+                                        kwargs={
+                                            "payload": payload,
+                                            "fallback_run_id": run_id,
+                                        },
+                                        daemon=True,
+                                    ).start()
+                                elif payload_type in {"heartbeat", "ping"}:
+                                    continue
                                 elif payload_type == "error":
                                     raise ApiError(str(payload.get("message") or "Ошибка запуска агента"))
                                 elif payload_type == "done":
@@ -1689,7 +1704,16 @@ class ApiClient:
                                                 "text": f"Проверяю условие: {payload.get('tool') or ''}…",
                                             }
                                         )
-                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
+                                    Thread(
+                                        target=self._handle_sse_tool_request,
+                                        kwargs={
+                                            "payload": payload,
+                                            "fallback_run_id": run_id,
+                                        },
+                                        daemon=True,
+                                    ).start()
+                                elif payload_type in {"heartbeat", "ping"}:
+                                    continue
                                 elif payload_type == "error":
                                     raise ApiError(str(payload.get("message") or "Ошибка проверки триггера"))
                                 elif payload_type == "done":
@@ -1776,9 +1800,30 @@ class ApiClient:
                                 elif payload_type == "tool_request":
                                     tool = str(payload.get("tool") or "")
                                     on_event("decision", f"Выполняю на этом компьютере: {tool}…")
-                                    self._handle_sse_tool_request(payload, fallback_run_id=run_id)
-                                elif payload_type in {"thinking", "assistant", "message", "decision", "system"}:
+                                    Thread(
+                                        target=self._handle_sse_tool_request,
+                                        kwargs={
+                                            "payload": payload,
+                                            "fallback_run_id": run_id,
+                                        },
+                                        daemon=True,
+                                    ).start()
+                                elif payload_type == "tool_result":
+                                    tool = str(payload.get("tool") or "").strip()
+                                    text = str(payload.get("text") or "").strip() or "Готово"
+                                    on_event("tool_result", f"{tool}\n{text}" if tool else text)
+                                elif payload_type in {
+                                    "thinking",
+                                    "assistant",
+                                    "message",
+                                    "decision",
+                                    "system",
+                                    "progress",
+                                    "status",
+                                }:
                                     on_event(payload_type, str(payload.get("text") or ""))
+                                elif payload_type in {"heartbeat", "ping"}:
+                                    continue
                                 elif payload_type == "error":
                                     err = str(payload.get("message") or "Ошибка workflow")
                                     on_event("error", err)

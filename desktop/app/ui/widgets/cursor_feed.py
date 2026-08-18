@@ -31,6 +31,17 @@ QFrame#cursorcollapse:hover {
 }
 """
 
+_TOOL_HEADER = """
+QFrame#cursorcollapse {
+    background: #F1F4F3;
+    border: none;
+    border-radius: 10px;
+}
+QFrame#cursorcollapse:hover {
+    background: #E8EEEC;
+}
+"""
+
 _DETAIL_BOX = """
 QFrame#cursordetail {
     background: #F6F8F7;
@@ -112,24 +123,52 @@ class _WrapLabel(QLabel):
         super().__init__(text, parent)
         self.setWordWrap(True)
         self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def _available_width(self) -> int:
+        w = self.width()
+        if w >= 80:
+            return w
+        parent = self.parentWidget()
+        while parent is not None:
+            if parent.width() >= 80:
+                return parent.width()
+            parent = parent.parentWidget()
+        return 420
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return max(super().heightForWidth(max(80, width)), 0)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        w = self._available_width()
+        return QSize(w, self.heightForWidth(w))
+
     def minimumSizeHint(self) -> QSize:  # noqa: N802
-        return QSize(0, super().minimumSizeHint().height())
+        return QSize(0, 0)
 
 
 class _CollapseHeader(QFrame):
     clicked = Signal()
 
-    def __init__(self, title: str, expanded: bool, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        title: str,
+        expanded: bool,
+        parent: QWidget | None = None,
+        *,
+        variant: str = "",
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("cursorcollapse")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
-        self.setStyleSheet(_COLLAPSE_HEADER)
+        self.setStyleSheet(_TOOL_HEADER if variant == "tool" else _COLLAPSE_HEADER)
         row = QHBoxLayout(self)
-        row.setContentsMargins(4, 4, 4, 4)
+        row.setContentsMargins(10, 8, 10, 8) if variant == "tool" else row.setContentsMargins(4, 4, 4, 4)
         row.setSpacing(8)
         self._chevron = QLabel("▼" if expanded else "▶")
         self._chevron.setFixedWidth(14)
@@ -253,7 +292,11 @@ class CursorFeedItem(QFrame):
         return "Подробнее"
 
     def _build_collapsible(self, root: QVBoxLayout) -> None:
-        self._header = _CollapseHeader(self._header_title(), self._expanded)
+        self._header = _CollapseHeader(
+            self._header_title(),
+            self._expanded,
+            variant="tool" if self._kind == "tool" else "",
+        )
         self._header.clicked.connect(self._toggle_expand)
         root.addWidget(self._header)
         if self._kind == "plan":

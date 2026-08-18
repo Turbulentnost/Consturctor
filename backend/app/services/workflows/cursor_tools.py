@@ -208,6 +208,8 @@ def invoke_creation_tool(
         from app.services.agent_runtime import _invoke_turboproject_server
 
         return _invoke_turboproject_server(tool, args)
+    if tool in {"users.list", "users"}:
+        return _invoke_users_list(args)
 
     ctx = current_tool_context()
     if ctx is None:
@@ -297,6 +299,12 @@ def stream_cursor_with_tools(
                     "«turboproject»: читаю проекты на сервере Constructor "
                     "(это может занять до минуты)…",
                 )
+            if name in {"users.list", "users"}:
+                _emit(
+                    on_event,
+                    "decision",
+                    "«users.list»: читаю справочник пользователей…",
+                )
             try:
                 result = invoke_creation_tool(
                     tool=name,
@@ -304,11 +312,19 @@ def stream_cursor_with_tools(
                     on_event=on_event,
                     workflow_id=workflow_id,
                 )
-                results.append({"name": name, "ok": True, "result": _clip_result(result)})
+                clipped = _clip_result(result)
+                results.append({"name": name, "ok": True, "result": clipped})
                 if family:
                     successful.add(family)
                     fail_counts[family] = 0
                     unreachable.discard(family)
+                summary = _format_tool_output(name, result if isinstance(result, dict) else clipped)
+                _emit(
+                    on_event,
+                    "tool_result",
+                    summary,
+                    {"tool": name, "result": clipped},
+                )
                 _emit(on_event, "decision", f"«{name}»: готово.")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Creation tool %s failed: %s", name, exc)
@@ -318,6 +334,12 @@ def stream_cursor_with_tools(
                     last_errors[family] = str(exc)
                     if fail_counts[family] >= _MAX_TOOL_FAILURES:
                         unreachable.add(family)
+                _emit(
+                    on_event,
+                    "tool_result",
+                    str(exc),
+                    {"tool": name, "ok": False},
+                )
                 _emit(on_event, "decision", f"«{name}»: {exc}")
         pending = missing_required()
         follow = _followup_prompt(
@@ -395,6 +417,74 @@ def _followup_prompt(
         "Результаты вызовов инструментов Constructor (факты с сервера/desktop, не с VM):\n"
         f"{blob}\n\n{tail}"
     )
+
+
+def _invoke_users_list(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.db.session import SessionLocal
+    from app.services.notifications.service import list_directory_users
+
+    query = str(arguments.get("query") or arguments.get("search") or "")
+    db = SessionLocal()
+    try:
+        items = list_directory_users(db, search=query)
+    finally:
+        db.close()
+    return {
+        "users": [item.model_dump(mode="json") for item in items],
+        "count": len(items),
+    }
+
+
+def _row_title(row: Any) -> str:
+    if isinstance(row, str):
+        return row.strip()
+    if not isinstance(row, dict):
+        return str(row).strip()
+    for key in ("name", "title", "fio", "email", "file", "path", "id", "projectName"):
+        value = row.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _format_tool_output(_name: str, result: dict[str, Any], *, limit: int = 1600) -> str:
+    if not result:
+        return "Готово"
+    labels = {
+        "projects": "проектов",
+        "users": "пользователей",
+        "items": "записей",
+        "results": "результатов",
+        "documents": "документов",
+        "cards": "карточек",
+        "files": "файлов",
+        "messages": "писем",
+        "events": "событий",
+    }
+    for key, label in labels.items():
+        value = result.get(key)
+        if not isinstance(value, list) or not value:
+            continue
+        count = result.get("count", len(value))
+        lines = [f"Готово · {count} {label}"]
+        for row in value[:15]:
+            title = _row_title(row)
+            if title:
+                lines.append(f"• {title}")
+        extra = len(value) - 15
+        if extra > 0:
+            lines.append(f"… ещё {extra}")
+        return "\n".join(lines)
+    if result.get("truncated") and result.get("preview"):
+        preview = str(result.get("preview") or "")
+        return preview[:limit] + ("…" if len(preview) > limit else "")
+    try:
+        text = json.dumps(result, ensure_ascii=False, indent=2)
+    except TypeError:
+        text = str(result)
+    if len(text) > limit:
+        return text[:limit] + "…"
+    return text or "Готово"
 
 
 def _clip_result(result: dict[str, Any], limit: int = 8000) -> dict[str, Any]:

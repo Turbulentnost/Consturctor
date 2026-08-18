@@ -1,4 +1,6 @@
+from app.services.local_mcp import list_tools
 from app.services.workflows.cursor_tools import (
+    invoke_creation_tool,
     required_live_tools_from_plan,
     should_run_tool_calls,
 )
@@ -52,3 +54,27 @@ def test_vm_fail_after_live_ok_stays_fail_or_pass() -> None:
     text = "Получил данные. На Cloud VM нет BACKEND_URL. TESTS: FAIL"
     assert _tests_status_from_text(text, live_tools_ok=True) == "fail"
     assert _tests_status_from_text("RESULT ok\nTESTS: PASS", live_tools_ok=True) == "pass"
+
+
+def test_users_list_catalog_is_server() -> None:
+    item = next(tool for tool in list_tools() if tool.get("name") == "users.list")
+    assert item.get("execution") == "server"
+
+
+def test_users_list_runs_on_server(monkeypatch) -> None:
+    class _User:
+        def model_dump(self, mode: str = "json") -> dict:
+            return {"id": "u1", "fio": "Иванов", "position": "", "department": ""}
+
+    class _Db:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("app.db.session.SessionLocal", lambda: _Db())
+    monkeypatch.setattr(
+        "app.services.notifications.service.list_directory_users",
+        lambda db, *, search="": [_User()],
+    )
+    result = invoke_creation_tool(tool="users.list", arguments={"query": "Ив"}, on_event=None)
+    assert result["count"] == 1
+    assert result["users"][0]["id"] == "u1"

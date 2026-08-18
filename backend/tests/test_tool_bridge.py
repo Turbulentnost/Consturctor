@@ -56,3 +56,24 @@ def test_tool_bridge_rejects_wrong_user() -> None:
         assert exc.status_code == 403
     finally:
         bridge.unregister_run(run_id)
+
+
+def test_tool_bridge_late_submit_is_ignored() -> None:
+    bridge = ToolBridgeRegistry()
+    run_id = bridge.new_run_id()
+    request_id = bridge.new_request_id()
+    bridge.register_run(run_id, "owner")
+    bridge.begin_wait(request_id=request_id, user_id="owner")
+    try:
+        bridge.await_result(request_id=request_id, timeout_s=0.01)
+        assert False, "expected timeout"
+    except TimeoutError:
+        pass
+    bridge.submit_result(
+        run_id=run_id,
+        request_id=request_id,
+        user_id="owner",
+        ok=True,
+        result={"late": True},
+    )
+    bridge.unregister_run(run_id)

@@ -8,8 +8,17 @@ from datetime import datetime
 from pathlib import Path
 from threading import Thread
 
-from PySide6.QtCore import Qt, QSize, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont
+from PySide6.QtCore import QPointF, Qt, QSize, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QFont,
+    QImage,
+    QPainter,
+    QPen,
+    QPixmap,
+    QRadialGradient,
+)
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
@@ -48,12 +57,12 @@ SUPPORTED_SUFFIXES = {
 }
 
 _STAGES = [
-    ("document", "Материалы"),
-    ("plan", "План"),
-    ("clarify", "Уточнения"),
-    ("ready", "Сборка workflow"),
-    ("executing", "Тестовый прогон"),
-    ("done", "Готово"),
+    ("document", "Материалы", "Файлы загружены", "Добавляем материалы"),
+    ("plan", "План", "Структура готова", "Агент строит план"),
+    ("clarify", "Уточнения", "Ответы получены", "Нужны уточнения"),
+    ("ready", "Сборка workflow", "Workflow собран", "Агент формирует шаги, условия и связи."),
+    ("executing", "Тестовый прогон", "Прогон пройден", "Проверка на реальных данных"),
+    ("done", "Готово", "Агент сохранён", "Можно запускать агента"),
 ]
 _PHASE_RANK = {
     "document": 0,
@@ -314,20 +323,32 @@ class _WrappingLabel(QLabel):
         super().__init__(text, parent)
         self.setWordWrap(True)
         self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-    def minimumSizeHint(self) -> QSize:  # noqa: N802
-        return QSize(0, super().minimumSizeHint().height())
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def _available_width(self) -> int:
+        w = self.width()
+        if w >= 80:
+            return w
+        parent = self.parentWidget()
+        while parent is not None:
+            if parent.width() >= 80:
+                return parent.width()
+            parent = parent.parentWidget()
+        return 420
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return max(super().heightForWidth(max(80, width)), 0)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        # Prefer parent/available width so layout doesn't grow to one long line.
-        w = self.width()
-        if w < 40:
-            parent = self.parentWidget()
-            w = parent.width() if parent is not None else 280
-        w = max(120, w)
+        w = self._available_width()
         return QSize(w, self.heightForWidth(w))
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, 0)
 
 
 class _FitWidthScrollArea(QScrollArea):
@@ -352,6 +373,7 @@ class _FitWidthScrollArea(QScrollArea):
             w = max(1, self.viewport().width())
             # Fixed width prevents children from expanding the feed to unwrapped text.
             inner.setFixedWidth(w)
+            inner.adjustSize()
 
 
 def _strip_clarify_block(blob: str) -> str:
@@ -891,37 +913,224 @@ class FeedEvent:
     event_key: str = ""
 
 
+_TEMP_DIR = Path(__file__).resolve().parents[1] / "temp"
+_CHECK_ICON_PATH = _TEMP_DIR / "зеленаягалочка.png"
+_RAIL_W = 22
+_DONE_DOT = 14
+_IDLE_DOT = 10
+_ACTIVE_CORE = 7
+_ROW_PAD_Y = 8
+_DOT_TOP = _ROW_PAD_Y + 9
+_CHECK_SIZE = 8
+
+
+def _white_check_icon(size: int = _CHECK_SIZE) -> QPixmap:
+    """Green check on black → white check on transparent, then scaled."""
+    if not _CHECK_ICON_PATH.exists():
+        return QPixmap()
+    src = QImage(str(_CHECK_ICON_PATH))
+    if src.isNull():
+        return QPixmap()
+    img = src.convertToFormat(QImage.Format.Format_ARGB32)
+    for y in range(img.height()):
+        for x in range(img.width()):
+            color = QColor.fromRgba(img.pixel(x, y))
+            if color.red() < 48 and color.green() < 48 and color.blue() < 48:
+                color.setAlpha(0)
+                img.setPixelColor(x, y, color)
+    punched = QPixmap.fromImage(img)
+    out = QPixmap(punched.size())
+    out.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(out)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    painter.drawPixmap(0, 0, punched)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    painter.fillRect(out.rect(), QColor("#FFFFFF"))
+    painter.end()
+    return out.scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+class _StageRail(QWidget):
+    """Vertical connector + title-aligned dots; active step has a small glowing core."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._kind = "mid"
+        self._state = "idle"
+        self.setFixedWidth(_RAIL_W)
+        self.setMinimumHeight(20)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self._check = _white_check_icon()
+
+    def set_kind(self, kind: str) -> None:
+        self._kind = kind
+        self.update()
+
+    def set_state(self, state: str) -> None:
+        self._state = state
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        cx = self.width() / 2.0
+        cy = float(_DOT_TOP)
+        center = QPointF(cx, cy)
+
+        if self._state == "active":
+            glow = QRadialGradient(center, 11.0)
+            glow.setColorAt(0.00, QColor(8, 116, 95, 230))
+            glow.setColorAt(0.28, QColor(8, 116, 95, 150))
+            glow.setColorAt(0.55, QColor(110, 210, 180, 80))
+            glow.setColorAt(1.00, QColor(8, 116, 95, 0))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(glow)
+            painter.drawEllipse(center, 11.0, 11.0)
+            painter.setBrush(QColor("#08745F"))
+            core = _ACTIVE_CORE / 2.0
+            painter.drawEllipse(center, core, core)
+            return
+
+        if self._state == "done":
+            radius = _DONE_DOT / 2.0
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#08745F"))
+            painter.drawEllipse(center, radius, radius)
+            if not self._check.isNull():
+                pw = self._check.width()
+                ph = self._check.height()
+                painter.drawPixmap(int(cx - pw / 2), int(cy - ph / 2), self._check)
+            return
+
+        radius = _IDLE_DOT / 2.0
+        painter.setPen(QPen(QColor("#C5D2CD"), 1.4))
+        painter.setBrush(QColor("#FFFFFF"))
+        painter.drawEllipse(center, radius, radius)
+
+
+class _StageRow(QFrame):
+    def __init__(
+        self,
+        title: str,
+        done_hint: str,
+        active_hint: str,
+        *,
+        kind: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._title_text = title
+        self._done_hint = done_hint
+        self._active_hint = active_hint
+        self._kind = kind
+        self.setObjectName("stagerow")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 0, 10, 0)
+        lay.setSpacing(8)
+        self.rail = _StageRail()
+        self.rail.set_kind(kind)
+        texts = QVBoxLayout()
+        texts.setContentsMargins(0, _ROW_PAD_Y, 0, _ROW_PAD_Y)
+        texts.setSpacing(2)
+        self.title = QLabel(title)
+        self.title.setWordWrap(True)
+        self.title.setFont(app_font(13, QFont.Weight.DemiBold))
+        self.hint = QLabel(done_hint)
+        self.hint.setWordWrap(True)
+        self.hint.setFont(app_font(11))
+        self.badge = QLabel("Выполняется…")
+        self.badge.setFont(app_font(11, QFont.Weight.Medium))
+        self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.badge.setFixedHeight(22)
+        self.badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.badge.setStyleSheet(
+            """
+            QLabel {
+                background: #FFFFFF;
+                color: #08745F;
+                border: 1px solid #B7D6CE;
+                border-radius: 11px;
+                padding: 0 10px;
+            }
+            """
+        )
+        self.badge.setVisible(False)
+        texts.addWidget(self.title)
+        texts.addWidget(self.hint)
+        texts.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(self.rail, 0)
+        lay.addLayout(texts, 1)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        x = int(self.rail.x() + self.rail.width() / 2)
+        cy = int(self.rail.y() + _DOT_TOP)
+        painter.setPen(QPen(QColor("#D7E0DC"), 1))
+        if self._kind != "first":
+            painter.drawLine(x, 0, x, cy)
+        if self._kind != "last":
+            painter.drawLine(x, cy, x, self.height())
+
+    def set_state(self, state: str, *, busy: bool = False) -> None:
+        self.rail.set_state(state)
+        if state == "done":
+            self.setStyleSheet("QFrame#stagerow { background: transparent; border: none; }")
+            self.title.setStyleSheet("color: #101817; background: transparent;")
+            self.hint.setText(self._done_hint)
+            self.hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+            self.badge.setVisible(False)
+            return
+        if state == "active":
+            self.setStyleSheet(
+                """
+                QFrame#stagerow {
+                    background: #F3F8F6;
+                    border: 1px solid #08745F;
+                    border-radius: 14px;
+                }
+                """
+            )
+            self.title.setStyleSheet("color: #101817; background: transparent;")
+            self.hint.setText(self._active_hint)
+            self.hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+            self.badge.setVisible(True)
+            self.badge.setText("Выполняется…" if busy else "Текущий этап")
+            return
+        self.setStyleSheet("QFrame#stagerow { background: transparent; border: none; }")
+        self.title.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        self.hint.setText(self._active_hint)
+        self.hint.setStyleSheet("color: #9AA7A2; background: transparent;")
+        self.badge.setVisible(False)
+
+
 class StageStepper(QWidget):
-    """Vertical stages panel matching the mockup."""
+    """Правая панель этапов: линия, маленькие кружки, карточка текущего шага."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._active = 0
-        self._rows: list[tuple[QFrame, QLabel, QLabel]] = []
-        self.setFixedWidth(260)
+        self._busy = False
+        self._rows: list[_StageRow] = []
+        self.setFixedWidth(272)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
+        root.setContentsMargins(18, 18, 16, 18)
         root.setSpacing(0)
 
-        heading = QLabel("Этапы работы")
+        heading = QLabel("Создание workflow")
         heading.setFont(app_font(15, QFont.Weight.DemiBold))
         heading.setStyleSheet("color: #06483D; background: transparent;")
-        root.addWidget(heading)
-        root.addSpacing(14)
-
-        self._list = QVBoxLayout()
-        self._list.setSpacing(4)
-        for _key, label in _STAGES:
-            row, dot, text = self._make_row(label)
-            self._rows.append((row, dot, text))
-            self._list.addWidget(row)
-        root.addLayout(self._list)
-        root.addStretch(1)
-
-        self._ready_label = QLabel("Готовность 0%")
-        self._ready_label.setFont(app_font(12, QFont.Weight.DemiBold))
-        self._ready_label.setStyleSheet("color: #06483D; background: transparent;")
+        self._meta = QLabel("Этап 1 из 6 · 0%")
+        self._meta.setFont(app_font(12))
+        self._meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         self._bar = QProgressBar()
         self._bar.setRange(0, 100)
         self._bar.setValue(0)
@@ -937,9 +1146,24 @@ class StageStepper(QWidget):
             }
             """
         )
-        root.addWidget(self._ready_label)
-        root.addSpacing(8)
+        root.addWidget(heading)
+        root.addSpacing(4)
+        root.addWidget(self._meta)
+        root.addSpacing(10)
         root.addWidget(self._bar)
+        root.addSpacing(16)
+
+        self._list = QVBoxLayout()
+        self._list.setContentsMargins(0, 0, 0, 0)
+        self._list.setSpacing(0)
+        last = len(_STAGES) - 1
+        for index, (_key, title, done_hint, active_hint) in enumerate(_STAGES):
+            kind = "first" if index == 0 else "last" if index == last else "mid"
+            row = _StageRow(title, done_hint, active_hint, kind=kind)
+            self._rows.append(row)
+            self._list.addWidget(row)
+        root.addLayout(self._list)
+        root.addStretch(1)
 
         self.setStyleSheet(
             """
@@ -950,63 +1174,26 @@ class StageStepper(QWidget):
             }
             """
         )
+        self.set_phase("document")
 
-    def _make_row(self, label: str) -> tuple[QFrame, QLabel, QLabel]:
-        row = QFrame()
-        row.setObjectName("stagerow")
-        lay = QHBoxLayout(row)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(12)
-        dot = QLabel("○")
-        dot.setFixedSize(22, 22)
-        dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        dot.setFont(app_font(13, QFont.Weight.DemiBold))
-        text = QLabel(label)
-        text.setFont(app_font(13, QFont.Weight.Medium))
-        text.setStyleSheet("background: transparent;")
-        lay.addWidget(dot)
-        lay.addWidget(text, 1)
-        return row, dot, text
-
-    def set_phase(self, phase: str) -> None:
+    def set_phase(self, phase: str, *, busy: bool = False) -> None:
         rank = _PHASE_RANK.get(phase, 0)
         if phase == "done":
             rank = len(_STAGES) - 1
         self._active = rank
-        for i, (row, dot, text) in enumerate(self._rows):
+        self._busy = busy
+        for i, row in enumerate(self._rows):
             if i < rank or (phase == "done" and i <= rank):
                 state = "done"
             elif i == rank:
                 state = "active"
             else:
                 state = "idle"
-            if state == "done":
-                row.setStyleSheet("QFrame#stagerow { background: transparent; border-radius: 12px; }")
-                dot.setText("✓")
-                dot.setStyleSheet(
-                    "color: #FFFFFF; background: #08745F; border-radius: 11px;"
-                )
-                text.setStyleSheet("color: #06483D; background: transparent;")
-            elif state == "active":
-                row.setStyleSheet(
-                    "QFrame#stagerow { background: #FFF4E5; border-radius: 12px; }"
-                )
-                dot.setText("●")
-                dot.setStyleSheet(
-                    "color: #FFFFFF; background: #F0A202; border-radius: 11px;"
-                )
-                text.setStyleSheet("color: #8A5300; background: transparent; font-weight: 600;")
-            else:
-                row.setStyleSheet("QFrame#stagerow { background: transparent; border-radius: 12px; }")
-                dot.setText("○")
-                dot.setStyleSheet(
-                    "color: #9DB3AD; background: #F1F5F3; border-radius: 11px;"
-                )
-                text.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        pct = int(round((rank / max(1, len(_STAGES) - 1)) * 100))
-        if phase == "done":
-            pct = 100
-        self._ready_label.setText(f"Готовность {pct}%")
+            row.set_state(state, busy=busy and state == "active")
+        total = len(_STAGES)
+        current = total if phase == "done" else min(total, rank + 1)
+        pct = 100 if phase == "done" else int(round((rank / max(1, total - 1)) * 100))
+        self._meta.setText(f"Этап {current} из {total} · {pct}%")
         self._bar.setValue(pct)
 
 
@@ -1032,6 +1219,7 @@ class WorkflowPage(QWidget):
         self._events: list[FeedEvent] = []
         self._event_seq = 0
         self._expanded_keys: set[str] = set()
+        self._collapsed_keys: set[str] = set()
         self._pending_answers: dict[str, str] = {}
         self._tests_ok = False
         self._thinking_text = ""
@@ -1243,6 +1431,7 @@ class WorkflowPage(QWidget):
             }
         self._event_seq = 0
         self._expanded_keys = set()
+        self._collapsed_keys = set()
         self._events = []
         self._execute_started = bool(record.exec_agent_id or record.last_result)
         self._last_stream_phrase = ""
@@ -1340,7 +1529,7 @@ class WorkflowPage(QWidget):
 
     def _render_all(self) -> None:
         phase = self._record.phase if self._record else "document"
-        self._stepper.set_phase(phase)
+        self._stepper.set_phase(phase, busy=self._busy)
         self._rebuild_feed()
         plan = self._record.plan if self._record else None
         unanswered = bool(plan and plan.unanswered())
@@ -1450,6 +1639,7 @@ class WorkflowPage(QWidget):
                     break
 
         hide_run_plan = self._should_hide_run_plan_action()
+        self._feed_layout.addStretch(1)
         for idx, event in enumerate(self._events):
             if skip_clarify_idx is not None and idx == skip_clarify_idx:
                 continue
@@ -1487,13 +1677,15 @@ class WorkflowPage(QWidget):
                 title = f"Инструмент: {name}"
                 body = detail or "Ошибка"
             key = str(tool.get("key") or f"live-tool-{name}")
+            if key not in self._collapsed_keys:
+                self._expanded_keys.add(key)
             widget = CursorFeedItem(
                 kind="tool",
                 text=body,
                 title=title,
                 detail=body,
                 event_key=key,
-                expanded=status == "running",
+                expanded=key in self._expanded_keys,
             )
             widget.expand_toggled.connect(self._on_expand_toggled)
             self._feed_layout.addWidget(widget)
@@ -1503,9 +1695,8 @@ class WorkflowPage(QWidget):
             phrase = (self._last_stream_phrase or self._busy_base or "Агент работает").strip()
             if len(phrase) > 100:
                 phrase = phrase[:97] + "…"
-            banner = QLabel(f"{frame} Система работает — {phrase}")
+            banner = _WrappingLabel(f"{frame} Система работает — {phrase}")
             banner.setFont(app_font(12, QFont.Weight.Medium))
-            banner.setWordWrap(True)
             banner.setStyleSheet("color: #08745F; background: #EAF7F3; border-radius: 10px; padding: 8px 10px;")
             self._activity_banner = banner
             self._feed_layout.addWidget(banner)
@@ -1550,8 +1741,10 @@ class WorkflowPage(QWidget):
             return
         if expanded:
             self._expanded_keys.add(key)
+            self._collapsed_keys.discard(key)
         else:
             self._expanded_keys.discard(key)
+            self._collapsed_keys.add(key)
 
     def _feed_item(
         self,
@@ -1567,6 +1760,8 @@ class WorkflowPage(QWidget):
             title = "Thinking"
         elif kind not in {"plan", "tool"}:
             title = ""
+        if kind == "tool" and key and key not in self._collapsed_keys:
+            self._expanded_keys.add(key)
         widget = CursorFeedItem(
             kind=kind,
             text=event.body,
@@ -1792,6 +1987,8 @@ class WorkflowPage(QWidget):
             plan = self._record.plan if self._record else None
             unanswered = bool(plan and plan.unanswered())
             self._update_run_button(plan=plan, unanswered=unanswered)
+            phase = self._record.phase if self._record else "document"
+            self._stepper.set_phase(phase, busy=True)
             self._rebuild_feed()
         else:
             self._busy_timer.stop()
@@ -1828,38 +2025,77 @@ class WorkflowPage(QWidget):
 
     def _upsert_live_tool(self, name: str, *, status: str, detail: str = "") -> None:
         tool_name = (name or "").strip() or "инструмент"
-        for item in self._live_tools:
-            if item.get("name") == tool_name and item.get("status") == "running":
-                item["status"] = status
-                item["detail"] = detail
-                self._rebuild_feed()
-                return
+        incoming = (detail or "").strip()
+        running = next(
+            (
+                item
+                for item in self._live_tools
+                if item.get("name") == tool_name and item.get("status") == "running"
+            ),
+            None,
+        )
+        target = running
+        if target is None and status != "running":
+            target = next(
+                (item for item in reversed(self._live_tools) if item.get("name") == tool_name),
+                None,
+            )
+        if target is not None:
+            target["status"] = status
+            target["detail"] = self._merge_tool_detail(str(target.get("detail") or ""), incoming, status)
+            self._rebuild_feed()
+            return
         if status == "running":
-            # Close previous running tools visually if a new one starts.
             for item in self._live_tools:
                 if item.get("status") == "running":
                     item["status"] = "ok"
                     item["detail"] = item.get("detail") or "Готово"
+            key = self._next_event_key()
+            if key not in self._collapsed_keys:
+                self._expanded_keys.add(key)
             self._live_tools.append(
                 {
                     "name": tool_name,
                     "status": "running",
-                    "detail": detail or "Выполняется на сервере Constructor…",
-                    "key": self._next_event_key(),
+                    "detail": incoming or "Выполняется…",
+                    "key": key,
                 }
             )
             self._last_stream_phrase = f"вызываю {tool_name}"
             self._rebuild_feed()
             return
+        key = self._next_event_key()
+        if key not in self._collapsed_keys:
+            self._expanded_keys.add(key)
         self._live_tools.append(
             {
                 "name": tool_name,
                 "status": status,
-                "detail": detail,
-                "key": self._next_event_key(),
+                "detail": incoming or ("Готово" if status == "ok" else "Ошибка"),
+                "key": key,
             }
         )
         self._rebuild_feed()
+
+    def _merge_tool_detail(self, previous: str, incoming: str, status: str) -> str:
+        placeholders = {
+            "",
+            "Готово",
+            "Выполняется…",
+            "Выполняется на сервере Constructor…",
+            "Выполняется на этом компьютере…",
+        }
+        if incoming and incoming not in placeholders:
+            return incoming
+        if previous and previous not in placeholders:
+            return previous
+        if incoming:
+            return incoming
+        if status == "error":
+            return previous or "Ошибка"
+        if status == "ok":
+            return previous or "Готово"
+        return previous or "Выполняется…"
 
     def _commit_live_tools_to_feed(self) -> None:
         for tool in self._live_tools:
@@ -1872,13 +2108,16 @@ class WorkflowPage(QWidget):
                 body = detail or "Ошибка"
             else:
                 body = detail or "Вызов завершён"
+            key = str(tool.get("key") or self._next_event_key())
+            if key not in self._collapsed_keys:
+                self._expanded_keys.add(key)
             self._events.append(
                 FeedEvent(
                     title=f"Инструмент: {name}",
                     body=body,
                     time=self._now(),
                     kind="tool",
-                    event_key=str(tool.get("key") or self._next_event_key()),
+                    event_key=key,
                 )
             )
         self._live_tools = []
@@ -1953,6 +2192,25 @@ class WorkflowPage(QWidget):
 
     def _on_stream_event(self, event_type: str, text: str) -> None:
         incoming = (text or "").replace(_REPLACEMENT, "")
+        if event_type in {"heartbeat", "ping"}:
+            self._tick_activity()
+            return
+        if event_type == "tool_result":
+            raw = incoming.strip()
+            name, sep, body = raw.partition("\n")
+            if not sep:
+                name, body = "инструмент", raw
+            self._upsert_live_tool(
+                name.strip() or "инструмент",
+                status="ok" if "ошибка" not in (body or "").casefold() else "error",
+                detail=(body or "Готово").strip(),
+            )
+            self._tick_activity()
+            return
+        if event_type == "progress" and incoming.strip():
+            self._last_stream_phrase = incoming.strip()
+            self._tick_activity()
+            return
         if incoming.strip():
             last_line = incoming.strip().splitlines()[-1].strip()
             if last_line:
@@ -2642,6 +2900,7 @@ class WorkflowPage(QWidget):
         self._events = []
         self._event_seq = 0
         self._expanded_keys = set()
+        self._collapsed_keys = set()
         self._results.clear()
         self._render_chips()
         self._render_all()

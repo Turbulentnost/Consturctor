@@ -568,6 +568,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "trigger_id": {"type": "string"},
         }, ["trigger_id"]),
     ]
+    server_tools = {"users.list"}
     tools: list[dict[str, Any]] = []
     for item in items:
         name, description, properties = item[0], item[1], item[2]
@@ -575,11 +576,17 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         schema: dict[str, Any] = {"type": "object", "properties": properties}
         if required:
             schema["required"] = required
+        if name in server_tools:
+            suffix = " Исполняется на сервере Constructor."
+            execution = "server"
+        else:
+            suffix = " Исполняется на desktop пользователя."
+            execution = "desktop"
         tools.append(
             {
                 "name": name,
-                "description": description + " Исполняется на desktop пользователя.",
-                "execution": "desktop",
+                "description": description + suffix,
+                "execution": execution,
                 "input_schema": schema,
             }
         )

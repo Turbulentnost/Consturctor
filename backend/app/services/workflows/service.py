@@ -193,6 +193,7 @@ def plan_workflow(
         raise WorkflowError("Нет материалов для планирования — загрузите файлы или заметки.")
 
     _emit(on_event, "decision", "Изучаю материалы и формирую структуру workflow.")
+    _emit(on_event, "progress", "создаю агента Cursor")
     from app.services.workflows.cursor_tools import with_tools_if_desktop
 
     prompt = with_tools_if_desktop(
@@ -242,6 +243,7 @@ def plan_workflow(
         agent_id, run_id, on_event=on_event, workflow_id=workflow_id, mode="plan"
     )
     plan = prompts.parse_plan_from_text(phase.text)
+    plan.sanitize_open_questions()
     from app.services.plan_run import apply_autonomy, ensure_runtime
 
     ensure_runtime(plan)
@@ -316,6 +318,7 @@ def clarify_workflow(
         if a.get("kind") == "image" and a.get("name")
     ][: len(images)]
     _emit(on_event, "decision", "Учитываю ответы пользователя и обновляю план.")
+    _emit(on_event, "progress", "обновляю план")
     from app.services.workflows.cursor_tools import with_tools_if_desktop
 
     prompt = with_tools_if_desktop(
@@ -394,6 +397,7 @@ def clarify_workflow(
         recent_answers=merged_answers,
         prior_questions=plan.open_questions,
     )
+    updated.sanitize_open_questions()
     row.plan_json = updated.to_dict()
     row.title = updated.title or row.title
     row.phase = "clarify" if updated.unanswered() else "ready"
@@ -482,6 +486,7 @@ def execute_workflow(
         )
 
     _emit(on_event, "decision", "Запускаю реализацию workflow.")
+    _emit(on_event, "progress", "создаю агента Cursor")
     try:
         if reexecute and row.exec_agent_id:
             try:
@@ -1152,7 +1157,17 @@ def _stream_run(
             agent_id,
             run_id,
         )
-        result = _poll_until_terminal(agent_id, run_id, base=result)
+        result = _poll_until_terminal(agent_id, run_id, base=result, on_event=on_event)
+        polled = (result.text or "").strip()
+        if polled:
+            if not streamed:
+                _emit(on_event, "thinking", polled)
+            elif polled.startswith(streamed):
+                tail = polled[len(streamed) :]
+                if tail:
+                    _emit(on_event, "thinking", tail)
+            else:
+                _emit(on_event, "thinking", polled)
     logger.info(
         "Cursor stream end agent=%s run=%s status=%s text_len=%s",
         agent_id,
@@ -1168,6 +1183,7 @@ def _poll_until_terminal(
     run_id: str,
     *,
     base: PhaseResult,
+    on_event: WorkflowEventCallback | None = None,
     max_wait_s: float = 900.0,
     interval_s: float = 5.0,
 ) -> PhaseResult:
@@ -1175,6 +1191,7 @@ def _poll_until_terminal(
     if not run_id:
         return result
     deadline = time.monotonic() + max_wait_s
+    last_progress = 0.0
     while True:
         try:
             run = cursor_client.get_run(agent_id, run_id)
@@ -1186,6 +1203,11 @@ def _poll_until_terminal(
             result.text = str(run.get("result"))
         result.git = run.get("git") or result.git
         result.branch, result.pr_url = _extract_git(result.git)
+        now = time.monotonic()
+        if now - last_progress >= 8.0:
+            label = (status or "RUNNING").lower()
+            _emit(on_event, "progress", f"агент думает ({label})")
+            last_progress = now
         logger.info(
             "Cursor poll agent=%s run=%s status=%s text_len=%s",
             agent_id[-8:],

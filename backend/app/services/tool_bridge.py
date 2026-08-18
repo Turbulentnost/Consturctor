@@ -99,10 +99,8 @@ class ToolBridgeRegistry:
                 raise ToolBridgeError("Нет доступа к этому run", status_code=403)
             pending = self._by_request.get(request_id)
             if pending is None:
-                raise ToolBridgeError(
-                    "Нет ожидающего tool_request с таким request_id",
-                    status_code=404,
-                )
+                # Late ACK after timeout or a duplicate POST — do not fail the desktop.
+                return
             if pending.user_id and pending.user_id != user_id:
                 raise ToolBridgeError("Нет доступа к этому request", status_code=403)
             pending.payload = {
