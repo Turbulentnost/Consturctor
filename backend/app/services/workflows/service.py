@@ -654,6 +654,107 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     return _to_schema(row)
 
 
+def generate_agent_kpi(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
+    from app.services import agent_kpi
+
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    if not row.exec_agent_id:
+        raise WorkflowError("Сначала завершите реализацию агента")
+    plan = WorkflowPlan.from_dict(row.plan_json or {})
+    local = dict(row.local_run or {})
+    draft = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+    title = str(draft.get("name") or row.title or plan.title or "ИИ-агент")
+    goal = str(draft.get("goal") or plan.goal or "")
+    _emit(on_event, "decision", "Куратор определяет KPI: как агент должен работать и как мерить факт.")
+    prompt = prompts.build_kpi_curator_prompt(
+        title=title,
+        goal=goal,
+        plan_text=prompts.plan_summary_text(plan),
+        schedule_draft=draft,
+        notes=row.notes or "",
+    )
+    text = ""
+    try:
+        agent_id, run_id = _create_exec_agent(f"KPI · {title}", prompt)
+        _emit(on_event, "decision", "Куратор пишет набор KPI…")
+        result = _stream_run(agent_id, run_id, on_event=on_event)
+        text = result.text or ""
+        if result.error:
+            _emit(on_event, "decision", "Куратор завершился с предупреждением — сверю JSON и дополню по паспорту.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("KPI curator failed workflow=%s: %s", workflow_id, exc)
+        _emit(on_event, "decision", "Куратор недоступен — собрал KPI по паспорту и расписанию.")
+    parsed = agent_kpi.parse_kpi_payload(text)
+    if parsed:
+        _emit(on_event, "decision", "KPI готовы — считаю факт по истории прогонов.")
+    else:
+        _emit(on_event, "decision", "Собрал стандартные KPI по расписанию и цели агента.")
+    kpi = agent_kpi.build_kpi_record(parsed, title=title, goal=goal, schedule=draft, status="draft")
+    runs = agent_kpi.list_runs_for_kpi(db, user_id=user_id, workflow_id=workflow_id)
+    kpi = agent_kpi.apply_facts(kpi, runs, draft)
+    local["kpi"] = kpi
+    row.local_run = local
+    db.commit()
+    db.refresh(row)
+    return _to_schema(row)
+
+
+def get_agent_kpi(db: Session, *, user_id: str, workflow_id: str):
+    from app.services import agent_kpi
+
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    plan = WorkflowPlan.from_dict(row.plan_json or {})
+    local = dict(row.local_run or {})
+    draft = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+    title = str(draft.get("name") or row.title or plan.title or "ИИ-агент")
+    goal = str(draft.get("goal") or plan.goal or "")
+    stored = local.get("kpi") if isinstance(local.get("kpi"), dict) else None
+    if stored and (stored.get("tiles") or []):
+        kpi = agent_kpi.build_kpi_record(
+            stored,
+            title=title,
+            goal=goal,
+            schedule=draft,
+            status=str(stored.get("status") or "draft"),
+            generated_at=str(stored.get("generated_at") or ""),
+        )
+        kpi["summary"] = str(stored.get("summary") or kpi["summary"])
+    else:
+        kpi = agent_kpi.build_kpi_record(None, title=title, goal=goal, schedule=draft, status="draft")
+    runs = agent_kpi.list_runs_for_kpi(db, user_id=user_id, workflow_id=workflow_id)
+    kpi = agent_kpi.apply_facts(kpi, runs, draft)
+    return agent_kpi.kpi_to_schema(kpi, workflow_id=workflow_id, title=title)
+
+
+def confirm_agent_kpi(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSchema:
+    from app.services import agent_kpi
+
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    local = dict(row.local_run or {})
+    stored = local.get("kpi") if isinstance(local.get("kpi"), dict) else None
+    if not stored or not (stored.get("tiles") or []):
+        plan = WorkflowPlan.from_dict(row.plan_json or {})
+        draft = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+        stored = agent_kpi.build_kpi_record(
+            None,
+            title=str(draft.get("name") or row.title or plan.title or ""),
+            goal=str(draft.get("goal") or plan.goal or ""),
+            schedule=draft,
+            status="draft",
+        )
+    stored["status"] = "ready"
+    local["kpi"] = stored
+    row.local_run = local
+    db.commit()
+    return publish_workflow(db, user_id=user_id, workflow_id=workflow_id)
+
+
 _VM_INFRA_FAIL_HINTS = (
     "backend_url",
     "constructor_api",

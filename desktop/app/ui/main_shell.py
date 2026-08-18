@@ -39,8 +39,10 @@ from app.api_client import (
     ScheduleDraft,
     WorkflowListItem,
     WorkflowRecord,
+    _parse_schedule_draft,
 )
 from app.ui.pages.agent_passport_page import AgentPassportPage
+from app.ui.pages.agent_kpi_preview_page import AgentKpiPreviewPage
 from app.ui.pages.agent_schedule_page import AgentSchedulePage
 from app.ui.pages.agent_implementation_page import AgentImplementationPage
 from app.ui.pages.agent_run_page import AgentRunPage
@@ -174,6 +176,7 @@ class MainShell(QWidget):
     _agent_history_ready = Signal(object)
     _schedule_draft_ready = Signal(object)
     _schedule_save_ready = Signal(object)
+    _kpi_preview_ready = Signal(object)
     _schedule_failed = Signal(str)
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
@@ -193,7 +196,7 @@ class MainShell(QWidget):
         self._page_workflows = WorkflowPage(self._api)
         self._page_agent_run = AgentRunPage(self._api)
         self._page_saved_workflows = SavedWorkflowsPage(self._api)
-        self._page_kpi = KpiPage()
+        self._page_kpi = KpiPage(self._api)
         self._page_dashboard = MyDashboardPage(self._api)
         self._page_settings = SettingsPage(self._api)
         self._page_review = RegulationReviewPage()
@@ -203,6 +206,7 @@ class MainShell(QWidget):
         self._page_creation_chat = RegulationCreationPage()
         self._page_passport = AgentPassportPage()
         self._page_schedule = AgentSchedulePage()
+        self._page_kpi_preview = AgentKpiPreviewPage(self._api)
         self._page_loading = LoadingPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
@@ -221,6 +225,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_passport)
         self._pages.addWidget(self._page_schedule)
         self._pages.addWidget(self._page_loading)
+        self._pages.addWidget(self._page_kpi_preview)
         self._page_index = {
             "create": 0,
             "agents": 1,
@@ -239,6 +244,7 @@ class MainShell(QWidget):
             "passport": 14,
             "schedule": 15,
             "loading": 16,
+            "kpi_preview": 17,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
@@ -248,6 +254,8 @@ class MainShell(QWidget):
             lambda: self._pages.setCurrentIndex(self._page_index["workflows"])
         )
         self._page_schedule.save_requested.connect(self._on_schedule_save)
+        self._page_kpi_preview.back_requested.connect(self._on_kpi_back)
+        self._page_kpi_preview.confirm_requested.connect(self._on_kpi_confirm)
         self._page_saved_workflows.open_requested.connect(self._on_open_saved_workflow)
         self._page_implementation_agents.create_requested.connect(self._on_create_agent_from_inline_suggestion)
         self._page_settings.profile_updated.connect(self._on_profile_updated)
@@ -304,6 +312,7 @@ class MainShell(QWidget):
         self._agent_history_ready.connect(self._show_agent_history)
         self._schedule_draft_ready.connect(self._show_schedule_page)
         self._schedule_save_ready.connect(self._show_schedule_saved)
+        self._kpi_preview_ready.connect(self._show_kpi_preview)
         self._schedule_failed.connect(self._show_schedule_error)
         self._pages.currentChanged.connect(self._on_stack_changed)
         self._review_fullscreen = False
@@ -1071,6 +1080,8 @@ class MainShell(QWidget):
             self._load_agent_drafts()
         elif key == "dashboard":
             self._page_dashboard.refresh()
+        elif key == "kpi":
+            self._page_kpi.refresh()
 
     def _on_open_saved_workflow(self, record: object) -> None:
         from app.api_client import WorkflowRecord as WorkflowRecordType
@@ -1311,8 +1322,42 @@ class MainShell(QWidget):
                         for item in draft.triggers
                     ],
                 }
-                self._api.update_workflow_local_run(wid, local)
-                published = self._api.publish_workflow(wid)
+                updated = self._api.update_workflow_local_run(wid, local)
+            except ApiError as exc:
+                self._schedule_failed.emit(exc.message)
+                return
+            self._kpi_preview_ready.emit(updated)
+
+        Thread(target=run, daemon=True).start()
+
+    def _show_kpi_preview(self, record: object) -> None:
+        self._page_schedule.set_busy(False)
+        if not isinstance(record, WorkflowRecord):
+            return
+        self._page_kpi_preview.start(record)
+        self._pages.setCurrentIndex(self._page_index["kpi_preview"])
+
+    def _on_kpi_back(self) -> None:
+        record = self._page_kpi_preview.current_record()
+        draft = ScheduleDraft()
+        if isinstance(record, WorkflowRecord):
+            raw = (record.local_run or {}).get("schedule_draft")
+            if isinstance(raw, dict):
+                draft = _parse_schedule_draft(raw)
+            self._page_schedule.load(record, draft)
+        self._pages.setCurrentIndex(self._page_index["schedule"])
+
+    def _on_kpi_confirm(self, record: object) -> None:
+        if not isinstance(record, WorkflowRecord):
+            return
+        self._page_kpi_preview.set_busy(True)
+        wid = record.id
+
+        def run() -> None:
+            try:
+                published = self._api.confirm_workflow_kpi(wid)
+                raw = (published.local_run or {}).get("schedule_draft")
+                draft = _parse_schedule_draft(raw) if isinstance(raw, dict) else ScheduleDraft()
                 for spec in draft.triggers:
                     self._api.create_trigger(published.id, spec, message=spec.message or draft.goal)
             except ApiError as exc:
@@ -1324,6 +1369,7 @@ class MainShell(QWidget):
 
     def _show_schedule_saved(self, record: object) -> None:
         self._page_schedule.set_busy(False)
+        self._page_kpi_preview.set_busy(False)
         if isinstance(record, WorkflowRecord):
             self._page_workflows.saved.emit(record.id)
             self._on_workflow_record_saved(record)
@@ -1332,7 +1378,9 @@ class MainShell(QWidget):
 
     def _show_schedule_error(self, message: str) -> None:
         self._page_schedule.set_busy(False)
-        QMessageBox.warning(self, "Паспорт агента", message)
+        self._page_kpi_preview.set_busy(False)
+        title = "KPI агента" if self._pages.currentIndex() == self._page_index["kpi_preview"] else "Паспорт агента"
+        QMessageBox.warning(self, title, message)
 
     def _on_workflow_record_saved(self, record: object) -> None:
         if str(getattr(record, "phase", "")) != "done":

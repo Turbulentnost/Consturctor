@@ -466,6 +466,40 @@ class ScheduleDraft:
     triggers: list[ScheduleTriggerSpec] = field(default_factory=list)
 
 
+@dataclass
+class KpiSide:
+    label: str = ""
+    value: float | None = None
+    unit: str = ""
+    description: str = ""
+
+
+@dataclass
+class KpiMeasure:
+    kind: str = ""
+    params: dict = field(default_factory=dict)
+    formula: str = ""
+
+
+@dataclass
+class KpiTile:
+    id: str = ""
+    name: str = ""
+    plan: KpiSide = field(default_factory=KpiSide)
+    fact: KpiSide = field(default_factory=KpiSide)
+    measure: KpiMeasure = field(default_factory=KpiMeasure)
+
+
+@dataclass
+class AgentKpi:
+    status: str = "draft"
+    generated_at: str = ""
+    summary: str = ""
+    tiles: list[KpiTile] = field(default_factory=list)
+    workflow_id: str = ""
+    title: str = ""
+
+
 def _interval_seconds(value: float, unit: str) -> int:
     amount = max(0.0, float(value or 0))
     factor = {"minutes": 60, "hours": 3600, "days": 86400}.get((unit or "hours").strip().casefold(), 3600)
@@ -496,6 +530,56 @@ def _parse_schedule_draft(data: dict) -> ScheduleDraft:
         name=str(data.get("name") or ""),
         goal=str(data.get("goal") or ""),
         triggers=triggers,
+    )
+
+
+def _parse_kpi_side(data: dict | None) -> KpiSide:
+    raw = data if isinstance(data, dict) else {}
+    value = raw.get("value")
+    parsed: float | None
+    if value is None or value == "":
+        parsed = None
+    else:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = None
+    return KpiSide(
+        label=str(raw.get("label") or ""),
+        value=parsed,
+        unit=str(raw.get("unit") or ""),
+        description=str(raw.get("description") or ""),
+    )
+
+
+def _parse_agent_kpi(data: dict) -> AgentKpi:
+    tiles: list[KpiTile] = []
+    for item in data.get("tiles") or []:
+        if not isinstance(item, dict):
+            continue
+        measure = item.get("measure") if isinstance(item.get("measure"), dict) else {}
+        tiles.append(
+            KpiTile(
+                id=str(item.get("id") or ""),
+                name=str(item.get("name") or ""),
+                plan=_parse_kpi_side(item.get("plan") if isinstance(item.get("plan"), dict) else {}),
+                fact=_parse_kpi_side(item.get("fact") if isinstance(item.get("fact"), dict) else {}),
+                measure=KpiMeasure(
+                    kind=str(measure.get("kind") or ""),
+                    params=dict(measure.get("params") or {})
+                    if isinstance(measure.get("params"), dict)
+                    else {},
+                    formula=str(measure.get("formula") or ""),
+                ),
+            )
+        )
+    return AgentKpi(
+        status=str(data.get("status") or "draft"),
+        generated_at=str(data.get("generated_at") or ""),
+        summary=str(data.get("summary") or ""),
+        tiles=tiles,
+        workflow_id=str(data.get("workflow_id") or ""),
+        title=str(data.get("title") or ""),
     )
 
 
@@ -1772,6 +1856,29 @@ class ApiClient:
         data = self._request(
             "POST",
             f"/api/v1/workflows/{workflow_id}/publish",
+            timeout=180.0,
+        )
+        return self._parse_workflow(data)
+
+    def stream_generate_workflow_kpi(
+        self,
+        workflow_id: str,
+        on_event: Callable[[str, str], None],
+    ) -> WorkflowRecord:
+        return self._stream_workflow(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/kpi/generate/stream",
+            on_event=on_event,
+        )
+
+    def get_workflow_kpi(self, workflow_id: str) -> AgentKpi:
+        data = self._request("GET", f"/api/v1/workflows/{workflow_id}/kpi", timeout=60.0)
+        return _parse_agent_kpi(data if isinstance(data, dict) else {})
+
+    def confirm_workflow_kpi(self, workflow_id: str) -> WorkflowRecord:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/kpi/confirm",
             timeout=180.0,
         )
         return self._parse_workflow(data)

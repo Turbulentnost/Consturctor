@@ -14,6 +14,7 @@ from app.core.jwt import AuthContext
 from app.db.session import SessionLocal, get_db
 from app.schemas.trigger import ScheduleDraftOut
 from app.schemas.workflow import (
+    AgentKpiSchema,
     AgentRunOut,
     AgentToolResultSubmit,
     ArtifactItem,
@@ -31,9 +32,12 @@ from app.services.workflows import (
     WorkflowError,
     build_artifacts_zip,
     clarify_workflow,
+    confirm_agent_kpi,
     create_workflow,
     delete_workflow,
     execute_workflow,
+    generate_agent_kpi,
+    get_agent_kpi,
     get_workflow,
     list_artifacts_for_workflow,
     list_workflows,
@@ -553,6 +557,53 @@ async def publish_workflow_endpoint(
 ) -> WorkflowSchema:
     try:
         return publish_workflow(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/kpi/generate/stream")
+async def generate_workflow_kpi_stream_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+) -> StreamingResponse:
+    user_id = auth.user_id
+    return StreamingResponse(
+        _workflow_stream(
+            lambda db, emit: generate_agent_kpi(
+                db,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                on_event=emit,
+            ),
+            user_id=user_id,
+        ),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
+
+@router.get("/{workflow_id}/kpi", response_model=AgentKpiSchema)
+async def read_workflow_kpi(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentKpiSchema:
+    try:
+        return get_agent_kpi(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/kpi/confirm", response_model=WorkflowSchema)
+async def confirm_workflow_kpi_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowSchema:
+    try:
+        return confirm_agent_kpi(db, user_id=auth.user_id, workflow_id=workflow_id)
     except WorkflowError as exc:
         _raise(exc)
         raise

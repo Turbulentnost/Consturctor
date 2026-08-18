@@ -481,3 +481,67 @@ def plan_summary_text(plan: WorkflowPlan) -> str:
         lines.append("")
     return "\n".join(lines).strip() + "\n"
 
+
+def build_kpi_curator_prompt(
+    *,
+    title: str,
+    goal: str,
+    plan_text: str,
+    schedule_draft: dict[str, Any] | None = None,
+    notes: str = "",
+) -> str:
+    schedule = json.dumps(schedule_draft or {}, ensure_ascii=False, indent=2)
+    return f"""
+Ты куратор KPI для ИИ-агента Constructor. По паспорту и расписанию определи,
+как агент ДОЛЖЕН работать (план) и как измерять факт после прогонов.
+
+Агент:
+- Название: {title or "—"}
+- Цель: {goal or "—"}
+- Заметки: {(notes or "—")[:1200]}
+- Расписание / триггеры:
+{schedule}
+
+План агента:
+{plan_text or "—"}
+
+Верни ТОЛЬКО один JSON-объект (можно в блоке ```json), без текста вокруг.
+Схема:
+{{
+  "summary": "как должен работать агент: частота, что считает успехом",
+  "tiles": [
+    {{
+      "id": "snake_case",
+      "name": "человеческое имя KPI",
+      "plan": {{
+        "label": "План",
+        "value": 30,
+        "unit": "мин",
+        "description": "как ДОЛЖЕН работать"
+      }},
+      "fact": {{
+        "label": "Факт",
+        "value": null,
+        "unit": "%",
+        "description": "как измерять факт"
+      }},
+      "measure": {{
+        "kind": "expected_interval",
+        "params": {{}},
+        "formula": "человеческая формула"
+      }}
+    }}
+  ]
+}}
+
+Правила:
+- 3–5 плиток, без повторов measure.kind.
+- measure.kind только из: expected_interval, runs_count, success_rate, on_schedule_rate, fail_count.
+- План — норма работы (частота, 100% успешности, 0 ошибок).
+- fact.value всегда null: значения посчитает backend по истории прогонов.
+- Если запусков ещё нет, факт читается как «ещё нет прогонов».
+- Не выдумывай поля TurboProject и не пиши произвольный код.
+- Не вызывай constructor_tool и не ходи в HTTP — только JSON.
+""".strip()
+
+

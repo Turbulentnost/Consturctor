@@ -138,3 +138,33 @@ class AgentRunOut(BaseModel):
     source: str = "chat"
     started_at: str = ""
     finished_at: str = ""
+
+
+class KpiMeasureSchema(BaseModel):
+    kind: str = ""
+    params: dict[str, Any] = Field(default_factory=dict)
+    formula: str = ""
+
+
+class KpiSideSchema(BaseModel):
+    label: str = ""
+    value: float | None = None
+    unit: str = ""
+    description: str = ""
+
+
+class KpiTileSchema(BaseModel):
+    id: str = ""
+    name: str = ""
+    plan: KpiSideSchema = Field(default_factory=KpiSideSchema)
+    fact: KpiSideSchema = Field(default_factory=KpiSideSchema)
+    measure: KpiMeasureSchema = Field(default_factory=KpiMeasureSchema)
+
+
+class AgentKpiSchema(BaseModel):
+    status: str = "draft"
+    generated_at: str = ""
+    summary: str = ""
+    tiles: list[KpiTileSchema] = Field(default_factory=list)
+    workflow_id: str = ""
+    title: str = ""
