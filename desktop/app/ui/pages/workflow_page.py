@@ -64,6 +64,15 @@ _PHASE_RANK = {
     "done": 5,
 }
 
+
+def _merge_desktop_capability(
+    local: dict[str, object],
+    capability: dict[str, object],
+) -> dict[str, object]:
+    payload = dict(local)
+    payload["desktop"] = dict(capability)
+    return payload
+
 _SEND_BTN = """
 QToolButton {
     background: #08745F; color: #FFFFFF; border: none;
@@ -1207,6 +1216,22 @@ class WorkflowPage(QWidget):
         capability = com_availability.describe_com_capability()
         return {"desktop": capability}
 
+    def _merge_desktop_capability(self, local: dict[str, object]) -> dict[str, object]:
+        return _merge_desktop_capability(local, self._desktop_capability_payload()["desktop"])
+
+    def _ensure_desktop_capability(self, workflow_id: str, local: dict[str, object]) -> None:
+        if not workflow_id:
+            return
+        try:
+            updated = self._api.update_workflow_local_run(
+                workflow_id,
+                self._merge_desktop_capability(local),
+            )
+        except ApiError:
+            return
+        if self._record and self._record.id == updated.id:
+            self._record = updated
+
     def _sync_desktop_capability(self, workflow_id: str, local: dict[str, object]) -> None:
         if not workflow_id:
             return
@@ -1217,9 +1242,10 @@ class WorkflowPage(QWidget):
 
         def run() -> None:
             try:
-                payload = dict(local)
-                payload.update(capability)
-                updated = self._api.update_workflow_local_run(workflow_id, payload)
+                updated = self._api.update_workflow_local_run(
+                    workflow_id,
+                    self._merge_desktop_capability(local),
+                )
             except ApiError:
                 return
             if self._record and self._record.id == updated.id:
@@ -1930,6 +1956,7 @@ class WorkflowPage(QWidget):
                     "tests_status": "unknown",
                 }
             )
+            self._ensure_desktop_capability(wid, local)
 
             def work() -> WorkflowRecord:
                 self._api.update_workflow_local_run(wid, local)
@@ -1974,6 +2001,7 @@ class WorkflowPage(QWidget):
         if self._record.plan.unanswered():
             QMessageBox.information(self, "Уточнения", "Сначала ответьте на вопросы агента.")
             return
+        self._ensure_desktop_capability(self._record.id, dict(self._record.local_run or {}))
         self._tests_ok = False
         self._post_build_question = None
         self._next_btn.setVisible(False)

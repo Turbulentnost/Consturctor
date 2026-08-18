@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from PySide6.QtCore import QSettings
+
+logger = logging.getLogger(__name__)
+
+
+def _trace(message: str) -> None:
+    print(message, flush=True)
+    logger.info(message)
 
 
 def _settings() -> QSettings:
@@ -40,6 +48,7 @@ def save_session(*, access_token: str, fio: str = "") -> None:
     s.setValue("session/access_token", access_token)
     s.setValue("session/fio", fio.strip())
     s.sync()
+    _trace(f"Session saved fio={fio.strip() or '-'}")
 
 
 def clear_session(*, keep_fio: bool = False) -> None:
@@ -52,3 +61,4 @@ def clear_session(*, keep_fio: bool = False) -> None:
     else:
         s.remove("session/fio")
     s.sync()
+    _trace(f"Session cleared keep_fio={keep_fio} fio={fio or '-'}")

@@ -201,7 +201,11 @@ def _run_hybrid_task(
     user_id: str,
     workflow_id: str,
 ) -> dict[str, Any]:
-    phases = list(getattr(plan.runtime, "phases", []) or [])
+    phases = [
+        phase
+        for phase in (list(getattr(plan.runtime, "phases", []) or []))
+        if str(getattr(phase, "kind", "") or "").strip()
+    ]
     if not phases:
         raise AgentRuntimeError("Hybrid plan не содержит phases")
 
@@ -483,11 +487,17 @@ def _desktop_com_available(workflow: Workflow, domain: str) -> tuple[bool, str]:
         if domain == "outlook_calendar":
             if bool(desktop.get("outlook_com_available")):
                 return True, "Outlook COM доступен"
+            if bool(desktop.get("com_available")):
+                reason = str(desktop.get("com_reason") or "").strip()
+                return True, reason or "COM доступен"
             reason = str(desktop.get("outlook_com_reason") or "").strip()
             return False, reason or "Outlook COM недоступен"
         if domain == "onec":
             if bool(desktop.get("onec_com_available")):
                 return True, "1C COM доступен"
+            if bool(desktop.get("com_available")):
+                reason = str(desktop.get("com_reason") or "").strip()
+                return True, reason or "COM доступен"
             reason = str(desktop.get("onec_com_reason") or "").strip()
             return False, reason or "1C COMConnector недоступен"
         if bool(desktop.get("com_available")):

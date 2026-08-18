@@ -20,6 +20,11 @@ from tools.onec.password import verify_password
 
 logger = logging.getLogger(__name__)
 
+
+def _trace(message: str) -> None:
+    print(message, flush=True)
+    logger.info(message)
+
 # Локальные оверрайды должности по подстроке ФИО (без учёта ь/ъ).
 _POSITION_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("комарков", "менеджер тендерного офиса"),
@@ -67,6 +72,8 @@ async def login(fio: str, password: str) -> LoginResponse:
     if not fio or not password:
         raise AuthError("Неверный логин или пароль", status_code=401)
 
+    _trace(f"Auth login start fio={fio}")
+
     try:
         erp_user = await asyncio.to_thread(find_user_by_fio, fio)
     except UserNotFoundError as exc:
@@ -105,7 +112,10 @@ async def login(fio: str, password: str) -> LoginResponse:
         department=department or "",
         position=position or "",
     )
-    logger.info("User logged in: id=%s", erp_user.id)
+    _trace(
+        f"Auth login ok id={erp_user.id} fio={erp_user.fio} "
+        f"department={department or '-'} position={position or '-'}"
+    )
     return LoginResponse(access_token=token, user=user_out)
 
 

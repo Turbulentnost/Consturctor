@@ -2,25 +2,63 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.config import settings
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
+
+def _configure_logging() -> None:
+    """Keep Cursor/httpx/app logs visible under uvicorn --reload.
+
+    Uvicorn may already attach handlers, so basicConfig is a no-op and httpx
+    stays at WARNING — that's why the terminal looks empty during a run.
+    """
+    fmt = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(fmt)
+        root.addHandler(handler)
+    for handler in root.handlers:
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(fmt)
+    for name in (
+        "httpx",
+        "httpcore",
+        "httpcore.http11",
+        "app",
+        "app.clients.cursor",
+        "app.services.workflows",
+        "app.services.workflows.service",
+        "app.services.workflows.cursor_tools",
+        "uvicorn.access",
+    ):
+        log = logging.getLogger(name)
+        log.setLevel(logging.INFO)
+        log.propagate = True
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
+http_logger = logging.getLogger("app.http")
+
+
+def _http_trace(message: str) -> None:
+    print(message, flush=True)
+    http_logger.info(message)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     from app.db.session import init_db
 
+    _configure_logging()
     logger.info(
         "Constructor backend starting (ERP=%s/%s, LLM=%s, DB=%s)",
         settings.erp_sql_server,
@@ -56,6 +94,27 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def _log_http_requests(request: Request, call_next):
+    started = time.perf_counter()
+    path = request.url.path
+    query = f"?{request.url.query}" if request.url.query else ""
+    client = request.client.host if request.client else "-"
+    _http_trace(f"API request {request.method} {path}{query} client={client}")
+    try:
+        response = await call_next(request)
+    except Exception:
+        _http_trace(f"API error {request.method} {path}{query}")
+        http_logger.exception("API error %s %s%s", request.method, path, query)
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    _http_trace(
+        f"API response {request.method} {path}{query} -> {getattr(response, 'status_code', '-')}"
+        f" in {elapsed_ms:.1f}ms"
+    )
+    return response
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

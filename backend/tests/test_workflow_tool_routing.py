@@ -65,6 +65,35 @@ def test_runtime_phases_survive_roundtrip() -> None:
     ]
 
 
+def test_runtime_filters_empty_hybrid_phases() -> None:
+    plan = WorkflowPlan.from_dict(
+        {
+            "title": "Broken hybrid agent",
+            "runtime": {
+                "kind": "hybrid",
+                "phases": [
+                    {
+                        "id": "p1",
+                        "kind": "",
+                        "tools": ["outlook.read_calendar"],
+                        "handoff": "skip this",
+                    },
+                    {
+                        "id": "p2",
+                        "kind": "onec",
+                        "tools": ["onec.search_documents"],
+                        "handoff": "keep this",
+                    },
+                ],
+            },
+        }
+    )
+
+    assert [phase.kind for phase in plan.runtime.phases] == ["onec"]
+    assert [phase.id for phase in plan.runtime.phases] == ["p2"]
+    assert [phase["kind"] for phase in plan.to_dict()["runtime"]["phases"]] == ["onec"]
+
+
 def test_shared_routing_prefers_explicit_tools() -> None:
     plan = WorkflowPlan.from_dict(
         {
@@ -425,3 +454,32 @@ def test_live_gate_allows_onec_when_onec_com_present() -> None:
 
     assert available is True
     assert "1C COM" in reason
+
+
+def test_live_gate_allows_generic_com_when_desktop_com_present() -> None:
+    workflow = Workflow(
+        id="wf-5",
+        user_id="user-1",
+        title="Generic COM agent",
+        local_run={
+            "desktop": {
+                "platform": "win32",
+                "outlook_com_available": False,
+                "outlook_com_reason": "Outlook COM недоступен",
+                "onec_com_available": False,
+                "onec_com_reason": "1C COM недоступен",
+                "com_available": True,
+                "com_reason": "COM доступен",
+            }
+        },
+        plan_json={
+            "title": "Generic COM agent",
+            "goal": "Use COM on this machine",
+            "runtime": {"kind": "outlook_calendar"},
+        },
+    )
+
+    available, reason = _desktop_com_available(workflow, "outlook_calendar")
+
+    assert available is True
+    assert "COM доступен" in reason

@@ -154,6 +154,7 @@ class AppWindow(QMainWindow):
             self.main_shell.navigate_to_agent_run(pending)
 
     def _on_logout(self) -> None:
+        current_fio = self._user.fio if getattr(self, "_user", None) is not None else "-"
         self._notify.stop()
         configure_runtime_api(token=None, base_url=self.api.base_url)
         self._terminate_creation_sessions()
@@ -174,8 +175,9 @@ class AppWindow(QMainWindow):
             self._terminate_creation_sessions()
             event.accept()
             return
-        event.ignore()
-        self.hide()
+        self._notify.stop()
+        self._terminate_creation_sessions()
+        event.accept()
 
     def _terminate_creation_sessions(self) -> None:
         try:

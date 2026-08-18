@@ -123,6 +123,7 @@ def invoke_creation_tool(
     if workflow_id:
         args.setdefault("workflow_id", workflow_id)
         args.setdefault("agent_id", workflow_id)
+    logger.info("Creation tool invoke start tool=%s workflow_id=%s", tool, workflow_id or "-")
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, args)
     if tool in _ONEC_TOOLS:
@@ -149,6 +150,7 @@ def invoke_creation_tool(
     if not payload.get("ok"):
         raise RuntimeError(str(payload.get("error") or f"Ошибка инструмента {tool}"))
     result = payload.get("result")
+    logger.info("Creation tool invoke ok tool=%s workflow_id=%s", tool, workflow_id or "-")
     return result if isinstance(result, dict) else {}
 
 
@@ -169,6 +171,12 @@ def stream_cursor_with_tools(
         calls = should_run_tool_calls(last.text or "", mode=mode)
         if not calls:
             return last
+        logger.info(
+            "Cursor tool round=%s mode=%s calls=%s",
+            round_n + 1,
+            mode,
+            [str(call.get("name") or "") for call in calls[:_MAX_CALLS_PER_ROUND]],
+        )
         results: list[dict[str, Any]] = []
         for call in calls[:_MAX_CALLS_PER_ROUND]:
             name = str(call.get("name") or "")
@@ -232,6 +240,15 @@ def _emit(
     text: str = "",
     extra: dict[str, Any] | None = None,
 ) -> None:
+    preview = (text or "").replace("\n", " ").strip()
+    if len(preview) > 240:
+        preview = preview[:240] + "…"
+    if extra:
+        logger.info("Cursor event type=%s text=%s extra_keys=%s", event_type, preview, sorted(extra.keys()))
+    elif preview:
+        logger.info("Cursor event type=%s text=%s", event_type, preview)
+    else:
+        logger.info("Cursor event type=%s", event_type)
     if on_event is None:
         return
     if extra:

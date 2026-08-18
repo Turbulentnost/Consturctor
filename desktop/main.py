@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -11,6 +12,9 @@ if getattr(sys, "frozen", False):
         sys.path.insert(0, str(meipass))
 elif str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+for _noisy_logger in ("httpx", "httpcore", "urllib3"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QIcon
@@ -62,7 +66,7 @@ def main() -> int:
         Qt.HighDpiScaleFactorRoundingPolicy.RoundPreferFloor
     )
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)
+    app.setQuitOnLastWindowClosed(True)
     app.setApplicationName("NewConstructor")
     logo = bundle_path("app", "ui", "temp", "logo.png")
     if not logo.exists():

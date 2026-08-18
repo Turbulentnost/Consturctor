@@ -94,7 +94,11 @@ class PlanRuntime:
         phases_raw = data.get("phases") or []
         phases: list[PlanPhase] = []
         if isinstance(phases_raw, list):
-            phases = [PlanPhase.from_dict(x) for x in phases_raw if isinstance(x, dict)]
+            phases = [
+                phase
+                for phase in (PlanPhase.from_dict(x) for x in phases_raw if isinstance(x, dict))
+                if phase.id.strip() and phase.kind.strip()
+            ]
         return cls(
             kind=str(data.get("kind") or ""),
             site_url=str(data.get("site_url") or data.get("siteUrl") or ""),

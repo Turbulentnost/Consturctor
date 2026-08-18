@@ -24,7 +24,7 @@ class SubprocessComWorker(BaseWorker):
 
     def execute(self, task: WorkerTask) -> WorkerResult:
         """Выполнить WorkerTask в дочернем процессе и вернуть WorkerResult."""
-        command = _build_worker_command(self._module_name)
+        command = _build_worker_command(self._module_name, task)
         try:
             completed = subprocess.run(
                 command,
@@ -97,10 +97,16 @@ def _worker_env() -> dict[str, str]:
     return env
 
 
-def _build_worker_command(module_name: str) -> list[str]:
+def _build_worker_command(module_name: str, task: WorkerTask) -> list[str]:
     """Собрать команду запуска COM-worker для обычного Python и frozen exe."""
     if getattr(sys, "frozen", False):
         return [sys.executable, "--com-worker"]
+    if task.tool_name.startswith("onec."):
+        helper = os.environ.get("ONEC_COM_PYTHON", "").strip()
+        if helper:
+            return [helper, "-m", module_name]
+        if sys.platform == "win32" and os.environ.get("ONEC_COM_USE_32BIT", "1") == "1":
+            return ["py", "-3.12-32", "-m", module_name]
     return [sys.executable, "-m", module_name]
 
 

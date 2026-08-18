@@ -92,6 +92,10 @@ PLAN_SCHEMA_HINT = """
   - onec — если пользователь указал 1С / OData / COM к 1С;
   - browser_task — работа в конкретном веб-приложении по URL;
   - иначе runtime={} или опусти поле (не ставь site_search_excel «по умолчанию»).
+- phases используй ТОЛЬКО для hybrid-сценариев. Каждая фаза обязана иметь непустые
+  id и kind из набора onec / outlook_calendar / browser_task / site_search_excel / web_search.
+  Никогда не добавляй пустую placeholder-фазу в конце, не оставляй `{}` и не создавай phase
+  без kind. Если гибридных этапов нет, поле phases вообще не добавляй.
 - keywords — только для site_search_excel (разбей перечисления пользователя на элементы).
 - Не пиши код реализации в этом ответе.
 """.strip()
@@ -256,12 +260,15 @@ def _desktop_runtime_hint(local_run: dict[str, Any] | None = None) -> str:
     ]
     if reason:
         parts.append(f"- reason: {reason}")
-    parts.append("- Если COM доступен, live для Outlook/1C можно использовать на этой машине.")
+    parts.append(
+        "- Если COM доступен, live должен идти на Windows-машине пользователя через "
+        "Constructor desktop tools; не переключайся на cloud-only live harness."
+    )
     parts.append("- Если COM недоступен, выбирай fixtures/stub и не пытайся имитировать live.")
     return "\n".join(parts)
 
 
-def server_access_notes(*, odata: bool, imap: bool) -> str:
+def server_access_notes(*, odata: bool, imap: bool, backend_url: str = "") -> str:
     odata_line = (
         "1С OData (tools onec.*): настроен в backend/.env. "
         "Не спрашивай URL/логин/пароль. Ходи в 1С через onec.*"
@@ -276,12 +283,18 @@ def server_access_notes(*, odata: bool, imap: bool) -> str:
         if imap
         else "IMAP: в backend/.env не настроен — не проси логин/пароль почты в чате."
     )
+    backend_line = (
+        f"- API конструктора уже доступен с десктопа: BACKEND_URL={backend_url}. "
+        "Используй именно этот адрес для live-коннекта десктопа, не выдумывай CONSTRUCTOR_API_URL."
+        if backend_url
+        else "- API конструктора уже доступен с десктопа (BACKEND_URL). "
+        "Не выдумывай CONSTRUCTOR_API_URL и не проси его у пользователя."
+    )
     return (
         "Доступы Constructor (не спрашивай секреты у пользователя):\n"
         f"- {odata_line}\n"
         f"- {imap_line}\n"
-        "- API конструктора уже доступен с десктопа (BACKEND_URL). "
-        "Не выдумывай CONSTRUCTOR_API_URL и не проси его у пользователя.\n"
+        f"{backend_line}\n"
         "- Имена ONEC_BASE_URL / CONSTRUCTOR_API_URL в проекте нет — это ODATA_* и BACKEND_URL."
     )
 
@@ -309,6 +322,9 @@ def build_execute_prompt(
         "ОБЯЗАТЕЛЬНО учти все ответы пользователя (answered_questions / уточнения): "
         "если там 1С, COM Outlook, fixtures/live — реализуй именно это, "
         "не подменяй на web_search или site_browser.\n"
+        "Если desktop_hint сообщает COM доступен, не создавай cloud-only live harness "
+        "и не делай BACKEND_URL внутри облака обязательным условием запуска: "
+        "live должен идти через Constructor desktop tools на машине пользователя.\n"
         "В финальном ответе не называй агента готовым без TESTS: PASS.\n\n"
         f"{desktop_section}"
         f"{access_section}"
@@ -354,6 +370,9 @@ def build_reexecute_prompt(
         "Не ломай уже корректное. Доведи незакрытые steps и test_criteria.\n"
         "ОБЯЗАТЕЛЬНО сохрани интеграции из ответов пользователя "
         "(1С / COM Outlook / fixtures/live) — не подменяй на web_search.\n"
+        "Если desktop_hint сообщает COM доступен, повторный прогон должен идти "
+        "через Constructor desktop tools на машине пользователя; не уводи live "
+        "в cloud-only harness и не делай BACKEND_URL внутри облака обязательным.\n"
         "В конце — статус PASS/FAIL по критериям (TESTS: PASS|FAIL в RESULT.md). "
         "Не пиши, что агент готов, без TESTS: PASS.\n\n"
         f"{desktop_section}"

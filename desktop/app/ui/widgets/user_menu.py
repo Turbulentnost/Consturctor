@@ -19,6 +19,17 @@ from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 _AVATAR_SIZE = 42
 _HEADER_WIDTH = 300
 _DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
+_HEADER_POSITION_OVERRIDES: tuple[tuple[str, str], ...] = (
+    ("комарков", "помощник председателя совета директоров"),
+)
+
+
+def _header_position(fio: str, position: str) -> str:
+    key = (fio or "").casefold().replace("ь", "").replace("ъ", "")
+    for needle, title in _HEADER_POSITION_OVERRIDES:
+        if needle in key:
+            return title
+    return position.strip() or "должность не указана"
 
 
 class ElidedLabel(QLabel):
@@ -168,7 +179,7 @@ class UserMenuHeader(QWidget):
 
     def set_user(self, *, fio: str, position: str = "") -> None:
         self._fio.setText(fio or "—")
-        self._position.setText(position.strip() or "должность не указана")
+        self._position.setText(_header_position(fio, position))
 
     def set_avatar_pixmap(self, pixmap: QPixmap | None) -> None:
         if pixmap is None or pixmap.isNull():

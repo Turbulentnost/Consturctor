@@ -10,6 +10,7 @@ import time
 from pydantic import ValidationError
 
 from app.tools.ac.workers.models import WorkerResult, WorkerTask
+from app.tools.ac.workers.onec_worker import OneCComWorker
 from app.tools.ac.workers.outlook_com_worker import OutlookComWorker
 
 if hasattr(sys.stdin, "reconfigure"):
@@ -45,6 +46,10 @@ def _execute_task(task: WorkerTask) -> WorkerResult:
     """Маршрутизировать задачу внутри изолированного COM process."""
     if task.tool_name == "test.sleep":
         return _execute_test_sleep(task)
+
+    if task.tool_name.startswith("onec."):
+        worker = OneCComWorker()
+        return worker.execute(task)
 
     worker = OutlookComWorker(safe_mode=True, allow_direct_com_calls=True)
     return worker.execute(task)

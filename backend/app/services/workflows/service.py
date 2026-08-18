@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import logging
 import shutil
 import time
@@ -13,8 +14,6 @@ from sqlalchemy.orm import Session
 from app.clients import cursor as cursor_client
 from app.clients.cursor import CursorAgentError
 from app.config import settings
-
-logger = logging.getLogger(__name__)
 from app.models.workflow import Workflow
 from app.schemas.workflow import (
     ArtifactItem,
@@ -33,6 +32,13 @@ from app.services.workflows.document import (
     load_attachment_bytes,
 )
 from app.services.workflows.plan_models import WorkflowPlan
+
+logger = logging.getLogger(__name__)
+
+
+def _trace(message: str) -> None:
+    print(message, flush=True)
+    logger.info("%s", message)
 
 
 class WorkflowError(Exception):
@@ -184,7 +190,7 @@ def plan_workflow(
     on_event: WorkflowEventCallback | None = None,
 ) -> WorkflowSchema:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
-    logger.info("Workflow plan start id=%s title=%s", workflow_id, row.title)
+    _trace(f"Workflow plan start id={workflow_id} title={row.title}")
     attachments = _load_attachments_payload(workflow_id)
     images = collect_prompt_images(attachments)
     has_text = bool((row.document_text or "").strip())
@@ -203,12 +209,9 @@ def plan_workflow(
         )
     )
     model = _resolve_model()
-    logger.info(
-        "Workflow plan creating Cursor agent id=%s model=%s prompt_len=%s images=%s",
-        workflow_id,
-        model or "-",
-        len(prompt or ""),
-        len(images),
+    _trace(
+        f"Workflow plan creating Cursor agent id={workflow_id} "
+        f"model={model or '-'} prompt_len={len(prompt or '')} images={len(images)}"
     )
     try:
         created = cursor_client.create_agent(
@@ -229,11 +232,9 @@ def plan_workflow(
     row.plan_run_id = run_id
     row.phase = "plan"
     db.commit()
-    logger.info(
-        "Workflow plan agent created id=%s agent=%s run=%s — waiting for stream text",
-        workflow_id,
-        agent_id,
-        run_id,
+    _trace(
+        f"Workflow plan agent created id={workflow_id} agent={agent_id} "
+        f"run={run_id} — waiting for stream text"
     )
 
     _emit(on_event, "decision", "Планировщик запущен, получаю рассуждения агента.")
@@ -311,12 +312,9 @@ def clarify_workflow(
             image_names=image_names,
         )
     )
-    logger.info(
-        "Workflow clarify start id=%s answers=%s images=%s names=%s",
-        workflow_id,
-        list((merged_answers or {}).keys()),
-        len(images),
-        image_names,
+    _trace(
+        f"Workflow clarify start id={workflow_id} answers={list((merged_answers or {}).keys())} "
+        f"images={len(images)} names={image_names}"
     )
     try:
         if row.plan_agent_id:
@@ -344,12 +342,7 @@ def clarify_workflow(
 
     row.plan_run_id = run_id
     db.commit()
-    logger.info(
-        "Workflow clarify run started id=%s agent=%s run=%s",
-        workflow_id,
-        agent_id,
-        run_id,
-    )
+    _trace(f"Workflow clarify run started id={workflow_id} agent={agent_id} run={run_id}")
 
     phase = _stream_run_with_tools(
         agent_id, run_id, on_event=on_event, workflow_id=workflow_id, mode="plan"
@@ -408,12 +401,7 @@ def execute_workflow(
     if not row.plan_json:
         raise WorkflowError("Нет плана для выполнения")
     plan = WorkflowPlan.from_dict(row.plan_json)
-    logger.info(
-        "Workflow execute start id=%s reexecute=%s title=%s",
-        workflow_id,
-        reexecute,
-        row.title,
-    )
+    _trace(f"Workflow execute start id={workflow_id} reexecute={reexecute} title={row.title}")
 
     from app.services.imap_tools import imap_configured
     from app.services.onec_tools import odata_configured
@@ -421,6 +409,7 @@ def execute_workflow(
     access_notes = prompts.server_access_notes(
         odata=odata_configured(),
         imap=imap_configured(),
+        backend_url=str(getattr(settings, "backend_url", "") or os.environ.get("BACKEND_URL", "")).strip(),
     )
     if reexecute:
         clarification = str((row.local_run or {}).get("post_build_answer") or "").strip()
@@ -617,7 +606,7 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     row.phase = "done"
     db.commit()
     db.refresh(row)
-    logger.info("Workflow published id=%s title=%s", workflow_id, row.title)
+    _trace(f"Workflow published id={workflow_id} title={row.title}")
     return _to_schema(row)
 
 
@@ -790,11 +779,9 @@ def _materialize_artifacts(
 
 def _create_exec_agent(title: str, prompt: str) -> tuple[str, str]:
     model = _resolve_model()
-    logger.info(
-        "Workflow execute creating Cursor agent title=%s model=%s prompt_len=%s",
-        title,
-        model or "-",
-        len(prompt or ""),
+    _trace(
+        f"Workflow execute creating Cursor agent title={title} model={model or '-'} "
+        f"prompt_len={len(prompt or '')}"
     )
     created = cursor_client.create_agent(
         prompt=prompt,
@@ -811,11 +798,11 @@ def _create_exec_agent(title: str, prompt: str) -> tuple[str, str]:
 
 def _resolve_model() -> str | None:
     preferred = settings.cursor_workflow_model
-    logger.info("Cursor resolve model preferred=%s", preferred or "-")
+    _trace(f"Cursor resolve model preferred={preferred or '-'}")
     try:
         models = cursor_client.list_models()
     except CursorAgentError as exc:
-        logger.warning("Cursor list_models failed: %s — fallback=%s", exc.message, preferred or "-")
+        _trace(f"Cursor list_models failed: {exc.message} — fallback={preferred or '-'}")
         return preferred or None
     ids: list[str] = []
     for model in models:
@@ -824,14 +811,14 @@ def _resolve_model() -> str | None:
             ids.append(mid)
         aliases = {str(a) for a in (model.get("aliases") or [])}
         if preferred and (mid == preferred or preferred in aliases):
-            logger.info("Cursor model resolved=%s (preferred match)", mid)
+            _trace(f"Cursor model resolved={mid} (preferred match)")
             return mid
     for mid in ids:
         if mid.startswith(preferred or "composer"):
-            logger.info("Cursor model resolved=%s (prefix)", mid)
+            _trace(f"Cursor model resolved={mid} (prefix)")
             return mid
     chosen = preferred or (ids[0] if ids else None)
-    logger.info("Cursor model resolved=%s from %s candidates", chosen or "-", len(ids))
+    _trace(f"Cursor model resolved={chosen or '-'} from {len(ids)} candidates")
     return chosen
 
 
@@ -861,6 +848,15 @@ def _emit(
     text: str = "",
     extra: dict | None = None,
 ) -> None:
+    preview = (text or "").replace("\n", " ").strip()
+    if len(preview) > 240:
+        preview = preview[:240] + "…"
+    if extra:
+        _trace(f"Workflow event type={event_type} text={preview} extra_keys={sorted(extra.keys())}")
+    elif preview:
+        _trace(f"Workflow event type={event_type} text={preview}")
+    else:
+        _trace(f"Workflow event type={event_type}")
     if on_event is None:
         return
     if extra:
@@ -883,7 +879,7 @@ def _stream_run(
     assistant_parts: list[str] = []
     got_terminal = False
     logged_assistant = ""
-    logger.info("Cursor stream start agent=%s run=%s", agent_id, run_id)
+    _trace(f"Cursor stream start agent={agent_id} run={run_id}")
     try:
         for item in cursor_client.stream_run_events(agent_id, run_id):
             event = str(item.get("event") or "message")
@@ -902,7 +898,7 @@ def _stream_run(
                     delta = chunk
                     logged_assistant += chunk
                 if delta.strip():
-                    logger.info("Cursor assistant [%s/%s]: %s", agent_id[-8:], run_id[-8:], delta)
+                    _trace(f"Cursor assistant [{agent_id[-8:]}/{run_id[-8:]}]: {delta}")
             elif event == "message":
                 _emit(on_event, "message", str(payload.get("text") or payload.get("message") or ""))
             elif event == "result":
@@ -913,52 +909,29 @@ def _stream_run(
                 result.git = payload.get("git") or {}
                 result.branch, result.pr_url = _extract_git(result.git)
                 preview = (result.text or "")[:1200]
-                logger.info(
-                    "Cursor stream result status=%s branch=%s text_len=%s preview=%s",
-                    result.status,
-                    result.branch or "-",
-                    len(result.text or ""),
-                    preview,
+                _trace(
+                    f"Cursor stream result status={result.status} branch={result.branch or '-'} "
+                    f"text_len={len(result.text or '')} preview={preview}"
                 )
             elif event == "error":
                 result.error = str(payload.get("message") or payload.get("code") or "")
-                logger.error(
-                    "Cursor stream error agent=%s run=%s: %s",
-                    agent_id,
-                    run_id,
-                    result.error,
-                )
+                _trace(f"Cursor stream error agent={agent_id} run={run_id}: {result.error}")
             elif event not in {"heartbeat", "ping", "message", "done"}:
-                logger.info(
-                    "Cursor stream event=%s agent=%s run=%s keys=%s",
-                    event,
-                    agent_id[-8:],
-                    run_id[-8:],
-                    sorted(payload.keys()),
+                _trace(
+                    f"Cursor stream event={event} agent={agent_id[-8:]} run={run_id[-8:]} "
+                    f"keys={sorted(payload.keys())}"
                 )
     except CursorAgentError as exc:
-        logger.warning(
-            "Cursor stream failed agent=%s run=%s: %s",
-            agent_id,
-            run_id,
-            exc.message,
-        )
+        _trace(f"Cursor stream failed agent={agent_id} run={run_id}: {exc.message}")
 
     if not result.text:
         result.text = "".join(assistant_parts).strip()
     if not got_terminal:
-        logger.info(
-            "Cursor stream incomplete — polling agent=%s run=%s",
-            agent_id,
-            run_id,
-        )
+        _trace(f"Cursor stream incomplete — polling agent={agent_id} run={run_id}")
         result = _poll_until_terminal(agent_id, run_id, base=result)
-    logger.info(
-        "Cursor stream end agent=%s run=%s status=%s text_len=%s",
-        agent_id,
-        run_id,
-        result.status or "-",
-        len(result.text or ""),
+    _trace(
+        f"Cursor stream end agent={agent_id} run={run_id} "
+        f"status={result.status or '-'} text_len={len(result.text or '')}"
     )
     return result
 
@@ -986,22 +959,14 @@ def _poll_until_terminal(
             result.text = str(run.get("result"))
         result.git = run.get("git") or result.git
         result.branch, result.pr_url = _extract_git(result.git)
-        logger.info(
-            "Cursor poll agent=%s run=%s status=%s text_len=%s",
-            agent_id[-8:],
-            run_id[-8:],
-            status or "-",
-            len(result.text or ""),
+        _trace(
+            f"Cursor poll agent={agent_id[-8:]} run={run_id[-8:]} "
+            f"status={status or '-'} text_len={len(result.text or '')}"
         )
         if status in cursor_client.TERMINAL_RUN_STATUSES:
             break
         if time.monotonic() >= deadline:
-            logger.warning(
-                "Cursor poll timeout agent=%s run=%s last_status=%s",
-                agent_id,
-                run_id,
-                status or "-",
-            )
+            _trace(f"Cursor poll timeout agent={agent_id} run={run_id} last_status={status or '-'}")
             break
         time.sleep(interval_s)
     return result

@@ -16,6 +16,10 @@ from app.services import app_users, auth_service
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _trace(message: str) -> None:
+    print(message, flush=True)
+
+
 @router.get("/users", response_model=UserFioListResponse)
 async def list_users(search: str | None = None) -> UserFioListResponse:
     try:
@@ -37,7 +41,10 @@ async def departments(_: AuthContext = Depends(get_current_user)) -> DepartmentL
 @router.post("/login", response_model=LoginResponse)
 async def login(body: LoginRequest) -> LoginResponse:
     try:
-        return await auth_service.login(body.fio, body.password)
+        _trace(f"Auth API /login request fio={body.fio}")
+        result = await auth_service.login(body.fio, body.password)
+        _trace(f"Auth API /login ok fio={body.fio} user_id={result.user.id}")
+        return result
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
