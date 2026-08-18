@@ -124,6 +124,7 @@ def _definition(name: str, title: str) -> ToolDefinition:
         side_effect_level=ToolSideEffectLevel.READ,
         execution_mode=ToolExecutionMode.COM_WORKER,
         requires_human_approval=False,
+        timeout_seconds=180,
         input_schema={"type": "object"},
         output_schema={"type": "object"},
     )

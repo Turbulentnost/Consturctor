@@ -1,4 +1,4 @@
-"""Cursor Cloud Agent ↔ desktop tools during workflow creation."""
+"""Cursor Cloud Agent and desktop tools during workflow creation."""
 
 from __future__ import annotations
 

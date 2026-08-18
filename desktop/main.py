@@ -28,6 +28,16 @@ from app.ui.theme import app_font, load_fonts, qss_global
 APP_ID = "NewConstructor"
 
 
+def _configure_console_encoding() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+            except Exception:
+                pass
+
+
 def _set_app_user_model_id() -> None:
     if sys.platform != "win32":
         return
@@ -53,6 +63,7 @@ def _wants_background(argv: list[str]) -> bool:
 
 
 def main() -> int:
+    _configure_console_encoding()
     _set_app_user_model_id()
     workflow_id = _open_workflow_id(sys.argv)
     background = _wants_background(sys.argv)

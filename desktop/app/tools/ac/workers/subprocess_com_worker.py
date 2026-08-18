@@ -7,8 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pydantic import ValidationError
-
 from app.tools.ac.workers.base import BaseWorker
 from app.tools.ac.workers.models import WorkerResult, WorkerTask
 
@@ -81,7 +79,7 @@ def _parse_worker_result(task_id: str, stdout: str) -> WorkerResult | None:
     """Попытаться распарсить stdout дочернего процесса как WorkerResult."""
     try:
         return WorkerResult.model_validate_json(stdout)
-    except (ValueError, ValidationError):
+    except Exception:
         return None
 
 
@@ -94,6 +92,9 @@ def _worker_env() -> dict[str, str]:
     desktop = str(_desktop_root())
     current = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = desktop if not current else f"{desktop}{os.pathsep}{current}"
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONLEGACYWINDOWSSTDIO", "0")
     return env
 
 

@@ -335,20 +335,32 @@ def _run_hybrid_onec_phase(
     emit({"type": "tool_result", "tool": "onec.search_documents", "result": search_result})
 
     card_result: dict[str, Any] = {}
-    if "onec.get_document_card" in {t.casefold() for t in phase_tools}:
-        documents = search_result.get("documents") or []
-        if documents and isinstance(documents[0], dict):
-            doc_ref = str(documents[0].get("ref") or "").strip()
-            if doc_ref:
-                card_result = _request_desktop_tool(
-                    emit,
-                    run_id=run_id,
-                    user_id=user_id,
-                    workflow_id=workflow_id,
-                    tool="onec.get_document_card",
-                    arguments={"document_ref": doc_ref},
-                )
-                emit({"type": "tool_result", "tool": "onec.get_document_card", "result": card_result})
+    documents = search_result.get("documents") if isinstance(search_result, dict) else []
+    first_doc = documents[0] if documents and isinstance(documents[0], dict) else {}
+
+    if len(documents) == 1 and first_doc:
+        card_result = {
+            "document": first_doc,
+            "source": "onec.search_documents",
+            "method": "search_result_fallback",
+        }
+        emit({"type": "tool_result", "tool": "onec.get_document_card", "result": card_result})
+    elif "onec.get_document_card" in {t.casefold() for t in phase_tools}:
+        search_query = str(search_result.get("query") or query).strip()
+        document_type = str(search_result.get("document_type") or "").strip()
+        if search_query or document_type:
+            card_result = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                tool="onec.get_document_card",
+                arguments={
+                    "query": search_query or document_type,
+                    "document_type": document_type,
+                },
+            )
+            emit({"type": "tool_result", "tool": "onec.get_document_card", "result": card_result})
 
     return {"search": search_result, "card": card_result}
 

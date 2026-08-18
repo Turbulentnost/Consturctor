@@ -7,8 +7,6 @@ import os
 import sys
 import time
 
-from pydantic import ValidationError
-
 from app.tools.ac.workers.models import WorkerResult, WorkerTask
 from app.tools.ac.workers.onec_worker import OneCComWorker
 from app.tools.ac.workers.outlook_com_worker import OutlookComWorker
@@ -26,7 +24,7 @@ def main() -> int:
     raw_input = sys.stdin.read()
     try:
         task = WorkerTask.model_validate_json(raw_input)
-    except (ValueError, ValidationError) as exc:
+    except Exception as exc:
         _write_result(
             WorkerResult(
                 task_id="invalid-task",

@@ -2,14 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.config import settings
+
+
+def _configure_console_encoding() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+            except Exception:
+                pass
 
 
 def _configure_logging() -> None:
@@ -44,6 +56,7 @@ def _configure_logging() -> None:
         log.propagate = True
 
 
+_configure_console_encoding()
 _configure_logging()
 logger = logging.getLogger(__name__)
 http_logger = logging.getLogger("app.http")
@@ -94,6 +107,15 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled backend exception")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {exc}"},
+    )
 
 
 @app.middleware("http")

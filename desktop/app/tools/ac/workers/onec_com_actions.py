@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 from typing import Any
@@ -36,6 +37,44 @@ ENV_GET_DOCUMENT_CARD_METHOD = "ONEC_COM_GET_DOCUMENT_CARD_METHOD"
 ENV_SEARCH_TASKS_METHOD = "ONEC_COM_SEARCH_TASKS_METHOD"
 ENV_GET_TASK_CARD_METHOD = "ONEC_COM_GET_TASK_CARD_METHOD"
 
+SELECTABLE_FIELD_HINTS = (
+    "номер",
+    "наимен",
+    "код",
+    "коммент",
+    "содерж",
+    "тема",
+    "описан",
+    "статус",
+    "текст",
+    "соглаш",
+    "договор",
+    "вид",
+    "тип",
+    "партнер",
+    "ответствен",
+    "организац",
+    "контрагент",
+    "клиент",
+    "поставщик",
+    "сумм",
+    "дата",
+)
+
+TEXT_SEARCH_FIELD_HINTS = (
+    "номер",
+    "наимен",
+    "код",
+    "коммент",
+    "содерж",
+    "тема",
+    "описан",
+    "статус",
+    "текст",
+    "соглаш",
+    "договор",
+)
+
 
 def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
     """Выполнить read-only задачу 1С через COMConnector."""
@@ -55,12 +94,17 @@ def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
 
     pythoncom = None
     com_initialized = False
+    session = None
     try:
         pythoncom, _ = _load_pywin32_modules()
+        print("[COM_DIAG] step=pythoncom-loaded", file=sys.stderr, flush=True)
         pythoncom.CoInitialize()
         com_initialized = True
+        print("[COM_DIAG] step=coinitialize", file=sys.stderr, flush=True)
         session = _connect_session()
+        print("[COM_DIAG] step=connected", file=sys.stderr, flush=True)
         output_data = _dispatch_tool(session, task)
+        print("[COM_DIAG] step=dispatched", file=sys.stderr, flush=True)
     except ImportError as exc:
         return _com_not_available(task, f"pywin32 недоступен: {exc}")
     except OneCConnectionError as exc:
@@ -78,11 +122,12 @@ def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
             error_message=str(exc),
         )
     finally:
+        session = None
         if pythoncom is not None and com_initialized:
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
+            # In a short-lived worker process, let Python/Windows tear down COM
+            # during process exit. Manual CoUninitialize after COM proxy release
+            # has been unstable here and could crash or hang the helper process.
+            print("[COM_DIAG] step=skip-co-uninitialize", file=sys.stderr, flush=True)
 
     return WorkerResult(task_id=task.task_id, ok=True, output_data=output_data)
 
@@ -113,13 +158,17 @@ def _connect_session() -> Any:
             f"Укажите {ENV_CONNECTION_STRING} или {ENV_SERVER}/{ENV_REF}."
         )
     try:
+        print(f"[COM_DIAG] step=dispatch progid={progid}", file=sys.stderr, flush=True)
         connector = win32com_client.Dispatch(progid)
     except Exception as exc:  # noqa: BLE001
         raise OneCConnectionError(
             f"Не удалось создать COMConnector {progid!r}: {exc}"
         ) from exc
     try:
-        return connector.Connect(connection_string)
+        print("[COM_DIAG] step=connect", file=sys.stderr, flush=True)
+        session = connector.Connect(connection_string)
+        del connector
+        return session
     except Exception as exc:  # noqa: BLE001
         raise OneCConnectionError(
             f"Не удалось подключиться к 1С через COMConnector: {exc}"
@@ -156,38 +205,63 @@ def _quote_conn_value(value: str) -> str:
 def _dispatch_tool(session: Any, task: WorkerTask) -> dict[str, Any]:
     """Маршрутизировать read-only tool_name к COM-методу."""
     if task.tool_name == "onec.search_documents":
-        number = str(task.input_data.get("number") or task.input_data.get("query") or "").strip()
-        if not number:
+        query = str(task.input_data.get("number") or task.input_data.get("query") or "").strip()
+        document_type = str(
+            task.input_data.get("document_type")
+            or task.input_data.get("type")
+            or task.input_data.get("section")
+            or ""
+        ).strip() or None
+        limit = int(task.input_data.get("max_results") or task.input_data.get("limit") or 10)
+        if not query:
             return {
                 "documents": [],
                 "count": 0,
                 "source": "onec_com",
                 "method": "get_incoming_correspondence",
-                "note": "Укажите номер документа для поиска",
+                "note": "Укажите номер документа или текст для поиска",
             }
-        raw = get_incoming_correspondence(session, number=number)
-        documents = [raw] if raw.get("found") else []
+        raw = _search_documents_across_specs(
+            session,
+            query=query,
+            limit=limit,
+            document_type=document_type,
+        )
+        documents = raw.get("documents") if isinstance(raw.get("documents"), list) else []
         return {
             "documents": documents,
             "count": len(documents),
-            "source": "onec_com",
-            "method": "get_incoming_correspondence",
+            "document_type": raw.get("document_type"),
+            "browse_only": raw.get("browse_only", False),
+            "source": raw.get("source", "onec_com"),
+            "method": raw.get("method", "query_documents"),
+            "query": query,
+            **({"error": raw.get("error")} if raw.get("error") else {}),
         }
     if task.tool_name == "onec.get_document_card":
-        number = str(
-            task.input_data.get("number")
-            or task.input_data.get("document_number")
-            or task.input_data.get("query")
+        query = str(
+            task.input_data.get("query")
+            or task.input_data.get("document_type")
+            or task.input_data.get("type")
+            or task.input_data.get("section")
+            or task.input_data.get("number")
             or ""
         ).strip()
-        if not number:
-            raise OneCConnectionError("Для get_document_card нужен номер документа")
-        raw = get_incoming_correspondence(session, number=number)
-        document = raw.get("fields", {}) if raw.get("found") else {}
+        if not query:
+            raise OneCConnectionError("Для get_document_card нужен query или document_type")
+        document_type = str(
+            task.input_data.get("document_type")
+            or task.input_data.get("type")
+            or task.input_data.get("section")
+            or ""
+        ).strip() or None
+        raw = _search_documents_across_specs(session, query=query, limit=1, document_type=document_type)
+        documents = raw.get("documents") if isinstance(raw.get("documents"), list) else []
+        document = documents[0] if documents and isinstance(documents[0], dict) else {}
         return {
             "document": document,
             "source": "onec_com",
-            "method": "get_incoming_correspondence",
+            "method": "get_document_card_from_search",
         }
     if task.tool_name == "onec.search_tasks":
         mine_only = bool(task.input_data.get("mine_only", True))
@@ -223,6 +297,383 @@ def _safe_str(value: Any, limit: int = 500) -> str:
     if len(text) > limit:
         return text[: limit - 3] + "..."
     return text
+
+
+def _looks_like_document_number(value: str) -> bool:
+    if not value:
+        return False
+    if " " in value:
+        return False
+    return any(ch.isdigit() for ch in value) and bool(re.fullmatch(r"[\w./\\\-()]+", value))
+
+
+def _normalize_search_text(value: str) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+METADATA_COLLECTION_NAMES = ("Документы", "Documents", "Справочники", "Catalogs")
+SELECTABLE_FIELD_HINTS = (
+    "номер",
+    "наимен",
+    "код",
+    "коммент",
+    "содерж",
+    "тема",
+    "описан",
+    "статус",
+    "ответствен",
+    "организац",
+    "контрагент",
+    "клиент",
+    "поставщик",
+    "сумм",
+    "дата",
+    "текст",
+    "соглаш",
+    "договор",
+    "вид",
+    "тип",
+)
+TEXT_SEARCH_FIELD_HINTS = (
+    "номер",
+    "наимен",
+    "код",
+    "коммент",
+    "содерж",
+    "тема",
+    "описан",
+    "статус",
+    "текст",
+    "соглаш",
+    "договор",
+)
+
+
+def _tokenize_search_text(value: str) -> list[str]:
+    return [token for token in re.findall(r"[0-9A-Za-zА-Яа-яЁё]+", _normalize_search_text(value)) if token]
+
+
+def _stem_token(token: str) -> str:
+    token = token.casefold()
+    for suffix in ("иями", "ями", "ами", "ями", "ого", "ему", "ому", "ыми", "ими", "ее", "ие", "ые", "ой", "ый", "ий", "ая", "яя", "ое", "ее", "ов", "ев", "ам", "ям", "ах", "ях", "ом", "ем", "ую", "юю", "а", "я", "ы", "и", "о", "е", "у", "ю", "й"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 4:
+            return token[: -len(suffix)]
+    return token
+
+
+def _stem_set(value: str) -> set[str]:
+    return {_stem_token(token) for token in _tokenize_search_text(value)}
+
+
+def _metadata_collection_kind(collection_name: str) -> str:
+    return "catalog" if "справоч" in collection_name.casefold() or "catalog" in collection_name.casefold() else "document"
+
+
+def _get_metadata_root(session: Any) -> Any | None:
+    return getattr(session, "Метаданные", None) or getattr(session, "Metadata", None)
+
+
+def _iter_metadata_collection_items(collection: Any) -> list[Any]:
+    try:
+        count = int(collection.Count())
+    except Exception:
+        return []
+    return [collection.Get(i) for i in range(count)]
+
+
+def _metadata_name(item: Any) -> str:
+    for attr in ("Name", "Имя"):
+        value = _safe_str(getattr(item, attr, ""))
+        if value:
+            return value
+    return ""
+
+
+def _metadata_synonym(item: Any) -> str:
+    for attr in ("Synonym", "Синоним"):
+        value = _safe_str(getattr(item, attr, ""))
+        if value:
+            return value
+    return ""
+
+
+def _metadata_requisite_names(item: Any) -> list[str]:
+    for attr in ("Реквизиты", "Requisites", "Attributes"):
+        requisites = getattr(item, attr, None)
+        if requisites is None:
+            continue
+        names: list[str] = []
+        for requisite in _iter_metadata_collection_items(requisites):
+            name = _metadata_name(requisite)
+            if name:
+                names.append(name)
+        if names:
+            return names
+    return []
+
+
+def _is_browse_query(query: str, candidate_name: str, candidate_synonym: str) -> bool:
+    query_stems = _stem_set(query)
+    if not query_stems:
+        return False
+    label_stems = _stem_set(f"{candidate_name} {candidate_synonym}")
+    if not label_stems:
+        return False
+    overlap = len(query_stems & label_stems)
+    return overlap >= max(1, round(len(query_stems) * 0.6))
+
+
+def _discover_metadata_candidates(session: Any, query: str, document_type: str | None = None) -> list[dict[str, Any]]:
+    metadata_root = _get_metadata_root(session)
+    if metadata_root is None:
+        return []
+
+    normalized_query = _normalize_search_text(document_type or query)
+    query_stems = _stem_set(normalized_query)
+    candidates: list[dict[str, Any]] = []
+    for collection_name in METADATA_COLLECTION_NAMES:
+        try:
+            collection = getattr(metadata_root, collection_name)
+        except Exception:
+            continue
+        kind = _metadata_collection_kind(collection_name)
+        for item in _iter_metadata_collection_items(collection):
+            name = _metadata_name(item)
+            synonym = _metadata_synonym(item)
+            label_text = _normalize_search_text(f"{name} {synonym}")
+            if not label_text:
+                continue
+            label_stems = _stem_set(label_text)
+            overlap = len(query_stems & label_stems)
+            if normalized_query and overlap == 0 and normalized_query not in label_text:
+                continue
+            score = overlap * 10
+            if normalized_query and normalized_query == _normalize_search_text(name):
+                score += 50
+            if normalized_query and normalized_query == _normalize_search_text(synonym):
+                score += 40
+            if normalized_query and normalized_query in label_text:
+                score += 20
+            if not score:
+                continue
+            candidates.append(
+                {
+                    "collection_name": collection_name,
+                    "kind": kind,
+                    "name": name,
+                    "synonym": synonym,
+                    "label": synonym or name or label_text,
+                    "item": item,
+                    "score": score,
+                    "browse_only": _is_browse_query(normalized_query, name, synonym),
+                    "requisites": _metadata_requisite_names(item),
+                }
+            )
+    candidates.sort(key=lambda candidate: candidate["score"], reverse=True)
+    return candidates
+
+
+def _pick_select_fields(candidate: dict[str, Any]) -> list[tuple[str, str]]:
+    requisites = candidate.get("requisites") or []
+    fields: list[tuple[str, str]] = [("ref", "Ссылка")]
+
+    if requisites:
+        for field_name in (name for name in requisites if _is_selectable_field_name(name)):
+            if len(fields) >= 8:
+                break
+            if all(existing_name != field_name for _, existing_name in fields):
+                fields.append((_field_alias(field_name), field_name))
+    return fields
+
+
+def _field_alias(field_name: str) -> str:
+    alias = re.sub(r"[^0-9A-Za-zА-Яа-яЁё]+", "_", field_name).strip("_")
+    return alias[:60] or "field"
+
+
+def _is_selectable_field_name(field_name: str) -> bool:
+    normalized = field_name.casefold()
+    return any(hint in normalized for hint in SELECTABLE_FIELD_HINTS)
+
+
+def _is_text_search_field_name(field_name: str) -> bool:
+    normalized = field_name.casefold()
+    return any(hint in normalized for hint in TEXT_SEARCH_FIELD_HINTS)
+
+
+def _build_metadata_query(
+    candidate: dict[str, Any],
+    query: str,
+    *,
+    limit: int,
+    browse_only: bool,
+) -> tuple[str, list[tuple[str, str]]]:
+    select_fields = _pick_select_fields(candidate)
+    select_clause = ",\n        ".join(f"Д.{field_name} КАК {alias}" for alias, field_name in select_fields)
+    query_lines = [f"ВЫБРАТЬ ПЕРВЫЕ {limit}", f"        {select_clause}", f"        ИЗ {candidate['collection_name'][:-1] if False else ''}"]
+    object_expr = f"{candidate['collection_name']}."  # placeholder to keep structure valid? will be replaced below
+    object_expr = candidate["name"]
+    # Build the fully qualified metadata reference from the collection kind.
+    if candidate["kind"] == "catalog":
+        object_expr = f"Справочник.{candidate['name']}"
+    else:
+        object_expr = f"Документ.{candidate['name']}"
+    query_lines[2] = f"        ИЗ {object_expr} КАК Д"
+
+    conditions: list[str] = []
+    if candidate["kind"] in {"document", "catalog"}:
+        conditions.append("НЕ Д.ПометкаУдаления")
+    if not browse_only:
+        safe_query = query.replace('"', '""')
+        search_fields = [
+            field_name
+            for _, field_name in select_fields
+            if _is_text_search_field_name(field_name)
+        ]
+        if search_fields:
+            conditions.append(
+                "("
+                + " ИЛИ ".join(f"Д.{field_name} ПОДОБНО \"%{safe_query}%\"" for field_name in search_fields)
+                + ")"
+            )
+    if conditions:
+        query_lines.append("        ГДЕ " + " И ".join(conditions))
+    order_field = "Наименование" if candidate["kind"] == "catalog" else "Дата"
+    if order_field not in {field_name for _, field_name in select_fields}:
+        order_field = select_fields[0][1]
+    query_lines.append(f"        УПОРЯДОЧИТЬ ПО Д.{order_field} УБЫВ")
+    return "\n".join(query_lines), select_fields
+
+
+def _collect_metadata_rows(table: Any, candidate: dict[str, Any], select_fields: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for i in range(table.Count()):
+        row = table.Get(i)
+        fields: dict[str, str] = {}
+        for alias, attr in select_fields:
+            val = getattr(row, attr, None)
+            fields[alias] = _safe_str(getattr(val, "Наименование", None) or val, 5000)
+        rows.append(
+            {
+                "found": True,
+                "document_type": candidate["synonym"] or candidate["name"],
+                "ref": _safe_str(getattr(row, "Ref", "") or getattr(row, "Ссылка", "")),
+                "number": _safe_str(getattr(row, "Number", "") or getattr(row, "Номер", "")),
+                "fields": fields,
+                "attachments": [],
+            }
+        )
+    return rows
+
+
+def _search_documents_across_specs(
+    session: Any,
+    *,
+    query: str,
+    limit: int,
+    document_type: str | None = None,
+) -> dict[str, Any]:
+    candidates = _discover_metadata_candidates(session, query, document_type)
+    if not candidates:
+        return {
+            "found": False,
+            "query": query,
+            "document_type": document_type or "",
+            "browse_only": False,
+            "documents": [],
+            "count": 0,
+            "source": "onec_com",
+            "method": "query_documents",
+            "error": "Не удалось найти подходящие типы документов в метаданных 1С",
+        }
+
+    last_error: str | None = None
+    for candidate in candidates[:10]:
+        try:
+            query_text, select_fields = _build_metadata_query(
+                candidate,
+                query,
+                limit=limit,
+                browse_only=candidate["browse_only"],
+            )
+            table = session.NewObject("Query", query_text).Execute().Unload()
+            documents = _collect_metadata_rows(table, candidate, select_fields)
+            if documents:
+                return {
+                    "found": True,
+                    "query": query,
+                    "document_type": candidate["synonym"] or candidate["name"],
+                    "browse_only": candidate["browse_only"],
+                    "documents": documents,
+                    "count": len(documents),
+                    "source": "onec_com",
+                    "method": "query_documents",
+                }
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            continue
+
+    return {
+        "found": False,
+        "query": query,
+        "document_type": candidates[0]["synonym"] or candidates[0]["name"],
+        "browse_only": candidates[0]["browse_only"],
+        "documents": [],
+        "count": 0,
+        "source": "onec_com",
+        "method": "query_documents",
+        "error": last_error,
+    }
+
+
+def _build_card_query(candidate: dict[str, Any], number: str) -> tuple[str, list[tuple[str, str]]]:
+    select_fields = _pick_select_fields(candidate)
+    select_clause = ",\n        ".join(f"Д.{field_name} КАК {alias}" for alias, field_name in select_fields)
+    object_expr = f"Справочник.{candidate['name']}" if candidate["kind"] == "catalog" else f"Документ.{candidate['name']}"
+    safe_number = number.replace('"', '""')
+    query_lines = [
+        f"ВЫБРАТЬ ПЕРВЫЕ 1",
+        f"        {select_clause}",
+        f"        ИЗ {object_expr} КАК Д",
+        "        ГДЕ НЕ Д.ПометкаУдаления",
+        f"            И Д.Номер = \"{safe_number}\"",
+    ]
+    return "\n".join(query_lines), select_fields
+
+
+def _get_document_card_any(
+    session: Any,
+    *,
+    number: str,
+    document_type: str | None = None,
+) -> dict[str, Any] | None:
+    candidates = _discover_metadata_candidates(session, document_type or number, document_type)
+    for candidate in candidates[:10]:
+        try:
+            query_text, select_fields = _build_card_query(candidate, number)
+            table = session.NewObject("Query", query_text).Execute().Unload()
+            if not table.Count():
+                continue
+            row = table.Get(0)
+            fields: dict[str, str] = {}
+            for alias, attr in select_fields:
+                val = getattr(row, attr, None)
+                fields[alias] = _safe_str(getattr(val, "Наименование", None) or val, 5000)
+            return {
+                "document": {
+                    "found": True,
+                    "document_type": candidate["synonym"] or candidate["name"],
+                    "number": _safe_str(getattr(row, "Number", "") or getattr(row, "Номер", "")),
+                    "ref": _safe_str(getattr(row, "Ref", "") or getattr(row, "Ссылка", "")),
+                    "fields": fields,
+                    "attachments": [],
+                },
+                "source": "onec_com",
+                "method": "query_document_card",
+            }
+        except Exception:
+            continue
+    return None
 
 
 def get_current_user_name(app: Any) -> str:
@@ -380,6 +831,77 @@ def get_incoming_correspondence(app: Any, *, number: str) -> dict[str, Any]:
         "number": number,
         "fields": fields,
         "attachments": [],
+    }
+
+
+def search_incoming_correspondence(app: Any, *, query: str, limit: int = 10) -> dict[str, Any]:
+    safe_query = query.replace('"', '""')
+    limit = max(1, min(50, int(limit)))
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ {limit}
+        Д.Ссылка КАК Ref,
+        Д.Номер КАК Number,
+        Д.Дата КАК DocDate,
+        Д.Комментарий КАК Comment,
+        Д.Организация.Наименование КАК Org,
+        Д.Контрагент.Наименование КАК Counterparty,
+        Д.Содержание КАК Content,
+        Д.ТемаСлужебнойЗаписки КАК MemoSubject,
+        Д.EmailОтправителяПисьма КАК EmailFrom,
+        Д.EmailПолучателяПисьма КАК EmailTo,
+        Д.Кому КАК MailTo,
+        Д.НомерИсходящий КАК OutNumber,
+        Д.ДатаИсходящая КАК OutDate,
+        Д.Ответственный.Наименование КАК Responsible,
+        Д.ТекстHTML КАК HtmlText
+        ИЗ Документ.ТД_ВходящаяКорреспонденция КАК Д
+        ГДЕ НЕ Д.ПометкаУдаления
+            И (
+                Д.Номер ПОДОБНО "%{safe_query}%"
+                ИЛИ Д.Комментарий ПОДОБНО "%{safe_query}%"
+                ИЛИ Д.Содержание ПОДОБНО "%{safe_query}%"
+                ИЛИ Д.ТемаСлужебнойЗаписки ПОДОБНО "%{safe_query}%"
+                ИЛИ Д.Организация.Наименование ПОДОБНО "%{safe_query}%"
+                ИЛИ Д.Контрагент.Наименование ПОДОБНО "%{safe_query}%"
+                ИЛИ Д.Ответственный.Наименование ПОДОБНО "%{safe_query}%"
+            )
+        УПОРЯДОЧИТЬ ПО Д.Дата УБЫВ"""
+    table = app.NewObject("Query", query_text).Execute().Unload()
+    documents: list[dict[str, Any]] = []
+    for i in range(table.Count()):
+        row = table.Get(i)
+        fields: dict[str, str] = {}
+        for alias, attr in (
+            ("number", "Number"),
+            ("date", "DocDate"),
+            ("comment", "Comment"),
+            ("org", "Org"),
+            ("counterparty", "Counterparty"),
+            ("content", "Content"),
+            ("memo_subject", "MemoSubject"),
+            ("email_from", "EmailFrom"),
+            ("email_to", "EmailTo"),
+            ("mail_to", "MailTo"),
+            ("out_number", "OutNumber"),
+            ("out_date", "OutDate"),
+            ("responsible", "Responsible"),
+            ("html_text", "HtmlText"),
+        ):
+            val = getattr(row, attr, None)
+            fields[alias] = _safe_str(getattr(val, "Наименование", None) or val, 5000)
+        documents.append(
+            {
+                "found": True,
+                "ref": _safe_str(getattr(row, "Ref", "")),
+                "number": _safe_str(getattr(row, "Number", "")),
+                "fields": fields,
+                "attachments": [],
+            }
+        )
+    return {
+        "found": bool(documents),
+        "query": query,
+        "documents": documents,
+        "count": len(documents),
     }
 
 
