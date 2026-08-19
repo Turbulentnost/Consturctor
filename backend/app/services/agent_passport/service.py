@@ -1133,8 +1133,6 @@ def _heuristic_draft(
 
     text_l = f"{bp_name}\n{excerpt}".casefold()
     trigger = ""
-    if any(w in text_l for w in ("заявк", "поступил", "входящ", "событи", "письм")):
-        trigger = "поступило новое событие по процессу"
     receives = ""
     if "клиент" in text_l:
         receives = "клиент"

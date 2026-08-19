@@ -229,6 +229,21 @@ def _regulation_blob(row: Workflow) -> str:
     return " ".join([row.notes or "", row.document_text or "", row.title or ""])
 
 
+def _schedule_materials(row: Workflow, draft: dict[str, Any] | None = None) -> str:
+    parts = [_regulation_blob(row)]
+    data = draft or {}
+    if data.get("answers"):
+        parts.append(str(data.get("answers") or ""))
+    if data.get("when_to_run"):
+        parts.append(str(data.get("when_to_run") or ""))
+    plan = row.plan_json if isinstance(row.plan_json, dict) else {}
+    for item in plan.get("answered_questions") or []:
+        if not isinstance(item, dict):
+            continue
+        parts.append(f"{item.get('question') or ''} {item.get('answer') or ''}")
+    return "\n".join(part for part in parts if str(part).strip())
+
+
 def _validate_and_store_draft(
     db: Session,
     *,
@@ -244,7 +259,11 @@ def _validate_and_store_draft(
 
     allow_web = regulation_allows_web(_regulation_blob(row))
     enriched = attach_tool_candidates(draft, allow_web=allow_web)
-    validation = validate_draft(enriched, allow_web=allow_web)
+    validation = validate_draft(
+        enriched,
+        allow_web=allow_web,
+        materials=_schedule_materials(row, enriched),
+    )
     local = dict(row.local_run or {})
     local["playbook_draft"] = enriched
     local["draft_validation"] = validation.to_dict()
@@ -1266,12 +1285,18 @@ def _finish_demo_stream(
         )
     from app.services.workflows.schedule_draft import draft_after_demo
 
+    plan_for_scope = (
+        WorkflowPlan.from_dict(row.plan_json)
+        if isinstance(row.plan_json, dict)
+        else None
+    )
     local["schedule_draft"] = draft_after_demo(
         title=row.title,
         notes=row.notes or "",
         playbook=playbook,
         last_result=row.last_result or "",
         work=work,
+        answered_scope=prompts._answered_scope_lines(plan_for_scope),
     ).model_dump()
     row.local_run = local
     plan_data = dict(row.plan_json) if isinstance(row.plan_json, dict) else {}
@@ -1351,7 +1376,33 @@ def _apply_answers_to_draft(
         draft["answers"] = answers
     if not str(draft.get("recipient") or "").strip() and answers:
         draft["recipient"] = "по ответам человека"
+    _apply_when_to_run_answer(row, plan, draft)
     return _validate_and_store_draft(db, row=row, draft=draft)
+
+
+def _apply_when_to_run_answer(row: Workflow, plan: WorkflowPlan, draft: dict[str, Any]) -> None:
+    from app.schemas.trigger import ScheduleDraftOut
+    from app.services.workflows.schedule_draft import (
+        is_when_to_run_question,
+        triggers_from_when_answer,
+    )
+
+    answer = ""
+    for item in plan.answered_questions:
+        if is_when_to_run_question(item.question) and (item.answer or "").strip():
+            answer = item.answer.strip()
+            break
+    if not answer:
+        return
+    draft["when_to_run"] = answer
+    local = dict(row.local_run or {})
+    current = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+    local["schedule_draft"] = ScheduleDraftOut(
+        name=str(current.get("name") or row.title or "ИИ-агент"),
+        goal=str(current.get("goal") or ""),
+        triggers=triggers_from_when_answer(answer),
+    ).model_dump()
+    row.local_run = local
 
 
 def _continue_demo_after_answers(

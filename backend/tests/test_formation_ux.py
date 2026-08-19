@@ -104,6 +104,39 @@ def test_draft_after_demo_from_playbook() -> None:
     assert trigger_chip_label(draft.triggers[0]) == "каждые 15 мин"
 
 
+def test_draft_after_demo_drops_invented_event_trigger() -> None:
+    from app.services.workflows.schedule_draft import explicit_when_to_run
+
+    notes = (
+        "# Паспорт ИИ-агента: контролирует сроки, качество и риски проектов\n"
+        "Цель: не допускать нарушения SLA.\n"
+    )
+    assert not explicit_when_to_run(notes)
+    draft = draft_after_demo(
+        title="контролирует сроки, качество и риски проектов",
+        notes=notes,
+        playbook={
+            "name": "контролирует сроки, качество и риски проектов",
+            "triggers": [
+                {
+                    "kind": "event",
+                    "condition": "изменение статуса этапа, приближение или нарушение SLA",
+                }
+            ],
+        },
+        work={"schedule": ["при событии: нарушение SLA"]},
+    )
+    assert draft.triggers == []
+
+
+def test_when_answer_creates_daily_trigger() -> None:
+    from app.services.workflows.schedule_draft import triggers_from_when_answer
+
+    specs = triggers_from_when_answer("раз в день")
+    assert specs
+    assert trigger_chip_label(specs[0]) == "ежедневно"
+
+
 def test_playbook_parse_name_and_triggers() -> None:
     parsed = parse_playbook_from_text(
         """

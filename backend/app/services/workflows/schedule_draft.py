@@ -10,11 +10,26 @@ from sqlalchemy.orm import Session
 from app.schemas.trigger import ScheduleDraftOut, ScheduleTriggerSpec
 from app.services.agent_passport import llm as llm_service
 from app.services.workflows.plan_models import WorkflowPlan
-from app.services.workflows.service import WorkflowError, _get_owned
 
 logger = logging.getLogger(__name__)
 
 _UNITS = ("minutes", "hours", "days")
+WHEN_TO_RUN_QUESTION = "Когда запускать этого агента?"
+WHEN_TO_RUN_OPTIONS = [
+    "только вручную из чата",
+    "каждый час",
+    "раз в день",
+    "при конкретном событии — напишу каком",
+]
+WHEN_TO_RUN_WHY = "В материалах не сказано, когда запускать агента. Без этого он не должен стартовать сам."
+_MANUAL_HINTS = ("по кнопк", "вручную", "по запрос", "из чата", "только вручн")
+_WHEN_QUESTION_HINTS = (
+    "когда запуска",
+    "как часто",
+    "по расписан",
+    "только вручн",
+    WHEN_TO_RUN_QUESTION.casefold(),
+)
 
 
 def trigger_chip_label(spec: ScheduleTriggerSpec) -> str:
@@ -48,6 +63,53 @@ def trigger_chip_label(spec: ScheduleTriggerSpec) -> str:
     return "по событию"
 
 
+def explicit_when_to_run(*parts: str) -> bool:
+    """True только если человек или ТЗ явно сказали, когда запускать."""
+    blob = "\n".join(str(part or "") for part in parts if str(part or "").strip())
+    if not blob.strip():
+        return False
+    low = blob.casefold().replace("ё", "е")
+    if any(hint in low for hint in _MANUAL_HINTS):
+        return True
+    if _parse_interval(low) is not None:
+        return True
+    if re.search(r"(ежедневн|каждый день|раз в день).{0,20}\d{1,2}[:.]\d{2}", low):
+        return True
+    if re.search(r"триггер:\s*\S+", blob, re.IGNORECASE):
+        hint = _passport_trigger_line(blob)
+        if hint and _parse_trigger_hint(hint) is not None:
+            return True
+    if _is_explicit_event_condition(blob) and (
+        len(low) < 160 or _event_is_scheduled(low)
+    ):
+        return True
+    return False
+
+
+def already_asks_when_to_run(draft: dict[str, Any] | None) -> bool:
+    for item in (draft or {}).get("required_clarifications") or []:
+        if isinstance(item, str):
+            question = item
+        elif isinstance(item, dict):
+            question = str(item.get("question") or "")
+        else:
+            continue
+        folded = question.casefold().replace("ё", "е")
+        if any(hint in folded for hint in _WHEN_QUESTION_HINTS):
+            return True
+    return False
+
+
+def is_when_to_run_question(question: str) -> bool:
+    folded = (question or "").casefold().replace("ё", "е")
+    return bool(folded) and any(hint in folded for hint in _WHEN_QUESTION_HINTS)
+
+
+def triggers_from_when_answer(answer: str) -> list[ScheduleTriggerSpec]:
+    spec = _parse_trigger_hint(answer or "")
+    return [spec] if spec is not None else []
+
+
 def draft_after_demo(
     *,
     title: str,
@@ -55,6 +117,7 @@ def draft_after_demo(
     playbook: dict[str, Any],
     last_result: str = "",
     work: dict[str, Any] | None = None,
+    answered_scope: str = "",
 ) -> ScheduleDraftOut:
     from app.services.workflows.prompts import title_from_materials
 
@@ -64,24 +127,36 @@ def draft_after_demo(
     goal = str(playbook.get("expected_result") or playbook.get("instructions") or "").strip()
     if len(goal) > 280:
         goal = goal[:280].rsplit(" ", 1)[0].strip()
+    ground = "\n".join(part for part in (notes, answered_scope) if str(part or "").strip())
     triggers: list[ScheduleTriggerSpec] = []
     raw_triggers = playbook.get("triggers") if isinstance(playbook.get("triggers"), list) else []
     for item in raw_triggers:
         if not isinstance(item, dict):
             continue
         spec = _normalize_spec(item)
-        if spec is not None:
+        if spec is not None and _trigger_grounded(spec, ground):
             triggers.append(spec)
     work = work or {}
     for line in work.get("schedule") or []:
         parsed = _parse_trigger_hint(str(line))
-        if parsed is not None and not _same_trigger(parsed, triggers):
+        if parsed is not None and _trigger_grounded(parsed, ground) and not _same_trigger(parsed, triggers):
             triggers.append(parsed)
     if not triggers:
         hint = _passport_trigger_line(notes)
         parsed = _parse_trigger_hint(hint) if hint else None
-        if parsed is not None:
+        if parsed is not None and _trigger_grounded(parsed, ground):
             triggers.append(parsed)
+    if not triggers:
+        for line in (answered_scope or "").splitlines():
+            ask, _, reply = line.partition("→")
+            reply = reply.strip() or line.strip().lstrip("- ")
+            if not reply:
+                continue
+            if not (is_when_to_run_question(ask) or explicit_when_to_run(reply)):
+                continue
+            for parsed in triggers_from_when_answer(reply):
+                if not _same_trigger(parsed, triggers):
+                    triggers.append(parsed)
     return ScheduleDraftOut(name=name or title or "ИИ-агент", goal=goal, triggers=triggers)
 
 
@@ -91,18 +166,32 @@ def propose_schedule_draft(
     user_id: str,
     workflow_id: str,
 ) -> ScheduleDraftOut:
+    from app.services.workflows.service import _get_owned
+
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     plan = WorkflowPlan.from_dict(row.plan_json or {})
     local = dict(row.local_run or {})
+    from app.services.workflows.prompts import _answered_scope_lines
+
     existing_raw = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
     existing = _normalize_draft(existing_raw, ScheduleDraftOut()) if existing_raw else None
+    ground = "\n".join(
+        part
+        for part in (row.notes or "", row.document_text or "", _answered_scope_lines(plan))
+        if str(part).strip()
+    )
     if existing is not None and existing.triggers:
-        if (row.title or "").strip() and existing.name in {"", "ИИ-агент", "notes.txt", "notes"}:
-            existing = existing.model_copy(update={"name": row.title})
-        local["schedule_draft"] = existing.model_dump()
-        row.local_run = local
-        db.commit()
-        return existing
+        kept = [item for item in existing.triggers if _trigger_grounded(item, ground)]
+        if kept:
+            if (row.title or "").strip() and existing.name in {"", "ИИ-агент", "notes.txt", "notes"}:
+                existing = existing.model_copy(update={"name": row.title, "triggers": kept})
+            else:
+                existing = existing.model_copy(update={"triggers": kept})
+            local["schedule_draft"] = existing.model_dump()
+            row.local_run = local
+            db.commit()
+            return existing
+        existing = existing.model_copy(update={"triggers": []})
     fallback = _heuristic_draft(row.title or "", plan, row.notes or "", row.last_result or "")
     if existing is not None:
         fallback = ScheduleDraftOut(
@@ -116,6 +205,9 @@ def propose_schedule_draft(
         notes=row.notes or "",
         last_result=row.last_result or "",
         fallback=fallback,
+    )
+    draft = draft.model_copy(
+        update={"triggers": [item for item in draft.triggers if _trigger_grounded(item, ground)]}
     )
     local["schedule_draft"] = draft.model_dump()
     row.local_run = local
@@ -151,8 +243,8 @@ def _parse_trigger_hint(text: str) -> ScheduleTriggerSpec | None:
     raw = (text or "").strip()
     if not raw:
         return None
-    low = raw.casefold()
-    if any(k in low for k in ("по кнопк", "вручную", "по запрос", "из чата")):
+    low = raw.casefold().replace("ё", "е")
+    if any(k in low for k in _MANUAL_HINTS):
         return None
     interval = _parse_interval(low)
     if interval is not None:
@@ -170,6 +262,8 @@ def _parse_trigger_hint(text: str) -> ScheduleTriggerSpec | None:
         return ScheduleTriggerSpec(kind="datetime", message="", at=clock, once=False)
     if re.search(r"\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4}", raw):
         return ScheduleTriggerSpec(kind="datetime", message=raw, at=raw, once=True)
+    if not _is_explicit_event_condition(raw):
+        return None
     condition = _short_event_condition(raw)
     if not condition:
         return None
@@ -177,9 +271,18 @@ def _parse_trigger_hint(text: str) -> ScheduleTriggerSpec | None:
 
 
 def _parse_interval(low: str) -> tuple[float, str] | None:
+    folded = (low or "").casefold().replace("ё", "е")
+    if re.search(r"раз в день|ежедневн|каждый день", folded) and not re.search(
+        r"\d+(?:[.,]\d+)?\s*(минут|мин|час)", folded
+    ):
+        return 1, "days"
+    if re.search(r"каждый час|раз в час|ежечасн", folded) and not re.search(
+        r"\d+(?:[.,]\d+)?\s*(минут|мин)", folded
+    ):
+        return 1, "hours"
     match = re.search(
         r"(?:каждые|каждый|каждую|раз в)?\s*(\d+(?:[.,]\d+)?)\s*(минут|мин|час|дня|дней|день|сутк)",
-        low,
+        folded,
     )
     if not match:
         return None
@@ -190,6 +293,56 @@ def _parse_interval(low: str) -> tuple[float, str] | None:
     if unit_raw.startswith("час"):
         return value, "hours"
     return value, "days"
+
+
+def _is_explicit_event_condition(text: str) -> bool:
+    low = (text or "").casefold().replace("ё", "е")
+    if not low or len(low) < 6:
+        return False
+    if "напишу каком" in low:
+        return False
+    if low in {"по событию", "событие", "поступило новое событие по процессу"}:
+        return False
+    if "событие по процессу" in low:
+        return False
+    if re.match(r"при событи", low) and not any(
+        token in low for token in ("письм", "файл", "сообщен", "входящ")
+    ):
+        return False
+    if re.search(r"^(при|когда|если)\s+\S+", low):
+        return True
+    return any(token in low for token in ("письм", "файл", "сообщен", "входящ"))
+
+
+def _event_is_scheduled(low: str) -> bool:
+    return bool(
+        re.search(r"триггер:\s*", low)
+        or re.search(r"запускать.{0,40}(при|когда|если)", low)
+        or re.search(r"(запуск|запускать).{0,20}по письм", low)
+        or "по письм" in low
+    )
+
+
+def _trigger_grounded(spec: ScheduleTriggerSpec, ground: str) -> bool:
+    low = (ground or "").casefold().replace("ё", "е")
+    if not low.strip():
+        return False
+    if spec.kind == "interval":
+        parsed = _parse_interval(low)
+        if parsed is None:
+            return False
+        value, unit = parsed
+        return float(spec.interval_value or 0) == float(value) and (
+            spec.interval_unit or "hours"
+        ).casefold() == unit
+    if spec.kind == "datetime":
+        clock = _time_from_at(spec.at)
+        return bool(clock and _time_from_at(ground))
+    if spec.kind == "event":
+        if not _is_explicit_event_condition(spec.condition):
+            return False
+        return _event_is_scheduled(low)
+    return False
 
 
 def _llm_draft(

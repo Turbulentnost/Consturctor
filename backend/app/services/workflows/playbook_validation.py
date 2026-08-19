@@ -13,6 +13,13 @@ from typing import Any
 
 from app.services.workflow_tool_routing import select_candidates
 from app.services.workflows.plan_models import OpenQuestion
+from app.services.workflows.schedule_draft import (
+    WHEN_TO_RUN_OPTIONS,
+    WHEN_TO_RUN_QUESTION,
+    WHEN_TO_RUN_WHY,
+    already_asks_when_to_run,
+    explicit_when_to_run,
+)
 
 KIND_CLARIFY = "clarify"
 KIND_CONFIG_ERROR = "config_error"
@@ -263,7 +270,12 @@ def _off_vocabulary(step: dict[str, Any]) -> str:
     return ""
 
 
-def validate_draft(draft: dict[str, Any], *, allow_web: bool = False) -> DraftValidation:
+def validate_draft(
+    draft: dict[str, Any],
+    *,
+    allow_web: bool = False,
+    materials: str = "",
+) -> DraftValidation:
     """Проверить черновик до прогона. Инструменты уже должны быть подобраны."""
     issues: list[DraftIssue] = []
     if not draft or not (draft.get("steps") or []):
@@ -304,6 +316,16 @@ def validate_draft(draft: dict[str, Any], *, allow_web: bool = False) -> DraftVa
                 message=question,
                 detail=why,
                 options=options[:4],
+            )
+        )
+
+    if _needs_when_to_run_question(draft, materials):
+        issues.append(
+            DraftIssue(
+                kind=KIND_CLARIFY,
+                message=WHEN_TO_RUN_QUESTION,
+                detail=WHEN_TO_RUN_WHY,
+                options=list(WHEN_TO_RUN_OPTIONS),
             )
         )
 
@@ -410,6 +432,16 @@ def validate_draft(draft: dict[str, Any], *, allow_web: bool = False) -> DraftVa
             )
 
     return DraftValidation(issues=issues)
+
+
+def _needs_when_to_run_question(draft: dict[str, Any], materials: str) -> bool:
+    answers = str((draft or {}).get("answers") or "")
+    decided = str((draft or {}).get("when_to_run") or "")
+    if not (materials or "").strip() and not answers.strip() and not decided.strip():
+        return False
+    if already_asks_when_to_run(draft):
+        return False
+    return not explicit_when_to_run(materials, answers, decided)
 
 
 def issues_to_questions(issues: list[DraftIssue]) -> list[OpenQuestion]:

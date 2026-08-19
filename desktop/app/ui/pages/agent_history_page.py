@@ -4,7 +4,7 @@ from datetime import datetime
 from threading import Thread
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QFont, QMouseEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,

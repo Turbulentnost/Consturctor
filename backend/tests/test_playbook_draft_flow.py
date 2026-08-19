@@ -320,6 +320,29 @@ def test_valid_draft_has_no_issues() -> None:
     assert validation.ok
 
 
+def test_missing_schedule_in_materials_is_clarify() -> None:
+    from app.services.workflows.schedule_draft import WHEN_TO_RUN_QUESTION
+
+    validation = validate_draft(
+        attach_tool_candidates(_draft()),
+        materials="контролирует сроки, качество и риски проектов. Не допускать нарушения SLA.",
+    )
+
+    assert any(issue.message == WHEN_TO_RUN_QUESTION for issue in validation.clarifications)
+
+
+def test_explicit_schedule_in_materials_skips_when_question() -> None:
+    from app.services.workflows.schedule_draft import WHEN_TO_RUN_QUESTION
+
+    validation = validate_draft(
+        attach_tool_candidates(_draft()),
+        materials="Триггер: каждые 15 минут. Сводка руководителю.",
+    )
+
+    assert all(issue.message != WHEN_TO_RUN_QUESTION for issue in validation.clarifications)
+    assert validation.ok
+
+
 def test_missing_business_param_is_clarify() -> None:
     draft = _draft()
     draft["required_clarifications"] = [
@@ -702,6 +725,7 @@ def test_draft_prompt_asks_for_json_only_without_transport_lecture() -> None:
     assert "constructor_tool" not in prompt
     assert "вернуть JSON черновика" in prompt
     assert "не решай" in prompt.casefold()
+    assert "когда запускать" in prompt.casefold()
 
 
 def test_draft_prompt_carries_contract_vocabulary() -> None:
