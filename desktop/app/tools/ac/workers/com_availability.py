@@ -1,11 +1,16 @@
 """Безопасная проверка доступности Windows COM и pywin32."""
 
+from __future__ import annotations
+
+import functools
 import importlib
 import importlib.util
 import os
-import shutil
 import subprocess
 import sys
+
+ONEC_COM_RUNTIME_CSCRIPT32 = "cscript32"
+ONEC_COM_RUNTIME_INPROC = "inproc"
 
 
 def is_windows() -> bool:
@@ -34,7 +39,7 @@ def get_com_unavailable_reason() -> str:
 
 def get_onec_com_unavailable_reason() -> str:
     """Вернуть понятную причину недоступности 1С COMConnector."""
-    available, reason = _check_onec_com_availability()
+    available, reason, _runtime = _check_onec_com_availability()
     if available:
         return "1C COMConnector доступен"
     return reason or "1C COMConnector недоступен"
@@ -45,11 +50,27 @@ def is_onec_com_available() -> bool:
     return get_onec_com_unavailable_reason() == "1C COMConnector доступен"
 
 
+def onec_com_runtime() -> str:
+    """Как ходить в 1С: cscript32 (основной) или inproc. Пусто — недоступно."""
+    available, _reason, runtime = _check_onec_com_availability()
+    return runtime if available else ""
+
+
+def reset_onec_com_availability_cache() -> None:
+    """Сбросить кэш проверки — для тестов и смены .env."""
+    _check_onec_com_availability.cache_clear()
+
+
+def prefers_com32() -> bool:
+    """64-bit Python здесь не видит V83.COMConnector — нужен SysWOW64 cscript."""
+    return onec_com_runtime() == ONEC_COM_RUNTIME_CSCRIPT32
+
+
 def describe_com_capability() -> dict[str, object]:
     """Собрать краткое описание возможностей COM для передачи в local_run."""
     available, error_message = _check_pywin32_availability()
     outlook_available = is_windows() and available
-    onec_available, onec_reason = _check_onec_com_availability()
+    onec_available, onec_reason, onec_runtime = _check_onec_com_availability()
     return {
         "platform": sys.platform,
         "is_windows": is_windows(),
@@ -60,6 +81,7 @@ def describe_com_capability() -> dict[str, object]:
         else (error_message or get_com_unavailable_reason()),
         "onec_com_available": onec_available,
         "onec_com_reason": "1C COMConnector доступен" if onec_available else onec_reason,
+        "onec_com_runtime": onec_runtime if onec_available else "",
         "com_available": bool(outlook_available or onec_available),
         "com_reason": "COM доступен"
         if (outlook_available or onec_available)
@@ -85,52 +107,66 @@ def _check_pywin32_availability() -> tuple[bool, str | None]:
     return True, None
 
 
-def _check_onec_com_availability() -> tuple[bool, str | None]:
-    """Проверить, что 1С COMConnector инициализируется без ошибки."""
-    if not is_windows():
-        return False, "1C COMConnector доступен только на Windows"
-
-    available, error_message = _check_pywin32_availability()
-    if not available:
-        return False, error_message or "pywin32 не установлен или недоступен"
-
+def _has_onec_connection_env() -> bool:
     connection_string = os.environ.get("ONEC_COM_CONNECTION_STRING", "").strip()
     server = os.environ.get("ONEC_COM_SERVER", "").strip()
     ref = os.environ.get("ONEC_COM_REF", "").strip()
-    if not connection_string and not (server and ref):
+    return bool(connection_string or (server and ref))
+
+
+@functools.lru_cache(maxsize=1)
+def _check_onec_com_availability() -> tuple[bool, str | None, str]:
+    """Доступность 1С COM: сначала 32-bit cscript, не py -3.12-32."""
+    if not is_windows():
+        return False, "1C COMConnector доступен только на Windows", ""
+
+    if not _has_onec_connection_env():
         return (
             False,
             "Не заданы ONEC_COM_CONNECTION_STRING или ONEC_COM_SERVER/ONEC_COM_REF "
             "для 1С COMConnector",
+            "",
         )
 
+    from app.tools.ac.workers.onec_com32_helper import is_com32_available
+
+    com32_ok, com32_reason = is_com32_available()
+    if com32_ok:
+        return True, None, ONEC_COM_RUNTIME_CSCRIPT32
+
     progid = os.environ.get("ONEC_COM_PROGID", "V83.COMConnector").strip() or "V83.COMConnector"
-    try:
-        win32com_client = importlib.import_module("win32com.client")
-        win32com_client.Dispatch(progid)
-    except Exception as exc:  # noqa: BLE001
-        helper_available, helper_reason = _check_onec_com_availability_via_helper(progid)
-        if helper_available:
-            return True, None
-        helper_suffix = f". Helper: {helper_reason}" if helper_reason else ""
-        return False, f"Не удалось создать COMConnector {progid!r}: {exc}{helper_suffix}"
+    pywin32_ok, pywin32_error = _check_pywin32_availability()
+    if pywin32_ok:
+        try:
+            win32com_client = importlib.import_module("win32com.client")
+            win32com_client.Dispatch(progid)
+            return True, None, ONEC_COM_RUNTIME_INPROC
+        except Exception as exc:  # noqa: BLE001
+            dispatch_error = str(exc)
+    else:
+        dispatch_error = pywin32_error or "pywin32 недоступен"
 
-    return True, None
+    helper_available, helper_reason = _check_explicit_python32(progid)
+    if helper_available:
+        return True, None, "python32"
+
+    helper_suffix = f". Helper: {helper_reason}" if helper_reason else ""
+    com32_suffix = f". 32-bit: {com32_reason}" if com32_reason else ""
+    return (
+        False,
+        f"Не удалось создать COMConnector {progid!r}: {dispatch_error}{helper_suffix}{com32_suffix}",
+        "",
+    )
 
 
-def _check_onec_com_availability_via_helper(progid: str) -> tuple[bool, str | None]:
-    """Проверить COMConnector через 32-bit helper Python, если он доступен."""
+def _check_explicit_python32(progid: str) -> tuple[bool, str | None]:
+    """Только если явно задан ONEC_COM_PYTHON. py -3.12-32 больше не вызываем."""
     helper = os.environ.get("ONEC_COM_PYTHON", "").strip()
-    command: list[str] | None = None
-    if helper:
-        command = [helper, "-c", _helper_probe_code(progid)]
-    elif sys.platform == "win32" and shutil.which("py"):
-        command = ["py", "-3.12-32", "-c", _helper_probe_code(progid)]
-    if command is None:
-        return False, "32-bit helper Python не настроен"
+    if not helper:
+        return False, None
     try:
         completed = subprocess.run(
-            command,
+            [helper, "-c", _helper_probe_code(progid)],
             capture_output=True,
             text=True,
             encoding="utf-8",

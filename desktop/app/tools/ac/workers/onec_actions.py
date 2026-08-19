@@ -16,6 +16,7 @@ ALLOWED_ONEC_TOOLS = {
     "onec.get_document_card",
     "onec.search_tasks",
     "onec.get_task_card",
+    "onec.meeting_service_notes",
 }
 
 FORBIDDEN_INPUT_KEYS = {
@@ -111,6 +112,26 @@ def search_tasks(input_data: dict) -> dict:
         "tasks": tasks,
         "count": len(tasks),
         "source": "onec_readonly",
+    }
+
+
+def list_meeting_service_notes(input_data: dict) -> dict:
+    """Заглушка чтения СЗ, если COM недоступен. Ничего не пишет в 1С."""
+    ensure_onec_readonly_input(input_data)
+    from app.tools.ac.workers.onec_meeting_notes import default_addressee, parse_note_period
+
+    date_from, date_to = parse_note_period(input_data)
+    addressee = str(input_data.get("fio") or "").strip() or default_addressee()
+    return {
+        "notes": [],
+        "count": 0,
+        "source": "onec_readonly",
+        "readonly": True,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "addressee": addressee,
+        "theme": "организация совещаний",
+        "note": "COM 1С недоступен — живые служебные записки не прочитаны. Запись в 1С не выполнялась.",
     }
 
 

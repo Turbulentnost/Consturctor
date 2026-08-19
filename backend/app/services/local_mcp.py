@@ -507,7 +507,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "direction": _prop("string", "down или up"),
             "pixels": _prop("integer", "На сколько пикселей прокрутить"),
         }),
-        ("onec.search_documents", "Поиск документов 1С (desktop COM/read-only).", {
+        ("onec.search_documents", "Поиск документов 1С (desktop, 32-bit COMConnector через cscript, не 32-bit Python).", {
             "document_type": _prop("string", "Вид документа 1С, если известен"),
             "number": _prop("string", "Номер документа"),
             "query": _prop("string", "Подстрока в номере или названии, не фраза-ТЗ"),
@@ -524,6 +524,21 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("onec.get_task_card", "Карточка задачи 1С на desktop.", {
             "task_ref": _prop("string", "Ссылка задачи из onec.search_tasks"),
         }),
+        (
+            "onec.meeting_service_notes",
+            "Только чтение COM через 32-bit V83.COMConnector (cscript), без py -3.12-32. "
+            "Служебные записки 1С с темой «организация совещаний». "
+            "В ответе: тема СЗ, тема совещания, место, желаемые дата/время/длительность, "
+            "руководитель, приоритет, периодичность, вид, ПСД. date или date_from/date_to. "
+            "Ничего не записывает и не меняет в 1С.",
+            {
+                "date": _prop("string", "Один день YYYY-MM-DD"),
+                "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
+                "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
+                "fio": _prop("string", "Кому направлены. Пусто — пользователь COM-сессии"),
+                "max_results": _prop("integer", "Максимум записок, не больше 200"),
+            },
+        ),
         ("excel.list_files", "Список файлов в рабочей папке агента.", {}),
         ("excel.read_workbook", "Чтение .xlsx из папки агента.", {
             "filename": _prop("string", "Имя файла в папке агента, например report.xlsx"),
@@ -693,6 +708,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     ),
     "onec.search_tasks": ("onec", "task", "search", [], ["tasks"], "count"),
     "onec.get_task_card": ("onec", "task", "read", ["task_ref"], ["task"], "none"),
+    "onec.meeting_service_notes": (
+        "onec",
+        "service_note",
+        ("list", "search", "read"),
+        [],
+        ["notes"],
+        "count",
+    ),
     "turboproject": (
         "turboproject",
         "project",
@@ -754,6 +777,15 @@ EXECUTE_PHASE = "execute"
 # Новый context-tool достаточно добавить сюда — промпты не меняются.
 _DESIGN_PHASE_TOOLS = frozenset({"users.current", "users.subordinates"})
 _HELPER_TOOLS = frozenset({"data.process"})
+_COM32_RUNTIME_TOOLS = frozenset(
+    {
+        "onec.search_documents",
+        "onec.get_document_card",
+        "onec.search_tasks",
+        "onec.get_task_card",
+        "onec.meeting_service_notes",
+    }
+)
 
 
 def _phases_for(name: str) -> list[str]:
@@ -780,6 +812,7 @@ def _contract_for(name: str, execution: str) -> dict[str, Any]:
         "pagination": pagination,
         "phases": _phases_for(name),
         "helper": name in _HELPER_TOOLS,
+        "runtime": "com32" if name in _COM32_RUNTIME_TOOLS else "",
     }
 
 

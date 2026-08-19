@@ -44,6 +44,7 @@ class ToolDefinition(BaseModel):
     max_retries: int = Field(default=2, ge=0)
     input_schema: dict
     output_schema: dict
+    runtime: str = ""
 
     @field_validator("name", "title", "description")
     @classmethod

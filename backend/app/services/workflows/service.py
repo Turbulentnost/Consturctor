@@ -1734,6 +1734,9 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
         and not any(tip in blob for tip in ("outlook", "календар", "совещан"))
     ):
         return [
+            "onec.meeting_service_notes",
+            "onec.search_documents",
+            "onec.get_document_card",
             "onec.odata_catalog",
             "onec.odata_get",
             "onec.sql_query",
@@ -1779,6 +1782,9 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
         if any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm", "задач")):
             tools.extend(
                 [
+                    "onec.meeting_service_notes",
+                    "onec.search_documents",
+                    "onec.get_document_card",
                     "onec.odata_catalog",
                     "onec.odata_get",
                     "onec.sql_query",

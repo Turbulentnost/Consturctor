@@ -11,6 +11,7 @@ from app.tools.ac.workers.onec_actions import (
     ensure_onec_readonly_tool,
     get_document_card,
     get_task_card,
+    list_meeting_service_notes,
     search_documents,
     search_tasks,
 )
@@ -32,6 +33,7 @@ class OneCReadOnlyWorker(BaseWorker):
         "onec.get_document_card": get_document_card,
         "onec.search_tasks": search_tasks,
         "onec.get_task_card": get_task_card,
+        "onec.meeting_service_notes": list_meeting_service_notes,
     }
 
     def execute(self, task: WorkerTask) -> WorkerResult:

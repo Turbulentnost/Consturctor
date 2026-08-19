@@ -57,12 +57,7 @@ def build_registry() -> ToolRegistry:
     outlook_worker = SubprocessComWorker()
     registry.register(OutlookSearchMailComTool(outlook_worker))
     registry.register(OutlookReadCalendarComTool(outlook_worker))
-    onec_worker = (
-        SubprocessComWorker()
-        if com_availability.is_onec_com_available()
-        else OneCReadOnlyWorker()
-    )
-    register_onec_readonly_tools(registry, onec_worker)
+    register_onec_readonly_tools(registry, _onec_com_worker())
     register_report_tools(registry, skip_existing=True)
     register_web_tools(registry, skip_existing=True, workspace_resolver=resolver)
     register_excel_tools(registry, resolver, skip_existing=True)
@@ -76,6 +71,13 @@ def build_registry() -> ToolRegistry:
 
 
 _REGISTRY: ToolRegistry | None = None
+
+
+def _onec_com_worker():
+    """1С COM: 32-bit V83.COMConnector через cscript, не py -3.12-32."""
+    if com_availability.is_onec_com_available():
+        return SubprocessComWorker()
+    return OneCReadOnlyWorker()
 
 
 def get_registry() -> ToolRegistry:

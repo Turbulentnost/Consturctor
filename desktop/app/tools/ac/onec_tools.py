@@ -15,6 +15,17 @@ from app.tools.ac.registry import ToolRegistry
 from app.tools.ac.workers.base import BaseWorker
 from app.tools.ac.workers.models import WorkerTask
 
+ONEC_COM32_RUNTIME = "com32"
+ONEC_COM32_TOOLS = frozenset(
+    {
+        "onec.search_documents",
+        "onec.get_document_card",
+        "onec.search_tasks",
+        "onec.get_task_card",
+        "onec.meeting_service_notes",
+    }
+)
+
 
 class OneCReadOnlyTool(BaseTool):
     """Базовый read-only инструмент 1С через worker."""
@@ -97,6 +108,44 @@ class OneCGetTaskCardTool(OneCReadOnlyTool):
         )
 
 
+class OneCMeetingServiceNotesTool(OneCReadOnlyTool):
+    """Чтение служебных записок на организацию совещаний. Только SELECT."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="onec.meeting_service_notes",
+                title="Служебные записки на совещания",
+                description=(
+                    "Только чтение: служебные записки 1С с темой «организация совещаний». "
+                    "Возвращает тему СЗ, тему совещания, место, желаемую дату/время, "
+                    "длительность, руководителя, приоритет, периодичность, вид и признак ПСД. "
+                    "date или date_from/date_to (YYYY-MM-DD). Ничего не записывает в 1С."
+                ),
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=180,
+                runtime=ONEC_COM32_RUNTIME,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "date": {"type": "string", "description": "Один день YYYY-MM-DD"},
+                        "date_from": {"type": "string", "description": "Начало периода YYYY-MM-DD"},
+                        "date_to": {"type": "string", "description": "Конец периода YYYY-MM-DD"},
+                        "fio": {
+                            "type": "string",
+                            "description": "Кому направлены. Пусто — пользователь COM-сессии",
+                        },
+                        "max_results": {"type": "integer", "description": "Максимум записок, не больше 200"},
+                    },
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
 def register_onec_readonly_tools(
     registry: ToolRegistry,
     worker: BaseWorker,
@@ -109,6 +158,7 @@ def register_onec_readonly_tools(
         OneCGetDocumentCardTool(worker),
         OneCSearchTasksTool(worker),
         OneCGetTaskCardTool(worker),
+        OneCMeetingServiceNotesTool(worker),
     ]:
         if skip_existing and registry.has_tool(tool.definition.name):
             continue
@@ -127,5 +177,6 @@ def _definition(name: str, title: str) -> ToolDefinition:
         timeout_seconds=180,
         input_schema={"type": "object"},
         output_schema={"type": "object"},
+        runtime=ONEC_COM32_RUNTIME,
     )
 

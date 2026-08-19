@@ -14,6 +14,15 @@ from app.tools.ac.workers.onec_actions import (
     ensure_onec_readonly_tool,
 )
 from app.tools.ac.workers.onec_errors import OneCConnectionError
+from app.tools.ac.workers.onec_meeting_notes import (
+    MEETING_FIELDS,
+    assert_select_only,
+    build_meeting_notes_query,
+    default_addressee,
+    meeting_params_from_row,
+    parse_note_period,
+    pick_document_name,
+)
 
 FORBIDDEN_COM_METHOD_PARTS = (
     "write",
@@ -57,25 +66,38 @@ def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
     pythoncom = None
     com_initialized = False
     session = None
+    output_data: dict[str, Any] = {}
     try:
-        pythoncom, _ = _load_pywin32_modules()
-        print("[COM_DIAG] step=pythoncom-loaded", file=sys.stderr, flush=True)
-        pythoncom.CoInitialize()
-        com_initialized = True
-        print("[COM_DIAG] step=coinitialize", file=sys.stderr, flush=True)
-        session = _connect_session()
-        print("[COM_DIAG] step=connected", file=sys.stderr, flush=True)
-        output_data = _dispatch_tool(session, task)
-        print("[COM_DIAG] step=dispatched", file=sys.stderr, flush=True)
+        from app.tools.ac.workers.com_availability import prefers_com32
+
+        if prefers_com32() or not _native_connector_creatable():
+            print("[COM_DIAG] step=com32-helper", file=sys.stderr, flush=True)
+            output_data = _dispatch_via_com32(task)
+        else:
+            pythoncom, _ = _load_pywin32_modules()
+            print("[COM_DIAG] step=pythoncom-loaded", file=sys.stderr, flush=True)
+            pythoncom.CoInitialize()
+            com_initialized = True
+            print("[COM_DIAG] step=coinitialize", file=sys.stderr, flush=True)
+            session = _connect_session()
+            print("[COM_DIAG] step=connected", file=sys.stderr, flush=True)
+            output_data = _dispatch_tool(session, task)
+            print("[COM_DIAG] step=dispatched", file=sys.stderr, flush=True)
     except ImportError as exc:
-        return _com_not_available(task, f"pywin32 недоступен: {exc}")
+        try:
+            output_data = _dispatch_via_com32(task)
+        except Exception:
+            return _com_not_available(task, f"pywin32 недоступен: {exc}")
     except OneCConnectionError as exc:
-        return WorkerResult(
-            task_id=task.task_id,
-            ok=False,
-            error_type="ONEC_CONNECTION_ERROR",
-            error_message=str(exc),
-        )
+        try:
+            output_data = _dispatch_via_com32(task)
+        except Exception as helper_exc:
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=False,
+                error_type="ONEC_CONNECTION_ERROR",
+                error_message=f"{exc}; 32-bit: {helper_exc}",
+            )
     except Exception as exc:
         return WorkerResult(
             task_id=task.task_id,
@@ -107,6 +129,127 @@ def _load_pywin32_modules() -> tuple[Any, Any]:
     import win32com.client  # type: ignore
 
     return pythoncom, win32com.client
+
+
+def _native_connector_creatable() -> bool:
+    """64-bit in-process V83.COMConnector. На этой машине его обычно нет."""
+    try:
+        _, win32com_client = _load_pywin32_modules()
+        progid = os.environ.get(ENV_COM_PROGID, DEFAULT_COM_PROGID).strip() or DEFAULT_COM_PROGID
+        win32com_client.Dispatch(progid)
+    except Exception:
+        return False
+    return True
+
+
+def _dispatch_via_com32(task: WorkerTask) -> dict[str, Any]:
+    """Чтение через 32-bit COMConnector (cscript). Без записи в 1С."""
+    if task.tool_name == "onec.meeting_service_notes":
+        return _list_meeting_service_notes_com32(task.input_data)
+    raise OneCConnectionError(
+        f"Инструмент {task.tool_name} ещё не переведён на 32-bit COMConnector (cscript). "
+        "32-bit Python (py -3.12-32) для этого не нужен."
+    )
+
+
+def _list_meeting_service_notes_com32(input_data: dict[str, Any]) -> dict[str, Any]:
+    from app.tools.ac.workers.onec_com32_helper import run_select_first
+    from app.tools.ac.workers.onec_meeting_notes import (
+        build_meeting_notes_query_latin,
+        note_from_com32_row,
+    )
+
+    args = input_data if isinstance(input_data, dict) else {}
+    date_from, date_to = parse_note_period(args)
+    addressee = str(args.get("fio") or "").strip() or default_addressee()
+    limit = int(args.get("max_results") or args.get("limit") or 50)
+    specs: list[tuple[str, list[str], str, bool, bool]] = []
+    variants = (
+        {
+            "presentation": True,
+            "deref": False,
+            "include_addressee": True,
+            "include_meeting_fields": True,
+            "include_schedule": False,
+            "person_field": "МенеджерКому",
+        },
+        {
+            "presentation": True,
+            "deref": False,
+            "include_addressee": False,
+            "include_meeting_fields": True,
+            "include_schedule": False,
+            "person_field": "МенеджерКому",
+        },
+        {
+            "presentation": False,
+            "deref": True,
+            "include_addressee": False,
+            "include_meeting_fields": False,
+            "include_schedule": False,
+            "person_field": "МенеджерКому",
+        },
+    )
+    for document_name in ("ТД_СлужебнаяЗаписка", "СлужебнаяЗаписка"):
+        for variant in variants:
+            query, columns = build_meeting_notes_query_latin(
+                document_name=document_name,
+                date_from=date_from,
+                date_to=date_to,
+                fio=addressee,
+                limit=limit,
+                include_addressee=bool(variant["include_addressee"]),
+                deref=bool(variant["deref"]),
+                presentation=bool(variant["presentation"]),
+                person_field=str(variant["person_field"]),
+                include_meeting_fields=bool(variant["include_meeting_fields"]),
+                include_schedule=bool(variant["include_schedule"]),
+            )
+            specs.append(
+                (
+                    query,
+                    columns,
+                    document_name,
+                    bool(variant["include_addressee"]),
+                    bool(variant["deref"] or variant["presentation"]),
+                )
+            )
+    try:
+        rows, chosen = run_select_first([(query, columns) for query, columns, *_ in specs])
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc).strip()
+        if message.startswith(("CREATE", "CONNECT")):
+            raise OneCConnectionError(message) from exc
+        return {
+            "notes": [],
+            "count": 0,
+            "source": "onec_com32",
+            "readonly": True,
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "addressee": addressee,
+            "theme": "организация совещаний",
+            "error": message or "32-bit COM не вернул служебные записки",
+        }
+    document_name, include_addressee, deref = specs[chosen][2:]
+    notes = [
+        note_from_com32_row(row, document_name=document_name, addressee=addressee)
+        for row in rows
+    ]
+    return {
+        "notes": notes,
+        "count": len(notes),
+        "source": "onec_com32",
+        "readonly": True,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "addressee": addressee,
+        "theme": "организация совещаний",
+        "document_type": document_name,
+        "addressed_filter": include_addressee,
+        "deref": deref,
+        "method": "select_meeting_service_notes_com32",
+    }
 
 
 def _connect_session() -> Any:
@@ -249,6 +392,8 @@ def _dispatch_tool(session: Any, task: WorkerTask) -> dict[str, Any]:
             "source": "onec_com",
             "method": "get_task_details",
         }
+    if task.tool_name == "onec.meeting_service_notes":
+        return _list_meeting_service_notes(session, task.input_data)
     raise OneCConnectionError(f"Неизвестный COM tool_name: {task.tool_name}")
 
 
@@ -628,6 +773,100 @@ def _attach_com_tabular_parts(session: Any, document: dict[str, Any]) -> dict[st
         document["tabular_parts"] = parts
     document.pop("tabular_sections", None)
     return document
+
+
+def _session_user_fio(session: Any) -> str:
+    for name in ("ПолноеИмяПользователя", "ИмяПользователя"):
+        fn = getattr(session, name, None)
+        if callable(fn):
+            try:
+                value = _safe_str(fn())
+            except Exception:
+                value = ""
+            if value:
+                return value
+    return ""
+
+
+def _list_meeting_service_notes(session: Any, input_data: dict[str, Any]) -> dict[str, Any]:
+    """Прочитать служебные записки. Только ВЫБРАТЬ, без записи в 1С."""
+    args = input_data if isinstance(input_data, dict) else {}
+    date_from, date_to = parse_note_period(args)
+    addressee = str(args.get("fio") or "").strip() or _session_user_fio(session) or default_addressee()
+    limit = int(args.get("max_results") or args.get("limit") or 50)
+    candidates = _discover_metadata_candidates(session, "служебная записка", "служебная записка")
+    candidate = pick_document_name(candidates)
+    if candidate is None:
+        return {
+            "notes": [],
+            "count": 0,
+            "source": "onec_com",
+            "readonly": True,
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "addressee": addressee,
+            "theme": "организация совещаний",
+            "error": "В метаданных 1С не найден документ «служебная записка»",
+        }
+    query_text, theme_fields, person_fields = build_meeting_notes_query(
+        document_name=str(candidate["name"]),
+        requisites=list(candidate.get("requisites") or []),
+        date_from=date_from,
+        date_to=date_to,
+        fio=addressee,
+        limit=limit,
+    )
+    assert_select_only(query_text)
+    table = session.NewObject("Query", query_text).Execute().Unload()
+    notes: list[dict[str, Any]] = []
+    for index in range(table.Count()):
+        row = table.Get(index)
+        item: dict[str, Any] = {
+            "document_type": candidate.get("synonym") or candidate.get("name"),
+            "metadata_name": candidate.get("name"),
+            "ref": _safe_str(getattr(row, "Ссылка", None) or getattr(row, "Ref", None)),
+            "number": _safe_str(getattr(row, "Номер", None) or getattr(row, "Number", None)),
+            "date": _safe_str(getattr(row, "Дата", None) or getattr(row, "Date", None)),
+            "theme": "",
+            "addressee": "",
+            "fields": {},
+        }
+        fields: dict[str, str] = {}
+        for name in (*(theme_fields or []), *(person_fields or []), "Комментарий"):
+            alias = _field_alias(name)
+            val = getattr(row, alias, None)
+            if val is None:
+                val = getattr(row, name, None)
+            text = _safe_str(getattr(val, "Наименование", None) or val, 2000)
+            if text:
+                fields[name] = text
+        item["fields"] = fields
+        item["theme"] = next((fields[name] for name in theme_fields if fields.get(name)), "")
+        item["addressee"] = next((fields[name] for name in person_fields if fields.get(name)), addressee)
+        meeting_row: dict[str, str] = {}
+        for field_name, alias, _kind in MEETING_FIELDS:
+            val = getattr(row, alias, None)
+            if val is None:
+                val = getattr(row, field_name, None)
+            meeting_row[alias] = _safe_str(getattr(val, "Наименование", None) or val, 2000)
+        meeting = meeting_params_from_row(meeting_row)
+        item["meeting_topic"] = meeting["topic"]
+        item["place"] = meeting["place"]
+        item["meeting"] = meeting
+        notes.append(item)
+    return {
+        "notes": notes,
+        "count": len(notes),
+        "source": "onec_com",
+        "readonly": True,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "addressee": addressee,
+        "theme": "организация совещаний",
+        "document_type": candidate.get("synonym") or candidate.get("name"),
+        "addressed_filter": bool(person_fields),
+        "method": "select_meeting_service_notes",
+    }
 
 
 def _search_documents_across_specs(

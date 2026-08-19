@@ -72,11 +72,13 @@ def list_desktop_tools() -> list[dict[str, Any]]:
             "type": "object",
             "properties": {},
         }
-        tools.append(
-            {
-                "name": name,
-                "description": str(definition.description or definition.title or name),
-                "inputSchema": schema,
-            }
-        )
+        item = {
+            "name": name,
+            "description": str(definition.description or definition.title or name),
+            "inputSchema": schema,
+            "execution": "desktop",
+        }
+        if definition.runtime:
+            item["runtime"] = definition.runtime
+        tools.append(item)
     return tools

@@ -14,6 +14,7 @@ _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _OUTLOOK_TOOLS = ["outlook.read_calendar", "outlook.search_mail"]
 _OUTLOOK_MAIL_TOOLS = ["imap.list_unread", "imap.search", "imap.fetch_message"]
 _ONEC_TOOLS = [
+    "onec.meeting_service_notes",
     "onec.search_documents",
     "onec.get_document_card",
     "onec.odata_get",
@@ -283,6 +284,9 @@ _ENTITY_ALIASES = {
     "подчиненный": "subordinate",
     "подчинённые": "subordinate",
     "подчиненные": "subordinate",
+    "служебная записка": "service_note",
+    "служебные записки": "service_note",
+    "сз": "service_note",
 }
 
 _PROJECT_OPERATIONS = frozenset({"", "search", "read", "list"})

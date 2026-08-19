@@ -133,6 +133,9 @@ def tool_catalog_block() -> str:
         schema = item.get("input_schema") if isinstance(item.get("input_schema"), dict) else {}
         required = list(item.get("required_filters") or schema.get("required") or [])
         exec_at = str(item.get("execution") or "desktop")
+        runtime = str(item.get("runtime") or "").strip()
+        if runtime:
+            exec_at = f"{exec_at}/{runtime}"
         system = str(item.get("system") or "desktop")
         entity = str(item.get("entity") or "—")
         operations = [
