@@ -1,0 +1,21 @@
+---
+description: Only mention verified files, commands, and runtime events
+alwaysApply: true
+---
+
+# Verified References Only
+
+- Mention a file, script, command, or runtime event only if it was verified in the filesystem, terminal output, or application logs.
+- Do not invent script names, file paths, or execution steps. If a path was not found, say so plainly.
+- When describing a run, distinguish clearly between:
+  - **verified**: observed in logs or terminal output
+  - **unverified**: inferred or expected, but not yet confirmed
+- If a requested script does not exist, suggest the nearest real alternative instead of naming a fake path.
+- Prefer exact, checkable references over paraphrased placeholders.
+
+## Example
+
+```text
+GOOD: I verified `agent/tests/run_live_acceptance.py` in the repo.
+BAD: The system runs `.\scripts\run_desktop_acceptance.ps1`.
+```

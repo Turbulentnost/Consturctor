@@ -788,6 +788,8 @@ TESTS_USER_CLARIFY_INSTRUCTION = (
     "Не пиши блок CLARIFY по доступу к 1С/почте/API — бери рекомендованный путь сам.\n"
     "- Рекомендовано для 1С: сначала `onec.odata_catalog` (документы/справочники/регистры), "
     "затем `onec.odata_get` с entity из каталога и/или `onec.sql_query`. "
+    "Карточку документа читай по `ref_key` или path с guid — в ответе все реквизиты "
+    "и табличные части (участники, план совещания), не только Number/Date/Posted. "
     "Задачи пользователя из erp_pm и документооборота: `onec.erp_tasks_current` "
     "(открытые сейчас) и `onec.erp_tasks_period` (за период, date_from/date_to YYYY-MM-DD). "
     "Только документооборот: `onec.docflow_tasks`. "

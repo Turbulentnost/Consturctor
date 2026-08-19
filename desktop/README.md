@@ -38,7 +38,7 @@ python main.py
 BACKEND_URL=http://127.0.0.1:7812
 ```
 
-Подключение к 1С настраивается только на стороне [backend](../backend/README.md) (`ERP_SQL_SERVER=ii1`).
+Live-доступ к 1С через COMConnector настраивается на стороне desktop (`ONEC_COM_SERVER`, `ONEC_COM_REF`, `ERP_LOGIN`, `ERP_PASSWORD`, `ONEC_COM_PROGID`), а `ERP_LOGIN` / `ERP_PASSWORD` можно оставить пустыми, если ваша база пускает без них. Backend по-прежнему остаётся точкой для auth/оркестрации и server-side OData/SQL.
 
 ## Сборка Windows exe
 

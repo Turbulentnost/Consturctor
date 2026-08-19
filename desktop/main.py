@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -12,6 +13,9 @@ if getattr(sys, "frozen", False):
 elif str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+for _noisy_logger in ("httpx", "httpcore", "urllib3"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication
@@ -22,6 +26,16 @@ from app.ui.app_window import AppWindow
 from app.ui.theme import app_font, load_fonts, qss_global
 
 APP_ID = "NewConstructor"
+
+
+def _configure_console_encoding() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+            except Exception:
+                pass
 
 
 def _set_app_user_model_id() -> None:
@@ -49,6 +63,7 @@ def _wants_background(argv: list[str]) -> bool:
 
 
 def main() -> int:
+    _configure_console_encoding()
     _set_app_user_model_id()
     workflow_id = _open_workflow_id(sys.argv)
     background = _wants_background(sys.argv)
@@ -62,7 +77,7 @@ def main() -> int:
         Qt.HighDpiScaleFactorRoundingPolicy.RoundPreferFloor
     )
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)
+    app.setQuitOnLastWindowClosed(True)
     app.setApplicationName("NewConstructor")
     logo = bundle_path("app", "ui", "temp", "logo.png")
     if not logo.exists():

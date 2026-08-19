@@ -44,11 +44,32 @@ class OpenQuestion:
 
 
 @dataclass
+class PlanPhase:
+    id: str
+    kind: str = ""
+    tools: list[str] = field(default_factory=list)
+    handoff: str = ""
+    depends_on: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PlanPhase:
+        return cls(
+            id=str(data.get("id") or ""),
+            kind=str(data.get("kind") or ""),
+            tools=[str(x).strip() for x in (data.get("tools") or []) if str(x).strip()],
+            handoff=str(data.get("handoff") or ""),
+            depends_on=[str(x) for x in (data.get("depends_on") or data.get("dependsOn") or [])],
+        )
+
+
+@dataclass
 class PlanRuntime:
     """Machine-readable run rules taken from user answers (not global hardcode)."""
 
     kind: str = ""  # e.g. site_search_excel; empty = no special runtime
     site_url: str = ""
+    tools: list[str] = field(default_factory=list)
+    phases: list[PlanPhase] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     keyword_text: str = ""
     export_format: str = ""  # xlsx
@@ -68,9 +89,22 @@ class PlanRuntime:
         columns = data.get("columns") or export.get("columns") or []
         if isinstance(columns, str):
             columns = [columns]
+        tools = data.get("tools") or []
+        if isinstance(tools, str):
+            tools = [tools]
+        phases_raw = data.get("phases") or []
+        phases: list[PlanPhase] = []
+        if isinstance(phases_raw, list):
+            phases = [
+                phase
+                for phase in (PlanPhase.from_dict(x) for x in phases_raw if isinstance(x, dict))
+                if phase.id.strip() and phase.kind.strip()
+            ]
         return cls(
             kind=str(data.get("kind") or ""),
             site_url=str(data.get("site_url") or data.get("siteUrl") or ""),
+            tools=[str(x).strip() for x in tools if str(x).strip()],
+            phases=phases,
             keywords=[str(x).strip() for x in keywords if str(x).strip()],
             keyword_text=str(data.get("keyword_text") or data.get("keywordText") or ""),
             export_format=str(
@@ -96,11 +130,24 @@ class PlanRuntime:
         }
         if self.autonomy_policy:
             payload["autonomy_policy"] = self.autonomy_policy
-        if not self.kind and not self.keywords and not self.keyword_text:
+        if not self.kind and not self.keywords and not self.keyword_text and not self.tools and not self.phases:
             return payload
-        payload["kind"] = self.kind
+        payload["kind"] = self.kind or ("hybrid" if self.phases else "")
         if self.site_url:
             payload["site_url"] = self.site_url
+        if self.tools:
+            payload["tools"] = list(self.tools)
+        if self.phases:
+            payload["phases"] = [
+                {
+                    "id": phase.id,
+                    "kind": phase.kind,
+                    "tools": list(phase.tools),
+                    "handoff": phase.handoff,
+                    "depends_on": list(phase.depends_on),
+                }
+                for phase in self.phases
+            ]
         if self.keywords:
             payload["keywords"] = list(self.keywords)
         if self.keyword_text:

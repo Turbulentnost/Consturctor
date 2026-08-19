@@ -707,7 +707,7 @@ class QuestionChatSession:
 
 
 class ApiClient:
-    def __init__(self, base_url: str | None = None, timeout: float = 20.0) -> None:
+    def __init__(self, base_url: str | None = None, timeout: float = 600.0) -> None:
         self.base_url = (base_url or backend_url()).rstrip("/")
         self._timeout = timeout
         self._token: str | None = None
@@ -2565,7 +2565,9 @@ def _extract_detail(response: httpx.Response) -> str:
             if msg:
                 return str(msg)
     except Exception:
-        pass
+        body = response.text.strip()
+        if body:
+            return body
     if response.status_code == 401:
         return "Неверный логин или пароль"
     return f"Ошибка сервера ({response.status_code})"

@@ -1,0 +1,23 @@
+---
+description: Keep logs and service strings ASCII-safe to avoid Windows charmap crashes
+alwaysApply: true
+---
+
+# ASCII-Safe Logs and Service Strings
+
+- Use ASCII only in log messages, exception text, docstrings that are printed, CLI/status output, and other service strings that can reach a Windows console.
+- Do not introduce characters like `→`, `↔`, `…`, smart quotes, or other non-ASCII symbols in backend/desktop logs or operational messages.
+- Prefer plain ASCII wording: `and`, `to`, `->` only if it is safe for the target output, or rewrite the sentence without symbols.
+- If Unicode is required in user-facing product text, make sure it is not sent to legacy console output and cannot trigger `charmap` encoding errors.
+
+## Examples
+
+```text
+BAD: Cursor Cloud Agent ↔ desktop tools
+GOOD: Cursor Cloud Agent and desktop tools
+```
+
+```text
+BAD: retry → restart → continue
+GOOD: retry, then restart, then continue
+```

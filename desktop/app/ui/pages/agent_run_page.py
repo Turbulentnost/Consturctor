@@ -52,7 +52,6 @@ QPlainTextEdit {
 _TOOL_LABELS = {
     "web_search": "Поиск в интернете",
     "site_browser": "Просмотр сайта",
-    "plan_export": "Поиск по сайту и Excel",
     "outlook.search_mail": "Поиск писем Outlook",
     "outlook.read_calendar": "Календарь Outlook",
     "browser.list_installed_browsers": "Список браузеров",
@@ -565,12 +564,6 @@ def _summarize_tool_result(tool: str, result: dict) -> str:
     if tool == "web_search":
         n = len(result.get("results") or [])
         return f"Нашла {n} результатов в поиске." if n else "Поиск не дал результатов."
-    if tool == "plan_export":
-        count = int(result.get("count") or 0)
-        path = str(result.get("file") or "").strip()
-        if path:
-            return f"Excel готов: {count} записей → {path}"
-        return f"Поиск завершён: {count} записей." if count else "Поиск завершён."
     # Never dump JSON/code to the user.
     try:
         raw = json.dumps(result, ensure_ascii=False)

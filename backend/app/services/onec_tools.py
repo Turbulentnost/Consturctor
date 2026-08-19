@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -43,7 +44,21 @@ _INCOMING_DOC_MARKERS = (
 )
 _TOP_RE = re.compile(r"\$top=(\d+)", re.IGNORECASE)
 _SKIP_RE = re.compile(r"\$skip=(\d+)", re.IGNORECASE)
+_GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 _ENTITYSET_NAME_RE = re.compile(r"<EntitySet\b[^>]*\bName=\"([^\"]+)\"", re.IGNORECASE)
+_SUBJECT_KEYS = (
+    "ТемаСлужебнойЗаписки",
+    "Тема",
+    "Subject",
+    "Наименование",
+    "Description",
+    "ТемаСовещания",
+    "Содержание",
+    "Комментарий",
+)
+_ODATA_TYPE_PREFIX = "StandardODATA."
 _COLLECTION_HREF_RE = re.compile(r"<collection\b[^>]*\bhref=\"([^\"]+)\"", re.IGNORECASE)
 _KIND_ALIASES = {
     "document": "document",
@@ -187,10 +202,25 @@ def _parse_skip(path: str, payload: dict[str, Any]) -> int:
     return 0
 
 
+def _entity_set_name(raw: str) -> str:
+    head = str(raw or "").strip().lstrip("/").split("?", 1)[0]
+    if "(" in head:
+        head = head.split("(", 1)[0]
+    return head.strip()
+
+
+def _is_keyed_odata_path(path: str) -> bool:
+    head = str(path or "").strip().lstrip("/").split("?", 1)[0]
+    lowered = head.casefold()
+    if "(guid'" in lowered:
+        return True
+    return "(" in head and ")" in head
+
+
 def _entity_from_args(args: dict[str, Any]) -> str:
-    entity = str(args.get("entity", "")).strip()
+    entity = _entity_set_name(str(args.get("entity", "")).strip())
     if entity:
-        return entity.lstrip("/")
+        return entity
     path = str(args.get("path", "")).strip().lstrip("/")
     if not path:
         return ""
@@ -200,7 +230,7 @@ def _entity_from_args(args: dict[str, Any]) -> str:
             settings.odata_incoming_doc_entity
             or "Document_ТД_ВходящаяКорреспонденция"
         ).strip()
-    return head
+    return _entity_set_name(head)
 
 
 def _looks_like_odata_entity(entity: str) -> bool:
@@ -287,30 +317,227 @@ def _parse_onec_http_error(response: httpx.Response) -> str:
     return f"1C OData HTTP {response.status_code}: {text[:300]}"
 
 
-def _normalize_odata_rows(data: Any) -> list[dict[str, Any]]:
+def _nonempty_odata_value(value: Any) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip()
+    if not text:
+        return False
+    if text.startswith("00000000-0000-0000-0000-000000000000"):
+        return False
+    if text.startswith("0001-01-01"):
+        return False
+    return True
+
+
+def _refresh_subject(row: dict[str, Any]) -> None:
+    subject = _subject_from_row(row)
+    if subject is not None:
+        row["Subject"] = subject
+
+
+def _catalog_entity_from_type(type_name: str) -> str:
+    text = str(type_name or "").strip()
+    if text.startswith(_ODATA_TYPE_PREFIX):
+        text = text[len(_ODATA_TYPE_PREFIX) :]
+    if looks_like_odata_entity(text):
+        return text
+    return ""
+
+
+def _subject_from_row(row: dict[str, Any]) -> Any:
+    fallback = None
+    for key in _SUBJECT_KEYS:
+        value = row.get(key)
+        if not _nonempty_odata_value(value):
+            continue
+        if _GUID_RE.match(str(value).strip()):
+            if fallback is None:
+                fallback = value
+            continue
+        return value
+    return fallback
+
+
+def _odata_payload_rows(data: Any) -> list[dict[str, Any]]:
     if not isinstance(data, dict):
         return []
     rows = data.get("value")
-    if not isinstance(rows, list):
-        return []
-    normalized: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        normalized.append(
-            {
-                "Ref_Key": row.get("Ref_Key"),
-                "Number": row.get("Number") or row.get("Code"),
-                "Date": row.get("Date") or row.get("Дата"),
-                "Description": row.get("Description")
-                or row.get("Комментарий")
-                or row.get("Наименование")
-                or row.get("Description"),
-                "Subject": row.get("Тема") or row.get("Subject"),
-                "Posted": row.get("Posted"),
-            }
-        )
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    if any(key in data for key in ("Ref_Key", "Number", "Date", "Posted", "Description")):
+        return [data]
+    return []
+
+
+def _normalize_odata_row(row: dict[str, Any]) -> dict[str, Any]:
+    extra = {
+        key: value
+        for key, value in row.items()
+        if not str(key).startswith("odata.") and key not in {"odata.metadata"}
+    }
+    normalized = dict(extra)
+    normalized["Ref_Key"] = row.get("Ref_Key")
+    normalized["Number"] = row.get("Number") or row.get("Code")
+    normalized["Date"] = row.get("Date") or row.get("Дата")
+    normalized["Description"] = (
+        row.get("Description")
+        or row.get("Комментарий")
+        or row.get("Наименование")
+        or row.get("Содержание")
+    )
+    normalized["Posted"] = row.get("Posted")
+    subject = _subject_from_row(row)
+    if subject is not None:
+        normalized["Subject"] = subject
+    elif "Subject" not in normalized:
+        normalized["Subject"] = None
     return normalized
+
+
+def _normalize_odata_rows(data: Any) -> list[dict[str, Any]]:
+    return [_normalize_odata_row(row) for row in _odata_payload_rows(data)]
+
+
+def _append_odata_query(path: str, **params: str) -> str:
+    cleaned = path.strip().lstrip("/")
+    parts: list[str] = []
+    for key, value in params.items():
+        if not value:
+            continue
+        parts.append(f"{key}={value}")
+    if not parts:
+        return cleaned
+    sep = "&" if "?" in cleaned else "?"
+    return f"{cleaned}{sep}{'&'.join(parts)}"
+
+
+def _fetch_related_tabular_parts(
+    entity: str,
+    ref_key: str,
+    args: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    if not entity or not _GUID_RE.match(ref_key):
+        return {}
+    prefix = f"{entity}_"
+    names = [name for name in sorted(_cached_catalog_names()) if name.startswith(prefix)]
+    parts: dict[str, list[dict[str, Any]]] = {}
+    filter_expr = quote(f"Ref_Key eq guid'{ref_key}'", safe="=,'")
+    for name in names[:12]:
+        try:
+            path = _append_odata_query(name, **{"$format": "json", "$top": "50", "$filter": filter_expr})
+            raw = _odata_get(
+                {
+                    **{key: value for key, value in args.items() if key not in {"path", "entity", "top", "skip", "filter"}},
+                    "path": path,
+                }
+            )
+            payload = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+            rows = _normalize_odata_rows(payload)
+            if rows:
+                parts[name] = rows
+        except Exception:  # noqa: BLE001
+            continue
+    return parts
+
+
+def _navigation_display_name(data: dict[str, Any]) -> str:
+    for key in ("Description", "Наименование", "FullName", "DescriptionFull", "Code"):
+        value = data.get(key)
+        if _nonempty_odata_value(value) and not _GUID_RE.match(str(value).strip()):
+            return str(value).strip()
+    return ""
+
+
+def _resolve_navigation_names(row: dict[str, Any], args: dict[str, Any], *, budget: int = 8) -> None:
+    """Подставить ФИО/названия вместо GUID по @navigationLinkUrl."""
+    creds = {
+        key: value
+        for key, value in args.items()
+        if key in {"username", "password", "erp_login", "erp_password", "user"}
+    }
+    remaining = budget
+
+    def resolve_catalog_guid(obj: dict[str, Any], key: str, guid: str) -> None:
+        nonlocal remaining
+        if remaining <= 0:
+            return
+        entity_name = _catalog_entity_from_type(str(obj.get(f"{key}_Type") or ""))
+        if not entity_name:
+            return
+        try:
+            raw = _odata_get({"path": f"{entity_name}(guid'{guid}')", **creds})
+        except Exception:  # noqa: BLE001
+            remaining -= 1
+            return
+        remaining -= 1
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+        if not isinstance(data, dict):
+            return
+        name = _navigation_display_name(data)
+        if not name:
+            return
+        obj[key] = name
+        obj[f"{key}_Name"] = name
+
+    def resolve_obj(obj: dict[str, Any]) -> None:
+        nonlocal remaining
+        for key, value in list(obj.items()):
+            if remaining <= 0:
+                return
+            if str(key).endswith("_Type") or str(key).endswith("_Name"):
+                continue
+            text = str(value or "").strip()
+            if (
+                _GUID_RE.match(text)
+                and obj.get(f"{key}_Type")
+                and not str(key).endswith("_Key")
+            ):
+                resolve_catalog_guid(obj, key, text)
+            if remaining <= 0:
+                return
+            if not str(key).endswith("@navigationLinkUrl"):
+                continue
+            path = str(value or "").strip().lstrip("/")
+            if not path:
+                continue
+            try:
+                raw = _odata_get({"path": path, **creds})
+            except Exception:  # noqa: BLE001
+                remaining -= 1
+                continue
+            remaining -= 1
+            data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+            if not isinstance(data, dict):
+                continue
+            name = _navigation_display_name(data)
+            if not name:
+                continue
+            field = key[: -len("@navigationLinkUrl")]
+            obj[field] = name
+            obj[f"{field}_Name"] = name
+
+    resolve_obj(row)
+    for value in list(row.values()):
+        if remaining <= 0:
+            break
+        if isinstance(value, list):
+            for item in value[:10]:
+                if isinstance(item, dict):
+                    resolve_obj(item)
+        elif isinstance(value, dict) and value is not row.get("tabular_parts"):
+            resolve_obj(value)
+    parts = row.get("tabular_parts")
+    if isinstance(parts, dict):
+        for part_rows in parts.values():
+            if remaining <= 0:
+                break
+            if not isinstance(part_rows, list):
+                continue
+            for item in part_rows[:10]:
+                if isinstance(item, dict):
+                    resolve_obj(item)
+    _refresh_subject(row)
 
 
 def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
@@ -323,36 +550,106 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
         allowlist=_odata_allowlist(),
         extra_allowed=_odata_extra_entities(),
     )
+    ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
+    number = str(args.get("number") or args.get("Number") or "").strip()
+    extra_filter = str(args.get("filter") or "").strip()
     top = _parse_top_limit(path, args)
     skip = _parse_skip(path, args)
     cleaned_path = path.strip().lstrip("/")
-    if cleaned_path and cleaned_path.split("?", 1)[0] == entity:
-        odata_path = _ensure_odata_query(cleaned_path, top=top, skip=skip)
+    keyed = _is_keyed_odata_path(cleaned_path)
+    if number and args.get("top") is None and "$top" not in cleaned_path.lower():
+        top = max(top, 20)
+    if ref_key and not _GUID_RE.match(ref_key):
+        raise OnecToolError("ref_key must be a GUID")
+    if ref_key and not keyed:
+        cleaned_path = f"{entity}(guid'{ref_key}')"
+        keyed = True
+    elif not cleaned_path:
+        cleaned_path = entity
+
+    if keyed:
+        odata_path = _ensure_odata_query(cleaned_path)
     else:
-        odata_path = _build_list_path(entity, top, skip=skip)
+        if cleaned_path.split("?", 1)[0] == entity:
+            odata_path = _ensure_odata_query(cleaned_path, top=top, skip=skip)
+        else:
+            odata_path = _build_list_path(entity, top, skip=skip)
+        filters: list[str] = []
+        if extra_filter:
+            filters.append(extra_filter)
+        elif number:
+            safe_number = number.replace("'", "''")
+            filters.append(f"Number eq '{safe_number}'")
+        if filters and "$filter" not in odata_path.lower():
+            odata_path = _append_odata_query(
+                odata_path,
+                **{"$filter": quote(" and ".join(filters), safe="=,'")},
+            )
+        if (number or extra_filter) and entity.startswith("Document_") and "$orderby" not in odata_path.lower():
+            odata_path = _append_odata_query(odata_path, **{"$orderby": "Date%20desc"})
+
     if not settings.odata_base_url:
         raise OnecToolError(
             "ODATA_BASE_URL не настроен. Добавьте ODATA_BASE_URL, "
             "ODATA_USERNAME/ODATA_PASSWORD (или ERP_LOGIN/ERP_PASSWORD) в backend/.env."
         )
 
-    raw = _odata_get({"path": odata_path, **{k: v for k, v in args.items() if k != "path"}})
+    raw = _odata_get(
+        {
+            "path": odata_path,
+            **{
+                key: value
+                for key, value in args.items()
+                if key
+                not in {
+                    "path",
+                    "entity",
+                    "top",
+                    "skip",
+                    "filter",
+                    "ref_key",
+                    "Ref_Key",
+                    "number",
+                    "Number",
+                }
+            },
+        }
+    )
     payload = raw.get("data") if isinstance(raw.get("data"), dict) else raw
     value = _normalize_odata_rows(payload)
+    value.sort(key=lambda row: str(row.get("Date") or ""), reverse=True)
+    tabular_parts: dict[str, list[dict[str, Any]]] = {}
+    nav_suffix = cleaned_path.split(")", 1)[-1] if ")" in cleaned_path else ""
+    is_navigation = keyed and nav_suffix.startswith("/")
+    if value and not is_navigation:
+        for row in value[:10]:
+            _resolve_navigation_names(row, args, budget=2)
+        card = value[0] if (keyed or number or extra_filter or len(value) == 1) else None
+        if isinstance(card, dict):
+            row_ref = str(card.get("Ref_Key") or ref_key or "").strip()
+            tabular_parts = _fetch_related_tabular_parts(entity, row_ref, args)
+            if tabular_parts:
+                card["tabular_parts"] = tabular_parts
+            _resolve_navigation_names(card, args, budget=8)
     numbers = [str(item.get("Number") or "") for item in value if item.get("Number")]
     summary = f"получено {len(value)} записей из 1С OData ({entity})"
     if numbers:
         summary += f": {', '.join(numbers)}"
-    return {
+    if tabular_parts:
+        summary += f", табличные части: {', '.join(tabular_parts)}"
+    result = {
         "summary": summary,
         "path": odata_path,
         "entity": entity,
         "count": len(value),
-        "top": top,
-        "skip": skip,
+        "top": 1 if keyed else top,
+        "skip": 0 if keyed else skip,
         "value": value,
         "source": "odata",
     }
+    if tabular_parts:
+        result["tabular_parts"] = tabular_parts
+    return result
 
 
 def _odata_get_dispatch(args: dict[str, Any]) -> dict[str, Any]:
@@ -438,8 +735,6 @@ def _stub_sql_query(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _odata_url(path: str) -> str:
-    from urllib.parse import quote
-
     base = settings.odata_base_url.rstrip("/")
     cleaned = path.lstrip("/")
     safe = "/()'=,:$"
@@ -456,8 +751,9 @@ def _odata_get(args: dict[str, Any]) -> dict[str, Any]:
         allowlist=_odata_allowlist(),
         extra_allowed=_odata_extra_entities(),
     )
-    top = _parse_top_limit(raw_path, args) if raw_path else None
-    skip = _parse_skip(raw_path, args) if raw_path else None
+    keyed = _is_keyed_odata_path(raw_path)
+    top = None if keyed else (_parse_top_limit(raw_path, args) if raw_path else None)
+    skip = None if keyed else (_parse_skip(raw_path, args) if raw_path else None)
     path = _ensure_odata_query(
         path,
         top=top if top is not None and "$top" not in path.lower() else None,

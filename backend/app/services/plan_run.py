@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from app.models.workflow import Workflow
 from app.services.workflows.plan_models import PlanRuntime, WorkflowPlan
+from app.services.workflow_tool_routing import default_tools_for_kind
 
 ProgressCallback = Callable[[str], None]
 
@@ -146,6 +147,8 @@ def ensure_runtime(plan: WorkflowPlan) -> WorkflowPlan:
                 "цена",
                 "дата",
             ]
+        if not rt.tools:
+            rt.tools = default_tools_for_kind(rt.kind, blob=_plan_blob(plan))
         apply_autonomy(plan)
         return plan
     inferred = infer_runtime(plan)

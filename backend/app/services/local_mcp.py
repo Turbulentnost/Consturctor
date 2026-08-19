@@ -63,26 +63,6 @@ def list_tools() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "plan_export",
-            "description": (
-                "Поиск на ЭТП по ключам из плана агента и сохранение Excel на Desktop. "
-                "Исполняется на desktop пользователя."
-            ),
-            "execution": "desktop",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "site_url": {"type": "string"},
-                    "keywords": {"type": "array", "items": {"type": "string"}},
-                    "columns": {"type": "array", "items": {"type": "string"}},
-                    "destination": {"type": "string", "default": "desktop"},
-                    "export_format": {"type": "string", "default": "xlsx"},
-                    "workflow_title": {"type": "string"},
-                },
-                "required": ["keywords"],
-            },
-        },
-        {
             "name": "imap.list_unread",
             "description": "Список непрочитанных писем (сервер, IMAP).",
             "execution": "server",
@@ -168,7 +148,9 @@ def list_tools() -> list[dict[str, Any]]:
             "name": "onec.odata_get",
             "description": (
                 "Чтение сущности/пути 1С OData (сервер). "
-                "entity бери из onec.odata_catalog (documents / catalogs / registers). "
+                "entity бери из onec.odata_catalog. Для карточки документа передай "
+                "ref_key или path с guid — вернутся все реквизиты, не только номер/дата. "
+                "Табличные части (участники и т.п.) подтягиваются как Entity_ИмяТЧ. "
                 "Не выдумывай имена EntitySet."
             ),
             "execution": "server",
@@ -179,17 +161,32 @@ def list_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Имя EntitySet из onec.odata_catalog, например Document_Проект",
                     },
-                    "path": {"type": "string"},
-                    "top": {
-                        "type": "integer",
-                        "default": 3,
-                        "description": "OData $top — сколько записей вернуть",
-                    },
-                    "skip": {
-                        "type": "integer",
-                        "default": 0,
-                        "description": "OData $skip — смещение (сколько записей пропустить)",
-                    },
+            "path": {
+                "type": "string",
+                "description": "Путь OData, включая ключ: Document_Имя(guid'...')",
+            },
+            "ref_key": {
+                "type": "string",
+                "description": "GUID документа: читает карточку целиком, не список",
+            },
+            "number": {
+                "type": "string",
+                "description": "Номер документа. Один номер может повторяться по годам: вернутся свежие сначала, с темой и табличными частями.",
+            },
+            "filter": {
+                "type": "string",
+                "description": "OData $filter, например Number eq '000000001'",
+            },
+            "top": {
+                "type": "integer",
+                "default": 3,
+                "description": "OData $top — сколько записей вернуть",
+            },
+            "skip": {
+                "type": "integer",
+                "default": 0,
+                "description": "OData $skip — смещение (сколько записей пропустить)",
+            },
                 },
             },
         },
