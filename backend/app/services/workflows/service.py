@@ -62,6 +62,7 @@ class PhaseResult:
     error: str = ""
     git: dict[str, Any] = field(default_factory=dict)
     successful_live_tools: list[str] = field(default_factory=list)
+    step_ledger: list[dict[str, Any]] = field(default_factory=list)
 
 
 def workflow_health() -> WorkflowHealth:
@@ -218,6 +219,177 @@ def update_local_run(
 WorkflowEventCallback = Callable[..., None]
 
 
+def draft_of(row: Workflow) -> dict[str, Any]:
+    local = row.local_run if isinstance(row.local_run, dict) else {}
+    draft = local.get("playbook_draft")
+    return dict(draft) if isinstance(draft, dict) else {}
+
+
+def _regulation_blob(row: Workflow) -> str:
+    return " ".join([row.notes or "", row.document_text or "", row.title or ""])
+
+
+def _validate_and_store_draft(
+    db: Session,
+    *,
+    row: Workflow,
+    draft: dict[str, Any],
+) -> tuple[dict[str, Any], Any]:
+    """Подобрать инструменты по контрактам и проверить полноту черновика."""
+    from app.services.workflow_tool_routing import regulation_allows_web
+    from app.services.workflows.playbook_validation import (
+        attach_tool_candidates,
+        validate_draft,
+    )
+
+    allow_web = regulation_allows_web(_regulation_blob(row))
+    enriched = attach_tool_candidates(draft, allow_web=allow_web)
+    validation = validate_draft(enriched, allow_web=allow_web)
+    local = dict(row.local_run or {})
+    local["playbook_draft"] = enriched
+    local["draft_validation"] = validation.to_dict()
+    row.local_run = local
+    db.commit()
+    db.refresh(row)
+    return enriched, validation
+
+
+def _emit_config_errors(validation: Any, on_event: WorkflowEventCallback | None) -> None:
+    for issue in validation.config_errors:
+        detail = f" {issue.detail}" if issue.detail else ""
+        _emit(on_event, "decision", f"Ошибка конфигурации агента: {issue.message}{detail}")
+
+
+def design_workflow(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
+    """Спроектировать черновик инструкции по регламенту — без живых данных."""
+    from app.services.workflows.cursor_tools import tool_catalog_block
+
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    attachments = _load_attachments_payload(workflow_id)
+    images = collect_prompt_images(attachments)
+    has_text = bool((row.document_text or "").strip() or (row.notes or "").strip())
+    if not has_text and not images:
+        raise WorkflowError("Нет материалов — загрузите описание бизнес-процесса или файлы.")
+
+    prompt = prompts.build_playbook_draft_prompt(
+        document_text=row.document_text,
+        title=row.title,
+        notes=row.notes or "",
+        document_name=row.document_name,
+        catalog=tool_catalog_block(),
+    )
+    _emit(on_event, "decision", "Проектирую инструкцию по регламенту, без обращения к данным.")
+    _emit(on_event, "progress", "пишу черновик инструкции")
+    try:
+        if row.exec_agent_id:
+            try:
+                run = cursor_client.create_run(row.exec_agent_id, prompt=prompt, mode="agent")
+                agent_id = row.exec_agent_id
+                run_id = str(run.get("id") or "")
+            except CursorAgentError:
+                agent_id, run_id = _create_exec_agent(row.title, prompt)
+        else:
+            agent_id, run_id = _create_exec_agent(row.title, prompt)
+    except CursorAgentError as exc:
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
+
+    row.exec_agent_id = agent_id
+    row.exec_run_id = run_id
+    row.phase = "designing"
+    db.commit()
+
+    result = _stream_run(agent_id, run_id, on_event=on_event)
+    draft = prompts.parse_playbook_draft(result.text or "")
+    draft, validation = _validate_and_store_draft(db, row=row, draft=draft)
+
+    if validation.ambiguous and draft.get("steps"):
+        draft, validation = _repair_draft(
+            db, row=row, draft=draft, validation=validation, on_event=on_event
+        )
+
+    return _finish_design(db, row=row, draft=draft, validation=validation, on_event=on_event)
+
+
+def _repair_draft(
+    db: Session,
+    *,
+    row: Workflow,
+    draft: dict[str, Any],
+    validation: Any,
+    on_event: WorkflowEventCallback | None = None,
+) -> tuple[dict[str, Any], Any]:
+    """Неоднозначные шаги возвращаем проектировщику один раз."""
+    if not row.exec_agent_id:
+        return draft, validation
+    _emit(on_event, "decision", "Дорабатываю черновик: не хватает критериев по шагам.")
+    prompt = prompts.build_playbook_repair_prompt(
+        draft=draft,
+        issues=[issue.to_dict() for issue in validation.issues],
+    )
+    try:
+        run = cursor_client.create_run(row.exec_agent_id, prompt=prompt, mode="agent")
+        run_id = str(run.get("id") or "")
+        if not run_id:
+            return draft, validation
+        result = _stream_run(row.exec_agent_id, run_id, on_event=on_event)
+    except CursorAgentError as exc:
+        logger.warning("Draft repair failed id=%s: %s", row.id, exc)
+        return draft, validation
+    repaired = prompts.parse_playbook_draft(result.text or "")
+    if not repaired.get("steps"):
+        return draft, validation
+    return _validate_and_store_draft(db, row=row, draft=repaired)
+
+
+def _finish_design(
+    db: Session,
+    *,
+    row: Workflow,
+    draft: dict[str, Any],
+    validation: Any,
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
+    from app.services.workflows.playbook_validation import issues_to_questions
+
+    local = dict(row.local_run or {})
+    local["can_publish"] = False
+    local["demo_ok"] = False
+    row.local_run = local
+
+    questions = issues_to_questions(validation.issues)
+    if questions:
+        row.phase = "designed"
+        db.commit()
+        return _pause_demo_for_questions(
+            db,
+            row=row,
+            phase=PhaseResult(text=""),
+            questions=questions,
+            on_event=on_event,
+        )
+
+    _emit_config_errors(validation, on_event)
+    row.phase = "designed"
+    db.commit()
+    db.refresh(row)
+    if validation.config_errors:
+        _emit(
+            on_event,
+            "decision",
+            "Черновик готов, но инструменты подобрать не удалось — прогон не запускаю.",
+        )
+    else:
+        steps = len(draft.get("steps") or [])
+        _emit(on_event, "decision", f"Черновик инструкции готов: {steps} шагов. Можно делать прогон.")
+    return _to_schema(row)
+
+
 def demo_workflow(
     db: Session,
     *,
@@ -233,6 +405,27 @@ def demo_workflow(
     if not has_text and not images:
         raise WorkflowError("Нет материалов — загрузите описание бизнес-процесса или файлы.")
 
+    draft = draft_of(row)
+    if not draft.get("steps"):
+        schema = design_workflow(db, user_id=user_id, workflow_id=workflow_id, on_event=on_event)
+        db.refresh(row)
+        draft = draft_of(row)
+        if row.phase == "clarify" or not draft.get("steps"):
+            return schema
+
+    draft, validation = _validate_and_store_draft(db, row=row, draft=draft)
+    if validation.config_errors:
+        _emit_config_errors(validation, on_event)
+        _emit(
+            on_event,
+            "decision",
+            "Прогон не запускаю: для шагов нет подходящих инструментов.",
+        )
+        row.phase = "designed"
+        db.commit()
+        db.refresh(row)
+        return _to_schema(row)
+
     from app.services.workflows.cursor_tools import with_tools_if_desktop
 
     prompt = with_tools_if_desktop(
@@ -241,6 +434,7 @@ def demo_workflow(
             title=row.title,
             notes=row.notes or "",
             document_name=row.document_name,
+            draft=draft,
         )
     )
     _emit(on_event, "decision", "Запускаю пробный прогон по описанию бизнес-процесса.")
@@ -272,6 +466,7 @@ def demo_workflow(
         mode="execute",
         assumption_check=True,
         required_live_tools=_required_demo_tools(row),
+        draft=draft,
     )
     return _finish_demo_stream(db, row=row, phase=phase, on_event=on_event)
 
@@ -385,12 +580,14 @@ def clarify_workflow(
             agent_id = row.plan_agent_id
             run_id = str(run.get("id") or "")
         else:
+            model, model_params = _resolve_model_variant()
             created = cursor_client.create_agent(
                 prompt=prompt,
-                model_id=_resolve_model(),
+                model_id=model,
                 mode="agent",
                 name=row.title,
                 images=images or None,
+                model_params=model_params,
             )
             agent_id = str((created.get("agent") or {}).get("id") or "")
             run_id = str((created.get("run") or {}).get("id") or "")
@@ -644,6 +841,31 @@ def execute_workflow(
     return _to_schema(row)
 
 
+def _require_verified_playbook(row: Workflow, playbook: dict[str, Any]) -> None:
+    """Публикуем только проверенную инструкцию: черновик и открытые issue не пускаем."""
+    local = row.local_run if isinstance(row.local_run, dict) else {}
+    draft = local.get("playbook_draft") if isinstance(local.get("playbook_draft"), dict) else {}
+    if not draft.get("steps"):
+        return
+    if str(playbook.get("status") or "") != prompts.DRAFT_STATUS_VERIFIED:
+        raise WorkflowError(
+            "Нельзя сохранить агента: инструкция ещё черновик, прогон её не подтвердил"
+        )
+    report = local.get("validation") if isinstance(local.get("validation"), dict) else {}
+    if report and not report.get("ok", True):
+        reasons = "; ".join(str(item) for item in (report.get("reasons") or []))
+        raise WorkflowError(
+            "Нельзя сохранить агента: остались незакрытые проверки" + (f" — {reasons}" if reasons else "")
+        )
+    draft_report = (
+        local.get("draft_validation") if isinstance(local.get("draft_validation"), dict) else {}
+    )
+    if draft_report.get("config_error_count"):
+        raise WorkflowError(
+            "Нельзя сохранить агента: для части шагов не подобраны инструменты"
+        )
+
+
 def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSchema:
     """Опубликовать проверенный workflow в «Мои агенты» (phase=done)."""
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
@@ -655,6 +877,7 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
         raise WorkflowError("Сначала завершите пробный прогон")
     if not row.exec_agent_id and not has_demo:
         raise WorkflowError("Нет результата пробного прогона для публикации")
+    _require_verified_playbook(row, playbook)
 
     local = dict(row.local_run or {})
     if has_demo:
@@ -866,14 +1089,27 @@ def _finish_demo_stream(
             db, row=row, phase=phase, questions=questions, on_event=on_event
         )
     tools = list(phase.successful_live_tools or [])
-    playbook = _distill_playbook(
+    draft = draft_of(row)
+    report = _demo_validation_report(phase, draft)
+    if not report["ok"]:
+        return _fail_demo_validation(db, row=row, draft=draft, report=report, on_event=on_event)
+    playbook = _refine_playbook(
         row,
+        draft=draft,
         demo_text=phase.text or "",
         tools=tools,
+        report=report,
         on_event=on_event,
     )
     local = dict(row.local_run or {})
+    local["validation"] = report
     local["playbook"] = playbook
+    if draft.get("steps"):
+        local["playbook_draft"] = {
+            **draft,
+            "steps": playbook.get("steps") or draft.get("steps"),
+            "status": prompts.DRAFT_STATUS_VERIFIED,
+        }
     local["demo_ok"] = bool(playbook.get("demo_ok"))
     local["can_publish"] = bool(playbook.get("instructions"))
     local["tests_status"] = "pass" if playbook.get("demo_ok") else "unknown"
@@ -962,6 +1198,25 @@ def _pause_demo_for_questions(
     return _to_schema(row)
 
 
+def _apply_answers_to_draft(
+    db: Session,
+    *,
+    row: Workflow,
+    plan: WorkflowPlan,
+) -> tuple[dict[str, Any], Any]:
+    """Ответы человека закрывают clarify-пункты черновика, иначе вопрос повторится."""
+    draft = draft_of(row)
+    if not draft.get("steps"):
+        return draft, None
+    answers = prompts._answered_scope_lines(plan)
+    draft["required_clarifications"] = []
+    if answers:
+        draft["answers"] = answers
+    if not str(draft.get("recipient") or "").strip() and answers:
+        draft["recipient"] = "по ответам человека"
+    return _validate_and_store_draft(db, row=row, draft=draft)
+
+
 def _continue_demo_after_answers(
     db: Session,
     *,
@@ -971,6 +1226,15 @@ def _continue_demo_after_answers(
 ) -> WorkflowSchema:
     from app.services.workflows.cursor_tools import with_tools_if_desktop
 
+    _draft, validation = _apply_answers_to_draft(db, row=row, plan=plan)
+    if validation is not None and validation.config_errors:
+        _emit_config_errors(validation, on_event)
+        _emit(on_event, "decision", "Прогон не запускаю: для шагов нет подходящих инструментов.")
+        row.phase = "designed"
+        db.commit()
+        db.refresh(row)
+        return _to_schema(row)
+
     prompt = with_tools_if_desktop(
         prompts.build_demo_continue_prompt(
             document_text=row.document_text,
@@ -978,6 +1242,7 @@ def _continue_demo_after_answers(
             notes=row.notes or "",
             document_name=row.document_name,
             plan=plan,
+            draft=draft_of(row),
         )
     )
     _emit(on_event, "decision", "Учитываю ответы и продолжаю пробный прогон.")
@@ -1003,6 +1268,7 @@ def _continue_demo_after_answers(
         workflow_id=row.id,
         mode="execute",
         required_live_tools=_required_demo_tools(row, plan),
+        draft=draft_of(row),
     )
     return _finish_demo_stream(db, row=row, phase=phase, on_event=on_event)
 
@@ -1031,6 +1297,150 @@ def _local_playbook(*, title: str, demo_text: str, tools: list[str], answered_sc
         "expected_result": "",
         "triggers": [],
     }
+
+
+_ACCEPTED_DATA_STATUS = {"complete", "empty_valid"}
+
+
+def _demo_validation_report(phase: PhaseResult, draft: dict[str, Any]) -> dict[str, Any]:
+    """Гейт итога: успешный прогон — это закрытый ledger, а не наличие текста."""
+    ledger = [item for item in (phase.step_ledger or []) if isinstance(item, dict)]
+    failed_marker = "FAILED_VALIDATION" in (phase.text or "").upper()
+    unfinished = [
+        {
+            "id": str(item.get("id") or ""),
+            "status": str(item.get("status") or ""),
+            "data_status": str(item.get("data_status") or ""),
+            "tool": str(item.get("tool") or ""),
+            "error": str(item.get("error") or ""),
+            "reasons": list(item.get("reasons") or []),
+        }
+        for item in ledger
+        if item.get("required")
+        and (
+            str(item.get("status") or "") != "completed"
+            or str(item.get("data_status") or "") not in _ACCEPTED_DATA_STATUS
+        )
+    ]
+    has_steps = bool(draft.get("steps"))
+    ok = not failed_marker and not unfinished and (not has_steps or bool(ledger))
+    reasons: list[str] = []
+    if failed_marker:
+        reasons.append("Агент вернул FAILED_VALIDATION.")
+    if unfinished:
+        reasons.append(
+            "Не закрыты обязательные шаги: "
+            + ", ".join(item["id"] for item in unfinished if item["id"])
+        )
+    if has_steps and not ledger:
+        reasons.append("Ни один шаг черновика не подтверждён данными инструментов.")
+    return {
+        "ok": ok,
+        "failed_validation": failed_marker,
+        "ledger": ledger,
+        "unfinished": unfinished,
+        "reasons": reasons,
+    }
+
+
+def _playbook_from_draft(row: Workflow, draft: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": prompts.DRAFT_STATUS_DRAFT,
+        "instructions": prompts.draft_summary_text(draft),
+        "example_run": "",
+        "demo_ok": False,
+        "tools": [],
+        "name": row.title or "",
+        "expected_result": str(draft.get("result") or ""),
+        "triggers": [],
+    }
+
+
+def _fail_demo_validation(
+    db: Session,
+    *,
+    row: Workflow,
+    draft: dict[str, Any],
+    report: dict[str, Any],
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
+    """Прогон не подтвердил данные: черновик остаётся, example_run не пишем."""
+    local = dict(row.local_run or {})
+    local["validation"] = report
+    local["playbook"] = _playbook_from_draft(row, draft)
+    local["demo_ok"] = False
+    local["can_publish"] = False
+    local["tests_status"] = "fail"
+    local["awaiting_demo_answers"] = False
+    row.local_run = local
+    row.phase = "designed" if draft.get("steps") else "ready"
+    db.commit()
+    db.refresh(row)
+    for reason in report.get("reasons") or []:
+        _emit(on_event, "decision", reason)
+    _emit(
+        on_event,
+        "decision",
+        "Прогон не подтвердил данные — инструкция осталась черновиком, пример не сохранён.",
+    )
+    return _to_schema(row)
+
+
+def _refine_playbook(
+    row: Workflow,
+    *,
+    draft: dict[str, Any],
+    demo_text: str,
+    tools: list[str],
+    report: dict[str, Any],
+    on_event: WorkflowEventCallback | None = None,
+) -> dict[str, Any]:
+    """Правка черновика по фактам прогона, а не первое его создание."""
+    if not draft.get("steps"):
+        playbook = _distill_playbook(row, demo_text=demo_text, tools=tools, on_event=on_event)
+        playbook.setdefault("status", prompts.DRAFT_STATUS_VERIFIED if playbook.get("demo_ok") else prompts.DRAFT_STATUS_DRAFT)
+        return playbook
+
+    playbook = _playbook_from_draft(row, draft)
+    playbook["tools"] = list(tools)
+    playbook["example_run"] = (demo_text or "").strip()[:2500]
+    playbook["demo_ok"] = True
+    playbook["status"] = prompts.DRAFT_STATUS_VERIFIED
+    if not row.exec_agent_id:
+        return playbook
+
+    _emit(on_event, "progress", "правлю черновик по итогам прогона")
+    try:
+        prompt = prompts.build_playbook_refine_prompt(
+            draft=draft,
+            demo_trace=demo_text,
+            validation=report,
+            title=row.title,
+            tools=tools,
+        )
+        run = cursor_client.create_run(row.exec_agent_id, prompt=prompt, mode="agent")
+        run_id = str(run.get("id") or "")
+        if not run_id:
+            return playbook
+        result = _stream_run(row.exec_agent_id, run_id, on_event=on_event)
+        parsed = prompts.parse_playbook_refine(result.text or "", draft=draft)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Playbook refine failed id=%s: %s", row.id, exc)
+        return playbook
+
+    if parsed.get("instructions"):
+        playbook["instructions"] = parsed["instructions"]
+    if parsed.get("example_run"):
+        playbook["example_run"] = parsed["example_run"]
+    if parsed.get("name") and not prompts.is_placeholder_title(str(parsed.get("name") or "")):
+        playbook["name"] = parsed["name"]
+    if parsed.get("expected_result"):
+        playbook["expected_result"] = parsed["expected_result"]
+    if parsed.get("triggers"):
+        playbook["triggers"] = parsed["triggers"]
+    if parsed.get("steps"):
+        playbook["steps"] = parsed["steps"]
+    return playbook
 
 
 def _distill_playbook(
@@ -1282,11 +1692,12 @@ def _materialize_artifacts(
 
 
 def _create_exec_agent(title: str, prompt: str) -> tuple[str, str]:
-    model = _resolve_model()
+    model, model_params = _resolve_model_variant()
     logger.info(
-        "Workflow execute creating Cursor agent title=%s model=%s prompt_len=%s",
+        "Workflow execute creating Cursor agent title=%s model=%s params=%s prompt_len=%s",
         title,
         model or "-",
+        model_params or "-",
         len(prompt or ""),
     )
     created = cursor_client.create_agent(
@@ -1294,6 +1705,7 @@ def _create_exec_agent(title: str, prompt: str) -> tuple[str, str]:
         model_id=model,
         mode="agent",
         name=title,
+        model_params=model_params,
     )
     agent_id = str((created.get("agent") or {}).get("id") or "")
     run_id = str((created.get("run") or {}).get("id") or "")
@@ -1302,30 +1714,62 @@ def _create_exec_agent(title: str, prompt: str) -> tuple[str, str]:
     return agent_id, run_id
 
 
-def _resolve_model() -> str | None:
+def _effort_params(record: dict[str, Any] | None, effort: str) -> list[dict[str, str]] | None:
+    """Параметр effort уходит только моделям, которые его объявляют."""
+    value = (effort or "").strip().casefold()
+    if not value:
+        return None
+    if record is None:
+        return [{"id": "effort", "value": value}]
+    for param in record.get("parameters") or []:
+        if not isinstance(param, dict) or str(param.get("id") or "") != "effort":
+            continue
+        allowed = {
+            str(item.get("value") or "").casefold()
+            for item in (param.get("values") or [])
+            if isinstance(item, dict)
+        }
+        if not allowed or value in allowed:
+            return [{"id": "effort", "value": value}]
+        logger.warning(
+            "Cursor model %s не поддерживает effort=%s, доступны %s",
+            record.get("id"),
+            value,
+            sorted(allowed),
+        )
+        return None
+    return None
+
+
+def _resolve_model_variant() -> tuple[str | None, list[dict[str, str]] | None]:
+    """Id модели и её вариант (например Cursor Grok 4.6 с effort=high)."""
     preferred = settings.cursor_workflow_model
-    logger.info("Cursor resolve model preferred=%s", preferred or "-")
+    effort = settings.cursor_workflow_model_effort
+    logger.info("Cursor resolve model preferred=%s effort=%s", preferred or "-", effort or "-")
     try:
         models = cursor_client.list_models()
     except CursorAgentError as exc:
         logger.warning("Cursor list_models failed: %s — fallback=%s", exc.message, preferred or "-")
-        return preferred or None
-    ids: list[str] = []
-    for model in models:
+        return (preferred or None), _effort_params(None, effort)
+
+    records = [model for model in models if isinstance(model, dict)]
+    ids = [str(model.get("id") or "") for model in records if model.get("id")]
+    for model in records:
         mid = str(model.get("id") or "")
-        if mid:
-            ids.append(mid)
         aliases = {str(a) for a in (model.get("aliases") or [])}
         if preferred and (mid == preferred or preferred in aliases):
             logger.info("Cursor model resolved=%s (preferred match)", mid)
-            return mid
-    for mid in ids:
-        if mid.startswith(preferred or "composer"):
-            logger.info("Cursor model resolved=%s (prefix)", mid)
-            return mid
+            return mid, _effort_params(model, effort)
+    if preferred:
+        for model in records:
+            mid = str(model.get("id") or "")
+            if mid.startswith(preferred):
+                logger.info("Cursor model resolved=%s (prefix)", mid)
+                return mid, _effort_params(model, effort)
     chosen = preferred or (ids[0] if ids else None)
+    record = next((m for m in records if str(m.get("id") or "") == chosen), None)
     logger.info("Cursor model resolved=%s from %s candidates", chosen or "-", len(ids))
-    return chosen
+    return chosen, _effort_params(record, effort)
 
 
 def _stream_run_with_tools(
@@ -1337,6 +1781,7 @@ def _stream_run_with_tools(
     mode: str = "plan",
     required_live_tools: list[str] | None = None,
     assumption_check: bool = False,
+    draft: dict[str, Any] | None = None,
 ):
     from app.services.workflows.cursor_tools import stream_cursor_with_tools
 
@@ -1349,6 +1794,7 @@ def _stream_run_with_tools(
         stream_run=_stream_run,
         required_live_tools=required_live_tools,
         assumption_check=assumption_check,
+        draft=draft,
     )
 
 

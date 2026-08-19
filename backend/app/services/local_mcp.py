@@ -13,7 +13,7 @@ class LocalMcpError(RuntimeError):
     pass
 
 
-def list_tools() -> list[dict[str, Any]]:
+def _raw_tools() -> list[dict[str, Any]]:
     return [
         {
             "name": "web_search",
@@ -588,6 +588,165 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             }
         )
     return tools
+
+
+SYSTEMS = ("onec", "turboproject", "outlook", "imap", "web", "desktop", "constructor")
+OPERATIONS = (
+    "search",
+    "read",
+    "list",
+    "create",
+    "update",
+    "delete",
+    "export",
+    "notify",
+    "execute",
+)
+
+# Контракт нужен подбору инструментов и валидации ответа: по названию совместимость
+# определить нельзя (web_search и onec.sql_query «оба ищут»).
+_CONTRACTS: dict[str, tuple[str, str, str, list[str], list[str], str]] = {
+    # name: (system, entity, operation, required_filters, result_fields, pagination)
+    "web_search": ("web", "web_page", "search", ["query"], ["results"], "none"),
+    "site_browser": ("web", "web_page", "search", ["url"], ["items", "text"], "none"),
+    "imap.list_unread": ("imap", "mail_message", "list", [], ["messages"], "count"),
+    "imap.search": ("imap", "mail_message", "search", ["query"], ["messages"], "count"),
+    "imap.fetch_message": ("imap", "mail_message", "read", ["uid"], ["subject", "body"], "none"),
+    "imap.fetch_attachments": ("imap", "mail_attachment", "list", ["uid"], ["files"], "none"),
+    "onec.odata_catalog": ("onec", "metadata", "list", [], ["entities"], "count"),
+    "onec.odata_get": ("onec", "odata_entity", "read", ["entity"], ["rows", "value"], "cursor"),
+    "onec.odata_post": ("onec", "odata_entity", "create", ["entity"], ["ref_key"], "none"),
+    "onec.odata_patch": (
+        "onec",
+        "odata_entity",
+        "update",
+        ["entity", "ref_key"],
+        ["ref_key"],
+        "none",
+    ),
+    "onec.attach_file": (
+        "onec",
+        "file",
+        "create",
+        ["document_ref_key", "filename"],
+        [],
+        "none",
+    ),
+    "onec.sql_query": ("onec", "sql_table", "search", ["sql"], ["rows"], "count"),
+    "onec.erp_tasks_current": ("onec", "task", "list", [], ["tasks"], "count"),
+    "onec.erp_tasks_period": (
+        "onec",
+        "task",
+        "list",
+        ["date_from", "date_to"],
+        ["tasks"],
+        "count",
+    ),
+    "onec.erp_subordinate_tasks": ("onec", "task", "list", [], ["tree"], "count"),
+    "onec.docflow_tasks": ("onec", "task", "list", [], ["tasks"], "count"),
+    "onec.search_documents": ("onec", "document", "search", [], ["documents"], "count"),
+    "onec.get_document_card": (
+        "onec",
+        "document",
+        "read",
+        ["document_ref"],
+        ["document"],
+        "none",
+    ),
+    "onec.search_tasks": ("onec", "task", "search", [], ["tasks"], "count"),
+    "onec.get_task_card": ("onec", "task", "read", ["task_ref"], ["task"], "none"),
+    "turboproject": ("turboproject", "project", "search", [], ["projects"], "count"),
+    "outlook.search_mail": ("outlook", "mail_message", "search", [], ["messages"], "count"),
+    "outlook.read_calendar": ("outlook", "calendar_event", "list", [], ["events"], "count"),
+    "browser.list_installed_browsers": ("web", "browser", "list", [], ["items"], "none"),
+    "browser.open_browser": ("web", "browser", "execute", ["browser_id"], [], "none"),
+    "browser.search_web": ("web", "web_page", "search", ["query"], ["results"], "none"),
+    "browser.open_page": ("web", "web_page", "read", ["url"], ["text"], "none"),
+    "browser.extract_table": ("web", "web_page", "read", ["url"], ["items"], "none"),
+    "browser.scroll_page": ("web", "web_page", "read", ["url"], ["text"], "none"),
+    "browser.click_link": ("web", "web_page", "execute", ["url"], ["text"], "none"),
+    "browser.navigate": ("web", "web_page", "execute", ["url"], [], "none"),
+    "browser.screenshot": ("web", "web_page", "read", [], ["file"], "none"),
+    "browser.get_page_html": ("web", "web_page", "read", ["url"], ["text"], "none"),
+    "browser.dump_page_source": ("web", "web_page", "export", ["url"], ["files"], "none"),
+    "browser.click": ("web", "web_page", "execute", ["x", "y"], [], "none"),
+    "browser.type_text": ("web", "web_page", "execute", ["text"], [], "none"),
+    "browser.press_key": ("web", "web_page", "execute", ["key"], [], "none"),
+    "browser.scroll": ("web", "web_page", "execute", [], [], "none"),
+    "excel.list_files": ("desktop", "file", "list", [], ["files"], "none"),
+    "excel.read_workbook": ("desktop", "spreadsheet", "read", ["filename"], ["rows"], "count"),
+    "excel.create_workbook": ("desktop", "spreadsheet", "export", ["filename"], ["file"], "none"),
+    "excel.edit_workbook": ("desktop", "spreadsheet", "export", ["filename"], ["file"], "none"),
+    "workspace.powershell_run": ("desktop", "shell", "execute", ["command"], ["text"], "none"),
+    "code.write_python": ("desktop", "code", "create", ["code"], ["file"], "none"),
+    "code.run_python": ("desktop", "code", "execute", [], ["text"], "none"),
+    "agent.wait": ("constructor", "agent", "execute", ["seconds"], [], "none"),
+    "report.build_task_report": ("desktop", "report", "export", [], ["file"], "none"),
+    "report.build_meeting_summary": ("desktop", "report", "export", [], ["file"], "none"),
+    "report.build_schedule_recommendations": ("desktop", "report", "export", [], ["file"], "none"),
+    "users.list": ("constructor", "user", "list", [], ["users"], "count"),
+    "notify.send": (
+        "constructor",
+        "notification",
+        "notify",
+        ["user_id", "title"],
+        ["id", "delivered"],
+        "none",
+    ),
+    "agent.schedule": ("constructor", "trigger", "create", [], ["trigger_id"], "none"),
+    "agent.schedule.cancel": ("constructor", "trigger", "delete", ["trigger_id"], [], "none"),
+}
+
+
+def _contract_for(name: str, execution: str) -> dict[str, Any]:
+    system, entity, operation, filters, fields, pagination = _CONTRACTS.get(
+        name, (execution or "desktop", "", "execute", [], [], "none")
+    )
+    return {
+        "system": system,
+        "entity": entity,
+        "operation": operation,
+        "required_filters": list(filters),
+        "result_fields": list(fields),
+        "pagination": pagination,
+    }
+
+
+def list_tools() -> list[dict[str, Any]]:
+    """Каталог с контрактами: по ним идёт подбор инструмента и проверка ответа."""
+    tools: list[dict[str, Any]] = []
+    for tool in _raw_tools():
+        name = str(tool.get("name") or "")
+        tools.append({**tool, **_contract_for(name, str(tool.get("execution") or ""))})
+    return tools
+
+
+def tool_contracts() -> dict[str, dict[str, Any]]:
+    return {str(tool["name"]): tool for tool in list_tools() if tool.get("name")}
+
+
+def candidates_for(
+    *,
+    system: str = "",
+    entity: str = "",
+    operation: str = "",
+) -> list[dict[str, Any]]:
+    """Инструменты, совместимые по системе, сущности и операции."""
+    wanted_system = (system or "").strip().casefold()
+    wanted_entity = (entity or "").strip().casefold()
+    wanted_operation = (operation or "").strip().casefold()
+    found: list[dict[str, Any]] = []
+    for tool in list_tools():
+        if wanted_system and str(tool.get("system") or "").casefold() != wanted_system:
+            continue
+        if wanted_operation and str(tool.get("operation") or "").casefold() != wanted_operation:
+            continue
+        if wanted_entity:
+            tool_entity = str(tool.get("entity") or "").casefold()
+            if tool_entity != wanted_entity and wanted_entity not in tool_entity:
+                continue
+        found.append(tool)
+    return found
 
 
 def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:

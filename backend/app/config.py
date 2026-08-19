@@ -46,7 +46,9 @@ class Settings(BaseSettings):
     cursor_api_key: str = Field(default="", validation_alias="CURSOR_API_KEY")
     cursor_api_base_url: str = "https://api.cursor.com"
     cursor_regulation_model: str = "composer-2.5"
-    cursor_workflow_model: str = "composer"
+    cursor_workflow_model: str = "grok-4.6"
+    # Вариант модели: у grok-4.6 это Effort (low/medium/high/xhigh).
+    cursor_workflow_model_effort: str = "high"
 
     # App Postgres (users, avatars, future agent data). Not ERP.
     database_url: str = (

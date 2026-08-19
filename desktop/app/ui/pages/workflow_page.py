@@ -59,18 +59,21 @@ SUPPORTED_SUFFIXES = {
 
 _STAGES = [
     ("document", "Материалы", "Файлы загружены", "Добавляем материалы"),
+    ("designed", "Черновик", "Черновик готов", "Проектируем инструкцию по регламенту"),
     ("executing", "Пробный прогон", "Задача выполнена", "Агент делает задачу как Cursor"),
     ("tested", "Инструкция", "Инструкция готова", "Пишем правило для следующих запусков"),
     ("done", "Готово", "Агент сохранён", "Можно запускать агента"),
 ]
 _PHASE_RANK = {
     "document": 0,
-    "plan": 1,
+    "designing": 1,
+    "designed": 1,
+    "plan": 2,
     "clarify": 1,
-    "ready": 1,
-    "executing": 1,
-    "tested": 2,
-    "done": 3,
+    "ready": 2,
+    "executing": 2,
+    "tested": 3,
+    "done": 4,
 }
 
 _SEND_BTN = """
@@ -1568,6 +1571,9 @@ class WorkflowPage(QWidget):
         elif self._post_build_question:
             self._agent_status.setText("● Нужны уточнения после сборки — ответьте в чате")
             self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
+        elif self._record and self._record.phase == "designed":
+            self._agent_status.setText("● Черновик инструкции готов — запустите пробный прогон")
+            self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         elif self._record and self._record.phase in {"ready", "tested", "executing"}:
             self._agent_status.setText("● Можно запустить пробный прогон снова")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")

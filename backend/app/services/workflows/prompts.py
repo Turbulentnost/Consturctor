@@ -243,6 +243,39 @@ _DEMO_CLARIFY_HINT = (
 )
 
 
+_VALIDATION_RULES = (
+    "ДИСЦИПЛИНА ДАННЫХ.\n"
+    "Успешный вызов инструмента не доказывает, что шаг выполнен. "
+    "После каждого вызова проверь:\n"
+    "1. инструмент соответствует нужной системе, сущности и операции;\n"
+    "2. фактический охват данных совпадает с запрошенным;\n"
+    "3. в ответе есть обязательные поля;\n"
+    "4. пагинация завершена (count против длины, truncated, has_more, упор в limit);\n"
+    "5. данных хватает следующему шагу.\n"
+    "Пустой или неполный ответ — не основание продолжать. Тогда: не делай выводов, "
+    "не переходи к следующему бизнес-шагу, проверь параметры, возьми более подходящий "
+    "инструмент и повтори получение данных.\n"
+    "CLARIFY — только когда отсутствует бизнес-параметр, который должен дать человек. "
+    "«Вызвал инструмент, ничего не нашёл» — это не CLARIFY, а неверный выбор инструмента.\n"
+    "При ошибке инструмента, неверном источнике или недостаточном покрытии верни "
+    "FAILED_VALIDATION с причиной. Не подменяй отсутствующие данные предположениями.\n"
+    "Итог и example_run пиши только когда все обязательные шаги закрыты "
+    "с полными или честно пустыми данными."
+)
+
+
+def _draft_block(draft: dict[str, Any] | None) -> str:
+    if not draft or not (draft.get("steps") or []):
+        return ""
+    return (
+        "\n===== ЧЕРНОВИК ИНСТРУКЦИИ =====\n"
+        f"{draft_summary_text(draft)}\n"
+        "===== КОНЕЦ ЧЕРНОВИКА =====\n"
+        "Иди по шагам черновика. В каждом блоке ```constructor_tool указывай "
+        'поле "step" с id шага и бери инструмент только из его кандидатов.\n'
+    )
+
+
 def _clip_demo_materials(*, document_text: str, notes: str = "") -> str:
     clipped = (document_text or "").strip()
     if len(clipped) > 60_000:
@@ -259,6 +292,7 @@ def build_demo_prompt(
     title: str = "",
     notes: str = "",
     document_name: str = "",
+    draft: dict[str, Any] | None = None,
 ) -> str:
     body = _clip_demo_materials(document_text=document_text, notes=notes)
     return (
@@ -267,6 +301,8 @@ def build_demo_prompt(
         f"{_DEMO_CLARIFY_HINT}\n"
         "Когда человек ответил или решение уже есть в ТЗ — "
         "один реальный прогон на живых данных.\n"
+        f"{_VALIDATION_RULES}\n"
+        f"{_draft_block(draft)}"
         f"{_RESULT_HINT}\n"
         f"Название: {title_from_materials(notes=notes, document_text=document_text, document_name=document_name, fallback=title or 'агент')}\n"
         f"Источник: {document_name or 'материалы'}\n\n"
@@ -283,6 +319,7 @@ def build_demo_continue_prompt(
     notes: str = "",
     document_name: str = "",
     plan: WorkflowPlan | None = None,
+    draft: dict[str, Any] | None = None,
 ) -> str:
     body = _clip_demo_materials(document_text=document_text, notes=notes)
     answers = _answered_scope_lines(plan)
@@ -293,6 +330,8 @@ def build_demo_continue_prompt(
         "Если после ответов смысл ясен — вызывай Constructor tools и дай результат.\n"
         "Если человек просил уведомления / прислать / notify — до RESULT обязательно "
         "вызови users.list и notify.send. Текст «я отправил» без notify.send не считается.\n"
+        f"{_VALIDATION_RULES}\n"
+        f"{_draft_block(draft)}"
         f"{_RESULT_HINT}\n"
         f"Название: {title_from_materials(notes=notes, document_text=document_text, document_name=document_name, fallback=title or 'агент')}\n"
         f"Источник: {document_name or 'материалы'}\n\n"
@@ -303,6 +342,168 @@ def build_demo_continue_prompt(
         f"{body}\n"
         "===== END ====="
     )
+
+
+DRAFT_STATUS_DRAFT = "draft"
+DRAFT_STATUS_VERIFIED = "verified"
+
+_DRAFT_SCHEMA = (
+    "{\n"
+    '  "goal": "зачем агент нужен и чем заканчивается его работа",\n'
+    '  "inputs": ["что нужно на входе"],\n'
+    '  "required_clarifications": ["бизнес-параметр, которого нет в регламенте"],\n'
+    '  "result": "что получается на выходе",\n'
+    '  "recipient": "кому уходит результат",\n'
+    '  "confirmation_points": ["где нужно подтверждение человека"],\n'
+    '  "steps": [\n'
+    "    {\n"
+    '      "id": "s1",\n'
+    '      "title": "коротко что делаем",\n'
+    '      "required": true,\n'
+    '      "system": "onec|turboproject|outlook|imap|web|desktop|constructor",\n'
+    '      "entity": "сущность из контракта: task, document, project, mail_message, user…",\n'
+    '      "operation": "search|read|list|create|update|export|notify|execute",\n'
+    '      "required_params": ["какие параметры нужны для вызова"],\n'
+    '      "data_expectation": "какие данные и поля должны прийти",\n'
+    '      "done_when": "когда шаг считается выполненным",\n'
+    '      "on_empty": "что делать, если ответ пустой",\n'
+    '      "on_error": "что делать при ошибке инструмента"\n'
+    "    }\n"
+    "  ]\n"
+    "}"
+)
+
+
+def build_playbook_draft_prompt(
+    *,
+    document_text: str,
+    title: str = "",
+    notes: str = "",
+    document_name: str = "",
+    catalog: str = "",
+) -> str:
+    """Проектирование инструкции по регламенту — без обращения к живым данным."""
+    body = _clip_demo_materials(document_text=document_text, notes=notes)
+    catalog_block = f"\n===== КАТАЛОГ ИНСТРУМЕНТОВ =====\n{catalog}\n===== КОНЕЦ КАТАЛОГА =====\n" if catalog else ""
+    return (
+        "Ты проектировщик ИИ-агента Constructor. По регламенту составь черновик инструкции.\n"
+        "Сейчас НЕ выполняй задачу и НЕ вызывай инструменты: "
+        "блок ```constructor_tool в этом ответе запрещён, живых данных не запрашивай.\n"
+        "Инструмент для шага выбирай по контракту каталога: система, сущность, операция. "
+        "Похожее название — не основание. Если шаг про 1С, web_search и site_browser "
+        "не подходят, пока регламент прямо не требует внешний сайт.\n"
+        "В required_clarifications пиши только бизнес-параметры, которых нет в регламенте "
+        "(период, объекты, получатель, критерий успеха). "
+        "Технические вопросы (поля, OData, COM, имена tools, логины) туда не входят — "
+        "это твоя зона ответственности.\n"
+        "У каждого шага обязательно заполни done_when, on_empty и on_error.\n"
+        "Верни ТОЛЬКО один JSON-объект (можно в ```json) по схеме:\n"
+        f"{_DRAFT_SCHEMA}\n"
+        f"Название: {title_from_materials(notes=notes, document_text=document_text, document_name=document_name, fallback=title or 'агент')}\n"
+        f"Источник: {document_name or 'материалы'}\n"
+        f"{catalog_block}\n"
+        "===== BUSINESS PROCESS =====\n"
+        f"{body}\n"
+        "===== END ====="
+    )
+
+
+def _draft_step_from_dict(data: dict[str, Any], index: int) -> dict[str, Any]:
+    step_id = str(data.get("id") or "").strip() or f"s{index}"
+    required = data.get("required")
+    return {
+        "id": step_id,
+        "title": str(data.get("title") or "").strip(),
+        "required": True if required is None else bool(required),
+        "system": str(data.get("system") or "").strip().casefold(),
+        "entity": str(data.get("entity") or "").strip(),
+        "operation": str(data.get("operation") or "").strip().casefold(),
+        "required_params": [
+            str(item).strip()
+            for item in (data.get("required_params") or [])
+            if str(item).strip()
+        ],
+        "data_expectation": str(data.get("data_expectation") or "").strip(),
+        "done_when": str(data.get("done_when") or data.get("doneWhen") or "").strip(),
+        "on_empty": str(data.get("on_empty") or data.get("onEmpty") or "").strip(),
+        "on_error": str(data.get("on_error") or data.get("onError") or "").strip(),
+    }
+
+
+def parse_playbook_draft(text: str) -> dict[str, Any]:
+    """Черновик из ответа проектировщика. Пустой steps — значит черновик не получился."""
+    data = _extract_json_blob(text) or {}
+    steps_raw = data.get("steps") if isinstance(data.get("steps"), list) else []
+    steps = [
+        _draft_step_from_dict(item, i)
+        for i, item in enumerate(steps_raw, start=1)
+        if isinstance(item, dict)
+    ]
+    return {
+        "status": DRAFT_STATUS_DRAFT,
+        "goal": str(data.get("goal") or "").strip(),
+        "inputs": [str(x).strip() for x in (data.get("inputs") or []) if str(x).strip()],
+        "required_clarifications": [
+            str(x).strip()
+            for x in (data.get("required_clarifications") or [])
+            if str(x).strip()
+        ],
+        "result": str(data.get("result") or "").strip(),
+        "recipient": str(data.get("recipient") or "").strip(),
+        "confirmation_points": [
+            str(x).strip() for x in (data.get("confirmation_points") or []) if str(x).strip()
+        ],
+        "steps": steps,
+    }
+
+
+def build_playbook_repair_prompt(*, draft: dict[str, Any], issues: list[dict[str, Any]]) -> str:
+    """Черновик неоднозначен — просим проектировщика дописать критерии."""
+    lines = []
+    for issue in issues:
+        step_id = str(issue.get("step_id") or "").strip()
+        prefix = f"[{step_id}] " if step_id else ""
+        detail = str(issue.get("detail") or "").strip()
+        tail = f" ({detail})" if detail else ""
+        lines.append(f"- {prefix}{issue.get('message')}{tail}")
+    return (
+        "Черновик инструкции неполный. Исправь замечания и верни ЦЕЛИКОМ обновлённый JSON "
+        "по той же схеме — только JSON, без пояснений.\n"
+        "Инструменты не вызывай: блок ```constructor_tool запрещён.\n"
+        "Замечания:\n"
+        + "\n".join(lines)
+        + "\n\n===== ТЕКУЩИЙ ЧЕРНОВИК =====\n"
+        + json.dumps(draft, ensure_ascii=False, indent=2)
+        + "\n===== КОНЕЦ ЧЕРНОВИКА ====="
+    )
+
+
+def draft_summary_text(draft: dict[str, Any]) -> str:
+    """Компактный черновик для промптов прогона."""
+    if not draft:
+        return ""
+    lines = [f"Цель: {draft.get('goal') or '—'}"]
+    if draft.get("result"):
+        lines.append(f"Результат: {draft['result']}")
+    if draft.get("recipient"):
+        lines.append(f"Получатель: {draft['recipient']}")
+    for step in draft.get("steps") or []:
+        mark = "обязательный" if step.get("required") else "необязательный"
+        lines.append(
+            f"- {step.get('id')} [{mark}] {step.get('title')} "
+            f"({step.get('system')}·{step.get('entity')}·{step.get('operation')})"
+        )
+        if step.get("tool_candidates"):
+            lines.append(f"    инструменты: {', '.join(step['tool_candidates'])}")
+        if step.get("data_expectation"):
+            lines.append(f"    ожидаем данные: {step['data_expectation']}")
+        if step.get("done_when"):
+            lines.append(f"    выполнено, когда: {step['done_when']}")
+        if step.get("on_empty"):
+            lines.append(f"    если пусто: {step['on_empty']}")
+        if step.get("on_error"):
+            lines.append(f"    если ошибка: {step['on_error']}")
+    return "\n".join(lines)
 
 
 def build_playbook_prompt(
@@ -408,6 +609,61 @@ def parse_playbook_from_text(text: str) -> dict[str, Any]:
         "expected_result": expected[:800],
         "triggers": [item for item in triggers if isinstance(item, dict)],
     }
+
+
+def build_playbook_refine_prompt(
+    *,
+    draft: dict[str, Any],
+    demo_trace: str,
+    validation: dict[str, Any] | None = None,
+    title: str = "",
+    tools: list[str] | None = None,
+) -> str:
+    """После удачного прогона черновик правится, а не пишется заново."""
+    trace = (demo_trace or "").strip()
+    if len(trace) > 12_000:
+        trace = trace[:12_000] + "\n[...]"
+    ledger = json.dumps(validation or {}, ensure_ascii=False, indent=2)
+    tools_line = ", ".join(tools or []) or "—"
+    return (
+        "Прогон прошёл проверку данных. Доработай ЧЕРНОВИК инструкции по фактам прогона — "
+        "не пиши инструкцию с нуля.\n"
+        "Что уточнить: точные имена инструментов (например onec.*), рабочие параметры вызовов, "
+        "обработку пустого ответа, формат результата и получателя.\n"
+        "Инструменты сейчас не вызывай: блок ```constructor_tool запрещён.\n"
+        "Верни ТОЛЬКО JSON:\n"
+        "{\n"
+        '  "name": "название агента",\n'
+        '  "instructions": "инструкция для следующих запусков, по шагам",\n'
+        '  "example_run": "что именно было сделано в этом прогоне и с каким результатом",\n'
+        '  "expected_result": "что человек получает на выходе",\n'
+        '  "triggers": [],\n'
+        '  "steps": [ ...тот же формат шагов, что в черновике, с исправлениями... ]\n'
+        "}\n"
+        f"Название: {title or '—'}\n"
+        f"Сработавшие инструменты: {tools_line}\n\n"
+        "===== ЧЕРНОВИК =====\n"
+        f"{json.dumps(draft, ensure_ascii=False, indent=2)}\n"
+        "===== ЖУРНАЛ ШАГОВ =====\n"
+        f"{ledger}\n"
+        "===== ПРОГОН =====\n"
+        f"{trace}\n"
+        "===== END ====="
+    )
+
+
+def parse_playbook_refine(text: str, *, draft: dict[str, Any]) -> dict[str, Any]:
+    """Уточнённый playbook плюс поправленные шаги черновика."""
+    parsed = parse_playbook_from_text(text)
+    data = _extract_json_blob(text) or {}
+    steps_raw = data.get("steps") if isinstance(data.get("steps"), list) else []
+    steps = [
+        _draft_step_from_dict(item, i)
+        for i, item in enumerate(steps_raw, start=1)
+        if isinstance(item, dict)
+    ]
+    parsed["steps"] = steps or list(draft.get("steps") or [])
+    return parsed
 
 
 _CLARIFY_TECH_HINTS = (

@@ -228,6 +228,109 @@ def resolve_workflow_routing(plan: "WorkflowPlan", workflow: Workflow | None = N
     return WorkflowRouting(kind=kind, tools=tools, source=source)
 
 
+_WEB_TOOL_PREFIXES = ("web_search", "site_browser", "browser.")
+_WEB_ALLOWED_HINTS = (
+    "сайт",
+    "интернет",
+    "веб",
+    "web",
+    "http://",
+    "https://",
+    "этп",
+    "площадк",
+    "поисковик",
+)
+
+
+def regulation_allows_web(blob: str) -> bool:
+    """Веб-инструменты нужны, только если регламент прямо про сайт/интернет."""
+    low = (blob or "").casefold()
+    return any(hint in low for hint in _WEB_ALLOWED_HINTS)
+
+
+def _is_web_tool(name: str) -> bool:
+    low = (name or "").strip().casefold()
+    return any(low == prefix or low.startswith(prefix) for prefix in _WEB_TOOL_PREFIXES)
+
+
+_OPERATION_SYNONYMS = {
+    "fetch": "read",
+    "get": "read",
+    "load": "read",
+    "find": "search",
+    "query": "search",
+    "enumerate": "list",
+    "send": "notify",
+    "write": "create",
+    "save": "create",
+    "post": "create",
+    "modify": "update",
+    "patch": "update",
+    "download": "export",
+    "report": "export",
+    "run": "execute",
+}
+
+
+def normalize_operation(operation: str) -> str:
+    low = (operation or "").strip().casefold()
+    return _OPERATION_SYNONYMS.get(low, low)
+
+
+def select_candidates(
+    step: dict[str, Any],
+    *,
+    next_step: dict[str, Any] | None = None,
+    allow_web: bool = False,
+) -> list[str]:
+    """Инструменты, совместимые с шагом черновика: система, сущность, операция, фильтры."""
+    from app.services.local_mcp import candidates_for
+
+    system = str(step.get("system") or "").strip().casefold()
+    operation = normalize_operation(str(step.get("operation") or ""))
+    matched = candidates_for(
+        system=system,
+        entity=str(step.get("entity") or ""),
+        operation=operation,
+    )
+    # Имя сущности проектировщик пишет свободно, операция — из фиксированного набора.
+    if not matched:
+        matched = candidates_for(system=system, operation=operation)
+
+    if system and system != "web" and not allow_web:
+        matched = [tool for tool in matched if not _is_web_tool(str(tool.get("name") or ""))]
+
+    known_params = {
+        str(param).strip().casefold()
+        for param in (step.get("required_params") or [])
+        if str(param).strip()
+    }
+    covered = [
+        tool
+        for tool in matched
+        if not known_params
+        or all(
+            str(flt).strip().casefold() in known_params
+            for flt in (tool.get("required_filters") or [])
+        )
+    ]
+    if covered:
+        matched = covered
+
+    if next_step:
+        needs = {
+            str(param).strip().casefold()
+            for param in (next_step.get("required_params") or [])
+            if str(param).strip()
+        }
+        if needs:
+            useful = [tool for tool in matched if tool.get("result_fields")]
+            if useful:
+                matched = useful
+
+    return [str(tool.get("name") or "") for tool in matched if tool.get("name")]
+
+
 def apply_routing_to_runtime(plan: "WorkflowPlan", workflow: Workflow | None = None) -> "WorkflowPlan":
     route = resolve_workflow_routing(plan, workflow)
     rt = plan.runtime

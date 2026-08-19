@@ -63,6 +63,46 @@ def current_tool_context() -> tuple[str, str] | None:
     return _tool_ctx.get()
 
 
+def _validation_rules_block() -> str:
+    from app.services.workflows.prompts import _VALIDATION_RULES
+
+    return _VALIDATION_RULES
+
+
+def tool_catalog_block() -> str:
+    """Только контракты инструментов, без правил вызова — для проектировщика."""
+    lines = ["Каталог по системам (system · entity · operation):"]
+    by_system: dict[str, list[str]] = {}
+    for item in list_tools():
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        desc = str(item.get("description") or "").replace("\n", " ")
+        schema = item.get("input_schema") if isinstance(item.get("input_schema"), dict) else {}
+        props = list((schema.get("properties") or {}).keys())
+        required = list(item.get("required_filters") or schema.get("required") or [])
+        exec_at = str(item.get("execution") or "desktop")
+        system = str(item.get("system") or "desktop")
+        entity = str(item.get("entity") or "—")
+        operation = str(item.get("operation") or "—")
+        extra = f" args={props}" if props else ""
+        if required:
+            extra += f" required={required}"
+        result_fields = list(item.get("result_fields") or [])
+        if result_fields:
+            extra += f" returns={result_fields}"
+        pagination = str(item.get("pagination") or "none")
+        if pagination != "none":
+            extra += f" pagination={pagination}"
+        by_system.setdefault(system, []).append(
+            f"- {name} [{exec_at}] {system}·{entity}·{operation}: {desc}{extra}"
+        )
+    for system in sorted(by_system):
+        lines.append(f"[{system}]")
+        lines.extend(by_system[system])
+    return "\n".join(lines)
+
+
 def tools_prompt_block() -> str:
     lines = [
         "Реестр Constructor. ```constructor_tool — markdown в ответе, не tool Cursor. "
@@ -78,21 +118,14 @@ def tools_prompt_block() -> str:
         "Дождись ответа системы и только потом продолжи.",
         "Когда Constructor tool уже ответил и объём ясен — финальный ответ "
         "без блока constructor_tool. Если объём всё ещё неясен — CLARIFY, не RESULT.",
-        "Каталог:",
+        "Инструмент выбирай по контракту: система, сущность, операция. "
+        "Похожее название — не основание. Для задачи по 1С web_search и site_browser "
+        "не подходят, даже если в них есть слово «поиск».",
+        "Указывай шаг черновика, к которому относится вызов: "
+        '{"name": "...", "step": "s1", "arguments": {}}.',
+        _validation_rules_block(),
+        tool_catalog_block(),
     ]
-    for item in list_tools():
-        name = str(item.get("name") or "")
-        if not name:
-            continue
-        desc = str(item.get("description") or "").replace("\n", " ")
-        schema = item.get("input_schema") if isinstance(item.get("input_schema"), dict) else {}
-        props = list((schema.get("properties") or {}).keys())
-        required = list(schema.get("required") or [])
-        exec_at = str(item.get("execution") or "desktop")
-        extra = f" args={props}" if props else ""
-        if required:
-            extra += f" required={required}"
-        lines.append(f"- {name} [{exec_at}]: {desc}{extra}")
     return "\n".join(lines)
 
 
@@ -118,7 +151,11 @@ def extract_tool_calls(text: str) -> list[dict[str, Any]]:
         if not name:
             continue
         arguments = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
-        calls.append({"name": name, "arguments": arguments})
+        call = {"name": name, "arguments": arguments}
+        step = str(data.get("step") or data.get("step_id") or "").strip()
+        if step:
+            call["step"] = step
+        calls.append(call)
     return calls
 
 
@@ -286,6 +323,96 @@ def invoke_creation_tool(
     return result if isinstance(result, dict) else {}
 
 
+class StepLedger:
+    """Статус каждого шага черновика: успешный вызов — ещё не выполненный шаг."""
+
+    def __init__(self, draft: dict[str, Any] | None) -> None:
+        self.steps: list[dict[str, Any]] = [
+            step for step in ((draft or {}).get("steps") or []) if isinstance(step, dict)
+        ]
+        self.entries: dict[str, dict[str, Any]] = {}
+        for index, step in enumerate(self.steps, start=1):
+            step_id = str(step.get("id") or f"s{index}")
+            self.entries[step_id] = {
+                "id": step_id,
+                "title": str(step.get("title") or ""),
+                "required": bool(step.get("required", True)),
+                "status": "pending",
+                "data_status": "",
+                "tool": "",
+                "attempts": 0,
+                "error": "",
+                "reasons": [],
+            }
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.steps)
+
+    def step_by_id(self, step_id: str) -> dict[str, Any] | None:
+        for step in self.steps:
+            if str(step.get("id") or "") == step_id:
+                return step
+        return None
+
+    def next_step(self, step_id: str) -> dict[str, Any] | None:
+        for index, step in enumerate(self.steps):
+            if str(step.get("id") or "") == step_id:
+                return self.steps[index + 1] if index + 1 < len(self.steps) else None
+        return None
+
+    def resolve(self, call: dict[str, Any]) -> dict[str, Any] | None:
+        """Шаг из блока вызова, иначе — первый незакрытый шаг с таким инструментом."""
+        declared = str(call.get("step") or "").strip()
+        if declared:
+            found = self.step_by_id(declared)
+            if found is not None:
+                return found
+        name = str(call.get("name") or "")
+        for step in self.steps:
+            entry = self.entries.get(str(step.get("id") or ""), {})
+            if entry.get("status") == "completed":
+                continue
+            if name in (step.get("tool_candidates") or []):
+                return step
+        return None
+
+    def record(
+        self,
+        *,
+        step: dict[str, Any] | None,
+        name: str,
+        verdict: Any,
+        error: str = "",
+    ) -> None:
+        if step is None:
+            return
+        entry = self.entries.get(str(step.get("id") or ""))
+        if entry is None:
+            return
+        entry["attempts"] = int(entry.get("attempts") or 0) + 1
+        entry["tool"] = name
+        entry["error"] = error
+        if error:
+            entry["status"] = "failed"
+            entry["data_status"] = "mismatch"
+            entry["reasons"] = [error[:300]]
+            return
+        entry["data_status"] = verdict.data_status
+        entry["reasons"] = list(verdict.reasons)
+        entry["status"] = "completed" if verdict.accepted else "failed"
+
+    def missing_required(self) -> list[str]:
+        return [
+            entry["id"]
+            for entry in self.entries.values()
+            if entry.get("required") and entry.get("status") != "completed"
+        ]
+
+    def as_list(self) -> list[dict[str, Any]]:
+        return [dict(entry) for entry in self.entries.values()]
+
+
 def stream_cursor_with_tools(
     *,
     agent_id: str,
@@ -296,9 +423,11 @@ def stream_cursor_with_tools(
     stream_run,
     required_live_tools: list[str] | None = None,
     assumption_check: bool = False,
+    draft: dict[str, Any] | None = None,
 ) -> Any:
     """Stream a Cursor run; if it asks for constructor_tool, execute and continue."""
     last = stream_run(agent_id, run_id, on_event=on_event)
+    ledger = StepLedger(draft)
     required = [tool_family(name) for name in (required_live_tools or []) if tool_family(name)]
     successful: set[str] = set()
     fail_counts: dict[str, int] = {}
@@ -319,7 +448,7 @@ def stream_cursor_with_tools(
     for _round_n in range(max_rounds):
         last_text = getattr(last, "text", None) or ""
         if _should_pause_for_clarify(last_text):
-            return _attach_live_ok(last, successful)
+            return _attach_live_ok(last, successful, ledger)
         calls = should_run_tool_calls(last_text, mode=mode)
         if not calls and mode == "execute":
             pending = missing_required()
@@ -339,12 +468,12 @@ def stream_cursor_with_tools(
                 )
                 next_id = str(run.get("id") or "")
                 if not next_id:
-                    return _attach_live_ok(last, successful)
+                    return _attach_live_ok(last, successful, ledger)
                 last = stream_run(agent_id, next_id, on_event=on_event)
                 continue
-            return _attach_live_ok(last, successful)
+            return _attach_live_ok(last, successful, ledger)
         if not calls:
-            return _attach_live_ok(last, successful)
+            return _attach_live_ok(last, successful, ledger)
 
         if did_assumption_check:
             fresh: list[dict[str, Any]] = []
@@ -358,7 +487,7 @@ def stream_cursor_with_tools(
                     continue
                 fresh.append(call)
             if not fresh:
-                return _attach_live_ok(last, successful)
+                return _attach_live_ok(last, successful, ledger)
             calls = fresh
 
         nudge_without_call = 0
@@ -367,6 +496,24 @@ def stream_cursor_with_tools(
             name = str(call.get("name") or "")
             family = tool_family(name)
             arguments = call.get("arguments") or {}
+            step = ledger.resolve(call) if ledger.enabled else None
+            rejection = _reject_off_contract(step, name)
+            if rejection:
+                results.append(
+                    {
+                        "name": name,
+                        "ok": False,
+                        "step": str((step or {}).get("id") or ""),
+                        "validation": {
+                            "data_status": "mismatch",
+                            "reasons": [rejection],
+                            "next_action": "Возьми инструмент из кандидатов шага.",
+                        },
+                        "error": rejection,
+                    }
+                )
+                _emit(on_event, "decision", f"«{name}» отклонён: {rejection}")
+                continue
             cache_key = _tool_cache_key(name, arguments)
             cached = result_cache.get(cache_key)
             if cached is not None:
@@ -406,10 +553,25 @@ def stream_cursor_with_tools(
                     workflow_id=workflow_id,
                 )
                 clipped = _clip_result(result)
-                packed = {"name": name, "ok": True, "result": clipped}
+                verdict = _verdict_for(
+                    step=step,
+                    name=name,
+                    arguments=arguments,
+                    result=result,
+                    next_step=ledger.next_step(str((step or {}).get("id") or "")) if step else None,
+                )
+                ledger.record(step=step, name=name, verdict=verdict)
+                packed = {
+                    "name": name,
+                    "ok": True,
+                    "result": clipped,
+                    "step": str((step or {}).get("id") or ""),
+                    "validation": verdict.to_dict(),
+                }
                 results.append(packed)
                 result_cache[cache_key] = packed
-                if family:
+                # Успешный вызов не доказывает выполнение шага — только вердикт.
+                if family and verdict.accepted:
                     successful.add(family)
                     fail_counts[family] = 0
                     unreachable.discard(family)
@@ -418,12 +580,33 @@ def stream_cursor_with_tools(
                     on_event,
                     "tool_result",
                     f"{name}\n{summary}",
-                    {"tool": name, "result": clipped},
+                    {"tool": name, "result": clipped, "validation": verdict.to_dict()},
                 )
-                _emit(on_event, "decision", f"«{name}»: готово.")
+                if verdict.accepted:
+                    _emit(on_event, "decision", f"«{name}»: готово.")
+                else:
+                    reason = "; ".join(verdict.reasons) or verdict.data_status
+                    _emit(
+                        on_event,
+                        "decision",
+                        f"«{name}»: данные не приняты ({verdict.data_status}) — {reason}",
+                    )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Creation tool %s failed: %s", name, exc)
-                results.append({"name": name, "ok": False, "error": str(exc)})
+                ledger.record(step=step, name=name, verdict=None, error=str(exc))
+                results.append(
+                    {
+                        "name": name,
+                        "ok": False,
+                        "error": str(exc),
+                        "step": str((step or {}).get("id") or ""),
+                        "validation": {
+                            "data_status": "mismatch",
+                            "reasons": [str(exc)[:300]],
+                            "next_action": "Исправь параметры или выбери другой инструмент шага.",
+                        },
+                    }
+                )
                 if family:
                     fail_counts[family] = fail_counts.get(family, 0) + 1
                     last_errors[family] = str(exc)
@@ -437,13 +620,22 @@ def stream_cursor_with_tools(
                 )
                 _emit(on_event, "decision", f"«{name}»: {exc}")
         pending = missing_required()
-        any_ok = any(item.get("ok") for item in results)
+        accepted = [
+            item
+            for item in results
+            if item.get("ok")
+            and str((item.get("validation") or {}).get("data_status") or "complete")
+            in {"complete", "empty_valid"}
+        ]
+        any_ok = bool(accepted)
+        steps_left = ledger.missing_required() if ledger.enabled else []
         if (
             assumption_check
             and mode == "execute"
             and not did_assumption_check
             and any_ok
             and not pending
+            and not steps_left
         ):
             did_assumption_check = True
             follow = _assumption_check_prompt(results)
@@ -454,6 +646,7 @@ def stream_cursor_with_tools(
                 pending=pending,
                 unreachable=sorted(unreachable),
                 last_errors=last_errors,
+                steps_left=steps_left,
             )
         run = cursor_client.create_run_when_ready(
             agent_id,
@@ -463,15 +656,53 @@ def stream_cursor_with_tools(
         )
         next_id = str(run.get("id") or "")
         if not next_id:
-            return _attach_live_ok(last, successful)
+            return _attach_live_ok(last, successful, ledger)
         last = stream_run(agent_id, next_id, on_event=on_event)
-    return _attach_live_ok(last, successful)
+    return _attach_live_ok(last, successful, ledger)
 
 
-def _attach_live_ok(last: Any, successful: set[str]) -> Any:
+def _reject_off_contract(step: dict[str, Any] | None, name: str) -> str:
+    """Вызов вне кандидатов шага не исполняем — это ошибка выбора инструмента."""
+    if step is None:
+        return ""
+    candidates = [str(item) for item in (step.get("tool_candidates") or [])]
+    if not candidates or name in candidates:
+        return ""
+    return (
+        f"{name} не подходит шагу {step.get('id')} "
+        f"({step.get('system')}·{step.get('entity')}·{step.get('operation')}). "
+        f"Кандидаты: {', '.join(candidates)}"
+    )
+
+
+def _verdict_for(
+    *,
+    step: dict[str, Any] | None,
+    name: str,
+    arguments: dict[str, Any],
+    result: Any,
+    next_step: dict[str, Any] | None,
+) -> Any:
+    from app.services.workflows.tool_result_validation import evaluate_tool_result
+
+    return evaluate_tool_result(
+        step=step,
+        name=name,
+        arguments=arguments,
+        result=result,
+        next_step=next_step,
+    )
+
+
+def _attach_live_ok(last: Any, successful: set[str], ledger: "StepLedger | None" = None) -> Any:
     names = sorted(successful)
     if last is not None and hasattr(last, "successful_live_tools"):
         last.successful_live_tools = names
+    if last is not None and ledger is not None and ledger.enabled:
+        try:
+            last.step_ledger = ledger.as_list()
+        except AttributeError:
+            pass
     return last
 
 
@@ -486,6 +717,29 @@ def _nudge_live_tools_prompt(pending: list[str]) -> str:
     )
 
 
+def _verdict_lines(results: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for item in results:
+        validation = item.get("validation") if isinstance(item.get("validation"), dict) else {}
+        status = str(validation.get("data_status") or "")
+        if not status or status in {"complete", "empty_valid"}:
+            continue
+        reasons = "; ".join(str(r) for r in (validation.get("reasons") or []))
+        action = str(validation.get("next_action") or "")
+        step = str(item.get("step") or "")
+        head = f"- {item.get('name')}" + (f" (шаг {step})" if step else "")
+        lines.append(f"{head}: {status}. {reasons}. {action}".strip())
+    if not lines:
+        return ""
+    return (
+        "Проверка данных не пройдена:\n"
+        + "\n".join(lines)
+        + "\nЭто не выполненные шаги. Не делай выводов по этим данным и не переходи дальше: "
+        "исправь параметры, дочитай страницы или возьми другой инструмент шага. "
+        "Если исправить нельзя — верни FAILED_VALIDATION с причиной.\n"
+    )
+
+
 def _followup_prompt(
     results: list[dict[str, Any]],
     *,
@@ -493,8 +747,16 @@ def _followup_prompt(
     pending: list[str] | None = None,
     unreachable: list[str] | None = None,
     last_errors: dict[str, str] | None = None,
+    steps_left: list[str] | None = None,
 ) -> str:
     blob = json.dumps(results, ensure_ascii=False, indent=2, default=str)
+    verdicts = _verdict_lines(results)
+    if steps_left:
+        verdicts += (
+            "Ещё не закрыты обязательные шаги: "
+            + ", ".join(steps_left)
+            + ". Итог и example_run до этого не пиши.\n"
+        )
     if mode == "plan":
         tail = (
             "Учти результаты инструментов. "
@@ -538,7 +800,7 @@ def _followup_prompt(
         )
     return (
         "Результаты вызовов инструментов Constructor (факты с сервера/desktop, не с VM):\n"
-        f"{blob}\n\n{tail}"
+        f"{blob}\n\n{verdicts}{tail}"
     )
 
 
