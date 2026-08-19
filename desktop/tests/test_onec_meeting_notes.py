@@ -4,8 +4,11 @@ from app.tools.ac.workers.onec_actions import ALLOWED_ONEC_TOOLS, list_meeting_s
 from app.tools.ac.workers.onec_com32_helper import connection_string
 from app.tools.ac.workers.onec_meeting_notes import (
     assert_select_only,
+    build_document_search_query_latin,
+    build_incoming_search_query_latin,
     build_meeting_notes_query,
     build_meeting_notes_query_latin,
+    document_from_com32_row,
     meeting_params_from_row,
     parse_note_period,
     person_needles,
@@ -155,6 +158,103 @@ def test_connection_string_quotes_fio_with_spaces(monkeypatch) -> None:
     conn = connection_string()
     assert 'Usr="Ильченко Екатерина Александровна"' in conn
     assert "Pwd=secret" in conn
+
+
+def test_document_search_query_is_select_only() -> None:
+    query, columns = build_document_search_query_latin(
+        document_name="ТД_СлужебнаяЗаписка",
+        query="000013243",
+        limit=10,
+        exact_number=True,
+        include_meeting_fields=True,
+    )
+    assert_select_only(query)
+    assert columns[0:3] == ["Number", "DocDate", "Theme"]
+    assert "MeetingTopic" in columns
+    assert "Place" in columns
+    assert 'Д.Номер = "000013243"' in query
+    assert "ТемаСлужебнойЗаписки.Наименование" in query
+    like_query, _ = build_document_search_query_latin(
+        document_name="ТД_СлужебнаяЗаписка",
+        query="организация совещаний",
+        limit=10,
+        exact_number=False,
+        include_meeting_fields=False,
+    )
+    assert_select_only(like_query)
+    assert "ПОДОБНО" in like_query
+    assert "ТемаСовещания" not in like_query
+    incoming, incoming_columns = build_incoming_search_query_latin(
+        query="000013243",
+        limit=5,
+        exact_number=True,
+    )
+    assert_select_only(incoming)
+    assert incoming_columns == ["Number", "DocDate", "Theme"]
+    assert "ТД_ВходящаяКорреспонденция" in incoming
+
+
+def test_document_row_maps_meeting_fields() -> None:
+    doc = document_from_com32_row(
+        {
+            "Number": "000013243",
+            "DocDate": "19.08.2026 0:00:00",
+            "Theme": "организация совещаний",
+            "MeetingTopic": "Рабочая группа по форме 03-19 №182",
+            "Place": "Переговорная",
+            "DesiredDate": "20.08.2026",
+            "StartTime": "15:00:00",
+            "EndTime": "15:30:00",
+            "Priority": "Высокий",
+        },
+        document_name="ТД_СлужебнаяЗаписка",
+    )
+    assert doc["found"] is True
+    assert doc["number"] == "000013243"
+    assert doc["meeting_topic"] == "Рабочая группа по форме 03-19 №182"
+    assert doc["meeting"]["start_time"] == "15:00"
+    assert doc["meeting"]["priority"] == "Высокий"
+
+
+def test_com32_dispatch_search_and_card(monkeypatch) -> None:
+    from app.tools.ac.workers.models import WorkerTask
+    from app.tools.ac.workers.onec_com_actions import _dispatch_via_com32
+
+    def fake_select(attempts, timeout=150):
+        _ = attempts, timeout
+        return (
+            [
+                {
+                    "Number": "000013243",
+                    "DocDate": "19.08.2026",
+                    "Theme": "организация совещаний",
+                    "MeetingTopic": "Рабочая группа по форме 03-19 №182",
+                    "Place": "Переговорная",
+                    "DesiredDate": "20.08.2026",
+                    "StartTime": "15:00:00",
+                    "EndTime": "15:30:00",
+                    "Priority": "Высокий",
+                }
+            ],
+            0,
+        )
+
+    monkeypatch.setattr(
+        "app.tools.ac.workers.onec_com32_helper.run_select_first",
+        fake_select,
+    )
+    search = _dispatch_via_com32(
+        WorkerTask(task_id="t1", tool_name="onec.search_documents", input_data={"query": "000013243"})
+    )
+    assert search["source"] == "onec_com32"
+    assert search["count"] == 1
+    assert search["documents"][0]["number"] == "000013243"
+    assert search["documents"][0]["meeting"]["priority"] == "Высокий"
+    card = _dispatch_via_com32(
+        WorkerTask(task_id="t2", tool_name="onec.get_document_card", input_data={"number": "000013243"})
+    )
+    assert card["document"]["number"] == "000013243"
+    assert card["document"]["meeting_topic"].startswith("Рабочая группа")
 
 
 def test_mock_action_does_not_invent_writes() -> None:

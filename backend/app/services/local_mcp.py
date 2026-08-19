@@ -513,8 +513,10 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "query": _prop("string", "Подстрока в номере или названии, не фраза-ТЗ"),
             "max_results": _prop("integer", "Максимум документов"),
         }),
-        ("onec.get_document_card", "Карточка документа 1С на desktop.", {
-            "document_ref": _prop("string", "Ссылка документа из onec.search_documents"),
+        ("onec.get_document_card", "Карточка документа 1С на desktop (32-bit COMConnector через cscript).", {
+            "document_ref": _prop("string", "Ссылка или номер из onec.search_documents / onec.meeting_service_notes"),
+            "number": _prop("string", "Номер документа, например 000013243"),
+            "query": _prop("string", "Номер или подстрока, если ссылки нет"),
         }),
         ("onec.search_tasks", "Поиск задач 1С на desktop.", {
             "query": _prop("string", "Подстрока в названии задачи"),

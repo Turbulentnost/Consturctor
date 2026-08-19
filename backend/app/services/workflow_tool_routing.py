@@ -368,7 +368,12 @@ def select_candidates(
             if useful:
                 matched = useful
 
-    return [str(tool.get("name") or "") for tool in matched if tool.get("name")]
+    names = [str(tool.get("name") or "") for tool in matched if tool.get("name")]
+    if entity == "service_note" and "onec.meeting_service_notes" in names:
+        names = ["onec.meeting_service_notes"] + [
+            name for name in names if name != "onec.meeting_service_notes"
+        ]
+    return names
 
 
 def apply_routing_to_runtime(plan: "WorkflowPlan", workflow: Workflow | None = None) -> "WorkflowPlan":

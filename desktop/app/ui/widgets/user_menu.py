@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -140,14 +140,11 @@ class BellButton(QToolButton):
         self.setToolTip("Уведомления" if self._count == 0 else f"Уведомления · {self._count}")
         self.update()
 
-    def paintEvent(self, _event) -> None:  # noqa: N802
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        cx, cy = self.width() / 2, self.height() / 2 + 1
-        p.setPen(QColor("#06483D"))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setFont(app_font(18, QFont.Weight.Medium))
-        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "🔔")
+        self._draw_bell(p)
         if self._count > 0:
             badge = QRectF(self.width() - 16, 1, 15, 15)
             p.setPen(Qt.PenStyle.NoPen)
@@ -157,8 +154,31 @@ class BellButton(QToolButton):
             p.setFont(app_font(8, QFont.Weight.DemiBold))
             label = "9+" if self._count > 9 else str(self._count)
             p.drawText(badge, Qt.AlignmentFlag.AlignCenter, label)
-        _ = (cx, cy)
         p.end()
+
+    def _draw_bell(self, p: QPainter) -> None:
+        """Контурный колокольчик в стиле иконок сайдбара: тонкий штрих, без заливки."""
+        color = QColor("#101817") if self.underMouse() else QColor("#3D4441")
+        pen = QPen(color, 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        cx = self.width() / 2
+        cy = self.height() / 2 + 0.4
+
+        hanger = QRectF(cx - 2.3, cy - 10.2, 4.6, 3.8)
+        p.drawArc(hanger, 0, 180 * 16)
+
+        body = QPainterPath()
+        body.moveTo(cx - 4.1, cy - 6.2)
+        body.cubicTo(cx - 4.1, cy - 10.6, cx + 4.1, cy - 10.6, cx + 4.1, cy - 6.2)
+        body.cubicTo(cx + 4.3, cy - 0.2, cx + 6.6, cy + 3.6, cx + 7.3, cy + 5.4)
+        body.lineTo(cx - 7.3, cy + 5.4)
+        body.cubicTo(cx - 6.6, cy + 3.6, cx - 4.3, cy - 0.2, cx - 4.1, cy - 6.2)
+        p.drawPath(body)
+
+        clapper = QRectF(cx - 2.6, cy + 5.0, 5.2, 4.2)
+        p.drawArc(clapper, 200 * 16, -140 * 16)
 
 
 class UserMenuHeader(QWidget):

@@ -258,6 +258,119 @@ def build_meeting_notes_query_latin(
     return assert_select_only(query), columns
 
 
+def build_document_search_query_latin(
+    *,
+    document_name: str,
+    query: str,
+    limit: int,
+    exact_number: bool = False,
+    include_meeting_fields: bool = True,
+) -> tuple[str, list[str]]:
+    """SELECT документов по номеру или подстроке. Только чтение."""
+    meta_name = str(document_name or "").strip() or "ТД_СлужебнаяЗаписка"
+    limit = max(1, min(200, int(limit or 10)))
+    needle = like_escape(query)
+    theme_expr = "Д.ТемаСлужебнойЗаписки.Наименование"
+    select = [
+        "Д.Номер КАК Number",
+        "Д.Дата КАК DocDate",
+        f"{theme_expr} КАК Theme",
+    ]
+    columns = ["Number", "DocDate", "Theme"]
+    if include_meeting_fields:
+        for field_name, alias, kind in MEETING_FIELDS:
+            if field_name == "Расписание":
+                continue
+            select.append(f"{_meeting_field_expr(field_name, kind, deref=True, presentation=True)} КАК {alias}")
+            columns.append(alias)
+    conditions = ["НЕ Д.ПометкаУдаления"]
+    if exact_number:
+        conditions.append(f"Д.Номер = \"{str(query).replace(chr(34), chr(34)+chr(34))}\"")
+    elif needle:
+        likes = [
+            f"Д.Номер ПОДОБНО \"%{needle}%\"",
+            f"{theme_expr} ПОДОБНО \"%{needle}%\"",
+        ]
+        if include_meeting_fields:
+            likes.append(f"ПРЕДСТАВЛЕНИЕ(Д.ТемаСовещания) ПОДОБНО \"%{needle}%\"")
+        conditions.append("(" + " ИЛИ ".join(likes) + ")")
+    query_text = "\n".join(
+        [
+            f"ВЫБРАТЬ ПЕРВЫЕ {limit}",
+            "        " + ",\n        ".join(select),
+            f"        ИЗ Документ.{meta_name} КАК Д",
+            "        ГДЕ " + " И ".join(conditions),
+            "        УПОРЯДОЧИТЬ ПО Д.Дата УБЫВ",
+        ]
+    )
+    return assert_select_only(query_text), columns
+
+
+def build_incoming_search_query_latin(
+    *,
+    query: str,
+    limit: int,
+    exact_number: bool = False,
+) -> tuple[str, list[str]]:
+    """SELECT входящей корреспонденции. Только чтение."""
+    limit = max(1, min(200, int(limit or 10)))
+    needle = like_escape(query)
+    columns = ["Number", "DocDate", "Theme"]
+    conditions = ["НЕ Д.ПометкаУдаления"]
+    if exact_number:
+        conditions.append(f"Д.Номер = \"{str(query).replace(chr(34), chr(34)+chr(34))}\"")
+    elif needle:
+        conditions.append(
+            "("
+            + " ИЛИ ".join(
+                [
+                    f"Д.Номер ПОДОБНО \"%{needle}%\"",
+                    f"ПРЕДСТАВЛЕНИЕ(Д.Содержание) ПОДОБНО \"%{needle}%\"",
+                    f"ПРЕДСТАВЛЕНИЕ(Д.Комментарий) ПОДОБНО \"%{needle}%\"",
+                ]
+            )
+            + ")"
+        )
+    query_text = "\n".join(
+        [
+            f"ВЫБРАТЬ ПЕРВЫЕ {limit}",
+            "        Д.Номер КАК Number,",
+            "        Д.Дата КАК DocDate,",
+            "        ПРЕДСТАВЛЕНИЕ(Д.Содержание) КАК Theme",
+            "        ИЗ Документ.ТД_ВходящаяКорреспонденция КАК Д",
+            "        ГДЕ " + " И ".join(conditions),
+            "        УПОРЯДОЧИТЬ ПО Д.Дата УБЫВ",
+        ]
+    )
+    return assert_select_only(query_text), columns
+
+
+def document_from_com32_row(
+    row: dict[str, Any],
+    *,
+    document_name: str,
+    document_type: str = "Служебная записка",
+) -> dict[str, Any]:
+    meeting = meeting_params_from_row(row)
+    number = clean_onec_value(row.get("Number"))
+    return {
+        "found": True,
+        "document_type": document_type,
+        "metadata_name": document_name,
+        "kind": "document",
+        "ref": number,
+        "number": number,
+        "date": clean_onec_value(row.get("DocDate")),
+        "title": meeting["topic"] or clean_onec_value(row.get("Theme")),
+        "theme": clean_onec_value(row.get("Theme")),
+        "meeting_topic": meeting["topic"],
+        "place": meeting["place"],
+        "meeting": meeting,
+        "fields": {key: clean_onec_value(value) for key, value in row.items()},
+        "attachments": [],
+    }
+
+
 def _latin_field_expr(field_name: str, *, deref: bool, presentation: bool) -> str:
     name = str(field_name or "").strip()
     if presentation:

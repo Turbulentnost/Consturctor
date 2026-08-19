@@ -124,6 +124,11 @@ def test_project_read_uses_turboproject_not_onec_cards() -> None:
     assert "onec.get_document_card" in document
     assert "turboproject" not in document
 
+    notes = select_candidates(
+        {"system": "onec", "entity": "служебная записка", "operation": "search"}
+    )
+    assert notes[0] == "onec.meeting_service_notes"
+
 
 def _full_step(step_id: str, **overrides) -> dict:
     step = {

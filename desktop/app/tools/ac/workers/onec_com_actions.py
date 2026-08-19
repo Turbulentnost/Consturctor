@@ -146,6 +146,10 @@ def _dispatch_via_com32(task: WorkerTask) -> dict[str, Any]:
     """Чтение через 32-bit COMConnector (cscript). Без записи в 1С."""
     if task.tool_name == "onec.meeting_service_notes":
         return _list_meeting_service_notes_com32(task.input_data)
+    if task.tool_name == "onec.search_documents":
+        return _search_documents_com32(task.input_data)
+    if task.tool_name == "onec.get_document_card":
+        return _get_document_card_com32(task.input_data)
     raise OneCConnectionError(
         f"Инструмент {task.tool_name} ещё не переведён на 32-bit COMConnector (cscript). "
         "32-bit Python (py -3.12-32) для этого не нужен."
@@ -250,6 +254,136 @@ def _list_meeting_service_notes_com32(input_data: dict[str, Any]) -> dict[str, A
         "deref": deref,
         "method": "select_meeting_service_notes_com32",
     }
+
+
+def _search_documents_com32(input_data: dict[str, Any]) -> dict[str, Any]:
+    """Поиск документов 1С через 32-bit SELECT. Без записи."""
+    from app.tools.ac.workers.onec_com32_helper import run_select_first
+    from app.tools.ac.workers.onec_meeting_notes import (
+        build_document_search_query_latin,
+        build_incoming_search_query_latin,
+        document_from_com32_row,
+    )
+
+    args = input_data if isinstance(input_data, dict) else {}
+    query = str(
+        args.get("number")
+        or args.get("query")
+        or args.get("document_ref")
+        or ""
+    ).strip()
+    limit = int(args.get("max_results") or args.get("limit") or 10)
+    exact_number = bool(str(args.get("number") or "").strip()) or _looks_like_document_number(query)
+    specs: list[tuple[str, list[str], str, str]] = []
+    for document_name in ("ТД_СлужебнаяЗаписка", "СлужебнаяЗаписка"):
+        if exact_number and query:
+            text, columns = build_document_search_query_latin(
+                document_name=document_name,
+                query=query,
+                limit=limit,
+                exact_number=True,
+                include_meeting_fields=True,
+            )
+            specs.append((text, columns, document_name, "Служебная записка"))
+        text, columns = build_document_search_query_latin(
+            document_name=document_name,
+            query=query,
+            limit=limit,
+            exact_number=False,
+            include_meeting_fields=True,
+        )
+        specs.append((text, columns, document_name, "Служебная записка"))
+        text, columns = build_document_search_query_latin(
+            document_name=document_name,
+            query=query,
+            limit=limit,
+            exact_number=False,
+            include_meeting_fields=False,
+        )
+        specs.append((text, columns, document_name, "Служебная записка"))
+    if query:
+        incoming, incoming_columns = build_incoming_search_query_latin(
+            query=query,
+            limit=limit,
+            exact_number=exact_number,
+        )
+        specs.append((incoming, incoming_columns, "ТД_ВходящаяКорреспонденция", "Входящая корреспонденция"))
+        if exact_number:
+            incoming_like, incoming_like_columns = build_incoming_search_query_latin(
+                query=query,
+                limit=limit,
+                exact_number=False,
+            )
+            specs.append(
+                (
+                    incoming_like,
+                    incoming_like_columns,
+                    "ТД_ВходящаяКорреспонденция",
+                    "Входящая корреспонденция",
+                )
+            )
+    try:
+        rows, chosen = run_select_first([(text, columns) for text, columns, *_ in specs])
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc).strip()
+        if message.startswith(("CREATE", "CONNECT")):
+            raise OneCConnectionError(message) from exc
+        return {
+            "documents": [],
+            "count": 0,
+            "source": "onec_com32",
+            "method": "select_documents_com32",
+            "query": query,
+            "readonly": True,
+            "error": message or "32-bit COM не вернул документы",
+        }
+    document_name, document_type = specs[chosen][2:]
+    documents = [
+        document_from_com32_row(row, document_name=document_name, document_type=document_type)
+        for row in rows
+    ]
+    return {
+        "documents": documents,
+        "count": len(documents),
+        "source": "onec_com32",
+        "method": "select_documents_com32",
+        "query": query,
+        "readonly": True,
+        "document_type": document_type,
+        "metadata_name": document_name,
+    }
+
+
+def _get_document_card_com32(input_data: dict[str, Any]) -> dict[str, Any]:
+    """Карточка документа 1С через 32-bit SELECT. Без записи."""
+    args = input_data if isinstance(input_data, dict) else {}
+    query = str(
+        args.get("number")
+        or args.get("document_ref")
+        or args.get("query")
+        or ""
+    ).strip()
+    if not query:
+        raise OneCConnectionError("Для get_document_card нужен number, document_ref или query")
+    raw = _search_documents_com32(
+        {
+            "number": query if _looks_like_document_number(query) else "",
+            "query": query,
+            "max_results": 1,
+        }
+    )
+    documents = raw.get("documents") if isinstance(raw.get("documents"), list) else []
+    document = documents[0] if documents and isinstance(documents[0], dict) else {}
+    result: dict[str, Any] = {
+        "document": document,
+        "source": "onec_com32",
+        "method": "select_document_card_com32",
+        "readonly": True,
+        "query": query,
+    }
+    if raw.get("error"):
+        result["error"] = raw["error"]
+    return result
 
 
 def _connect_session() -> Any:
