@@ -67,6 +67,7 @@ class MyAgentsPage(QWidget):
     delete_requested = Signal(str)
     delete_suggestion_requested = Signal(str, str)
     delete_agent_requested = Signal(str)
+    stop_auto_run_requested = Signal(str)
     run_agent_requested = Signal(str)
     history_requested = Signal(str, str)
 
@@ -360,10 +361,19 @@ class MyAgentsPage(QWidget):
         return card
 
     def _agent_row(self, agent: WorkflowListItem) -> QWidget:
+        paused = bool(agent.paused)
         card = QFrame()
         card.setObjectName("PublishedAgentRow")
         card.setStyleSheet(
             """
+            QFrame#PublishedAgentRow {
+                background: #E6E9E8;
+                border: 1px solid rgba(16,24,23,0.08);
+                border-radius: 16px;
+            }
+            """
+            if paused
+            else """
             QFrame#PublishedAgentRow {
                 background: #FFFFFF;
                 border: 1px solid rgba(16,24,23,0.10);
@@ -376,16 +386,26 @@ class MyAgentsPage(QWidget):
         layout.setHorizontalSpacing(18)
         title = QLabel(agent.title or "ИИ-агент")
         title.setFont(app_font(16, QFont.Weight.DemiBold))
-        title.setStyleSheet("color: #101817; background: transparent;")
+        title.setStyleSheet(
+            "color: #7A8682; background: transparent;"
+            if paused
+            else "color: #101817; background: transparent;"
+        )
         title.setWordWrap(True)
         title.setFixedWidth(_TITLE_COL_WIDTH)
+        status = "Остановлен" if paused else ("Автозапуск включён" if agent.auto_run else "Автозапуск выключен")
         description = QLabel(
             "Опубликован"
+            + f"\n{status}"
             + (f"\nДокумент: {agent.document_name}" if agent.document_name else "")
             + (f"\nОбновлён: {agent.updated_at[:19]}" if agent.updated_at else "")
         )
         description.setFont(app_font(12))
-        description.setStyleSheet("color: #6B7773; background: transparent;")
+        description.setStyleSheet(
+            "color: #8A9692; background: transparent;"
+            if paused
+            else "color: #6B7773; background: transparent;"
+        )
         description.setWordWrap(True)
         description.setFixedWidth(_DESC_COL_WIDTH)
         run = QPushButton("Запустить")
@@ -393,6 +413,18 @@ class MyAgentsPage(QWidget):
         run.setStyleSheet(_PRIMARY_ACTION_QSS)
         run.clicked.connect(
             lambda _checked=False, workflow_id=agent.id: self.run_agent_requested.emit(workflow_id)
+        )
+        stop = QPushButton("Остановить")
+        stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        stop.setStyleSheet(_SECONDARY_ACTION_QSS)
+        stop.setEnabled(not paused)
+        stop.setToolTip(
+            "Агент уже остановлен"
+            if paused
+            else "Остановить автозапуск и пересчёт KPI"
+        )
+        stop.clicked.connect(
+            lambda _checked=False, workflow_id=agent.id: self.stop_auto_run_requested.emit(workflow_id)
         )
         history = QPushButton("История")
         history.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -408,7 +440,7 @@ class MyAgentsPage(QWidget):
         delete.clicked.connect(lambda _checked=False, workflow_id=agent.id: self.delete_agent_requested.emit(workflow_id))
         layout.addWidget(title, 0, 0)
         layout.addWidget(description, 0, 1)
-        layout.addWidget(_actions_widget(run, history, delete), 0, 2)
+        layout.addWidget(_actions_widget(run, stop, history, delete), 0, 2)
         layout.setColumnStretch(0, 2)
         layout.setColumnStretch(1, 3)
         return card

@@ -29,6 +29,7 @@ _IMAP_TOOLS = frozenset(
         "imap.fetch_attachments",
     }
 )
+_TURBOPROJECT_TOOLS = frozenset({"turboproject", "turboproject.projects"})
 
 
 class AgentRuntimeError(RuntimeError):
@@ -61,6 +62,20 @@ def run_agent_task(
 
     emit({"type": "status", "text": "Получил задачу, готовлю запуск…"})
     emit({"type": "agent_message", "text": f"Запускаю «{workflow.title or 'ИИ-агент'}»."})
+
+    from app.services.workflows.service import playbook_of
+
+    playbook = playbook_of(workflow)
+    if str(playbook.get("instructions") or "").strip():
+        return _run_with_playbook(
+            db,
+            workflow=workflow,
+            user_id=user_id,
+            message=task,
+            emit=emit,
+            run_id=run_id,
+            playbook=playbook,
+        )
 
     domain = _agent_domain(workflow)
 
@@ -180,6 +195,113 @@ def run_agent_task(
     return {"answer": answer, "tool": tool_name, "tool_result": tool_result or {}}
 
 
+def _run_with_playbook(
+    db: Session,
+    *,
+    workflow: Workflow,
+    user_id: str,
+    message: str,
+    emit: AgentEventCallback,
+    run_id: str,
+    playbook: dict[str, Any],
+) -> dict[str, Any]:
+    from app.clients import cursor as cursor_client
+    from app.clients.cursor import CursorAgentError
+    from app.services.workflows import prompts
+    from app.services.workflows.cursor_tools import (
+        set_tool_context,
+        stream_cursor_with_tools,
+        wants_notifications,
+        with_tools_if_desktop,
+    )
+    from app.services.workflows.service import _create_exec_agent, _stream_run
+
+    set_tool_context(run_id, user_id)
+    prompt = with_tools_if_desktop(
+        prompts.build_published_run_prompt(
+            instructions=str(playbook.get("instructions") or ""),
+            example_run=str(playbook.get("example_run") or ""),
+            user_message=message,
+            title=workflow.title or "",
+        )
+    )
+    emit({"type": "status", "text": "Запускаю Cursor по инструкции и примеру прогона…"})
+
+    def on_event(event_type: str, text: str = "", extra: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {"type": event_type}
+        if text:
+            payload["text"] = text
+        if extra:
+            payload.update(extra)
+        emit(payload)
+
+    try:
+        agent_id = str(workflow.exec_agent_id or "")
+        if agent_id:
+            try:
+                run = cursor_client.create_run_when_ready(
+                    agent_id,
+                    prompt=prompt,
+                    mode="agent",
+                    previous_run_id=str(workflow.exec_run_id or ""),
+                )
+                cursor_run_id = str(run.get("id") or "")
+            except CursorAgentError:
+                agent_id, cursor_run_id = _create_exec_agent(workflow.title or "агент", prompt)
+                workflow.exec_agent_id = agent_id
+                db.commit()
+        else:
+            agent_id, cursor_run_id = _create_exec_agent(workflow.title or "агент", prompt)
+            workflow.exec_agent_id = agent_id
+            db.commit()
+        if not agent_id or not cursor_run_id:
+            raise AgentRuntimeError("Cursor не вернул agent/run")
+        required = ["notify"] if wants_notifications(
+            str(playbook.get("instructions") or ""),
+            message,
+            str(workflow.notes or ""),
+        ) else []
+        phase = stream_cursor_with_tools(
+            agent_id=agent_id,
+            run_id=cursor_run_id,
+            on_event=on_event,
+            workflow_id=workflow.id,
+            mode="execute",
+            stream_run=_stream_run,
+            required_live_tools=required,
+        )
+    except CursorAgentError as exc:
+        emit({"type": "error", "message": exc.message})
+        raise AgentRuntimeError(exc.message) from exc
+    finally:
+        from app.services.workflows.cursor_tools import clear_tool_context
+
+        clear_tool_context()
+
+    work = prompts.parse_work_result(phase.text or "")
+    answer = (work.get("text") or "").strip() or "Прогон завершён."
+    emit(
+        {
+            "type": "work_result",
+            "text": answer,
+            "files": work.get("files") or [],
+            "actions": work.get("actions") or [],
+            "notifications": work.get("notifications") or [],
+        }
+    )
+    local = dict(workflow.local_run or {})
+    local["work_result"] = work
+    workflow.local_run = local
+    workflow.last_result = answer
+    db.commit()
+    return {
+        "answer": answer,
+        "work_result": work,
+        "tool": "cursor",
+        "tool_result": {"tools": list(phase.successful_live_tools or [])},
+    }
+
+
 def _agent_domain(workflow: Workflow) -> str:
     plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
     runtime = plan.get("runtime") if isinstance(plan.get("runtime"), dict) else {}
@@ -255,6 +377,8 @@ def _request_desktop_tool(
         return _invoke_imap_server(tool, arguments)
     if tool in _ONEC_TOOLS:
         return _invoke_onec_server(tool, arguments, user_id=user_id)
+    if tool in _TURBOPROJECT_TOOLS or tool.startswith("turboproject"):
+        return _invoke_turboproject_server(tool, arguments)
 
     request_id = tool_bridge.new_request_id()
     tool_bridge.begin_wait(request_id=request_id, user_id=user_id)
@@ -280,6 +404,15 @@ def _request_desktop_tool(
         raise AgentRuntimeError(str(payload.get("error") or f"Ошибка инструмента {tool}"))
     result = payload.get("result")
     return result if isinstance(result, dict) else {}
+
+
+def _invoke_turboproject_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.turboproject import TurboProjectError, invoke_turboproject
+
+    try:
+        return invoke_turboproject(tool, arguments)
+    except TurboProjectError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
 
 
 def _invoke_imap_server(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:

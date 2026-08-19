@@ -53,6 +53,7 @@ class AppWindow(QMainWindow):
         self._setup_tray(logo if logo.exists() else None)
         self._notify.open_workflow_requested.connect(self.open_workflow)
         self._notify.toast_requested.connect(self._on_tray_toast)
+        self._notify.inbox_changed.connect(self.main_shell.refresh_notification_badge)
         self._notify.command_received.connect(self._runner.handle_command)
         self._runner.toast_requested.connect(self._on_tray_toast)
         install_confirm_host(self)

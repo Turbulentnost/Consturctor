@@ -298,7 +298,8 @@ def list_tools() -> list[dict[str, Any]]:
         {
             "name": "onec.erp_subordinate_tasks",
             "description": (
-                "Дерево задач подчинённых из erp_pm: сначала непосредственные "
+                "Дерево задач подчинённых из erp_pm и 1С:Документооборот: "
+                "сначала руководитель (если include_self), затем непосредственные "
                 "подчинённые (должность, задачи и сроки за период), затем "
                 "подчинённые каждого из них и так далее. "
                 "Только действующие назначения, без уволенных и переведённых. "
@@ -338,6 +339,79 @@ def list_tools() -> list[dict[str, Any]]:
                         "type": "integer",
                         "default": 30,
                         "description": "Максимум задач на одного человека",
+                    },
+                    "include_self": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Включить руководителя (себя) отдельной строкой",
+                    },
+                },
+            },
+        },
+        {
+            "name": "onec.docflow_tasks",
+            "description": (
+                "Задачи пользователя из 1С:Документооборот (публикация /doc). "
+                "ФИО из JWT сессии. Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date_from": {
+                        "type": "string",
+                        "description": "Начало периода YYYY-MM-DD. Пусто — без нижней границы.",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "Конец периода YYYY-MM-DD. Пусто — без верхней границы.",
+                    },
+                    "only_open": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Только открытые задачи",
+                    },
+                    "include_done": {
+                        "type": "boolean",
+                        "description": "Включать выполненные задачи",
+                    },
+                    "limit": {"type": "integer", "default": 200},
+                },
+            },
+        },
+        {
+            "name": "turboproject",
+            "description": (
+                "Проекты TurboProject с синхронизацией 1С. "
+                "Карточка: имя, даты MSP/1С, статистика задач, просроченные задачи и вехи, "
+                "ресурсы (ФИО), руководитель/куратор/заказчик и весь блок data_1c. "
+                "Фильтры: query (имя/номер), manager (руководитель 1С), file_id, "
+                "overdue_only, limit. Учётка на сервере. Исполняется на сервере."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Поиск по названию проекта, имени MPP или номеру 1С",
+                    },
+                    "manager": {
+                        "type": "string",
+                        "description": "ФИО руководителя проекта из 1С (data_1c.rukovoditel)",
+                    },
+                    "file_id": {
+                        "type": "string",
+                        "description": "ID файла проекта (ProjectFile.id)",
+                    },
+                    "overdue_only": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Только проекты с просроченными задачами или вехами",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Максимум проектов в ответе (пусто — все, не больше 200)",
                     },
                 },
             },
@@ -475,7 +549,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("users.list", "Список пользователей Constructor: id, ФИО, должность, подразделение. Вызови перед notify.send, чтобы выбрать получателя.", {
             "query": {"type": "string"},
         }, []),
-        ("notify.send", "Отправить уведомление пользователю (сразу или в указанное время). user_id бери из инструмента users.list — не выдумывай id.", {
+        ("notify.send", "Отправить уведомление на компьютер получателя (Windows-тост + inbox). user_id бери из users.list — не выдумывай id. Если человек просил уведомления — вызови этот tool до RESULT.", {
             "user_id": {"type": "string", "description": "id получателя из users.list"},
             "title": {"type": "string"},
             "body": {"type": "string"},
@@ -494,6 +568,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "trigger_id": {"type": "string"},
         }, ["trigger_id"]),
     ]
+    server_tools = {"users.list", "notify.send"}
     tools: list[dict[str, Any]] = []
     for item in items:
         name, description, properties = item[0], item[1], item[2]
@@ -501,11 +576,17 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         schema: dict[str, Any] = {"type": "object", "properties": properties}
         if required:
             schema["required"] = required
+        if name in server_tools:
+            suffix = " Исполняется на сервере Constructor."
+            execution = "server"
+        else:
+            suffix = " Исполняется на desktop пользователя."
+            execution = "desktop"
         tools.append(
             {
                 "name": name,
-                "description": description + " Исполняется на desktop пользователя.",
-                "execution": "desktop",
+                "description": description + suffix,
+                "execution": execution,
                 "input_schema": schema,
             }
         )

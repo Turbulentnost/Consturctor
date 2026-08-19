@@ -19,6 +19,7 @@ from app.tools.ac.registry import ToolRegistry
 from app.tools.ac.report_tools import register_report_tools
 from app.tools.ac.notify_tools import register_notify_tools
 from app.tools.ac.schedule_tools import register_schedule_tools
+from app.tools.ac.turboproject_tools import register_turboproject_tools
 from app.tools.ac.wait_tool import register_wait_tool
 from app.tools.ac.web_tools import register_web_tools
 from app.tools.ac.workers.onec_worker import OneCReadOnlyWorker
@@ -64,6 +65,7 @@ def build_registry() -> ToolRegistry:
     register_wait_tool(registry, skip_existing=True)
     register_notify_tools(registry, skip_existing=True)
     register_schedule_tools(registry, skip_existing=True)
+    register_turboproject_tools(registry, skip_existing=True)
     return registry
 
 

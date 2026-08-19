@@ -180,7 +180,10 @@ class MarkdownBody(QTextBrowser):
         self._fit_height()
 
     def _fit_height(self) -> None:
-        width = max(self.viewport().width(), self.width(), 120)
+        width = self.viewport().width() or self.width()
+        if width < 80:
+            parent = self.parentWidget()
+            width = parent.width() if parent is not None and parent.width() >= 80 else 420
         self.document().setTextWidth(width)
         height = int(self.document().size().height()) + 6
         self.setFixedHeight(max(24, height))

@@ -31,6 +31,17 @@ QFrame#cursorcollapse:hover {
 }
 """
 
+_TOOL_HEADER = """
+QFrame#cursorcollapse {
+    background: #F1F4F3;
+    border: none;
+    border-radius: 10px;
+}
+QFrame#cursorcollapse:hover {
+    background: #E8EEEC;
+}
+"""
+
 _DETAIL_BOX = """
 QFrame#cursordetail {
     background: #F6F8F7;
@@ -70,12 +81,50 @@ def resolve_feed_kind(*, role: str = "", title: str = "", kind: str = "") -> str
         return "error"
     if folded in {"thinking", "планирование"}:
         return "thinking"
+    if folded in {"инструмент", "tool"} or folded.startswith("инструмент:"):
+        return "tool"
     if folded in {"предупреждение", "система"}:
         return "system"
     return "agent"
 
 
+_COLLECTION_LABELS = {
+    "projects": "проектов",
+    "users": "пользователей",
+    "items": "записей",
+    "results": "результатов",
+    "documents": "документов",
+    "cards": "карточек",
+    "files": "файлов",
+    "messages": "писем",
+    "events": "событий",
+}
+
+
+def format_collection_result(result: Any) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    for key, label in _COLLECTION_LABELS.items():
+        value = result.get(key)
+        if not isinstance(value, list):
+            continue
+        count = result.get("count", len(value))
+        lines = [f"Готово · {count} {label}"]
+        for row in value[:15]:
+            title = _row_title(row)
+            if title:
+                lines.append(f"• {title}")
+        extra = len(value) - 15
+        if extra > 0:
+            lines.append(f"… ещё {extra}")
+        return "\n".join(lines)
+    return None
+
+
 def format_tool_detail(arguments: Any = None, result: Any = None) -> str:
+    friendly = format_collection_result(result)
+    if friendly:
+        return friendly
     parts: list[str] = []
     if arguments not in (None, {}, ""):
         parts.append("Аргументы")
@@ -86,6 +135,18 @@ def format_tool_detail(arguments: Any = None, result: Any = None) -> str:
     elif arguments not in (None, {}, ""):
         parts.append("Ожидание результата…")
     return "\n\n".join(parts) if parts else "Нет данных"
+
+
+def _row_title(row: Any) -> str:
+    if isinstance(row, str):
+        return row.strip()
+    if not isinstance(row, dict):
+        return str(row).strip()
+    for key in ("name", "title", "fio", "email", "file", "path", "id", "projectName"):
+        value = row.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
 
 
 def _pretty(value: Any) -> str:
@@ -110,24 +171,56 @@ class _WrapLabel(QLabel):
         super().__init__(text, parent)
         self.setWordWrap(True)
         self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def _available_width(self) -> int:
+        w = self.width()
+        if w >= 80:
+            return w
+        parent = self.parentWidget()
+        while parent is not None:
+            if parent.width() >= 80:
+                return parent.width()
+            parent = parent.parentWidget()
+        return 420
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return max(super().heightForWidth(max(80, width)), 0)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        w = self._available_width()
+        return QSize(w, self.heightForWidth(w))
+
     def minimumSizeHint(self) -> QSize:  # noqa: N802
-        return QSize(0, super().minimumSizeHint().height())
+        return QSize(0, 0)
 
 
 class _CollapseHeader(QFrame):
     clicked = Signal()
 
-    def __init__(self, title: str, expanded: bool, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        title: str,
+        expanded: bool,
+        parent: QWidget | None = None,
+        *,
+        variant: str = "",
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("cursorcollapse")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
-        self.setStyleSheet(_COLLAPSE_HEADER)
+        self.setStyleSheet(_TOOL_HEADER if variant == "tool" else _COLLAPSE_HEADER)
         row = QHBoxLayout(self)
-        row.setContentsMargins(4, 4, 4, 4)
+        if variant == "tool":
+            row.setContentsMargins(10, 6, 10, 6)
+            self.setFixedHeight(36)
+        else:
+            row.setContentsMargins(4, 4, 4, 4)
         row.setSpacing(8)
         self._chevron = QLabel("▼" if expanded else "▶")
         self._chevron.setFixedWidth(14)
@@ -205,6 +298,7 @@ class CursorFeedItem(QFrame):
         self._header: _CollapseHeader | None = None
         self._detail_frame: QFrame | None = None
         self._detail_label: _WrapLabel | None = None
+        self._plain_label: QWidget | None = None
         self._preview: QWidget | None = None
         self._toggle: _ToggleLink | None = None
         self._build()
@@ -215,6 +309,19 @@ class CursorFeedItem(QFrame):
         self._detail = self._text
         if self._detail_label is not None:
             self._detail_label.setText(self._detail)
+        if self._plain_label is not None:
+            if hasattr(self._plain_label, "set_markdown"):
+                self._plain_label.set_markdown(self._text)
+            elif hasattr(self._plain_label, "setText"):
+                self._plain_label.setText(self._text)
+
+    def set_tool_detail(self, detail: str) -> None:
+        """Обновить вывод инструмента, не трогая шапку и не пересобирая ленту."""
+        body = (detail or "").strip() or self._detail
+        self._text = body
+        self._detail = body
+        if self._detail_label is not None:
+            self._detail_label.setText(body)
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
@@ -225,7 +332,9 @@ class CursorFeedItem(QFrame):
         elif self._is_long_plain():
             self._build_long_plain(root)
         else:
-            root.addWidget(self._plain_body(self._text))
+            body = self._plain_body(self._text)
+            self._plain_label = body
+            root.addWidget(body)
         if self._action:
             btn = QPushButton(self._action)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -251,7 +360,11 @@ class CursorFeedItem(QFrame):
         return "Подробнее"
 
     def _build_collapsible(self, root: QVBoxLayout) -> None:
-        self._header = _CollapseHeader(self._header_title(), self._expanded)
+        self._header = _CollapseHeader(
+            self._header_title(),
+            self._expanded,
+            variant="tool" if self._kind == "tool" else "",
+        )
         self._header.clicked.connect(self._toggle_expand)
         root.addWidget(self._header)
         if self._kind == "plan":

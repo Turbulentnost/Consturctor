@@ -12,17 +12,23 @@ from app.db.session import SessionLocal, get_db
 from app.schemas.notification import (
     DirectoryUserList,
     NotificationCreate,
+    NotificationInbox,
     NotificationOut,
 )
 from app.services.notifications.hub import hub
 from app.services.notifications.service import (
     NotificationError,
+    clear_inbox,
     create_notification,
     due_undelivered,
     list_directory_users,
+    list_inbox,
     list_pending,
+    mark_all_read,
     mark_delivered,
+    mark_read,
     payload_dict,
+    unread_count,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,12 +59,58 @@ async def create_notification_endpoint(
     return item
 
 
+@router.get("", response_model=NotificationInbox)
+def read_inbox(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> NotificationInbox:
+    items = list_inbox(db, user_id=auth.user_id)
+    return NotificationInbox(items=items, unread_count=sum(1 for item in items if item.unread))
+
+
+@router.get("/unread-count")
+def read_unread_count(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    return {"count": unread_count(db, user_id=auth.user_id)}
+
+
+@router.post("/read-all")
+def read_all_notifications(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    return {"updated": mark_all_read(db, user_id=auth.user_id)}
+
+
+@router.post("/clear")
+def clear_notifications(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    return {"deleted": clear_inbox(db, user_id=auth.user_id)}
+
+
 @router.get("/pending", response_model=list[NotificationOut])
 def read_pending(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[NotificationOut]:
     return list_pending(db, user_id=auth.user_id)
+
+
+@router.post("/{notification_id}/read")
+def read_notification(
+    notification_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    try:
+        mark_read(db, user_id=auth.user_id, notification_id=notification_id)
+    except NotificationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return {"ok": True}
 
 
 @router.post("/{notification_id}/ack")

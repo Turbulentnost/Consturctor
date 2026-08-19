@@ -83,6 +83,18 @@ def _ensure_columns() -> None:
                     "ADD COLUMN interval_seconds INTEGER NOT NULL DEFAULT 0"
                 )
             )
+        notif_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'notifications'
+                """
+            )
+        ).fetchall()
+        notif_cols = {str(r[0]) for r in notif_rows}
+        if notif_cols and "read_at" not in notif_cols:
+            conn.execute(text("ALTER TABLE notifications ADD COLUMN read_at TIMESTAMPTZ NULL"))
 
 
 def get_db() -> Generator[Session, None, None]:

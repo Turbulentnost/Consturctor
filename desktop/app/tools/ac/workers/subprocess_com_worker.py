@@ -37,6 +37,7 @@ class SubprocessComWorker(BaseWorker):
                 check=False,
                 cwd=_desktop_root(),
                 env=_worker_env(),
+                **_hidden_run_kwargs(),
             )
         except subprocess.TimeoutExpired as exc:
             stderr = _safe_process_text(exc.stderr)
@@ -95,6 +96,18 @@ def _worker_env() -> dict[str, str]:
     current = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = desktop if not current else f"{desktop}{os.pathsep}{current}"
     return env
+
+
+def _hidden_run_kwargs() -> dict:
+    """Keep the COM worker from flashing a console window on Windows."""
+    if sys.platform != "win32":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    }
 
 
 def _build_worker_command(module_name: str) -> list[str]:

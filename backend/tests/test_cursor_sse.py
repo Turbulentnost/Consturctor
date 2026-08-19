@@ -44,3 +44,27 @@ def test_sse_naive_decode_would_break_cyrillic() -> None:
         "utf-8", errors="replace"
     )
     assert "\ufffd" in broken
+
+
+def test_create_run_when_ready_retries_409(monkeypatch) -> None:
+    from app.clients import cursor as cursor_client
+    from app.clients.cursor import CursorAgentError
+
+    monkeypatch.setattr(cursor_client, "wait_until_run_idle", lambda *a, **k: {"status": "FINISHED"})
+    monkeypatch.setattr(cursor_client.time, "sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def fake_create_run(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise CursorAgentError("занят", status_code=409)
+        return {"id": "run-ok"}
+
+    monkeypatch.setattr(cursor_client, "create_run", fake_create_run)
+    data = cursor_client.create_run_when_ready(
+        "agent-1",
+        prompt="go",
+        previous_run_id="run-old",
+    )
+    assert data["id"] == "run-ok"
+    assert calls["n"] == 3

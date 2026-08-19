@@ -62,6 +62,7 @@ def _call_tool(name: str, arguments: dict) -> dict:
         or name.startswith("onec.odata")
         or name.startswith("onec.erp_tasks")
         or name == "onec.erp_subordinate_tasks"
+        or name == "onec.docflow_tasks"
         or name == "onec.sql_query"
     ):
         raise ToolHostError(

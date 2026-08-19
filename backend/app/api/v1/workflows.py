@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from queue import Queue
-from threading import Thread
+from threading import Event, Thread
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -14,10 +14,12 @@ from app.core.jwt import AuthContext
 from app.db.session import SessionLocal, get_db
 from app.schemas.trigger import ScheduleDraftOut
 from app.schemas.workflow import (
+    AgentKpiSchema,
     AgentRunOut,
     AgentToolResultSubmit,
     ArtifactItem,
     ArtifactsDownloadRequest,
+    AutoRunStopResult,
     ExecuteRequest,
     LocalRunUpdate,
     WorkflowHealth,
@@ -31,14 +33,19 @@ from app.services.workflows import (
     WorkflowError,
     build_artifacts_zip,
     clarify_workflow,
+    confirm_agent_kpi,
     create_workflow,
     delete_workflow,
+    demo_workflow,
     execute_workflow,
+    generate_agent_kpi,
+    get_agent_kpi,
     get_workflow,
     list_artifacts_for_workflow,
     list_workflows,
     plan_workflow,
     publish_workflow,
+    stop_auto_run,
     update_local_run,
     workflow_health,
 )
@@ -58,16 +65,34 @@ _SSE_HEADERS = {
     "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
+_SSE_PAD = ":" + (" " * 2048) + "\n"
+_HEARTBEAT_S = 2.0
 
 
 def _sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    # Padding forces proxies/uvicorn to flush so Thinking/tools appear immediately.
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n{_SSE_PAD}\n"
+
+
+def _iter_sse_queue(queue: Queue[dict | None], stop: Event):
+    def heartbeat() -> None:
+        while not stop.wait(_HEARTBEAT_S):
+            queue.put({"type": "heartbeat"})
+
+    Thread(target=heartbeat, daemon=True).start()
+    while True:
+        item = queue.get()
+        if item is None:
+            stop.set()
+            break
+        yield _sse(item)
 
 
 def _workflow_stream(action, *, user_id: str = ""):
     from app.services.workflows.cursor_tools import clear_tool_context, set_tool_context
 
     queue: Queue[dict | None] = Queue()
+    stop = Event()
     run_id = tool_bridge.new_run_id() if user_id else ""
 
     def emit(event_type: str, text: str = "", extra: dict | None = None) -> None:
@@ -96,18 +121,16 @@ def _workflow_stream(action, *, user_id: str = ""):
                 clear_tool_context()
                 tool_bridge.unregister_run(run_id)
             db.close()
+            stop.set()
             queue.put(None)
 
     Thread(target=run, daemon=True).start()
-    while True:
-        item = queue.get()
-        if item is None:
-            break
-        yield _sse(item)
+    yield from _iter_sse_queue(queue, stop)
 
 
 def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: str = "chat"):
     queue: Queue[dict | None] = Queue()
+    stop = Event()
     run_id = tool_bridge.new_run_id()
     tool_bridge.register_run(run_id, user_id)
 
@@ -158,14 +181,11 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: s
                     logger.exception("Failed to persist agent run history id=%s", history_id)
             tool_bridge.unregister_run(run_id)
             db.close()
+            stop.set()
             queue.put(None)
 
     Thread(target=run, daemon=True).start()
-    while True:
-        item = queue.get()
-        if item is None:
-            break
-        yield _sse(item)
+    yield from _iter_sse_queue(queue, stop)
 
 
 async def _parse_clarify_request(request: Request) -> tuple[dict[str, str], list[tuple[str, bytes]], list[str]]:
@@ -332,6 +352,53 @@ async def remove_workflow(
         _raise(exc)
         raise
     return {"ok": True}
+
+
+@router.post("/{workflow_id}/stop-auto-run", response_model=AutoRunStopResult)
+async def stop_workflow_auto_run(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AutoRunStopResult:
+    try:
+        return stop_auto_run(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/demo", response_model=WorkflowSchema)
+async def demo_workflow_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowSchema:
+    try:
+        return demo_workflow(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/demo/stream")
+async def demo_workflow_stream_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+) -> StreamingResponse:
+    user_id = auth.user_id
+    return StreamingResponse(
+        _workflow_stream(
+            lambda db, emit: demo_workflow(
+                db,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                on_event=emit,
+            ),
+            user_id=user_id,
+        ),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
 
 
 @router.post("/{workflow_id}/plan", response_model=WorkflowSchema)
@@ -553,6 +620,53 @@ async def publish_workflow_endpoint(
 ) -> WorkflowSchema:
     try:
         return publish_workflow(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/kpi/generate/stream")
+async def generate_workflow_kpi_stream_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+) -> StreamingResponse:
+    user_id = auth.user_id
+    return StreamingResponse(
+        _workflow_stream(
+            lambda db, emit: generate_agent_kpi(
+                db,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                on_event=emit,
+            ),
+            user_id=user_id,
+        ),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
+
+@router.get("/{workflow_id}/kpi", response_model=AgentKpiSchema)
+async def read_workflow_kpi(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentKpiSchema:
+    try:
+        return get_agent_kpi(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/kpi/confirm", response_model=WorkflowSchema)
+async def confirm_workflow_kpi_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowSchema:
+    try:
+        return confirm_agent_kpi(db, user_id=auth.user_id, workflow_id=workflow_id)
     except WorkflowError as exc:
         _raise(exc)
         raise
