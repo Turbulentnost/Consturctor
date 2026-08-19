@@ -509,6 +509,10 @@ class KpiMethod:
     plan_update: str = ""
     fact_update: str = ""
     percent_formula: str = ""
+    plan_explanation: str = ""
+    fact_explanation: str = ""
+    score_explanation: str = ""
+    system: str = ""
     green_min: float = 90
     yellow_min: float = 70
     schedule: KpiSchedule = field(default_factory=KpiSchedule)
@@ -612,6 +616,10 @@ def _parse_kpi_method(data: dict | None) -> KpiMethod:
         plan_update=str(raw.get("plan_update") or ""),
         fact_update=str(raw.get("fact_update") or ""),
         percent_formula=str(raw.get("percent_formula") or ""),
+        plan_explanation=str(raw.get("plan_explanation") or ""),
+        fact_explanation=str(raw.get("fact_explanation") or ""),
+        score_explanation=str(raw.get("score_explanation") or ""),
+        system=str(raw.get("system") or ""),
         green_min=green,
         yellow_min=yellow,
         schedule=KpiSchedule(

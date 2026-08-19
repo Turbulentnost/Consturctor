@@ -168,6 +168,14 @@ def _quick_answers_for_question(question: WorkflowOpenQuestion) -> list[str]:
     return [str(item).strip() for item in (question.options or []) if str(item).strip()][:4]
 
 
+def _demo_already_ran_state(validation: dict | None) -> bool:
+    """Прогон уже был: это не «черновик готов, сейчас сам стартую»."""
+    state = validation if isinstance(validation, dict) else {}
+    if state.get("demo_started") is True:
+        return True
+    return str(state.get("status") or "") == "demo_failed"
+
+
 def _clear_layout(layout) -> None:
     while layout.count():
         item = layout.takeAt(0)
@@ -1539,9 +1547,14 @@ class WorkflowPage(QWidget):
             return True
         return validation.get("demo_started") is False and validation.get("can_run_demo") is False
 
+    def _demo_already_ran(self, record: WorkflowRecord | None = None) -> bool:
+        return _demo_already_ran_state(self._validation_state(record))
+
     def _can_run_demo(self, record: WorkflowRecord | None = None) -> bool:
         current = record or self._record
         if current is None or self._draft_blocked_before_demo(current):
+            return False
+        if self._demo_already_ran(current):
             return False
         validation = self._validation_state(current)
         if validation.get("can_run_demo") is False:
@@ -1570,6 +1583,8 @@ class WorkflowPage(QWidget):
         if self._record and self._record.phase == "designed":
             if self._draft_blocked_before_demo():
                 self._run_btn.setText("Исправить черновик")
+            elif self._demo_already_ran():
+                self._run_btn.setText("Запустить снова")
             else:
                 self._run_btn.setVisible(False)
         else:
@@ -1611,6 +1626,7 @@ class WorkflowPage(QWidget):
             and not self._post_build_question
             and not unanswered
             and not can_next
+            and not self._demo_already_ran()
         )
         self._composer_wrap.setVisible(not draft_ready and not can_next)
         self._next_btn.setVisible(can_next)
@@ -1638,6 +1654,9 @@ class WorkflowPage(QWidget):
         elif self._record and self._record.phase == "designed" and self._draft_blocked_before_demo():
             self._agent_status.setText("● Черновик требует исправления — нажмите «Исправить черновик»")
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
+        elif self._record and self._record.phase == "designed" and self._demo_already_ran():
+            self._agent_status.setText("● Пробный прогон не дал устойчивый результат — можно запустить снова")
+            self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
         elif self._record and self._record.phase == "designed":
             self._agent_status.setText("● Черновик готов — запускаю пробный прогон")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
@@ -1987,6 +2006,8 @@ class WorkflowPage(QWidget):
                 self._on_plan()
             else:
                 self._on_execute()
+        elif key == "run_demo":
+            self._on_execute()
         elif key == "fetch":
             self._on_fetch_results()
         elif key == "save":
@@ -2038,6 +2059,10 @@ class WorkflowPage(QWidget):
             self._submit_question_answer()
             return
         self._push_event("Вы", text)
+        if self._demo_already_ran():
+            self._store_retry_hint(text)
+            self._on_execute()
+            return
         if self._record.plan and not self._record.plan.unanswered():
             self._push_event(
                 "Агент",
@@ -2599,7 +2624,13 @@ class WorkflowPage(QWidget):
                 action_key="next",
             )
         else:
-            self._push_event("Агент", "Пробный прогон не дал устойчивый результат. Можно запустить снова.")
+            self._execute_started = False
+            self._push_event(
+                "Агент",
+                "Пробный прогон не дал устойчивый результат. Можно запустить снова.",
+                action="Запустить снова",
+                action_key="run_demo",
+            )
 
     def _show_design_result(self, result: WorkflowRecord) -> None:
         if self._draft_blocked_before_demo(result):
@@ -2885,6 +2916,18 @@ class WorkflowPage(QWidget):
             return self._api.execute_workflow(workflow_id, reexecute=reexecute)
         except Exception:  # noqa: BLE001
             return self._api.execute_workflow(workflow_id, reexecute=reexecute)
+
+    def _store_retry_hint(self, text: str) -> None:
+        hint = (text or "").strip()
+        if not hint or self._record is None:
+            return
+        local = dict(self._record.local_run or {})
+        local["retry_hint"] = hint
+        self._record.local_run = local
+        try:
+            self._record = self._api.update_workflow_local_run(self._record.id, local)
+        except ApiError:
+            pass
 
     def _on_run_clicked(self) -> None:
         if self._record is not None and self._draft_blocked_before_demo():

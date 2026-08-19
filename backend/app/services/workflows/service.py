@@ -260,6 +260,17 @@ def _emit_config_errors(validation: Any, on_event: WorkflowEventCallback | None)
         _emit(on_event, "decision", f"Ошибка конфигурации агента: {issue.message}{detail}")
 
 
+def _demo_notes(row: Workflow) -> str:
+    notes = str(row.notes or "").strip()
+    hint = str((row.local_run or {}).get("retry_hint") or "").strip()
+    if not hint:
+        return notes
+    extra = f"Уточнение после прогона:\n{hint}"
+    if extra in notes:
+        return notes
+    return f"{notes}\n\n{extra}".strip() if notes else extra
+
+
 def _blocked_before_demo_report(validation: Any, *, message: str = "") -> dict[str, Any]:
     issues = [issue.to_dict() for issue in getattr(validation, "issues", [])]
     reasons = [
@@ -543,7 +554,7 @@ def demo_workflow(
         prompts.build_demo_prompt(
             document_text=row.document_text,
             title=row.title,
-            notes=row.notes or "",
+            notes=_demo_notes(row),
             document_name=row.document_name,
             draft=draft,
         ),
@@ -1372,7 +1383,7 @@ def _continue_demo_after_answers(
         prompts.build_demo_continue_prompt(
             document_text=row.document_text,
             title=row.title,
-            notes=row.notes or "",
+            notes=_demo_notes(row),
             document_name=row.document_name,
             plan=plan,
             draft=draft_of(row),
@@ -1470,6 +1481,9 @@ def _demo_validation_report(phase: PhaseResult, draft: dict[str, Any]) -> dict[s
         reasons.append("Ни один шаг черновика не подтверждён данными инструментов.")
     return {
         "ok": ok,
+        "status": "verified" if ok else "demo_failed",
+        "demo_started": True,
+        "can_run_demo": True,
         "failed_validation": failed_marker,
         "ledger": ledger,
         "unfinished": unfinished,
@@ -1499,11 +1513,19 @@ def _fail_demo_validation(
     on_event: WorkflowEventCallback | None = None,
 ) -> WorkflowSchema:
     """Прогон не подтвердил данные: черновик остаётся, example_run не пишем."""
+    stored = {
+        **dict(report or {}),
+        "ok": False,
+        "status": "demo_failed",
+        "demo_started": True,
+        "can_run_demo": True,
+    }
     local = dict(row.local_run or {})
-    local["validation"] = report
+    local["validation"] = stored
     local["playbook"] = _playbook_from_draft(row, draft)
     local["demo_ok"] = False
     local["can_publish"] = False
+    local["can_run_demo"] = True
     local["tests_status"] = "fail"
     local["awaiting_demo_answers"] = False
     row.local_run = local

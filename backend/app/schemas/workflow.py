@@ -185,6 +185,10 @@ class KpiMethodSchema(BaseModel):
     plan_update: str = ""
     fact_update: str = ""
     percent_formula: str = ""
+    plan_explanation: str = ""
+    fact_explanation: str = ""
+    score_explanation: str = ""
+    system: str = ""
     green_min: float = 90
     yellow_min: float = 70
     schedule: KpiScheduleSchema = Field(default_factory=KpiScheduleSchema)

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -21,10 +22,11 @@ from app.api_client import (
     AgentKpi,
     ApiClient,
     ApiError,
+    KpiTile,
     WorkflowRecord,
     _parse_agent_kpi,
 )
-from app.ui.pages.kpi_page import PlanFactTile, format_tiles_frequency
+from app.ui.pages.kpi_page import KpiMethodView, PlanFactTile, format_tiles_frequency
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 
 _USER_MENU_RESERVE = 320
@@ -76,19 +78,19 @@ class AgentKpiPreviewPage(QWidget):
         self._busy_timer.setInterval(280)
         self._busy_timer.timeout.connect(self._tick_activity)
 
-        title = QLabel("KPI агента")
-        title.setFont(app_font(28, QFont.Weight.DemiBold))
-        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        subtitle = QLabel("План — как агент должен работать. Факт — что произошло после запусков.")
-        subtitle.setWordWrap(True)
-        subtitle.setFont(app_font(13))
-        subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        self._title = QLabel("KPI агента")
+        self._title.setFont(app_font(28, QFont.Weight.DemiBold))
+        self._title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        self._subtitle = QLabel("План — как агент должен работать. Факт — что произошло после запусков.")
+        self._subtitle.setWordWrap(True)
+        self._subtitle.setFont(app_font(13))
+        self._subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
 
         self._back = QPushButton("Назад")
         self._back.setCursor(Qt.CursorShape.PointingHandCursor)
         self._back.setFixedHeight(36)
         self._back.setStyleSheet(_SECONDARY)
-        self._back.clicked.connect(self.back_requested.emit)
+        self._back.clicked.connect(self._on_back)
 
         self._banner = QLabel("")
         self._banner.setWordWrap(True)
@@ -147,19 +149,33 @@ class AgentKpiPreviewPage(QWidget):
         scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }" + scroll_bar_qss())
         scroll.setWidget(inner)
 
+        preview = QWidget()
+        preview.setStyleSheet("background: transparent;")
+        preview_lay = QVBoxLayout(preview)
+        preview_lay.setContentsMargins(0, 0, 0, 0)
+        preview_lay.setSpacing(12)
+        preview_lay.addWidget(scroll, 1)
+        preview_lay.addWidget(self._save, 0, Qt.AlignmentFlag.AlignRight)
+
+        self._method_page = KpiMethodView(header_reserve=_USER_MENU_RESERVE)
+        self._method_page.back_requested.connect(self._hide_method)
+
+        self._view = QStackedWidget()
+        self._view.addWidget(preview)
+        self._view.addWidget(self._method_page)
+
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, _USER_MENU_RESERVE, 0)
         header.setSpacing(12)
-        header.addWidget(title, 1)
+        header.addWidget(self._title, 1)
         header.addWidget(self._back, 0, Qt.AlignmentFlag.AlignRight)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 4, 8, 8)
         root.setSpacing(12)
         root.addLayout(header)
-        root.addWidget(subtitle)
-        root.addWidget(scroll, 1)
-        root.addWidget(self._save, 0, Qt.AlignmentFlag.AlignRight)
+        root.addWidget(self._subtitle)
+        root.addWidget(self._view, 1)
 
         self._stream_event.connect(self._on_stream_event)
         self._done.connect(self._on_done)
@@ -169,6 +185,7 @@ class AgentKpiPreviewPage(QWidget):
         return self._record
 
     def start(self, record: WorkflowRecord) -> None:
+        self._hide_method()
         self._record = record
         self._kpi = None
         self._live_tools = []
@@ -339,8 +356,31 @@ class AgentKpiPreviewPage(QWidget):
         self._summary.setText(format_tiles_frequency(kpi.tiles))
         self._summary.show()
         for index, tile in enumerate(kpi.tiles):
-            self._tiles.addWidget(PlanFactTile(tile), index // 2, index % 2)
+            card = PlanFactTile(tile)
+            card.method_requested.connect(self._open_method)
+            self._tiles.addWidget(card, index // 2, index % 2)
         self._save.setEnabled(not self._busy)
+
+    def _on_back(self) -> None:
+        if self._view.currentWidget() is self._method_page:
+            self._hide_method()
+            return
+        self.back_requested.emit()
+
+    def _open_method(self, tile: object) -> None:
+        if not isinstance(tile, KpiTile):
+            return
+        self._title.hide()
+        self._subtitle.hide()
+        self._back.hide()
+        self._method_page.show_tile(tile)
+        self._view.setCurrentWidget(self._method_page)
+
+    def _hide_method(self) -> None:
+        self._title.show()
+        self._subtitle.show()
+        self._back.show()
+        self._view.setCurrentIndex(0)
 
     @staticmethod
     def _clear_layout(layout) -> None:

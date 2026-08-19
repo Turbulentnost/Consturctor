@@ -6,8 +6,6 @@ from threading import Thread
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QMouseEvent
 from PySide6.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -21,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import AgentKpi, ApiClient, ApiError, KpiTile, WorkflowListItem
+from app.api_client import AgentKpi, ApiClient, ApiError, KpiSchedule, KpiTile, WorkflowListItem
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 
 
@@ -54,7 +52,101 @@ QFrame#KpiAgentRow[selected="true"] {
     border: 1px solid #08745F;
     background: #F3FAF7;
 }
+QFrame#KpiExplainCard {
+    background: #FFFFFF;
+    border: 1px solid rgba(16,24,23,0.10);
+    border-radius: 16px;
+}
 """
+_BACK_BTN = """
+QPushButton {
+    background: #FFFFFF; color: #06483D;
+    border: 1px solid rgba(16,24,23,0.12);
+    border-radius: 12px; padding: 0 16px;
+}
+QPushButton:hover { background: #F4F7F6; }
+"""
+_PLAN_FALLBACK = {
+    "expected_interval": (
+        "План — это норма, как часто агент должен запускаться. "
+        "Её берём из расписания триггеров и паспорта агента. "
+        "Если расписание или требования в паспорте не менялись, план остаётся прежним."
+    ),
+    "on_schedule_rate": (
+        "План — это норма своевременности: какая доля запусков должна происходить вовремя. "
+        "Обычно ожидаем, что все запуски укладываются в срок реакции из паспорта. "
+        "План меняется только если изменили паспорт (срок реакции) или расписание триггеров. "
+        "Иначе оставляем как есть."
+    ),
+    "runs_count": (
+        "План — сколько раз агент должен запускаться за выбранный период. "
+        "Число берём из расписания. Пока расписание не меняли, план не пересчитываем."
+    ),
+    "success_rate": (
+        "План — какая доля запусков должна завершаться без ошибки. "
+        "По умолчанию ожидаем, что все запуски успешны. "
+        "План меняется только если в паспорте изменили, что считается успехом."
+    ),
+    "fail_count": (
+        "План — сколько запусков допускается завершить с ошибкой. "
+        "Обычно норма — ни одной ошибки. "
+        "План не меняется, пока в паспорте не изменят требования к качеству."
+    ),
+}
+_FACT_FALLBACK = {
+    "expected_interval": (
+        "Факт — сколько в среднем проходит времени между соседними запусками агента. "
+        "Берём историю запусков, выстраиваем их по времени и смотрим промежутки. "
+        "Если запусков ещё не было или их слишком мало, факт не считается — "
+        "на плитке будет «ещё нет прогонов»."
+    ),
+    "on_schedule_rate": (
+        "Факт показывает, какая доля запусков произошла вовремя. "
+        "В истории запусков каждый прогон сопоставляем с событием, которое его вызвало "
+        "(например, номер служебной записки). "
+        "Считаем, сколько минут прошло от события до запуска. "
+        "Если это время не больше плана — запуск вовремя. "
+        "В расчёт входят только запуски, которые удалось связать с событием. "
+        "После каждого завершённого запуска и по расписанию пересчёта факт обновляется. "
+        "Если таких запусков ещё нет, факт не показываем."
+    ),
+    "runs_count": (
+        "Факт — сколько раз агент реально запускался за выбранный период. "
+        "Считаем записи в истории запусков. Если запусков ещё не было, факт не показываем."
+    ),
+    "success_rate": (
+        "Факт — какая доля завершённых запусков прошла без ошибки. "
+        "Смотрим только законченные запуски: успешные и с ошибкой. "
+        "Если завершённых запусков ещё нет, факт не считается."
+    ),
+    "fail_count": (
+        "Факт — сколько запусков завершилось ошибкой. "
+        "Смотрим историю и считаем такие случаи. Если запусков ещё не было, факт не показываем."
+    ),
+}
+_SCORE_FALLBACK = {
+    "expected_interval": (
+        "Оценка показывает, насколько фактический промежуток между запусками близок к плану. "
+        "Чем ближе факт к плану, тем выше процент. Если запусков ещё мало, оценку не считаем."
+    ),
+    "on_schedule_rate": (
+        "Оценка — это доля запусков, которые произошли вовремя, в процентах. "
+        "Если ни одного запуска с привязкой к событию ещё не было, оценку не считаем."
+    ),
+    "runs_count": (
+        "Оценка сравнивает число реальных запусков с планом. "
+        "Если запусков столько же или больше, чем задумано, процент высокий. "
+        "Пока запусков не было, оценку не считаем."
+    ),
+    "success_rate": (
+        "Оценка — это доля успешных запусков в процентах. "
+        "Если завершённых запусков ещё не было, оценку не считаем."
+    ),
+    "fail_count": (
+        "Оценка высокая, пока ошибок не больше плана. "
+        "Каждая лишняя ошибка снижает процент. Если запусков ещё не было, оценку не считаем."
+    ),
+}
 
 
 def format_kpi_value(value: float | None, unit: str = "", *, empty: str = _NO_RUNS) -> str:
@@ -82,35 +174,44 @@ def format_updated_at(value: str) -> str:
     return f"обновлено {local.strftime('%d.%m %H:%M')}"
 
 
-def format_tile_frequency(tile: KpiTile) -> str:
-    when = (tile.method.when or "").strip()
-    if when:
-        return when
-    sched = tile.method.schedule
-    if sched.kind == "at" and sched.at:
-        return f"однократно ({sched.at})"
-    seconds = max(60, int(sched.interval_seconds or 3600))
+def format_schedule_cadence(schedule: KpiSchedule) -> str:
+    if schedule.kind == "at" and schedule.at:
+        return f"однократно ({schedule.at})"
+    seconds = max(60, int(schedule.interval_seconds or 3600))
     if seconds < 3600:
         return f"каждые {seconds // 60} мин"
+    hours = seconds / 3600
+    if hours <= 1:
+        return "каждый час"
     if seconds < 86400:
-        hours = seconds / 3600
         value = int(hours) if hours == int(hours) else round(hours, 1)
         return f"каждые {value} ч"
     days = seconds / 86400
+    if days <= 1:
+        return "каждый день"
     value = int(days) if days == int(days) else round(days, 1)
     return f"каждые {value} дн"
+
+
+def _schedule_key(schedule: KpiSchedule) -> str:
+    if schedule.kind == "at":
+        return f"at:{(schedule.at or '').strip()}"
+    return f"interval:{max(60, int(schedule.interval_seconds or 3600))}"
+
+
+def format_tile_frequency(tile: KpiTile) -> str:
+    return format_schedule_cadence(tile.method.schedule)
 
 
 def format_tiles_frequency(tiles: list[KpiTile]) -> str:
     labels: list[str] = []
     seen: set[str] = set()
     for tile in tiles:
-        label = format_tile_frequency(tile)
-        key = label.casefold()
-        if not label or key in seen:
+        key = _schedule_key(tile.method.schedule)
+        if key in seen:
             continue
         seen.add(key)
-        labels.append(label)
+        labels.append(format_schedule_cadence(tile.method.schedule))
     if not labels:
         return "Частота обновления появится после методики."
     if len(labels) == 1:
@@ -118,7 +219,156 @@ def format_tiles_frequency(tiles: list[KpiTile]) -> str:
     return "Плитки обновляются: " + " · ".join(labels)
 
 
+def _kind_of(tile: KpiTile) -> str:
+    return (tile.measure.kind or "").strip()
+
+
+def tile_plan_explanation(tile: KpiTile) -> str:
+    text = (tile.method.plan_explanation or "").strip()
+    if text:
+        return text
+    return _PLAN_FALLBACK.get(
+        _kind_of(tile),
+        "План — норма работы агента из паспорта и расписания. "
+        "Его обновляем только если изменились требования или расписание.",
+    )
+
+
+def tile_fact_explanation(tile: KpiTile) -> str:
+    text = (tile.method.fact_explanation or "").strip()
+    if text:
+        return text
+    return _FACT_FALLBACK.get(
+        _kind_of(tile),
+        "Факт берём из истории запусков агента: смотрим, что реально произошло, "
+        "и сравниваем с планом. Если запусков ещё нет, факт не считаем.",
+    )
+
+
+def tile_score_explanation(tile: KpiTile) -> str:
+    text = (tile.method.score_explanation or "").strip()
+    if text:
+        return text
+    green = tile.method.green_min
+    yellow = tile.method.yellow_min
+    body = _SCORE_FALLBACK.get(
+        _kind_of(tile),
+        "Оценка в процентах показывает, насколько факт совпадает с планом. "
+        "Если запусков ещё не было, процент не считаем.",
+    )
+    return (
+        f"{body} Цвет: зелёный — от {green:g} процентов и выше, "
+        f"жёлтый — от {yellow:g} процентов, ниже — красный."
+    )
+
+
+def tile_recalc_explanation(tile: KpiTile) -> str:
+    return f"Показатель пересчитывается {format_schedule_cadence(tile.method.schedule)}."
+
+
+class KpiMethodView(QWidget):
+    back_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None, *, header_reserve: int = 0) -> None:
+        super().__init__(parent)
+        self._back = QPushButton("К показателям")
+        self._back.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._back.setFixedHeight(36)
+        self._back.setStyleSheet(_BACK_BTN)
+        self._back.clicked.connect(self.back_requested.emit)
+
+        self._title = QLabel("Как считается")
+        self._title.setFont(app_font(28, QFont.Weight.DemiBold))
+        self._title.setWordWrap(True)
+        self._title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+
+        self._subtitle = QLabel("Простыми словами — откуда берётся план и как получается факт.")
+        self._subtitle.setWordWrap(True)
+        self._subtitle.setFont(app_font(14))
+        self._subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+
+        self._now = QLabel("")
+        self._now.setWordWrap(True)
+        self._now.setFont(app_font(13))
+        self._now.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+
+        self._sections = QVBoxLayout()
+        self._sections.setContentsMargins(0, 0, 0, 0)
+        self._sections.setSpacing(12)
+
+        inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setContentsMargins(0, 0, 0, 0)
+        inner_lay.setSpacing(12)
+        inner_lay.addWidget(self._now)
+        inner_lay.addLayout(self._sections)
+        inner_lay.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }" + scroll_bar_qss())
+        scroll.setWidget(inner)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, max(0, header_reserve), 0)
+        header.setSpacing(12)
+        header.addWidget(self._title, 1)
+        header.addWidget(self._back, 0, Qt.AlignmentFlag.AlignTop)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
+        root.addLayout(header)
+        root.addWidget(self._subtitle)
+        root.addWidget(scroll, 1)
+
+    def show_tile(self, tile: KpiTile) -> None:
+        self._title.setText(tile.name or "KPI")
+        plan_now = format_kpi_value(tile.plan.value, tile.plan.unit, empty="не задан")
+        fact_now = format_kpi_value(tile.fact.value, tile.fact.unit)
+        score_now = format_kpi_value(tile.score_percent, "%", empty="ещё нет оценки")
+        self._now.setText(
+            f"Сейчас: {tile.plan.label or 'план'} {plan_now} · "
+            f"{tile.fact.label or 'факт'} {fact_now} · оценка {score_now}."
+        )
+        while self._sections.count():
+            item = self._sections.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        for title, body in (
+            ("Как считается план", tile_plan_explanation(tile)),
+            ("Как считается факт", tile_fact_explanation(tile)),
+            ("Как получается оценка", tile_score_explanation(tile)),
+            ("Как часто пересчитывается", tile_recalc_explanation(tile)),
+        ):
+            self._sections.addWidget(self._section(title, body))
+
+    def _section(self, title: str, body: str) -> QFrame:
+        card = QFrame()
+        card.setObjectName("KpiExplainCard")
+        card.setStyleSheet(_CARD)
+        head = QLabel(title)
+        head.setFont(app_font(16, QFont.Weight.DemiBold))
+        head.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        text = QLabel(body)
+        text.setWordWrap(True)
+        text.setFont(app_font(14))
+        text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        text.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(8)
+        lay.addWidget(head)
+        lay.addWidget(text)
+        return card
+
+
 class PlanFactTile(QFrame):
+    method_requested = Signal(object)
+
     def __init__(self, tile: KpiTile, parent: QWidget | None = None, *, paused: bool = False) -> None:
         super().__init__(parent)
         self._tile = tile
@@ -278,30 +528,7 @@ class PlanFactTile(QFrame):
         return back
 
     def _show_method(self) -> None:
-        tile = self._tile
-        method = tile.method
-        parts = [
-            f"План: {method.plan_update or '—'}",
-            f"Факт: {method.how or '—'}"
-            + (f" {method.fact_update}" if method.fact_update else ""),
-            f"KPI: {method.percent_formula or '—'}",
-            f"Пороги: зелёный ≥ {method.green_min:g}%, жёлтый ≥ {method.yellow_min:g}%.",
-        ]
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Как считается")
-        dialog.setModal(True)
-        text = QLabel("\n\n".join(parts))
-        text.setWordWrap(True)
-        text.setFont(app_font(13))
-        text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
-        buttons.accepted.connect(dialog.accept)
-        lay = QVBoxLayout(dialog)
-        lay.setSpacing(12)
-        lay.addWidget(text)
-        lay.addWidget(buttons)
-        dialog.resize(420, 280)
-        dialog.exec()
+        self.method_requested.emit(self._tile)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and not self._info.underMouse():
@@ -381,12 +608,26 @@ class KpiPage(QWidget):
         body.addWidget(list_scroll, 0)
         body.addWidget(detail, 1)
 
+        overview = QWidget()
+        overview.setStyleSheet("background: transparent;")
+        overview_lay = QVBoxLayout(overview)
+        overview_lay.setContentsMargins(0, 0, 0, 0)
+        overview_lay.setSpacing(10)
+        overview_lay.addWidget(title)
+        overview_lay.addWidget(subtitle)
+        overview_lay.addLayout(body, 1)
+
+        self._method_page = KpiMethodView()
+        self._method_page.back_requested.connect(self._hide_method)
+
+        self._view = QStackedWidget()
+        self._view.addWidget(overview)
+        self._view.addWidget(self._method_page)
+
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(10)
-        root.addWidget(title)
-        root.addWidget(subtitle)
-        root.addLayout(body, 1)
+        root.setSpacing(0)
+        root.addWidget(self._view)
         self._render_agents()
 
     def refresh(self) -> None:
@@ -467,6 +708,7 @@ class KpiPage(QWidget):
         self._list.addStretch(1)
 
     def _select_agent(self, workflow_id: str) -> None:
+        self._hide_method()
         self._selected_id = workflow_id
         for wid, row in self._rows.items():
             if isinstance(row, QPushButton):
@@ -510,12 +752,24 @@ class KpiPage(QWidget):
             return
         paused = bool(agent is not None and agent.paused)
         for index, tile in enumerate(payload.tiles):
-            self._tiles.addWidget(PlanFactTile(tile, paused=paused), index // 2, index % 2)
+            card = PlanFactTile(tile, paused=paused)
+            card.method_requested.connect(self._open_method)
+            self._tiles.addWidget(card, index // 2, index % 2)
+
+    def _open_method(self, tile: object) -> None:
+        if not isinstance(tile, KpiTile):
+            return
+        self._method_page.show_tile(tile)
+        self._view.setCurrentWidget(self._method_page)
+
+    def _hide_method(self) -> None:
+        self._view.setCurrentIndex(0)
 
     def _show_kpi_error(self, message: str) -> None:
         self._clear_detail(self._detail_title.text() or "KPI агента", message or "Не удалось загрузить KPI.")
 
     def _clear_detail(self, title: str, summary: str) -> None:
+        self._hide_method()
         self._detail_title.setText(title)
         self._detail_summary.setText(summary)
         self._clear_tiles()

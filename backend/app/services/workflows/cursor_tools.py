@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 WorkflowEmit = Callable[..., None]
 
 _tool_ctx: ContextVar[tuple[str, str] | None] = ContextVar("creation_tool_ctx", default=None)
+_datasets: ContextVar["DatasetRegistry | None"] = ContextVar("creation_datasets", default=None)
 
 _TOOL_BLOCK_RE = re.compile(
     r"```(?:constructor_tool|tool)\s*\n(\{.*?\})\s*```",
@@ -61,6 +62,57 @@ def clear_tool_context() -> None:
 
 def current_tool_context() -> tuple[str, str] | None:
     return _tool_ctx.get()
+
+
+class DatasetRegistry:
+    """Полные ответы инструментов прогона: модели уходит preview, коду — весь набор."""
+
+    def __init__(self) -> None:
+        self._items: dict[str, Any] = {}
+        self._n = 0
+
+    def put(self, payload: Any) -> str:
+        self._n += 1
+        dataset_id = f"d{self._n}"
+        self._items[dataset_id] = payload
+        return dataset_id
+
+    def get(self, dataset_id: str) -> Any:
+        return self._items.get((dataset_id or "").strip())
+
+    def latest_id(self) -> str:
+        return f"d{self._n}" if self._n else ""
+
+    def pack(self, result: Any, limit: int = 8000) -> dict[str, Any]:
+        dataset_id = self.put(result)
+        shape = _result_shape(result)
+        try:
+            raw = json.dumps(result, ensure_ascii=False, default=str)
+        except TypeError:
+            raw = str(result)
+        if len(raw) <= limit:
+            if isinstance(result, dict):
+                return {**result, "dataset_id": dataset_id, "shape": shape}
+            return {"dataset_id": dataset_id, "shape": shape, "value": result}
+        return {
+            "dataset_id": dataset_id,
+            "truncated": True,
+            "preview": raw[:limit] + "…",
+            "shape": shape,
+        }
+
+
+def _result_shape(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        counts = {
+            str(key): len(item)
+            for key, item in value.items()
+            if isinstance(item, list)
+        }
+        return {"type": "object", "keys": [str(key) for key in list(value.keys())[:40]], "counts": counts}
+    if isinstance(value, list):
+        return {"type": "array", "length": len(value)}
+    return {"type": type(value).__name__}
 
 
 def _validation_rules_block() -> str:
@@ -154,6 +206,25 @@ def design_tools_block() -> str:
     return "\n".join(lines)
 
 
+def helper_tools_block() -> str:
+    from app.services.local_mcp import helper_tools
+
+    allowed = helper_tools()
+    if not allowed:
+        return ""
+    lines = [
+        "ВСПОМОГАТЕЛЬНЫЕ ИНСТРУМЕНТЫ. Их можно вызывать на любом шаге, даже если их нет в кандидатах.",
+        "Если ответ усечён или нужна выборка — вызови helper constructor · dataset · execute с dataset_id.",
+    ]
+    for tool in allowed:
+        name = str(tool.get("name") or "")
+        entity = str(tool.get("entity") or "—")
+        lines.append(
+            f"- {name}: {tool.get('system')} · {entity} · {tool.get('operation')}"
+        )
+    return "\n".join(lines)
+
+
 def step_candidates_block(draft: dict[str, Any] | None) -> str:
     """Исполнителю показываем только кандидатов его шагов, не весь каталог."""
     steps = [step for step in ((draft or {}).get("steps") or []) if isinstance(step, dict)]
@@ -182,9 +253,12 @@ def tools_prompt_block(
     if phase == DESIGN_PHASE:
         return design_tools_block()
     scoped = step_candidates_block(draft)
+    helper = helper_tools_block()
     if scoped:
-        return "\n".join([scoped, _validation_rules_block()])
-    return "\n".join([_TRANSPORT_HINT, _validation_rules_block(), tool_catalog_block()])
+        return "\n".join([part for part in (scoped, helper, _validation_rules_block()) if part])
+    return "\n".join(
+        [part for part in (_TRANSPORT_HINT, helper, _validation_rules_block(), tool_catalog_block()) if part]
+    )
 
 
 def with_tools_if_desktop(
@@ -364,6 +438,8 @@ def invoke_creation_tool(
         return _invoke_users_list(args)
     if tool in {"notify.send", "notify"}:
         return _invoke_notify_send(args)
+    if tool in {"data.process", "data.process_dataset"}:
+        return _invoke_data_process(args)
 
     ctx = current_tool_context()
     if ctx is None:
@@ -493,6 +569,38 @@ def stream_cursor_with_tools(
     phase: str = "execute",
 ) -> Any:
     """Stream a Cursor run; if it asks for constructor_tool, execute and continue."""
+    registry = DatasetRegistry()
+    datasets_token = _datasets.set(registry)
+    try:
+        return _stream_cursor_with_tools_body(
+            agent_id=agent_id,
+            run_id=run_id,
+            on_event=on_event,
+            workflow_id=workflow_id,
+            mode=mode,
+            stream_run=stream_run,
+            required_live_tools=required_live_tools,
+            assumption_check=assumption_check,
+            draft=draft,
+            phase=phase,
+        )
+    finally:
+        _datasets.reset(datasets_token)
+
+
+def _stream_cursor_with_tools_body(
+    *,
+    agent_id: str,
+    run_id: str,
+    on_event: WorkflowEmit | None,
+    workflow_id: str,
+    mode: str,
+    stream_run,
+    required_live_tools: list[str] | None,
+    assumption_check: bool,
+    draft: dict[str, Any] | None,
+    phase: str,
+) -> Any:
     last = stream_run(agent_id, run_id, on_event=on_event)
     ledger = StepLedger(draft)
     required = [tool_family(name) for name in (required_live_tools or []) if tool_family(name)]
@@ -548,7 +656,7 @@ def stream_cursor_with_tools(
                 name = str(call.get("name") or "")
                 family = tool_family(name)
                 cache_key = _tool_cache_key(name, call.get("arguments") or {})
-                if family and family in successful:
+                if family and family in successful and not _is_helper_tool(name):
                     continue
                 if cache_key in result_cache:
                     continue
@@ -644,7 +752,7 @@ def stream_cursor_with_tools(
                 results.append(packed)
                 result_cache[cache_key] = packed
                 # Успешный вызов не доказывает выполнение шага — только вердикт.
-                if family and verdict.accepted:
+                if family and verdict.accepted and not _is_helper_tool(name):
                     successful.add(family)
                     fail_counts[family] = 0
                     unreachable.discard(family)
@@ -750,8 +858,16 @@ def _reject_off_phase(phase: str, name: str) -> str:
     )
 
 
+def _is_helper_tool(name: str) -> bool:
+    from app.services.local_mcp import tool_contracts
+
+    return bool((tool_contracts().get(name) or {}).get("helper"))
+
+
 def _reject_off_contract(step: dict[str, Any] | None, name: str) -> str:
     """Вызов вне кандидатов шага не исполняем — это ошибка выбора инструмента."""
+    if _is_helper_tool(name):
+        return ""
     if step is None:
         return ""
     candidates = [str(item) for item in (step.get("tool_candidates") or [])]
@@ -824,8 +940,12 @@ def _verdict_lines(results: list[dict[str, Any]]) -> str:
         "Проверка данных не пройдена:\n"
         + "\n".join(lines)
         + "\nЭто не выполненные шаги. Не делай выводов по этим данным и не переходи дальше: "
-        "исправь параметры, дочитай страницы или возьми другой инструмент шага. "
-        "Если исправить нельзя — верни FAILED_VALIDATION с причиной.\n"
+        "исправь параметры, дочитай страницы, возьми другой инструмент шага "
+        "или обработай полный набор кодом (helper constructor · dataset · execute). "
+        "Если признак должен быть в данных, но неясно где его искать и в материалах этого нет — "
+        "CLARIFY с 2–4 вариантами. "
+        "FAILED_VALIDATION — когда источник ответил, обработка сделана, "
+        "и либо человек уже ответил, либо спрашивать нечего.\n"
     )
 
 
@@ -1123,6 +1243,9 @@ def _format_tool_output(_name: str, result: dict[str, Any], *, limit: int = 1600
 
 
 def _clip_result(result: dict[str, Any], limit: int = 8000) -> dict[str, Any]:
+    registry = _datasets.get()
+    if registry is not None:
+        return registry.pack(result, limit=limit)
     try:
         raw = json.dumps(result, ensure_ascii=False, default=str)
     except TypeError:
@@ -1130,6 +1253,24 @@ def _clip_result(result: dict[str, Any], limit: int = 8000) -> dict[str, Any]:
     if len(raw) <= limit:
         return result
     return {"truncated": True, "preview": raw[:limit] + "…"}
+
+
+def _invoke_data_process(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.workflows.data_sandbox import run_dataset_code
+
+    registry = _datasets.get()
+    if registry is None:
+        raise RuntimeError("Нет набора данных этого прогона.")
+    dataset_id = str(arguments.get("dataset_id") or registry.latest_id() or "").strip()
+    data = registry.get(dataset_id)
+    if data is None:
+        raise RuntimeError(
+            f"Набор {dataset_id or '—'} не найден. Сначала вызови инструмент шага."
+        )
+    outcome = run_dataset_code(code=str(arguments.get("code") or ""), data=data)
+    if not outcome.get("ok"):
+        raise RuntimeError(str(outcome.get("error") or "песочница"))
+    return {"result": outcome.get("result"), "dataset_id": dataset_id}
 
 
 def _emit(

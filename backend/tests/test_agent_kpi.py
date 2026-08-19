@@ -30,6 +30,10 @@ def test_default_kpi_has_method_and_null_facts() -> None:
     assert all(tile["score_percent"] is None for tile in kpi["tiles"])
     assert all(tile["color"] == "none" for tile in kpi["tiles"])
     assert all(tile["method"]["how"] for tile in kpi["tiles"])
+    assert all(tile["method"]["plan_explanation"] for tile in kpi["tiles"])
+    assert all(tile["method"]["fact_explanation"] for tile in kpi["tiles"])
+    assert all(tile["method"]["score_explanation"] for tile in kpi["tiles"])
+    assert all(tile["method"]["system"] for tile in kpi["tiles"])
     assert all(tile["next_run_at"] for tile in kpi["tiles"])
     assert "должен" in kpi["summary"].casefold() or "запускаться" in kpi["summary"].casefold()
 
@@ -52,6 +56,10 @@ def test_parse_kpi_json_and_ignore_unknown_kind() -> None:
         "plan_update": "раз в неделю",
         "fact_update": "каждый час",
         "percent_formula": "факт",
+        "plan_explanation": "План — все запуски без ошибки.",
+        "fact_explanation": "Факт — доля успешных запусков.",
+        "score_explanation": "Оценка совпадает с фактом.",
+        "system": "success = ok / (ok + error)",
         "green_min": 95,
         "yellow_min": 80,
         "schedule": {"kind": "interval", "interval_seconds": 3600}
@@ -76,6 +84,8 @@ def test_parse_kpi_json_and_ignore_unknown_kind() -> None:
     assert kpi["tiles"][0]["method"]["green_min"] == 95
     assert kpi["tiles"][0]["method"]["yellow_min"] == 80
     assert kpi["tiles"][0]["method"]["how"] == "ok / all"
+    assert kpi["tiles"][0]["method"]["plan_explanation"] == "План — все запуски без ошибки."
+    assert kpi["tiles"][0]["method"]["system"] == "success = ok / (ok + error)"
 
 
 def test_normalize_method_thresholds_and_min_interval() -> None:
@@ -86,6 +96,12 @@ def test_normalize_method_thresholds_and_min_interval() -> None:
     assert method["yellow_min"] < method["green_min"]
     assert method["schedule"]["interval_seconds"] == MIN_INTERVAL_SECONDS
     assert method["how"]
+    assert method["plan_explanation"]
+    assert method["fact_explanation"]
+    assert method["score_explanation"]
+    assert method["system"]
+    assert "×" not in method["plan_explanation"]
+    assert "Δ" not in method["fact_explanation"]
 
 
 def test_tile_color_bands() -> None:
@@ -202,6 +218,11 @@ def test_curator_prompt_requires_method_and_thresholds() -> None:
         schedule_draft={"triggers": [{"kind": "interval", "interval_value": 1, "interval_unit": "hours"}]},
     )
     assert "method" in prompt
+    assert "plan_explanation" in prompt
+    assert "fact_explanation" in prompt
+    assert "score_explanation" in prompt
+    assert "system" in prompt
+    assert "простыми словами" in prompt
     assert "green_min" in prompt
     assert "yellow_min" in prompt
     assert "on_schedule_rate" in prompt
@@ -221,3 +242,5 @@ def test_calc_prompt_includes_runs_and_method() -> None:
     assert "score_percent" in prompt
     assert "evidence" in prompt
     assert "готово" in prompt
+    assert "plan_explanation" in prompt
+    assert "не используй" in prompt

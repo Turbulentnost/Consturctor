@@ -251,12 +251,24 @@ def normalize_method(
         interval = int(round((minutes or 60.0) * 60.0))
     interval = max(MIN_INTERVAL_SECONDS, interval)
     at = str(sched_raw.get("at") or "").strip() if sched_kind == "at" else ""
+    how = str(source.get("how") or "").strip() or _default_how(kind)
+    percent = str(source.get("percent_formula") or "").strip() or _default_percent(kind)
+    plan_update = str(source.get("plan_update") or "").strip() or _default_plan_update()
+    fact_update = str(source.get("fact_update") or "").strip() or _default_fact_update()
     return {
-        "how": str(source.get("how") or "").strip() or _default_how(kind),
+        "how": how,
         "when": str(source.get("when") or "").strip() or _default_when(interval, at, sched_kind),
-        "plan_update": str(source.get("plan_update") or "").strip() or _default_plan_update(),
-        "fact_update": str(source.get("fact_update") or "").strip() or _default_fact_update(),
-        "percent_formula": str(source.get("percent_formula") or "").strip() or _default_percent(kind),
+        "plan_update": plan_update,
+        "fact_update": fact_update,
+        "percent_formula": percent,
+        "plan_explanation": str(source.get("plan_explanation") or "").strip()
+        or _default_plan_explanation(kind),
+        "fact_explanation": str(source.get("fact_explanation") or "").strip()
+        or _default_fact_explanation(kind),
+        "score_explanation": str(source.get("score_explanation") or "").strip()
+        or _default_score_explanation(kind, green, yellow),
+        "system": str(source.get("system") or "").strip()
+        or _default_system(kind, how, percent, plan_update, fact_update),
         "green_min": green,
         "yellow_min": yellow,
         "schedule": {
@@ -594,6 +606,10 @@ def kpi_to_schema(
                     plan_update=str(method.get("plan_update") or ""),
                     fact_update=str(method.get("fact_update") or ""),
                     percent_formula=str(method.get("percent_formula") or ""),
+                    plan_explanation=str(method.get("plan_explanation") or ""),
+                    fact_explanation=str(method.get("fact_explanation") or ""),
+                    score_explanation=str(method.get("score_explanation") or ""),
+                    system=str(method.get("system") or ""),
                     green_min=float(method.get("green_min") or DEFAULT_GREEN_MIN),
                     yellow_min=float(method.get("yellow_min") or DEFAULT_YELLOW_MIN),
                     schedule=KpiScheduleSchema(
@@ -767,6 +783,136 @@ def _default_how(kind: str) -> str:
         "success_rate": "Доля прогонов со статусом ok среди завершённых (ok + error).",
         "fail_count": "Число прогонов со статусом error.",
     }.get(kind, "По истории прогонов агента и методике плитки.")
+
+
+def _default_plan_explanation(kind: str) -> str:
+    return {
+        "expected_interval": (
+            "План — это норма, как часто агент должен запускаться. "
+            "Её берём из расписания триггеров и паспорта агента. "
+            "Если расписание или требования в паспорте не менялись, план остаётся прежним."
+        ),
+        "on_schedule_rate": (
+            "План — это норма своевременности: какая доля запусков должна происходить вовремя. "
+            "Обычно ожидаем, что все запуски укладываются в срок реакции из паспорта. "
+            "План меняется только если изменили паспорт (срок реакции) или расписание триггеров. "
+            "Иначе оставляем как есть."
+        ),
+        "runs_count": (
+            "План — сколько раз агент должен запускаться за выбранный период. "
+            "Число берём из расписания: если агент должен срабатывать с определённой частотой, "
+            "считаем, сколько таких запусков ожидается. "
+            "Пока расписание не меняли, план не пересчитываем."
+        ),
+        "success_rate": (
+            "План — какая доля запусков должна завершаться без ошибки. "
+            "По умолчанию ожидаем, что все запуски успешны. "
+            "План меняется только если в паспорте изменили, что считается успехом."
+        ),
+        "fail_count": (
+            "План — сколько запусков допускается завершить с ошибкой. "
+            "Обычно норма — ни одной ошибки. "
+            "План не меняется, пока в паспорте не изменят требования к качеству."
+        ),
+    }.get(
+        kind,
+        "План — норма работы агента из паспорта и расписания. "
+        "Его обновляем только если изменились требования или расписание.",
+    )
+
+
+def _default_fact_explanation(kind: str) -> str:
+    return {
+        "expected_interval": (
+            "Факт — сколько в среднем проходит времени между соседними запусками агента. "
+            "Берём историю запусков, выстраиваем их по времени и смотрим промежутки. "
+            "Если запусков ещё не было или их слишком мало, факт не считается — "
+            "на плитке будет «ещё нет прогонов»."
+        ),
+        "on_schedule_rate": (
+            "Факт показывает, какая доля запусков произошла вовремя. "
+            "В истории запусков каждый прогон сопоставляем с событием, которое его вызвало "
+            "(например, номер служебной записки). "
+            "Считаем, сколько минут прошло от события до запуска. "
+            "Если это время не больше плана — запуск вовремя. "
+            "В расчёт входят только запуски, которые удалось связать с событием. "
+            "После каждого завершённого запуска и по расписанию пересчёта факт обновляется. "
+            "Если таких запусков ещё нет, факт не показываем."
+        ),
+        "runs_count": (
+            "Факт — сколько раз агент реально запускался за выбранный период. "
+            "Считаем записи в истории запусков. "
+            "Если запусков ещё не было, факт не показываем."
+        ),
+        "success_rate": (
+            "Факт — какая доля завершённых запусков прошла без ошибки. "
+            "Смотрим только законченные запуски: успешные и с ошибкой. "
+            "Незавершённые в расчёт не входят. "
+            "Если завершённых запусков ещё нет, факт не считается."
+        ),
+        "fail_count": (
+            "Факт — сколько запусков завершилось ошибкой. "
+            "Смотрим историю и считаем такие случаи. "
+            "Если запусков ещё не было, факт не показываем."
+        ),
+    }.get(
+        kind,
+        "Факт берём из истории запусков агента: смотрим, что реально произошло, "
+        "и сравниваем с планом. Если запусков ещё нет, факт не считаем.",
+    )
+
+
+def _default_score_explanation(kind: str, green_min: float, yellow_min: float) -> str:
+    colors = (
+        f"Цвет: зелёный — от {green_min:g} процентов и выше, "
+        f"жёлтый — от {yellow_min:g} процентов, ниже — красный."
+    )
+    body = {
+        "expected_interval": (
+            "Оценка показывает, насколько фактический промежуток между запусками близок к плану. "
+            "Чем ближе факт к плану, тем выше процент. "
+            "Если запусков ещё мало, оценку не считаем."
+        ),
+        "on_schedule_rate": (
+            "Оценка — это доля запусков, которые произошли вовремя, в процентах. "
+            "Если ни одного запуска с привязкой к событию ещё не было, оценку не считаем."
+        ),
+        "runs_count": (
+            "Оценка сравнивает число реальных запусков с планом. "
+            "Если запусков столько же или больше, чем задумано, процент высокий. "
+            "Пока запусков не было, оценку не считаем."
+        ),
+        "success_rate": (
+            "Оценка — это доля успешных запусков в процентах. "
+            "Если завершённых запусков ещё не было, оценку не считаем."
+        ),
+        "fail_count": (
+            "Оценка высокая, пока ошибок не больше плана. "
+            "Каждая лишняя ошибка снижает процент. "
+            "Если запусков ещё не было, оценку не считаем."
+        ),
+    }.get(
+        kind,
+        "Оценка в процентах показывает, насколько факт совпадает с планом. "
+        "Если запусков ещё не было, процент не считаем.",
+    )
+    return f"{body} {colors}"
+
+
+def _default_system(
+    kind: str,
+    how: str,
+    percent: str,
+    plan_update: str,
+    fact_update: str,
+) -> str:
+    return (
+        f"kind={kind or 'custom'}. "
+        f"fact: {how} "
+        f"score: {percent} "
+        f"plan_update: {plan_update} "
+        f"fact_update: {fact_update}"
+    )
 
 
 def _default_percent(kind: str) -> str:

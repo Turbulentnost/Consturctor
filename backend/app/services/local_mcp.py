@@ -540,6 +540,17 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("agent.wait", "Пауза агента на N секунд.", {
             "seconds": {"type": "number"},
         }),
+        (
+            "data.process",
+            "Обработать полный ответ предыдущего инструмента коротким Python: "
+            "в коде доступны data и нужно присвоить result. "
+            "dataset_id бери из усечённого ответа. Исполняется на сервере.",
+            {
+                "code": {"type": "string"},
+                "dataset_id": {"type": "string"},
+            },
+            ["code"],
+        ),
         ("report.build_task_report", "Собрать отчёт по поручениям из собранных данных.", {}),
         ("report.build_meeting_summary", "Сводка/протокол совещания из собранных данных.", {}),
         ("report.build_schedule_recommendations", "Рекомендации по графику из календаря.", {}),
@@ -566,7 +577,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "trigger_id": {"type": "string"},
         }, ["trigger_id"]),
     ]
-    server_tools = {"users.current", "users.list", "notify.send"}
+    server_tools = {"users.current", "users.list", "notify.send", "data.process"}
     tools: list[dict[str, Any]] = []
     for item in items:
         name, description, properties = item[0], item[1], item[2]
@@ -682,6 +693,7 @@ _CONTRACTS: dict[str, tuple[str, str, str, list[str], list[str], str]] = {
     "code.write_python": ("desktop", "code", "create", ["code"], ["file"], "none"),
     "code.run_python": ("desktop", "code", "execute", [], ["text"], "none"),
     "agent.wait": ("constructor", "agent", "execute", ["seconds"], [], "none"),
+    "data.process": ("constructor", "dataset", "execute", ["code"], ["result"], "none"),
     "report.build_task_report": ("desktop", "report", "export", [], ["file"], "none"),
     "report.build_meeting_summary": ("desktop", "report", "export", [], ["file"], "none"),
     "report.build_schedule_recommendations": ("desktop", "report", "export", [], ["file"], "none"),
@@ -707,6 +719,7 @@ EXECUTE_PHASE = "execute"
 # которые показывают контекст самого агента и не читают бизнес-данные.
 # Новый context-tool достаточно добавить сюда — промпты не меняются.
 _DESIGN_PHASE_TOOLS = frozenset({"users.current"})
+_HELPER_TOOLS = frozenset({"data.process"})
 
 
 def _phases_for(name: str) -> list[str]:
@@ -727,6 +740,7 @@ def _contract_for(name: str, execution: str) -> dict[str, Any]:
         "result_fields": list(fields),
         "pagination": pagination,
         "phases": _phases_for(name),
+        "helper": name in _HELPER_TOOLS,
     }
 
 
@@ -753,6 +767,11 @@ def design_context_tools() -> list[dict[str, Any]]:
     return tools_for_phase(DESIGN_PHASE)
 
 
+def helper_tools() -> list[dict[str, Any]]:
+    """Вспомогательные tools прогона: обработка набора, не шаг черновика."""
+    return [tool for tool in list_tools() if tool.get("helper")]
+
+
 def contract_vocabulary() -> dict[str, Any]:
     """Измерения контрактов без имён инструментов — вход для проектировщика.
 
@@ -764,6 +783,8 @@ def contract_vocabulary() -> dict[str, Any]:
     operations: set[str] = set()
     grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
     for tool in list_tools():
+        if tool.get("helper"):
+            continue
         system = str(tool.get("system") or "").strip()
         entity = str(tool.get("entity") or "").strip()
         operation = str(tool.get("operation") or "").strip()

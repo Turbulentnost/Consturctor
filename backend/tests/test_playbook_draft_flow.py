@@ -398,6 +398,9 @@ def test_gate_blocks_on_failed_validation_marker() -> None:
 
     assert not report["ok"]
     assert report["failed_validation"]
+    assert report["demo_started"] is True
+    assert report["can_run_demo"] is True
+    assert report["status"] == "demo_failed"
 
 
 def test_gate_blocks_when_no_step_confirmed() -> None:
@@ -521,6 +524,8 @@ def test_execute_block_scopes_tools_to_step_candidates() -> None:
 
     assert "s1" in block
     assert "onec.erp_tasks_period" in block
+    assert "data.process" in block
+    assert "constructor · dataset · execute" in block
     # Полный каталог в промпт исполнителя не попадает.
     assert "excel.create_workbook" not in block
 
@@ -550,3 +555,38 @@ def test_stream_delta_merges_overlapping_window() -> None:
     assert stream_delta("", "ABCD") == "ABCD"
     assert stream_delta("ABCD", "BC") == ""
     assert stream_delta("ABCD", "XY") == "XY"
+
+
+def test_helper_is_not_off_contract() -> None:
+    from app.services.workflows.cursor_tools import _reject_off_contract
+
+    step = {"id": "s1", "system": "onec", "entity": "task", "operation": "list", "tool_candidates": ["onec.erp_tasks_period"]}
+
+    assert _reject_off_contract(step, "data.process") == ""
+    assert _reject_off_contract(step, "excel.create_workbook")
+
+
+def test_contract_vocabulary_skips_helper() -> None:
+    from app.services.local_mcp import contract_vocabulary, helper_tools
+
+    helpers = helper_tools()
+    assert helpers
+    vocab = contract_vocabulary()
+    assert not any(item["entity"] == "dataset" for item in vocab["combinations"])
+
+
+def test_validation_rules_ask_where_to_look() -> None:
+    assert "где в предметной области" in prompts._VALIDATION_RULES
+    assert "FAILED_VALIDATION" in prompts._VALIDATION_RULES
+
+
+def test_packed_result_keeps_dataset_id() -> None:
+    from app.services.workflows.cursor_tools import DatasetRegistry
+
+    registry = DatasetRegistry()
+    packed = registry.pack({"document": {"title": "x" * 9000}}, limit=200)
+
+    assert packed["truncated"] is True
+    assert packed["dataset_id"] == "d1"
+    assert "document" in packed["shape"]["keys"]
+    assert registry.get("d1")["document"]["title"].startswith("x")
