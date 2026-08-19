@@ -106,10 +106,11 @@ class AppWindow(QMainWindow):
             return "агент"
 
     def _on_away_confirmation(self, workflow_id: str, tool: str, preview: str) -> None:
-        _ = preview
         name = self._agent_title(workflow_id)
         title = f"Агент «{name}» ждёт вашего подтверждения"
-        body = f"Нужно разрешить «{tool}»."
+        body = (preview or "").strip() or f"Нужно разрешить «{tool}»."
+        if len(body) > 400:
+            body = body[:397].rstrip() + "…"
         try:
             self.api.create_inbox_notification(
                 title=title,

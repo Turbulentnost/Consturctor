@@ -117,6 +117,153 @@ def workflow_id_from_arguments(arguments: dict | None) -> str:
     ).strip()
 
 
+_TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
+    "onec.odata_post": (
+        "Запись в 1С",
+        "Создаёт новый документ или элемент справочника в 1С. Это изменение базы, не чтение.",
+    ),
+    "onec.odata_patch": (
+        "Изменение в 1С",
+        "Меняет уже существующий объект в 1С. Указанные поля будут перезаписаны.",
+    ),
+    "onec.attach_file": (
+        "Файл в 1С",
+        "Прикрепляет файл из папки агента к документу в 1С.",
+    ),
+    "outlook.send_mail": (
+        "Отправка письма",
+        "Отправляет письмо через Outlook. Получатели его увидят сразу.",
+    ),
+    "email.send": (
+        "Отправка письма",
+        "Отправляет письмо через Outlook. Получатели его увидят сразу.",
+    ),
+    "email.create_draft": (
+        "Черновик письма",
+        "Создаёт черновик в Outlook. Письмо ещё не уйдёт, пока его не отправят.",
+    ),
+    "excel.create_workbook": (
+        "Создание Excel",
+        "Создаёт новую книгу Excel в папке агента.",
+    ),
+    "excel.edit_workbook": (
+        "Изменение Excel",
+        "Правит существующую книгу Excel в папке агента.",
+    ),
+    "code.write_python": (
+        "Запись кода",
+        "Сохраняет Python-файл в папке агента.",
+    ),
+    "code.run_python": (
+        "Запуск кода",
+        "Запускает Python-скрипт на этом компьютере.",
+    ),
+    "workspace.powershell_run": (
+        "Команда PowerShell",
+        "Выполняет команду PowerShell в папке агента.",
+    ),
+    "browser.click": (
+        "Клик в браузере",
+        "Нажимает элемент на открытой странице.",
+    ),
+    "browser.type_text": (
+        "Ввод в браузере",
+        "Вводит текст в поле на открытой странице.",
+    ),
+    "browser.navigate": (
+        "Переход в браузере",
+        "Открывает указанный адрес в браузере агента.",
+    ),
+    "plan_export": (
+        "Выгрузка с ЭТП",
+        "Ищет закупки по ключам и сохраняет Excel на рабочий стол.",
+    ),
+}
+
+_ENTITY_KINDS = (
+    ("Document_", "документ"),
+    ("Catalog_", "справочник"),
+    ("InformationRegister_", "регистр сведений"),
+    ("AccumulationRegister_", "регистр накопления"),
+    ("ChartOfCharacteristicTypes_", "план видов характеристик"),
+    ("Enum_", "перечисление"),
+)
+
+
+def _human_entity(entity: str) -> str:
+    raw = str(entity or "").strip()
+    if not raw:
+        return ""
+    kind = "объект 1С"
+    name = raw
+    for prefix, label in _ENTITY_KINDS:
+        if raw.startswith(prefix):
+            kind = label
+            name = raw[len(prefix) :]
+            break
+    name = name.replace("_", " ").strip()
+    if name:
+        return f"{kind} «{name}»"
+    return kind
+
+
+def _body_facts(body: object) -> list[str]:
+    if not isinstance(body, dict):
+        return []
+    facts: list[str] = []
+    number = str(body.get("Number") or body.get("Номер") or "").strip()
+    if number:
+        facts.append(f"номер {number}")
+    date = str(body.get("Date") or body.get("Дата") or "").strip()
+    if date:
+        facts.append(f"дата {date}")
+    posted = body.get("Posted")
+    if posted is False:
+        facts.append("черновик, без проведения")
+    elif posted is True:
+        facts.append("с проведением")
+    comment = str(body.get("Comment") or body.get("Комментарий") or "").strip()
+    if comment:
+        clipped = comment if len(comment) <= 220 else comment[:217].rstrip() + "…"
+        facts.append(f"комментарий: {clipped}")
+    return facts
+
+
+def explain_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
+    """Человеческое название и что сделает этот вызов."""
+    tool = (name or "").strip()
+    args = arguments if isinstance(arguments, dict) else {}
+    title, base = _TOOL_EXPLAIN.get(
+        tool,
+        (tool or "инструмент", "Выполнит действие во внешней системе. Без подтверждения операция не пройдёт."),
+    )
+    extra: list[str] = []
+    if tool in {"onec.odata_post", "onec.odata_patch"}:
+        entity = _human_entity(str(args.get("entity") or args.get("entitySet") or ""))
+        if entity:
+            verb = "создать" if tool == "onec.odata_post" else "изменить"
+            extra.append(f"Сейчас агент хочет {verb} {entity}.")
+        extra.extend(_body_facts(args.get("body")))
+        ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
+        if tool == "onec.odata_patch" and ref_key:
+            extra.append(f"объект {ref_key}")
+    elif tool == "onec.attach_file":
+        filename = str(args.get("filename") or "").strip()
+        if filename:
+            extra.append(f"Файл: {filename}.")
+    elif tool in {"outlook.send_mail", "email.send", "email.create_draft"}:
+        to = args.get("to") or args.get("recipients") or args.get("email")
+        subject = str(args.get("subject") or args.get("тема") or "").strip()
+        if to:
+            extra.append(f"Кому: {to}.")
+        if subject:
+            extra.append(f"Тема: {subject}.")
+    parts = [base]
+    if extra:
+        parts.append(" ".join(extra))
+    return title, " ".join(part for part in parts if part).strip()
+
+
 def host_is_eligible(*, wanted: str, host_workflow_id: str, visible: bool) -> bool:
     """Синий блок только на видимой formation/run. Чужой агент не перехватывает."""
     if not visible:
@@ -219,17 +366,33 @@ class HitlConfirmCard(QFrame):
     accepted = Signal()
     rejected = Signal()
 
-    def __init__(self, tool: str, preview: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        tool: str,
+        preview: str,
+        parent: QWidget | None = None,
+        arguments: dict | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("HitlCard")
         self.setStyleSheet(_CARD_QSS)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        title = QLabel(f"Агент хочет выполнить «{tool}».")
+        human_title, explanation = explain_tool(tool, arguments)
+        title = QLabel(f"Агент хочет: {human_title}")
         title.setFont(app_font(13, QFont.Weight.DemiBold))
         title.setWordWrap(True)
         title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        body = QLabel(preview or "Без аргументов.")
-        body.setFont(app_font(12))
+        tech = QLabel(f"Инструмент «{tool}».")
+        tech.setFont(app_font(11))
+        tech.setWordWrap(True)
+        tech.setStyleSheet("color: #5B6B74; background: transparent;")
+        what = QLabel(explanation)
+        what.setFont(app_font(12))
+        what.setWordWrap(True)
+        what.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        what.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        body = QLabel(preview or "")
+        body.setFont(app_font(11))
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         body.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
@@ -264,7 +427,13 @@ class HitlConfirmCard(QFrame):
         lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(8)
         lay.addWidget(title)
+        lay.addWidget(tech)
+        lay.addWidget(what)
         if preview:
+            params = QLabel("Параметры запроса")
+            params.setFont(app_font(11, QFont.Weight.DemiBold))
+            params.setStyleSheet("color: #5B6B74; background: transparent;")
+            lay.addWidget(params)
             lay.addWidget(body)
         lay.addWidget(hint)
         lay.addWidget(self._status)
@@ -302,20 +471,27 @@ class _ConfirmHost(QObject):
         workflow_id = workflow_id_from_arguments(arguments)
         app = QApplication.instance()
         if app is not None and QThread.currentThread() is app.thread():
-            return self._show(tool, preview, workflow_id)
-        self.asked.emit(tool, (preview, workflow_id))
+            return self._show(tool, preview, workflow_id, arguments)
+        self.asked.emit(tool, (preview, workflow_id, arguments))
         return self._ok
 
     @Slot(str, object)
     def _on_ask(self, tool: str, payload: object) -> None:
-        preview, workflow_id = payload if isinstance(payload, tuple) else (str(payload or ""), "")
-        self._ok = self._show(tool, str(preview or ""), str(workflow_id or ""))
+        preview, workflow_id, arguments = "", "", {}
+        if isinstance(payload, tuple) and len(payload) >= 2:
+            preview = str(payload[0] or "")
+            workflow_id = str(payload[1] or "")
+            if len(payload) >= 3 and isinstance(payload[2], dict):
+                arguments = payload[2]
+        else:
+            preview = str(payload or "")
+        self._ok = self._show(tool, preview, workflow_id, arguments)
 
-    def _show(self, tool: str, preview: str, workflow_id: str) -> bool:
+    def _show(self, tool: str, preview: str, workflow_id: str, arguments: dict | None = None) -> bool:
         loop = QEventLoop(self)
         answered = False
         accepted = False
-        card = HitlConfirmCard(tool, preview)
+        card = HitlConfirmCard(tool, preview, arguments=arguments)
         item = _PendingConfirm(workflow_id=workflow_id, card=card, attached=False)
         _pending.append(item)
 
@@ -345,7 +521,7 @@ class _ConfirmHost(QObject):
                 attach(card)
                 item.attached = True
         else:
-            _notify_away(workflow_id, tool, preview)
+            _notify_away(workflow_id, tool, preview, arguments)
 
         while not answered:
             loop.exec()
@@ -354,11 +530,20 @@ class _ConfirmHost(QObject):
         return accepted
 
 
-def _notify_away(workflow_id: str, tool: str, preview: str) -> None:
+def _notify_away(
+    workflow_id: str,
+    tool: str,
+    preview: str,
+    arguments: dict | None = None,
+) -> None:
     if _away_notify is None:
         return
+    title, explanation = explain_tool(tool, arguments)
+    body = f"{title}. {explanation}"
+    if preview:
+        body = f"{body}\n{preview}"
     try:
-        _away_notify(workflow_id, tool, preview)
+        _away_notify(workflow_id, tool, body)
     except Exception:  # noqa: BLE001
         pass
 

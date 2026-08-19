@@ -1,4 +1,5 @@
 from app.tools.hitl import (
+    explain_tool,
     host_is_eligible,
     needs_confirmation,
     never_confirm,
@@ -52,6 +53,32 @@ def test_invisible_host_never_shows_card() -> None:
     assert host_is_eligible(wanted="", host_workflow_id="wf-a", visible=False) is False
 
 
+def test_explain_odata_post_is_human() -> None:
+    title, text = explain_tool(
+        "onec.odata_post",
+        {
+            "entity": "Document_СлужебнаяЗаписка",
+            "body": {
+                "Number": "123",
+                "Date": "2026-06-26",
+                "Posted": False,
+                "Comment": "СЗ №123: проверка по обязательному составу — неполная.",
+            },
+        },
+    )
+    assert title == "Запись в 1С"
+    assert "созда" in text.lower()
+    assert "СлужебнаяЗаписка" in text
+    assert "номер 123" in text
+    assert "черновик" in text.lower()
+
+
+def test_explain_unknown_tool_has_fallback() -> None:
+    title, text = explain_tool("custom.write", {})
+    assert title == "custom.write"
+    assert "внешн" in text.lower()
+
+
 def test_away_notify_callback_keeps_pending_loop_intact() -> None:
     seen: dict[str, str] = {}
 
@@ -67,3 +94,5 @@ def test_away_notify_callback_keeps_pending_loop_intact() -> None:
         set_away_notify_callback(None)
     assert seen["workflow_id"] == "wf-1"
     assert seen["tool"] == "onec.odata_post"
+    assert "Запись в 1С" in seen["preview"]
+    assert "Catalog_Foo" in seen["preview"]
