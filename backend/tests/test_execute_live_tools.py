@@ -116,3 +116,63 @@ def test_users_current_runs_from_session_user(monkeypatch) -> None:
     assert result["ok"] is True
     assert result["user"]["id"] == "user-1"
     assert result["user"]["fio"] == "Мангасарян Давид Каренович"
+
+
+def test_users_subordinates_catalog_is_server() -> None:
+    item = next(tool for tool in list_tools() if tool.get("name") == "users.subordinates")
+    assert item.get("execution") == "server"
+    assert item.get("system") == "constructor"
+    assert item.get("entity") == "subordinate"
+    assert item.get("result_fields") == ["users"]
+
+
+def test_users_subordinates_from_erp_not_constructor(monkeypatch) -> None:
+    from app.clients.erp_sql import ErpSubordinate, ErpUserProfile
+
+    monkeypatch.setattr(
+        "app.services.erp_tasks.resolve_actor",
+        lambda **_kwargs: ("Руководитель Сектора", "1C-HEAD"),
+    )
+    monkeypatch.setattr(
+        "app.clients.erp_sql.load_subordinate_org",
+        lambda _fio: (
+            ErpUserProfile(fio="Руководитель Сектора", position="Руководитель", department="Сектор"),
+            [],
+            [
+                ErpSubordinate(
+                    fio="Незарегистрированный Иванов",
+                    position="Инженер",
+                    department="Сектор",
+                )
+            ],
+        ),
+    )
+    result = invoke_creation_tool(
+        tool="users.subordinates",
+        arguments={"fio": "Руководитель Сектора"},
+        on_event=None,
+    )
+    assert result["count"] == 1
+    assert result["users"][0]["fio"] == "Незарегистрированный Иванов"
+    assert result["users"][0]["source"] == "erp_pm"
+    assert result["source"] == "erp_pm"
+
+
+def test_users_subordinates_uses_session_when_args_empty(monkeypatch) -> None:
+    seen: dict[str, str] = {}
+
+    def _fake_list(*, fio: str = "", user_id: str = "") -> dict:
+        seen["fio"] = fio
+        seen["user_id"] = user_id
+        return {"ok": True, "users": [], "count": 0, "source": "erp_pm"}
+
+    monkeypatch.setattr("app.services.erp_tasks.list_org_subordinates", _fake_list)
+    set_tool_context("run-1", "session-user-1")
+    try:
+        result = invoke_creation_tool(tool="users.subordinates", arguments={}, on_event=None)
+    finally:
+        clear_tool_context()
+
+    assert result["ok"] is True
+    assert seen["fio"] == ""
+    assert seen["user_id"] == "session-user-1"

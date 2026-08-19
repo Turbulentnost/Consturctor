@@ -1,17 +1,18 @@
-"""Human-in-the-loop: уровень 1 — запись и прочие операции только после подтверждения."""
+"""Human-in-the-loop: запись — только после подтверждения на странице агента."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from PySide6.QtCore import QEventLoop, QObject, Qt, QThread, Signal, Slot
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -22,6 +23,8 @@ from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 
 AUTONOMY_LEVEL = 1
 HUMAN_REJECTED = "отклонено человеком"
+
+_NEVER_CONFIRM = frozenset({"notify.send", "notify"})
 
 _READ_EXACT = frozenset(
     {
@@ -46,7 +49,8 @@ _READ_EXACT = frozenset(
         "agent.wait",
         "turboproject",
         "users.list",
-        "notify.send",
+        "users.current",
+        "users.subordinates",
         "agent.schedule",
         "agent.schedule.cancel",
     }
@@ -54,10 +58,9 @@ _READ_EXACT = frozenset(
 _READ_PREFIXES = ("onec.search_", "onec.get_", "imap.")
 
 _host: "_ConfirmHost | None" = None
-_reveal: Callable[[], None] | None = None
-_inline_hosts: list[QWidget] = []
-_pending_loop: QEventLoop | None = None
-_pending_ok = False
+_away_notify: Callable[[str, str, str], None] | None = None
+_inline_hosts: dict[int, tuple[QWidget, str]] = {}
+_pending: list["_PendingConfirm"] = []
 
 _CARD_QSS = """
 QFrame#HitlCard {
@@ -85,46 +88,131 @@ QPushButton:disabled { background: #F4F7F6; color: #9DB3AD; border-color: rgba(1
 """
 
 
+def never_confirm(name: str) -> bool:
+    return (name or "").strip() in _NEVER_CONFIRM
+
+
 def is_read_tool(name: str) -> bool:
     tool = (name or "").strip()
-    if tool in _READ_EXACT:
+    if tool in _NEVER_CONFIRM or tool in _READ_EXACT:
         return True
     return any(tool.startswith(prefix) for prefix in _READ_PREFIXES)
 
 
+def needs_confirmation(name: str) -> bool:
+    if never_confirm(name):
+        return False
+    return not is_read_tool(name)
+
+
+def workflow_id_from_arguments(arguments: dict | None) -> str:
+    args = arguments if isinstance(arguments, dict) else {}
+    ctx = args.get("runtime_context") if isinstance(args.get("runtime_context"), dict) else {}
+    return str(
+        args.get("workflow_id")
+        or args.get("agent_id")
+        or ctx.get("workflow_id")
+        or ctx.get("agent_id")
+        or ""
+    ).strip()
+
+
+def host_is_eligible(*, wanted: str, host_workflow_id: str, visible: bool) -> bool:
+    """Синий блок только на видимой formation/run. Чужой агент не перехватывает."""
+    if not visible:
+        return False
+    if wanted and host_workflow_id and host_workflow_id != wanted:
+        return False
+    return True
+
+
+def page_is_in_view(host: QWidget) -> bool:
+    if host is None or not host.isVisible():
+        return False
+    window = host.window()
+    if window is None or not window.isVisible() or bool(window.isMinimized()):
+        return False
+    return True
+
+
 def install_confirm_host(parent: QObject | None = None) -> None:
-    """Создать диалог подтверждения на GUI-потоке (вызывать из окна приложения)."""
     global _host
     if _host is None:
         _host = _ConfirmHost(parent)
 
 
 def set_reveal_callback(callback: Callable[[], None] | None) -> None:
-    global _reveal
-    _reveal = callback
+    """Сохранено для совместимости. Окно больше не поднимаем сами."""
+    _ = callback
 
 
-def register_inline_host(host: QWidget) -> None:
-    if host not in _inline_hosts:
-        _inline_hosts.append(host)
+def set_away_notify_callback(callback: Callable[[str, str, str], None] | None) -> None:
+    global _away_notify
+    _away_notify = callback
+
+
+def register_inline_host(host: QWidget, workflow_id: str = "") -> None:
+    _inline_hosts[id(host)] = (host, str(workflow_id or "").strip())
+
+
+def set_host_workflow_id(host: QWidget, workflow_id: str) -> None:
+    wid = str(workflow_id or "").strip()
+    _inline_hosts[id(host)] = (host, wid)
+    if wid:
+        attach_pending_for(wid)
 
 
 def unregister_inline_host(host: QWidget) -> None:
-    if host in _inline_hosts:
-        _inline_hosts.remove(host)
+    _inline_hosts.pop(id(host), None)
 
 
-def _active_inline_host() -> QWidget | None:
-    visible: QWidget | None = None
-    fallback: QWidget | None = None
-    for host in reversed(_inline_hosts):
+def has_pending_for(workflow_id: str) -> bool:
+    wanted = str(workflow_id or "").strip()
+    return any(item.workflow_id == wanted and not item.answered for item in _pending)
+
+
+def attach_pending_for(workflow_id: str) -> None:
+    wanted = str(workflow_id or "").strip()
+    if not wanted:
+        return
+    host = _active_inline_host(wanted)
+    if host is None:
+        return
+    attach = getattr(host, "attach_hitl_card", None)
+    if not callable(attach):
+        return
+    for item in _pending:
+        if item.workflow_id != wanted or item.attached:
+            continue
+        attach(item.card)
+        item.attached = True
+
+
+def _active_inline_host(workflow_id: str = "") -> QWidget | None:
+    wanted = str(workflow_id or "").strip()
+    unbound: QWidget | None = None
+    for host, wid in reversed(list(_inline_hosts.values())):
         if not hasattr(host, "attach_hitl_card"):
             continue
-        fallback = host
-        if host.isVisible():
-            visible = host
-            break
-    return visible or fallback
+        visible = page_is_in_view(host)
+        if not host_is_eligible(wanted=wanted, host_workflow_id=wid, visible=visible):
+            continue
+        if wanted and wid == wanted:
+            return host
+        if wanted and not wid:
+            unbound = host
+            continue
+        if not wanted:
+            return host
+    return unbound
+
+
+@dataclass
+class _PendingConfirm:
+    workflow_id: str
+    card: QWidget
+    attached: bool = False
+    answered: bool = False
 
 
 class HitlConfirmCard(QFrame):
@@ -193,8 +281,8 @@ class HitlConfirmCard(QFrame):
 
 
 def confirm_level1_tool(tool: str, arguments: dict | None = None) -> bool:
-    """True — можно вызывать инструмент. Read-инструменты без диалога."""
-    if is_read_tool(tool):
+    """True — можно вызывать инструмент."""
+    if not needs_confirmation(tool):
         return True
     if QApplication.instance() is None:
         return False
@@ -202,7 +290,7 @@ def confirm_level1_tool(tool: str, arguments: dict | None = None) -> bool:
 
 
 class _ConfirmHost(QObject):
-    asked = Signal(str, str)
+    asked = Signal(str, object)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -211,77 +299,68 @@ class _ConfirmHost(QObject):
 
     def confirm(self, tool: str, arguments: dict) -> bool:
         preview = _preview_arguments(arguments)
+        workflow_id = workflow_id_from_arguments(arguments)
         app = QApplication.instance()
         if app is not None and QThread.currentThread() is app.thread():
-            return self._show(tool, preview)
-        self.asked.emit(tool, preview)
+            return self._show(tool, preview, workflow_id)
+        self.asked.emit(tool, (preview, workflow_id))
         return self._ok
 
-    @Slot(str, str)
-    def _on_ask(self, tool: str, preview: str) -> None:
-        self._ok = self._show(tool, preview)
+    @Slot(str, object)
+    def _on_ask(self, tool: str, payload: object) -> None:
+        preview, workflow_id = payload if isinstance(payload, tuple) else (str(payload or ""), "")
+        self._ok = self._show(tool, str(preview or ""), str(workflow_id or ""))
 
-    def _show(self, tool: str, preview: str) -> bool:
-        if _reveal is not None:
-            try:
-                _reveal()
-            except Exception:  # noqa: BLE001
-                pass
-        host = _active_inline_host()
-        if host is not None:
-            return self._show_inline(host, tool, preview)
-        return self._show_box(tool, preview)
-
-    def _show_inline(self, host: QWidget, tool: str, preview: str) -> bool:
-        global _pending_loop, _pending_ok
+    def _show(self, tool: str, preview: str, workflow_id: str) -> bool:
         loop = QEventLoop(self)
-        _pending_loop = loop
-        _pending_ok = False
         answered = False
+        accepted = False
         card = HitlConfirmCard(tool, preview)
+        item = _PendingConfirm(workflow_id=workflow_id, card=card, attached=False)
+        _pending.append(item)
 
         def _accept() -> None:
-            nonlocal answered
-            global _pending_ok
+            nonlocal answered, accepted
             answered = True
-            _pending_ok = True
+            accepted = True
+            item.answered = True
             card.set_resolved(True)
             loop.quit()
 
         def _reject() -> None:
-            nonlocal answered
-            global _pending_ok
+            nonlocal answered, accepted
             answered = True
-            _pending_ok = False
+            accepted = False
+            item.answered = True
             card.set_resolved(False)
             loop.quit()
 
         card.accepted.connect(_accept)
         card.rejected.connect(_reject)
-        attach = getattr(host, "attach_hitl_card", None)
-        if callable(attach):
-            attach(card)
-        # Rebuilds or window activate can stop the loop without a click.
-        # Do not treat that as «отклонено человеком».
+
+        host = _active_inline_host(workflow_id)
+        if host is not None:
+            attach = getattr(host, "attach_hitl_card", None)
+            if callable(attach):
+                attach(card)
+                item.attached = True
+        else:
+            _notify_away(workflow_id, tool, preview)
+
         while not answered:
             loop.exec()
-        _pending_loop = None
-        return _pending_ok
+        if item in _pending:
+            _pending.remove(item)
+        return accepted
 
-    def _show_box(self, tool: str, preview: str) -> bool:
-        parent = _active_window()
-        text = f"Агент хочет выполнить «{tool}»."
-        if preview:
-            text += f"\n\nАргументы:\n{preview}"
-        text += "\n\nРазрешить выполнение? Без подтверждения операция будет отклонена."
-        answer = QMessageBox.question(
-            parent,
-            "Подтверждение человека",
-            text,
-            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        return answer == QMessageBox.StandardButton.Ok
+
+def _notify_away(workflow_id: str, tool: str, preview: str) -> None:
+    if _away_notify is None:
+        return
+    try:
+        _away_notify(workflow_id, tool, preview)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _bridge() -> _ConfirmHost:
@@ -294,20 +373,17 @@ def _bridge() -> _ConfirmHost:
     return _host
 
 
-def _active_window() -> QWidget | None:
-    app = QApplication.instance()
-    if app is None:
-        return None
-    return app.activeWindow()
-
-
 def _preview_arguments(arguments: dict) -> str:
     if not arguments:
         return ""
+    skip = {"runtime_context", "workflow_id", "agent_id"}
+    shown = {key: value for key, value in arguments.items() if key not in skip}
+    if not shown:
+        return ""
     try:
-        text = json.dumps(arguments, ensure_ascii=False, indent=2, default=str)
+        text = json.dumps(shown, ensure_ascii=False, indent=2, default=str)
     except TypeError:
-        text = str(arguments)
+        text = str(shown)
     if len(text) > 4000:
         return text[:4000].rstrip() + "…"
     return text

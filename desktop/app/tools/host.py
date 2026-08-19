@@ -47,6 +47,11 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str,
         "onec.erp_subordinate_tasks",
         "onec.docflow_tasks",
     }
+    _SERVER_CONSTRUCTOR = {
+        "users.current",
+        "users.subordinates",
+        "data.process",
+    }
     if name.startswith("imap."):
         raise ToolHostError(
             f"Инструмент {name} выполняется на сервере (IMAP), не на desktop."
@@ -54,6 +59,10 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str,
     if name in _SERVER_ONEC:
         raise ToolHostError(
             f"Инструмент {name} выполняется на сервере (1С OData/SQL), не на desktop."
+        )
+    if name in _SERVER_CONSTRUCTOR:
+        raise ToolHostError(
+            f"Инструмент {name} выполняется на сервере Constructor, не на desktop."
         )
     handler = _HANDLERS.get(name)
     if handler is not None:

@@ -445,8 +445,12 @@ class AgentRunHistoryItem:
     status: str = ""
     answer: str = ""
     source: str = "chat"
+    trigger_id: str = ""
+    trigger_kind: str = ""
+    trigger_reason: str = ""
     started_at: str = ""
     finished_at: str = ""
+    events: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -547,6 +551,24 @@ def _interval_seconds(value: float, unit: str) -> int:
     amount = max(0.0, float(value or 0))
     factor = {"minutes": 60, "hours": 3600, "days": 86400}.get((unit or "hours").strip().casefold(), 3600)
     return int(amount * factor)
+
+
+def _parse_agent_run(data: dict, workflow_id: str = "") -> AgentRunHistoryItem:
+    events = [item for item in data.get("events") or [] if isinstance(item, dict)]
+    return AgentRunHistoryItem(
+        id=str(data.get("id") or ""),
+        workflow_id=str(data.get("workflow_id") or workflow_id),
+        message=str(data.get("message") or ""),
+        status=str(data.get("status") or ""),
+        answer=str(data.get("answer") or ""),
+        source=str(data.get("source") or "chat"),
+        trigger_id=str(data.get("trigger_id") or ""),
+        trigger_kind=str(data.get("trigger_kind") or ""),
+        trigger_reason=str(data.get("trigger_reason") or ""),
+        started_at=str(data.get("started_at") or ""),
+        finished_at=str(data.get("finished_at") or ""),
+        events=events,
+    )
 
 
 def _parse_schedule_draft(data: dict) -> ScheduleDraft:
@@ -719,6 +741,7 @@ class ApiClient:
         self.base_url = (base_url or backend_url()).rstrip("/")
         self._timeout = timeout
         self._token: str | None = None
+        self._user_id: str = ""
 
     @property
     def token(self) -> str | None:
@@ -757,11 +780,14 @@ class ApiClient:
         user = self._parse_user(data.get("user") or {})
         token = str(data.get("access_token", ""))
         self._token = token
+        self._user_id = user.id
         return LoginResult(access_token=token, user=user)
 
     def me(self) -> UserProfile:
         data = self._request("GET", "/api/v1/auth/me")
-        return self._parse_user(data)
+        user = self._parse_user(data)
+        self._user_id = user.id
+        return user
 
     def fetch_bytes(self, path_or_url: str) -> bytes:
         if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
@@ -1613,6 +1639,14 @@ class ApiClient:
                     error=HUMAN_REJECTED,
                 )
                 return
+            if payload.get("confirm_only"):
+                self.post_agent_tool_result(
+                    req_run,
+                    request_id=request_id,
+                    ok=True,
+                    result={"confirmed": True},
+                )
+                return
             tool_result = invoke_tool(tool, arguments)
             self.post_agent_tool_result(
                 req_run,
@@ -1675,6 +1709,8 @@ class ApiClient:
         on_event: Callable[[dict], None],
         *,
         source: str = "chat",
+        trigger_id: str = "",
+        evidence: str = "",
     ) -> dict:
         url = f"{self.base_url}/api/v1/workflows/{workflow_id}/agent-runs/stream"
         final_result: dict | None = None
@@ -1685,7 +1721,12 @@ class ApiClient:
                     "POST",
                     url,
                     headers={**self._headers(), "Accept": "text/event-stream"},
-                    json={"message": message, "source": source or "chat"},
+                    json={
+                        "message": message,
+                        "source": source or "chat",
+                        "trigger_id": trigger_id or "",
+                        "evidence": evidence or "",
+                    },
                 ) as response:
                     if response.status_code >= 400:
                         body = response.read().decode("utf-8", errors="replace")
@@ -1763,6 +1804,29 @@ class ApiClient:
             unread = sum(1 for item in items if item.unread)
         return items, unread
 
+    def create_inbox_notification(
+        self,
+        *,
+        title: str,
+        body: str = "",
+        workflow_id: str = "",
+        recipient_user_id: str = "",
+    ) -> dict:
+        user_id = (recipient_user_id or self._user_id).strip()
+        if not user_id:
+            user_id = self.me().id
+        return self._request(
+            "POST",
+            "/api/v1/notifications",
+            json={
+                "recipient_user_id": user_id,
+                "title": title,
+                "body": body,
+                "workflow_id": workflow_id,
+            },
+            timeout=20.0,
+        )
+
     def unread_notification_count(self) -> int:
         data = self._request("GET", "/api/v1/notifications/unread-count", timeout=15.0)
         if isinstance(data, dict):
@@ -1823,19 +1887,16 @@ class ApiClient:
         data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs", timeout=60.0)
         items = data if isinstance(data, list) else []
         return [
-            AgentRunHistoryItem(
-                id=str(item.get("id") or ""),
-                workflow_id=str(item.get("workflow_id") or workflow_id),
-                message=str(item.get("message") or ""),
-                status=str(item.get("status") or ""),
-                answer=str(item.get("answer") or ""),
-                source=str(item.get("source") or "chat"),
-                started_at=str(item.get("started_at") or ""),
-                finished_at=str(item.get("finished_at") or ""),
-            )
+            _parse_agent_run(item, workflow_id)
             for item in items
             if isinstance(item, dict)
         ]
+
+    def get_agent_run(self, workflow_id: str, run_id: str) -> AgentRunHistoryItem:
+        data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs/{run_id}", timeout=60.0)
+        if not isinstance(data, dict):
+            raise ApiError("Не удалось загрузить ход выполнения")
+        return _parse_agent_run(data, workflow_id)
 
     def stream_trigger_check(
         self,

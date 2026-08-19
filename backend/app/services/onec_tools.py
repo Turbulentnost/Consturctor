@@ -103,6 +103,13 @@ ONEC_TOOLS = frozenset(
         "onec.docflow_tasks",
     }
 )
+ONEC_WRITE_TOOLS = frozenset(
+    {
+        "onec.odata_post",
+        "onec.odata_patch",
+        "onec.attach_file",
+    }
+)
 _ERP_TASK_TOOLS = frozenset(
     {
         "onec.erp_tasks_current",

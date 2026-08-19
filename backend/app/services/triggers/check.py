@@ -30,8 +30,12 @@ SYSTEM = (
     '{"name": "outlook.search_mail", "arguments": {"query": "..."}}\n'
     "```\n"
     "Когда данных достаточно, верни ТОЛЬКО JSON без markdown:\n"
-    '{"matched": true, "evidence": "кратко почему"}\n'
-    "matched=true только если условие уже истинно в этот момент."
+    '{"matched": true, "changed": "что именно изменилось", "evidence": "на каких данных это видно"}\n'
+    "matched=true только если условие уже истинно в этот момент.\n"
+    "Если matched=true, поле changed обязательно и должно назвать конкретное изменение: "
+    "объект (проект, задача, письмо, файл), идентификатор/название, какое поле, было → стало. "
+    "Пример: «В проекте «Дашборды» (file_id 344) срок вехи сдвинулся с 12.08 на 19.08». "
+    "Запрещены общие фразы: «условие выполнено», «данные обновились», «что-то изменилось»."
 )
 
 
@@ -55,7 +59,8 @@ def check_trigger_condition(
             "content": (
                 f"Условие:\n{condition}\n\n"
                 f"Агент: {row.workflow_id}\n"
-                "Проверь, выполняется ли оно сейчас."
+                "Проверь, выполняется ли оно сейчас. "
+                "Если да — в changed напиши, что именно изменилось, с названиями и id."
             ),
         },
     ]
@@ -95,7 +100,12 @@ def check_trigger_condition(
         messages.append(
             {
                 "role": "user",
-                "content": "Результаты инструментов:\n" + "\n".join(results) + "\n\nВерни JSON matched/evidence.",
+                "content": (
+                    "Результаты инструментов:\n"
+                    + "\n".join(results)
+                    + "\n\nВерни JSON matched/changed/evidence. "
+                    "В changed напиши, что именно изменилось (объект, id, было → стало)."
+                ),
             }
         )
     parsed = _parse_verdict(last_text)
@@ -133,8 +143,12 @@ def _parse_verdict(text: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             continue
         if isinstance(data, dict) and "matched" in data:
+            changed = str(data.get("changed") or data.get("change") or "").strip()
+            evidence = str(data.get("evidence") or "").strip()
+            detail = changed or evidence
             return {
                 "matched": bool(data.get("matched")),
-                "evidence": str(data.get("evidence") or "")[:500],
+                "changed": changed[:1500],
+                "evidence": detail[:1500],
             }
     return None

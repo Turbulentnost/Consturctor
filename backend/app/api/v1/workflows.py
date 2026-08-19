@@ -26,7 +26,13 @@ from app.schemas.workflow import (
     WorkflowListItem,
     WorkflowSchema,
 )
-from app.services.agent_runs import answer_from_result, finish_agent_run, list_agent_runs, start_agent_run
+from app.services.agent_runs import (
+    answer_from_result,
+    finish_agent_run,
+    get_agent_run,
+    list_agent_runs,
+    start_agent_run,
+)
 from app.services.agent_runtime import AgentRuntimeError, available_tools, run_agent_task
 from app.services.tool_bridge import ToolBridgeError, tool_bridge
 from app.services.workflows import (
@@ -128,7 +134,21 @@ def _workflow_stream(action, *, user_id: str = ""):
     yield from _iter_sse_queue(queue, stop)
 
 
-def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: str = "chat"):
+def _record_and_emit(payload: dict, events: list[dict], emit) -> None:
+    if isinstance(payload, dict):
+        events.append(payload)
+    emit(payload)
+
+
+def _agent_run_stream(
+    *,
+    user_id: str,
+    workflow_id: str,
+    message: str,
+    source: str = "chat",
+    trigger_id: str = "",
+    evidence: str = "",
+):
     queue: Queue[dict | None] = Queue()
     stop = Event()
     run_id = tool_bridge.new_run_id()
@@ -142,6 +162,7 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: s
         history_id = ""
         status = "error"
         answer = ""
+        events: list[dict] = []
         try:
             history = start_agent_run(
                 db,
@@ -149,6 +170,8 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: s
                 workflow_id=workflow_id,
                 message=message,
                 source=source,
+                trigger_id=trigger_id,
+                evidence=evidence,
             )
             history_id = history.id
             emit({"type": "run", "run_id": run_id})
@@ -157,7 +180,7 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: s
                 user_id=user_id,
                 workflow_id=workflow_id,
                 message=message,
-                emit=emit,
+                emit=lambda payload: _record_and_emit(payload, events, emit),
                 run_id=run_id,
             )
             status = "ok"
@@ -165,18 +188,28 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: s
             queue.put({"type": "done", "result": result})
         except AgentRuntimeError as exc:
             answer = str(exc)
+            events.append({"type": "error", "message": str(exc)})
             queue.put({"type": "error", "message": str(exc)})
         except WorkflowError as exc:
             answer = exc.message
+            events.append({"type": "error", "message": exc.message})
             queue.put({"type": "error", "message": exc.message})
         except Exception as exc:  # noqa: BLE001
             answer = str(exc)
+            events.append({"type": "error", "message": str(exc)})
             queue.put({"type": "error", "message": str(exc)})
         finally:
             if history_id:
                 try:
                     db.rollback()
-                    finish_agent_run(db, run_id=history_id, status=status, answer=answer)
+                    finish_agent_run(
+                        db,
+                        run_id=history_id,
+                        status=status,
+                        answer=answer,
+                        events=events,
+                        message=message,
+                    )
                 except Exception:  # noqa: BLE001
                     logger.exception("Failed to persist agent run history id=%s", history_id)
             tool_bridge.unregister_run(run_id)
@@ -251,12 +284,16 @@ async def run_workflow_agent_stream(
     body = await request.json()
     message = str((body or {}).get("message") or "").strip()
     source = str((body or {}).get("source") or "chat").strip() or "chat"
+    trigger_id = str((body or {}).get("trigger_id") or "").strip()
+    evidence = str((body or {}).get("evidence") or "").strip()
     return StreamingResponse(
         _agent_run_stream(
             user_id=auth.user_id,
             workflow_id=workflow_id,
             message=message,
             source=source,
+            trigger_id=trigger_id,
+            evidence=evidence,
         ),
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
@@ -322,6 +359,20 @@ def read_agent_runs(
 ) -> list[AgentRunOut]:
     try:
         return list_agent_runs(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.get("/{workflow_id}/runs/{run_id}", response_model=AgentRunOut)
+def read_agent_run(
+    workflow_id: str,
+    run_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentRunOut:
+    try:
+        return get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
     except WorkflowError as exc:
         _raise(exc)
         raise

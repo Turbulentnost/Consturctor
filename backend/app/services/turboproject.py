@@ -37,7 +37,17 @@ TOOL_DESCRIPTION = (
     "rukovoditel, kurator, zakazchik, investor, zam_rp, istochnik_finansirovaniya, "
     "podrazdelenie, organizatsiya, tseli_proekta, chek_list, resheniya, "
     "perenosy_proekta, synced_at.\n"
-    "Фильтры: query (имя), manager (руководитель 1С), file_id, overdue_only, limit."
+    "Фильтры: query (только название / имя MPP / номер 1С, не фраза), "
+    "manager (одно ФИО руководителя 1С), file_id, overdue_only, limit."
+)
+
+_PHRASE_QUERY_HINTS = (
+    "участник",
+    "активн",
+    "все проекты",
+    "мои проекты",
+    "руководител",
+    "сотрудник",
 )
 
 _TOKEN_TTL_SEC = 1500.0
@@ -244,6 +254,24 @@ def _api_get(path: str, token: str, *, retry: bool = True) -> Any:
     return data
 
 
+def is_phrase_query(query: str) -> bool:
+    """True if query is a sentence/filter dump, not a project name or 1C number."""
+    raw = (query or "").strip()
+    if not raw:
+        return False
+    low = raw.casefold()
+    if any(hint in low for hint in _PHRASE_QUERY_HINTS):
+        return True
+    parts = [chunk.strip() for chunk in raw.split(",") if chunk.strip()]
+    if len(parts) >= 2 and all(len(chunk.split()) >= 2 for chunk in parts):
+        return True
+    return len(raw.split()) >= 8
+
+
+def is_project_name_query(query: str) -> bool:
+    return bool((query or "").strip()) and not is_phrase_query(query)
+
+
 def _matches_query(item: dict[str, Any], query: str) -> bool:
     if not query:
         return True
@@ -270,10 +298,23 @@ def _matches_manager(item: dict[str, Any], manager: str) -> bool:
 
 def list_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = args if isinstance(args, dict) else {}
-    query = str(payload.get("query") or payload.get("project_name") or "").strip()
+    raw_query = str(payload.get("query") or payload.get("project_name") or "").strip()
+    query = raw_query if is_project_name_query(raw_query) else ""
     manager = str(payload.get("manager") or payload.get("rukovoditel") or "").strip()
     file_id = payload.get("file_id") or payload.get("fileId")
     overdue_only = bool(payload.get("overdue_only") or payload.get("overdueOnly"))
+    if raw_query and not query and not manager and not file_id and not overdue_only:
+        return {
+            "summary": (
+                "query не применён: нужна строка-название проекта, имя MPP или номер 1С, "
+                "не фраза. Участников отдельным полем этот инструмент пока не принимает."
+            ),
+            "total_projects": 0,
+            "projects_with_1c_count": 0,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "projects": [],
+            "source": "turboproject",
+        }
     raw_limit = payload.get("limit")
     # Без limit агент на планировании тянет все ~200 карточек по одной — UI «зависает».
     limit = int(raw_limit) if raw_limit not in (None, "") else 20

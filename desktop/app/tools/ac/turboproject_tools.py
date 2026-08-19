@@ -47,8 +47,8 @@ TOOL_DESCRIPTION = (
     "rukovoditel, kurator, zakazchik, investor, zam_rp, istochnik_finansirovaniya, "
     "podrazdelenie, organizatsiya, tseli_proekta, chek_list, resheniya, "
     "perenosy_proekta, synced_at.\n\n"
-    "Аргументы: query (имя/номер), manager (руководитель 1С), file_id, "
-    "overdue_only, limit."
+    "Аргументы: query (только название / имя MPP / номер 1С, не фраза), "
+    "manager (одно ФИО руководителя 1С), file_id, overdue_only, limit."
 )
 
 
@@ -69,7 +69,10 @@ class TurboProjectTool(BaseTool):
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Поиск по названию проекта, имени MPP или номеру 1С",
+                            "description": (
+                                "Название проекта, имя MPP или номер 1С — не фраза "
+                                "и не список участников"
+                            ),
                         },
                         "manager": {
                             "type": "string",

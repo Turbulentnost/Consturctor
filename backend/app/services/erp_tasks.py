@@ -110,6 +110,8 @@ def resolve_actor(*, fio: str = "", user_id: str = "") -> tuple[str, str]:
         row = erp_sql.find_user_by_id(user_id)
         if row is not None:
             return row.fio or fio, row.id
+    if not fio and user_id and not _looks_like_1c_user_id(user_id):
+        fio = _constructor_session_fio(user_id)
     if fio:
         try:
             row = erp_sql.find_user_by_fio(fio)
@@ -117,6 +119,50 @@ def resolve_actor(*, fio: str = "", user_id: str = "") -> tuple[str, str]:
         except (erp_sql.UserNotFoundError, erp_sql.AmbiguousUserError):
             return fio, user_id
     raise ErpTaskError("Не удалось определить пользователя: нет ФИО в JWT и в аргументах")
+
+
+def _constructor_session_fio(user_id: str) -> str:
+    """ФИО из сессии Constructor — подчинённых всё равно читаем из erp_pm."""
+    from app.db.session import SessionLocal
+    from app.models.user import AppUser
+
+    db = SessionLocal()
+    try:
+        row = db.get(AppUser, user_id)
+        return (row.fio or "").strip() if row is not None else ""
+    finally:
+        db.close()
+
+
+def list_org_subordinates(*, fio: str = "", user_id: str = "") -> dict[str, Any]:
+    """Действующие подчинённые из erp_pm. Регистрация в Constructor не нужна."""
+    actor_fio, actor_id = resolve_actor(fio=fio, user_id=user_id)
+    try:
+        manager, _departments, people = erp_sql.load_subordinate_org(actor_fio)
+    except ErpSqlError as exc:
+        raise ErpTaskError(str(exc)) from exc
+    users = [
+        {
+            "fio": person.fio,
+            "position": person.position,
+            "department": person.department,
+            "source": "erp_pm",
+        }
+        for person in people
+        if person.fio and person.fio != actor_fio
+    ]
+    return {
+        "ok": True,
+        "manager": {
+            "fio": manager.fio or actor_fio,
+            "position": manager.position,
+            "department": manager.department,
+            "user_id": actor_id,
+        },
+        "users": users,
+        "count": len(users),
+        "source": "erp_pm",
+    }
 
 
 def list_current_tasks(

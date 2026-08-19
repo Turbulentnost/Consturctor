@@ -8,13 +8,14 @@ from sqlalchemy.orm import Session
 from app.models.workflow import Workflow
 from app.services.local_mcp import list_tools
 from app.services.onec_tools import ONEC_TOOLS as _ONEC_TOOLS
+from app.services.onec_tools import ONEC_WRITE_TOOLS as _ONEC_WRITE_TOOLS
 from app.services.plan_run import (
     PlanRunError,
     build_plan_export_arguments,
     format_plan_run_answer,
     uses_plan_export,
 )
-from app.services.tool_bridge import DEFAULT_TIMEOUT_S, tool_bridge
+from app.services.tool_bridge import CONFIRM_TIMEOUT_S, DEFAULT_TIMEOUT_S, tool_bridge
 
 
 AgentEventCallback = Callable[[dict[str, Any]], None]
@@ -359,6 +360,38 @@ def _agent_domain(workflow: Workflow) -> str:
     return ""
 
 
+def _await_human_confirm_runtime(
+    emit: AgentEventCallback,
+    *,
+    run_id: str,
+    user_id: str,
+    tool: str,
+    arguments: dict[str, Any],
+) -> None:
+    request_id = tool_bridge.new_request_id()
+    tool_bridge.begin_wait(request_id=request_id, user_id=user_id)
+    emit({"type": "status", "text": f"жду подтверждения: {tool}"})
+    emit(
+        {
+            "type": "tool_request",
+            "run_id": run_id,
+            "request_id": request_id,
+            "tool": tool,
+            "arguments": arguments,
+            "confirm_only": True,
+        }
+    )
+    try:
+        payload = tool_bridge.await_result(
+            request_id=request_id,
+            timeout_s=CONFIRM_TIMEOUT_S,
+        )
+    except TimeoutError as exc:
+        raise AgentRuntimeError(str(exc)) from exc
+    if not payload.get("ok"):
+        raise AgentRuntimeError(str(payload.get("error") or "отклонено человеком"))
+
+
 def _request_desktop_tool(
     emit: AgentEventCallback,
     *,
@@ -376,6 +409,14 @@ def _request_desktop_tool(
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, arguments)
     if tool in _ONEC_TOOLS:
+        if tool in _ONEC_WRITE_TOOLS:
+            _await_human_confirm_runtime(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                tool=tool,
+                arguments=arguments,
+            )
         return _invoke_onec_server(tool, arguments, user_id=user_id)
     if tool in _TURBOPROJECT_TOOLS or tool.startswith("turboproject"):
         return _invoke_turboproject_server(tool, arguments)

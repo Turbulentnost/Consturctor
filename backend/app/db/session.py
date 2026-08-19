@@ -93,6 +93,32 @@ def _ensure_columns() -> None:
         notif_cols = {str(r[0]) for r in notif_rows}
         if notif_cols and "read_at" not in notif_cols:
             conn.execute(text("ALTER TABLE notifications ADD COLUMN read_at TIMESTAMPTZ NULL"))
+        run_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'agent_runs'
+                """
+            )
+        ).fetchall()
+        run_cols = {str(r[0]) for r in run_rows}
+        if run_cols and "events_json" not in run_cols:
+            conn.execute(
+                text("ALTER TABLE agent_runs ADD COLUMN events_json JSON NOT NULL DEFAULT '[]'")
+            )
+        if run_cols and "trigger_id" not in run_cols:
+            conn.execute(
+                text("ALTER TABLE agent_runs ADD COLUMN trigger_id VARCHAR(64) NOT NULL DEFAULT ''")
+            )
+        if run_cols and "trigger_kind" not in run_cols:
+            conn.execute(
+                text("ALTER TABLE agent_runs ADD COLUMN trigger_kind VARCHAR(32) NOT NULL DEFAULT ''")
+            )
+        if run_cols and "trigger_reason" not in run_cols:
+            conn.execute(
+                text("ALTER TABLE agent_runs ADD COLUMN trigger_reason TEXT NOT NULL DEFAULT ''")
+            )
 
 
 def get_db() -> Generator[Session, None, None]:

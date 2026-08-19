@@ -29,6 +29,17 @@ def test_sandbox_requires_result() -> None:
     assert "result" in outcome["error"]
 
 
+def test_sandbox_accepts_nonbreaking_hyphen() -> None:
+    data = {"title": "Проект А\u2011Б", "items": [{"name": "этап\u2011контроль"}]}
+    outcome = run_dataset_code(
+        code="result = {'title': data['title'], 'names': [item['name'] for item in data['items']]}",
+        data=data,
+    )
+    assert outcome["ok"] is True
+    assert "\u2011" in outcome["result"]["title"]
+    assert outcome["result"]["names"] == ["этап\u2011контроль"]
+
+
 def test_sandbox_filters_list() -> None:
     data = {"items": [{"id": 1, "ok": False}, {"id": 2, "ok": True}]}
     outcome = run_dataset_code(

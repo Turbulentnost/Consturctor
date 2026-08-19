@@ -89,6 +89,150 @@ def test_unknown_entity_and_operation_leave_no_candidates() -> None:
     assert select_candidates(_onec_step(entity="unicorn", operation="teleport")) == []
 
 
+def test_project_read_uses_turboproject_not_onec_cards() -> None:
+    from app.services.local_mcp import contract_vocabulary
+
+    combos = {
+        (item["system"], item["entity"], item["operation"])
+        for item in contract_vocabulary()["combinations"]
+    }
+    assert ("turboproject", "project", "search") in combos
+    assert ("turboproject", "project", "read") in combos
+    assert ("turboproject", "project", "list") in combos
+    assert ("constructor", "subordinate", "list") in combos
+
+    people = select_candidates(
+        {"system": "constructor", "entity": "подчинённые", "operation": "list"}
+    )
+    assert people == ["users.subordinates"]
+
+    turbo = select_candidates(
+        {"system": "turboproject", "entity": "project", "operation": "read"}
+    )
+    assert turbo == ["turboproject"]
+
+    remapped = select_candidates(
+        {"system": "onec", "entity": "проект", "operation": "read"}
+    )
+    assert remapped == ["turboproject"]
+    assert "onec.get_document_card" not in remapped
+    assert "onec.get_task_card" not in remapped
+
+    document = select_candidates(
+        {"system": "onec", "entity": "document", "operation": "read"}
+    )
+    assert "onec.get_document_card" in document
+    assert "turboproject" not in document
+
+
+def _full_step(step_id: str, **overrides) -> dict:
+    step = {
+        "id": step_id,
+        "title": step_id,
+        "required": True,
+        "required_params": [],
+        "data_expectation": "данные",
+        "done_when": "готово",
+        "on_empty": "пусто",
+        "on_error": "повторить",
+    }
+    step.update(overrides)
+    return step
+
+
+def test_notify_after_project_needs_user_step() -> None:
+    draft = attach_tool_candidates(
+        _draft(
+            _full_step(
+                "s1",
+                title="Проекты",
+                system="turboproject",
+                entity="project",
+                operation="read",
+            ),
+            _full_step(
+                "s2",
+                title="Уведомить",
+                system="constructor",
+                entity="notification",
+                operation="notify",
+                required_params=["title", "user_id"],
+            ),
+        )
+    )
+
+    assert draft["steps"][0]["provides"] == ["projects"]
+    assert draft["steps"][1]["needs_from"] == []
+    messages = [issue.message for issue in validate_draft(draft).config_errors]
+    assert any("user_id" in message for message in messages)
+
+
+def test_project_user_notify_handoff() -> None:
+    draft = attach_tool_candidates(
+        _draft(
+            _full_step(
+                "s1",
+                title="Проекты",
+                system="turboproject",
+                entity="project",
+                operation="read",
+            ),
+            _full_step(
+                "s2",
+                title="Кто я",
+                system="constructor",
+                entity="user",
+                operation="read",
+            ),
+            _full_step(
+                "s3",
+                title="Уведомить",
+                system="constructor",
+                entity="notification",
+                operation="notify",
+                required_params=["title", "user_id"],
+            ),
+        )
+    )
+
+    assert draft["steps"][1]["provides"] == ["user"]
+    assert draft["steps"][2]["needs_from"] == [
+        {"step": "s2", "field": "user_id", "as": "user_id"}
+    ]
+    assert not any("user_id" in issue.message for issue in validate_draft(draft).config_errors)
+    from app.services.workflows.cursor_tools import step_candidates_block
+
+    block = step_candidates_block(draft)
+    assert "user_id ← s2.user_id" in block
+    assert "отдаёт дальше: projects" in block
+
+
+def test_project_does_not_provide_task_ref() -> None:
+    draft = attach_tool_candidates(
+        _draft(
+            _full_step(
+                "s1",
+                title="Проекты",
+                system="turboproject",
+                entity="project",
+                operation="read",
+            ),
+            _full_step(
+                "s2",
+                title="Карточка задачи",
+                system="onec",
+                entity="task",
+                operation="read",
+                required_params=["task_ref"],
+            ),
+        )
+    )
+
+    messages = [issue.message for issue in validate_draft(draft).config_errors]
+    assert any("task_ref" in message for message in messages)
+    assert draft["steps"][1]["needs_from"] == []
+
+
 def test_operation_synonym_resolves_to_contract() -> None:
     names = select_candidates(
         _onec_step(operation="fetch", entity="task", required_params=["task_ref"])
@@ -278,6 +422,49 @@ def test_empty_answer_without_params_is_suspect() -> None:
     assert not verdict.accepted
 
 
+def test_next_step_input_names_do_not_fail_current_result() -> None:
+    document = {
+        "id": "s7",
+        "system": "onec",
+        "entity": "document",
+        "operation": "read",
+        "tool_candidates": ["onec.get_document_card"],
+        "required_params": ["document_ref"],
+    }
+    task = {
+        "id": "s8",
+        "system": "onec",
+        "entity": "task",
+        "operation": "read",
+        "required_params": ["task_ref"],
+    }
+    notify = {
+        "id": "s9",
+        "system": "constructor",
+        "entity": "notification",
+        "operation": "notify",
+        "required_params": ["title", "user_id"],
+    }
+    card = evaluate_tool_result(
+        step=document,
+        name="onec.get_document_card",
+        arguments={"document_ref": "doc-1"},
+        result={"document": {"ref": "doc-1", "number": "0001"}},
+        next_step=task,
+    )
+    assert card.data_status == "complete"
+    assert card.accepted
+    task_card = evaluate_tool_result(
+        step=task,
+        name="onec.get_task_card",
+        arguments={"task_ref": "task-1"},
+        result={"task": {"ref": "task-1", "name": "Согласовать"}},
+        next_step=notify,
+    )
+    assert task_card.data_status == "complete"
+    assert task_card.accepted
+
+
 def test_unfinished_pagination_is_partial() -> None:
     verdict = evaluate_tool_result(
         step=_candidate_step(),
@@ -299,6 +486,44 @@ def test_wrong_system_is_mismatch() -> None:
     )
 
     assert verdict.data_status == "mismatch"
+
+
+def test_turboproject_read_is_complete_even_if_step_said_onec() -> None:
+    step = {
+        "id": "s1",
+        "system": "onec",
+        "entity": "project",
+        "operation": "read",
+        "tool_candidates": ["turboproject"],
+    }
+    verdict = evaluate_tool_result(
+        step=step,
+        name="turboproject",
+        arguments={"limit": 20},
+        result={"projects": [{"id": "p1", "name": "Реконструкция"}], "count": 1},
+    )
+
+    assert verdict.data_status == "complete"
+    assert verdict.accepted
+
+
+def test_document_card_stays_rejected_for_project_step() -> None:
+    step = {
+        "id": "s1",
+        "system": "onec",
+        "entity": "project",
+        "operation": "read",
+        "tool_candidates": ["turboproject"],
+    }
+    verdict = evaluate_tool_result(
+        step=step,
+        name="onec.get_document_card",
+        arguments={"document_ref": "doc-1"},
+        result={"document": {"ref": "doc-1"}},
+    )
+
+    assert verdict.data_status == "mismatch"
+    assert not verdict.accepted
 
 
 def test_tool_error_is_mismatch() -> None:
@@ -490,6 +715,8 @@ def test_draft_prompt_carries_contract_vocabulary() -> None:
 
     assert "СЛОВАРЬ КОНТРАКТОВ" in prompt
     assert "из допустимых сочетаний" in prompt
+    assert "turboproject · project · read" in prompt
+    assert "не карточка документа" in prompt
 
 
 def test_design_phase_block_offers_only_context_tools() -> None:
@@ -513,6 +740,7 @@ def test_design_phase_rejects_business_tool() -> None:
 
     assert _reject_off_phase(DESIGN_PHASE, "onec.sql_query")
     assert _reject_off_phase(DESIGN_PHASE, "users.current") == ""
+    assert _reject_off_phase(DESIGN_PHASE, "users.subordinates") == ""
     assert _reject_off_phase("execute", "onec.sql_query") == ""
 
 

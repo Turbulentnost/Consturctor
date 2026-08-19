@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from app.clients import cursor as cursor_client
 from app.services.local_mcp import list_tools
-from app.services.tool_bridge import DEFAULT_TIMEOUT_S, tool_bridge
+from app.services.tool_bridge import CONFIRM_TIMEOUT_S, DEFAULT_TIMEOUT_S, tool_bridge
 
 logger = logging.getLogger(__name__)
 
@@ -131,15 +131,19 @@ def tool_catalog_block() -> str:
             continue
         desc = str(item.get("description") or "").replace("\n", " ")
         schema = item.get("input_schema") if isinstance(item.get("input_schema"), dict) else {}
-        props = list((schema.get("properties") or {}).keys())
         required = list(item.get("required_filters") or schema.get("required") or [])
         exec_at = str(item.get("execution") or "desktop")
         system = str(item.get("system") or "desktop")
         entity = str(item.get("entity") or "—")
-        operation = str(item.get("operation") or "—")
-        extra = f" args={props}" if props else ""
+        operations = [
+            str(op).strip()
+            for op in (item.get("operations") or [item.get("operation")])
+            if str(op).strip()
+        ]
+        operation = "|".join(operations) if operations else "—"
+        extra = f" {format_tool_inputs(name, schema)}"
         if required:
-            extra += f" required={required}"
+            extra += f" обязательные={required}"
         result_fields = list(item.get("result_fields") or [])
         if result_fields:
             extra += f" returns={result_fields}"
@@ -164,6 +168,8 @@ def contract_vocabulary_block() -> str:
         "СЛОВАРЬ КОНТРАКТОВ. Для шага бери system, entity и operation только отсюда.",
         "systems: " + ", ".join(vocab["systems"]),
         "operations: " + ", ".join(vocab["operations"]),
+        "Проекты, сроки, риски, портфель, MPP — turboproject · project · search|read|list. "
+        "Это не карточка документа и не задача 1С.",
         "Допустимые сочетания (system · entity · operation → обязательные параметры → поля результата):",
     ]
     for item in vocab["combinations"]:
@@ -181,6 +187,8 @@ _TRANSPORT_HINT = (
     "```constructor_tool\n"
     '{"name": "имя_из_разрешённых", "step": "s1", "arguments": {}}\n'
     "```\n"
+    "В arguments — только поля из «входы» этого инструмента, отдельными ключами. "
+    "Не сваливай условие в одну строку query. "
     "Не ходи в HTTP, curl и BACKEND_URL. Не придумывай результат: дождись ответа backend."
 )
 
@@ -198,9 +206,13 @@ def design_tools_block() -> str:
     for tool in allowed:
         name = str(tool.get("name") or "")
         entity = str(tool.get("entity") or "—")
-        lines.append(
-            f"- {name}: {tool.get('system')} · {entity} · {tool.get('operation')}"
-        )
+        ops = "|".join(
+            str(op).strip()
+            for op in (tool.get("operations") or [tool.get("operation")])
+            if str(op).strip()
+        ) or "—"
+        lines.append(f"- {name}: {tool.get('system')} · {entity} · {ops}")
+        lines.append(f"  {format_tool_inputs(name)}")
     lines.append("Другие инструменты сейчас отклоняются backend.")
     lines.append(_TRANSPORT_HINT)
     return "\n".join(lines)
@@ -219,9 +231,13 @@ def helper_tools_block() -> str:
     for tool in allowed:
         name = str(tool.get("name") or "")
         entity = str(tool.get("entity") or "—")
-        lines.append(
-            f"- {name}: {tool.get('system')} · {entity} · {tool.get('operation')}"
-        )
+        ops = "|".join(
+            str(op).strip()
+            for op in (tool.get("operations") or [tool.get("operation")])
+            if str(op).strip()
+        ) or "—"
+        lines.append(f"- {name}: {tool.get('system')} · {entity} · {ops}")
+        lines.append(f"  {format_tool_inputs(name)}")
     return "\n".join(lines)
 
 
@@ -236,8 +252,19 @@ def step_candidates_block(draft: dict[str, Any] | None) -> str:
         candidates = [str(item) for item in (step.get("tool_candidates") or [])]
         names = ", ".join(candidates) if candidates else "нет кандидатов"
         required = ", ".join(str(item) for item in (step.get("required_params") or []))
-        tail = f" параметры: {required}." if required else ""
+        tail = f" обязательные шага: {required}." if required else ""
         lines.append(f"- {step_id}: {names}.{tail}")
+        needs = []
+        for item in step.get("needs_from") or []:
+            if isinstance(item, dict) and item.get("as"):
+                needs.append(f"{item['as']} ← {item.get('step')}.{item.get('field')}")
+        if needs:
+            lines.append(f"  передача: {', '.join(needs)}")
+        provides = [str(item) for item in (step.get("provides") or []) if str(item).strip()]
+        if provides:
+            lines.append(f"  отдаёт дальше: {', '.join(provides)}")
+        for tool_name in candidates:
+            lines.append(f"  · {tool_name}: {format_tool_inputs(tool_name)}")
     lines.append(_TRANSPORT_HINT)
     return "\n".join(lines)
 
@@ -325,6 +352,123 @@ def tool_family(name: str) -> str:
     return raw.split(".", 1)[0]
 
 
+_TOOL_ALIASES = {
+    "turboproject.projects": "turboproject",
+    "users": "users.list",
+    "current_user": "users.current",
+    "subordinates": "users.subordinates",
+    "notify": "notify.send",
+    "data.process_dataset": "data.process",
+}
+_INTERNAL_ARG_KEYS = frozenset({"workflow_id", "agent_id"})
+_HUMAN_REJECTED = "отклонено человеком"
+_INPUT_TYPE_LABELS = {
+    "string": "строка",
+    "integer": "число",
+    "number": "число",
+    "boolean": "boolean",
+    "array": "список",
+    "object": "объект",
+}
+
+
+def _catalog_tool(name: str) -> dict[str, Any]:
+    wanted = _TOOL_ALIASES.get((name or "").strip(), (name or "").strip())
+    catalog = {str(item.get("name") or ""): item for item in list_tools()}
+    if wanted in catalog:
+        return catalog[wanted]
+    family = tool_family(wanted)
+    if family in catalog:
+        return catalog[family]
+    return {}
+
+
+def format_tool_inputs(name: str, schema: dict[str, Any] | None = None) -> str:
+    """Одна строка: какие поля передавать в arguments."""
+    catalog = _catalog_tool(name) if schema is None else {}
+    raw = schema if schema is not None else (
+        catalog.get("input_schema") if isinstance(catalog.get("input_schema"), dict) else {}
+    )
+    compact = _compact_input_schema(raw if isinstance(raw, dict) else {})
+    required = set()
+    if isinstance(raw, dict):
+        required = {str(item) for item in (raw.get("required") or [])}
+    if not compact:
+        return "входы: нет, вызывай с arguments: {}"
+    parts = [
+        f"{key}{'*' if key in required else ''} ({text})"
+        for key, text in compact.items()
+    ]
+    return "входы: " + "; ".join(parts)
+
+
+def _compact_input_schema(schema: dict[str, Any] | None) -> dict[str, str]:
+    props = schema.get("properties") if isinstance(schema, dict) else {}
+    if not isinstance(props, dict):
+        return {}
+    compact: dict[str, str] = {}
+    for key, spec in props.items():
+        info = spec if isinstance(spec, dict) else {}
+        typ = _INPUT_TYPE_LABELS.get(str(info.get("type") or ""), str(info.get("type") or "значение"))
+        desc = str(info.get("description") or "").strip()
+        default = info.get("default")
+        parts = [typ]
+        if desc:
+            parts.append(desc)
+        if default is not None:
+            parts.append(f"по умолчанию {default}")
+        compact[str(key)] = ": ".join(parts) if desc else (
+            f"{typ}, по умолчанию {default}" if default is not None else typ
+        )
+    return compact
+
+
+def build_tool_envelope(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
+    """Что пришло, что принято, что отброшено и какие поля инструмент ждёт."""
+    received = dict(arguments) if isinstance(arguments, dict) else {}
+    catalog = _catalog_tool(name)
+    schema = catalog.get("input_schema") if isinstance(catalog.get("input_schema"), dict) else {}
+    allowed = set((schema.get("properties") or {}) if isinstance(schema, dict) else {})
+    catalog_name = str(catalog.get("name") or name or "")
+    accepted: dict[str, Any] = {}
+    ignored: dict[str, str] = {}
+    for key, value in received.items():
+        if key in _INTERNAL_ARG_KEYS:
+            continue
+        if allowed and key not in allowed:
+            ignored[str(key)] = f"инструмент не принимает поле {key}"
+            continue
+        accepted[key] = value
+
+    if catalog_name.startswith("turboproject") or str(name or "").startswith("turboproject"):
+        from app.services.turboproject import is_phrase_query
+
+        query = str(accepted.get("query") or accepted.get("project_name") or "").strip()
+        if query and is_phrase_query(query):
+            accepted.pop("query", None)
+            accepted.pop("project_name", None)
+            ignored["query"] = (
+                "query — только название проекта, имя MPP или номер 1С, не фраза. "
+                "Участников отдельным полем этот инструмент пока не принимает."
+            )
+
+    if catalog_name in {"users.list", "users"} or str(name or "") in {"users.list", "users"}:
+        search, ignored_query = normalize_users_list_query(received)
+        if ignored_query:
+            accepted.pop("query", None)
+            accepted.pop("search", None)
+            ignored["query"] = "query — ФИО, email или id, не роль и не «все»"
+        elif search:
+            accepted["query"] = search
+
+    return {
+        "received": received,
+        "accepted": accepted,
+        "ignored": ignored,
+        "inputs": _compact_input_schema(schema if isinstance(schema, dict) else {}),
+    }
+
+
 _LIVE_FAMILIES = frozenset({"turboproject", "onec", "imap", "outlook", "notify"})
 
 _NOTIFY_HINTS = (
@@ -404,6 +548,36 @@ def _covers_required(required: str, successful: set[str]) -> bool:
     return any(item == req or item.startswith(req) for item in successful)
 
 
+def _await_human_confirm(
+    *,
+    tool: str,
+    arguments: dict[str, Any],
+    on_event: WorkflowEmit | None,
+) -> None:
+    ctx = current_tool_context()
+    if ctx is None:
+        raise RuntimeError("Нет desktop-сессии для подтверждения")
+    run_id, user_id = ctx
+    request_id = tool_bridge.new_request_id()
+    tool_bridge.begin_wait(request_id=request_id, user_id=user_id)
+    _emit(on_event, "decision", f"«{tool}»: жду подтверждения человека…")
+    _emit(
+        on_event,
+        "tool_request",
+        f"Нужно подтверждение: {tool}",
+        {
+            "run_id": run_id,
+            "request_id": request_id,
+            "tool": tool,
+            "arguments": arguments,
+            "confirm_only": True,
+        },
+    )
+    payload = tool_bridge.await_result(request_id=request_id, timeout_s=CONFIRM_TIMEOUT_S)
+    if not payload.get("ok"):
+        raise RuntimeError(str(payload.get("error") or _HUMAN_REJECTED))
+
+
 def invoke_creation_tool(
     *,
     tool: str,
@@ -417,6 +591,7 @@ def invoke_creation_tool(
         _invoke_imap_server,
         _invoke_onec_server,
     )
+    from app.services.onec_tools import ONEC_WRITE_TOOLS
 
     args = dict(arguments or {})
     if workflow_id:
@@ -425,6 +600,8 @@ def invoke_creation_tool(
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, args)
     if tool in _ONEC_TOOLS:
+        if tool in ONEC_WRITE_TOOLS:
+            _await_human_confirm(tool=tool, arguments=args, on_event=on_event)
         ctx = current_tool_context()
         user_id = ctx[1] if ctx else ""
         return _invoke_onec_server(tool, args, user_id=user_id)
@@ -436,6 +613,8 @@ def invoke_creation_tool(
         return _invoke_users_current()
     if tool in {"users.list", "users"}:
         return _invoke_users_list(args)
+    if tool in {"users.subordinates", "subordinates"}:
+        return _invoke_users_subordinates(args)
     if tool in {"notify.send", "notify"}:
         return _invoke_notify_send(args)
     if tool in {"data.process", "data.process_dataset"}:
@@ -671,6 +850,7 @@ def _stream_cursor_with_tools_body(
             name = str(call.get("name") or "")
             family = tool_family(name)
             arguments = call.get("arguments") or {}
+            envelope = build_tool_envelope(name, arguments)
             step = ledger.resolve(call) if ledger.enabled else None
             rejection = _reject_off_phase(phase, name) or _reject_off_contract(step, name)
             if rejection:
@@ -685,6 +865,7 @@ def _stream_cursor_with_tools_body(
                             "next_action": "Возьми инструмент из разрешённых для этого шага.",
                         },
                         "error": rejection,
+                        **envelope,
                     }
                 )
                 _emit(on_event, "decision", f"«{name}» отклонён: {rejection}")
@@ -720,6 +901,12 @@ def _stream_cursor_with_tools_body(
                     "decision",
                     "«users.current»: читаю текущего пользователя…",
                 )
+            if name in {"users.subordinates", "subordinates"}:
+                _emit(
+                    on_event,
+                    "decision",
+                    "«users.subordinates»: читаю подчинённых из erp_pm…",
+                )
             if name in {"notify.send", "notify"}:
                 _emit(
                     on_event,
@@ -729,7 +916,7 @@ def _stream_cursor_with_tools_body(
             try:
                 result = invoke_creation_tool(
                     tool=name,
-                    arguments=arguments,
+                    arguments=envelope["accepted"],
                     on_event=on_event,
                     workflow_id=workflow_id,
                 )
@@ -740,6 +927,7 @@ def _stream_cursor_with_tools_body(
                     arguments=arguments,
                     result=result,
                     next_step=ledger.next_step(str((step or {}).get("id") or "")) if step else None,
+                    ignored=envelope["ignored"],
                 )
                 ledger.record(step=step, name=name, verdict=verdict)
                 packed = {
@@ -748,6 +936,7 @@ def _stream_cursor_with_tools_body(
                     "result": clipped,
                     "step": str((step or {}).get("id") or ""),
                     "validation": verdict.to_dict(),
+                    **envelope,
                 }
                 results.append(packed)
                 result_cache[cache_key] = packed
@@ -786,6 +975,7 @@ def _stream_cursor_with_tools_body(
                             "reasons": [str(exc)[:300]],
                             "next_action": "Исправь параметры или выбери другой инструмент шага.",
                         },
+                        **envelope,
                     }
                 )
                 if family:
@@ -887,6 +1077,7 @@ def _verdict_for(
     arguments: dict[str, Any],
     result: Any,
     next_step: dict[str, Any] | None,
+    ignored: dict[str, Any] | None = None,
 ) -> Any:
     from app.services.workflows.tool_result_validation import evaluate_tool_result
 
@@ -896,6 +1087,7 @@ def _verdict_for(
         arguments=arguments,
         result=result,
         next_step=next_step,
+        ignored=ignored,
     )
 
 
@@ -1005,6 +1197,7 @@ def _followup_prompt(
             "плюс файлы/действия/уведомления если они были. "
             "Если в задаче сказано «текущий пользователь», «данный пользователь», «мои проекты» "
             "или «мои задачи» — сначала вызови users.current. "
+            "Если нужны подчинённые — users.subordinates (оргструктура erp_pm), не users.list. "
             "Не вызывай users.list / turboproject «на всякий случай». "
             "Если нужен ДРУГОЙ tool — только ```constructor_tool. "
             "Не ставь FAIL из-за отсутствия BACKEND_URL на Cloud VM."
@@ -1140,6 +1333,20 @@ def _invoke_users_list(arguments: dict[str, Any]) -> dict[str, Any]:
     if ignored:
         payload["ignored_query"] = ignored
     return payload
+
+
+def _invoke_users_subordinates(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.erp_tasks import ErpTaskError, list_org_subordinates
+
+    fio = str(arguments.get("fio") or arguments.get("manager") or "").strip()
+    user_id = str(arguments.get("user_id") or "").strip()
+    if not fio and not user_id:
+        ctx = current_tool_context()
+        user_id = ctx[1] if ctx else ""
+    try:
+        return list_org_subordinates(fio=fio, user_id=user_id)
+    except ErpTaskError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _invoke_users_current() -> dict[str, Any]:

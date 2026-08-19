@@ -9,6 +9,7 @@ from typing import Any
 
 
 DEFAULT_TIMEOUT_S = 600.0
+CONFIRM_TIMEOUT_S = 12 * 3600.0
 
 
 class ToolBridgeError(RuntimeError):

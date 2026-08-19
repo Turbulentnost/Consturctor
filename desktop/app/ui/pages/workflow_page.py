@@ -47,7 +47,7 @@ from app.api_client import (
     WorkflowPlan,
     WorkflowRecord,
 )
-from app.tools.hitl import register_inline_host
+from app.tools.hitl import attach_pending_for, register_inline_host, set_host_workflow_id
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 from app.ui.widgets.cursor_feed import CursorFeedItem, resolve_feed_kind
 
@@ -301,6 +301,39 @@ def _take_words(text: str, count: int) -> str:
         return text
     end = matches[min(count, len(matches)) - 1].end()
     return text[:end]
+
+
+_TOOL_FENCE_RE = re.compile(
+    r"```(?:constructor_tool|tool)\s*\n.*?```",
+    re.DOTALL | re.IGNORECASE,
+)
+_TOOL_FENCE_OPEN_RE = re.compile(
+    r"```(?:constructor_tool|tool)\b.*\Z",
+    re.DOTALL | re.IGNORECASE,
+)
+_TOOL_JSON_RE = re.compile(
+    r"\{\s*\"name\"\s*:\s*\"[^\"]+\"[\s\S]*?\"arguments\"\s*:\s*\{[\s\S]*?\}\s*\}",
+)
+
+
+def _looks_like_tool_json(text: str) -> bool:
+    blob = (text or "").strip()
+    if not blob.startswith("{"):
+        return False
+    return '"name"' in blob and '"arguments"' in blob
+
+
+def _strip_tool_call_text(text: str) -> str:
+    """Убрать из ответа агента вход вызова: fence constructor_tool и JSON name+arguments."""
+    cleaned = _TOOL_FENCE_RE.sub("", text or "")
+    cleaned = _TOOL_JSON_RE.sub("", cleaned)
+    cleaned = _TOOL_FENCE_OPEN_RE.sub("", cleaned)
+    last = cleaned.rfind("{")
+    if last >= 0:
+        tail = cleaned[last:]
+        if _looks_like_tool_json(tail) and tail.count("{") > tail.count("}"):
+            cleaned = cleaned[:last]
+    return cleaned.strip()
 
 
 def _stream_delta(streamed: str, chunk: str) -> str:
@@ -1282,7 +1315,7 @@ class WorkflowPage(QWidget):
         self._feed_rebuilding = False
         self._build()
         self._render_all()
-        register_inline_host(self)
+        register_inline_host(self, "")
 
     def _build(self) -> None:
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -1449,6 +1482,7 @@ class WorkflowPage(QWidget):
 
     def load_record(self, record: WorkflowRecord) -> None:
         self._record = record
+        set_host_workflow_id(self, record.id)
         self._pending_paths = []
         self._workflow_title = record.title
         self._notes = record.notes
@@ -1782,7 +1816,7 @@ class WorkflowPage(QWidget):
                 title=title,
                 detail=body,
                 event_key=key,
-                expanded=key in self._expanded_keys,
+                expanded=key not in self._collapsed_keys,
             )
             widget.expand_toggled.connect(self._on_expand_toggled)
             self._live_tool_widgets[key] = widget
@@ -1860,6 +1894,10 @@ class WorkflowPage(QWidget):
             title = "Thinking"
         elif kind not in {"plan", "tool"}:
             title = ""
+        if kind == "tool":
+            expanded = key not in self._collapsed_keys
+        else:
+            expanded = key in self._expanded_keys
         widget = CursorFeedItem(
             kind=kind,
             text=event.body,
@@ -1868,7 +1906,7 @@ class WorkflowPage(QWidget):
             action="" if hide_action else event.action,
             action_key="" if hide_action else event.action_key,
             event_key=key,
-            expanded=key in self._expanded_keys,
+            expanded=expanded,
         )
         widget.action_clicked.connect(self._on_feed_action)
         widget.expand_toggled.connect(self._on_expand_toggled)
@@ -2216,7 +2254,7 @@ class WorkflowPage(QWidget):
             title=title,
             detail=body,
             event_key=key,
-            expanded=key in self._expanded_keys,
+            expanded=key not in self._collapsed_keys,
         )
         widget.expand_toggled.connect(self._on_expand_toggled)
         self._live_tool_widgets[key] = widget
@@ -2399,7 +2437,9 @@ class WorkflowPage(QWidget):
         if event_type == "assistant" and incoming:
             shown = incoming.replace("\ufffd", "")
             if shown.strip() and self._planning_stream:
-                self._append_thinking(shown)
+                cleaned = _strip_tool_call_text(shown)
+                if cleaned:
+                    self._append_thinking(cleaned)
                 return
             if shown.strip():
                 last = self._events[-1] if self._events else None
@@ -2407,14 +2447,19 @@ class WorkflowPage(QWidget):
                     delta = _stream_delta(last.body or "", shown)
                     if not delta:
                         return
-                    last.body = (last.body or "") + delta
+                    visible = _strip_tool_call_text((last.body or "") + delta)
+                    if not visible.strip() or visible == (last.body or ""):
+                        return
+                    last.body = visible
                     if self._assistant_live is not None:
                         self._assistant_live.set_body_text(last.body)
                         self._scroll_feed_to_bottom()
                     else:
                         self._rebuild_feed()
                 else:
-                    self._push_event("Агент", shown, kind="agent")
+                    cleaned = _strip_tool_call_text(shown)
+                    if cleaned.strip():
+                        self._push_event("Агент", cleaned, kind="agent")
             return
         if event_type == "thinking" and incoming:
             self._append_thinking(incoming)
@@ -2533,6 +2578,7 @@ class WorkflowPage(QWidget):
         self._set_busy(False)
         if isinstance(result, WorkflowRecord):
             self._record = self._persist_passport_runtime(result)
+            set_host_workflow_id(self, self._record.id)
             self._pending_paths = []
             self._workflow_title = result.title
             self._notes = result.notes or self._notes
@@ -3129,8 +3175,16 @@ class WorkflowPage(QWidget):
         if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        wid = str(getattr(self._record, "id", "") or "")
+        if wid:
+            set_host_workflow_id(self, wid)
+            attach_pending_for(wid)
+
     def _on_new(self) -> None:
         self._record = None
+        set_host_workflow_id(self, "")
         self._pending_paths.clear()
         self._workflow_title = ""
         self._notes = ""

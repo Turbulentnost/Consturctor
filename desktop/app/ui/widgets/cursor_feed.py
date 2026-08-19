@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -19,6 +20,7 @@ from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 from app.ui.widgets.markdown_body import MarkdownBody
 
 _LONG_PREVIEW = 360
+_TOOL_DETAIL_MAX_H = 220
 
 _COLLAPSE_HEADER = """
 QFrame#cursorcollapse {
@@ -122,19 +124,14 @@ def format_collection_result(result: Any) -> str | None:
 
 
 def format_tool_detail(arguments: Any = None, result: Any = None) -> str:
+    """Только выход инструмента. Вход (arguments) в ленту не кладём."""
+    _ = arguments
     friendly = format_collection_result(result)
     if friendly:
         return friendly
-    parts: list[str] = []
-    if arguments not in (None, {}, ""):
-        parts.append("Аргументы")
-        parts.append(_pretty(arguments))
     if result not in (None, {}, ""):
-        parts.append("Результат")
-        parts.append(_pretty(result))
-    elif arguments not in (None, {}, ""):
-        parts.append("Ожидание результата…")
-    return "\n\n".join(parts) if parts else "Нет данных"
+        return _pretty(result)
+    return "Ожидание результата…"
 
 
 def _row_title(row: Any) -> str:
@@ -322,6 +319,22 @@ class CursorFeedItem(QFrame):
         self._detail = body
         if self._detail_label is not None:
             self._detail_label.setText(body)
+        if self._kind == "tool" and body and body not in {"Выполняется…", "Готово"}:
+            self.set_expanded(True)
+
+    def set_expanded(self, expanded: bool) -> None:
+        if bool(self._expanded) == bool(expanded):
+            return
+        self._expanded = bool(expanded)
+        if self._header is not None:
+            self._header.set_expanded(self._expanded)
+        if self._detail_frame is not None:
+            self._detail_frame.setVisible(self._expanded)
+        if self._preview is not None:
+            self._preview.setVisible(not self._expanded)
+        if self._toggle is not None:
+            self._toggle.setText("Свернуть" if self._expanded else "Показать полностью")
+        self.expand_toggled.emit(self._event_key, self._expanded)
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
@@ -422,7 +435,19 @@ class CursorFeedItem(QFrame):
         body.setFont(app_font(12))
         body.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         self._detail_label = body
-        lay.addWidget(body)
+        if self._kind == "tool":
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setMaximumHeight(_TOOL_DETAIL_MAX_H)
+            scroll.setWidget(body)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+            scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+            lay.addWidget(scroll)
+        else:
+            lay.addWidget(body)
         return box
 
     def _toggle_expand(self) -> None:

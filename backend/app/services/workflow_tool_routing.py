@@ -269,12 +269,33 @@ _OPERATION_SYNONYMS = {
     "download": "export",
     "report": "export",
     "run": "execute",
+    "inspect": "read",
+    "review": "read",
+    "control": "read",
 }
+
+_ENTITY_ALIASES = {
+    "проект": "project",
+    "проекты": "project",
+    "портфель": "project",
+    "portfolio": "project",
+    "подчинённый": "subordinate",
+    "подчиненный": "subordinate",
+    "подчинённые": "subordinate",
+    "подчиненные": "subordinate",
+}
+
+_PROJECT_OPERATIONS = frozenset({"", "search", "read", "list"})
 
 
 def normalize_operation(operation: str) -> str:
     low = (operation or "").strip().casefold()
     return _OPERATION_SYNONYMS.get(low, low)
+
+
+def normalize_entity(entity: str) -> str:
+    low = (entity or "").strip().casefold()
+    return _ENTITY_ALIASES.get(low, low)
 
 
 def select_candidates(
@@ -284,18 +305,33 @@ def select_candidates(
     allow_web: bool = False,
 ) -> list[str]:
     """Инструменты, совместимые с шагом черновика: система, сущность, операция, фильтры."""
-    from app.services.local_mcp import candidates_for
+    from app.services.local_mcp import candidates_for, contract_vocabulary
 
     system = str(step.get("system") or "").strip().casefold()
     operation = normalize_operation(str(step.get("operation") or ""))
+    entity = normalize_entity(str(step.get("entity") or ""))
     matched = candidates_for(
         system=system,
-        entity=str(step.get("entity") or ""),
+        entity=entity,
         operation=operation,
     )
-    # Имя сущности проектировщик пишет свободно, операция — из фиксированного набора.
+    if entity == "project" and operation in _PROJECT_OPERATIONS:
+        for tool in candidates_for(
+            system="turboproject",
+            entity="project",
+            operation=operation or "search",
+        ):
+            if tool not in matched and str(tool.get("name") or "") not in {
+                str(item.get("name") or "") for item in matched
+            }:
+                matched.append(tool)
     if not matched:
-        matched = candidates_for(system=system, operation=operation)
+        known_entities = {str(item).casefold() for item in contract_vocabulary()["entities"]}
+        # Известная сущность не подменяем чужой (project → карточки 1С).
+        if entity and entity in known_entities:
+            matched = []
+        else:
+            matched = candidates_for(system=system, operation=operation)
 
     if system and system != "web" and not allow_web:
         matched = [tool for tool in matched if not _is_web_tool(str(tool.get("name") or ""))]

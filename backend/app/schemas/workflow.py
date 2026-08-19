@@ -156,8 +156,12 @@ class AgentRunOut(BaseModel):
     status: str = "started"
     answer: str = ""
     source: str = "chat"
+    trigger_id: str = ""
+    trigger_kind: str = ""
+    trigger_reason: str = ""
     started_at: str = ""
     finished_at: str = ""
+    events: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class KpiMeasureSchema(BaseModel):

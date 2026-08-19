@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -230,6 +231,76 @@ def mark_fired(db: Session, *, user_id: str, trigger_id: str, evidence: str = ""
     db.commit()
     db.refresh(row)
     return _to_out(row)
+
+
+_GENERIC_CHANGE = {
+    "",
+    "запущен",
+    "условие выполнено",
+    "условие сработало",
+    "данные обновились",
+    "что-то изменилось",
+    "изменилось",
+    "нет условия — срабатывание по времени",
+}
+
+
+def describe_trigger_reason(row: AgentTrigger | None, *, evidence: str = "") -> tuple[str, str]:
+    """Краткий kind и понятная причина срабатывания для истории запусков."""
+    note = _clean_change_note(evidence)
+    if row is not None and not note:
+        note = _clean_change_note(row.last_evidence)
+    condition = (row.condition_text if row is not None else "") or ""
+    condition = condition.strip()
+    if condition:
+        if note and note.casefold() != condition.casefold():
+            return "event", f"Изменилось: {note}"
+        return "event", f"Сработало условие «{condition}», но что именно изменилось — не зафиксировано"
+    interval = int(getattr(row, "interval_seconds", 0) or 0) if row is not None else 0
+    if interval > 0:
+        return "interval", f"Наступило время по расписанию ({_format_interval(interval)})"
+    if row is not None:
+        when = _as_utc(row.fire_at)
+        if when is not None:
+            stamp = when.astimezone().strftime("%d.%m.%Y %H:%M")
+            return "time", f"Наступило запланированное время ({stamp})"
+        return "time", "Наступило запланированное время"
+    if note:
+        return "event", f"Изменилось: {note}"
+    return "", "Сработал триггер"
+
+
+def _clean_change_note(value: object) -> str:
+    note = re.sub(r"\s+", " ", str(value or "").strip())
+    if not note:
+        return ""
+    for prefix in ("изменилось:", "что-то изменилось:", "причина:"):
+        if note.casefold().startswith(prefix):
+            note = note[len(prefix) :].strip()
+    if note.casefold() in _GENERIC_CHANGE:
+        return ""
+    return note
+
+
+def _format_interval(seconds: int) -> str:
+    if seconds <= 0:
+        return "по расписанию"
+    if seconds % 86400 == 0:
+        days = seconds // 86400
+        if days == 1:
+            return "каждый день"
+        return f"каждые {days} дн."
+    if seconds % 3600 == 0:
+        hours = seconds // 3600
+        if hours == 1:
+            return "каждый час"
+        return f"каждые {hours} ч."
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        if minutes == 1:
+            return "каждую минуту"
+        return f"каждые {minutes} мин."
+    return f"каждые {seconds} с."
 
 
 def command_payload(row: AgentTrigger | TriggerOut) -> dict:

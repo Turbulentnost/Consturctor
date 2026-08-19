@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -22,6 +22,10 @@ class AgentRun(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="started")
     answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="chat")
+    trigger_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    trigger_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    trigger_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    events_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

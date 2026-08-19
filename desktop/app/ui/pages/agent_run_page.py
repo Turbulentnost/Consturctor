@@ -17,7 +17,13 @@ from PySide6.QtWidgets import (
 )
 
 from app.api_client import ApiClient, ApiError, WorkflowRecord
-from app.tools.hitl import install_confirm_host, register_inline_host
+from app.tools.hitl import (
+    attach_pending_for,
+    has_pending_for,
+    install_confirm_host,
+    register_inline_host,
+    set_host_workflow_id,
+)
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 from app.ui.widgets.cursor_feed import CursorFeedItem, format_collection_result, format_tool_detail
 
@@ -89,7 +95,9 @@ _TOOL_LABELS = {
     "report.build_meeting_summary": "Сводка совещания",
     "report.build_schedule_recommendations": "Рекомендации по графику",
     "turboproject": "Проекты TurboProject",
+    "users.current": "Текущий пользователь",
     "users.list": "Список пользователей",
+    "users.subordinates": "Подчинённые из erp_pm",
     "notify.send": "Уведомление",
     "agent.schedule": "Расписание агента",
     "agent.schedule.cancel": "Отмена расписания",
@@ -117,7 +125,14 @@ class AgentRunPage(QWidget):
         self._hitl_cards: list[QWidget] = []
         install_confirm_host(self)
         self._build()
-        register_inline_host(self)
+        register_inline_host(self, "")
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        wid = str(getattr(self._workflow, "id", "") or "")
+        if wid:
+            set_host_workflow_id(self, wid)
+            attach_pending_for(wid)
 
     def _build(self) -> None:
         self._title = QLabel("Агент")
@@ -226,8 +241,9 @@ class AgentRunPage(QWidget):
         self._quick.setEnabled(True)
         self._status.setText("Готов к работе")
         self._render()
-        # Автозапуск типовой задачи — пользователь сразу видит результат.
-        QTimer.singleShot(250, self._run_default_task)
+        set_host_workflow_id(self, workflow.id)
+        if not has_pending_for(workflow.id):
+            QTimer.singleShot(250, self._run_default_task)
 
     def _default_task(self) -> str:
         title = (self._workflow.title if self._workflow else "") or "агент"

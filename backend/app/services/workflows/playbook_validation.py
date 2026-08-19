@@ -70,8 +70,128 @@ class DraftValidation:
         }
 
 
+# Ссылки, которые шаг не придумывает: их обязан отдать предыдущий шаг или вход черновика.
+_REF_PARAMS = frozenset(
+    {
+        "user_id",
+        "task_ref",
+        "document_ref",
+        "document_ref_key",
+        "uid",
+        "message_id",
+        "file_id",
+        "ref_key",
+        "trigger_id",
+        "browser_id",
+    }
+)
+
+# Поле результата → какие входы следующих шагов оно закрывает.
+_PROVIDES_TO_PARAMS = {
+    "users": ("user_id", "user"),
+    "user": ("user_id",),
+    "projects": ("project_id", "file_id"),
+    "tasks": ("task_ref", "task_id"),
+    "task": ("task_ref", "task_id"),
+    "documents": ("document_ref", "document_ref_key"),
+    "document": ("document_ref", "document_ref_key"),
+    "messages": ("uid", "message_id"),
+    "files": ("file_id",),
+    "id": ("id", "trigger_id"),
+}
+
+
+def _string_list(raw: Any) -> list[str]:
+    return [str(item).strip() for item in (raw or []) if str(item).strip()]
+
+
+def _parse_needs_from(raw: Any) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for item in raw or []:
+        if isinstance(item, str) and "." in item:
+            step_id, field = item.split(".", 1)
+            step_id, field = step_id.strip(), field.strip()
+            if step_id and field:
+                out.append({"step": step_id, "field": field, "as": field})
+            continue
+        if not isinstance(item, dict):
+            continue
+        step_id = str(item.get("step") or "").strip()
+        field = str(item.get("field") or "").strip()
+        dest = str(item.get("as") or field).strip()
+        if step_id and field:
+            out.append({"step": step_id, "field": field, "as": dest})
+    return out
+
+
+def _default_provides(candidates: list[str]) -> list[str]:
+    from app.services.local_mcp import tool_contracts
+
+    contracts = tool_contracts()
+    fields: list[str] = []
+    for name in candidates:
+        for field in (contracts.get(name) or {}).get("result_fields") or []:
+            text = str(field).strip()
+            if text and text not in fields:
+                fields.append(text)
+    return fields
+
+
+def _expand_provided(fields: list[str]) -> set[str]:
+    offered = {str(field).strip().casefold() for field in fields if str(field).strip()}
+    extra: set[str] = set()
+    for field in offered:
+        extra.update(alias.casefold() for alias in _PROVIDES_TO_PARAMS.get(field, ()))
+    return offered | extra
+
+
+def _ref_params_of(step: dict[str, Any], candidates: list[str]) -> list[str]:
+    from app.services.local_mcp import tool_contracts
+
+    contracts = tool_contracts()
+    params: list[str] = []
+    seen: set[str] = set()
+    for name in candidates:
+        for item in (contracts.get(name) or {}).get("required_filters") or []:
+            text = str(item).strip()
+            key = text.casefold()
+            if key in _REF_PARAMS and key not in seen:
+                seen.add(key)
+                params.append(text)
+    for item in step.get("required_params") or []:
+        text = str(item).strip()
+        key = text.casefold()
+        if key in _REF_PARAMS and key not in seen:
+            seen.add(key)
+            params.append(text)
+    return params
+
+
+def attach_handoff(draft: dict[str, Any]) -> dict[str, Any]:
+    """Явная передача: что шаг отдаёт и какие ссылки берёт из предыдущих."""
+    available: dict[str, str] = {}
+    steps: list[dict[str, Any]] = []
+    for step in draft.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        step_id = str(step.get("id") or "")
+        candidates = [str(name) for name in (step.get("tool_candidates") or []) if str(name).strip()]
+        provides = _string_list(step.get("provides")) or _default_provides(candidates)
+        needs = _parse_needs_from(step.get("needs_from"))
+        seen = {(item["step"], item["as"].casefold()) for item in needs}
+        for param in _ref_params_of(step, candidates):
+            source = available.get(param.casefold())
+            if source and (source, param.casefold()) not in seen:
+                needs.append({"step": source, "field": param, "as": param})
+                seen.add((source, param.casefold()))
+        for field in _expand_provided(provides):
+            available[field] = step_id
+        steps.append({**step, "provides": provides, "needs_from": needs})
+    return {**draft, "steps": steps}
+
+
 def attach_tool_candidates(draft: dict[str, Any], *, allow_web: bool = False) -> dict[str, Any]:
-    """Проставить каждому шагу инструменты, совместимые по контракту."""
+    """Проставить каждому шагу инструменты и передачу данных между шагами."""
     steps = list(draft.get("steps") or [])
     enriched: list[dict[str, Any]] = []
     for index, step in enumerate(steps):
@@ -84,7 +204,21 @@ def attach_tool_candidates(draft: dict[str, Any], *, allow_web: bool = False) ->
             allow_web=allow_web,
         )
         enriched.append({**step, "tool_candidates": candidates})
-    return {**draft, "steps": enriched}
+    return attach_handoff({**draft, "steps": enriched})
+
+
+def _handoff_hint(params: list[str]) -> str:
+    lows = {item.casefold() for item in params}
+    hints: list[str] = []
+    if "user_id" in lows:
+        hints.append("для уведомления сначала constructor · user · read или list")
+    if lows & {"task_ref", "task_id"}:
+        hints.append("для карточки задачи сначала onec · task · search или list")
+    if lows & {"document_ref", "document_ref_key"}:
+        hints.append("для карточки документа сначала onec · document · search")
+    if "uid" in lows or "message_id" in lows:
+        hints.append("для письма сначала imap · mail_message · search или list")
+    return "; ".join(hints) or "Добавь шаг, который отдаёт эту ссылку, и укажи needs_from."
 
 
 def _missing_params(step: dict[str, Any], candidates: list[str]) -> list[str]:
@@ -182,6 +316,12 @@ def validate_draft(draft: dict[str, Any], *, allow_web: bool = False) -> DraftVa
             )
         )
 
+    offered: set[str] = set()
+    draft_inputs = {
+        str(item).strip().casefold()
+        for item in (draft.get("inputs") or [])
+        if str(item).strip()
+    }
     for index, step in enumerate(draft.get("steps") or [], start=1):
         if not isinstance(step, dict):
             continue
@@ -232,6 +372,25 @@ def validate_draft(draft: dict[str, Any], *, allow_web: bool = False) -> DraftVa
                         detail="Нужны: " + ", ".join(missing),
                     )
                 )
+            gaps = [
+                param
+                for param in _ref_params_of(step, candidates)
+                if param.casefold() not in offered and param.casefold() not in draft_inputs
+            ]
+            if gaps:
+                issues.append(
+                    DraftIssue(
+                        kind=KIND_CONFIG_ERROR,
+                        step_id=step_id,
+                        message=f"Шаг «{title}»: неоткуда взять {', '.join(gaps)}.",
+                        detail=_handoff_hint(gaps),
+                    )
+                )
+
+        provides = _string_list(step.get("provides")) or _default_provides(
+            [str(name) for name in candidates if str(name).strip()]
+        )
+        offered.update(_expand_provided(provides))
 
         if not str(step.get("done_when") or "").strip():
             issues.append(

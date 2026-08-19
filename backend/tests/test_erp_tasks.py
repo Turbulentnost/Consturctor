@@ -12,6 +12,7 @@ from app.services.erp_tasks import (
     actor_from_jwt,
     build_subordinate_task_tree,
     from_1c_datetime,
+    list_org_subordinates,
     merge_task_lists,
     parse_date,
     task_is_late,
@@ -102,6 +103,7 @@ def test_tools_registered() -> None:
     assert "onec.erp_subordinate_tasks" in ONEC_TOOLS
     assert "onec.docflow_tasks" in ONEC_TOOLS
     names = {item["name"] for item in list_tools()}
+    assert "users.subordinates" in names
     assert "onec.erp_tasks_current" in names
     assert "onec.erp_tasks_period" in names
     assert "onec.erp_subordinate_tasks" in names
@@ -114,6 +116,34 @@ def test_tools_registered() -> None:
             "onec.docflow_tasks",
         }:
             assert item.get("execution") == "server"
+
+
+def test_list_org_subordinates_from_erp_without_constructor(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.erp_tasks.resolve_actor",
+        lambda **_kwargs: ("Руководитель Сектора", ""),
+    )
+    monkeypatch.setattr(
+        "app.services.erp_tasks.erp_sql.load_subordinate_org",
+        lambda _fio: (
+            ErpUserProfile(fio="Руководитель Сектора", position="Руководитель", department="Сектор"),
+            [],
+            [
+                ErpSubordinate(
+                    fio="Незарегистрированный Иванов",
+                    position="Инженер",
+                    department="Сектор",
+                )
+            ],
+        ),
+    )
+    result = list_org_subordinates(fio="Руководитель Сектора")
+    assert result["ok"] is True
+    assert result["source"] == "erp_pm"
+    assert result["count"] == 1
+    assert result["users"][0]["fio"] == "Незарегистрированный Иванов"
+    assert result["users"][0]["source"] == "erp_pm"
+    assert "id" not in result["users"][0]
 
 
 def test_invoke_current_uses_jwt_actor(monkeypatch) -> None:

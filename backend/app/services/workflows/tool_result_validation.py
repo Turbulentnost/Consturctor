@@ -1,7 +1,11 @@
 """Проверка ответа инструмента. Успешный вызов сам по себе ничего не доказывает.
 
-Пять проверок: соответствие системы/сущности/операции, охват против запрошенного,
-обязательные поля, завершённость пагинации, пригодность для следующего шага.
+Четыре проверки: соответствие системы/сущности/операции, охват против запрошенного,
+обязательные поля результата, завершённость пагинации.
+
+required_params следующего шага — это входы его инструмента, а не ключи
+текущего ответа. Их совпадение не проверяем: иначе карточка документа
+бракуется из‑за task_ref, а карточка задачи — из‑за title/user_id notify.
 """
 
 from __future__ import annotations
@@ -142,12 +146,14 @@ def evaluate_tool_result(
     result: Any,
     next_step: dict[str, Any] | None = None,
     contract: dict[str, Any] | None = None,
+    ignored: dict[str, Any] | None = None,
 ) -> ToolVerdict:
     """Вердикт по одному вызову инструмента."""
     from app.services.local_mcp import tool_contracts
 
     step = step or {}
     arguments = arguments if isinstance(arguments, dict) else {}
+    ignored = ignored if isinstance(ignored, dict) else {}
     payload = _as_dict(result)
     contract = contract if contract is not None else (tool_contracts().get(name) or {})
 
@@ -158,15 +164,26 @@ def evaluate_tool_result(
     from app.services.workflow_tool_routing import normalize_operation
 
     mismatch: list[str] = []
+    candidates = [str(c) for c in (step.get("tool_candidates") or [])]
+    routed = bool(candidates and name and name in candidates)
     step_system = str(step.get("system") or "").strip().casefold()
     tool_system = str(contract.get("system") or "").strip().casefold()
-    if step_system and tool_system and step_system != tool_system:
+    if step_system and tool_system and step_system != tool_system and not routed:
         mismatch.append(f"шагу нужна система {step_system}, а инструмент из {tool_system}")
     step_operation = normalize_operation(str(step.get("operation") or ""))
-    tool_operation = str(contract.get("operation") or "").strip().casefold()
-    if step_operation and tool_operation and step_operation != tool_operation:
-        mismatch.append(f"шагу нужна операция {step_operation}, а инструмент делает {tool_operation}")
-    candidates = [str(c) for c in (step.get("tool_candidates") or [])]
+    tool_operations = {
+        str(item).strip().casefold()
+        for item in (contract.get("operations") or [contract.get("operation")])
+        if str(item).strip()
+    }
+    if (
+        step_operation
+        and tool_operations
+        and step_operation not in tool_operations
+        and not routed
+    ):
+        shown = ", ".join(sorted(tool_operations))
+        mismatch.append(f"шагу нужна операция {step_operation}, а инструмент делает {shown}")
     if candidates and name and name not in candidates:
         mismatch.append(f"{name} не входит в кандидатов шага: {', '.join(candidates)}")
     checks["source"] = not mismatch
@@ -207,14 +224,23 @@ def evaluate_tool_result(
     items = found[1] if found else []
     empty = _is_empty(payload)
     if empty:
-        if missing_params or not arguments:
+        if missing_params or not arguments or ignored:
+            if ignored:
+                reasons.append(
+                    "часть аргументов не принята: " + ", ".join(str(key) for key in ignored)
+                )
             return ToolVerdict(
                 data_status=EMPTY_SUSPECT,
                 reasons=[*reasons, "пустой ответ при неполных параметрах вызова"],
                 checks=checks,
                 next_action=(
-                    "Пусто — это не результат. Задай недостающие параметры "
-                    "или выбери инструмент, который покрывает нужную сущность."
+                    "Пусто — это не результат. Задай параметры из inputs "
+                    "отдельными полями, не одной фразой в query."
+                    if ignored
+                    else (
+                        "Пусто — это не результат. Задай недостающие параметры "
+                        "или выбери инструмент, который покрывает нужную сущность."
+                    )
                 ),
             )
         return ToolVerdict(
@@ -245,26 +271,12 @@ def evaluate_tool_result(
         reasons.append(f"ответ упёрся в limit={limit}, часть данных могла не попасть")
     checks["pagination"] = pagination_done
 
-    # 5. Пригодность для следующего шага.
-    next_ready = True
-    if next_step:
-        needed = [
-            str(param)
-            for param in (next_step.get("required_params") or [])
-            if str(param) not in arguments
-        ]
-        if needed:
-            sample = items[0] if items and isinstance(items[0], dict) else payload
-            keys = {str(k).casefold() for k in (sample or {}).keys()}
-            unresolved = [param for param in needed if param.casefold() not in keys]
-            if unresolved and len(unresolved) == len(needed):
-                next_ready = False
-                reasons.append(
-                    "для следующего шага не хватает данных: " + ", ".join(unresolved)
-                )
-    checks["next_step"] = next_ready
+    # 5. Следующий шаг сам возьмёт свои входы. Имена required_params у него
+    # другие (task_ref, user_id, title) — это не поля текущего ответа.
+    _ = next_step
+    checks["next_step"] = True
 
-    if not (checks["coverage"] and checks["fields"] and pagination_done and next_ready):
+    if not (checks["coverage"] and checks["fields"] and pagination_done):
         return ToolVerdict(
             data_status=PARTIAL,
             reasons=reasons,

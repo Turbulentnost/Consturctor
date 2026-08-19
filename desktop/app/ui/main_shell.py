@@ -45,10 +45,11 @@ from app.ui.pages.agent_passport_page import AgentPassportPage
 from app.ui.pages.agent_kpi_preview_page import AgentKpiPreviewPage
 from app.ui.pages.agent_schedule_page import AgentSchedulePage
 from app.ui.pages.agent_implementation_page import AgentImplementationPage
+from app.ui.pages.agent_history_page import AgentHistoryPage
 from app.ui.pages.agent_run_page import AgentRunPage
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
-from app.ui.pages.my_agents_page import AgentHistoryDialog, MyAgentsPage
+from app.ui.pages.my_agents_page import MyAgentsPage
 from app.ui.pages.my_dashboard_page import MyDashboardPage
 from app.ui.pages.regulation_review_page import RegulationReviewPage
 from app.ui.pages.regulation_creation_page import RegulationCreationPage
@@ -210,6 +211,7 @@ class MainShell(QWidget):
         self._page_kpi_preview = AgentKpiPreviewPage(self._api)
         self._page_loading = LoadingPage()
         self._page_notifications = NotificationsPage()
+        self._page_history = AgentHistoryPage(self._api)
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_implementation_agents)
@@ -229,6 +231,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_loading)
         self._pages.addWidget(self._page_kpi_preview)
         self._pages.addWidget(self._page_notifications)
+        self._pages.addWidget(self._page_history)
         self._page_index = {
             "create": 0,
             "agents": 1,
@@ -249,6 +252,7 @@ class MainShell(QWidget):
             "loading": 16,
             "kpi_preview": 17,
             "notifications": 18,
+            "agent_history": 19,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
@@ -272,6 +276,10 @@ class MainShell(QWidget):
         self._page_agents.stop_auto_run_requested.connect(self._on_stop_published_agent)
         self._page_agents.run_agent_requested.connect(self._on_run_published_agent)
         self._page_agents.history_requested.connect(self._on_agent_history_requested)
+        self._page_history.back_requested.connect(
+            lambda: self._pages.setCurrentIndex(self._page_index["agents"])
+        )
+        self._page_history.failed.connect(self._readiness_failed.emit)
         self._page_passport.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["agents"]))
         self._page_passport.draft_requested.connect(self._on_passport_draft_requested)
         self._page_passport.answer_requested.connect(self._on_passport_answer_requested)
@@ -455,6 +463,7 @@ class MainShell(QWidget):
 
     def _apply_user(self, user: UserProfile) -> None:
         self._user = user
+        self._api._user_id = user.id
         self.user_menu.set_user(fio=user.fio, position=user.position)
         self._load_avatar(user)
         pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap
@@ -1634,14 +1643,22 @@ class MainShell(QWidget):
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._agent_history_ready.emit((title, runs))
+            self._agent_history_ready.emit((title, workflow_id, runs))
 
         Thread(target=run, daemon=True).start()
 
     def _show_agent_history(self, payload: object) -> None:
-        title, runs = payload if isinstance(payload, tuple) else ("ИИ-агент", [])
-        dialog = AgentHistoryDialog(title=str(title or "ИИ-агент"), runs=list(runs or []), parent=self)
-        dialog.exec()
+        title, workflow_id, runs = ("ИИ-агент", "", [])
+        if isinstance(payload, tuple) and len(payload) >= 3:
+            title = str(payload[0] or "ИИ-агент")
+            workflow_id = str(payload[1] or "")
+            runs = list(payload[2] or [])
+        elif isinstance(payload, tuple) and len(payload) >= 2:
+            title = str(payload[0] or "ИИ-агент")
+            runs = list(payload[1] or [])
+        self.sidebar.set_active_key("agents", animate=False)
+        self._page_history.show_history(title=title, workflow_id=workflow_id, runs=runs)
+        self._pages.setCurrentIndex(self._page_index["agent_history"])
 
 
 def _suggestions_from_role_match(role_match: RoleMatchResult | None) -> list[AgentSuggestion]:

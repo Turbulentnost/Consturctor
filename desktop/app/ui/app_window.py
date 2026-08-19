@@ -10,7 +10,7 @@ from app.agents.headless_runner import HeadlessRunner
 from app.api_client import ApiClient, ApiError, LoginResult
 from app.notifications.service import NotificationService
 from app.session_store import clear_session, load_session
-from app.tools.hitl import install_confirm_host, set_reveal_callback
+from app.tools.hitl import install_confirm_host, set_away_notify_callback
 from app.tools.runtime_api import configure as configure_runtime_api
 from app.ui.login_page import LoginPage
 from app.ui.main_shell import MainShell
@@ -57,7 +57,7 @@ class AppWindow(QMainWindow):
         self._notify.command_received.connect(self._runner.handle_command)
         self._runner.toast_requested.connect(self._on_tray_toast)
         install_confirm_host(self)
-        set_reveal_callback(self.reveal)
+        set_away_notify_callback(self._on_away_confirmation)
 
         if not self._try_restore_session():
             self._stack.setCurrentWidget(self.login_page)
@@ -87,6 +87,38 @@ class AppWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def _agent_title(self, workflow_id: str) -> str:
+        wid = (workflow_id or "").strip()
+        run = getattr(self.main_shell, "_page_agent_run", None)
+        rec = getattr(run, "_workflow", None)
+        if rec is not None and str(getattr(rec, "id", "") or "") == wid:
+            return (getattr(rec, "title", "") or "").strip() or "агент"
+        page = getattr(self.main_shell, "_page_workflows", None)
+        rec = getattr(page, "_record", None)
+        if rec is not None and str(getattr(rec, "id", "") or "") == wid:
+            return (getattr(rec, "title", "") or "").strip() or "агент"
+        if not wid:
+            return "агент"
+        try:
+            return (self.api.get_workflow(wid).title or "").strip() or "агент"
+        except ApiError:
+            return "агент"
+
+    def _on_away_confirmation(self, workflow_id: str, tool: str, preview: str) -> None:
+        _ = preview
+        name = self._agent_title(workflow_id)
+        title = f"Агент «{name}» ждёт вашего подтверждения"
+        body = f"Нужно разрешить «{tool}»."
+        try:
+            self.api.create_inbox_notification(
+                title=title,
+                body=body,
+                workflow_id=workflow_id,
+            )
+            self.main_shell.refresh_notification_badge()
+        except ApiError:
+            self._on_tray_toast(title, body, workflow_id)
 
     def _setup_tray(self, logo: Path | None) -> None:
         self._tray = QSystemTrayIcon(self)

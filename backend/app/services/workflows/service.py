@@ -1690,6 +1690,7 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
             "onec.erp_tasks_period",
             "onec.erp_subordinate_tasks",
             "onec.docflow_tasks",
+            "users.subordinates",
             "turboproject",
         ]
 
@@ -1734,6 +1735,7 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
                     "onec.erp_tasks_period",
                     "onec.erp_subordinate_tasks",
                     "onec.docflow_tasks",
+                    "users.subordinates",
                     "turboproject",
                 ]
             )

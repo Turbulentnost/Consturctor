@@ -55,7 +55,7 @@ def _error(request_id, message: str, code: int = -32000) -> None:
 
 def _call_tool(name: str, arguments: dict) -> dict:
     from app.tools import ToolHostError, invoke_tool
-    from app.tools.hitl import confirm_level1_tool, is_read_tool
+    from app.tools.hitl import confirm_level1_tool, needs_confirmation
 
     if (
         name.startswith("imap.")
@@ -68,7 +68,7 @@ def _call_tool(name: str, arguments: dict) -> dict:
         raise ToolHostError(
             f"«{name}» выполняется на backend Constructor, не в MCP-процессе Cursor."
         )
-    if not is_read_tool(name) and not confirm_level1_tool(name, arguments):
+    if needs_confirmation(name) and not confirm_level1_tool(name, arguments):
         raise ToolHostError(
             "Запись и прочие операции уровня 1 требуют подтверждения в окне Constructor."
         )

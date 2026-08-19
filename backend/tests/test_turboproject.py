@@ -11,8 +11,18 @@ from app.services.turboproject import (
     build_overdue_tasks,
     build_project_payload,
     invoke_turboproject,
+    is_phrase_query,
+    is_project_name_query,
+    list_projects,
     unique_resource_names,
 )
+from app.services.workflows.cursor_tools import (
+    build_tool_envelope,
+    format_tool_inputs,
+    step_candidates_block,
+    tool_catalog_block,
+)
+from app.services.workflows.tool_result_validation import evaluate_tool_result
 
 
 def test_tool_registered() -> None:
@@ -99,3 +109,96 @@ def test_invoke_stub_when_not_configured(monkeypatch) -> None:
     assert result["source"] == "stub"
     assert result["projects"] == []
     assert result["total_projects"] == 0
+
+
+def test_phrase_query_is_not_a_project_name() -> None:
+    phrase = (
+        "активные проекты участники Мангасарян Давид Каренович, "
+        "Жалыбин Максим Дмитриевич, Комарькова Анастасия Эдуардовна"
+    )
+    assert is_phrase_query(phrase)
+    assert not is_project_name_query(phrase)
+    assert is_project_name_query("Реконструкция")
+    assert is_project_name_query("ПР-001")
+    assert not is_phrase_query("Реконструкция")
+
+
+def test_list_projects_ignores_phrase_query() -> None:
+    result = list_projects(
+        {
+            "query": (
+                "активные проекты участники Мангасарян Давид Каренович, "
+                "Жалыбин Максим Дмитриевич"
+            )
+        }
+    )
+    assert result["projects"] == []
+    assert "не фраза" in result["summary"]
+
+
+def test_tool_envelope_splits_received_and_inputs() -> None:
+    phrase = "активные проекты участники Иванов Иван Иванович, Петров Пётр Петрович"
+    envelope = build_tool_envelope("turboproject", {"query": phrase, "unknown": 1})
+    assert envelope["received"]["query"] == phrase
+    assert "query" not in envelope["accepted"]
+    assert "unknown" in envelope["ignored"]
+    assert "query" in envelope["ignored"]
+    assert "query" in envelope["inputs"]
+    assert "manager" in envelope["inputs"]
+    assert "фраза" in envelope["inputs"]["query"]
+    assert all(key in envelope["inputs"] for key in envelope["accepted"])
+
+
+def test_tool_envelope_keeps_project_name_query() -> None:
+    envelope = build_tool_envelope("turboproject", {"query": "Реконструкция", "limit": 5})
+    assert envelope["accepted"]["query"] == "Реконструкция"
+    assert envelope["accepted"]["limit"] == 5
+    assert "query" not in envelope["ignored"]
+
+
+def test_users_list_envelope_ignores_generic_query() -> None:
+    envelope = build_tool_envelope("users.list", {"query": "получатели"})
+    assert "query" not in envelope["accepted"]
+    assert envelope["ignored"]["query"]
+    assert "query" in envelope["inputs"]
+
+
+def test_empty_result_with_ignored_query_is_suspect() -> None:
+    envelope = build_tool_envelope(
+        "turboproject",
+        {"query": "активные проекты участники Иванов Иван Иванович"},
+    )
+    verdict = evaluate_tool_result(
+        step={"system": "turboproject", "operation": "search"},
+        name="turboproject",
+        arguments={"query": "активные проекты участники Иванов Иван Иванович"},
+        result={"projects": [], "summary": "query не применён"},
+        ignored=envelope["ignored"],
+    )
+    assert verdict.data_status == "empty_suspect"
+    assert not verdict.accepted
+    assert "inputs" in verdict.next_action
+
+
+def test_every_tool_input_has_description() -> None:
+    for item in list_tools():
+        schema = item.get("input_schema") if isinstance(item.get("input_schema"), dict) else {}
+        props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        for key, spec in props.items():
+            assert isinstance(spec, dict), item["name"]
+            desc = str(spec.get("description") or "").strip()
+            assert desc, f"{item['name']}.{key}"
+            assert desc != f"поле {key}", f"{item['name']}.{key} без описания"
+
+
+def test_prompt_shows_inputs_for_candidates() -> None:
+    catalog = tool_catalog_block()
+    assert "входы:" in catalog
+    assert "query" in catalog
+    block = step_candidates_block(
+        {"steps": [{"id": "s3", "tool_candidates": ["turboproject"]}]}
+    )
+    assert "turboproject" in block
+    assert "входы:" in block
+    assert "не фраза" in format_tool_inputs("turboproject")
+    assert "arguments: {}" in format_tool_inputs("users.current")

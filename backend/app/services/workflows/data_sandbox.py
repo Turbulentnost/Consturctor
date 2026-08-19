@@ -83,26 +83,30 @@ def run_dataset_code(
         return {"ok": False, "error": problem}
     script = (
         "import json, sys\n"
+        "sys.stdin.reconfigure(encoding='utf-8')\n"
+        "sys.stdout.reconfigure(encoding='utf-8')\n"
+        "sys.stderr.reconfigure(encoding='utf-8')\n"
         "data = json.loads(sys.stdin.read())\n"
         "result = None\n"
         f"{code.rstrip()}\n"
         "if result is None:\n"
         "    raise SystemExit('assign result')\n"
-        "print(json.dumps({'ok': True, 'result': result}, ensure_ascii=False, default=str))\n"
+        "sys.stdout.write(json.dumps({'ok': True, 'result': result}, ensure_ascii=False, default=str))\n"
     )
     env = {
         "SYSTEMROOT": os.environ.get("SYSTEMROOT", r"C:\Windows"),
         "WINDIR": os.environ.get("WINDIR", r"C:\Windows"),
         "PATH": os.environ.get("PATH", ""),
         "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
         "PYTHONNOUSERSITE": "1",
     }
+    payload = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
     try:
         proc = subprocess.run(
             [sys.executable, "-I", "-c", script],
-            input=json.dumps(data, ensure_ascii=False, default=str),
+            input=payload,
             capture_output=True,
-            text=True,
             timeout=max(1.0, float(timeout_s)),
             cwd=tempfile.gettempdir(),
             env=env,
@@ -111,16 +115,18 @@ def run_dataset_code(
         return {"ok": False, "error": f"Песочница превысила {int(timeout_s)} с."}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
+    stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
+    stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
     if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "ошибка песочницы").strip()
+        err = (stderr or stdout or "ошибка песочницы").strip()
         if "assign result" in err:
             return {"ok": False, "error": "Код должен положить ответ в переменную result."}
         return {"ok": False, "error": err[:800]}
     try:
-        payload = json.loads(proc.stdout or "")
+        parsed = json.loads(stdout or "")
     except json.JSONDecodeError:
         return {"ok": False, "error": "Песочница вернула не JSON."}
-    result = payload.get("result") if isinstance(payload, dict) else payload
+    result = parsed.get("result") if isinstance(parsed, dict) else parsed
     return {"ok": True, "result": _clip_value(result)}
 
 

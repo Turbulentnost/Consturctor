@@ -380,6 +380,8 @@ _DRAFT_SCHEMA = (
     '      "entity": "сущность из контракта: task, document, project, mail_message, user…",\n'
     '      "operation": "search|read|list|create|update|export|notify|execute",\n'
     '      "required_params": ["какие параметры нужны для вызова"],\n'
+    '      "provides": ["какие поля отдаём следующим шагам"],\n'
+    '      "needs_from": [{"step": "s1", "field": "projects", "as": "file_id"}],\n'
     '      "data_expectation": "какие данные и поля должны прийти",\n'
     '      "done_when": "когда шаг считается выполненным",\n'
     '      "on_empty": "что делать, если ответ пустой",\n'
@@ -422,6 +424,9 @@ def build_playbook_draft_prompt(
         "Если в материалах объект описан через самого исполнителя («текущий пользователь», "
         "«мои задачи»), это не вопрос человеку: добавь шаг, который читает контекст агента.\n"
         "У каждого шага обязательно заполни done_when, on_empty и on_error.\n"
+        "Шаги стыкуй явно: provides — что отдаём дальше, needs_from — откуда берём ссылку.\n"
+        "Карточка (read) не стоит первой: ей нужен id/ref из предыдущего search/list той же сущности.\n"
+        "notify не берёт user_id из проекта или задачи 1С — сначала constructor · user · read или list.\n"
         "Верни ТОЛЬКО один JSON-объект (можно в ```json) по схеме:\n"
         f"{_DRAFT_SCHEMA}\n"
         f"Название: {title_from_materials(notes=notes, document_text=document_text, document_name=document_name, fallback=title or 'агент')}\n"
@@ -431,6 +436,12 @@ def build_playbook_draft_prompt(
         f"{body}\n"
         "===== END ====="
     )
+
+
+def _parse_needs_from(raw: Any) -> list[dict[str, str]]:
+    from app.services.workflows.playbook_validation import _parse_needs_from as parse_needs
+
+    return parse_needs(raw)
 
 
 def _draft_step_from_dict(data: dict[str, Any], index: int) -> dict[str, Any]:
@@ -448,6 +459,12 @@ def _draft_step_from_dict(data: dict[str, Any], index: int) -> dict[str, Any]:
             for item in (data.get("required_params") or [])
             if str(item).strip()
         ],
+        "provides": [
+            str(item).strip()
+            for item in (data.get("provides") or [])
+            if str(item).strip()
+        ],
+        "needs_from": _parse_needs_from(data.get("needs_from")),
         "data_expectation": str(data.get("data_expectation") or "").strip(),
         "done_when": str(data.get("done_when") or data.get("doneWhen") or "").strip(),
         "on_empty": str(data.get("on_empty") or data.get("onEmpty") or "").strip(),
@@ -554,6 +571,15 @@ def draft_summary_text(draft: dict[str, Any]) -> str:
         )
         if step.get("tool_candidates"):
             lines.append(f"    инструменты: {', '.join(step['tool_candidates'])}")
+        if step.get("provides"):
+            lines.append(f"    отдаёт: {', '.join(step['provides'])}")
+        if step.get("needs_from"):
+            links = []
+            for item in step["needs_from"]:
+                if isinstance(item, dict) and item.get("as"):
+                    links.append(f"{item['as']} ← {item.get('step')}.{item.get('field')}")
+            if links:
+                lines.append(f"    берёт: {', '.join(links)}")
         if step.get("data_expectation"):
             lines.append(f"    ожидаем данные: {step['data_expectation']}")
         if step.get("done_when"):
@@ -604,7 +630,8 @@ def build_playbook_prompt(
         "}\n"
         "Зафиксируй выбранный объём (какие проекты/люди/период). "
         "Не пиши «бери все», если человек этого не сказал.\n"
-        "Если человек просил уведомления — в instructions явно: вызови notify.send.\n"
+        "Если человек просил уведомления — в instructions явно: вызови notify.send сразу. "
+        "notify.send не ждёт подтверждения человека и не откладывается «на HITL».\n"
         "name — из паспорта, не notes.txt.\n"
         "triggers — только если человек или ТЗ сказали, когда запускать; иначе [].\n"
         "condition не копируй абзацем из ТЗ.\n"
@@ -636,8 +663,10 @@ def build_published_run_prompt(
         "(проекты, люди, период) — спроси человека блоком CLARIFY и остановись. "
         "Не бери весь каталог по умолчанию.\n"
         "Не спрашивай про поля и протоколы. Не составляй план-JSON.\n"
-        "Если инструкция или задача требуют уведомить человека — вызови notify.send "
-        "(user_id из users.list). Без этого tool уведомление на компьютер не уйдёт.\n"
+        "Если инструкция или задача требуют уведомить человека — вызови notify.send сразу "
+        "(user_id из users.list). Подтверждение человека для notify.send не нужно: "
+        "не откладывай отправку и не пиши «алерт не отправлен (нужно подтверждение)». "
+        "Без этого tool уведомление на компьютер не уйдёт.\n"
         f"{_RESULT_HINT}\n"
         f"Агент: {title or 'ИИ-агент'}\n\n"
         "===== ИНСТРУКЦИЯ =====\n"
@@ -1109,6 +1138,8 @@ TESTS_USER_CLARIFY_INSTRUCTION = (
     "(открытые сейчас) и `onec.erp_tasks_period` (за период, date_from/date_to YYYY-MM-DD). "
     "Только документооборот: `onec.docflow_tasks`. "
     "Проекты MS Project + 1С: `turboproject` (поля — из ответа инструмента). "
+    "Список подчинённых руководителя (люди из оргструктуры erp_pm, "
+    "не справочник Constructor, регистрация не нужна): `users.subordinates`. "
     "Задачи подчинённых руководителя: `onec.erp_subordinate_tasks` "
     "(сначала прямые подчинённые и их задачи/сроки за date_from…date_to, "
     "затем подчинённые каждого из них; человек из JWT). "

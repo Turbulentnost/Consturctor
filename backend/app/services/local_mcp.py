@@ -13,6 +13,12 @@ class LocalMcpError(RuntimeError):
     pass
 
 
+def _prop(typ: str, description: str, **extra: Any) -> dict[str, Any]:
+    field: dict[str, Any] = {"type": typ, "description": description}
+    field.update(extra)
+    return field
+
+
 def _raw_tools() -> list[dict[str, Any]]:
     return [
         {
@@ -25,9 +31,11 @@ def _raw_tools() -> list[dict[str, Any]]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
-                    "max_results": {"type": "integer", "default": 5},
-                    "fetch_top": {"type": "boolean", "default": False},
+                    "query": _prop("string", "Что искать в вебе — короткая фраза, не ТЗ агента"),
+                    "max_results": _prop("integer", "Сколько ссылок вернуть", default=5),
+                    "fetch_top": _prop(
+                        "boolean", "Если true — ещё скачать текст первой ссылки", default=False
+                    ),
                 },
                 "required": ["query"],
             },
@@ -42,22 +50,23 @@ def _raw_tools() -> list[dict[str, Any]]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["open", "extract", "search"],
-                        "default": "open",
-                    },
-                    "url": {"type": "string"},
-                    "query": {"type": "string"},
-                    "wait_ms": {"type": "integer", "default": 0},
-                    "wait_selector": {"type": "string"},
-                    "input_selector": {"type": "string"},
-                    "submit_selector": {"type": "string"},
-                    "item_selector": {"type": "string"},
-                    "title_selector": {"type": "string"},
-                    "link_selector": {"type": "string"},
-                    "max_items": {"type": "integer", "default": 30},
-                    "headless": {"type": "boolean", "default": True},
+                    "action": _prop(
+                        "string",
+                        "open — открыть страницу, extract — вытащить блоки, search — поиск на сайте",
+                        enum=["open", "extract", "search"],
+                        default="open",
+                    ),
+                    "url": _prop("string", "Полный URL страницы, начиная с https://"),
+                    "query": _prop("string", "Текст поиска на сайте, только для action=search"),
+                    "wait_ms": _prop("integer", "Пауза после загрузки, миллисекунды", default=0),
+                    "wait_selector": _prop("string", "CSS-селектор, которого ждать"),
+                    "input_selector": _prop("string", "CSS поля ввода для search"),
+                    "submit_selector": _prop("string", "CSS кнопки отправки поиска"),
+                    "item_selector": _prop("string", "CSS карточки результата"),
+                    "title_selector": _prop("string", "CSS заголовка внутри карточки"),
+                    "link_selector": _prop("string", "CSS ссылки внутри карточки"),
+                    "max_items": _prop("integer", "Максимум карточек", default=30),
+                    "headless": _prop("boolean", "Без окна браузера", default=True),
                 },
                 "required": ["url"],
             },
@@ -69,9 +78,9 @@ def _raw_tools() -> list[dict[str, Any]]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "default": 20},
-                    "user": {"type": "string"},
-                    "query": {"type": "string"},
+                    "limit": _prop("integer", "Сколько писем вернуть", default=20),
+                    "user": _prop("string", "Ящик. Пусто — ящик сессии"),
+                    "query": _prop("string", "Подстрока в теме или отправителе, не свободное ТЗ"),
                 },
             },
         },
@@ -82,9 +91,9 @@ def _raw_tools() -> list[dict[str, Any]]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
-                    "user": {"type": "string"},
-                    "limit": {"type": "integer", "default": 50},
+                    "query": _prop("string", "Текст поиска в теме или отправителе"),
+                    "user": _prop("string", "Ящик. Пусто — ящик сессии"),
+                    "limit": _prop("integer", "Сколько писем вернуть", default=50),
                 },
             },
         },
@@ -95,9 +104,9 @@ def _raw_tools() -> list[dict[str, Any]]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "uid": {"type": "integer"},
-                    "message_id": {"type": "integer"},
-                    "user": {"type": "string"},
+                    "uid": _prop("integer", "uid письма из imap.list_unread или imap.search"),
+                    "message_id": _prop("integer", "Альтернатива uid: внутренний id письма"),
+                    "user": _prop("string", "Ящик. Пусто — ящик сессии"),
                 },
             },
         },
@@ -108,9 +117,9 @@ def _raw_tools() -> list[dict[str, Any]]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "uid": {"type": "integer"},
-                    "message_id": {"type": "integer"},
-                    "user": {"type": "string"},
+                    "uid": _prop("integer", "uid письма из imap.list_unread или imap.search"),
+                    "message_id": _prop("integer", "Альтернатива uid: внутренний id письма"),
+                    "user": _prop("string", "Ящик. Пусто — ящик сессии"),
                 },
             },
         },
@@ -135,7 +144,7 @@ def _raw_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Подстрока в имени сущности (Document_, Catalog_, *Register_)",
                     },
-                    "limit": {"type": "integer", "default": 400},
+                    "limit": _prop("integer", "Максимум сущностей в списке", default=400),
                     "refresh": {
                         "type": "boolean",
                         "default": False,
@@ -197,8 +206,8 @@ def _raw_tools() -> list[dict[str, Any]]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "entity": {"type": "string"},
-                    "body": {"type": "object"},
+                    "entity": _prop("string", "Имя EntitySet из onec.odata_catalog"),
+                    "body": _prop("object", "Поля нового объекта 1С, как в OData"),
                 },
                 "required": ["entity"],
             },
@@ -210,9 +219,9 @@ def _raw_tools() -> list[dict[str, Any]]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "entity": {"type": "string"},
-                    "ref_key": {"type": "string"},
-                    "body": {"type": "object"},
+                    "entity": _prop("string", "Имя EntitySet из onec.odata_catalog"),
+                    "ref_key": _prop("string", "GUID объекта, который меняем"),
+                    "body": _prop("object", "Только поля, которые нужно изменить"),
                 },
                 "required": ["entity", "ref_key"],
             },
@@ -224,8 +233,8 @@ def _raw_tools() -> list[dict[str, Any]]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "document_ref_key": {"type": "string"},
-                    "filename": {"type": "string"},
+                    "document_ref_key": _prop("string", "GUID документа 1С"),
+                    "filename": _prop("string", "Имя файла в папке агента"),
                 },
             },
         },
@@ -235,7 +244,9 @@ def _raw_tools() -> list[dict[str, Any]]:
             "execution": "server",
             "input_schema": {
                 "type": "object",
-                "properties": {"sql": {"type": "string"}},
+                "properties": {
+                    "sql": _prop("string", "Один SELECT. Таблицы только из allowlist, без INSERT/UPDATE"),
+                },
                 "required": ["sql"],
             },
         },
@@ -250,7 +261,7 @@ def _raw_tools() -> list[dict[str, Any]]:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "default": 50},
+                    "limit": _prop("integer", "Максимум задач", default=50),
                     "fio": {
                         "type": "string",
                         "description": "Необязательно: чужое ФИО. Пусто — пользователь из JWT.",
@@ -285,9 +296,9 @@ def _raw_tools() -> list[dict[str, Any]]:
                         "default": True,
                         "description": "Включать выполненные задачи",
                     },
-                    "limit": {"type": "integer", "default": 100},
-                    "fio": {"type": "string"},
-                    "user_id": {"type": "string"},
+                    "limit": _prop("integer", "Максимум задач", default=100),
+                    "fio": _prop("string", "Чужое ФИО. Пусто — пользователь из JWT"),
+                    "user_id": _prop("string", "id пользователя 1С. Пусто — из JWT"),
                 },
                 "required": ["date_from", "date_to"],
             },
@@ -372,7 +383,7 @@ def _raw_tools() -> list[dict[str, Any]]:
                         "type": "boolean",
                         "description": "Включать выполненные задачи",
                     },
-                    "limit": {"type": "integer", "default": 200},
+                    "limit": _prop("integer", "Максимум задач", default=200),
                 },
             },
         },
@@ -382,8 +393,9 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "Проекты TurboProject с синхронизацией 1С. "
                 "Карточка: имя, даты MSP/1С, статистика задач, просроченные задачи и вехи, "
                 "ресурсы (ФИО), руководитель/куратор/заказчик и весь блок data_1c. "
-                "Фильтры: query (имя/номер), manager (руководитель 1С), file_id, "
-                "overdue_only, limit. Учётка на сервере. Исполняется на сервере."
+                "Фильтры: query (только название / имя MPP / номер 1С, не фраза), "
+                "manager (одно ФИО руководителя 1С), file_id, overdue_only, limit. "
+                "Учётка на сервере. Исполняется на сервере."
             ),
             "execution": "server",
             "input_schema": {
@@ -391,7 +403,10 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Поиск по названию проекта, имени MPP или номеру 1С",
+                        "description": (
+                            "Название проекта, имя MPP или номер 1С — не фраза "
+                            "и не список участников"
+                        ),
                     },
                     "manager": {
                         "type": "string",
@@ -421,124 +436,124 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
     """Схемы ported desktop-инструментов (исполнение на клиенте)."""
     items: list[tuple[str, str, dict[str, Any]]] = [
         ("outlook.search_mail", "Поиск писем Outlook через COM на desktop.", {
-            "folder": {"type": "string"},
-            "date": {"type": "string"},
-            "date_from": {"type": "string"},
-            "date_to": {"type": "string"},
-            "query": {"type": "string"},
-            "max_results": {"type": "integer"},
+            "folder": _prop("string", "Папка Outlook, например Inbox"),
+            "date": _prop("string", "Один день YYYY-MM-DD"),
+            "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
+            "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
+            "query": _prop("string", "Подстрока в теме или отправителе, не список людей"),
+            "max_results": _prop("integer", "Максимум писем"),
         }),
         ("outlook.read_calendar", "Чтение календаря Outlook через COM на desktop.", {
-            "date": {"type": "string"},
-            "date_from": {"type": "string"},
-            "date_to": {"type": "string"},
-            "days_forward": {"type": "integer"},
-            "max_results": {"type": "integer"},
+            "date": _prop("string", "Один день YYYY-MM-DD"),
+            "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
+            "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
+            "days_forward": _prop("integer", "Сколько дней вперёд от сегодня, если дат нет"),
+            "max_results": _prop("integer", "Максимум событий"),
         }),
         ("browser.list_installed_browsers", "Список установленных браузеров на desktop.", {}),
         ("browser.open_browser", "Открыть установленный браузер (штатный профиль).", {
-            "browser_id": {"type": "string"},
-            "url": {"type": "string"},
+            "browser_id": _prop("string", "id браузера из browser.list_installed_browsers"),
+            "url": _prop("string", "Необязательный URL для открытия"),
         }),
         ("browser.search_web", "Веб-поиск DuckDuckGo на desktop.", {
-            "query": {"type": "string"},
-            "max_results": {"type": "integer"},
+            "query": _prop("string", "Что искать — короткая фраза"),
+            "max_results": _prop("integer", "Сколько ссылок вернуть"),
         }),
         ("browser.open_page", "Прочитать web-страницу через CDP на desktop.", {
-            "url": {"type": "string"},
-            "max_chars": {"type": "integer"},
-            "browser_id": {"type": "string"},
+            "url": _prop("string", "Полный URL, начиная с https://"),
+            "max_chars": _prop("integer", "Обрезать текст страницы до N символов"),
+            "browser_id": _prop("string", "id браузера. Пусто — текущий"),
         }),
         ("browser.extract_table", "Извлечь таблицы со страницы на desktop.", {
-            "url": {"type": "string"},
-            "table_hint": {"type": "string"},
+            "url": _prop("string", "Полный URL страницы с таблицей"),
+            "table_hint": _prop("string", "Подсказка: заголовок или текст рядом с таблицей"),
         }),
         ("browser.scroll_page", "Прокрутить страницу и прочитать текст.", {
-            "url": {"type": "string"},
-            "direction": {"type": "string"},
-            "pixels": {"type": "integer"},
+            "url": _prop("string", "URL открытой страницы"),
+            "direction": _prop("string", "down или up"),
+            "pixels": _prop("integer", "На сколько пикселей прокрутить"),
         }),
         ("browser.click_link", "Перейти по ссылке на странице.", {
-            "url": {"type": "string"},
-            "link_text": {"type": "string"},
-            "href": {"type": "string"},
+            "url": _prop("string", "URL текущей страницы"),
+            "link_text": _prop("string", "Видимый текст ссылки"),
+            "href": _prop("string", "Адрес ссылки, если текст неизвестен"),
         }),
         ("browser.navigate", "Открыть URL в управляемом браузере (скриншот).", {
-            "url": {"type": "string"},
-            "browser_id": {"type": "string"},
+            "url": _prop("string", "Полный URL"),
+            "browser_id": _prop("string", "id браузера. Пусто — текущий"),
         }),
         ("browser.screenshot", "Скриншот текущей вкладки браузера.", {
-            "browser_id": {"type": "string"},
+            "browser_id": _prop("string", "id браузера. Пусто — текущий"),
         }),
         ("browser.get_page_html", "HTML текущей вкладки через CDP.", {
-            "url": {"type": "string"},
-            "max_chars": {"type": "integer"},
+            "url": _prop("string", "URL страницы"),
+            "max_chars": _prop("integer", "Обрезать HTML до N символов"),
         }),
         ("browser.dump_page_source", "Выгрузить HTML+CSS страницы в папку агента.", {
-            "url": {"type": "string"},
-            "dump_name": {"type": "string"},
+            "url": _prop("string", "URL страницы"),
+            "dump_name": _prop("string", "Имя папки выгрузки в каталоге агента"),
         }),
         ("browser.click", "Клик по координатам в браузере.", {
-            "x": {"type": "number"},
-            "y": {"type": "number"},
+            "x": _prop("number", "Координата X в пикселях"),
+            "y": _prop("number", "Координата Y в пикселях"),
         }),
         ("browser.type_text", "Ввод текста в активное поле браузера.", {
-            "text": {"type": "string"},
+            "text": _prop("string", "Текст для ввода"),
         }),
         ("browser.press_key", "Нажатие клавиши в браузере.", {
-            "key": {"type": "string"},
+            "key": _prop("string", "Клавиша, например Enter или Tab"),
         }),
         ("browser.scroll", "Прокрутка вкладки браузера (UI).", {
-            "direction": {"type": "string"},
-            "pixels": {"type": "integer"},
+            "direction": _prop("string", "down или up"),
+            "pixels": _prop("integer", "На сколько пикселей прокрутить"),
         }),
         ("onec.search_documents", "Поиск документов 1С (desktop COM/read-only).", {
-            "document_type": {"type": "string"},
-            "number": {"type": "string"},
-            "query": {"type": "string"},
-            "max_results": {"type": "integer"},
+            "document_type": _prop("string", "Вид документа 1С, если известен"),
+            "number": _prop("string", "Номер документа"),
+            "query": _prop("string", "Подстрока в номере или названии, не фраза-ТЗ"),
+            "max_results": _prop("integer", "Максимум документов"),
         }),
         ("onec.get_document_card", "Карточка документа 1С на desktop.", {
-            "document_ref": {"type": "string"},
+            "document_ref": _prop("string", "Ссылка документа из onec.search_documents"),
         }),
         ("onec.search_tasks", "Поиск задач 1С на desktop.", {
-            "query": {"type": "string"},
-            "status": {"type": "string"},
-            "max_results": {"type": "integer"},
+            "query": _prop("string", "Подстрока в названии задачи"),
+            "status": _prop("string", "Статус, если нужен фильтр"),
+            "max_results": _prop("integer", "Максимум задач"),
         }),
         ("onec.get_task_card", "Карточка задачи 1С на desktop.", {
-            "task_ref": {"type": "string"},
+            "task_ref": _prop("string", "Ссылка задачи из onec.search_tasks"),
         }),
         ("excel.list_files", "Список файлов в рабочей папке агента.", {}),
         ("excel.read_workbook", "Чтение .xlsx из папки агента.", {
-            "filename": {"type": "string"},
-            "sheet": {"type": "string"},
-            "max_rows": {"type": "integer"},
+            "filename": _prop("string", "Имя файла в папке агента, например report.xlsx"),
+            "sheet": _prop("string", "Имя листа. Пусто — первый"),
+            "max_rows": _prop("integer", "Максимум строк"),
         }),
         ("excel.create_workbook", "Создать .xlsx в папке агента.", {
-            "filename": {"type": "string"},
-            "headers": {"type": "array", "items": {"type": "string"}},
-            "rows": {"type": "array"},
+            "filename": _prop("string", "Имя нового файла, например report.xlsx"),
+            "headers": _prop("array", "Заголовки колонок", items={"type": "string"}),
+            "rows": _prop("array", "Строки таблицы: список списков или объектов"),
         }),
         ("excel.edit_workbook", "Изменить .xlsx в папке агента.", {
-            "filename": {"type": "string"},
-            "operations": {"type": "array"},
+            "filename": _prop("string", "Имя существующего файла в папке агента"),
+            "operations": _prop("array", "Список операций правки листа"),
         }),
         ("workspace.powershell_run", "PowerShell только в папке агента.", {
-            "command": {"type": "string"},
-            "timeout_seconds": {"type": "integer"},
+            "command": _prop("string", "Команда PowerShell без выхода из папки агента"),
+            "timeout_seconds": _prop("integer", "Таймаут выполнения"),
         }),
         ("code.write_python", "Сохранить .py в папку code агента.", {
-            "code": {"type": "string"},
-            "filename": {"type": "string"},
+            "code": _prop("string", "Текст программы Python"),
+            "filename": _prop("string", "Имя файла, например script.py"),
         }),
         ("code.run_python", "Запустить .py из папки агента.", {
-            "filename": {"type": "string"},
-            "code": {"type": "string"},
-            "timeout_seconds": {"type": "integer"},
+            "filename": _prop("string", "Имя файла из папки code"),
+            "code": _prop("string", "Либо сам код, если файла ещё нет"),
+            "timeout_seconds": _prop("integer", "Таймаут выполнения"),
         }),
         ("agent.wait", "Пауза агента на N секунд.", {
-            "seconds": {"type": "number"},
+            "seconds": _prop("number", "Сколько секунд ждать"),
         }),
         (
             "data.process",
@@ -546,8 +561,8 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "в коде доступны data и нужно присвоить result. "
             "dataset_id бери из усечённого ответа. Исполняется на сервере.",
             {
-                "code": {"type": "string"},
-                "dataset_id": {"type": "string"},
+                "code": _prop("string", "Короткий Python: есть data, присвой result"),
+                "dataset_id": _prop("string", "id набора из предыдущего ответа, например d1"),
             },
             ["code"],
         ),
@@ -556,28 +571,38 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("report.build_schedule_recommendations", "Рекомендации по графику из календаря.", {}),
         ("users.current", "Текущий пользователь сессии Constructor: id, ФИО, должность, подразделение. Если регламент говорит «текущий пользователь», «данный пользователь» или «мои данные» — вызови этот tool, не спрашивай человека.", {}),
         ("users.list", "Список пользователей Constructor: id, ФИО, должность, подразделение. Вызови перед notify.send, чтобы выбрать получателя.", {
-            "query": {"type": "string"},
+            "query": _prop("string", "ФИО, email или id — не роль и не «все» / «получатели»"),
         }, []),
-        ("notify.send", "Отправить уведомление на компьютер получателя (Windows-тост + inbox). user_id бери из users.list — не выдумывай id. Если человек просил уведомления — вызови этот tool до RESULT.", {
-            "user_id": {"type": "string", "description": "id получателя из users.list"},
-            "title": {"type": "string"},
-            "body": {"type": "string"},
-            "send_at": {"type": "string"},
-            "workflow_id": {"type": "string"},
+        (
+            "users.subordinates",
+            "Подчинённые руководителя из оргструктуры erp_pm: ФИО, должность, подразделение. "
+            "Не зависит от регистрации в Constructor. Пустой fio — текущий пользователь сессии.",
+            {
+                "fio": _prop("string", "ФИО руководителя. Пусто — текущий пользователь"),
+                "user_id": _prop("string", "id из сессии или 1С. Пусто — текущий пользователь"),
+            },
+            [],
+        ),
+        ("notify.send", "Отправить уведомление на компьютер получателя (Windows-тост + inbox). user_id бери из users.list — не выдумывай id. Подтверждение человека не нужно: вызывай сразу, не откладывай. Если человек просил уведомления — вызови этот tool до RESULT.", {
+            "user_id": _prop("string", "id получателя из users.list, не ФИО"),
+            "title": _prop("string", "Заголовок уведомления"),
+            "body": _prop("string", "Текст уведомления"),
+            "send_at": _prop("string", "Когда отправить, ISO. Пусто — сразу"),
+            "workflow_id": _prop("string", "id агента. Пусто — текущий"),
         }, ["user_id", "title"]),
         ("agent.schedule", "Запланировать запуск агента: в момент at (ISO), через after_seconds, или когда выполнится condition (свободный текст: файл, письмо, любое событие). Пустой workflow_id = текущий агент.", {
-            "workflow_id": {"type": "string"},
-            "message": {"type": "string"},
-            "at": {"type": "string"},
-            "after_seconds": {"type": "number"},
-            "condition": {"type": "string"},
-            "once": {"type": "boolean"},
+            "workflow_id": _prop("string", "id агента. Пусто — текущий"),
+            "message": _prop("string", "Что сказать агенту при запуске"),
+            "at": _prop("string", "Момент запуска, ISO datetime"),
+            "after_seconds": _prop("number", "Запуск через N секунд, если at нет"),
+            "condition": _prop("string", "Событие: файл, письмо и т.п."),
+            "once": _prop("boolean", "true — один раз, false — повторять"),
         }, []),
         ("agent.schedule.cancel", "Отменить ранее созданный триггер agent.schedule по trigger_id.", {
-            "trigger_id": {"type": "string"},
+            "trigger_id": _prop("string", "id триггера из ответа agent.schedule"),
         }, ["trigger_id"]),
     ]
-    server_tools = {"users.current", "users.list", "notify.send", "data.process"}
+    server_tools = {"users.current", "users.list", "users.subordinates", "notify.send", "data.process"}
     tools: list[dict[str, Any]] = []
     for item in items:
         name, description, properties = item[0], item[1], item[2]
@@ -617,7 +642,8 @@ OPERATIONS = (
 
 # Контракт нужен подбору инструментов и валидации ответа: по названию совместимость
 # определить нельзя (web_search и onec.sql_query «оба ищут»).
-_CONTRACTS: dict[str, tuple[str, str, str, list[str], list[str], str]] = {
+# Третий элемент — одна операция или набор (один tool закрывает несколько).
+_CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str], str]] = {
     # name: (system, entity, operation, required_filters, result_fields, pagination)
     "web_search": ("web", "web_page", "search", ["query"], ["results"], "none"),
     "site_browser": ("web", "web_page", "search", ["url"], ["items", "text"], "none"),
@@ -667,7 +693,14 @@ _CONTRACTS: dict[str, tuple[str, str, str, list[str], list[str], str]] = {
     ),
     "onec.search_tasks": ("onec", "task", "search", [], ["tasks"], "count"),
     "onec.get_task_card": ("onec", "task", "read", ["task_ref"], ["task"], "none"),
-    "turboproject": ("turboproject", "project", "search", [], ["projects"], "count"),
+    "turboproject": (
+        "turboproject",
+        "project",
+        ("search", "read", "list"),
+        [],
+        ["projects"],
+        "count",
+    ),
     "outlook.search_mail": ("outlook", "mail_message", "search", [], ["messages"], "count"),
     "outlook.read_calendar": ("outlook", "calendar_event", "list", [], ["events"], "count"),
     "browser.list_installed_browsers": ("web", "browser", "list", [], ["items"], "none"),
@@ -699,6 +732,7 @@ _CONTRACTS: dict[str, tuple[str, str, str, list[str], list[str], str]] = {
     "report.build_schedule_recommendations": ("desktop", "report", "export", [], ["file"], "none"),
     "users.current": ("constructor", "user", "read", [], ["user"], "none"),
     "users.list": ("constructor", "user", "list", [], ["users"], "count"),
+    "users.subordinates": ("constructor", "subordinate", "list", [], ["users"], "count"),
     "notify.send": (
         "constructor",
         "notification",
@@ -718,7 +752,7 @@ EXECUTE_PHASE = "execute"
 # Фазы объявляет контракт, а не промпт. На проектировании доступны только tools,
 # которые показывают контекст самого агента и не читают бизнес-данные.
 # Новый context-tool достаточно добавить сюда — промпты не меняются.
-_DESIGN_PHASE_TOOLS = frozenset({"users.current"})
+_DESIGN_PHASE_TOOLS = frozenset({"users.current", "users.subordinates"})
 _HELPER_TOOLS = frozenset({"data.process"})
 
 
@@ -729,13 +763,18 @@ def _phases_for(name: str) -> list[str]:
 
 
 def _contract_for(name: str, execution: str) -> dict[str, Any]:
-    system, entity, operation, filters, fields, pagination = _CONTRACTS.get(
+    system, entity, raw_operation, filters, fields, pagination = _CONTRACTS.get(
         name, (execution or "desktop", "", "execute", [], [], "none")
     )
+    if isinstance(raw_operation, (list, tuple)):
+        operations = [str(item).strip() for item in raw_operation if str(item).strip()]
+    else:
+        operations = [str(raw_operation).strip()] if str(raw_operation).strip() else ["execute"]
     return {
         "system": system,
         "entity": entity,
-        "operation": operation,
+        "operation": operations[0] if operations else "execute",
+        "operations": operations,
         "required_filters": list(filters),
         "result_fields": list(fields),
         "pagination": pagination,
@@ -744,12 +783,25 @@ def _contract_for(name: str, execution: str) -> dict[str, Any]:
     }
 
 
+def _ensure_input_descriptions(tool: dict[str, Any]) -> dict[str, Any]:
+    schema = tool.get("input_schema") if isinstance(tool.get("input_schema"), dict) else {}
+    props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    for key, spec in props.items():
+        if not isinstance(spec, dict):
+            continue
+        if str(spec.get("description") or "").strip():
+            continue
+        spec["description"] = f"поле {key}"
+    return tool
+
+
 def list_tools() -> list[dict[str, Any]]:
     """Каталог с контрактами: по ним идёт подбор инструмента и проверка ответа."""
     tools: list[dict[str, Any]] = []
     for tool in _raw_tools():
         name = str(tool.get("name") or "")
-        tools.append({**tool, **_contract_for(name, str(tool.get("execution") or ""))})
+        merged = {**tool, **_contract_for(name, str(tool.get("execution") or ""))}
+        tools.append(_ensure_input_descriptions(merged))
     return tools
 
 
@@ -787,31 +839,35 @@ def contract_vocabulary() -> dict[str, Any]:
             continue
         system = str(tool.get("system") or "").strip()
         entity = str(tool.get("entity") or "").strip()
-        operation = str(tool.get("operation") or "").strip()
-        if not system or not operation:
+        tool_operations = [
+            str(item).strip()
+            for item in (tool.get("operations") or [tool.get("operation")])
+            if str(item).strip()
+        ]
+        if not system or not tool_operations:
             continue
         systems.add(system)
-        operations.add(operation)
         if entity:
             entities.add(entity)
-        key = (system, entity, operation)
         required = [str(item) for item in (tool.get("required_filters") or [])]
         fields = [str(item) for item in (tool.get("result_fields") or [])]
-        group = grouped.get(key)
-        if group is None:
-            grouped[key] = {
-                "system": system,
-                "entity": entity,
-                "operation": operation,
-                # Минимально достаточный набор: его хватает хотя бы одному инструменту.
-                "required_params": sorted(required),
-                "result_fields": set(fields),
-                "pagination": str(tool.get("pagination") or "none"),
-            }
-            continue
-        if len(required) < len(group["required_params"]):
-            group["required_params"] = sorted(required)
-        group["result_fields"].update(fields)
+        for operation in tool_operations:
+            operations.add(operation)
+            key = (system, entity, operation)
+            group = grouped.get(key)
+            if group is None:
+                grouped[key] = {
+                    "system": system,
+                    "entity": entity,
+                    "operation": operation,
+                    "required_params": sorted(required),
+                    "result_fields": set(fields),
+                    "pagination": str(tool.get("pagination") or "none"),
+                }
+                continue
+            if len(required) < len(group["required_params"]):
+                group["required_params"] = sorted(required)
+            group["result_fields"].update(fields)
     combinations = [
         {**group, "result_fields": sorted(group["result_fields"])}
         for group in grouped.values()
@@ -839,7 +895,12 @@ def candidates_for(
     for tool in list_tools():
         if wanted_system and str(tool.get("system") or "").casefold() != wanted_system:
             continue
-        if wanted_operation and str(tool.get("operation") or "").casefold() != wanted_operation:
+        tool_operations = {
+            str(item).strip().casefold()
+            for item in (tool.get("operations") or [tool.get("operation")])
+            if str(item).strip()
+        }
+        if wanted_operation and wanted_operation not in tool_operations:
             continue
         if wanted_entity:
             tool_entity = str(tool.get("entity") or "").casefold()
