@@ -20,8 +20,11 @@ from app.services.workflows.playbook_validation import (
 from app.services.workflows.service import (
     PhaseResult,
     WorkflowError,
+    _blocked_before_demo_report,
     _demo_validation_report,
+    _needs_draft_repair,
     _require_verified_playbook,
+    plan_workflow,
 )
 from app.services.workflows.tool_result_validation import evaluate_tool_result
 
@@ -92,6 +95,76 @@ def test_operation_synonym_resolves_to_contract() -> None:
     )
 
     assert names == ["onec.get_task_card"]
+
+
+def test_config_error_is_draft_repair_candidate() -> None:
+    validation = validate_draft(
+        attach_tool_candidates(_draft(_onec_step(system="missing", entity="unknown", operation="list")))
+    )
+
+    assert validation.config_errors
+    assert _needs_draft_repair(validation)
+
+
+def test_blocked_before_demo_report_marks_demo_not_started() -> None:
+    validation = validate_draft(
+        attach_tool_candidates(_draft(_onec_step(system="missing", entity="unknown", operation="list")))
+    )
+
+    report = _blocked_before_demo_report(validation)
+
+    assert report["status"] == "blocked_before_demo"
+    assert report["demo_started"] is False
+    assert report["can_run_demo"] is False
+    assert report["issues"]
+
+
+def test_plan_workflow_starts_demo_when_draft_ready(monkeypatch) -> None:
+    class Row:
+        phase = "designed"
+        local_run = {"validation": {"can_run_demo": True, "status": "draft_ready"}}
+
+    seen: dict[str, str] = {}
+
+    def fake_design(db, *, user_id: str, workflow_id: str, on_event=None):
+        del db, on_event
+        seen["design"] = f"{user_id}:{workflow_id}"
+        return "designed"
+
+    def fake_demo(db, *, user_id: str, workflow_id: str, on_event=None):
+        del db, on_event
+        seen["demo"] = f"{user_id}:{workflow_id}"
+        return "demoed"
+
+    monkeypatch.setattr("app.services.workflows.service.design_workflow", fake_design)
+    monkeypatch.setattr("app.services.workflows.service._get_owned", lambda *a, **k: Row())
+    monkeypatch.setattr("app.services.workflows.service.draft_of", lambda _row: {"steps": [{"id": "s1"}]})
+    monkeypatch.setattr("app.services.workflows.service.demo_workflow", fake_demo)
+
+    assert plan_workflow(object(), user_id="u1", workflow_id="w1") == "demoed"
+    assert seen == {"design": "u1:w1", "demo": "u1:w1"}
+
+
+def test_plan_workflow_skips_demo_when_draft_blocked(monkeypatch) -> None:
+    class Row:
+        phase = "designed"
+        local_run = {"validation": {"can_run_demo": False, "status": "blocked_before_demo"}}
+
+    called = {"demo": False}
+
+    monkeypatch.setattr(
+        "app.services.workflows.service.design_workflow",
+        lambda *_args, **_kwargs: "designed",
+    )
+    monkeypatch.setattr("app.services.workflows.service._get_owned", lambda *a, **k: Row())
+    monkeypatch.setattr("app.services.workflows.service.draft_of", lambda _row: {"steps": [{"id": "s1"}]})
+    monkeypatch.setattr(
+        "app.services.workflows.service.demo_workflow",
+        lambda **_kwargs: called.__setitem__("demo", True) or "demoed",
+    )
+
+    assert plan_workflow(object(), user_id="u1", workflow_id="w1") == "designed"
+    assert called["demo"] is False
 
 
 # --- preflight -----------------------------------------------------------

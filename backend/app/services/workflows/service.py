@@ -260,6 +260,24 @@ def _emit_config_errors(validation: Any, on_event: WorkflowEventCallback | None)
         _emit(on_event, "decision", f"Ошибка конфигурации агента: {issue.message}{detail}")
 
 
+def _blocked_before_demo_report(validation: Any, *, message: str = "") -> dict[str, Any]:
+    issues = [issue.to_dict() for issue in getattr(validation, "issues", [])]
+    reasons = [
+        str(issue.get("message") or "")
+        for issue in issues
+        if str(issue.get("kind") or "") in {"config_error", "ambiguous"}
+    ]
+    return {
+        "ok": False,
+        "status": "blocked_before_demo",
+        "demo_started": False,
+        "can_run_demo": False,
+        "message": message or "Пробный прогон не запущен: черновик не прошёл проверку.",
+        "reasons": [item for item in reasons if item],
+        "issues": issues,
+    }
+
+
 def design_workflow(
     db: Session,
     *,
@@ -310,16 +328,42 @@ def design_workflow(
         on_event=on_event,
         workflow_id=workflow_id,
         mode="execute",
+        assistant_as_thinking=True,
     )
     draft = prompts.parse_playbook_draft(result.text or "")
     draft, validation = _validate_and_store_draft(db, row=row, draft=draft)
-
-    if validation.ambiguous and draft.get("steps"):
-        draft, validation = _repair_draft(
-            db, row=row, draft=draft, validation=validation, on_event=on_event
-        )
+    draft, validation = _repair_draft_until_ready(
+        db, row=row, draft=draft, validation=validation, on_event=on_event
+    )
 
     return _finish_design(db, row=row, draft=draft, validation=validation, on_event=on_event)
+
+
+def _needs_draft_repair(validation: Any) -> bool:
+    return bool(getattr(validation, "ambiguous", []) or getattr(validation, "config_errors", []))
+
+
+def _repair_draft_until_ready(
+    db: Session,
+    *,
+    row: Workflow,
+    draft: dict[str, Any],
+    validation: Any,
+    on_event: WorkflowEventCallback | None = None,
+    max_attempts: int = 2,
+) -> tuple[dict[str, Any], Any]:
+    attempts = 0
+    while draft.get("steps") and _needs_draft_repair(validation) and attempts < max_attempts:
+        attempts += 1
+        draft, validation = _repair_draft(
+            db,
+            row=row,
+            draft=draft,
+            validation=validation,
+            on_event=on_event,
+            attempt=attempts,
+        )
+    return draft, validation
 
 
 def _repair_draft(
@@ -329,11 +373,16 @@ def _repair_draft(
     draft: dict[str, Any],
     validation: Any,
     on_event: WorkflowEventCallback | None = None,
+    attempt: int = 1,
 ) -> tuple[dict[str, Any], Any]:
-    """Неоднозначные шаги возвращаем проектировщику один раз."""
+    """Неоднозначные шаги и несовместимые инструменты возвращаем проектировщику."""
     if not row.exec_agent_id:
         return draft, validation
-    _emit(on_event, "decision", "Дорабатываю черновик: не хватает критериев по шагам.")
+    _emit(
+        on_event,
+        "decision",
+        f"Дорабатываю черновик: нужно уточнить шаги и подобрать совместимые инструменты (попытка {attempt}).",
+    )
     prompt = prompts.build_playbook_repair_prompt(
         draft=draft,
         issues=[issue.to_dict() for issue in validation.issues],
@@ -349,6 +398,7 @@ def _repair_draft(
             on_event=on_event,
             workflow_id=row.id,
             mode="execute",
+            assistant_as_thinking=True,
         )
     except CursorAgentError as exc:
         logger.warning("Draft repair failed id=%s: %s", row.id, exc)
@@ -372,6 +422,14 @@ def _finish_design(
     local = dict(row.local_run or {})
     local["can_publish"] = False
     local["demo_ok"] = False
+    local["validation"] = {
+        "ok": True,
+        "status": "draft_ready",
+        "demo_started": False,
+        "can_run_demo": True,
+        "issues": [],
+        "reasons": [],
+    }
     row.local_run = local
 
     questions = issues_to_questions(validation.issues)
@@ -386,19 +444,39 @@ def _finish_design(
             on_event=on_event,
         )
 
-    _emit_config_errors(validation, on_event)
+    if _needs_draft_repair(validation):
+        report = _blocked_before_demo_report(validation)
+        local = dict(row.local_run or {})
+        local["validation"] = report
+        local["can_run_demo"] = False
+        row.local_run = local
+        _emit_config_errors(validation, on_event)
+        for issue in getattr(validation, "ambiguous", []):
+            _emit(on_event, "decision", f"Черновик неполный: {issue.message}")
+    else:
+        local = dict(row.local_run or {})
+        local["validation"] = {
+            "ok": True,
+            "status": "draft_ready",
+            "demo_started": False,
+            "can_run_demo": True,
+            "issues": [],
+            "reasons": [],
+        }
+        local["can_run_demo"] = True
+        row.local_run = local
     row.phase = "designed"
     db.commit()
     db.refresh(row)
-    if validation.config_errors:
+    if _needs_draft_repair(validation):
         _emit(
             on_event,
             "decision",
-            "Черновик готов, но инструменты подобрать не удалось — прогон не запускаю.",
+            "Черновик не готов к пробному прогону — нужно исправить шаги и инструменты.",
         )
     else:
         steps = len(draft.get("steps") or [])
-        _emit(on_event, "decision", f"Черновик инструкции готов: {steps} шагов. Можно делать прогон.")
+        _emit(on_event, "decision", f"Черновик инструкции готов: {steps} шагов. Запускаю пробный прогон.")
     return _to_schema(row)
 
 
@@ -426,12 +504,20 @@ def demo_workflow(
             return schema
 
     draft, validation = _validate_and_store_draft(db, row=row, draft=draft)
-    if validation.config_errors:
+    if _needs_draft_repair(validation):
         _emit_config_errors(validation, on_event)
+        report = _blocked_before_demo_report(validation)
+        local = dict(row.local_run or {})
+        local["validation"] = report
+        local["demo_ok"] = False
+        local["can_publish"] = False
+        local["can_run_demo"] = False
+        local["tests_status"] = "unknown"
+        row.local_run = local
         _emit(
             on_event,
             "decision",
-            "Прогон не запускаю: для шагов нет подходящих инструментов.",
+            "Пробный прогон не запущен: черновик не прошёл проверку.",
         )
         row.phase = "designed"
         db.commit()
@@ -490,6 +576,20 @@ def plan_workflow(
     workflow_id: str,
     on_event: WorkflowEventCallback | None = None,
 ) -> WorkflowSchema:
+    schema = design_workflow(
+        db, user_id=user_id, workflow_id=workflow_id, on_event=on_event
+    )
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    if row.phase == "clarify":
+        return schema
+    local = dict(row.local_run or {})
+    validation = local.get("validation") if isinstance(local.get("validation"), dict) else {}
+    blocked = (
+        validation.get("status") == "blocked_before_demo"
+        or validation.get("can_run_demo") is False
+    )
+    if blocked or not draft_of(row).get("steps"):
+        return schema
     return demo_workflow(
         db, user_id=user_id, workflow_id=workflow_id, on_event=on_event
     )
@@ -1239,9 +1339,16 @@ def _continue_demo_after_answers(
     from app.services.workflows.cursor_tools import with_tools_if_desktop
 
     _draft, validation = _apply_answers_to_draft(db, row=row, plan=plan)
-    if validation is not None and validation.config_errors:
+    if validation is not None and _needs_draft_repair(validation):
         _emit_config_errors(validation, on_event)
-        _emit(on_event, "decision", "Прогон не запускаю: для шагов нет подходящих инструментов.")
+        report = _blocked_before_demo_report(validation)
+        local = dict(row.local_run or {})
+        local["validation"] = report
+        local["demo_ok"] = False
+        local["can_publish"] = False
+        local["can_run_demo"] = False
+        row.local_run = local
+        _emit(on_event, "decision", "Пробный прогон не запущен: черновик не прошёл проверку.")
         row.phase = "designed"
         db.commit()
         db.refresh(row)
@@ -1803,8 +1910,17 @@ def _stream_run_with_tools(
     required_live_tools: list[str] | None = None,
     assumption_check: bool = False,
     draft: dict[str, Any] | None = None,
+    assistant_as_thinking: bool = False,
 ):
     from app.services.workflows.cursor_tools import stream_cursor_with_tools
+
+    def stream_run(agent_id: str, run_id: str, *, on_event=None):
+        return _stream_run(
+            agent_id,
+            run_id,
+            on_event=on_event,
+            assistant_as_thinking=assistant_as_thinking,
+        )
 
     return stream_cursor_with_tools(
         agent_id=agent_id,
@@ -1812,7 +1928,7 @@ def _stream_run_with_tools(
         on_event=on_event,
         workflow_id=workflow_id,
         mode=mode,
-        stream_run=_stream_run,
+        stream_run=stream_run,
         required_live_tools=required_live_tools,
         assumption_check=assumption_check,
         draft=draft,
@@ -1888,6 +2004,7 @@ def _stream_run(
     run_id: str,
     *,
     on_event: WorkflowEventCallback | None = None,
+    assistant_as_thinking: bool = False,
 ) -> PhaseResult:
     result = PhaseResult(agent_id=agent_id, run_id=run_id)
     assistant_parts: list[str] = []
@@ -1914,11 +2031,12 @@ def _stream_run(
                         streamed_by_kind[kind] = streamed + chunk
                     if not delta:
                         continue
-                    if kind == "thinking":
+                    if kind == "thinking" or assistant_as_thinking:
                         thinking_parts.append(delta)
+                        _emit(on_event, "thinking", delta)
                     else:
                         assistant_parts.append(delta)
-                    _emit(on_event, kind, delta)
+                        _emit(on_event, kind, delta)
                     if delta.strip():
                         logger.info("Cursor %s [%s/%s]: %s", kind, agent_id[-8:], run_id[-8:], delta)
             elif event == "message":

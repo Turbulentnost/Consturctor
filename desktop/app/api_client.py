@@ -1466,7 +1466,11 @@ class ApiClient:
         workflow_id: str,
         on_event: Callable[[str, str], None],
     ) -> WorkflowRecord:
-        return self.stream_demo_workflow(workflow_id, on_event)
+        return self._stream_workflow(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/plan/stream",
+            on_event=on_event,
+        )
 
     def stream_demo_workflow(
         self,

@@ -90,6 +90,8 @@ def main() -> int:
 
     window = AppWindow(open_workflow_id=workflow_id)
     instance = SingleInstance(app)
+    if not instance.is_listening:
+        return 0
     instance.command_received.connect(window.handle_external_command)
     if not background:
         window.show()
