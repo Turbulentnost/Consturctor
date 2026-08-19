@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.theme import MINT, SIDEBAR_MIDDLE, app_font
+from app.regulation_templates import act_registry_regulation_path
 
 _TEMP = Path(__file__).resolve().parents[1] / "temp"
 _UPLOAD_ICON = _TEMP / "Редактировать.png"
@@ -230,6 +231,7 @@ class OptionCard(QFrame):
 class CreateAgentPage(QWidget):
     create_regulation_requested = Signal()
     regulation_selected = Signal(str)
+    act_registry_template_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -255,6 +257,7 @@ class CreateAgentPage(QWidget):
 
         self._upload_card = self._build_upload_card()
         self._create_card = self._build_create_card()
+        self._act_template = self._build_act_template_banner()
 
         cards = QHBoxLayout()
         cards.setContentsMargins(0, 0, 0, 0)
@@ -287,6 +290,8 @@ class CreateAgentPage(QWidget):
         layout.addWidget(self._dev_banner)
         layout.addSpacing(36)
         layout.addLayout(cards, 0)
+        layout.addSpacing(16)
+        layout.addWidget(self._act_template, 0)
         layout.addStretch(1)
         layout.addWidget(self._status)
         layout.addWidget(footer)
@@ -302,6 +307,7 @@ class CreateAgentPage(QWidget):
         self._status.setVisible(active)
         self._upload_card.setEnabled(not active)
         self._create_card.setEnabled(not active)
+        self._act_template.setEnabled(not active)
 
     def _build_upload_card(self) -> OptionCard:
         card = OptionCard(self)
@@ -419,3 +425,69 @@ class CreateAgentPage(QWidget):
         lay.addSpacing(8)
         lay.addWidget(button)
         return card
+
+    def _build_act_template_banner(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("ActRegistryTemplate")
+        frame.setStyleSheet(
+            """
+            QFrame#ActRegistryTemplate {
+                background: #F3FAF7;
+                border: 1px solid rgba(8,116,95,0.18);
+                border-radius: 18px;
+            }
+            """
+        )
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(22, 16, 22, 16)
+        row.setSpacing(16)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(4)
+        title = QLabel("Быстрый старт: ACT-реестр поручений")
+        title.setFont(app_font(16, QFont.Weight.DemiBold))
+        title.setStyleSheet("color: #06483D; background: transparent;")
+        desc = QLabel(
+            "Готовый регламент ACT_REGISTRY.md. Любой другой регламент можно загрузить выше — "
+            "после паспорта агент получит handler, tools и MCP-runtime автоматически."
+        )
+        desc.setFont(app_font(12))
+        desc.setStyleSheet("color: #4A5A55; background: transparent;")
+        desc.setWordWrap(True)
+        text_col.addWidget(title)
+        text_col.addWidget(desc)
+
+        button = QPushButton("Собрать ACT-агента")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedHeight(44)
+        button.setFont(app_font(13, QFont.Weight.DemiBold))
+        button.setStyleSheet(
+            """
+            QPushButton {
+                background: #08745F;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 22px;
+                padding: 0 20px;
+            }
+            QPushButton:hover { background: #0A8670; }
+            QPushButton:disabled { background: #A8C8BF; color: #EAF7F3; }
+            """
+        )
+        button.clicked.connect(self._on_act_template_clicked)
+
+        row.addLayout(text_col, 1)
+        row.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
+        return frame
+
+    def _on_act_template_clicked(self) -> None:
+        path = act_registry_regulation_path()
+        if path is None:
+            QMessageBox.warning(
+                self,
+                "ACT-реестр",
+                "Файл ACT_REGISTRY.md не найден в комплекте приложения.",
+            )
+            return
+        self.act_registry_template_requested.emit()
+        self.regulation_selected.emit(str(path))

@@ -35,6 +35,7 @@ from app.services.triggers.service import (
     is_workflow_paused,
 )
 from app.services.workflows import prompts
+from app.services.workflows.heuristic import build_heuristic_plan
 from app.services.workflows.document import (
     DocumentError,
     collect_prompt_images,
@@ -65,6 +66,17 @@ class PhaseResult:
 
 
 def workflow_health() -> WorkflowHealth:
+    if not settings.cursor_api_key.strip():
+        if settings.dev_mode:
+            return WorkflowHealth(
+                ok=True,
+                who="heuristic (dev_mode)",
+                message="CURSOR_API_KEY не задан — планирование через эвристику",
+            )
+        return WorkflowHealth(
+            ok=False,
+            message="CURSOR_API_KEY не настроен в backend/.env",
+        )
     try:
         me = cursor_client.get_me()
         who = str(
@@ -109,6 +121,63 @@ def list_workflows(db: Session, *, user_id: str) -> list[WorkflowListItem]:
         )
         for row in rows
     ]
+
+
+def import_workflow_snapshot(
+    db: Session,
+    *,
+    user_id: str,
+    payload: WorkflowSchema,
+) -> WorkflowSchema:
+    """Импорт опубликованного агента с общего сервера в локальную БД."""
+    if payload.phase != "done":
+        raise WorkflowError("Импортируются только опубликованные агенты (phase=done)")
+
+    row = (
+        db.query(Workflow)
+        .filter(Workflow.id == payload.id, Workflow.user_id == user_id)
+        .one_or_none()
+    )
+    if row is None:
+        row = Workflow(id=payload.id, user_id=user_id)
+        db.add(row)
+
+    plan_dict = payload.plan.model_dump() if payload.plan else {}
+    if payload.agent_route is not None:
+        from app.services.agent_route import (
+            AgentRoute,
+            agent_route_dict_for_local,
+            agent_route_dict_for_plan,
+        )
+
+        route = AgentRoute.from_dict(payload.agent_route.model_dump())
+        local = dict(payload.local_run or {})
+        if route is not None:
+            local["agent_route"] = agent_route_dict_for_local(route)
+            plan_dict = dict(plan_dict)
+            plan_dict["agent_route"] = agent_route_dict_for_plan(route)
+        row.local_run = local
+    else:
+        row.local_run = dict(payload.local_run or {})
+
+    row.title = payload.title or row.title or "ИИ-агент"
+    row.phase = "done"
+    row.notes = payload.notes or ""
+    row.document_name = payload.document_name or ""
+    row.document_text = payload.document_text or ""
+    row.plan_json = plan_dict
+    row.attachments_meta = [x.model_dump() for x in payload.attachments]
+    row.plan_agent_id = payload.plan_agent_id or ""
+    row.plan_run_id = payload.plan_run_id or ""
+    row.exec_agent_id = payload.exec_agent_id or ""
+    row.exec_run_id = payload.exec_run_id or ""
+    row.last_result = payload.last_result or ""
+    row.branch = payload.branch or ""
+    row.pr_url = payload.pr_url or ""
+    db.commit()
+    db.refresh(row)
+    logger.info("Imported workflow snapshot id=%s user=%s", payload.id, user_id)
+    return _to_schema(row)
 
 
 def get_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSchema:
@@ -180,6 +249,12 @@ def create_workflow(
     db.add(row)
     db.commit()
     db.refresh(row)
+    from app.services.regulation_constructor_workflow import apply_regulation_constructor_workflow
+
+    if apply_regulation_constructor_workflow(row):
+        db.commit()
+        db.refresh(row)
+        logger.info("Applied regulation constructor spec on create workflow id=%s", workflow_id)
     return _to_schema(row)
 
 
@@ -205,14 +280,113 @@ def stop_auto_run(db: Session, *, user_id: str, workflow_id: str) -> AutoRunStop
     return AutoRunStopResult(ok=True, stopped=stopped)
 
 
+def _merge_local_run(
+    current: dict[str, Any] | None,
+    incoming: dict[str, Any] | None,
+) -> dict[str, Any]:
+    base = dict(current or {})
+    patch = dict(incoming or {})
+    merged = {**base, **patch}
+    for key in ("playbook", "schedule_draft", "agent_route", "kpi", "work_result"):
+        cur_val = base.get(key)
+        inc_val = patch.get(key)
+        if isinstance(cur_val, dict) and isinstance(inc_val, dict):
+            merged[key] = {**cur_val, **inc_val}
+    return merged
+
+
 def update_local_run(
     db: Session, *, user_id: str, workflow_id: str, local_run: dict[str, Any]
 ) -> WorkflowSchema:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
-    row.local_run = dict(local_run or {})
+    row.local_run = _merge_local_run(
+        row.local_run if isinstance(row.local_run, dict) else {},
+        local_run or {},
+    )
     db.commit()
     db.refresh(row)
     return _to_schema(row)
+
+
+def get_agent_route(db: Session, *, user_id: str, workflow_id: str):
+    from app.schemas.agent_route import AgentRouteSchema
+    from app.services.agent_route import resolve_agent_route
+
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    route = resolve_agent_route(row)
+    return AgentRouteSchema.model_validate(route.to_dict())
+
+
+def update_agent_route(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    patch: dict[str, Any],
+) -> "AgentRouteSchema":
+    from app.schemas.agent_route import AgentRouteSchema
+    from app.services.agent_route import (
+        agent_route_dict_for_local,
+        agent_route_dict_for_plan,
+        merge_agent_route,
+    )
+
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    if not patch.get("handler") and str(patch.get("source") or "") == "passport":
+        from app.services.agent_route import build_route_from_passport
+
+        plan_data = row.plan_json if isinstance(row.plan_json, dict) else {}
+        local = row.local_run if isinstance(row.local_run, dict) else {}
+        inferred = build_route_from_passport(
+            passport_title=str(local.get("passport_title") or row.title or ""),
+            notes=row.notes or "",
+            goal=str(plan_data.get("goal") or patch.get("default_task") or ""),
+            document_text=str(row.document_text or ""),
+            document_name=str(row.document_name or ""),
+        )
+        patch = {**inferred.to_dict(), **patch}
+    route = merge_agent_route(row, patch)
+    local = dict(row.local_run or {})
+    local["agent_route"] = agent_route_dict_for_local(route)
+    if route.tools:
+        local["tools"] = list(route.tools)
+    row.local_run = local
+
+    plan_data = dict(row.plan_json or {})
+    plan_data["agent_route"] = agent_route_dict_for_plan(route)
+    runtime = plan_data.get("runtime") if isinstance(plan_data.get("runtime"), dict) else {}
+    if not isinstance(runtime, dict):
+        runtime = {}
+    runtime["kind"] = route.kind or route.handler
+    runtime["handler"] = route.handler
+    if route.default_task:
+        runtime["default_task"] = route.default_task
+    plan_data["runtime"] = runtime
+    row.plan_json = plan_data
+
+    from app.services.regulation_constructor_workflow import apply_regulation_constructor_workflow
+
+    apply_regulation_constructor_workflow(row)
+
+    db.commit()
+    db.refresh(row)
+    from app.services.agent_route import resolve_agent_route
+
+    route = resolve_agent_route(row)
+    return AgentRouteSchema.model_validate(route.to_dict())
+
+
+def _freeze_agent_route(row: Workflow) -> None:
+    """Persist resolved route on publish — idempotent for any machine."""
+    from app.services.agent_route import agent_route_dict_for_local, resolve_agent_route
+
+    route = resolve_agent_route(row)
+    local = dict(row.local_run or {})
+    local["agent_route"] = agent_route_dict_for_local(route)
+    row.local_run = local
+    plan_data = dict(row.plan_json or {})
+    plan_data["agent_route"] = route.to_dict()
+    row.plan_json = plan_data
 
 
 WorkflowEventCallback = Callable[..., None]
@@ -357,6 +531,27 @@ def clarify_workflow(
     ][: len(images)]
     _emit(on_event, "decision", "Учитываю ответы пользователя и обновляю план.")
     _emit(on_event, "progress", "обновляю план")
+    if not settings.cursor_api_key.strip():
+        if settings.dev_mode:
+            logger.info(
+                "Workflow clarify heuristic id=%s (CURSOR_API_KEY missing, dev_mode=true)",
+                workflow_id,
+            )
+            from app.services.plan_run import apply_autonomy, ensure_runtime
+
+            ensure_runtime(plan)
+            apply_autonomy(plan, row.local_run)
+            row.plan_json = plan.to_dict()
+            row.phase = "clarify" if plan.unanswered() else "ready"
+            db.commit()
+            db.refresh(row)
+            _emit(on_event, "decision", "Ответы учтены в черновом плане (dev_mode).")
+            return _to_schema(row)
+        raise WorkflowError(
+            "CURSOR_API_KEY не настроен в backend/.env или infra/.env",
+            status_code=500,
+        )
+
     from app.services.workflows.cursor_tools import with_tools_if_desktop
 
     prompt = with_tools_if_desktop(
@@ -584,7 +779,7 @@ def execute_workflow(
                     "status": "tested",
                     "can_publish": True,
                     "tests_status": "pass",
-                    "runtime": "mcp",
+                    "execution_backend": "mcp",
                 }
             )
             _emit(
@@ -599,7 +794,7 @@ def execute_workflow(
                     "status": "tests_failed",
                     "can_publish": False,
                     "tests_status": "fail",
-                    "runtime": "mcp",
+                    "execution_backend": "mcp",
                 }
             )
             _emit(
@@ -616,7 +811,7 @@ def execute_workflow(
                     "status": "awaiting_tests",
                     "can_publish": False,
                     "tests_status": "unknown",
-                    "runtime": "mcp",
+                    "execution_backend": "mcp",
                 }
             )
             if required_live and not live_ok:
@@ -653,6 +848,9 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     has_demo = bool(playbook.get("instructions") and playbook.get("demo_ok"))
     if row.phase not in {"tested", "ready", "done", "executing"}:
         raise WorkflowError("Сначала завершите пробный прогон")
+    from app.services.regulation_constructor_workflow import apply_regulation_constructor_workflow
+
+    apply_regulation_constructor_workflow(row)
     if not row.exec_agent_id and not has_demo:
         raise WorkflowError("Нет результата пробного прогона для публикации")
 
@@ -682,6 +880,8 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
         if goal and not (plan.goal or "").strip():
             plan.goal = goal
             row.plan_json = plan.to_dict()
+    _freeze_agent_route(row)
+    local = dict(row.local_run or {})
     local.update(
         {
             "status": "published",
@@ -689,6 +889,7 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
             "published": True,
             "tests_status": "pass",
             "runtime": "cursor" if has_demo else "mcp",
+            "execution_backend": "mcp",
             "tools": _tools_for_published_plan(plan, row),
             "ui_mode": "chat",
             "playbook": playbook or local.get("playbook") or {},
@@ -744,6 +945,9 @@ def generate_agent_kpi(
     else:
         _emit(on_event, "decision", "Собрал стандартные KPI и методику по расписанию и цели агента.")
     kpi = agent_kpi.build_kpi_record(parsed, title=title, goal=goal, schedule=draft, status="draft")
+    runs = agent_kpi.list_runs_for_kpi(db, user_id=user_id, workflow_id=workflow_id)
+    if runs:
+        kpi = agent_kpi.refresh_kpi_from_runs(kpi, runs, draft, persist_timestamps=True)
     local["kpi"] = kpi
     row.local_run = local
     db.commit()
@@ -774,6 +978,9 @@ def get_agent_kpi(db: Session, *, user_id: str, workflow_id: str):
         kpi["summary"] = str(stored.get("summary") or kpi["summary"])
     else:
         kpi = agent_kpi.build_kpi_record(None, title=title, goal=goal, schedule=draft, status="draft")
+    runs = agent_kpi.list_runs_for_kpi(db, user_id=user_id, workflow_id=workflow_id)
+    if runs:
+        kpi = agent_kpi.refresh_kpi_from_runs(kpi, runs, draft)
     return agent_kpi.kpi_to_schema(kpi, workflow_id=workflow_id, title=title)
 
 
@@ -793,6 +1000,10 @@ def confirm_agent_kpi(db: Session, *, user_id: str, workflow_id: str) -> Workflo
             schedule=draft,
             status="draft",
         )
+    draft = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+    runs = agent_kpi.list_runs_for_kpi(db, user_id=user_id, workflow_id=workflow_id)
+    if runs:
+        stored = agent_kpi.refresh_kpi_from_runs(stored, runs, draft, persist_timestamps=True)
     stored["status"] = "ready"
     local["kpi"] = stored
     row.local_run = local
@@ -1095,6 +1306,13 @@ def _tests_status_from_text(text: str, *, live_tools_ok: bool = False) -> str:
 
 def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
     """Pick MCP tools from plan domain — never force web_search for Outlook/meetings."""
+    from app.services.agent_route import resolve_agent_route
+    from app.services.act_registry_workflow import act_registry_tools
+
+    route = resolve_agent_route(row)
+    if route.handler == "act_porucheniya_registry":
+        return act_registry_tools()
+
     answered = " ".join(
         f"{q.question} {q.answer}" for q in (plan.answered_questions or []) if q.answer
     )
@@ -1125,6 +1343,7 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
             "onec.erp_subordinate_tasks",
             "onec.docflow_tasks",
             "turboproject",
+            "excel.create_workbook",
         ]
 
     if kind == "turboproject" or any(
@@ -1231,9 +1450,15 @@ def build_artifacts_zip(
     """Materialize artifacts and pack them into a zip for client download."""
     import zipfile
 
-    dest, saved = _materialize_artifacts(
-        db, user_id=user_id, workflow_id=workflow_id, paths=paths
-    )
+    dest = _workflow_dir(workflow_id) / "outputs"
+    dest.mkdir(parents=True, exist_ok=True)
+    saved: list[str] = []
+    try:
+        dest, saved = _materialize_artifacts(
+            db, user_id=user_id, workflow_id=workflow_id, paths=paths
+        )
+    except (WorkflowError, CursorAgentError) as exc:
+        logger.warning("Workflow artifacts skipped id=%s: %s", workflow_id, exc.message)
     zip_path = _workflow_dir(workflow_id) / "artifacts.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for file_path in saved:
@@ -1241,7 +1466,11 @@ def build_artifacts_zip(
             if p.is_file():
                 zf.write(p, arcname=p.name)
         if not saved:
-            zf.writestr("README.txt", "Артефакты не найдены у Cursor-агента.\n")
+            zf.writestr(
+                "README.txt",
+                "Артефакты не найдены у Cursor-агента (часто так без git-репозитория).\n"
+                "Текст реализации — в блоке «Тестовый прогон» в приложении.\n",
+            )
     return zip_path
 
 
@@ -1265,7 +1494,8 @@ def _materialize_artifacts(
     dest = _workflow_dir(workflow_id) / "outputs"
     dest.mkdir(parents=True, exist_ok=True)
     saved: list[str] = []
-    for it in items:
+    max_files = 12
+    for it in items[:max_files]:
         rel = str(it.get("path") or "")
         if not rel:
             continue
@@ -1276,7 +1506,8 @@ def _materialize_artifacts(
         try:
             cursor_client.download_artifact_to(agent_id, rel, target)
             saved.append(str(target))
-        except CursorAgentError:
+        except CursorAgentError as exc:
+            logger.warning("Skip artifact %s: %s", rel, exc.message)
             continue
     return dest, saved
 
@@ -1722,6 +1953,9 @@ def _iso(value: Any) -> str:
 
 
 def _to_schema(row: Workflow) -> WorkflowSchema:
+    from app.schemas.agent_route import AgentRouteSchema
+    from app.services.agent_route import resolve_agent_route
+
     plan = None
     if row.plan_json:
         plan = WorkflowPlanSchema.model_validate(row.plan_json)
@@ -1730,6 +1964,7 @@ def _to_schema(row: Workflow) -> WorkflowSchema:
         for x in (row.attachments_meta or [])
         if isinstance(x, dict)
     ]
+    route = resolve_agent_route(row)
     return WorkflowSchema(
         id=row.id,
         title=row.title,
@@ -1749,4 +1984,5 @@ def _to_schema(row: Workflow) -> WorkflowSchema:
         pr_url=row.pr_url or "",
         created_at=_iso(row.created_at),
         updated_at=_iso(row.updated_at),
+        agent_route=AgentRouteSchema.model_validate(route.to_dict()),
     )

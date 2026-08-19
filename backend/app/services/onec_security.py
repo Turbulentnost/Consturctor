@@ -34,6 +34,7 @@ ODATA_ENTITY_PREFIXES = (
 _DEFAULT_ODATA_ENTITIES = (
     "Document_ТД_ВходящаяКорреспонденция",
     "Document_ТД_ИсходящаяКорреспонденция",
+    "Document_ТД_Поручения",
     "Document_ВходящаяКорреспонденция",
     "Document_Changes",
     "Catalog_ТД_ВходящаяКорреспонденцияПрисоединенныеФайлы",

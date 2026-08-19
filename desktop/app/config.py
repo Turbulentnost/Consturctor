@@ -25,20 +25,48 @@ DESKTOP_ROOT = _desktop_root()
 BUNDLE_ROOT = _bundle_root()
 REPO_ROOT = DESKTOP_ROOT.parent if not getattr(sys, "frozen", False) else DESKTOP_ROOT
 
-# Prefer .env beside the exe / desktop folder.
-load_dotenv(DESKTOP_ROOT / ".env")
-if getattr(sys, "frozen", False):
-    load_dotenv(DESKTOP_ROOT / ".env", override=False)
+# Prefer .env beside the exe / desktop folder (override stale QSettings / old defaults).
+load_dotenv(DESKTOP_ROOT / ".env", override=True)
 
 
-from app.session_store import saved_backend_url
+from app.session_store import saved_auth_url, saved_backend_url
 
 
 def backend_url() -> str:
-    saved = saved_backend_url()
+    """Локальный gateway: агенты, workflow, LLM, инструменты через Docker."""
+    env_url = os.getenv("BACKEND_URL", "").strip().rstrip("/")
+    if env_url:
+        return env_url
+    if getattr(sys, "frozen", False):
+        return "http://127.0.0.1:7812"
+    saved = saved_backend_url().rstrip("/")
+    stale_markers = ()
+    if saved and not any(marker in saved for marker in stale_markers):
+        return saved
+    return "http://127.0.0.1:7812"
+
+
+def auth_url() -> str:
+    """Общий сервер входа (ERP SQL / 1С). Если не задан — тот же, что BACKEND_URL."""
+    env_url = os.getenv("AUTH_URL", "").strip().rstrip("/")
+    if env_url:
+        return env_url
+    saved = saved_auth_url().rstrip("/")
     if saved:
-        return saved.rstrip("/")
-    return os.getenv("BACKEND_URL", "http://192.168.1.157:7812").rstrip("/")
+        return saved
+    return backend_url()
+
+
+def catalog_url() -> str:
+    """Каталог опубликованных агентов (общий сервер)."""
+    env_url = os.getenv("WORKFLOWS_URL", "").strip().rstrip("/")
+    if env_url:
+        return env_url
+    auth = auth_url()
+    local = backend_url()
+    if auth.rstrip("/") != local.rstrip("/"):
+        return auth
+    return local
 
 
 def repo_root() -> Path:

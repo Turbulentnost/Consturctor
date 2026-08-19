@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 from app.tools.ac.tooling import (
     ToolCallResult,
@@ -31,12 +32,92 @@ def _cell_value(value: object) -> object:
     return value
 
 
+def _apply_workbook_table_style(
+    worksheet,
+    *,
+    header_rows: int = 1,
+    wrap_text_columns: list[int] | None = None,
+) -> None:
+    """Сетка ячеек и перенос текста — чтобы таблица читалась в Excel."""
+    from openpyxl.styles import Alignment, Border, Side
+
+    data_side = Side(style="thin", color="FF90A4AE")
+    header_side = Side(style="thin", color="FF546E7A")
+    data_border = Border(left=data_side, right=data_side, top=data_side, bottom=data_side)
+    header_border = Border(
+        left=header_side, right=header_side, top=header_side, bottom=header_side
+    )
+    wrap_cols = set(wrap_text_columns or [])
+
+    max_row = worksheet.max_row or 1
+    max_col = worksheet.max_column or 1
+    for row in worksheet.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
+        for cell in row:
+            is_header = cell.row <= header_rows
+            cell.border = header_border if is_header else data_border
+            if is_header:
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            elif cell.column in wrap_cols:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+            else:
+                cell.alignment = Alignment(vertical="top")
+
+
 def _ensure_xlsx(name: str) -> str:
     """Гарантировать расширение .xlsx у имени файла."""
     name = str(name).strip()
     if not name.lower().endswith(".xlsx"):
         name = f"{name}.xlsx"
     return name
+
+
+def _resolve_excel_read_path(input_data: dict[str, Any], workspace) -> Path:
+    """Прочитать .xlsx из папки агента или с рабочего стола пользователя."""
+    from urllib.parse import unquote, urlparse
+
+    from app.tools.plan_export import desktop_dir
+
+    raw = str(
+        input_data.get("desktop_path") or input_data.get("absolute_path") or ""
+    ).strip()
+    if raw:
+        if raw.lower().startswith("file:"):
+            parsed = urlparse(raw)
+            candidate = unquote(parsed.path or "")
+            if candidate.startswith("/") and len(candidate) > 2 and candidate[2] == ":":
+                candidate = candidate[1:]
+        else:
+            candidate = raw
+        path = Path(candidate).expanduser()
+        if "*" in path.name or "?" in path.name:
+            from app.tools.plan_export import desktop_dir
+
+            pattern = path.name
+            matches = sorted(
+                desktop_dir().glob(pattern),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            )
+            if not matches:
+                raise WorkspaceError(f"На рабочем столе нет файлов по маске: {pattern}")
+            path = matches[0]
+        path = path.resolve()
+        if path.suffix.lower() != ".xlsx":
+            raise WorkspaceError("Нужен файл .xlsx")
+        if not path.is_file():
+            raise WorkspaceError(f"Файл не найден: {path}")
+        allowed = {workspace.directory.resolve(), desktop_dir().resolve()}
+        if not any(base == path or base in path.parents for base in allowed):
+            raise WorkspaceError("Чтение Excel разрешено только с рабочего стола или из папки агента")
+        return path
+
+    filename = str(input_data.get("filename") or "").strip()
+    if not filename:
+        raise WorkspaceError("Укажите filename или desktop_path")
+    desktop_candidate = desktop_dir() / Path(filename).name
+    if desktop_candidate.is_file():
+        return desktop_candidate.resolve()
+    return workspace.resolve(_ensure_xlsx(filename), must_exist=True)
 
 
 class _WorkspaceTool(BaseTool):
@@ -112,10 +193,11 @@ class ExcelReadWorkbookTool(_WorkspaceTool):
                     "type": "object",
                     "properties": {
                         "filename": {"type": "string"},
+                        "desktop_path": {"type": "string"},
+                        "absolute_path": {"type": "string"},
                         "sheet": {"type": "string"},
                         "max_rows": {"type": "integer"},
                     },
-                    "required": ["filename"],
                 },
                 output_schema={"type": "object"},
             ),
@@ -128,9 +210,7 @@ class ExcelReadWorkbookTool(_WorkspaceTool):
 
         try:
             workspace = self._workspace(input_data)
-            path = workspace.resolve(
-                _ensure_xlsx(input_data.get("filename", "")), must_exist=True
-            )
+            path = _resolve_excel_read_path(input_data, workspace)
         except WorkspaceError as exc:
             return self._fail("WORKSPACE_ERROR", str(exc))
 
@@ -162,6 +242,8 @@ class ExcelReadWorkbookTool(_WorkspaceTool):
             tool_name=self.definition.name,
             output_data={
                 "filename": path.name,
+                "path": str(path),
+                "desktop_path": str(path),
                 "sheet": worksheet.title,
                 "sheets": sheet_names,
                 "row_count": len(rows),
@@ -191,6 +273,41 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
                         "sheet": {"type": "string"},
                         "headers": {"type": "array", "items": {"type": "string"}},
                         "rows": {"type": "array"},
+                        "row_fills": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "ARGB заливка строк данных (без заголовка)",
+                        },
+                        "header_fill": {
+                            "type": "string",
+                            "description": "ARGB заливка строки заголовков",
+                        },
+                        "header_bold": {
+                            "type": "boolean",
+                            "description": "Жирный шрифт заголовков",
+                        },
+                        "column_widths": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "Ширина колонок",
+                        },
+                        "freeze_header": {
+                            "type": "boolean",
+                            "description": "Закрепить строку заголовков",
+                        },
+                        "cell_borders": {
+                            "type": "boolean",
+                            "description": "Тонкая сетка по всем ячейкам таблицы",
+                        },
+                        "wrap_text_columns": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "Номера колонок (1-based) с переносом текста",
+                        },
+                        "save_to_desktop": {
+                            "type": "boolean",
+                            "description": "Дополнительно сохранить копию на рабочий стол Windows",
+                        },
                         "overwrite": {"type": "boolean"},
                     },
                     "required": ["filename"],
@@ -226,23 +343,91 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
         for row in input_data.get("rows") or []:
             worksheet.append(list(row) if isinstance(row, (list, tuple)) else [row])
 
+        row_fills = input_data.get("row_fills") or []
+        if row_fills:
+            from openpyxl.styles import PatternFill
+
+            header_offset = 1 if headers else 0
+            for idx, fill_argb in enumerate(row_fills):
+                if not fill_argb:
+                    continue
+                row_num = header_offset + idx + 1
+                color = str(fill_argb).removeprefix("#").upper()
+                if len(color) == 6:
+                    color = "FF" + color
+                fill = PatternFill(start_color=color[-8:], end_color=color[-8:], fill_type="solid")
+                for cell in worksheet[row_num]:
+                    cell.fill = fill
+
+        if headers:
+            from openpyxl.styles import Font, PatternFill
+
+            header_fill = input_data.get("header_fill")
+            header_bold = bool(input_data.get("header_bold"))
+            if header_fill or header_bold:
+                for cell in worksheet[1]:
+                    if header_bold:
+                        cell.font = Font(bold=True, color="FFFFFFFF")
+                    if header_fill:
+                        color = str(header_fill).removeprefix("#").upper()
+                        if len(color) == 6:
+                            color = "FF" + color
+                        cell.fill = PatternFill(
+                            start_color=color[-8:],
+                            end_color=color[-8:],
+                            fill_type="solid",
+                        )
+
+        column_widths = input_data.get("column_widths") or []
+        if column_widths:
+            from openpyxl.utils import get_column_letter
+
+            for index, width in enumerate(column_widths, start=1):
+                try:
+                    worksheet.column_dimensions[get_column_letter(index)].width = float(width)
+                except (TypeError, ValueError):
+                    continue
+
+        if input_data.get("freeze_header") and headers:
+            worksheet.freeze_panes = "A2"
+
+        if input_data.get("cell_borders") and worksheet.max_row and worksheet.max_column:
+            _apply_workbook_table_style(
+                worksheet,
+                header_rows=1 if headers else 0,
+                wrap_text_columns=list(input_data.get("wrap_text_columns") or []),
+            )
+
+        desktop_path: Path | None = None
         try:
             workbook.save(path)
+            if input_data.get("save_to_desktop"):
+                from app.tools.plan_export import desktop_dir
+
+                desktop_path = desktop_dir() / path.name
+                import shutil
+
+                shutil.copy2(path, desktop_path)
         except Exception as exc:  # noqa: BLE001
             return self._fail("EXCEL_WRITE_ERROR", str(exc))
         finally:
             workbook.close()
 
+        output: dict[str, Any] = {
+            "filename": path.name,
+            "sheet": worksheet.title,
+            "written_rows": len(input_data.get("rows") or [])
+            + (1 if headers else 0),
+            "path": str(desktop_path or path),
+            "workspace_path": str(path),
+        }
+        if desktop_path is not None:
+            output["desktop_path"] = str(desktop_path)
+
         return ToolCallResult(
             ok=True,
             tool_name=self.definition.name,
-            output_data={
-                "filename": path.name,
-                "sheet": worksheet.title,
-                "written_rows": len(input_data.get("rows") or [])
-                + (1 if headers else 0),
-                "path": str(path),
-            },
+            output_data=output,
         )
 
 

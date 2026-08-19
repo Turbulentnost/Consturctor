@@ -79,6 +79,16 @@ def load_specs(root: Path) -> dict[int, DesktopServiceSpec]:
     }
 
 
+def _service_command(*, root: Path, spec: DesktopServiceSpec) -> list[str]:
+    if spec.port == DESKTOP_HOST_PORT:
+        host_exe = root / "DesktopHost.exe"
+        if host_exe.is_file():
+            return [str(host_exe)]
+    if spec.python_args:
+        return ["py", *spec.python_args, "-m", spec.module]
+    return [sys.executable, "-m", spec.module]
+
+
 def port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.4) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
@@ -159,9 +169,7 @@ def ensure_desktop_service(
     err_path = logs / f"{log_stem}.err.log"
     out_fh = open(out_path, "a", encoding="utf-8")
     err_fh = open(err_path, "a", encoding="utf-8")
-    cmd = [sys.executable, *spec.python_args, "-m", spec.module] if spec.python_args else [sys.executable, "-m", spec.module]
-    if spec.python_args:
-        cmd = ["py", *spec.python_args, "-m", spec.module]
+    cmd = _service_command(root=root, spec=spec)
     try:
         subprocess.Popen(
             cmd,

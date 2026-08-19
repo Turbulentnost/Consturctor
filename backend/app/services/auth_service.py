@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 # Локальные оверрайды должности по подстроке ФИО (без учёта ь/ъ).
 _POSITION_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("комарков", "менеджер тендерного офиса"),
+    ("жалыбин", "Промпт-инженер 2 категории"),
 )
 
 
@@ -77,6 +78,7 @@ def _stub_login(fio: str) -> LoginResponse:
     else:
         department = "Demo (AUTH_STUB)"
         position = ""
+    position = _apply_position_override(fio, position)
     token = create_access_token(
         user_id="auth-stub",
         fio=fio,

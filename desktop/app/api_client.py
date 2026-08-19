@@ -12,7 +12,8 @@ from urllib.parse import quote
 
 import httpx
 
-from app.config import backend_url
+from app.config import auth_url, backend_url
+from app.config import catalog_url as cfg_catalog_url
 
 
 class ApiError(Exception):
@@ -507,6 +508,17 @@ class WorkflowAttachment:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentRouteRecord:
+    handler: str = "generic"
+    kind: str = ""
+    mode: str = ""
+    default_task: str = ""
+    source: str = ""
+    version: int = 1
+    tools: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class WorkflowRecord:
     id: str
     title: str
@@ -526,6 +538,7 @@ class WorkflowRecord:
     pr_url: str = ""
     created_at: str = ""
     updated_at: str = ""
+    agent_route: AgentRouteRecord | None = None
 
     @property
     def name(self) -> str:
@@ -801,11 +814,19 @@ class QuestionChatSession:
     messages: list[QuestionChatMessage]
 
 
+_AUTH_PREFIX = "/api/v1/auth"
+
+
 class ApiClient:
     def __init__(self, base_url: str | None = None, timeout: float = 20.0) -> None:
         self.base_url = (base_url or backend_url()).rstrip("/")
+        self.auth_url = auth_url().rstrip("/")
         self._timeout = timeout
         self._token: str | None = None
+        self._on_unauthorized: Callable[[], None] | None = None
+
+    def set_on_unauthorized(self, callback: Callable[[], None] | None) -> None:
+        self._on_unauthorized = callback
 
     @property
     def token(self) -> str | None:
@@ -822,6 +843,18 @@ class ApiClient:
 
     def set_base_url(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
+
+    def set_auth_url(self, url: str) -> None:
+        self.auth_url = url.rstrip("/")
+
+    @property
+    def workflows_catalog_url(self) -> str:
+        return cfg_catalog_url().rstrip("/")
+
+    def _api_root(self, path: str) -> str:
+        if path.startswith(_AUTH_PREFIX):
+            return self.auth_url
+        return self.base_url
 
     @staticmethod
     def _parse_agent_kpi_metric(data: dict) -> AgentKpiMetric:
@@ -896,8 +929,9 @@ class ApiClient:
             )
         return tuple(items)
 
-    def health(self) -> HealthStatus:
-        data = self._request("GET", "/health")
+    def health(self, *, target: str = "api") -> HealthStatus:
+        root = self.auth_url if target == "auth" else self.base_url
+        data = self._request("GET", "/health", root=root)
         services = []
         for item in data.get("platform_services") or []:
             services.append(
@@ -1079,7 +1113,7 @@ class ApiClient:
         path = Path(file_path)
         if not path.is_file():
             raise ApiError("Файл не найден")
-        url = f"{self.base_url}/api/v1/auth/me/avatar"
+        url = f"{self.auth_url}/api/v1/auth/me/avatar"
         mime = {
             ".png": "image/png",
             ".jpg": "image/jpeg",
@@ -1705,6 +1739,43 @@ class ApiClient:
             if isinstance(x, dict)
         ]
 
+    def sync_workflows_from_catalog(self) -> int:
+        """Скопировать опубликованные агенты с общего сервера в локальный backend."""
+        remote = self.workflows_catalog_url.rstrip("/")
+        local = self.base_url.rstrip("/")
+        if not remote or remote == local or not self._token:
+            return 0
+        try:
+            remote_items = self._request("GET", "/api/v1/workflows", root=remote, timeout=60.0)
+        except ApiError:
+            return 0
+        if not isinstance(remote_items, list):
+            return 0
+        imported = 0
+        for item in remote_items:
+            if not isinstance(item, dict) or str(item.get("phase") or "") != "done":
+                continue
+            workflow_id = str(item.get("id") or "").strip()
+            if not workflow_id:
+                continue
+            try:
+                detail = self._request(
+                    "GET",
+                    f"/api/v1/workflows/{workflow_id}",
+                    root=remote,
+                    timeout=60.0,
+                )
+                self._request(
+                    "POST",
+                    "/api/v1/workflows/import",
+                    json=detail if isinstance(detail, dict) else {},
+                    timeout=60.0,
+                )
+                imported += 1
+            except ApiError:
+                continue
+        return imported
+
     def get_workflow(self, workflow_id: str) -> WorkflowRecord:
         data = self._request("GET", f"/api/v1/workflows/{workflow_id}", timeout=60.0)
         return self._parse_workflow(data)
@@ -1902,7 +1973,13 @@ class ApiClient:
         data = self._request("GET", "/api/v1/workflows/agent-tools", timeout=60.0)
         return [item for item in (data.get("tools") or []) if isinstance(item, dict)]
 
-    def _handle_sse_tool_request(self, payload: dict, *, fallback_run_id: str = "") -> None:
+    def _handle_sse_tool_request(
+        self,
+        payload: dict,
+        *,
+        fallback_run_id: str = "",
+        auto_approve: bool = False,
+    ) -> None:
         from app.tools import ToolHostError, invoke_tool
         from app.tools.hitl import HUMAN_REJECTED, confirm_level1_tool
 
@@ -1916,7 +1993,7 @@ class ApiClient:
         if workflow_id and not isinstance(arguments.get("runtime_context"), dict):
             arguments["runtime_context"] = {"workflow_id": workflow_id, "agent_id": workflow_id}
         try:
-            if not confirm_level1_tool(tool, arguments):
+            if not confirm_level1_tool(tool, arguments, auto_approve=auto_approve):
                 self.post_agent_tool_result(
                     req_run,
                     request_id=request_id,
@@ -1986,66 +2063,95 @@ class ApiClient:
         on_event: Callable[[dict], None],
         *,
         source: str = "chat",
+        auto_approve: bool = False,
+        agent_kind: str = "",
     ) -> dict:
         url = f"{self.base_url}/api/v1/workflows/{workflow_id}/agent-runs/stream"
         final_result: dict | None = None
         run_id = ""
+        payload_body: dict = {
+            "message": message,
+            "source": source or "chat",
+        }
+        if agent_kind:
+            payload_body["agent_kind"] = agent_kind
+
+        def handle_payload(payload: dict) -> None:
+            nonlocal final_result, run_id
+            payload_type = str(payload.get("type") or "")
+            if payload_type == "run":
+                run_id = str(payload.get("run_id") or "")
+                on_event(payload)
+            elif payload_type == "tool_request":
+                tool = str(payload.get("tool") or "")
+                on_event(
+                    {
+                        "type": "status",
+                        "text": f"Выполняю на этом компьютере: {tool}…",
+                    }
+                )
+                Thread(
+                    target=self._handle_sse_tool_request,
+                    kwargs={
+                        "payload": payload,
+                        "fallback_run_id": run_id,
+                        "auto_approve": auto_approve
+                        or (source or "").strip().casefold() == "script",
+                    },
+                    daemon=True,
+                ).start()
+            elif payload_type in {"heartbeat", "ping"}:
+                return
+            elif payload_type == "error":
+                raise ApiError(str(payload.get("message") or "Ошибка запуска агента"))
+            elif payload_type == "done":
+                final_result = (
+                    payload.get("result") if isinstance(payload.get("result"), dict) else {}
+                )
+            else:
+                on_event(payload)
+
+        last_transport: Exception | None = None
         try:
-            with httpx.Client(timeout=None) as client:
-                with client.stream(
-                    "POST",
-                    url,
-                    headers={**self._headers(), "Accept": "text/event-stream"},
-                    json={"message": message, "source": source or "chat"},
-                ) as response:
-                    if response.status_code >= 400:
-                        body = response.read().decode("utf-8", errors="replace")
-                        raise ApiError(body or "Ошибка запуска агента", status_code=response.status_code)
-                    data_lines: list[str] = []
-                    for line in response.iter_lines():
-                        if line == "":
-                            if data_lines:
-                                payload = _parse_sse_payload("\n".join(data_lines))
-                                payload_type = str(payload.get("type") or "")
-                                if payload_type == "run":
-                                    run_id = str(payload.get("run_id") or "")
-                                    on_event(payload)
-                                elif payload_type == "tool_request":
-                                    tool = str(payload.get("tool") or "")
-                                    on_event(
-                                        {
-                                            "type": "status",
-                                            "text": f"Выполняю на этом компьютере: {tool}…",
-                                        }
-                                    )
-                                    Thread(
-                                        target=self._handle_sse_tool_request,
-                                        kwargs={
-                                            "payload": payload,
-                                            "fallback_run_id": run_id,
-                                        },
-                                        daemon=True,
-                                    ).start()
-                                elif payload_type in {"heartbeat", "ping"}:
-                                    continue
-                                elif payload_type == "error":
-                                    raise ApiError(str(payload.get("message") or "Ошибка запуска агента"))
-                                elif payload_type == "done":
-                                    final_result = (
-                                        payload.get("result")
-                                        if isinstance(payload.get("result"), dict)
-                                        else {}
-                                    )
-                                else:
-                                    on_event(payload)
-                            data_lines = []
-                            continue
-                        if line.startswith("data:"):
-                            data_lines.append(line.split(":", 1)[1].strip())
-        except httpx.ConnectError as exc:
-            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+            for attempt in range(2):
+                try:
+                    with httpx.Client(timeout=None) as client:
+                        with client.stream(
+                            "POST",
+                            url,
+                            headers={**self._headers(), "Accept": "text/event-stream"},
+                            json=payload_body,
+                        ) as response:
+                            if response.status_code >= 400:
+                                body = response.read().decode("utf-8", errors="replace")
+                                raise ApiError(
+                                    body or "Ошибка запуска агента",
+                                    status_code=response.status_code,
+                                )
+                            for payload in _iter_sse_payloads(response):
+                                handle_payload(payload)
+                    last_transport = None
+                    break
+                except httpx.ConnectError as exc:
+                    last_transport = exc
+                    if attempt == 0 and final_result is None:
+                        time.sleep(0.6)
+                        continue
+                    raise ApiError(
+                        f"Не удалось подключиться к backend ({self.base_url})"
+                    ) from exc
+                except httpx.RemoteProtocolError as exc:
+                    last_transport = exc
+                    if attempt == 0 and final_result is None:
+                        time.sleep(0.6)
+                        continue
+                    raise ApiError(_humanize_agent_stream_error(exc)) from exc
+            if last_transport is not None:
+                raise ApiError(_humanize_agent_stream_error(last_transport))
+        except ApiError:
+            raise
         except httpx.HTTPError as exc:
-            raise ApiError(f"Ошибка сети: {exc}") from exc
+            raise ApiError(_humanize_agent_stream_error(exc)) from exc
         return final_result or {}
 
     def list_inbox(self) -> tuple[list[InboxNotification], int]:
@@ -2342,12 +2448,14 @@ class ApiClient:
         dest = DESKTOP_ROOT / "data" / "outputs" / workflow_id
         dest.mkdir(parents=True, exist_ok=True)
         try:
-            with httpx.Client(timeout=300.0) as client:
+            with httpx.Client(timeout=120.0) as client:
                 response = client.post(url, headers=self._headers(), json={})
         except httpx.ConnectError as exc:
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
         except httpx.TimeoutException as exc:
-            raise ApiError("Превышено время скачивания артефактов") from exc
+            raise ApiError(
+                "Превышено время скачивания артефактов (Cursor API медленно или файлов нет)"
+            ) from exc
         except httpx.HTTPError as exc:
             raise ApiError(f"Ошибка сети: {exc}") from exc
         if response.status_code >= 400:
@@ -2377,6 +2485,19 @@ class ApiClient:
             timeout=60.0,
         )
         return self._parse_workflow(data)
+
+    def get_agent_route(self, workflow_id: str) -> AgentRouteRecord:
+        data = self._request("GET", f"/api/v1/workflows/{workflow_id}/agent-route", timeout=30.0)
+        return self._parse_agent_route(data)
+
+    def update_agent_route(self, workflow_id: str, patch: dict) -> AgentRouteRecord:
+        data = self._request(
+            "PATCH",
+            f"/api/v1/workflows/{workflow_id}/agent-route",
+            json=patch,
+            timeout=60.0,
+        )
+        return self._parse_agent_route(data)
 
     def publish_workflow(self, workflow_id: str) -> WorkflowRecord:
         data = self._request(
@@ -2456,6 +2577,8 @@ class ApiClient:
             for a in (data.get("attachments") or [])
             if isinstance(a, dict)
         ]
+        route_data = data.get("agent_route")
+        agent_route = self._parse_agent_route(route_data) if isinstance(route_data, dict) else None
         return WorkflowRecord(
             id=str(data.get("id") or ""),
             title=str(data.get("title") or "Без названия"),
@@ -2475,6 +2598,22 @@ class ApiClient:
             pr_url=str(data.get("pr_url") or ""),
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
+            agent_route=agent_route,
+        )
+
+    @staticmethod
+    def _parse_agent_route(data: dict | None) -> AgentRouteRecord:
+        payload = data if isinstance(data, dict) else {}
+        tools_raw = payload.get("tools") or []
+        tools = tuple(str(x) for x in tools_raw if str(x).strip()) if isinstance(tools_raw, list) else ()
+        return AgentRouteRecord(
+            handler=str(payload.get("handler") or "generic"),
+            kind=str(payload.get("kind") or ""),
+            mode=str(payload.get("mode") or ""),
+            default_task=str(payload.get("default_task") or ""),
+            source=str(payload.get("source") or ""),
+            version=int(payload.get("version") or 1) or 1,
+            tools=tools,
         )
 
     @staticmethod
@@ -2523,8 +2662,10 @@ class ApiClient:
         json: dict | None = None,
         params: dict | None = None,
         timeout: float | None = None,
+        root: str | None = None,
     ):
-        url = f"{self.base_url}{path}"
+        base = (root or self._api_root(path)).rstrip("/")
+        url = f"{base}{path}"
         last_connect: httpx.ConnectError | None = None
         for attempt in range(3):
             try:
@@ -2542,7 +2683,7 @@ class ApiClient:
                 last_connect = exc
                 if attempt == 2:
                     raise ApiError(
-                        f"Не удалось подключиться к backend ({self.base_url})"
+                        f"Не удалось подключиться к backend ({base})"
                     ) from exc
                 time.sleep(0.4 * (attempt + 1))
             except httpx.TimeoutException as exc:
@@ -2551,11 +2692,15 @@ class ApiClient:
                 raise ApiError(f"Ошибка сети: {exc}") from exc
         if last_connect is not None:
             raise ApiError(
-                f"Не удалось подключиться к backend ({self.base_url})"
+                f"Не удалось подключиться к backend ({base})"
             ) from last_connect
 
         if response.status_code >= 400:
             detail = _extract_detail(response)
+            if response.status_code == 401 and path != "/api/v1/auth/login":
+                self._token = None
+                if self._on_unauthorized:
+                    self._on_unauthorized()
             raise ApiError(detail, status_code=response.status_code)
 
         if not response.content:
@@ -2892,6 +3037,19 @@ def _extract_detail(response: httpx.Response) -> str:
     if response.status_code == 401:
         return "Неверный логин или пароль"
     return f"Ошибка сервера ({response.status_code})"
+
+
+def _humanize_agent_stream_error(exc: Exception) -> str:
+    text = str(exc).strip()
+    lowered = text.casefold()
+    if "incomplete chunked read" in lowered or "peer closed connection" in lowered:
+        return (
+            "Соединение с backend прервалось во время длительной загрузки OData (~1 мин). "
+            "Проверьте, что Docker gateway запущен, и повторите «Запустить типовую задачу»."
+        )
+    if text:
+        return f"Ошибка сети: {text}"
+    return "Ошибка сети при запуске агента"
 
 
 def _iter_sse_payloads(response: httpx.Response):

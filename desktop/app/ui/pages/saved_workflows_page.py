@@ -59,6 +59,7 @@ _PHASE_HINT = {
 
 class SavedWorkflowsPage(QWidget):
     open_requested = Signal(object)
+    agent_run_requested = Signal(object)
     _list_ready = Signal(object)
     _detail_ready = Signal(object)
     _fail = Signal(str)
@@ -130,7 +131,7 @@ class SavedWorkflowsPage(QWidget):
         )
         self._detail.setMinimumWidth(360)
 
-        self._run_btn = QPushButton("Запустить локально")
+        self._run_btn = QPushButton("Запустить агента")
         self._run_btn.setFixedHeight(40)
         self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._run_btn.setFont(app_font(12, QFont.Weight.DemiBold))
@@ -273,13 +274,16 @@ class SavedWorkflowsPage(QWidget):
         local_run = dict(record.local_run or {})
         cwd = self._resolve_cwd(str(local_run.get("cwd") or ""))
         runnable = bool(cwd and Path(cwd).is_dir())
-        lines.append(
-            "<span style='color:#0A7A5F'>▶ можно запустить локально</span>"
-            if runnable
-            else "<span style='color:#9A6B00'>локальный запуск не настроен</span>"
-        )
+        is_published = record.phase == "done"
+        if is_published:
+            lines.append("<span style='color:#0A7A5F'>▶ запуск агента доступен</span>")
+        elif runnable:
+            lines.append("<span style='color:#0A7A5F'>▶ можно запустить локально</span>")
+        else:
+            lines.append("<span style='color:#9A6B00'>локальный запуск не настроен</span>")
         self._detail.setText("<br>".join(lines))
-        self._run_btn.setEnabled(runnable and self._proc is None)
+        self._run_btn.setText("Запустить агента" if is_published else "Запустить локально")
+        self._run_btn.setEnabled((is_published or runnable) and self._proc is None)
         out = str(local_run.get("output") or "")
         last = os.path.join(cwd, out) if cwd and out else ""
         self._open_result_btn.setEnabled(bool(last and os.path.exists(last)))
@@ -315,6 +319,9 @@ class SavedWorkflowsPage(QWidget):
     def _on_run(self) -> None:
         record = self._current_full
         if record is None:
+            return
+        if record.phase == "done":
+            self.agent_run_requested.emit(record)
             return
         spec = dict(record.local_run or {})
         cwd = self._resolve_cwd(str(spec.get("cwd") or ""))

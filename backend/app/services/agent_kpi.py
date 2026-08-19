@@ -469,29 +469,170 @@ def build_kpi_record(
     }
 
 
-def apply_facts(
+def compute_score_from_plan_fact(
+    kind: str,
+    plan_val: float | None,
+    fact_val: float | None,
+) -> float | None:
+    if fact_val is None:
+        return None
+    if kind in {"success_rate", "on_schedule_rate"}:
+        return max(0.0, min(100.0, fact_val))
+    if kind == "fail_count":
+        if plan_val is None:
+            return 100.0 if fact_val <= 0 else max(0.0, 100.0 - fact_val * 25.0)
+        if fact_val <= plan_val:
+            return 100.0
+        excess = fact_val - plan_val
+        return max(0.0, 100.0 - excess * 25.0)
+    if kind == "runs_count":
+        if plan_val is None or plan_val <= 0:
+            return 100.0 if fact_val > 0 else None
+        return max(0.0, min(100.0, 100.0 * fact_val / plan_val))
+    if kind == "expected_interval":
+        if plan_val is None or plan_val <= 0:
+            return None
+        deviation = abs(fact_val - plan_val) / plan_val * 100.0
+        return max(0.0, 100.0 - deviation)
+    return None
+
+
+def build_evidence(
+    kind: str,
+    value: float | None,
+    hint: str,
+    runs: list[Any],
+    plan_val: float | None,
+) -> str:
+    run_count = len(runs)
+    if run_count == 0:
+        return NO_RUNS_LABEL
+    finished = sum(
+        1 for row in runs if str(getattr(row, "status", "") or "") in {"ok", "error"}
+    )
+    ok = sum(1 for row in runs if str(getattr(row, "status", "")) == "ok")
+    err = sum(1 for row in runs if str(getattr(row, "status", "")) == "error")
+    if value is None:
+        if kind == "expected_interval":
+            return f"Прогонов: {run_count}. Для интервала нужно минимум 2 запуска."
+        if kind == "on_schedule_rate":
+            return f"Прогонов: {run_count}. Для своевременности нужны trigger-запуски."
+        return f"Прогонов: {run_count} (завершённых: {finished}). Данных пока недостаточно."
+    if kind == "success_rate":
+        return (
+            f"Прогонов: {run_count}, завершённых: {finished} "
+            f"(ok: {ok}, error: {err}). Успешность: {value:g}%."
+        )
+    if kind == "fail_count":
+        plan_text = int(plan_val) if plan_val is not None else 0
+        return (
+            f"Прогонов: {run_count}, завершённых: {finished}. "
+            f"Ошибок: {int(value)} (план: {plan_text})."
+        )
+    if kind == "runs_count":
+        unit = "шт/день" if plan_val is not None else "шт"
+        if plan_val is not None:
+            return f"Прогонов: {int(value)} (план: {plan_val:g} {unit})."
+        return f"Прогонов: {int(value)}."
+    if kind == "expected_interval":
+        plan_text = f"{plan_val:g}" if plan_val is not None else "—"
+        return (
+            f"Прогонов: {run_count}. Средний интервал: {value:g} мин "
+            f"(план: {plan_text} мин)."
+        )
+    if kind == "on_schedule_rate":
+        return f"Прогонов: {run_count}. Своевременность trigger-запусков: {value:g}%."
+    return f"Прогонов: {run_count}. {hint}: {value:g}."
+
+
+def build_deterministic_calc_updates(
     kpi: dict[str, Any],
     runs: list[Any],
     schedule: dict[str, Any] | None = None,
+    *,
+    due_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    updates: list[dict[str, Any]] = []
+    for raw in (kpi or {}).get("tiles") or []:
+        if not isinstance(raw, dict):
+            continue
+        tile_id = str(raw.get("id") or "").strip()
+        if not tile_id:
+            continue
+        if due_ids is not None and tile_id not in due_ids:
+            continue
+        measure = raw.get("measure") if isinstance(raw.get("measure"), dict) else {}
+        plan_side = raw.get("plan") if isinstance(raw.get("plan"), dict) else {}
+        kind = str(measure.get("kind") or "").strip()
+        params = measure.get("params") if isinstance(measure.get("params"), dict) else {}
+        plan_val = _as_float(plan_side.get("value"))
+        value, hint = compute_fact(kind, params, runs, schedule)
+        score = compute_score_from_plan_fact(kind, plan_val, value)
+        updates.append(
+            {
+                "id": tile_id,
+                "fact": {
+                    "value": value,
+                    "unit": str(plan_side.get("unit") or _default_unit(kind)),
+                },
+                "score_percent": score,
+                "evidence": build_evidence(kind, value, hint, runs, plan_val),
+            }
+        )
+    return updates
+
+
+def refresh_kpi_from_runs(
+    kpi: dict[str, Any],
+    runs: list[Any],
+    schedule: dict[str, Any] | None = None,
+    *,
+    now: datetime | None = None,
+    persist_timestamps: bool = False,
+    tile_ids: set[str] | None = None,
 ) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
     out = dict(kpi or {})
     tiles: list[dict[str, Any]] = []
     for raw in out.get("tiles") or []:
         if not isinstance(raw, dict):
             continue
         tile = dict(raw)
+        tile_id = str(tile.get("id") or "").strip()
+        if tile_ids is not None and tile_id not in tile_ids:
+            tiles.append(tile)
+            continue
+        measure = tile.get("measure") if isinstance(tile.get("measure"), dict) else {}
+        plan_side = tile.get("plan") if isinstance(tile.get("plan"), dict) else {}
         fact = dict(tile.get("fact") or {})
-        measure = dict(tile.get("measure") or {})
         kind = str(measure.get("kind") or "").strip()
         params = measure.get("params") if isinstance(measure.get("params"), dict) else {}
-        value, _hint = compute_fact(kind, params, runs, schedule)
+        plan_val = _as_float(plan_side.get("value"))
+        value, hint = compute_fact(kind, params, runs, schedule)
         fact["value"] = value
         if not str(fact.get("label") or "").strip():
             fact["label"] = "Факт"
         tile["fact"] = fact
+        score = compute_score_from_plan_fact(kind, plan_val, value)
+        tile["score_percent"] = score
+        method = tile.get("method") if isinstance(tile.get("method"), dict) else {}
+        tile["color"] = tile_color(score, method.get("green_min"), method.get("yellow_min"))
+        tile["evidence"] = build_evidence(kind, value, hint, runs, plan_val)
+        if persist_timestamps:
+            tile["updated_at"] = now.isoformat()
+            tile["calc_failures"] = 0
+            tile["next_run_at"] = advance_next_run_at(method, now=now, failed=False)
         tiles.append(tile)
     out["tiles"] = tiles
     return out
+
+
+def apply_facts(
+    kpi: dict[str, Any],
+    runs: list[Any],
+    schedule: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return refresh_kpi_from_runs(kpi, runs, schedule)
 
 
 def compute_fact(
@@ -543,16 +684,18 @@ def compute_fact(
 
 
 def list_runs_for_kpi(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRun]:
-    return list(
+    rows = list(
         db.execute(
             select(AgentRun)
             .where(AgentRun.workflow_id == workflow_id, AgentRun.user_id == user_id)
-            .order_by(AgentRun.started_at.asc())
+            .order_by(AgentRun.started_at.desc())
             .limit(200)
         )
         .scalars()
         .all()
     )
+    rows.reverse()
+    return rows
 
 
 def kpi_to_schema(

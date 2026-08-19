@@ -21,7 +21,8 @@ if not errorlevel 1 (
 )
 
 set "CONSTRUCTOR_ROOT=%CD%"
-set "CMD=set API_PORT=7831&& set USE_STUBS=%USE_STUBS%&& set CONSTRUCTOR_ROOT=%CD%&& py -3.12-32 -m platform_tool_onec_com.main"
+set "PYTHONPATH=%CD%\services\platform-tool-onec-com;%CD%\platform-service-common;%CD%\platform-contracts"
+set "CMD=set API_PORT=7831&& set USE_STUBS=%USE_STUBS%&& set CONSTRUCTOR_ROOT=%CD%&& set PYTHONPATH=%PYTHONPATH%&& py -3.12-32 -m platform_tool_onec_com.main"
 
 powershell -NoProfile -Command ^
   "$wd='%CD%'; Start-Process cmd.exe -ArgumentList @('/c','%CMD%') -WorkingDirectory $wd -WindowStyle Hidden -RedirectStandardOutput (Join-Path $wd 'logs\onec-com.out.log') -RedirectStandardError (Join-Path $wd 'logs\onec-com.err.log') | Out-Null"

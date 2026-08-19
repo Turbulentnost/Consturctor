@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     dev_mode: bool = False
     tool_manifest_path: str = str(BACKEND_ROOT / "data" / "tool_manifest.json")
 
+    # Split-auth: локальный gateway доверяет токенам общего сервера входа
+    auth_server_url: str = Field(default="", validation_alias="AUTH_SERVER_URL")
+
     # IMAP (server-side tools only; desktop never executes imap.*)
     imap_host: str = ""
     imap_port: int = 993
@@ -92,7 +95,7 @@ class Settings(BaseSettings):
     odata_base_url: str = ""
     odata_username: str = ""
     odata_password: str = ""
-    odata_timeout_sec: float = 60.0
+    odata_timeout_sec: float = 120.0
     odata_incoming_doc_entity: str = "Document_ТД_ВходящаяКорреспонденция"
     docflow_odata_base_url: str = ""
     docflow_odata_username: str = ""

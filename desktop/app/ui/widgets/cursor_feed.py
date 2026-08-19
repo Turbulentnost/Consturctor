@@ -171,32 +171,61 @@ class _WrapLabel(QLabel):
         super().__init__(text, parent)
         self.setWordWrap(True)
         self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        super().setText(text)
+        self.updateGeometry()
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
         return True
 
-    def _available_width(self) -> int:
-        w = self.width()
-        if w >= 80:
-            return w
+    def _layout_width(self) -> int:
+        width = self.width()
+        if width >= 40:
+            return width
+        max_w = self.maximumWidth()
+        if 0 < max_w < 16777215:
+            return max_w
         parent = self.parentWidget()
         while parent is not None:
-            if parent.width() >= 80:
+            parent_max = parent.maximumWidth()
+            if 0 < parent_max < 16777215:
+                return max(40, parent_max)
+            if parent.width() >= 40:
                 return parent.width()
             parent = parent.parentWidget()
         return 420
 
+    def _text_height(self, width: int) -> int:
+        text = self.text() or ""
+        if not text.strip():
+            return self.fontMetrics().height()
+        rect = self.fontMetrics().boundingRect(
+            0,
+            0,
+            max(40, width),
+            10000,
+            int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
+            text,
+        )
+        return max(self.fontMetrics().height(), rect.height() + 4)
+
     def heightForWidth(self, width: int) -> int:  # noqa: N802
-        return max(super().heightForWidth(max(80, width)), 0)
+        return self._text_height(width)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        w = self._available_width()
-        return QSize(w, self.heightForWidth(w))
+        width = self._layout_width()
+        return QSize(width, self._text_height(width))
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
-        return QSize(0, 0)
+        width = min(self._layout_width(), 200)
+        return QSize(0, self._text_height(width))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.updateGeometry()
 
 
 class _CollapseHeader(QFrame):
@@ -275,6 +304,7 @@ class CursorFeedItem(QFrame):
         action_key: str = "",
         event_key: str = "",
         expanded: bool = False,
+        text_color: str = "",
         arguments: Any = None,
         result: Any = None,
         parent: QWidget | None = None,
@@ -288,13 +318,14 @@ class CursorFeedItem(QFrame):
         self._action_key = action_key
         self._event_key = event_key
         self._expanded = expanded
+        self._text_color = (text_color or "").strip()
         if kind == "tool" and not self._detail:
             self._detail = format_tool_detail(arguments, result)
         if not self._detail:
             self._detail = self._text
         self.setStyleSheet("background: transparent;")
         self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         self._header: _CollapseHeader | None = None
         self._detail_frame: QFrame | None = None
         self._detail_label: _WrapLabel | None = None
@@ -314,6 +345,7 @@ class CursorFeedItem(QFrame):
                 self._plain_label.set_markdown(self._text)
             elif hasattr(self._plain_label, "setText"):
                 self._plain_label.setText(self._text)
+        self.updateGeometry()
 
     def set_tool_detail(self, detail: str) -> None:
         """Обновить вывод инструмента, не трогая шапку и не пересобирая ленту."""
@@ -389,6 +421,18 @@ class CursorFeedItem(QFrame):
         self._detail_frame = self._plain_body(self._text)
         self._detail_frame.setVisible(self._expanded)
         self._toggle = _ToggleLink("Свернуть" if self._expanded else "Показать полностью")
+        if (self._text_color or "").upper() in {"#FFFFFF", "#FFF"}:
+            self._toggle.setStyleSheet(
+                """
+                QLabel#cursortoggle {
+                    color: #C8E6DF;
+                    background: transparent;
+                }
+                QLabel#cursortoggle:hover {
+                    color: #FFFFFF;
+                }
+                """
+            )
         self._toggle.clicked.connect(self._toggle_expand)
         root.addWidget(self._preview)
         root.addWidget(self._detail_frame)
@@ -397,14 +441,16 @@ class CursorFeedItem(QFrame):
     def _plain_body(self, text: str) -> QWidget:
         if self._kind == "agent":
             return MarkdownBody(text, font_size=14, weight=QFont.Weight.Medium)
-        color = MAIN_TEXT.name()
+        color = self._text_color or MAIN_TEXT.name()
         weight = QFont.Weight.Medium
         if self._kind == "error":
-            color = "#B00020"
+            color = self._text_color or "#B00020"
         elif self._kind == "system":
-            color = COLOR_CONTENT_MUTED.name()
+            color = self._text_color or COLOR_CONTENT_MUTED.name()
         elif self._kind == "user":
             weight = QFont.Weight.DemiBold
+            if not self._text_color:
+                color = MAIN_TEXT.name()
         label = _WrapLabel(text)
         label.setFont(app_font(14, weight))
         label.setStyleSheet(f"color: {color}; background: transparent;")

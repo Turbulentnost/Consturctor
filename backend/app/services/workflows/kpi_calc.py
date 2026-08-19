@@ -17,6 +17,7 @@ from app.services.workflows.plan_models import WorkflowPlan
 logger = logging.getLogger(__name__)
 
 SCHEDULER_INTERVAL_SEC = 30
+MAX_WORKFLOWS_PER_TICK = 5
 
 
 def list_due_workflows(db: Session, *, now: datetime | None = None) -> list[tuple[Workflow, list[str]]]:
@@ -24,11 +25,15 @@ def list_due_workflows(db: Session, *, now: datetime | None = None) -> list[tupl
     rows = list(db.execute(select(Workflow)).scalars().all())
     due: list[tuple[Workflow, list[str]]] = []
     for row in rows:
+        if str(getattr(row, "phase", "") or "") != "done":
+            continue
         local = row.local_run if isinstance(row.local_run, dict) else {}
         if is_workflow_paused(local):
             continue
         kpi = local.get("kpi") if isinstance(local.get("kpi"), dict) else None
         if not kpi or not (kpi.get("tiles") or []):
+            continue
+        if str(kpi.get("status") or "") != "ready":
             continue
         if agent_kpi.is_calc_lock_active(kpi.get("calculating_at"), now):
             continue
@@ -63,6 +68,8 @@ def calculate_workflow_kpi(db: Session, row: Workflow, tile_ids: list[str]) -> N
         tiles=due,
         runs=agent_kpi.runs_digest(runs),
     )
+    due_set = set(tile_ids)
+    fallback = agent_kpi.build_deterministic_calc_updates(kpi, runs, draft, due_ids=due_set)
     updates: list[dict] = []
     try:
         from app.services.workflows.service import _create_exec_agent, _stream_run
@@ -72,7 +79,11 @@ def calculate_workflow_kpi(db: Session, row: Workflow, tile_ids: list[str]) -> N
         updates = agent_kpi.parse_calc_payload(result.text or "")
         if result.error and not updates:
             raise RuntimeError(result.error)
-        kpi = agent_kpi.apply_calc_updates(kpi, updates, due_ids=set(tile_ids))
+        seen = {str(item.get("id") or "") for item in updates}
+        for item in fallback:
+            if item["id"] not in seen:
+                updates.append(item)
+        kpi = agent_kpi.apply_calc_updates(kpi, updates, due_ids=due_set)
         logger.info(
             "KPI calc done workflow=%s tiles=%s updates=%s",
             row.id,
@@ -81,7 +92,7 @@ def calculate_workflow_kpi(db: Session, row: Workflow, tile_ids: list[str]) -> N
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("KPI calc failed workflow=%s: %s", row.id, exc)
-        kpi = agent_kpi.apply_calc_updates(kpi, [], due_ids=set(tile_ids))
+        kpi = agent_kpi.apply_calc_updates(kpi, fallback, due_ids=due_set)
     finally:
         kpi["calculating_at"] = ""
         local = dict(row.local_run or {})
@@ -96,9 +107,11 @@ def run_due_kpi_calculations() -> int:
         due = list_due_workflows(db)
         if not due:
             return 0
-        row, tile_ids = due[0]
-        calculate_workflow_kpi(db, row, tile_ids)
-        return 1
+        processed = 0
+        for row, tile_ids in due[:MAX_WORKFLOWS_PER_TICK]:
+            calculate_workflow_kpi(db, row, tile_ids)
+            processed += 1
+        return processed
     except Exception:
         logger.exception("KPI scheduler tick failed")
         return 0

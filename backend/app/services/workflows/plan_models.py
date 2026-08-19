@@ -48,6 +48,8 @@ class PlanRuntime:
     """Machine-readable run rules taken from user answers (not global hardcode)."""
 
     kind: str = ""  # e.g. site_search_excel; empty = no special runtime
+    handler: str = ""  # act_porucheniya_registry | assignments_action_tracker | ...
+    default_task: str = ""
     site_url: str = ""
     keywords: list[str] = field(default_factory=list)
     keyword_text: str = ""
@@ -70,6 +72,8 @@ class PlanRuntime:
             columns = [columns]
         return cls(
             kind=str(data.get("kind") or ""),
+            handler=str(data.get("handler") or ""),
+            default_task=str(data.get("default_task") or ""),
             site_url=str(data.get("site_url") or data.get("siteUrl") or ""),
             keywords=[str(x).strip() for x in keywords if str(x).strip()],
             keyword_text=str(data.get("keyword_text") or data.get("keywordText") or ""),
@@ -96,9 +100,14 @@ class PlanRuntime:
         }
         if self.autonomy_policy:
             payload["autonomy_policy"] = self.autonomy_policy
-        if not self.kind and not self.keywords and not self.keyword_text:
+        if self.handler:
+            payload["handler"] = self.handler
+        if self.default_task:
+            payload["default_task"] = self.default_task
+        if not self.kind and not self.keywords and not self.keyword_text and not self.handler:
             return payload
-        payload["kind"] = self.kind
+        if self.kind:
+            payload["kind"] = self.kind
         if self.site_url:
             payload["site_url"] = self.site_url
         if self.keywords:

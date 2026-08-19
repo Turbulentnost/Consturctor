@@ -168,11 +168,11 @@ def cancel_run(agent_id: str, run_id: str) -> dict[str, Any]:
 
 
 def archive_agent(agent_id: str) -> dict[str, Any]:
-    return _request("POST", f"/v1/agents/{agent_id}/archive", timeout=45.0)
+    return _request("POST", f"/v1/agents/{agent_id}/archive", json={}, timeout=45.0)
 
 
 def list_artifacts(agent_id: str) -> list[dict[str, Any]]:
-    data = _request("GET", f"/v1/agents/{agent_id}/artifacts", timeout=60.0)
+    data = _request("GET", f"/v1/agents/{agent_id}/artifacts", timeout=45.0)
     if isinstance(data, list):
         return data
     return list(data.get("items") or [])
@@ -183,7 +183,7 @@ def artifact_download_url(agent_id: str, path: str) -> str:
         "GET",
         f"/v1/agents/{agent_id}/artifacts/download",
         params={"path": path},
-        timeout=60.0,
+        timeout=45.0,
     )
     return str(data.get("url") or "")
 
@@ -193,7 +193,7 @@ def download_artifact_to(agent_id: str, path: str, dest: str | Path) -> None:
     if not url:
         raise CursorAgentError(f"Не удалось получить ссылку на артефакт: {path}")
     try:
-        with httpx.Client(timeout=120.0, follow_redirects=True) as raw:
+        with httpx.Client(timeout=45.0, follow_redirects=True) as raw:
             with raw.stream("GET", url) as resp:
                 if resp.status_code >= 400:
                     body = resp.read().decode("utf-8", errors="replace")

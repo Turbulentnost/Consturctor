@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QStackedWidget, 
 
 from app.agents.headless_runner import HeadlessRunner
 from app.api_client import ApiClient, ApiError, LoginResult
+from app.config import auth_url, backend_url
 from app.notifications.service import NotificationService
 from app.session_store import clear_session, load_session
 from app.tools.hitl import install_confirm_host, set_reveal_callback
@@ -21,6 +22,8 @@ class AppWindow(QMainWindow):
     def __init__(self, api: ApiClient | None = None, *, open_workflow_id: str = "") -> None:
         super().__init__()
         self.api = api or ApiClient()
+        self.api.set_base_url(backend_url())
+        self.api.set_auth_url(auth_url())
         self._force_quit = False
         self._pending_workflow_id = (open_workflow_id or "").strip()
         self.setWindowTitle("turbobot")
@@ -41,6 +44,7 @@ class AppWindow(QMainWindow):
 
         self.login_page = LoginPage(self.api)
         self.main_shell = MainShell(self.api)
+        self.api.set_on_unauthorized(self._on_session_expired)
         self._stack.addWidget(self.login_page)
         self._stack.addWidget(self.main_shell)
 
@@ -129,6 +133,8 @@ class AppWindow(QMainWindow):
         stored = load_session()
         if stored is None:
             return False
+        self.api.set_base_url(backend_url())
+        self.api.set_auth_url(auth_url())
         self.api.set_token(stored.access_token)
         try:
             user = self.api.me()
@@ -167,6 +173,25 @@ class AppWindow(QMainWindow):
         self.api.set_token(None)
         self.login_page.reset_form()
         self._stack.setCurrentWidget(self.login_page)
+
+    def _on_session_expired(self) -> None:
+        from PySide6.QtCore import QTimer
+
+        def apply() -> None:
+            if self._stack.currentWidget() is self.login_page:
+                return
+            self._notify.stop()
+            configure_runtime_api(token=None, base_url=self.api.base_url)
+            clear_session(keep_fio=True)
+            self.api.set_token(None)
+            self.login_page.reset_form()
+            self.login_page.set_session_message(
+                "Сессия истекла или сервер перезапущен. Войдите снова."
+            )
+            self._stack.setCurrentWidget(self.login_page)
+            self.reveal()
+
+        QTimer.singleShot(0, apply)
 
     def quit_app(self) -> None:
         self._force_quit = True

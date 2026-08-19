@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 
 from PySide6.QtCore import QEventLoop, QObject, Qt, QThread, Signal, Slot
@@ -192,8 +193,23 @@ class HitlConfirmCard(QFrame):
         self._status.show()
 
 
-def confirm_level1_tool(tool: str, arguments: dict | None = None) -> bool:
+def _auto_approve_enabled() -> bool:
+    return os.environ.get("AUTO_APPROVE_AGENT_TOOLS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def confirm_level1_tool(
+    tool: str,
+    arguments: dict | None = None,
+    *,
+    auto_approve: bool = False,
+) -> bool:
     """True — можно вызывать инструмент. Read-инструменты без диалога."""
+    if auto_approve or _auto_approve_enabled():
+        return True
     if is_read_tool(tool):
         return True
     if QApplication.instance() is None:

@@ -54,6 +54,26 @@ def ensure_onec_readonly_input(input_data: dict) -> None:
 def search_documents(input_data: dict) -> dict:
     """Найти документы в 1С по read-only критериям."""
     ensure_onec_readonly_input(input_data)
+    query = str(input_data.get("query") or "").casefold()
+    if any(
+        h in query
+        for h in (
+            "поручен",
+            "action tracker",
+            "decision log",
+            "отслеж",
+            "артефакт",
+            "статус",
+            "smart",
+            "формулиров",
+            "act00",
+            "аст00",
+        )
+    ):
+        raise OneCReadOnlyPolicyError(
+            "onec.search_documents — заглушка MVP. Для поручений используйте Action Tracker "
+            "(backend → onec.docflow_assignments). Обновите backend и нажмите «Типовая задача»."
+        )
     max_results = int(input_data.get("max_results") or 10)
     documents = [
         {

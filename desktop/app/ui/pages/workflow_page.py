@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import re
@@ -58,10 +58,10 @@ SUPPORTED_SUFFIXES = {
 }
 
 _STAGES = [
-    ("document", "Материалы", "Файлы загружены", "Добавляем материалы"),
-    ("executing", "Пробный прогон", "Задача выполнена", "Агент делает задачу как Cursor"),
-    ("tested", "Инструкция", "Инструкция готова", "Пишем правило для следующих запусков"),
-    ("done", "Готово", "Агент сохранён", "Можно запускать агента"),
+    ("document", "╨Ь╨░╤В╨╡╤А╨╕╨░╨╗╤Л", "╨д╨░╨╣╨╗╤Л ╨╖╨░╨│╤А╤Г╨╢╨╡╨╜╤Л", "╨Ф╨╛╨▒╨░╨▓╨╗╤П╨╡╨╝ ╨╝╨░╤В╨╡╤А╨╕╨░╨╗╤Л"),
+    ("executing", "╨Я╤А╨╛╨▒╨╜╤Л╨╣ ╨┐╤А╨╛╨│╨╛╨╜", "╨Ч╨░╨┤╨░╤З╨░ ╨▓╤Л╨┐╨╛╨╗╨╜╨╡╨╜╨░", "╨Р╨│╨╡╨╜╤В ╨┤╨╡╨╗╨░╨╡╤В ╨╖╨░╨┤╨░╤З╤Г ╨║╨░╨║ Cursor"),
+    ("tested", "╨Ш╨╜╤Б╤В╤А╤Г╨║╤Ж╨╕╤П", "╨Ш╨╜╤Б╤В╤А╤Г╨║╤Ж╨╕╤П ╨│╨╛╤В╨╛╨▓╨░", "╨Я╨╕╤И╨╡╨╝ ╨┐╤А╨░╨▓╨╕╨╗╨╛ ╨┤╨╗╤П ╤Б╨╗╨╡╨┤╤Г╤О╤Й╨╕╤Е ╨╖╨░╨┐╤Г╤Б╨║╨╛╨▓"),
+    ("done", "╨У╨╛╤В╨╛╨▓╨╛", "╨Р╨│╨╡╨╜╤В ╤Б╨╛╤Е╤А╨░╨╜╤С╨╜", "╨Ь╨╛╨╢╨╜╨╛ ╨╖╨░╨┐╤Г╤Б╨║╨░╤В╤М ╨░╨│╨╡╨╜╤В╨░"),
 ]
 _PHASE_RANK = {
     "document": 0,
@@ -165,9 +165,9 @@ def _quick_answers_for_question(question: WorkflowOpenQuestion) -> list[str]:
     if options:
         return options[:4]
     text = (question.question or "").casefold()
-    if "outlook" in text or "календар" in text:
-        return ["Microsoft Outlook", "Google Calendar", "1С / внутренняя система", "Другое"]
-    return ["Да", "Нет", "Пока неизвестно"]
+    if "outlook" in text or "╨║╨░╨╗╨╡╨╜╨┤╨░╤А" in text:
+        return ["Microsoft Outlook", "Google Calendar", "1╨б / ╨▓╨╜╤Г╤В╤А╨╡╨╜╨╜╤П╤П ╤Б╨╕╤Б╤В╨╡╨╝╨░", "╨Ф╤А╤Г╨│╨╛╨╡"]
+    return ["╨Ф╨░", "╨Э╨╡╤В", "╨Я╨╛╨║╨░ ╨╜╨╡╨╕╨╖╨▓╨╡╤Б╤В╨╜╨╛"]
 
 
 def _clear_layout(layout) -> None:
@@ -210,12 +210,12 @@ def _format_plan_dict(data: dict) -> str:
     if title:
         lines.append(title)
     if goal:
-        lines.append(f"Цель: {goal}")
+        lines.append(f"╨ж╨╡╨╗╤М: {goal}")
     steps = data.get("steps") or []
     if isinstance(steps, list) and steps:
         if lines:
             lines.append("")
-        lines.append("Шаги:")
+        lines.append("╨и╨░╨│╨╕:")
         for index, step in enumerate(steps, 1):
             if not isinstance(step, dict):
                 continue
@@ -223,45 +223,45 @@ def _format_plan_dict(data: dict) -> str:
             stitle = str(step.get("title") or "").strip()
             action = str(step.get("action") or "").strip()
             done = str(step.get("done_when") or "").strip()
-            lines.append(f"{sid} — {stitle}" if stitle else sid)
+            lines.append(f"{sid} тАФ {stitle}" if stitle else sid)
             if action:
                 lines.append(f"  {action}")
             if done:
-                lines.append(f"  Готово когда: {done}")
+                lines.append(f"  ╨У╨╛╤В╨╛╨▓╨╛ ╨║╨╛╨│╨┤╨░: {done}")
     return "\n".join(lines).strip()
 
 
 def _format_plan_steps(plan: WorkflowPlan | None) -> str:
     if plan is None:
-        return "План ещё не загружен."
+        return "╨Я╨╗╨░╨╜ ╨╡╤Й╤С ╨╜╨╡ ╨╖╨░╨│╤А╤Г╨╢╨╡╨╜."
     lines: list[str] = []
     if (plan.title or "").strip():
         lines.append(plan.title.strip())
     if (plan.goal or "").strip():
-        lines.append(f"Цель: {plan.goal.strip()}")
+        lines.append(f"╨ж╨╡╨╗╤М: {plan.goal.strip()}")
     steps = list(plan.steps or [])
     if steps:
         if lines:
             lines.append("")
-        lines.append("Шаги:")
+        lines.append("╨и╨░╨│╨╕:")
         for step in steps:
             sid = (step.id or "").strip()
             stitle = (step.title or "").strip()
-            head = f"{sid} — {stitle}".strip(" —") if sid or stitle else "шаг"
+            head = f"{sid} тАФ {stitle}".strip(" тАФ") if sid or stitle else "╤И╨░╨│"
             lines.append(head)
             if (step.action or "").strip():
                 lines.append(f"  {step.action.strip()}")
             if (step.done_when or "").strip():
-                lines.append(f"  Готово когда: {step.done_when.strip()}")
+                lines.append(f"  ╨У╨╛╤В╨╛╨▓╨╛ ╨║╨╛╨│╨┤╨░: {step.done_when.strip()}")
     else:
         if lines:
             lines.append("")
-        lines.append("Шагов в плане нет.")
+        lines.append("╨и╨░╨│╨╛╨▓ ╨▓ ╨┐╨╗╨░╨╜╨╡ ╨╜╨╡╤В.")
         raw = (plan.raw_text or "").strip()
         if raw:
             lines.append("")
             lines.append(raw[:2000])
-    return "\n".join(lines).strip() or "—"
+    return "\n".join(lines).strip() or "тАФ"
 
 
 _REPLACEMENT = "\ufffd"
@@ -273,12 +273,12 @@ _WPS_MAX_ELAPSED = 1.0
 
 
 def _word_count(text: str) -> int:
-    return len(re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", text or ""))
+    return len(re.findall(r"[A-Za-z╨Р-╨п╨░-╤П╨Б╤С0-9]+", text or ""))
 
 
 def _same_feed_question(left: str, right: str) -> bool:
-    na = " ".join((left or "").casefold().replace("ё", "е").split())
-    nb = " ".join((right or "").casefold().replace("ё", "е").split())
+    na = " ".join((left or "").casefold().replace("╤С", "╨╡").split())
+    nb = " ".join((right or "").casefold().replace("╤С", "╨╡").split())
     if not na or not nb:
         return False
     if na == nb:
@@ -386,11 +386,11 @@ def _strip_clarify_block(blob: str) -> str:
             continue
         if skipping and (
             low.startswith("question:")
-            or low.startswith("вопрос:")
+            or low.startswith("╨▓╨╛╨┐╤А╨╛╤Б:")
             or low.startswith("options:")
-            or low.startswith("варианты:")
+            or low.startswith("╨▓╨░╤А╨╕╨░╨╜╤В╤Л:")
             or low.startswith("-")
-            or low.startswith("•")
+            or low.startswith("тАв")
             or re.match(r"^\d+[.)]", low)
         ):
             continue
@@ -408,11 +408,11 @@ def _blocker_snippets(blob: str) -> list[str]:
     text = _strip_clarify_block(blob)
     snippets: list[str] = []
     patterns = (
-        r"(?im)^(?:[-*•]\s*)?(?:blocker|блокер|причина|error|ошибка)\s*[:：]\s*(.+)$",
-        r"(?im)^(?:[-*•]\s*)?(?:blocked|не удалось|failed|fail(?:ed)?)\s*[:：-]?\s*(.+)$",
-        r"(?im)(?:нет|missing|не задан[ао]?|отсутствует)\s+([A-Z][A-Z0-9_]{2,}|[\w./:-]{4,})",
+        r"(?im)^(?:[-*тАв]\s*)?(?:blocker|╨▒╨╗╨╛╨║╨╡╤А|╨┐╤А╨╕╤З╨╕╨╜╨░|error|╨╛╤И╨╕╨▒╨║╨░)\s*[:я╝Ъ]\s*(.+)$",
+        r"(?im)^(?:[-*тАв]\s*)?(?:blocked|╨╜╨╡ ╤Г╨┤╨░╨╗╨╛╤Б╤М|failed|fail(?:ed)?)\s*[:я╝Ъ-]?\s*(.+)$",
+        r"(?im)(?:╨╜╨╡╤В|missing|╨╜╨╡ ╨╖╨░╨┤╨░╨╜[╨░╨╛]?|╨╛╤В╤Б╤Г╤В╤Б╤В╨▓╤Г╨╡╤В)\s+([A-Z][A-Z0-9_]{2,}|[\w./:-]{4,})",
         r"(?im)(?:connection reset|sso|unauthorized|403|401|timeout|timed out)[^\n.]{0,80}",
-        r"(?im)live[^\n]{0,40}(?:blocked|недоступ|fail|не удалось)[^\n]{0,80}",
+        r"(?im)live[^\n]{0,40}(?:blocked|╨╜╨╡╨┤╨╛╤Б╤В╤Г╨┐|fail|╨╜╨╡ ╤Г╨┤╨░╨╗╨╛╤Б╤М)[^\n]{0,80}",
     )
     for pat in patterns:
         for m in re.finditer(pat, text):
@@ -433,19 +433,19 @@ def _blocker_snippets(blob: str) -> list[str]:
             tip in low
             for tip in (
                 "blocked",
-                "блокер",
-                "нет ",
+                "╨▒╨╗╨╛╨║╨╡╤А",
+                "╨╜╨╡╤В ",
                 "missing",
-                "недоступ",
-                "не задан",
+                "╨╜╨╡╨┤╨╛╤Б╤В╤Г╨┐",
+                "╨╜╨╡ ╨╖╨░╨┤╨░╨╜",
                 "credential",
-                "учётк",
+                "╤Г╤З╤С╤В╨║",
                 "sso",
                 "connection reset",
-                "не хватает",
+                "╨╜╨╡ ╤Е╨▓╨░╤В╨░╨╡╤В",
             )
         ):
-            cleaned = re.sub(r"^[-•*\d.)|\s]+", "", ln).strip()
+            cleaned = re.sub(r"^[-тАв*\d.)|\s]+", "", ln).strip()
             cleaned = re.sub(r"\s+", " ", cleaned)
             if 12 <= len(cleaned) <= 220:
                 snippets.append(cleaned)
@@ -467,9 +467,9 @@ _ENV_LABELS = {
     "AZURE_CLIENT_ID": "Azure Client ID",
     "AZURE_CLIENT_SECRET": "Azure Client Secret",
     "AZURE_TENANT_ID": "Azure Tenant ID",
-    "GRAPH_TOKEN": "токен Microsoft Graph",
-    "OUTLOOK_USER": "учётка Outlook",
-    "SITE_URL": "URL сайта",
+    "GRAPH_TOKEN": "╤В╨╛╨║╨╡╨╜ Microsoft Graph",
+    "OUTLOOK_USER": "╤Г╤З╤С╤В╨║╨░ Outlook",
+    "SITE_URL": "URL ╤Б╨░╨╣╤В╨░",
 }
 
 _SERVER_SECRET_ENV = frozenset(
@@ -499,7 +499,7 @@ _SERVER_SECRET_ENV = frozenset(
 
 _INFRA_FAIL_HINTS = (
     "onec",
-    "1с",
+    "1╤Б",
     "1c",
     "odata",
     "invoker",
@@ -507,11 +507,11 @@ _INFRA_FAIL_HINTS = (
     "constructor_api",
     "backend_url",
     "turboproject",
-    "live-проверк",
-    "live 1с",
+    "live-╨┐╤А╨╛╨▓╨╡╤А╨║",
+    "live 1╤Б",
     "live 1c",
-    "нет канала",
-    "с облака",
+    "╨╜╨╡╤В ╨║╨░╨╜╨░╨╗╨░",
+    "╤Б ╨╛╨▒╨╗╨░╨║╨░",
     "cloud vm",
 )
 
@@ -539,7 +539,7 @@ _RESERVED_ENV = frozenset(
 def _missing_env_vars(text: str) -> list[str]:
     found: list[str] = []
     for m in re.finditer(
-        r"(?:нет|missing|не задан[ао]?|отсутствует|нужен|требуется)\s+([A-Z][A-Z0-9_]{2,})",
+        r"(?:╨╜╨╡╤В|missing|╨╜╨╡ ╨╖╨░╨┤╨░╨╜[╨░╨╛]?|╨╛╤В╤Б╤Г╤В╤Б╤В╨▓╤Г╨╡╤В|╨╜╤Г╨╢╨╡╨╜|╤В╤А╨╡╨▒╤Г╨╡╤В╤Б╤П)\s+([A-Z][A-Z0-9_]{2,})",
         text or "",
         flags=re.IGNORECASE,
     ):
@@ -568,44 +568,44 @@ def _label_env(name: str) -> str:
     low = name.casefold()
     if "onec" in low or "1c" in low:
         if "url" in low:
-            return f"URL базы 1С ({name})"
+            return f"URL ╨▒╨░╨╖╤Л 1╨б ({name})"
         if "user" in low or "login" in low:
-            return f"логин 1С ({name})"
+            return f"╨╗╨╛╨│╨╕╨╜ 1╨б ({name})"
         if "pass" in low or "secret" in low:
-            return f"пароль 1С ({name})"
-        return f"параметр 1С ({name})"
+            return f"╨┐╨░╤А╨╛╨╗╤М 1╨б ({name})"
+        return f"╨┐╨░╤А╨░╨╝╨╡╤В╤А 1╨б ({name})"
     if "outlook" in low or "graph" in low or "azure" in low:
         if "url" in low:
             return f"URL Outlook / Graph ({name})"
         if "user" in low:
-            return f"учётка Outlook ({name})"
-        return f"доступ Microsoft/Outlook ({name})"
+            return f"╤Г╤З╤С╤В╨║╨░ Outlook ({name})"
+        return f"╨┤╨╛╤Б╤В╤Г╨┐ Microsoft/Outlook ({name})"
     if "url" in low or name.endswith("_HOST"):
-        return f"URL системы ({name})"
+        return f"URL ╤Б╨╕╤Б╤В╨╡╨╝╤Л ({name})"
     if "user" in low or "login" in low:
-        return f"логин ({name})"
+        return f"╨╗╨╛╨│╨╕╨╜ ({name})"
     if "pass" in low or "secret" in low or "token" in low:
-        return f"секрет/токен ({name})"
+        return f"╤Б╨╡╨║╤А╨╡╤В/╤В╨╛╨║╨╡╨╜ ({name})"
     return name
 
 
 def _detect_system(blob: str, blockers: list[str], context: str = "") -> str:
     low = " ".join([blob or "", " ".join(blockers), context or ""]).casefold()
-    if any(k in low for k in ("onec", "1с", "1c", "odata")):
-        return "1С"
-    if any(k in low for k in ("outlook", "календар", "совещан", "graph", "win32com")):
-        return "Outlook / календарь"
-    if any(k in low for k in ("этп", "закупк", "тендер")):
-        return "площадки закупок (ЭТП)"
-    if any(k in low for k in ("imap", "почт", "email", "mail")):
-        return "почты"
+    if any(k in low for k in ("onec", "1╤Б", "1c", "odata")):
+        return "1╨б"
+    if any(k in low for k in ("outlook", "╨║╨░╨╗╨╡╨╜╨┤╨░╤А", "╤Б╨╛╨▓╨╡╤Й╨░╨╜", "graph", "win32com")):
+        return "Outlook / ╨║╨░╨╗╨╡╨╜╨┤╨░╤А╤М"
+    if any(k in low for k in ("╤Н╤В╨┐", "╨╖╨░╨║╤Г╨┐╨║", "╤В╨╡╨╜╨┤╨╡╤А")):
+        return "╨┐╨╗╨╛╤Й╨░╨┤╨║╨╕ ╨╖╨░╨║╤Г╨┐╨╛╨║ (╨н╨в╨Я)"
+    if any(k in low for k in ("imap", "╨┐╨╛╤З╤В", "email", "mail")):
+        return "╨┐╨╛╤З╤В╤Л"
     # Host from URL in text
     m = re.search(r"https?://([^/\s]+)", blob or "")
     if m:
-        return f"сайт {m.group(1)}"
+        return f"╤Б╨░╨╣╤В {m.group(1)}"
     title = (context or "").strip()
     if title and len(title) <= 80:
-        return f"агент «{title}»"
+        return f"╨░╨│╨╡╨╜╤В ┬л{title}┬╗"
     return ""
 
 
@@ -615,7 +615,7 @@ def _question_from_blocker(
     *,
     context: str = "",
 ) -> tuple[str, list[str], str]:
-    """Concrete user-facing question + options — always name WHAT is missing."""
+    """Concrete user-facing question + options тАФ always name WHAT is missing."""
     focus = _strip_clarify_block(blob)
     low = focus.casefold()
     joined = " ".join(blockers).casefold()
@@ -627,110 +627,110 @@ def _question_from_blocker(
     def why(extra: str = "") -> str:
         bits = []
         if sample:
-            bits.append(sample if sample.casefold().startswith("блокер") else f"Блокер: {sample}")
+            bits.append(sample if sample.casefold().startswith("╨▒╨╗╨╛╨║╨╡╤А") else f"╨С╨╗╨╛╨║╨╡╤А: {sample}")
         if env_labels:
-            bits.append("Не хватает: " + ", ".join(env_labels))
+            bits.append("╨Э╨╡ ╤Е╨▓╨░╤В╨░╨╡╤В: " + ", ".join(env_labels))
         if extra:
             bits.append(extra)
-        bits.append("Без этого ответа нельзя сохранить агента.")
+        bits.append("╨С╨╡╨╖ ╤Н╤В╨╛╨│╨╛ ╨╛╤В╨▓╨╡╤В╨░ ╨╜╨╡╨╗╤М╨╖╤П ╤Б╨╛╤Е╤А╨░╨╜╨╕╤В╤М ╨░╨│╨╡╨╜╤В╨░.")
         return " ".join(bits)
 
     need_list = ", ".join(env_labels[:3]) if env_labels else ""
 
-    if system == "1С" or any(k in low or k in joined for k in ("onec", "1с", "1c", "odata")):
+    if system == "1╨б" or any(k in low or k in joined for k in ("onec", "1╤Б", "1c", "odata")):
         return (
-            "Live-проверка 1С с облака недоступна. URL и учётка OData задаются в backend/.env, "
-            "не в чате. Как продолжить?",
+            "Live-╨┐╤А╨╛╨▓╨╡╤А╨║╨░ 1╨б ╤Б ╨╛╨▒╨╗╨░╨║╨░ ╨╜╨╡╨┤╨╛╤Б╤В╤Г╨┐╨╜╨░. URL ╨╕ ╤Г╤З╤С╤В╨║╨░ OData ╨╖╨░╨┤╨░╤О╤В╤Б╤П ╨▓ backend/.env, "
+            "╨╜╨╡ ╨▓ ╤З╨░╤В╨╡. ╨Ъ╨░╨║ ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨╕╤В╤М?",
             [
-                "Подключаться к 1С через COM на этой машине",
-                "Пока только fixtures / офлайн без live 1С",
-                "OData уже в backend/.env — повторить проверку через onec.*",
-                "Свой вариант — опишу режим проверки (без пароля)",
+                "╨Я╨╛╨┤╨║╨╗╤О╤З╨░╤В╤М╤Б╤П ╨║ 1╨б ╤З╨╡╤А╨╡╨╖ COM ╨╜╨░ ╤Н╤В╨╛╨╣ ╨╝╨░╤И╨╕╨╜╨╡",
+                "╨Я╨╛╨║╨░ ╤В╨╛╨╗╤М╨║╨╛ fixtures / ╨╛╤Д╨╗╨░╨╣╨╜ ╨▒╨╡╨╖ live 1╨б",
+                "OData ╤Г╨╢╨╡ ╨▓ backend/.env тАФ ╨┐╨╛╨▓╤В╨╛╤А╨╕╤В╤М ╨┐╤А╨╛╨▓╨╡╤А╨║╤Г ╤З╨╡╤А╨╡╨╖ onec.*",
+                "╨б╨▓╨╛╨╣ ╨▓╨░╤А╨╕╨░╨╜╤В тАФ ╨╛╨┐╨╕╤И╤Г ╤А╨╡╨╢╨╕╨╝ ╨┐╤А╨╛╨▓╨╡╤А╨║╨╕ (╨▒╨╡╨╖ ╨┐╨░╤А╨╛╨╗╤П)",
             ],
-            why("Учётку 1С не вводите в чат — она в backend/.env."),
+            why("╨г╤З╤С╤В╨║╤Г 1╨б ╨╜╨╡ ╨▓╨▓╨╛╨┤╨╕╤В╨╡ ╨▓ ╤З╨░╤В тАФ ╨╛╨╜╨░ ╨▓ backend/.env."),
         )
 
     if system.startswith("Outlook") or any(
-        k in low or k in joined for k in ("outlook", "календар", "совещан", "graph", "win32com", "через com")
+        k in low or k in joined for k in ("outlook", "╨║╨░╨╗╨╡╨╜╨┤╨░╤А", "╤Б╨╛╨▓╨╡╤Й╨░╨╜", "graph", "win32com", "╤З╨╡╤А╨╡╨╖ com")
     ):
-        what = need_list or "способ доступа к календарю Outlook"
+        what = need_list or "╤Б╨┐╨╛╤Б╨╛╨▒ ╨┤╨╛╤Б╤В╤Г╨┐╨░ ╨║ ╨║╨░╨╗╨╡╨╜╨┤╨░╤А╤О Outlook"
         return (
-            f"Live-проверка Outlook/календаря не прошла — не хватает: {what}. Как подключаться?",
+            f"Live-╨┐╤А╨╛╨▓╨╡╤А╨║╨░ Outlook/╨║╨░╨╗╨╡╨╜╨┤╨░╤А╤П ╨╜╨╡ ╨┐╤А╨╛╤И╨╗╨░ тАФ ╨╜╨╡ ╤Е╨▓╨░╤В╨░╨╡╤В: {what}. ╨Ъ╨░╨║ ╨┐╨╛╨┤╨║╨╗╤О╤З╨░╤В╤М╤Б╤П?",
             [
-                "Локальный Outlook через COM (win32com) на этой машине",
-                "Microsoft Graph — дам tenant / Client ID / права календаря",
-                "Пока только fixtures, без live Outlook",
-                "Свой вариант — опишу доступ к Outlook",
+                "╨Ы╨╛╨║╨░╨╗╤М╨╜╤Л╨╣ Outlook ╤З╨╡╤А╨╡╨╖ COM (win32com) ╨╜╨░ ╤Н╤В╨╛╨╣ ╨╝╨░╤И╨╕╨╜╨╡",
+                "Microsoft Graph тАФ ╨┤╨░╨╝ tenant / Client ID / ╨┐╤А╨░╨▓╨░ ╨║╨░╨╗╨╡╨╜╨┤╨░╤А╤П",
+                "╨Я╨╛╨║╨░ ╤В╨╛╨╗╤М╨║╨╛ fixtures, ╨▒╨╡╨╖ live Outlook",
+                "╨б╨▓╨╛╨╣ ╨▓╨░╤А╨╕╨░╨╜╤В тАФ ╨╛╨┐╨╕╤И╤Г ╨┤╨╛╤Б╤В╤Г╨┐ ╨║ Outlook",
             ],
-            why("Нужен доступ именно к Outlook/календарю."),
+            why("╨Э╤Г╨╢╨╡╨╜ ╨┤╨╛╤Б╤В╤Г╨┐ ╨╕╨╝╨╡╨╜╨╜╨╛ ╨║ Outlook/╨║╨░╨╗╨╡╨╜╨┤╨░╤А╤О."),
         )
 
-    if any(k in low or k in joined for k in ("sso", "azure", "credential", "учётк", "логин", "password", "токен", "auth")):
-        target = system or "целевой системы проверки"
+    if any(k in low or k in joined for k in ("sso", "azure", "credential", "╤Г╤З╤С╤В╨║", "╨╗╨╛╨│╨╕╨╜", "password", "╤В╨╛╨║╨╡╨╜", "auth")):
+        target = system or "╤Ж╨╡╨╗╨╡╨▓╨╛╨╣ ╤Б╨╕╤Б╤В╨╡╨╝╤Л ╨┐╤А╨╛╨▓╨╡╤А╨║╨╕"
         return (
-            f"Live-проверка {target} не прошла. Секреты в чат не вводите. Как продолжить?",
+            f"Live-╨┐╤А╨╛╨▓╨╡╤А╨║╨░ {target} ╨╜╨╡ ╨┐╤А╨╛╤И╨╗╨░. ╨б╨╡╨║╤А╨╡╤В╤Л ╨▓ ╤З╨░╤В ╨╜╨╡ ╨▓╨▓╨╛╨┤╨╕╤В╨╡. ╨Ъ╨░╨║ ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨╕╤В╤М?",
             [
-                f"Перезапустить live к {target} на этой машине",
-                f"Оставить только fixtures, без live к {target}",
-                f"Свой вариант — опишу режим проверки {target} (без пароля)",
+                f"╨Я╨╡╤А╨╡╨╖╨░╨┐╤Г╤Б╤В╨╕╤В╤М live ╨║ {target} ╨╜╨░ ╤Н╤В╨╛╨╣ ╨╝╨░╤И╨╕╨╜╨╡",
+                f"╨Ю╤Б╤В╨░╨▓╨╕╤В╤М ╤В╨╛╨╗╤М╨║╨╛ fixtures, ╨▒╨╡╨╖ live ╨║ {target}",
+                f"╨б╨▓╨╛╨╣ ╨▓╨░╤А╨╕╨░╨╜╤В тАФ ╨╛╨┐╨╕╤И╤Г ╤А╨╡╨╢╨╕╨╝ ╨┐╤А╨╛╨▓╨╡╤А╨║╨╕ {target} (╨▒╨╡╨╖ ╨┐╨░╤А╨╛╨╗╤П)",
             ],
-            why(f"Логин и пароль для {target} не спрашиваем в чате."),
+            why(f"╨Ы╨╛╨│╨╕╨╜ ╨╕ ╨┐╨░╤А╨╛╨╗╤М ╨┤╨╗╤П {target} ╨╜╨╡ ╤Б╨┐╤А╨░╤И╨╕╨▓╨░╨╡╨╝ ╨▓ ╤З╨░╤В╨╡."),
         )
 
     if any(
         k in low or k in joined
-        for k in ("url", "endpoint", "эндпоинт", "site_url", "http://", "https://", "base_url", "_url")
-    ) and system != "1С":
-        target = system or "проверяемой системы"
+        for k in ("url", "endpoint", "╤Н╨╜╨┤╨┐╨╛╨╕╨╜╤В", "site_url", "http://", "https://", "base_url", "_url")
+    ) and system != "1╨б":
+        target = system or "╨┐╤А╨╛╨▓╨╡╤А╤П╨╡╨╝╨╛╨╣ ╤Б╨╕╤Б╤В╨╡╨╝╤Л"
         url_what = next((lab for lab in env_labels if "url" in lab.casefold() or "URL" in lab), "") or (
             f"URL {target}"
         )
         return (
-            f"Не хватает адреса: {url_what}. Какой рабочий URL указать для {target}?",
+            f"╨Э╨╡ ╤Е╨▓╨░╤В╨░╨╡╤В ╨░╨┤╤А╨╡╤Б╨░: {url_what}. ╨Ъ╨░╨║╨╛╨╣ ╤А╨░╨▒╨╛╤З╨╕╨╣ URL ╤Г╨║╨░╨╖╨░╤В╤М ╨┤╨╗╤П {target}?",
             [
-                f"Впишу URL для {target} в своём варианте",
-                f"Доступ к {target} только из внутренней сети — проверять с этой машины",
-                f"URL для {target} пока нет — оставить fixtures",
-                f"Свой вариант — опишу адрес для {target}",
+                f"╨Т╨┐╨╕╤И╤Г URL ╨┤╨╗╤П {target} ╨▓ ╤Б╨▓╨╛╤С╨╝ ╨▓╨░╤А╨╕╨░╨╜╤В╨╡",
+                f"╨Ф╨╛╤Б╤В╤Г╨┐ ╨║ {target} ╤В╨╛╨╗╤М╨║╨╛ ╨╕╨╖ ╨▓╨╜╤Г╤В╤А╨╡╨╜╨╜╨╡╨╣ ╤Б╨╡╤В╨╕ тАФ ╨┐╤А╨╛╨▓╨╡╤А╤П╤В╤М ╤Б ╤Н╤В╨╛╨╣ ╨╝╨░╤И╨╕╨╜╤Л",
+                f"URL ╨┤╨╗╤П {target} ╨┐╨╛╨║╨░ ╨╜╨╡╤В тАФ ╨╛╤Б╤В╨░╨▓╨╕╤В╤М fixtures",
+                f"╨б╨▓╨╛╨╣ ╨▓╨░╤А╨╕╨░╨╜╤В тАФ ╨╛╨┐╨╕╤И╤Г ╨░╨┤╤А╨╡╤Б ╨┤╨╗╤П {target}",
             ],
-            why(f"Нужен URL именно для {target}."),
+            why(f"╨Э╤Г╨╢╨╡╨╜ URL ╨╕╨╝╨╡╨╜╨╜╨╛ ╨┤╨╗╤П {target}."),
         )
 
-    if any(k in low or k in joined for k in ("connection reset", "timeout", "timed out", "недоступ", "network")):
-        target = system or "внутреннего сервиса"
+    if any(k in low or k in joined for k in ("connection reset", "timeout", "timed out", "╨╜╨╡╨┤╨╛╤Б╤В╤Г╨┐", "network")):
+        target = system or "╨▓╨╜╤Г╤В╤А╨╡╨╜╨╜╨╡╨│╨╛ ╤Б╨╡╤А╨▓╨╕╤Б╨░"
         return (
-            f"{target} недоступен с облака (сеть/VPN). Как продолжить проверку {target}?",
+            f"{target} ╨╜╨╡╨┤╨╛╤Б╤В╤Г╨┐╨╡╨╜ ╤Б ╨╛╨▒╨╗╨░╨║╨░ (╤Б╨╡╤В╤М/VPN). ╨Ъ╨░╨║ ╨┐╤А╨╛╨┤╨╛╨╗╨╢╨╕╤В╤М ╨┐╤А╨╛╨▓╨╡╤А╨║╤Г {target}?",
             [
-                f"Перезапустить live к {target} на этой машине (есть VPN/доступ)",
-                f"Дам альтернативный URL / стенд для {target}",
-                f"Оставить только fixtures, без live к {target}",
-                f"Свой вариант — опишу доступ к {target}",
+                f"╨Я╨╡╤А╨╡╨╖╨░╨┐╤Г╤Б╤В╨╕╤В╤М live ╨║ {target} ╨╜╨░ ╤Н╤В╨╛╨╣ ╨╝╨░╤И╨╕╨╜╨╡ (╨╡╤Б╤В╤М VPN/╨┤╨╛╤Б╤В╤Г╨┐)",
+                f"╨Ф╨░╨╝ ╨░╨╗╤М╤В╨╡╤А╨╜╨░╤В╨╕╨▓╨╜╤Л╨╣ URL / ╤Б╤В╨╡╨╜╨┤ ╨┤╨╗╤П {target}",
+                f"╨Ю╤Б╤В╨░╨▓╨╕╤В╤М ╤В╨╛╨╗╤М╨║╨╛ fixtures, ╨▒╨╡╨╖ live ╨║ {target}",
+                f"╨б╨▓╨╛╨╣ ╨▓╨░╤А╨╕╨░╨╜╤В тАФ ╨╛╨┐╨╕╤И╤Г ╨┤╨╛╤Б╤В╤Г╨┐ ╨║ {target}",
             ],
-            why(f"Нужен доступ к {target} с вашей машины."),
+            why(f"╨Э╤Г╨╢╨╡╨╜ ╨┤╨╛╤Б╤В╤Г╨┐ ╨║ {target} ╤Б ╨▓╨░╤И╨╡╨╣ ╨╝╨░╤И╨╕╨╜╤Л."),
         )
 
     if sample or system:
-        target = system or "системы из блокера"
+        target = system or "╤Б╨╕╤Б╤В╨╡╨╝╤Л ╨╕╨╖ ╨▒╨╗╨╛╨║╨╡╤А╨░"
         detail = need_list or sample or target
         return (
-            f"Проверка {target} остановилась. Не хватает: {detail}. Что можете дать?",
+            f"╨Я╤А╨╛╨▓╨╡╤А╨║╨░ {target} ╨╛╤Б╤В╨░╨╜╨╛╨▓╨╕╨╗╨░╤Б╤М. ╨Э╨╡ ╤Е╨▓╨░╤В╨░╨╡╤В: {detail}. ╨з╤В╨╛ ╨╝╨╛╨╢╨╡╤В╨╡ ╨┤╨░╤В╤М?",
             [
-                f"Опишу недостающие данные для {target} в своём варианте",
-                f"Перезапустить live-проверку {target} на этой машине",
-                f"Оставить только fixtures для {target}",
-                "Свой вариант — уточню, чего именно не хватает",
+                f"╨Ю╨┐╨╕╤И╤Г ╨╜╨╡╨┤╨╛╤Б╤В╨░╤О╤Й╨╕╨╡ ╨┤╨░╨╜╨╜╤Л╨╡ ╨┤╨╗╤П {target} ╨▓ ╤Б╨▓╨╛╤С╨╝ ╨▓╨░╤А╨╕╨░╨╜╤В╨╡",
+                f"╨Я╨╡╤А╨╡╨╖╨░╨┐╤Г╤Б╤В╨╕╤В╤М live-╨┐╤А╨╛╨▓╨╡╤А╨║╤Г {target} ╨╜╨░ ╤Н╤В╨╛╨╣ ╨╝╨░╤И╨╕╨╜╨╡",
+                f"╨Ю╤Б╤В╨░╨▓╨╕╤В╤М ╤В╨╛╨╗╤М╨║╨╛ fixtures ╨┤╨╗╤П {target}",
+                "╨б╨▓╨╛╨╣ ╨▓╨░╤А╨╕╨░╨╜╤В тАФ ╤Г╤В╨╛╤З╨╜╤О, ╤З╨╡╨│╨╛ ╨╕╨╝╨╡╨╜╨╜╨╛ ╨╜╨╡ ╤Е╨▓╨░╤В╨░╨╡╤В",
             ],
             why(),
         )
 
     return (
-        "Тестовый прогон не завершён. Выберите режим проверки — без пароля и URL OData.",
+        "╨в╨╡╤Б╤В╨╛╨▓╤Л╨╣ ╨┐╤А╨╛╨│╨╛╨╜ ╨╜╨╡ ╨╖╨░╨▓╨╡╤А╤И╤С╨╜. ╨Т╤Л╨▒╨╡╤А╨╕╤В╨╡ ╤А╨╡╨╢╨╕╨╝ ╨┐╤А╨╛╨▓╨╡╤А╨║╨╕ тАФ ╨▒╨╡╨╖ ╨┐╨░╤А╨╛╨╗╤П ╨╕ URL OData.",
         [
-            "Пока только fixtures, live отложить",
-            "Перезапустить live на этой машине",
-            "Свой вариант — уточню режим проверки (без пароля)",
+            "╨Я╨╛╨║╨░ ╤В╨╛╨╗╤М╨║╨╛ fixtures, live ╨╛╤В╨╗╨╛╨╢╨╕╤В╤М",
+            "╨Я╨╡╤А╨╡╨╖╨░╨┐╤Г╤Б╤В╨╕╤В╤М live ╨╜╨░ ╤Н╤В╨╛╨╣ ╨╝╨░╤И╨╕╨╜╨╡",
+            "╨б╨▓╨╛╨╣ ╨▓╨░╤А╨╕╨░╨╜╤В тАФ ╤Г╤В╨╛╤З╨╜╤О ╤А╨╡╨╢╨╕╨╝ ╨┐╤А╨╛╨▓╨╡╤А╨║╨╕ (╨▒╨╡╨╖ ╨┐╨░╤А╨╛╨╗╤П)",
         ],
-        "Сборка без TESTS: PASS. Секреты в чат не вводите.",
+        "╨б╨▒╨╛╤А╨║╨░ ╨▒╨╡╨╖ TESTS: PASS. ╨б╨╡╨║╤А╨╡╤В╤Л ╨▓ ╤З╨░╤В ╨╜╨╡ ╨▓╨▓╨╛╨┤╨╕╤В╨╡.",
     )
 
 
@@ -777,14 +777,14 @@ def _asks_server_secrets(value: str) -> bool:
             "odata_base",
             "odata_user",
             "odata_password",
-            "парол",
-            "логин 1с",
-            "логин odata",
-            "учётк",
-            "url базы 1с",
+            "╨┐╨░╤А╨╛╨╗",
+            "╨╗╨╛╨│╨╕╨╜ 1╤Б",
+            "╨╗╨╛╨│╨╕╨╜ odata",
+            "╤Г╤З╤С╤В╨║",
+            "url ╨▒╨░╨╖╤Л 1╤Б",
             "url odata",
-            "впишу url",
-            "впишу url odata",
+            "╨▓╨┐╨╕╤И╤Г url",
+            "╨▓╨┐╨╕╤И╤Г url odata",
         )
     )
 
@@ -809,15 +809,15 @@ def _extract_post_build_question(
         if low.startswith("clarify:"):
             in_options = False
             continue
-        if low.startswith("question:") or low.startswith("вопрос:"):
+        if low.startswith("question:") or low.startswith("╨▓╨╛╨┐╤А╨╛╤Б:"):
             structured_q = ln.split(":", 1)[1].strip()
             in_options = False
             continue
-        if low.startswith("options:") or low.startswith("варианты:"):
+        if low.startswith("options:") or low.startswith("╨▓╨░╤А╨╕╨░╨╜╤В╤Л:"):
             rest = ln.split(":", 1)[1].strip()
             in_options = True
             if rest:
-                cleaned = re.sub(r"^[-•*\d.)\s]+", "", rest).strip()
+                cleaned = re.sub(r"^[-тАв*\d.)\s]+", "", rest).strip()
                 if cleaned:
                     structured_opts.append(cleaned)
             continue
@@ -825,7 +825,7 @@ def _extract_post_build_question(
             if not ln or ln.upper().startswith("TESTS:"):
                 in_options = False
                 continue
-            cleaned = re.sub(r"^[-•*\d.)\s]+", "", ln).strip()
+            cleaned = re.sub(r"^[-тАв*\d.)\s]+", "", ln).strip()
             if cleaned:
                 structured_opts.append(cleaned)
             if len(structured_opts) >= 4:
@@ -840,12 +840,12 @@ def _extract_post_build_question(
             if not ln or ln.upper().startswith("TESTS:"):
                 continue
             cleaned = re.sub(r"^[\d]+[.)]\s*", "", ln)
-            cleaned = re.sub(r"^[-•*]\s*", "", cleaned).strip()
+            cleaned = re.sub(r"^[-тАв*]\s*", "", cleaned).strip()
             if "?" in cleaned and len(cleaned) >= 12 and cleaned.endswith("?"):
                 # Skip useless meta questions about TESTS: PASS.
                 if "tests: pass" in cleaned.casefold() or "tests:pass" in cleaned.casefold():
                     continue
-                if "что нужно уточнить" in cleaned.casefold():
+                if "╤З╤В╨╛ ╨╜╤Г╨╢╨╜╨╛ ╤Г╤В╨╛╤З╨╜╨╕╤В╤М" in cleaned.casefold():
                     continue
                 questions.append(cleaned)
             if len(questions) >= 3:
@@ -862,8 +862,8 @@ def _extract_post_build_question(
         return (
             "tests: pass" in low
             or "tests:pass" in low
-            or "что нужно уточнить" in low
-            or "довести проверку" in low
+            or "╤З╤В╨╛ ╨╜╤Г╨╢╨╜╨╛ ╤Г╤В╨╛╤З╨╜╨╕╤В╤М" in low
+            or "╨┤╨╛╨▓╨╡╤Б╤В╨╕ ╨┐╤А╨╛╨▓╨╡╤А╨║╤Г" in low
             or _asks_server_secrets(value)
             or len((value or "").strip()) < 12
         )
@@ -877,12 +877,12 @@ def _extract_post_build_question(
     extras = [q for q in questions[1:3] if not _is_meta_question(q)]
     why = generic_why
     if extras:
-        why = f"{why} Также: " + " · ".join(extras)
+        why = f"{why} ╨в╨░╨║╨╢╨╡: " + " ┬╖ ".join(extras)
 
     options = structured_opts[:4] if structured_opts and not used_generic else generic_opts
     if options is structured_opts[:4] or (structured_opts and not used_generic):
         # Keep model options only if they look like concrete actions/facts.
-        junk = ("указать url / систему", "уточнить критерии", "tests: pass")
+        junk = ("╤Г╨║╨░╨╖╨░╤В╤М url / ╤Б╨╕╤Б╤В╨╡╨╝╤Г", "╤Г╤В╨╛╤З╨╜╨╕╤В╤М ╨║╤А╨╕╤В╨╡╤А╨╕╨╕", "tests: pass")
         useful = [
             opt
             for opt in options
@@ -913,7 +913,7 @@ class FeedEvent:
 
 
 _TEMP_DIR = Path(__file__).resolve().parents[1] / "temp"
-_CHECK_ICON_PATH = _TEMP_DIR / "зеленаягалочка.png"
+_CHECK_ICON_PATH = _TEMP_DIR / "╨╖╨╡╨╗╨╡╨╜╨░╤П╨│╨░╨╗╨╛╤З╨║╨░.png"
 _RAIL_W = 22
 _DONE_DOT = 14
 _IDLE_DOT = 10
@@ -924,7 +924,7 @@ _CHECK_SIZE = 8
 
 
 def _white_check_icon(size: int = _CHECK_SIZE) -> QPixmap:
-    """Green check on black → white check on transparent, then scaled."""
+    """Green check on black тЖТ white check on transparent, then scaled."""
     if not _CHECK_ICON_PATH.exists():
         return QPixmap()
     src = QImage(str(_CHECK_ICON_PATH))
@@ -1043,7 +1043,7 @@ class _StageRow(QFrame):
         self.hint = QLabel(done_hint)
         self.hint.setWordWrap(True)
         self.hint.setFont(app_font(11))
-        self.badge = QLabel("Выполняется…")
+        self.badge = QLabel("╨Т╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤ПтАж")
         self.badge.setFont(app_font(11, QFont.Weight.Medium))
         self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.badge.setFixedHeight(22)
@@ -1101,7 +1101,7 @@ class _StageRow(QFrame):
             self.hint.setText(self._active_hint)
             self.hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
             self.badge.setVisible(True)
-            self.badge.setText("Выполняется…" if busy else "Текущий этап")
+            self.badge.setText("╨Т╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤ПтАж" if busy else "╨в╨╡╨║╤Г╤Й╨╕╨╣ ╤Н╤В╨░╨┐")
             return
         self.setStyleSheet("QFrame#stagerow { background: transparent; border: none; }")
         self.title.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
@@ -1111,7 +1111,7 @@ class _StageRow(QFrame):
 
 
 class StageStepper(QWidget):
-    """Правая панель этапов: линия, маленькие кружки, карточка текущего шага."""
+    """╨Я╤А╨░╨▓╨░╤П ╨┐╨░╨╜╨╡╨╗╤М ╤Н╤В╨░╨┐╨╛╨▓: ╨╗╨╕╨╜╨╕╤П, ╨╝╨░╨╗╨╡╨╜╤М╨║╨╕╨╡ ╨║╤А╤Г╨╢╨║╨╕, ╨║╨░╤А╤В╨╛╤З╨║╨░ ╤В╨╡╨║╤Г╤Й╨╡╨│╨╛ ╤И╨░╨│╨░."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1124,10 +1124,10 @@ class StageStepper(QWidget):
         root.setContentsMargins(18, 18, 16, 18)
         root.setSpacing(0)
 
-        heading = QLabel("Создание агента")
+        heading = QLabel("╨б╨╛╨╖╨┤╨░╨╜╨╕╨╡ ╨░╨│╨╡╨╜╤В╨░")
         heading.setFont(app_font(15, QFont.Weight.DemiBold))
         heading.setStyleSheet("color: #06483D; background: transparent;")
-        self._meta = QLabel("Этап 1 из 6 · 0%")
+        self._meta = QLabel("╨н╤В╨░╨┐ 1 ╨╕╨╖ 6 ┬╖ 0%")
         self._meta.setFont(app_font(12))
         self._meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         self._bar = QProgressBar()
@@ -1192,7 +1192,7 @@ class StageStepper(QWidget):
         total = len(_STAGES)
         current = total if phase == "done" else min(total, rank + 1)
         pct = 100 if phase == "done" else int(round((rank / max(1, total - 1)) * 100))
-        self._meta.setText(f"Этап {current} из {total} · {pct}%")
+        self._meta.setText(f"╨н╤В╨░╨┐ {current} ╨╕╨╖ {total} ┬╖ {pct}%")
         self._bar.setValue(pct)
 
 
@@ -1242,7 +1242,7 @@ class WorkflowPage(QWidget):
         self._live_tool_widgets: dict[str, CursorFeedItem] = {}
         self._hitl_cards: list[QWidget] = []
         self._activity_banner: QLabel | None = None
-        self._busy_frames = ("◐", "◓", "◑", "◒")
+        self._busy_frames = ("тЧР", "тЧУ", "тЧС", "тЧТ")
         self._question_fields: dict[str, QLineEdit] = {}
         self._current_question_id = ""
         self._selected_quick_answer = ""
@@ -1262,7 +1262,7 @@ class WorkflowPage(QWidget):
     def _build(self) -> None:
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        title = QLabel("Конструктор workflow")
+        title = QLabel("╨Ъ╨╛╨╜╤Б╤В╤А╤Г╨║╤В╨╛╤А workflow")
         title.setFont(app_font(24, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
 
@@ -1282,7 +1282,7 @@ class WorkflowPage(QWidget):
         feed_lay.setContentsMargins(20, 16, 20, 14)
         feed_lay.setSpacing(10)
 
-        feed_title = QLabel("Работа агента")
+        feed_title = QLabel("╨а╨░╨▒╨╛╤В╨░ ╨░╨│╨╡╨╜╤В╨░")
         feed_title.setFont(app_font(15, QFont.Weight.DemiBold))
         feed_title.setStyleSheet("color: #06483D; background: transparent;")
         feed_lay.addWidget(feed_title)
@@ -1320,22 +1320,22 @@ class WorkflowPage(QWidget):
         composer_row = QHBoxLayout()
         composer_row.setSpacing(8)
         self._clip_btn = QToolButton()
-        self._clip_btn.setText("📎")
+        self._clip_btn.setText("ЁЯУО")
         self._clip_btn.setFixedSize(40, 40)
         self._clip_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clip_btn.setStyleSheet(_CLIP_BTN)
-        self._clip_btn.setToolTip("Приложить файл")
+        self._clip_btn.setToolTip("╨Я╤А╨╕╨╗╨╛╨╢╨╕╤В╤М ╤Д╨░╨╣╨╗")
         self._clip_btn.clicked.connect(self._on_pick_files)
 
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Напишите сообщение агенту…")
+        self._input.setPlaceholderText("╨Э╨░╨┐╨╕╤И╨╕╤В╨╡ ╤Б╨╛╨╛╨▒╤Й╨╡╨╜╨╕╨╡ ╨░╨│╨╡╨╜╤В╤ГтАж")
         self._input.setFont(app_font(13))
         self._input.setFixedHeight(44)
         self._input.setStyleSheet(_COMPOSER)
         self._input.returnPressed.connect(self._on_send)
 
         self._send_btn = QToolButton()
-        self._send_btn.setText("↑")
+        self._send_btn.setText("тЖС")
         self._send_btn.setFixedSize(40, 40)
         self._send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._send_btn.setStyleSheet(_SEND_BTN)
@@ -1348,11 +1348,11 @@ class WorkflowPage(QWidget):
 
         status_row = QHBoxLayout()
         status_row.setSpacing(12)
-        self._agent_status = QLabel("● Готов к работе")
+        self._agent_status = QLabel("тЧП ╨У╨╛╤В╨╛╨▓ ╨║ ╤А╨░╨▒╨╛╤В╨╡")
         self._agent_status.setFont(app_font(12))
         self._agent_status.setWordWrap(True)
         self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
-        self._run_btn = QPushButton("Запустить сборку")
+        self._run_btn = QPushButton("╨Ч╨░╨┐╤Г╤Б╤В╨╕╤В╤М ╤Б╨▒╨╛╤А╨║╤Г")
         self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._run_btn.setFont(app_font(12, QFont.Weight.DemiBold))
         self._run_btn.setFixedHeight(32)
@@ -1368,7 +1368,7 @@ class WorkflowPage(QWidget):
         )
         self._run_btn.clicked.connect(self._on_run_clicked)
         self._run_btn.setVisible(False)
-        self._next_btn = QPushButton("Далее")
+        self._next_btn = QPushButton("╨Ф╨░╨╗╨╡╨╡")
         self._next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._next_btn.setFont(app_font(12, QFont.Weight.DemiBold))
         self._next_btn.setFixedHeight(32)
@@ -1412,7 +1412,7 @@ class WorkflowPage(QWidget):
         self._busy_timer = QTimer(self)
         self._busy_timer.setInterval(400)
         self._busy_timer.timeout.connect(self._tick_activity)
-        self._busy_base = "Агент работает"
+        self._busy_base = "╨Р╨│╨╡╨╜╤В ╤А╨░╨▒╨╛╤В╨░╨╡╤В"
         self._busy_n = 0
 
     # --- public API ------------------------------------------------------------
@@ -1443,10 +1443,10 @@ class WorkflowPage(QWidget):
         if record.plan:
             self._events.append(
                 FeedEvent(
-                    "План",
+                    "╨Я╨╗╨░╨╜",
                     _format_plan_steps(record.plan),
                     self._now(),
-                    action="Показать шаги плана",
+                    action="╨Я╨╛╨║╨░╨╖╨░╤В╤М ╤И╨░╨│╨╕ ╨┐╨╗╨░╨╜╨░",
                     action_key="show_plan",
                 )
             )
@@ -1454,14 +1454,14 @@ class WorkflowPage(QWidget):
             if first_q is not None:
                 self._events.append(
                     FeedEvent(
-                        "Уточнение",
+                        "╨г╤В╨╛╤З╨╜╨╡╨╜╨╕╨╡",
                         first_q.question,
                         self._now(),
                     )
                 )
         if record.last_result:
             self._events.append(
-                FeedEvent("Результат тестового прогона", record.last_result, self._now())
+                FeedEvent("╨а╨╡╨╖╤Г╨╗╤М╤В╨░╤В ╤В╨╡╤Б╤В╨╛╨▓╨╛╨│╨╛ ╨┐╤А╨╛╨│╨╛╨╜╨░", record.last_result, self._now())
             )
         for ev in self._events:
             if not ev.event_key:
@@ -1471,33 +1471,49 @@ class WorkflowPage(QWidget):
 
     def start_from_passport(self, session: PassportSession, *, auto_plan: bool = True) -> None:
         self._on_new()
-        title = (session.passport.name or session.bp_name or "ИИ-агент").strip()
+        title = (session.passport.name or session.bp_name or "╨Ш╨Ш-╨░╨│╨╡╨╜╤В").strip()
         self._workflow_title = title
         self._notes = _notes_from_passport(session)
         self._passport_runtime = {
             "autonomy_level": int(getattr(session.passport, "autonomy_level", 1) or 1),
             "autonomy_policy": (
-                "Уровень 1: генерация текста, инструменты чтения и human-in-the-loop; "
-                "запись и прочие операции только после подтверждения человека."
+                "╨г╤А╨╛╨▓╨╡╨╜╤М 1: ╨│╨╡╨╜╨╡╤А╨░╤Ж╨╕╤П ╤В╨╡╨║╤Б╤В╨░, ╨╕╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В╤Л ╤З╤В╨╡╨╜╨╕╤П ╨╕ human-in-the-loop; "
+                "╨╖╨░╨┐╨╕╤Б╤М ╨╕ ╨┐╤А╨╛╤З╨╕╨╡ ╨╛╨┐╨╡╤А╨░╤Ж╨╕╨╕ ╤В╨╛╨╗╤М╨║╨╛ ╨┐╨╛╤Б╨╗╨╡ ╨┐╨╛╨┤╤В╨▓╨╡╤А╨╢╨┤╨╡╨╜╨╕╤П ╤З╨╡╨╗╨╛╨▓╨╡╨║╨░."
             ),
         }
         if auto_plan:
             self._on_plan()
 
     def _persist_passport_runtime(self, record: WorkflowRecord) -> WorkflowRecord:
-        if not self._passport_runtime:
-            return record
         local = dict(record.local_run or {})
-        level = int(self._passport_runtime.get("autonomy_level") or 1)
-        policy = str(self._passport_runtime.get("autonomy_policy") or "")
-        if int(local.get("autonomy_level") or 0) == level and str(local.get("autonomy_policy") or "") == policy:
-            return record
-        local["autonomy_level"] = level
-        local["autonomy_policy"] = policy
+        changed = False
+        if self._passport_runtime:
+            level = int(self._passport_runtime.get("autonomy_level") or 1)
+            policy = str(self._passport_runtime.get("autonomy_policy") or "")
+            if int(local.get("autonomy_level") or 0) != level:
+                local["autonomy_level"] = level
+                changed = True
+            if str(local.get("autonomy_policy") or "") != policy:
+                local["autonomy_policy"] = policy
+                changed = True
+        title = (self._workflow_title or "").strip()
+        if title and str(local.get("passport_title") or "") != title:
+            local["passport_title"] = title
+            changed = True
+        if self._passport_runtime and not local.get("from_regulation_constructor"):
+            local["from_regulation_constructor"] = True
+            changed = True
+        if changed:
+            try:
+                record = self._api.update_workflow_local_run(record.id, local)
+            except ApiError:
+                pass
         try:
-            return self._api.update_workflow_local_run(record.id, local)
+            self._api.update_agent_route(record.id, {"source": "passport"})
+            record = self._api.get_workflow(record.id)
         except ApiError:
-            return record
+            pass
+        return record
 
     # --- render ----------------------------------------------------------------
 
@@ -1514,10 +1530,10 @@ class WorkflowPage(QWidget):
             return
         if self._busy:
             self._run_btn.setEnabled(False)
-            self._run_btn.setText("Идёт прогон…")
+            self._run_btn.setText("╨Ш╨┤╤С╤В ╨┐╤А╨╛╨│╨╛╨╜тАж")
             return
         self._run_btn.setEnabled(True)
-        self._run_btn.setText("Запустить снова")
+        self._run_btn.setText("╨Ч╨░╨┐╤Г╤Б╤В╨╕╤В╤М ╤Б╨╜╨╛╨▓╨░")
 
     def _should_hide_run_plan_action(self) -> bool:
         if self._busy or self._execute_started:
@@ -1525,10 +1541,10 @@ class WorkflowPage(QWidget):
         if self._record and self._record.exec_agent_id:
             return True
         return any(
-            ev.title in {"Результат тестового прогона", "Тестовый прогон"}
+            ev.title in {"╨а╨╡╨╖╤Г╨╗╤М╤В╨░╤В ╤В╨╡╤Б╤В╨╛╨▓╨╛╨│╨╛ ╨┐╤А╨╛╨│╨╛╨╜╨░", "╨в╨╡╤Б╤В╨╛╨▓╤Л╨╣ ╨┐╤А╨╛╨│╨╛╨╜"}
             or (
-                ev.title == "Сборка workflow"
-                and "реализац" in (ev.body or "").casefold()
+                ev.title == "╨б╨▒╨╛╤А╨║╨░ workflow"
+                and "╤А╨╡╨░╨╗╨╕╨╖╨░╤Ж" in (ev.body or "").casefold()
             )
             for ev in self._events
         )
@@ -1560,25 +1576,25 @@ class WorkflowPage(QWidget):
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
             self._tick_activity()
         elif self._last_stream_error and not can_next:
-            self._agent_status.setText("● Предыдущий запуск завершился ошибкой — можно запустить снова")
+            self._agent_status.setText("тЧП ╨Я╤А╨╡╨┤╤Л╨┤╤Г╤Й╨╕╨╣ ╨╖╨░╨┐╤Г╤Б╨║ ╨╖╨░╨▓╨╡╤А╤И╨╕╨╗╤Б╤П ╨╛╤И╨╕╨▒╨║╨╛╨╣ тАФ ╨╝╨╛╨╢╨╜╨╛ ╨╖╨░╨┐╤Г╤Б╤В╨╕╤В╤М ╤Б╨╜╨╛╨▓╨░")
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
         elif can_next:
-            self._agent_status.setText("● Инструкция готова — нажмите «Далее», чтобы сохранить агента")
+            self._agent_status.setText("тЧП ╨Ш╨╜╤Б╤В╤А╤Г╨║╤Ж╨╕╤П ╨│╨╛╤В╨╛╨▓╨░ тАФ ╨╜╨░╨╢╨╝╨╕╤В╨╡ ┬л╨Ф╨░╨╗╨╡╨╡┬╗, ╤З╤В╨╛╨▒╤Л ╤Б╨╛╤Е╤А╨░╨╜╨╕╤В╤М ╨░╨│╨╡╨╜╤В╨░")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         elif self._post_build_question:
-            self._agent_status.setText("● Нужны уточнения после сборки — ответьте в чате")
+            self._agent_status.setText("тЧП ╨Э╤Г╨╢╨╜╤Л ╤Г╤В╨╛╤З╨╜╨╡╨╜╨╕╤П ╨┐╨╛╤Б╨╗╨╡ ╤Б╨▒╨╛╤А╨║╨╕ тАФ ╨╛╤В╨▓╨╡╤В╤М╤В╨╡ ╨▓ ╤З╨░╤В╨╡")
             self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
         elif self._record and self._record.phase in {"ready", "tested", "executing"}:
-            self._agent_status.setText("● Можно запустить пробный прогон снова")
+            self._agent_status.setText("тЧП ╨Ь╨╛╨╢╨╜╨╛ ╨╖╨░╨┐╤Г╤Б╤В╨╕╤В╤М ╨┐╤А╨╛╨▒╨╜╤Л╨╣ ╨┐╤А╨╛╨│╨╛╨╜ ╤Б╨╜╨╛╨▓╨░")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         elif unanswered:
-            self._agent_status.setText("● Нужен ответ по смыслу задачи — без этого неясен объём работы")
+            self._agent_status.setText("тЧП ╨Э╤Г╨╢╨╡╨╜ ╨╛╤В╨▓╨╡╤В ╨┐╨╛ ╤Б╨╝╤Л╤Б╨╗╤Г ╨╖╨░╨┤╨░╤З╨╕ тАФ ╨▒╨╡╨╖ ╤Н╤В╨╛╨│╨╛ ╨╜╨╡╤П╤Б╨╡╨╜ ╨╛╨▒╤К╤С╨╝ ╤А╨░╨▒╨╛╤В╤Л")
             self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
         elif plan and not unanswered:
-            self._agent_status.setText("● Можно запускать пробный прогон")
+            self._agent_status.setText("тЧП ╨Ь╨╛╨╢╨╜╨╛ ╨╖╨░╨┐╤Г╤Б╨║╨░╤В╤М ╨┐╤А╨╛╨▒╨╜╤Л╨╣ ╨┐╤А╨╛╨│╨╛╨╜")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         else:
-            self._agent_status.setText("● Готов к работе")
+            self._agent_status.setText("тЧП ╨У╨╛╤В╨╛╨▓ ╨║ ╤А╨░╨▒╨╛╤В╨╡")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
 
     def _sync_feed_scroll_state(self, *_args) -> None:
@@ -1637,7 +1653,7 @@ class WorkflowPage(QWidget):
         if show_question and current_q_text:
             for i in range(len(self._events) - 1, -1, -1):
                 ev = self._events[i]
-                if ev.title == "Уточнение" and (ev.body or "").strip() == current_q_text:
+                if ev.title == "╨г╤В╨╛╤З╨╜╨╡╨╜╨╕╨╡" and (ev.body or "").strip() == current_q_text:
                     skip_clarify_idx = i
                     break
 
@@ -1653,7 +1669,7 @@ class WorkflowPage(QWidget):
             )
             widget = self._feed_item(event, fallback_key=f"e{idx}", hide_action=hide_action)
             self._feed_layout.addWidget(widget)
-            if event.title == "Агент" and event.kind == "agent":
+            if event.title == "╨Р╨│╨╡╨╜╤В" and event.kind == "agent":
                 self._assistant_live = widget
         thinking = (self._thinking_shown or "").strip()
         self._thinking_live = None
@@ -1671,18 +1687,18 @@ class WorkflowPage(QWidget):
             self._thinking_live = live
             self._feed_layout.addWidget(live)
         for tool in self._live_tools:
-            name = str(tool.get("name") or "инструмент")
+            name = str(tool.get("name") or "╨╕╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В")
             status = str(tool.get("status") or "running")
             detail = str(tool.get("detail") or "")
             if status == "running":
-                title = f"Инструмент: {name}"
-                body = detail or "Выполняется…"
+                title = f"╨Ш╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В: {name}"
+                body = detail or "╨Т╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤ПтАж"
             elif status == "ok":
-                title = f"Инструмент: {name}"
-                body = detail or "Готово"
+                title = f"╨Ш╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В: {name}"
+                body = detail or "╨У╨╛╤В╨╛╨▓╨╛"
             else:
-                title = f"Инструмент: {name}"
-                body = detail or "Ошибка"
+                title = f"╨Ш╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В: {name}"
+                body = detail or "╨Ю╤И╨╕╨▒╨║╨░"
             key = str(tool.get("key") or f"live-tool-{name}")
             widget = CursorFeedItem(
                 kind="tool",
@@ -1698,10 +1714,10 @@ class WorkflowPage(QWidget):
         self._activity_banner = None
         if self._busy:
             frame = self._busy_frames[self._busy_n % len(self._busy_frames)]
-            phrase = (self._last_stream_phrase or self._busy_base or "Агент работает").strip()
+            phrase = (self._last_stream_phrase or self._busy_base or "╨Р╨│╨╡╨╜╤В ╤А╨░╨▒╨╛╤В╨░╨╡╤В").strip()
             if len(phrase) > 100:
-                phrase = phrase[:97] + "…"
-            banner = _WrappingLabel(f"{frame} Система работает — {phrase}")
+                phrase = phrase[:97] + "тАж"
+            banner = _WrappingLabel(f"{frame} ╨б╨╕╤Б╤В╨╡╨╝╨░ ╤А╨░╨▒╨╛╤В╨░╨╡╤В тАФ {phrase}")
             banner.setFont(app_font(12, QFont.Weight.Medium))
             banner.setStyleSheet("color: #08745F; background: #EAF7F3; border-radius: 10px; padding: 8px 10px;")
             self._activity_banner = banner
@@ -1833,7 +1849,7 @@ class WorkflowPage(QWidget):
         if not resolved_role:
             resolved_role = (
                 "user"
-                if title.strip().casefold() in {"вы", "you"}
+                if title.strip().casefold() in {"╨▓╤Л", "you"}
                 else "agent"
             )
         self._events.append(
@@ -1855,7 +1871,7 @@ class WorkflowPage(QWidget):
         if not text:
             return True
         for ev in self._events:
-            if ev.title == "Уточнение" and _same_feed_question(ev.body, text):
+            if ev.title == "╨г╤В╨╛╤З╨╜╨╡╨╜╨╕╨╡" and _same_feed_question(ev.body, text):
                 return True
         return False
 
@@ -1863,7 +1879,7 @@ class WorkflowPage(QWidget):
         text = (question_text or "").strip()
         if not text or self._question_already_in_feed(text):
             return
-        self._push_event("Уточнение", text)
+        self._push_event("╨г╤В╨╛╤З╨╜╨╡╨╜╨╕╨╡", text)
 
     def _ensure_question_in_feed(self, question_text: str) -> None:
         """Keep the asked question visible in history (do not lose it after answer)."""
@@ -1899,10 +1915,10 @@ class WorkflowPage(QWidget):
                 if ev.action_key == "show_plan":
                     target = ev
                     break
-                if ev.title in {"План", "Шаги плана"}:
+                if ev.title in {"╨Я╨╗╨░╨╜", "╨и╨░╨│╨╕ ╨┐╨╗╨░╨╜╨░"}:
                     target = ev
             if target is None:
-                self._push_event("План", body, action="Показать шаги плана", action_key="show_plan")
+                self._push_event("╨Я╨╗╨░╨╜", body, action="╨Я╨╛╨║╨░╨╖╨░╤В╤М ╤И╨░╨│╨╕ ╨┐╨╗╨░╨╜╨░", action_key="show_plan")
                 target = self._events[-1]
             else:
                 target.body = body
@@ -1923,7 +1939,7 @@ class WorkflowPage(QWidget):
     def _on_pick_files(self) -> None:
         patterns = " ".join(f"*{s}" for s in sorted(SUPPORTED_SUFFIXES))
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Приложить файлы", "", f"Документы ({patterns});;Все файлы (*)"
+            self, "╨Я╤А╨╕╨╗╨╛╨╢╨╕╤В╤М ╤Д╨░╨╣╨╗╤Л", "", f"╨Ф╨╛╨║╤Г╨╝╨╡╨╜╤В╤Л ({patterns});;╨Т╤Б╨╡ ╤Д╨░╨╣╨╗╤Л (*)"
         )
         for path in paths:
             if path and Path(path).is_file() and path not in self._pending_paths:
@@ -1951,23 +1967,23 @@ class WorkflowPage(QWidget):
         if self._record is None:
             if text:
                 self._notes = (self._notes + "\n" + text).strip() if self._notes else text
-            self._push_event("Вы", text or "Материалы приложены")
+            self._push_event("╨Т╤Л", text or "╨Ь╨░╤В╨╡╤А╨╕╨░╨╗╤Л ╨┐╤А╨╕╨╗╨╛╨╢╨╡╨╜╤Л")
             self._on_plan()
             return
 
-        # Free-form message while plan ready → replan or execute hint
+        # Free-form message while plan ready тЖТ replan or execute hint
         if self._record.plan and self._record.plan.unanswered():
             self._current_question_id = self._record.plan.unanswered()[0].id
             self._selected_quick_answer = text
             self._submit_question_answer()
             return
-        self._push_event("Вы", text)
+        self._push_event("╨Т╤Л", text)
         if self._record.plan and not self._record.plan.unanswered():
             self._push_event(
-                "Агент",
-                "План уже готов. Нажмите «Запустить», чтобы собрать workflow, "
-                "или уточните требования — пересоберу план.",
-                action="Запустить сборку",
+                "╨Р╨│╨╡╨╜╤В",
+                "╨Я╨╗╨░╨╜ ╤Г╨╢╨╡ ╨│╨╛╤В╨╛╨▓. ╨Э╨░╨╢╨╝╨╕╤В╨╡ ┬л╨Ч╨░╨┐╤Г╤Б╤В╨╕╤В╤М┬╗, ╤З╤В╨╛╨▒╤Л ╤Б╨╛╨▒╤А╨░╤В╤М workflow, "
+                "╨╕╨╗╨╕ ╤Г╤В╨╛╤З╨╜╨╕╤В╨╡ ╤В╤А╨╡╨▒╨╛╨▓╨░╨╜╨╕╤П тАФ ╨┐╨╡╤А╨╡╤Б╨╛╨▒╨╡╤А╤Г ╨┐╨╗╨░╨╜.",
+                action="╨Ч╨░╨┐╤Г╤Б╤В╨╕╤В╤М ╤Б╨▒╨╛╤А╨║╤Г",
                 action_key="run_plan",
             )
         else:
@@ -1976,9 +1992,9 @@ class WorkflowPage(QWidget):
     def _append_user_files_to_event(self) -> None:
         if self._pending_paths:
             names = ", ".join(Path(p).name for p in self._pending_paths)
-            self._push_event("Вложения", names)
+            self._push_event("╨Т╨╗╨╛╨╢╨╡╨╜╨╕╤П", names)
 
-    def _set_busy(self, busy: bool, base: str = "Агент работает") -> None:
+    def _set_busy(self, busy: bool, base: str = "╨Р╨│╨╡╨╜╤В ╤А╨░╨▒╨╛╤В╨░╨╡╤В") -> None:
         self._busy = busy
         self._send_btn.setEnabled(True)  # allow clarify while working, per mockup
         self._clip_btn.setEnabled(True)
@@ -2006,16 +2022,16 @@ class WorkflowPage(QWidget):
         frame = self._busy_frames[(self._busy_n - 1) % len(self._busy_frames)]
         running = next((t for t in self._live_tools if t.get("status") == "running"), None)
         if running:
-            name = str(running.get("name") or "инструмент")
-            self._agent_status.setText(f"{frame} Вызываю {name}…")
+            name = str(running.get("name") or "╨╕╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В")
+            self._agent_status.setText(f"{frame} ╨Т╤Л╨╖╤Л╨▓╨░╤О {name}тАж")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
-            self._refresh_activity_banner(f"Вызываю {name}…")
+            self._refresh_activity_banner(f"╨Т╤Л╨╖╤Л╨▓╨░╤О {name}тАж")
             return
-        phrase = (self._last_stream_phrase or self._busy_base or "Агент работает").strip()
+        phrase = (self._last_stream_phrase or self._busy_base or "╨Р╨│╨╡╨╜╤В ╤А╨░╨▒╨╛╤В╨░╨╡╤В").strip()
         if len(phrase) > 80:
-            phrase = phrase[:77] + "…"
-        if (self._busy_base or "").startswith("Реализация"):
-            self._agent_status.setText(f"{frame} Реализация… {phrase}" if phrase else f"{frame} Реализация…")
+            phrase = phrase[:77] + "тАж"
+        if (self._busy_base or "").startswith("╨а╨╡╨░╨╗╨╕╨╖╨░╤Ж╨╕╤П"):
+            self._agent_status.setText(f"{frame} ╨а╨╡╨░╨╗╨╕╨╖╨░╤Ж╨╕╤ПтАж {phrase}" if phrase else f"{frame} ╨а╨╡╨░╨╗╨╕╨╖╨░╤Ж╨╕╤ПтАж")
         else:
             self._agent_status.setText(f"{frame} {self._busy_base}{'.' * min(self._busy_n, 3)}")
         self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
@@ -2025,13 +2041,13 @@ class WorkflowPage(QWidget):
         if self._activity_banner is None or not self._busy:
             return
         frame = self._busy_frames[(self._busy_n - 1) % len(self._busy_frames)]
-        text = (phrase or self._busy_base or "Агент работает").strip()
+        text = (phrase or self._busy_base or "╨Р╨│╨╡╨╜╤В ╤А╨░╨▒╨╛╤В╨░╨╡╤В").strip()
         if len(text) > 100:
-            text = text[:97] + "…"
-        self._activity_banner.setText(f"{frame} Система работает — {text}")
+            text = text[:97] + "тАж"
+        self._activity_banner.setText(f"{frame} ╨б╨╕╤Б╤В╨╡╨╝╨░ ╤А╨░╨▒╨╛╤В╨░╨╡╤В тАФ {text}")
 
     def _upsert_live_tool(self, name: str, *, status: str, detail: str = "") -> None:
-        tool_name = (name or "").strip() or "инструмент"
+        tool_name = (name or "").strip() or "╨╕╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В"
         incoming = (detail or "").strip()
         running = next(
             (
@@ -2056,39 +2072,39 @@ class WorkflowPage(QWidget):
             for item in self._live_tools:
                 if item.get("status") == "running":
                     item["status"] = "ok"
-                    item["detail"] = item.get("detail") or "Готово"
+                    item["detail"] = item.get("detail") or "╨У╨╛╤В╨╛╨▓╨╛"
                     self._refresh_live_tool_widget(item)
             key = self._next_event_key()
             tool = {
                 "name": tool_name,
                 "status": "running",
-                "detail": incoming or "Выполняется…",
+                "detail": incoming or "╨Т╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤ПтАж",
                 "key": key,
             }
             self._live_tools.append(tool)
-            self._last_stream_phrase = f"вызываю {tool_name}"
+            self._last_stream_phrase = f"╨▓╤Л╨╖╤Л╨▓╨░╤О {tool_name}"
             self._append_live_tool_widget(tool)
             return
         key = self._next_event_key()
         tool = {
             "name": tool_name,
             "status": status,
-            "detail": incoming or ("Готово" if status == "ok" else "Ошибка"),
+            "detail": incoming or ("╨У╨╛╤В╨╛╨▓╨╛" if status == "ok" else "╨Ю╤И╨╕╨▒╨║╨░"),
             "key": key,
         }
         self._live_tools.append(tool)
         self._append_live_tool_widget(tool)
 
     def _tool_card_body(self, tool: dict) -> tuple[str, str]:
-        name = str(tool.get("name") or "инструмент")
+        name = str(tool.get("name") or "╨╕╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В")
         status = str(tool.get("status") or "running")
         detail = str(tool.get("detail") or "")
-        title = f"Инструмент: {name}"
+        title = f"╨Ш╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В: {name}"
         if status == "running":
-            return title, detail or "Выполняется…"
+            return title, detail or "╨Т╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤ПтАж"
         if status == "ok":
-            return title, detail or "Готово"
-        return title, detail or "Ошибка"
+            return title, detail or "╨У╨╛╤В╨╛╨▓╨╛"
+        return title, detail or "╨Ю╤И╨╕╨▒╨║╨░"
 
     def _refresh_live_tool_widget(self, tool: dict) -> None:
         key = str(tool.get("key") or "")
@@ -2126,10 +2142,10 @@ class WorkflowPage(QWidget):
     def _merge_tool_detail(self, previous: str, incoming: str, status: str) -> str:
         placeholders = {
             "",
-            "Готово",
-            "Выполняется…",
-            "Выполняется на сервере Constructor…",
-            "Выполняется на этом компьютере…",
+            "╨У╨╛╤В╨╛╨▓╨╛",
+            "╨Т╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤ПтАж",
+            "╨Т╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤П ╨╜╨░ ╤Б╨╡╤А╨▓╨╡╤А╨╡ ConstructorтАж",
+            "╨Т╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤П ╨╜╨░ ╤Н╤В╨╛╨╝ ╨║╨╛╨╝╨┐╤М╤О╤В╨╡╤А╨╡тАж",
         }
         if incoming and incoming not in placeholders:
             return incoming
@@ -2138,26 +2154,26 @@ class WorkflowPage(QWidget):
         if incoming:
             return incoming
         if status == "error":
-            return previous or "Ошибка"
+            return previous or "╨Ю╤И╨╕╨▒╨║╨░"
         if status == "ok":
-            return previous or "Готово"
-        return previous or "Выполняется…"
+            return previous or "╨У╨╛╤В╨╛╨▓╨╛"
+        return previous or "╨Т╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤ПтАж"
 
     def _commit_live_tools_to_feed(self) -> None:
         for tool in self._live_tools:
-            name = str(tool.get("name") or "инструмент")
+            name = str(tool.get("name") or "╨╕╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В")
             status = str(tool.get("status") or "")
             detail = str(tool.get("detail") or "").strip()
             if status == "ok":
-                body = detail or "Готово"
+                body = detail or "╨У╨╛╤В╨╛╨▓╨╛"
             elif status == "error":
-                body = detail or "Ошибка"
+                body = detail or "╨Ю╤И╨╕╨▒╨║╨░"
             else:
-                body = detail or "Вызов завершён"
+                body = detail or "╨Т╤Л╨╖╨╛╨▓ ╨╖╨░╨▓╨╡╤А╤И╤С╨╜"
             key = str(tool.get("key") or self._next_event_key())
             self._events.append(
                 FeedEvent(
-                    title=f"Инструмент: {name}",
+                    title=f"╨Ш╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В: {name}",
                     body=body,
                     time=self._now(),
                     kind="tool",
@@ -2174,39 +2190,39 @@ class WorkflowPage(QWidget):
             return False
         low = raw.casefold()
         call = re.search(
-            r"(?:Cursor вызывает|Выполняю на этом компьютере|Выполняю на компьютере)\s*[:«\"]?\s*«?([^\n»]+)»?",
+            r"(?:Cursor ╨▓╤Л╨╖╤Л╨▓╨░╨╡╤В|╨Т╤Л╨┐╨╛╨╗╨╜╤П╤О ╨╜╨░ ╤Н╤В╨╛╨╝ ╨║╨╛╨╝╨┐╤М╤О╤В╨╡╤А╨╡|╨Т╤Л╨┐╨╛╨╗╨╜╤П╤О ╨╜╨░ ╨║╨╛╨╝╨┐╤М╤О╤В╨╡╤А╨╡)\s*[:┬л\"]?\s*┬л?([^\n┬╗]+)┬╗?",
             raw,
             re.IGNORECASE,
         )
-        if call and ("вызывает" in low or "выполняю" in low):
-            name = call.group(1).strip(" «»\"'.,;")
-            detail = "Выполняется на сервере Constructor…"
-            if "компьютере" in low:
-                detail = "Выполняется на этом компьютере…"
+        if call and ("╨▓╤Л╨╖╤Л╨▓╨░╨╡╤В" in low or "╨▓╤Л╨┐╨╛╨╗╨╜╤П╤О" in low):
+            name = call.group(1).strip(" ┬л┬╗\"'.,;")
+            detail = "╨Т╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤П ╨╜╨░ ╤Б╨╡╤А╨▓╨╡╤А╨╡ ConstructorтАж"
+            if "╨║╨╛╨╝╨┐╤М╤О╤В╨╡╤А╨╡" in low:
+                detail = "╨Т╤Л╨┐╨╛╨╗╨╜╤П╨╡╤В╤Б╤П ╨╜╨░ ╤Н╤В╨╛╨╝ ╨║╨╛╨╝╨┐╤М╤О╤В╨╡╤А╨╡тАж"
             self._upsert_live_tool(name, status="running", detail=detail)
             return True
-        if "жду вызов constructor tool" in low:
+        if "╨╢╨┤╤Г ╨▓╤Л╨╖╨╛╨▓ constructor tool" in low:
             names = raw.split(":", 1)[-1].strip() if ":" in raw else raw
-            self._last_stream_phrase = f"жду вызов {names}"
-            self._push_event("Система", f"Жду вызов Constructor tool: {names}", kind="system")
+            self._last_stream_phrase = f"╨╢╨┤╤Г ╨▓╤Л╨╖╨╛╨▓ {names}"
+            self._push_event("╨б╨╕╤Б╤В╨╡╨╝╨░", f"╨Ц╨┤╤Г ╨▓╤Л╨╖╨╛╨▓ Constructor tool: {names}", kind="system")
             return True
-        progress = re.search(r"«([^»]+)»\s*:\s*(читаю|загружаю|ожидаю)\b(.+)$", raw, re.IGNORECASE)
+        progress = re.search(r"┬л([^┬╗]+)┬╗\s*:\s*(╤З╨╕╤В╨░╤О|╨╖╨░╨│╤А╤Г╨╢╨░╤О|╨╛╨╢╨╕╨┤╨░╤О)\b(.+)$", raw, re.IGNORECASE)
         if progress:
             name = progress.group(1).strip()
             detail = (progress.group(2) + progress.group(3)).strip()
             self._upsert_live_tool(name, status="running", detail=detail)
             self._last_stream_phrase = f"{name}: {detail}"
             return True
-        done = re.search(r"«([^»]+)»\s*:\s*готово\.?", raw, re.IGNORECASE)
+        done = re.search(r"┬л([^┬╗]+)┬╗\s*:\s*╨│╨╛╤В╨╛╨▓╨╛\.?", raw, re.IGNORECASE)
         if done:
-            self._upsert_live_tool(done.group(1).strip(), status="ok", detail="Готово")
-            self._last_stream_phrase = f"{done.group(1).strip()} готово"
+            self._upsert_live_tool(done.group(1).strip(), status="ok", detail="╨У╨╛╤В╨╛╨▓╨╛")
+            self._last_stream_phrase = f"{done.group(1).strip()} ╨│╨╛╤В╨╛╨▓╨╛"
             return True
-        failed = re.search(r"«([^»]+)»\s*:\s*(.+)$", raw)
-        if failed and "готово" not in failed.group(2).casefold():
+        failed = re.search(r"┬л([^┬╗]+)┬╗\s*:\s*(.+)$", raw)
+        if failed and "╨│╨╛╤В╨╛╨▓╨╛" not in failed.group(2).casefold():
             detail = failed.group(2).strip()
-            # Прогресс/подсказка, не ошибка.
-            if any(hint in detail.casefold() for hint in ("читаю", "загружаю", "может занять", "ожидаю")):
+            # ╨Я╤А╨╛╨│╤А╨╡╤Б╤Б/╨┐╨╛╨┤╤Б╨║╨░╨╖╨║╨░, ╨╜╨╡ ╨╛╤И╨╕╨▒╨║╨░.
+            if any(hint in detail.casefold() for hint in ("╤З╨╕╤В╨░╤О", "╨╖╨░╨│╤А╤Г╨╢╨░╤О", "╨╝╨╛╨╢╨╡╤В ╨╖╨░╨╜╤П╤В╤М", "╨╛╨╢╨╕╨┤╨░╤О")):
                 self._upsert_live_tool(failed.group(1).strip(), status="running", detail=detail)
                 self._last_stream_phrase = f"{failed.group(1).strip()}: {detail}"
                 return True
@@ -2215,7 +2231,7 @@ class WorkflowPage(QWidget):
                 status="error",
                 detail=detail,
             )
-            self._last_stream_phrase = f"ошибка {failed.group(1).strip()}"
+            self._last_stream_phrase = f"╨╛╤И╨╕╨▒╨║╨░ {failed.group(1).strip()}"
             return True
         return False
 
@@ -2245,11 +2261,11 @@ class WorkflowPage(QWidget):
             raw = incoming.strip()
             name, sep, body = raw.partition("\n")
             if not sep:
-                name, body = "инструмент", raw
+                name, body = "╨╕╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В", raw
             self._upsert_live_tool(
-                name.strip() or "инструмент",
-                status="ok" if "ошибка" not in (body or "").casefold() else "error",
-                detail=(body or "Готово").strip(),
+                name.strip() or "╨╕╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В",
+                status="ok" if "╨╛╤И╨╕╨▒╨║╨░" not in (body or "").casefold() else "error",
+                detail=(body or "╨У╨╛╤В╨╛╨▓╨╛").strip(),
             )
             self._tick_activity()
             return
@@ -2263,21 +2279,21 @@ class WorkflowPage(QWidget):
                 self._last_stream_phrase = last_line
         if event_type == "error" and incoming.strip():
             self._last_stream_error = incoming.strip()
-            self._push_event("Ошибка", incoming.strip(), kind="error")
-            self._agent_status.setText("● Ошибка — смотрите карточку в ленте")
+            self._push_event("╨Ю╤И╨╕╨▒╨║╨░", incoming.strip(), kind="error")
+            self._agent_status.setText("тЧП ╨Ю╤И╨╕╨▒╨║╨░ тАФ ╤Б╨╝╨╛╤В╤А╨╕╤В╨╡ ╨║╨░╤А╤В╨╛╤З╨║╤Г ╨▓ ╨╗╨╡╨╜╤В╨╡")
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
             return
         if event_type in {"decision", "system", "status", "message"} and incoming.strip():
             if self._parse_tool_activity(incoming):
                 self._tick_activity()
                 return
-            self._push_event("Система", incoming.strip(), kind="system")
+            self._push_event("╨б╨╕╤Б╤В╨╡╨╝╨░", incoming.strip(), kind="system")
             return
         if event_type == "assistant" and incoming:
             shown = incoming.replace("\ufffd", "")
             if shown.strip():
                 last = self._events[-1] if self._events else None
-                if last is not None and last.title == "Агент" and last.kind == "agent":
+                if last is not None and last.title == "╨Р╨│╨╡╨╜╤В" and last.kind == "agent":
                     last.body = (last.body or "") + shown
                     if self._assistant_live is not None:
                         self._assistant_live.set_body_text(last.body)
@@ -2285,7 +2301,7 @@ class WorkflowPage(QWidget):
                     else:
                         self._rebuild_feed()
                 else:
-                    self._push_event("Агент", shown, kind="agent")
+                    self._push_event("╨Р╨│╨╡╨╜╤В", shown, kind="agent")
             return
         if event_type == "thinking" and incoming:
             if incoming.startswith(self._thinking_received) and len(incoming) >= len(self._thinking_received):
@@ -2306,7 +2322,7 @@ class WorkflowPage(QWidget):
         if previous and started:
             words = _word_count(previous)
             elapsed = now - started
-            # Пауза модели — не скорость печати. Иначе think ползёт по 3 слова/с.
+            # ╨Я╨░╤Г╨╖╨░ ╨╝╨╛╨┤╨╡╨╗╨╕ тАФ ╨╜╨╡ ╤Б╨║╨╛╤А╨╛╤Б╤В╤М ╨┐╨╡╤З╨░╤В╨╕. ╨Ш╨╜╨░╤З╨╡ think ╨┐╨╛╨╗╨╖╤С╤В ╨┐╨╛ 3 ╤Б╨╗╨╛╨▓╨░/╤Б.
             if words >= 1 and 0.08 <= elapsed <= _WPS_MAX_ELAPSED:
                 self._thinking_wps = min(_MAX_WPS, max(_MIN_WPS, words / elapsed))
         self._thinking_chunk = delta
@@ -2371,8 +2387,8 @@ class WorkflowPage(QWidget):
             self._last_stream_error = fail
             self._commit_live_tools_to_feed()
             self._set_busy(False)
-            self._push_event("Ошибка", fail, kind="error")
-            self._agent_status.setText("● Ошибка — предыдущий запуск не завершён")
+            self._push_event("╨Ю╤И╨╕╨▒╨║╨░", fail, kind="error")
+            self._agent_status.setText("тЧП ╨Ю╤И╨╕╨▒╨║╨░ тАФ ╨┐╤А╨╡╨┤╤Л╨┤╤Г╤Й╨╕╨╣ ╨╖╨░╨┐╤Г╤Б╨║ ╨╜╨╡ ╨╖╨░╨▓╨╡╤А╤И╤С╨╜")
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
             return
         if pending is None:
@@ -2399,26 +2415,26 @@ class WorkflowPage(QWidget):
             self._workflow_title = result.title
             self._notes = result.notes or self._notes
             self._render_chips()
-            if label.startswith("Планирование") or label.startswith("Пробный"):
+            if label.startswith("╨Я╨╗╨░╨╜╨╕╤А╨╛╨▓╨░╨╜╨╕╨╡") or label.startswith("╨Я╤А╨╛╨▒╨╜╤Л╨╣"):
                 unanswered = result.plan.unanswered() if result.plan else []
                 if unanswered:
-                    self._push_event("Агент", unanswered[0].question)
+                    self._push_event("╨Р╨│╨╡╨╜╤В", unanswered[0].question)
                     self._push_question_if_new(unanswered[0].question)
                 else:
                     self._show_demo_result(result)
-            elif label.startswith("Уточнение"):
+            elif label.startswith("╨г╤В╨╛╤З╨╜╨╡╨╜╨╕╨╡"):
                 unanswered = result.plan.unanswered() if result.plan else []
                 if unanswered:
-                    self._push_event("Агент", "Принял ответ, следующий вопрос.")
+                    self._push_event("╨Р╨│╨╡╨╜╤В", "╨Я╤А╨╕╨╜╤П╨╗ ╨╛╤В╨▓╨╡╤В, ╤Б╨╗╨╡╨┤╤Г╤О╤Й╨╕╨╣ ╨▓╨╛╨┐╤А╨╛╤Б.")
                     self._push_question_if_new(unanswered[0].question)
                 else:
                     self._show_demo_result(result)
-            elif label.startswith("Реализация"):
+            elif label.startswith("╨а╨╡╨░╨╗╨╕╨╖╨░╤Ж╨╕╤П"):
                 self._show_demo_result(result)
-            elif label.startswith("Публикация"):
+            elif label.startswith("╨Я╤Г╨▒╨╗╨╕╨║╨░╤Ж╨╕╤П"):
                 self._push_event(
-                    "Сохранено",
-                    "Агент опубликован в «Мои агенты».",
+                    "╨б╨╛╤Е╤А╨░╨╜╨╡╨╜╨╛",
+                    "╨Р╨│╨╡╨╜╤В ╨╛╨┐╤Г╨▒╨╗╨╕╨║╨╛╨▓╨░╨╜ ╨▓ ┬л╨Ь╨╛╨╕ ╨░╨│╨╡╨╜╤В╤Л┬╗.",
                 )
             self.saved.emit(result.id)
             if result.phase == "done":
@@ -2454,31 +2470,31 @@ class WorkflowPage(QWidget):
         report = str(work.get("text") or result.last_result or "").strip()
         extras: list[str] = []
         for item in work.get("files") or []:
-            extras.append(f"Файл: {item}")
+            extras.append(f"╨д╨░╨╣╨╗: {item}")
         for item in work.get("actions") or []:
-            extras.append(f"Действие: {item}")
+            extras.append(f"╨Ф╨╡╨╣╤Б╤В╨▓╨╕╨╡: {item}")
         for item in work.get("notifications") or []:
-            extras.append(f"Уведомление: {item}")
+            extras.append(f"╨г╨▓╨╡╨┤╨╛╨╝╨╗╨╡╨╜╨╕╨╡: {item}")
         if extras:
             report = (report + "\n\n" + "\n".join(extras)).strip()
         if report:
-            self._push_event("Результат", report[:4000])
+            self._push_event("╨а╨╡╨╖╤Г╨╗╤М╤В╨░╤В", report[:4000])
         instructions = str(playbook.get("instructions") or "").strip()
         example = str(playbook.get("example_run") or "").strip()
         if instructions:
-            self._push_event("Инструкция", instructions)
+            self._push_event("╨Ш╨╜╤Б╤В╤А╤Г╨║╤Ж╨╕╤П", instructions)
         if example:
-            self._push_event("Пример прогона", example[:2000])
+            self._push_event("╨Я╤А╨╕╨╝╨╡╤А ╨┐╤А╨╛╨│╨╛╨╜╨░", example[:2000])
         self._tests_ok = bool(playbook.get("demo_ok") or instructions)
         if self._tests_ok:
             self._push_event(
-                "Сохранение",
-                "Инструкция готова. Нажмите «Далее», чтобы сохранить агента в «Мои агенты».",
-                action="Далее",
+                "╨б╨╛╤Е╤А╨░╨╜╨╡╨╜╨╕╨╡",
+                "╨Ш╨╜╤Б╤В╤А╤Г╨║╤Ж╨╕╤П ╨│╨╛╤В╨╛╨▓╨░. ╨Э╨░╨╢╨╝╨╕╤В╨╡ ┬л╨Ф╨░╨╗╨╡╨╡┬╗, ╤З╤В╨╛╨▒╤Л ╤Б╨╛╤Е╤А╨░╨╜╨╕╤В╤М ╨░╨│╨╡╨╜╤В╨░ ╨▓ ┬л╨Ь╨╛╨╕ ╨░╨│╨╡╨╜╤В╤Л┬╗.",
+                action="╨Ф╨░╨╗╨╡╨╡",
                 action_key="next",
             )
         else:
-            self._push_event("Агент", "Прогон завершён. Можно запустить снова.")
+            self._push_event("╨Р╨│╨╡╨╜╤В", "╨Я╤А╨╛╨│╨╛╨╜ ╨╖╨░╨▓╨╡╤А╤И╤С╨╜. ╨Ь╨╛╨╢╨╜╨╛ ╨╖╨░╨┐╤Г╤Б╤В╨╕╤В╤М ╤Б╨╜╨╛╨▓╨░.")
 
     def _on_plan(self) -> None:
         notes = (self._notes or "").strip()
@@ -2486,10 +2502,19 @@ class WorkflowPage(QWidget):
             if not notes and not self._pending_paths:
                 QMessageBox.warning(
                     self,
-                    "Документ",
-                    "Нет материалов. Откройте агента из паспорта.",
+                    "╨Ф╨╛╨║╤Г╨╝╨╡╨╜╤В",
+                    "╨Э╨╡╤В ╨╝╨░╤В╨╡╤А╨╕╨░╨╗╨╛╨▓. ╨Ю╤В╨║╤А╨╛╨╣╤В╨╡ ╨░╨│╨╡╨╜╤В╨░ ╨╕╨╖ ╨┐╨░╤Б╨┐╨╛╤А╤В╨░.",
                 )
                 return
+
+            if self._passport_runtime:
+                def create_from_regulation() -> WorkflowRecord:
+                    created = self._api.create_workflow(notes=notes, file_paths=self._pending_paths)
+                    return self._persist_passport_runtime(created)
+
+                self._run_async("Сборка из регламента", create_from_regulation)
+                return
+
             def create_and_demo() -> WorkflowRecord:
                 created = self._api.create_workflow(notes=notes, file_paths=self._pending_paths)
                 created = self._persist_passport_runtime(created)
@@ -2499,10 +2524,10 @@ class WorkflowPage(QWidget):
                 )
                 return self._persist_passport_runtime(demoed)
 
-            self._run_async("Пробный прогон", create_and_demo)
+            self._run_async("╨Я╤А╨╛╨▒╨╜╤Л╨╣ ╨┐╤А╨╛╨│╨╛╨╜", create_and_demo)
             return
         self._run_async(
-            "Пробный прогон",
+            "╨Я╤А╨╛╨▒╨╜╤Л╨╣ ╨┐╤А╨╛╨│╨╛╨╜",
             lambda: self._api.stream_demo_workflow(
                 self._record.id,  # type: ignore[union-attr]
                 lambda event_type, text: self._stream_event.emit(event_type, text),
@@ -2525,7 +2550,7 @@ class WorkflowPage(QWidget):
         self._current_question_id = unanswered[0].id
 
     def _make_clarification_message(self, question: WorkflowOpenQuestion) -> QWidget:
-        """Clarification with options — rendered as an agent message in the chat feed."""
+        """Clarification with options тАФ rendered as an agent message in the chat feed."""
         self._current_question_id = question.id
         self._question_fields = {}
 
@@ -2546,7 +2571,7 @@ class WorkflowPage(QWidget):
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(6)
 
-        title = _WrappingLabel("Агенту нужно уточнение")
+        title = _WrappingLabel("╨Р╨│╨╡╨╜╤В╤Г ╨╜╤Г╨╢╨╜╨╛ ╤Г╤В╨╛╤З╨╜╨╡╨╜╨╕╨╡")
         title.setFont(app_font(12, QFont.Weight.DemiBold))
         title.setStyleSheet("color: #8A5300; background: transparent;")
         question_label = _WrappingLabel(question.question)
@@ -2564,7 +2589,7 @@ class WorkflowPage(QWidget):
         self._answer_group = group
         group.setExclusive(True)
         for answer in _quick_answers_for_question(question):
-            # QRadioButton text does not wrap — indicator + wrapping label.
+            # QRadioButton text does not wrap тАФ indicator + wrapping label.
             opt_row = QHBoxLayout()
             opt_row.setContentsMargins(0, 0, 0, 0)
             opt_row.setSpacing(8)
@@ -2592,12 +2617,12 @@ class WorkflowPage(QWidget):
 
         custom_row = QHBoxLayout()
         custom_row.setSpacing(8)
-        custom_option = QRadioButton("Свой вариант")
+        custom_option = QRadioButton("╨б╨▓╨╛╨╣ ╨▓╨░╤А╨╕╨░╨╜╤В")
         custom_option.setCursor(Qt.CursorShape.PointingHandCursor)
         custom_option.setFont(app_font(12))
         custom_option.setStyleSheet(_RADIO_OPTION)
         custom_input = QLineEdit()
-        custom_input.setPlaceholderText("Напишите свой ответ")
+        custom_input.setPlaceholderText("╨Э╨░╨┐╨╕╤И╨╕╤В╨╡ ╤Б╨▓╨╛╨╣ ╨╛╤В╨▓╨╡╤В")
         custom_input.setFont(app_font(12))
         custom_input.setMinimumWidth(0)
         custom_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -2618,14 +2643,14 @@ class WorkflowPage(QWidget):
         )
         custom_input.textEdited.connect(lambda _value: self._select_custom_answer())
 
-        hint = _WrappingLabel("Выберите вариант или заполните свой ответ, затем «Далее».")
+        hint = _WrappingLabel("╨Т╤Л╨▒╨╡╤А╨╕╤В╨╡ ╨▓╨░╤А╨╕╨░╨╜╤В ╨╕╨╗╨╕ ╨╖╨░╨┐╨╛╨╗╨╜╨╕╤В╨╡ ╤Б╨▓╨╛╨╣ ╨╛╤В╨▓╨╡╤В, ╨╖╨░╤В╨╡╨╝ ┬л╨Ф╨░╨╗╨╡╨╡┬╗.")
         hint.setFont(app_font(11))
         hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         lay.addWidget(hint)
 
         next_row = QHBoxLayout()
         next_row.addStretch(1)
-        next_btn = QPushButton("Далее")
+        next_btn = QPushButton("╨Ф╨░╨╗╨╡╨╡")
         next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         next_btn.setFixedHeight(34)
         next_btn.setMinimumWidth(110)
@@ -2671,8 +2696,8 @@ class WorkflowPage(QWidget):
         if not text and not self._pending_paths:
             QMessageBox.information(
                 self,
-                "Ответ",
-                "Выберите вариант, заполните свой ответ или приложите файл.",
+                "╨Ю╤В╨▓╨╡╤В",
+                "╨Т╤Л╨▒╨╡╤А╨╕╤В╨╡ ╨▓╨░╤А╨╕╨░╨╜╤В, ╨╖╨░╨┐╨╛╨╗╨╜╨╕╤В╨╡ ╤Б╨▓╨╛╨╣ ╨╛╤В╨▓╨╡╤В ╨╕╨╗╨╕ ╨┐╤А╨╕╨╗╨╛╨╢╨╕╤В╨╡ ╤Д╨░╨╣╨╗.",
             )
             return
         qid = self._current_question_id
@@ -2688,12 +2713,12 @@ class WorkflowPage(QWidget):
                 asked = self._record.plan.unanswered()[0].question
         self._ensure_question_in_feed(asked)
         self._mark_question_answered(qid, text)
-        self._push_event("Вы", text or "Файл приложен", role="user")
+        self._push_event("╨Т╤Л", text or "╨д╨░╨╣╨╗ ╨┐╤А╨╕╨╗╨╛╨╢╨╡╨╜", role="user")
         self._append_user_files_to_event()
 
-        # After-build clarification → apply answer and re-run assembly.
+        # After-build clarification тЖТ apply answer and re-run assembly.
         if qid.startswith("post-build-"):
-            note = f"Уточнение после сборки: {text}"
+            note = f"╨г╤В╨╛╤З╨╜╨╡╨╜╨╕╨╡ ╨┐╨╛╤Б╨╗╨╡ ╤Б╨▒╨╛╤А╨║╨╕: {text}"
             self._notes = (self._notes + "\n" + note).strip() if self._notes else note
             self._post_build_question = None
             self._clear_questions()
@@ -2711,13 +2736,13 @@ class WorkflowPage(QWidget):
                 self._api.update_workflow_local_run(wid, local)
                 return self._execute_with_stream(wid, True)
 
-            self._push_event("Сборка workflow", "Учитываю уточнение и запускаю повторную сборку…")
+            self._push_event("╨б╨▒╨╛╤А╨║╨░ workflow", "╨г╤З╨╕╤В╤Л╨▓╨░╤О ╤Г╤В╨╛╤З╨╜╨╡╨╜╨╕╨╡ ╨╕ ╨╖╨░╨┐╤Г╤Б╨║╨░╤О ╨┐╨╛╨▓╤В╨╛╤А╨╜╤Г╤О ╤Б╨▒╨╛╤А╨║╤ГтАж")
             self._execute_started = True
             self._last_stream_phrase = ""
             self._last_stream_error = ""
             self._run_btn.setEnabled(False)
-            self._run_btn.setText("Идёт сборка…")
-            self._run_async("Реализация", work)
+            self._run_btn.setText("╨Ш╨┤╤С╤В ╤Б╨▒╨╛╤А╨║╨░тАж")
+            self._run_async("╨а╨╡╨░╨╗╨╕╨╖╨░╤Ж╨╕╤П", work)
             return
 
         answers = {qid: text}
@@ -2735,7 +2760,7 @@ class WorkflowPage(QWidget):
                 file_question_ids=qids,
             )
 
-        self._run_async("Уточнение плана", clarify)
+        self._run_async("╨г╤В╨╛╤З╨╜╨╡╨╜╨╕╨╡ ╨┐╨╗╨░╨╜╨░", clarify)
 
     def _execute_with_stream(self, workflow_id: str, reexecute: bool) -> WorkflowRecord:
         try:
@@ -2746,7 +2771,7 @@ class WorkflowPage(QWidget):
             )
         except ApiError as exc:
             low = (exc.message or "").casefold()
-            retryable = exc.status_code in {404, 405} or "подключ" in low or "сети" in low
+            retryable = exc.status_code in {404, 405} or "╨┐╨╛╨┤╨║╨╗╤О╤З" in low or "╤Б╨╡╤В╨╕" in low
             if not retryable:
                 raise
             return self._api.execute_workflow(workflow_id, reexecute=reexecute)
@@ -2768,8 +2793,8 @@ class WorkflowPage(QWidget):
         self._last_stream_error = ""
         self._next_btn.setVisible(False)
         self._run_btn.setEnabled(False)
-        self._run_btn.setText("Идёт прогон…")
-        self._push_event("Пробный прогон", "Запускаю задачу по описанию бизнес-процесса…")
+        self._run_btn.setText("╨Ш╨┤╤С╤В ╨┐╤А╨╛╨│╨╛╨╜тАж")
+        self._push_event("╨Я╤А╨╛╨▒╨╜╤Л╨╣ ╨┐╤А╨╛╨│╨╛╨╜", "╨Ч╨░╨┐╤Г╤Б╨║╨░╤О ╨╖╨░╨┤╨░╤З╤Г ╨┐╨╛ ╨╛╨┐╨╕╤Б╨░╨╜╨╕╤О ╨▒╨╕╨╖╨╜╨╡╤Б-╨┐╤А╨╛╤Ж╨╡╤Б╤Б╨░тАж")
         self._on_plan()
 
     def _show_test_run_result(self, *, files: list[str], dest_dir: str) -> None:
@@ -2784,16 +2809,16 @@ class WorkflowPage(QWidget):
             parts.append(result_md)
         combined = "\n\n".join(parts).strip()
         if not _has_subject_result(combined):
-            body = "Инструмент не вернул данные."
+            body = "╨Ш╨╜╤Б╤В╤А╤Г╨╝╨╡╨╜╤В ╨╜╨╡ ╨▓╨╡╤А╨╜╤Г╨╗ ╨┤╨░╨╜╨╜╤Л╨╡."
             if self._last_stream_error:
                 body += "\n\n" + self._last_stream_error
             elif dest_dir and not files:
-                body += "\nФайлы результата не найдены в artifacts/."
+                body += "\n╨д╨░╨╣╨╗╤Л ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В╨░ ╨╜╨╡ ╨╜╨░╨╣╨┤╨╡╨╜╤Л ╨▓ artifacts/."
             self._tests_ok = False
-            self._push_event("Результат тестового прогона", body)
+            self._push_event("╨а╨╡╨╖╤Г╨╗╤М╤В╨░╤В ╤В╨╡╤Б╤В╨╛╨▓╨╛╨│╨╛ ╨┐╤А╨╛╨│╨╛╨╜╨░", body)
             self._render_all()
             return
-        self._push_event("Результат тестового прогона", combined)
+        self._push_event("╨а╨╡╨╖╤Г╨╗╤М╤В╨░╤В ╤В╨╡╤Б╤В╨╛╨▓╨╛╨│╨╛ ╨┐╤А╨╛╨│╨╛╨╜╨░", combined)
         self._evaluate_tests(list(files))
         self._render_all()
 
@@ -2806,7 +2831,7 @@ class WorkflowPage(QWidget):
             result = self._api.download_workflow_artifacts(wid)
             return result.dest_dir, result.files
 
-        self._run_async("Скачивание", work)
+        self._run_async("╨б╨║╨░╤З╨╕╨▓╨░╨╜╨╕╨╡", work)
 
     def _evaluate_tests(self, files: list[str]) -> None:
         """Require TESTS: PASS in RESULT.md / last_result before save is allowed."""
@@ -2850,18 +2875,18 @@ class WorkflowPage(QWidget):
         if explicit_fail:
             if infra_fail:
                 self._push_event(
-                    "Тесты",
-                    "Live 1С с облака недоступен — это ожидаемо. "
-                    "Проверка идёт через OData на сервере Constructor, без вопросов в чате. "
-                    "Перезапустите сборку.",
+                    "╨в╨╡╤Б╤В╤Л",
+                    "Live 1╨б ╤Б ╨╛╨▒╨╗╨░╨║╨░ ╨╜╨╡╨┤╨╛╤Б╤В╤Г╨┐╨╡╨╜ тАФ ╤Н╤В╨╛ ╨╛╨╢╨╕╨┤╨░╨╡╨╝╨╛. "
+                    "╨Я╤А╨╛╨▓╨╡╤А╨║╨░ ╨╕╨┤╤С╤В ╤З╨╡╤А╨╡╨╖ OData ╨╜╨░ ╤Б╨╡╤А╨▓╨╡╤А╨╡ Constructor, ╨▒╨╡╨╖ ╨▓╨╛╨┐╤А╨╛╤Б╨╛╨▓ ╨▓ ╤З╨░╤В╨╡. "
+                    "╨Я╨╡╤А╨╡╨╖╨░╨┐╤Г╤Б╤В╨╕╤В╨╡ ╤Б╨▒╨╛╤А╨║╤Г.",
                 )
                 self._render_all()
                 return
             self._post_build_question = _extract_post_build_question(blob, context=context)
             self._ensure_question_in_feed(self._post_build_question.question)
             self._push_event(
-                "Тесты",
-                "TESTS: FAIL — сохранение недоступно. Ответьте на вопрос агента в чате.",
+                "╨в╨╡╤Б╤В╤Л",
+                "TESTS: FAIL тАФ ╤Б╨╛╤Е╤А╨░╨╜╨╡╨╜╨╕╨╡ ╨╜╨╡╨┤╨╛╤Б╤В╤Г╨┐╨╜╨╛. ╨Ю╤В╨▓╨╡╤В╤М╤В╨╡ ╨╜╨░ ╨▓╨╛╨┐╤А╨╛╤Б ╨░╨│╨╡╨╜╤В╨░ ╨▓ ╤З╨░╤В╨╡.",
             )
             self._render_all()
             return
@@ -2870,10 +2895,10 @@ class WorkflowPage(QWidget):
                 explicit_pass = True
             elif infra_fail:
                 self._push_event(
-                    "Тесты",
-                    "Live 1С с облака недоступен — это ожидаемо. "
-                    "Проверка идёт через OData на сервере Constructor, без вопросов в чате. "
-                    "Перезапустите сборку.",
+                    "╨в╨╡╤Б╤В╤Л",
+                    "Live 1╨б ╤Б ╨╛╨▒╨╗╨░╨║╨░ ╨╜╨╡╨┤╨╛╤Б╤В╤Г╨┐╨╡╨╜ тАФ ╤Н╤В╨╛ ╨╛╨╢╨╕╨┤╨░╨╡╨╝╨╛. "
+                    "╨Я╤А╨╛╨▓╨╡╤А╨║╨░ ╨╕╨┤╤С╤В ╤З╨╡╤А╨╡╨╖ OData ╨╜╨░ ╤Б╨╡╤А╨▓╨╡╤А╨╡ Constructor, ╨▒╨╡╨╖ ╨▓╨╛╨┐╤А╨╛╤Б╨╛╨▓ ╨▓ ╤З╨░╤В╨╡. "
+                    "╨Я╨╡╤А╨╡╨╖╨░╨┐╤Г╤Б╤В╨╕╤В╨╡ ╤Б╨▒╨╛╤А╨║╤Г.",
                 )
                 self._render_all()
                 return
@@ -2881,24 +2906,24 @@ class WorkflowPage(QWidget):
                 self._post_build_question = _extract_post_build_question(blob, context=context)
                 self._ensure_question_in_feed(self._post_build_question.question)
                 self._push_event(
-                    "Тесты",
-                    "TESTS: PASS не найден — сохранение недоступно. Ответьте на вопрос агента в чате.",
+                    "╨в╨╡╤Б╤В╤Л",
+                    "TESTS: PASS ╨╜╨╡ ╨╜╨░╨╣╨┤╨╡╨╜ тАФ ╤Б╨╛╤Е╤А╨░╨╜╨╡╨╜╨╕╨╡ ╨╜╨╡╨┤╨╛╤Б╤В╤Г╨┐╨╜╨╛. ╨Ю╤В╨▓╨╡╤В╤М╤В╨╡ ╨╜╨░ ╨▓╨╛╨┐╤А╨╛╤Б ╨░╨│╨╡╨╜╤В╨░ ╨▓ ╤З╨░╤В╨╡.",
                 )
                 self._render_all()
                 return
         if not run_finished:
             self._push_event(
-                "Тесты",
-                "Тестовый прогон не завершён — сохранение недоступно. Перезапустите сборку.",
+                "╨в╨╡╤Б╤В╤Л",
+                "╨в╨╡╤Б╤В╨╛╨▓╤Л╨╣ ╨┐╤А╨╛╨│╨╛╨╜ ╨╜╨╡ ╨╖╨░╨▓╨╡╤А╤И╤С╨╜ тАФ ╤Б╨╛╤Е╤А╨░╨╜╨╡╨╜╨╕╨╡ ╨╜╨╡╨┤╨╛╤Б╤В╤Г╨┐╨╜╨╛. ╨Я╨╡╤А╨╡╨╖╨░╨┐╤Г╤Б╤В╨╕╤В╨╡ ╤Б╨▒╨╛╤А╨║╤Г.",
             )
             self._render_all()
             return
 
         self._tests_ok = True
         self._push_event(
-            "Тесты",
-            "TESTS: PASS. Нажмите «Далее», чтобы заполнить паспорт и расписание.",
-            action="Далее",
+            "╨в╨╡╤Б╤В╤Л",
+            "TESTS: PASS. ╨Э╨░╨╢╨╝╨╕╤В╨╡ ┬л╨Ф╨░╨╗╨╡╨╡┬╗, ╤З╤В╨╛╨▒╤Л ╨╖╨░╨┐╨╛╨╗╨╜╨╕╤В╤М ╨┐╨░╤Б╨┐╨╛╤А╤В ╨╕ ╤А╨░╤Б╨┐╨╕╤Б╨░╨╜╨╕╨╡.",
+            action="╨Ф╨░╨╗╨╡╨╡",
             action_key="next",
         )
         if self._record is None:
@@ -2920,7 +2945,7 @@ class WorkflowPage(QWidget):
         try:
             self._record = sync()
         except ApiError as exc:
-            self._push_event("Предупреждение", f"Не удалось зафиксировать TESTS: PASS на сервере: {exc}")
+            self._push_event("╨Я╤А╨╡╨┤╤Г╨┐╤А╨╡╨╢╨┤╨╡╨╜╨╕╨╡", f"╨Э╨╡ ╤Г╨┤╨░╨╗╨╛╤Б╤М ╨╖╨░╤Д╨╕╨║╤Б╨╕╤А╨╛╨▓╨░╤В╤М TESTS: PASS ╨╜╨░ ╤Б╨╡╤А╨▓╨╡╤А╨╡: {exc}")
 
     def _on_schedule_requested(self) -> None:
         if self._record is None:
@@ -2928,8 +2953,8 @@ class WorkflowPage(QWidget):
         if not (self._tests_ok or self._playbook().get("demo_ok")):
             QMessageBox.information(
                 self,
-                "Прогон",
-                "Сначала дождитесь успешного пробного прогона.",
+                "╨Я╤А╨╛╨│╨╛╨╜",
+                "╨б╨╜╨░╤З╨░╨╗╨░ ╨┤╨╛╨╢╨┤╨╕╤В╨╡╤Б╤М ╤Г╤Б╨┐╨╡╤И╨╜╨╛╨│╨╛ ╨┐╤А╨╛╨▒╨╜╨╛╨│╨╛ ╨┐╤А╨╛╨│╨╛╨╜╨░.",
             )
             return
         self.schedule_requested.emit(self._record)
@@ -2969,40 +2994,40 @@ class WorkflowPage(QWidget):
 
 def _notes_from_passport(session: PassportSession) -> str:
     passport = session.passport
-    title = (passport.name or session.bp_name or "ИИ-агент").strip()
+    title = (passport.name or session.bp_name or "╨Ш╨Ш-╨░╨│╨╡╨╜╤В").strip()
     text = (passport.text or "").strip()
     if not text:
         text = "\n".join(
             [
-                f"ИИ-агент: {passport.name or '—'}",
-                f"Цель: {passport.goal or '—'}",
-                f"Триггер: {passport.trigger or '—'}",
-                f"Получает: {passport.receives or '—'}",
-                f"Проверяет: {passport.checks or '—'}",
-                f"Принимает решения: {passport.decisions or '—'}",
-                f"Может самостоятельно: {passport.can_autonomous or '—'}",
-                f"Требует подтверждения человека: {passport.needs_human_approval or '—'}",
-                f"Не может: {passport.forbidden or '—'}",
-                f"Результат: {passport.result or '—'}",
-                f"Уровень автономности: {int(getattr(passport, 'autonomy_level', 1) or 1)}",
+                f"╨Ш╨Ш-╨░╨│╨╡╨╜╤В: {passport.name or 'тАФ'}",
+                f"╨ж╨╡╨╗╤М: {passport.goal or 'тАФ'}",
+                f"╨в╤А╨╕╨│╨│╨╡╤А: {passport.trigger or 'тАФ'}",
+                f"╨Я╨╛╨╗╤Г╤З╨░╨╡╤В: {passport.receives or 'тАФ'}",
+                f"╨Я╤А╨╛╨▓╨╡╤А╤П╨╡╤В: {passport.checks or 'тАФ'}",
+                f"╨Я╤А╨╕╨╜╨╕╨╝╨░╨╡╤В ╤А╨╡╤И╨╡╨╜╨╕╤П: {passport.decisions or 'тАФ'}",
+                f"╨Ь╨╛╨╢╨╡╤В ╤Б╨░╨╝╨╛╤Б╤В╨╛╤П╤В╨╡╨╗╤М╨╜╨╛: {passport.can_autonomous or 'тАФ'}",
+                f"╨в╤А╨╡╨▒╤Г╨╡╤В ╨┐╨╛╨┤╤В╨▓╨╡╤А╨╢╨┤╨╡╨╜╨╕╤П ╤З╨╡╨╗╨╛╨▓╨╡╨║╨░: {passport.needs_human_approval or 'тАФ'}",
+                f"╨Э╨╡ ╨╝╨╛╨╢╨╡╤В: {passport.forbidden or 'тАФ'}",
+                f"╨а╨╡╨╖╤Г╨╗╤М╤В╨░╤В: {passport.result or 'тАФ'}",
+                f"╨г╤А╨╛╨▓╨╡╨╜╤М ╨░╨▓╤В╨╛╨╜╨╛╨╝╨╜╨╛╤Б╤В╨╕: {int(getattr(passport, 'autonomy_level', 1) or 1)}",
             ]
         )
     lines = [
-        f"# Паспорт ИИ-агента: {title}",
+        f"# ╨Я╨░╤Б╨┐╨╛╤А╤В ╨Ш╨Ш-╨░╨│╨╡╨╜╤В╨░: {title}",
         "",
-        "Составь план реализации ИИ-агента по согласованному паспорту.",
-        "Уровень автономности: 1. Запись и прочие операции — только после подтверждения человека.",
-        "Не меняй смысл полей паспорта без уточняющих вопросов.",
-        "В steps опиши конкретные шаги автоматизации процесса.",
+        "╨б╨╛╤Б╤В╨░╨▓╤М ╨┐╨╗╨░╨╜ ╤А╨╡╨░╨╗╨╕╨╖╨░╤Ж╨╕╨╕ ╨Ш╨Ш-╨░╨│╨╡╨╜╤В╨░ ╨┐╨╛ ╤Б╨╛╨│╨╗╨░╤Б╨╛╨▓╨░╨╜╨╜╨╛╨╝╤Г ╨┐╨░╤Б╨┐╨╛╤А╤В╤Г.",
+        "╨г╤А╨╛╨▓╨╡╨╜╤М ╨░╨▓╤В╨╛╨╜╨╛╨╝╨╜╨╛╤Б╤В╨╕: 1. ╨Ч╨░╨┐╨╕╤Б╤М ╨╕ ╨┐╤А╨╛╤З╨╕╨╡ ╨╛╨┐╨╡╤А╨░╤Ж╨╕╨╕ тАФ ╤В╨╛╨╗╤М╨║╨╛ ╨┐╨╛╤Б╨╗╨╡ ╨┐╨╛╨┤╤В╨▓╨╡╤А╨╢╨┤╨╡╨╜╨╕╤П ╤З╨╡╨╗╨╛╨▓╨╡╨║╨░.",
+        "╨Э╨╡ ╨╝╨╡╨╜╤П╨╣ ╤Б╨╝╤Л╤Б╨╗ ╨┐╨╛╨╗╨╡╨╣ ╨┐╨░╤Б╨┐╨╛╤А╤В╨░ ╨▒╨╡╨╖ ╤Г╤В╨╛╤З╨╜╤П╤О╤Й╨╕╤Е ╨▓╨╛╨┐╤А╨╛╤Б╨╛╨▓.",
+        "╨Т steps ╨╛╨┐╨╕╤И╨╕ ╨║╨╛╨╜╨║╤А╨╡╤В╨╜╤Л╨╡ ╤И╨░╨│╨╕ ╨░╨▓╤В╨╛╨╝╨░╤В╨╕╨╖╨░╤Ж╨╕╨╕ ╨┐╤А╨╛╤Ж╨╡╤Б╤Б╨░.",
         "",
-        "## Паспорт",
+        "## ╨Я╨░╤Б╨┐╨╛╤А╤В",
         text,
     ]
     if session.excerpt.strip():
-        lines.extend(["", "## Фрагмент регламента", session.excerpt.strip()[:4000]])
+        lines.extend(["", "## ╨д╤А╨░╨│╨╝╨╡╨╜╤В ╤А╨╡╨│╨╗╨░╨╝╨╡╨╜╤В╨░", session.excerpt.strip()[:4000]])
     if session.functions:
-        lines.extend(["", "## Функции агента"])
+        lines.extend(["", "## ╨д╤Г╨╜╨║╤Ж╨╕╨╕ ╨░╨│╨╡╨╜╤В╨░"])
         for item in session.functions:
-            desc = f" — {item.description}" if item.description else ""
+            desc = f" тАФ {item.description}" if item.description else ""
             lines.append(f"- {item.name}{desc}")
     return "\n".join(lines).strip() + "\n"

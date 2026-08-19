@@ -69,6 +69,7 @@ class MyAgentsPage(QWidget):
     delete_agent_requested = Signal(str)
     stop_auto_run_requested = Signal(str)
     run_agent_requested = Signal(str)
+    edit_agent_requested = Signal(str)
     history_requested = Signal(str, str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -220,7 +221,10 @@ class MyAgentsPage(QWidget):
 
     def _render_agents(self) -> None:
         if not self._agents:
-            empty = QLabel("Пока нет опубликованных ИИ-агентов. Созданные и опубликованные агенты появятся здесь.")
+            empty = QLabel(
+                "Пока нет опубликованных ИИ-агентов. "
+                "При входе через общий сервер (192.168.1.157) они подтянутся сюда автоматически."
+            )
             empty.setWordWrap(True)
             empty.setFont(app_font(18))
             empty.setStyleSheet("color: #6B7773; background: transparent;")
@@ -414,6 +418,12 @@ class MyAgentsPage(QWidget):
         run.clicked.connect(
             lambda _checked=False, workflow_id=agent.id: self.run_agent_requested.emit(workflow_id)
         )
+        edit = QPushButton("Доработать")
+        edit.setCursor(Qt.CursorShape.PointingHandCursor)
+        edit.setStyleSheet(_SECONDARY_ACTION_QSS)
+        edit.clicked.connect(
+            lambda _checked=False, workflow_id=agent.id: self.edit_agent_requested.emit(workflow_id)
+        )
         stop = QPushButton("Остановить")
         stop.setCursor(Qt.CursorShape.PointingHandCursor)
         stop.setStyleSheet(_SECONDARY_ACTION_QSS)
@@ -440,7 +450,7 @@ class MyAgentsPage(QWidget):
         delete.clicked.connect(lambda _checked=False, workflow_id=agent.id: self.delete_agent_requested.emit(workflow_id))
         layout.addWidget(title, 0, 0)
         layout.addWidget(description, 0, 1)
-        layout.addWidget(_actions_widget(run, stop, history, delete), 0, 2)
+        layout.addWidget(_actions_widget(run, edit, stop, history, delete), 0, 2)
         layout.setColumnStretch(0, 2)
         layout.setColumnStretch(1, 3)
         return card

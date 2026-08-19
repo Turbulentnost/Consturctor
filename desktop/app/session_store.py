@@ -38,9 +38,19 @@ def saved_backend_url() -> str:
     return str(_settings().value("server/backend_url", "", type=str) or "").strip()
 
 
+def saved_auth_url() -> str:
+    return str(_settings().value("server/auth_url", "", type=str) or "").strip()
+
+
 def save_backend_url(url: str) -> None:
     s = _settings()
     s.setValue("server/backend_url", url.strip().rstrip("/"))
+    s.sync()
+
+
+def save_auth_url(url: str) -> None:
+    s = _settings()
+    s.setValue("server/auth_url", url.strip().rstrip("/"))
     s.sync()
 
 

@@ -15,11 +15,16 @@ from platform_tool_onec_com.com_runtime import com_call
 from platform_tool_onec_com.onec_com import (
     build_connection_string,
     connect_session,
+    execute_query,
     get_current_user_name,
     get_task_details,
+    list_assignment_sources,
+    query_docflow_assignments,
     query_performer_tasks,
     query_tasks_period,
+    query_work_items,
     require_32bit_python,
+    search_metadata,
     service_status,
 )
 
@@ -85,6 +90,23 @@ _load_infra_env()
 
 def _is_windows() -> bool:
     return sys.platform == "win32"
+
+
+def _open_session(session_id: str) -> tuple[str, Any, dict[str, Any], bool]:
+    created = False
+    sid = session_id.strip()
+    if not sid:
+        session = connect_session()
+        sid = session["session_id"]
+        with _lock:
+            _sessions[sid] = session
+        created = True
+    with _lock:
+        stored = _sessions.get(sid)
+        if not stored:
+            raise ValueError("session not found")
+        app = stored["object"]
+    return sid, app, stored, created
 
 
 def _onec_status(_: ToolInvokeRequest) -> dict[str, Any]:
@@ -196,6 +218,161 @@ def _query_tasks(req: ToolInvokeRequest) -> dict[str, Any]:
             "transport": "com-connector",
             "source": "onec-com",
         }
+
+    return com_call(_do, timeout=float(settings.com_timeout_sec))
+
+
+def _query_docflow_assignments(req: ToolInvokeRequest) -> dict[str, Any]:
+    if not _is_windows():
+        raise RuntimeError("onec.com is only available on Windows")
+
+    session_id = str(req.payload.get("session_id", "")).strip()
+    fio = str(req.payload.get("fio", "") or req.payload.get("user", "")).strip()
+    limit = int(req.payload.get("limit") or 100)
+    only_open = bool(req.payload.get("only_open", True))
+
+    def _do() -> dict[str, Any]:
+        nonlocal session_id
+        created = False
+        if not session_id:
+            session = connect_session()
+            session_id = session["session_id"]
+            with _lock:
+                _sessions[session_id] = session
+            created = True
+
+        with _lock:
+            stored = _sessions.get(session_id)
+            if not stored:
+                raise ValueError("session not found")
+            app = stored["object"]
+
+        current_user = stored.get("current_user") or get_current_user_name(app)
+        actor = fio or current_user
+        rows = query_docflow_assignments(
+            app,
+            user_name=actor,
+            limit=limit,
+            only_open=only_open,
+        )
+        return {
+            "summary": f"COM docflow assignments for {actor} ({len(rows)} items)",
+            "session_id": session_id,
+            "current_user": current_user,
+            "fio": actor,
+            "count": len(rows),
+            "tasks": rows,
+            "task_source": "td_docflow",
+            "only_open": only_open,
+            "session_created": created,
+            "transport": "com-connector",
+            "source": "td-docflow",
+        }
+
+    return com_call(_do, timeout=float(settings.com_timeout_sec))
+
+
+def _execute_query(req: ToolInvokeRequest) -> dict[str, Any]:
+    if not _is_windows():
+        raise RuntimeError("onec.com is only available on Windows")
+
+    session_id = str(req.payload.get("session_id", "")).strip()
+    query_text = str(req.payload.get("query_text") or req.payload.get("query") or "").strip()
+    parameters = req.payload.get("parameters") or {}
+    limit = int(req.payload.get("limit") or 200)
+    if not isinstance(parameters, dict):
+        raise ValueError("parameters must be an object")
+
+    def _do() -> dict[str, Any]:
+        sid, app, stored, created = _open_session(session_id)
+        result = execute_query(app, query_text, parameters=parameters, limit=limit)
+        current_user = stored.get("current_user") or get_current_user_name(app)
+        result.update(
+            {
+                "summary": f"COM query ({result.get('count', 0)} rows)",
+                "session_id": sid,
+                "current_user": current_user,
+                "session_created": created,
+                "transport": "com-connector",
+                "source": "onec-com",
+            }
+        )
+        return result
+
+    return com_call(_do, timeout=float(settings.com_timeout_sec))
+
+
+def _metadata_search(req: ToolInvokeRequest) -> dict[str, Any]:
+    if not _is_windows():
+        raise RuntimeError("onec.com is only available on Windows")
+
+    session_id = str(req.payload.get("session_id", "")).strip()
+    pattern = str(req.payload.get("pattern") or req.payload.get("query") or "").strip()
+    kinds_raw = req.payload.get("kinds")
+    kinds = [str(item) for item in kinds_raw] if isinstance(kinds_raw, list) else None
+    limit = int(req.payload.get("limit") or 50)
+
+    def _do() -> dict[str, Any]:
+        sid, app, stored, created = _open_session(session_id)
+        hits = search_metadata(app, pattern=pattern, kinds=kinds, limit=limit)
+        current_user = stored.get("current_user") or get_current_user_name(app)
+        return {
+            "summary": f"COM metadata search ({len(hits)} hits)",
+            "session_id": sid,
+            "current_user": current_user,
+            "pattern": pattern,
+            "count": len(hits),
+            "items": hits,
+            "session_created": created,
+            "transport": "com-connector",
+            "source": "onec-com",
+        }
+
+    return com_call(_do, timeout=float(settings.com_timeout_sec))
+
+
+def _list_assignment_sources(_: ToolInvokeRequest) -> dict[str, Any]:
+    sources = list_assignment_sources()
+    return {
+        "summary": f"{len(sources)} assignment sources",
+        "count": len(sources),
+        "sources": sources,
+        "source": "onec-com",
+    }
+
+
+def _query_work_items(req: ToolInvokeRequest) -> dict[str, Any]:
+    if not _is_windows():
+        raise RuntimeError("onec.com is only available on Windows")
+
+    session_id = str(req.payload.get("session_id", "")).strip()
+    fio = str(req.payload.get("fio", "") or req.payload.get("user", "")).strip()
+    scope = str(req.payload.get("scope") or "all").strip()
+    limit = int(req.payload.get("limit") or 100)
+    only_open = bool(req.payload.get("only_open", True))
+
+    def _do() -> dict[str, Any]:
+        sid, app, stored, created = _open_session(session_id)
+        current_user = stored.get("current_user") or get_current_user_name(app)
+        actor = fio or current_user
+        payload = query_work_items(
+            app,
+            user_name=actor,
+            scope=scope,
+            limit=limit,
+            only_open=only_open,
+        )
+        payload.update(
+            {
+                "summary": f"COM work items ({scope}) for {actor}: {payload.get('count', 0)}",
+                "session_id": sid,
+                "current_user": current_user,
+                "session_created": created,
+                "transport": "com-connector",
+                "source": "onec-com",
+            }
+        )
+        return payload
 
     return com_call(_do, timeout=float(settings.com_timeout_sec))
 
@@ -372,6 +549,59 @@ def _stub_query_tasks(req: ToolInvokeRequest) -> dict[str, Any]:
     }
 
 
+def _stub_execute_query(req: ToolInvokeRequest) -> dict[str, Any]:
+    return {
+        "summary": "stub COM query",
+        "columns": ["Number", "Description"],
+        "rows": [{"Number": "stub-1", "Description": "stub row"}],
+        "count": 1,
+        "total": 1,
+        "query": str(req.payload.get("query_text") or "")[:120],
+        "source": "stub",
+    }
+
+
+def _stub_metadata_search(req: ToolInvokeRequest) -> dict[str, Any]:
+    return {
+        "summary": "stub metadata search",
+        "pattern": str(req.payload.get("pattern") or ""),
+        "count": 1,
+        "items": [{"kind": "Documents", "name": "ТД_Поручения", "synonym": "Поручения (ТД)"}],
+        "source": "stub",
+    }
+
+
+def _stub_list_assignment_sources(_: ToolInvokeRequest) -> dict[str, Any]:
+    return {
+        "summary": "stub assignment sources",
+        "count": 2,
+        "sources": [
+            {"id": "docflow_protocol", "title": "stub docflow protocol"},
+            {"id": "erp_performer_tasks", "title": "stub erp tasks"},
+        ],
+        "source": "stub",
+    }
+
+
+def _stub_query_work_items(req: ToolInvokeRequest) -> dict[str, Any]:
+    return {
+        "summary": "stub work items",
+        "fio": "stub-user",
+        "scope": str(req.payload.get("scope") or "all"),
+        "count": 1,
+        "tasks": [
+            {
+                "number": "stub-1",
+                "title": "stub work item",
+                "due_at": "",
+                "source": "td_задачи_протоколов",
+            }
+        ],
+        "sources": ["td_задачи_протоколов"],
+        "source": "stub",
+    }
+
+
 def _stub_release(req: ToolInvokeRequest) -> dict[str, Any]:
     return {"summary": "stub released", "session_id": req.payload.get("session_id"), "source": "stub"}
 
@@ -381,7 +611,12 @@ REAL_HANDLERS = {
     "onec.com.connect": _connect,
     "onec.com.invoke": _invoke,
     "onec.com.query_tasks": _query_tasks,
+    "onec.com.query_docflow_assignments": _query_docflow_assignments,
     "onec.com.query_assignments": _query_assignments,
+    "onec.com.execute_query": _execute_query,
+    "onec.com.metadata_search": _metadata_search,
+    "onec.com.list_assignment_sources": _list_assignment_sources,
+    "onec.com.query_work_items": _query_work_items,
     "onec.com.task_details": _task_details,
     "onec.com.release": _release,
 }
@@ -391,6 +626,10 @@ STUB_HANDLERS = {
     "onec.com.connect": _stub_connect,
     "onec.com.invoke": _stub_invoke,
     "onec.com.query_tasks": _stub_query_tasks,
+    "onec.com.execute_query": _stub_execute_query,
+    "onec.com.metadata_search": _stub_metadata_search,
+    "onec.com.list_assignment_sources": _stub_list_assignment_sources,
+    "onec.com.query_work_items": _stub_query_work_items,
     "onec.com.release": _stub_release,
 }
 

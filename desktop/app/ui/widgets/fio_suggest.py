@@ -214,9 +214,6 @@ class FioSuggestEdit(QLineEdit):
         # Empty query → browse catalog; non-empty → server search (needed because
         # the empty catalog is only TOP N alphabetically and may miss the target FIO).
         self._request_token = key
-        if not self._popup.isVisible() or self._list.count() == 0:
-            self._populate_message("Загружаем список…")
-            self._show_popup()
         Thread(target=self._fetch_in_background, args=(query, key), daemon=True).start()
 
     def _fetch_in_background(self, query: str, key: str) -> None:
@@ -237,7 +234,12 @@ class FioSuggestEdit(QLineEdit):
             self._hide_popup()
             return
         if not items:
-            self._populate_message("Ничего не найдено")
+            hint = "Ничего не найдено — введите ФИО полностью и нажмите «Войти»"
+            if len(self.text().strip()) >= 3:
+                self._hide_popup()
+            else:
+                self._populate_message(hint)
+                self._show_popup()
         else:
             self._populate(items)
         self._show_popup()

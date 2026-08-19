@@ -219,7 +219,7 @@ _TOOL_ENTRIES: tuple[ToolCatalogEntry, ...] = (
             "Список задач исполнителя через COM-запрос в ERP (не OData, не GUI). "
             "По умолчанию: Задача.ЗадачаИсполнителя для текущего ERP-пользователя. "
             "prefer_crm=true — CRM_ЗадачиПользователей. "
-            "НЕ возвращает задачи формы «Документооборот: Мои задачи» (1С:ДО) — они в другой интеграции. "
+            "Для документооборота и смешанных источников предпочтительнее onec.com.query_work_items. "
             "Ответ: tasks[] с number, description, date, due_date, executor; task_source; current_user."
         ),
         parameters=_schema(
@@ -230,6 +230,71 @@ _TOOL_ENTRIES: tuple[ToolCatalogEntry, ...] = (
                 "prefer_crm": _bool("CRM вместо ERP Задача.ЗадачаИсполнителя", default=False),
             },
         ),
+    ),
+    ToolCatalogEntry(
+        name="onec.com.query_work_items",
+        category="onec.com",
+        runtime="windows",
+        read_only=True,
+        description=(
+            "Унифицированный список рабочих элементов из нескольких источников 1С через COM. "
+            "scope: docflow | docflow_protocol | docflow_orders | erp_tasks | crm | business_process | all. "
+            "Возвращает tasks[] с полем source и список фактически использованных sources."
+        ),
+        parameters=_schema(
+            properties={
+                "session_id": _str("Существующая COM-сессия (опционально)"),
+                "fio": _str("ФИО исполнителя (по умолчанию текущий ERP-пользователь)"),
+                "scope": _str("Область источников", default="all"),
+                "limit": _int("Макс. записей", default=100),
+                "only_open": _bool("Только открытые", default=True),
+            },
+        ),
+    ),
+    ToolCatalogEntry(
+        name="onec.com.execute_query",
+        category="onec.com",
+        runtime="windows",
+        read_only=True,
+        description=(
+            "Произвольный read-only запрос 1С (ВЫБРАТЬ/SELECT) через COM Query. "
+            "parameters — именованные параметры запроса. Макс. ~500 строк."
+        ),
+        parameters=_schema(
+            properties={
+                "session_id": _str("Существующая COM-сессия (опционально)"),
+                "query_text": _str("Текст запроса 1С"),
+                "parameters": {"type": "object", "description": "Параметры запроса"},
+                "limit": _int("Макс. строк в ответе", default=200),
+            },
+            required=["query_text"],
+        ),
+    ),
+    ToolCatalogEntry(
+        name="onec.com.metadata_search",
+        category="onec.com",
+        runtime="windows",
+        read_only=True,
+        description=(
+            "Поиск объектов метаданных 1С (Documents, Catalogs, InformationRegisters и др.) "
+            "по подстроке в имени или синониме."
+        ),
+        parameters=_schema(
+            properties={
+                "session_id": _str("Существующая COM-сессия (опционально)"),
+                "pattern": _str("Подстрока для поиска"),
+                "kinds": {"type": "array", "items": {"type": "string"}, "description": "Типы метаданных"},
+                "limit": _int("Макс. результатов", default=50),
+            },
+        ),
+    ),
+    ToolCatalogEntry(
+        name="onec.com.list_assignment_sources",
+        category="onec.com",
+        runtime="windows",
+        read_only=True,
+        description="Справочник встроенных источников поручений/задач для onec.com.query_work_items.",
+        parameters=_schema(properties={}),
     ),
     ToolCatalogEntry(
         name="onec.com.invoke",

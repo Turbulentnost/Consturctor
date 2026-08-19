@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.agent_route import AgentRouteSchema
+
 
 class PlanStepSchema(BaseModel):
     id: str = ""
@@ -61,6 +63,7 @@ class WorkflowSchema(BaseModel):
     pr_url: str = ""
     created_at: str = ""
     updated_at: str = ""
+    agent_route: AgentRouteSchema | None = None
 
 
 class WorkflowListItem(BaseModel):
@@ -109,6 +112,11 @@ class WorkflowHealth(BaseModel):
     ok: bool
     who: str = ""
     message: str = ""
+
+
+class WorkflowSyncResult(BaseModel):
+    imported: int = 0
+    skipped: int = 0
 
 
 class WebSearchRequest(BaseModel):

@@ -9,6 +9,7 @@ from app.clients.erp_sql import ErpSqlError, ping
 from app.config import settings
 from app.schemas.health import HealthResponse, PlatformServiceHealth
 from app.services import auth_service, platform_proxy
+from app.services.llm_provider import effective_llm_provider
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -70,7 +71,7 @@ async def health() -> HealthResponse:
         status=status,
         erp_reachable=erp_reachable,
         erp_server=settings.erp_sql_server,
-        llm_provider=settings.llm_provider,
+        llm_provider=effective_llm_provider(),
         auth_stub=settings.auth_stub,
         registration_enabled=auth_service.registration_enabled(),
         dev_mode=settings.dev_mode,

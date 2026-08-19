@@ -1,5 +1,6 @@
 # turbobot — конструктор ИИ-агентов
 
+> **ACT-реестр поручений (агент, OData, Excel):** см. **[ACT_REGISTRY.md](ACT_REGISTRY.md)**  
 > **Для агента-разработчика (карта репо, tools, API):** см. **[AGENT_BUILDER.md](AGENT_BUILDER.md)** — начните с этого файла.
 
 Платформа из двух частей:

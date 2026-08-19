@@ -13,6 +13,7 @@ from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.db.session import SessionLocal, get_db
 from app.schemas.trigger import ScheduleDraftOut
+from app.schemas.agent_route import AgentRoutePatch, AgentRouteSchema
 from app.schemas.workflow import (
     AgentKpiSchema,
     AgentRunOut,
@@ -25,6 +26,7 @@ from app.schemas.workflow import (
     WorkflowHealth,
     WorkflowListItem,
     WorkflowSchema,
+    WorkflowSyncResult,
 )
 from app.services.agent_runs import answer_from_result, finish_agent_run, list_agent_runs, start_agent_run
 from app.services.agent_runtime import AgentRuntimeError, available_tools, run_agent_task
@@ -41,11 +43,14 @@ from app.services.workflows import (
     generate_agent_kpi,
     get_agent_kpi,
     get_workflow,
+    import_workflow_snapshot,
     list_artifacts_for_workflow,
     list_workflows,
     plan_workflow,
     publish_workflow,
     stop_auto_run,
+    get_agent_route,
+    update_agent_route,
     update_local_run,
     workflow_health,
 )
@@ -128,7 +133,7 @@ def _workflow_stream(action, *, user_id: str = ""):
     yield from _iter_sse_queue(queue, stop)
 
 
-def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: str = "chat"):
+def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: str = "chat", agent_kind: str = ""):
     queue: Queue[dict | None] = Queue()
     stop = Event()
     run_id = tool_bridge.new_run_id()
@@ -159,6 +164,7 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: s
                 message=message,
                 emit=emit,
                 run_id=run_id,
+                agent_kind=agent_kind,
             )
             status = "ok"
             answer = answer_from_result(result)
@@ -251,12 +257,14 @@ async def run_workflow_agent_stream(
     body = await request.json()
     message = str((body or {}).get("message") or "").strip()
     source = str((body or {}).get("source") or "chat").strip() or "chat"
+    agent_kind = str((body or {}).get("agent_kind") or "").strip()
     return StreamingResponse(
         _agent_run_stream(
             user_id=auth.user_id,
             workflow_id=workflow_id,
             message=message,
             source=source,
+            agent_kind=agent_kind,
         ),
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
@@ -296,6 +304,19 @@ async def create_workflow_endpoint(
         payloads.append((upload.filename or "file", raw))
     try:
         return create_workflow(db, user_id=auth.user_id, notes=notes, files=payloads)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise  # pragma: no cover
+
+
+@router.post("/import", response_model=WorkflowSchema)
+def import_workflow_endpoint(
+    payload: WorkflowSchema,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowSchema:
+    try:
+        return import_workflow_snapshot(db, user_id=auth.user_id, payload=payload)
     except WorkflowError as exc:
         _raise(exc)
         raise  # pragma: no cover
@@ -606,6 +627,38 @@ async def patch_local_run(
             user_id=auth.user_id,
             workflow_id=workflow_id,
             local_run=request.local_run,
+        )
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.get("/{workflow_id}/agent-route", response_model=AgentRouteSchema)
+async def read_agent_route(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentRouteSchema:
+    try:
+        return get_agent_route(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.patch("/{workflow_id}/agent-route", response_model=AgentRouteSchema)
+async def patch_agent_route(
+    workflow_id: str,
+    request: AgentRoutePatch,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentRouteSchema:
+    try:
+        return update_agent_route(
+            db,
+            user_id=auth.user_id,
+            workflow_id=workflow_id,
+            patch=request.model_dump(exclude_unset=True),
         )
     except WorkflowError as exc:
         _raise(exc)

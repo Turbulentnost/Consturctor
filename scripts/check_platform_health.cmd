@@ -5,7 +5,7 @@ set "ROOT=%~dp0.."
 set FAIL=0
 
 echo HTTP health:
-for %%P in (7820 7821 7822 7823 7824 7825 7812) do (
+for %%P in (7820 7821 7822 7823 7824 7825 7812 7830 7831) do (
     curl -sf http://127.0.0.1:%%P/health >nul 2>&1
     if errorlevel 1 (
         echo   [FAIL] :%%P/health
@@ -46,7 +46,9 @@ for %%S in (platform-orchestrator-worker platform-orchestrator-beat platform-too
 
 if %FAIL%==1 (
     echo.
-    echo Some services are down. Run: scripts\docker_up.cmd
+    echo Some services are down.
+    echo   Docker: scripts\docker_up.cmd  OR  scripts\start_all_local.cmd
+    echo   COM :7831: scripts\restart_onec_com_service.cmd
     echo Logs: cd infra ^&^& docker compose logs -f SERVICE
     exit /b 1
 )

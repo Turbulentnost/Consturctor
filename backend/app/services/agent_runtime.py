@@ -48,6 +48,7 @@ def run_agent_task(
     message: str,
     emit: AgentEventCallback,
     run_id: str,
+    agent_kind: str = "",
 ) -> dict[str, Any]:
     workflow = (
         db.query(Workflow)
@@ -60,9 +61,7 @@ def run_agent_task(
     if not task:
         raise AgentRuntimeError("Пустая задача")
 
-    emit({"type": "status", "text": "Получил задачу, готовлю запуск…"})
-    emit({"type": "agent_message", "text": f"Запускаю «{workflow.title or 'ИИ-агент'}»."})
-
+    from app.services.agent_route import resolve_agent_route
     from app.services.workflows.service import playbook_of
 
     playbook = playbook_of(workflow)
@@ -77,21 +76,53 @@ def run_agent_task(
             playbook=playbook,
         )
 
-    domain = _agent_domain(workflow)
+    route = resolve_agent_route(workflow, override_handler=agent_kind)
+    handler = route.handler
 
-    # Rules come from THIS agent's plan (runtime / constraints / answers), not globals.
-    # Outlook/meetings must never fall into tender Excel export or web_search.
-    if domain != "outlook_calendar" and uses_plan_export(workflow):
-        emit({"type": "status", "text": "Читаю правила из паспорта этого агента…"})
-        emit(
-            {
-                "type": "agent_message",
-                "text": (
-                    "Выполняю по правилам из ответов при создании: поиск по ключам, "
-                    "Excel с указанными колонками, сохранение куда указано в плане."
-                ),
-            }
+    if handler in {"act_porucheniya_registry", "assignments_action_tracker", "assignments_smart"}:
+        return _run_act_porucheniya_registry(
+            db,
+            emit=emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            workflow=workflow,
+            task=task,
         )
+
+    emit({"type": "status", "text": "Получил задачу, готовлю запуск…"})
+
+    if handler == "outlook_calendar":
+        emit({"type": "status", "text": "Читаю Outlook на этом компьютере…"})
+        outlook_tool, outlook_args = _outlook_tool_request(task)
+        try:
+            tool_result = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                tool=outlook_tool,
+                arguments=outlook_args,
+            )
+        except AgentRuntimeError as exc:
+            emit({"type": "error", "message": str(exc)})
+            raise
+        emit({"type": "tool_result", "tool": outlook_tool, "result": tool_result})
+        answer = _compose_outlook_tool_answer(task, outlook_tool, tool_result)
+        from app.services.agent_llm_reply import finalize_agent_answer
+
+        answer = finalize_agent_answer(
+            task=task,
+            handler="outlook_calendar",
+            workflow=workflow,
+            factual_answer=answer,
+            emit=emit,
+        )
+        emit({"type": "agent_message", "text": answer})
+        return {"answer": answer, "tool": outlook_tool, "tool_result": tool_result}
+
+    if handler == "site_search_excel" or uses_plan_export(workflow):
+        emit({"type": "status", "text": "Читаю правила из паспорта и запускаю поиск…"})
         try:
             arguments = build_plan_export_arguments(workflow)
         except PlanRunError as exc:
@@ -113,51 +144,18 @@ def run_agent_task(
 
         answer = format_plan_run_answer(result)
         emit({"type": "tool_result", "tool": "plan_export", "result": result})
+        from app.services.agent_llm_reply import finalize_agent_answer
+
+        answer = finalize_agent_answer(
+            task=task,
+            handler="site_search_excel",
+            workflow=workflow,
+            factual_answer=answer,
+            extra_context={"excel_path": result.get("file") or result.get("path")},
+            emit=emit,
+        )
         emit({"type": "agent_message", "text": answer})
         return {"answer": answer, "tool": "plan_export", "tool_result": result}
-
-    if domain == "outlook_calendar":
-        emit({"type": "status", "text": "Читаю Outlook на этом компьютере…"})
-        outlook_tool, outlook_args = _outlook_tool_request(task)
-        try:
-            tool_result = _request_desktop_tool(
-                emit,
-                run_id=run_id,
-                user_id=user_id,
-                workflow_id=workflow_id,
-                tool=outlook_tool,
-                arguments=outlook_args,
-            )
-        except AgentRuntimeError as exc:
-            emit({"type": "error", "message": str(exc)})
-            raise
-        emit({"type": "tool_result", "tool": outlook_tool, "result": tool_result})
-        answer = _compose_outlook_tool_answer(task, outlook_tool, tool_result)
-        emit({"type": "agent_message", "text": answer})
-        return {"answer": answer, "tool": outlook_tool, "tool_result": tool_result}
-
-    if domain == "onec":
-        emit({"type": "status", "text": "Ищу документы 1С на этом компьютере…"})
-        try:
-            tool_result = _request_desktop_tool(
-                emit,
-                run_id=run_id,
-                user_id=user_id,
-                workflow_id=workflow_id,
-                tool="onec.search_documents",
-                arguments={"query": task, "max_results": 10},
-            )
-        except AgentRuntimeError as exc:
-            emit({"type": "error", "message": str(exc)})
-            raise
-        emit({"type": "tool_result", "tool": "onec.search_documents", "result": tool_result})
-        answer = _compose_onec_desktop_answer(tool_result)
-        emit({"type": "agent_message", "text": answer})
-        return {
-            "answer": answer,
-            "tool": "onec.search_documents",
-            "tool_result": tool_result,
-        }
 
     tool_name = ""
     tool_result: dict[str, Any] | None = None
@@ -191,6 +189,15 @@ def run_agent_task(
         emit({"type": "tool_result", "tool": tool_name, "result": tool_result})
 
     answer = _compose_answer(task, tool_name, tool_result)
+    from app.services.agent_llm_reply import finalize_agent_answer
+
+    answer = finalize_agent_answer(
+        task=task,
+        handler=handler,
+        workflow=workflow,
+        factual_answer=answer,
+        emit=emit,
+    )
     emit({"type": "agent_message", "text": answer})
     return {"answer": answer, "tool": tool_name, "tool_result": tool_result or {}}
 
@@ -208,7 +215,9 @@ def _run_with_playbook(
     from app.clients import cursor as cursor_client
     from app.clients.cursor import CursorAgentError
     from app.services.workflows import prompts
+    from app.services.agent_route import resolve_agent_tool_names
     from app.services.workflows.cursor_tools import (
+        set_allowed_tools,
         set_tool_context,
         stream_cursor_with_tools,
         wants_notifications,
@@ -217,13 +226,17 @@ def _run_with_playbook(
     from app.services.workflows.service import _create_exec_agent, _stream_run
 
     set_tool_context(run_id, user_id)
+    tool_names = resolve_agent_tool_names(workflow)
+    set_allowed_tools(tool_names)
+    allowed = frozenset(tool_names) if tool_names else None
     prompt = with_tools_if_desktop(
         prompts.build_published_run_prompt(
             instructions=str(playbook.get("instructions") or ""),
             example_run=str(playbook.get("example_run") or ""),
             user_message=message,
             title=workflow.title or "",
-        )
+        ),
+        allowed_names=allowed,
     )
     emit({"type": "status", "text": "Запускаю Cursor по инструкции и примеру прогона…"})
 
@@ -302,11 +315,671 @@ def _run_with_playbook(
     }
 
 
-def _agent_domain(workflow: Workflow) -> str:
+def _run_act_porucheniya_registry(
+    db: Session,
+    *,
+    emit: AgentEventCallback,
+    run_id: str,
+    user_id: str,
+    workflow_id: str,
+    workflow: Workflow,
+    task: str,
+) -> dict[str, Any]:
+    from app.config import settings
+    from app.services.act_porucheniya_odata import fetch_act_porucheniya_registry
+    from app.services.act_porucheniya_report import (
+        build_act_excel_arguments,
+        compose_act_registry_answer,
+    )
+    from app.services.app_users import get_app_user
+
+    _ = db
+    actor_fio = ""
+    user = get_app_user(user_id)
+    if user is not None:
+        actor_fio = str(user.fio or "")
+    if not actor_fio.strip():
+        actor_fio = str(settings.erp_login or "").strip()
+
+    from app.services.act_porucheniya_task import (
+        apply_act_document_filters,
+        parse_act_filter_from_task,
+        parse_act_task_intent,
+        workflow_attachment_context,
+    )
+
+    intent = parse_act_task_intent(task)
+    if intent == "freeform_chat":
+        return _run_act_freeform_chat(
+            emit=emit,
+            workflow=workflow,
+            task=task,
+        )
+    if intent == "summarize_excel":
+        emit({"type": "status", "text": "Режим: сводка по указанному Excel (без OData)…"})
+        return _run_act_summarize_excel(
+            emit=emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            workflow=workflow,
+            task=task,
+        )
+
+    if intent == "reformat_excel":
+        return _run_act_reformat_desktop_excel(
+            emit=emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            workflow=workflow,
+            task=task,
+            actor_fio=actor_fio,
+        )
+
+    attachment_ctx = workflow_attachment_context(workflow)
+    if attachment_ctx:
+        emit({"type": "status", "text": "Учитываю материалы из вложений workflow…"})
+
+    from app.services.act_protocol_merge import (
+        extract_protocol_text,
+        merge_protocol_documents,
+        parse_protocol_to_documents,
+        task_implies_protocol_merge,
+    )
+
+    registry_payload: dict[str, Any] = {}
+    all_documents: list[dict[str, Any]] = []
+    odata_source = ""
+
+    if intent == "merge_add":
+        emit({"type": "status", "text": "Режим: дополнение реестра по вашей задаче…"})
+        excel_read = _read_act_desktop_excel(
+            emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            actor_fio=actor_fio,
+        )
+        if excel_read:
+            from app.services.act_porucheniya_report import documents_from_excel_payload
+
+            all_documents = documents_from_excel_payload(excel_read)
+            if all_documents:
+                odata_source = "excel-desktop"
+                task_count = sum(int(doc.get("task_line_count") or 0) for doc in all_documents)
+                registry_payload = {
+                    "summary": (
+                        f"База из Excel на рабочем столе: {len(all_documents)} ACT, {task_count} задач"
+                    ),
+                    "count": len(all_documents),
+                    "task_count": task_count,
+                    "documents": all_documents,
+                    "source": odata_source,
+                }
+                emit(
+                    {
+                        "type": "status",
+                        "text": (
+                            f"Загружено из Excel: {len(all_documents)} ACT, {task_count} задач "
+                            "(OData не вызываю)."
+                        ),
+                    }
+                )
+            elif int(excel_read.get("row_count") or 0) > 1:
+                emit(
+                    {
+                        "type": "status",
+                        "text": (
+                            "Excel прочитан, но строки задач не распознаны. "
+                            "OData не вызываю — проверьте лист «Задачи ACT» и заголовки."
+                        ),
+                    }
+                )
+                return _run_act_analyze_without_data(
+                    emit=emit,
+                    workflow=workflow,
+                    task=task,
+                    factual=(
+                        "Файл Excel на рабочем столе найден, но не удалось восстановить задачи ACT "
+                        "(ожидаются колонки: Номер ACT, Задача, Исполнитель, Срок, Статус). "
+                        "OData не вызывался."
+                    ),
+                )
+
+    if not all_documents:
+        if intent == "analyze_chat":
+            excel_read = _read_act_desktop_excel(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                actor_fio=actor_fio,
+            )
+            if excel_read:
+                from app.services.act_porucheniya_report import documents_from_excel_payload
+
+                desktop_docs = documents_from_excel_payload(excel_read)
+                if desktop_docs:
+                    task_count = sum(int(doc.get("task_line_count") or 0) for doc in desktop_docs)
+                    all_documents = desktop_docs
+                    registry_payload = {
+                        "summary": (
+                            f"База из Excel на рабочем столе: {len(desktop_docs)} ACT, {task_count} задач"
+                        ),
+                        "count": len(desktop_docs),
+                        "task_count": task_count,
+                        "documents": desktop_docs,
+                        "source": "excel-desktop",
+                    }
+                    odata_source = "excel-desktop"
+                    emit(
+                        {
+                            "type": "status",
+                            "text": (
+                                f"Загружено из Excel: {len(desktop_docs)} ACT, {task_count} задач "
+                                "(OData не вызываю)."
+                            ),
+                        }
+                    )
+            if not all_documents:
+                return _run_act_analyze_without_data(
+                    emit=emit,
+                    workflow=workflow,
+                    task=task,
+                )
+        elif intent == "merge_add":
+            emit(
+                {
+                    "type": "status",
+                    "text": "Excel на рабочем столе не найден — загружаю базу из OData…",
+                }
+            )
+        else:
+            emit({"type": "status", "text": "Читаю реестр поручений ACT через OData…"})
+
+        if intent != "analyze_chat":
+            def _odata_progress(message: str) -> None:
+                emit({"type": "status", "text": message})
+
+            registry_payload = fetch_act_porucheniya_registry(on_progress=_odata_progress)
+            all_documents = list(registry_payload.get("documents") or [])
+            odata_source = str(registry_payload.get("source") or "")
+            if odata_source == "odata-error":
+                emit(
+                    {
+                        "type": "status",
+                        "text": str(registry_payload.get("summary") or "OData: ошибка загрузки реестра ACT."),
+                    }
+                )
+            else:
+                task_count = int(registry_payload.get("task_count") or 0)
+                emit(
+                    {
+                        "type": "status",
+                        "text": (
+                            f"Загружено {len(all_documents)} документов ACT/АСТ из OData"
+                            + (f", {task_count} задач." if task_count else ".")
+                        ),
+                    }
+                )
+
+    task_filter = parse_act_filter_from_task(task)
+
+    protocol_merge_stats: dict[str, Any] = {}
+    working_documents = list(all_documents)
+    if task_implies_protocol_merge(task) or intent == "merge_add":
+        protocol_text = extract_protocol_text(task, workflow_text=attachment_ctx)
+        if protocol_text.strip():
+            emit({"type": "status", "text": "Разбираю протокол и дополняю реестр новыми ACT…"})
+            protocol_docs = parse_protocol_to_documents(protocol_text)
+            working_documents, protocol_merge_stats = merge_protocol_documents(
+                working_documents, protocol_docs
+            )
+            emit(
+                {
+                    "type": "status",
+                    "text": (
+                        f"Из протокола: +{protocol_merge_stats.get('added_documents', 0)} ACT, "
+                        f"+{protocol_merge_stats.get('added_task_lines', 0)} задач."
+                    ),
+                }
+            )
+        else:
+            emit({"type": "status", "text": "Протокол в задаче не найден — только OData."})
+
+    documents, filter_desc = apply_act_document_filters(working_documents, task_filter)
+
+    if filter_desc != "без фильтров (полный реестр)":
+        emit(
+            {
+                "type": "status",
+                "text": f"Фильтр по задаче: {filter_desc} → {len(documents)} из {len(working_documents)}.",
+            }
+        )
+    from app.services.act_porucheniya_report import flatten_documents_to_task_rows
+
+    registry_payload = {
+        **registry_payload,
+        "documents": documents,
+        "filter": filter_desc,
+        "count": len(documents),
+        "task_count": len(flatten_documents_to_task_rows(documents)),
+        "protocol_merge": protocol_merge_stats,
+    }
+    emit({"type": "tool_result", "tool": "onec.act_porucheniya_registry", "result": registry_payload})
+
+    excel_payload: dict[str, Any] | None = None
+    if documents and task_filter.get("refresh_excel", True):
+        emit({"type": "status", "text": "Формирую Excel (задачи ACT, OData + протокол)…"})
+        excel_args = build_act_excel_arguments(
+            workflow_id=workflow_id,
+            documents=documents,
+            actor_fio=actor_fio,
+        )
+        try:
+            excel_payload = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                tool="excel.create_workbook",
+                arguments=excel_args,
+                timeout_s=120.0,
+            )
+            emit({"type": "tool_result", "tool": "excel.create_workbook", "result": excel_payload})
+        except AgentRuntimeError as exc:
+            emit({"type": "status", "text": f"Excel не создан: {exc}"})
+
+    answer = compose_act_registry_answer(registry_payload, excel_payload)
+    from app.services.agent_llm_reply import finalize_agent_answer
+
+    excel_path = ""
+    if excel_payload:
+        excel_path = str(excel_payload.get("desktop_path") or excel_payload.get("path") or "")
+    answer = finalize_agent_answer(
+        task=task,
+        handler="act_porucheniya_registry",
+        workflow=workflow,
+        factual_answer=answer,
+        extra_context={
+            "count": len(documents),
+            "task_count": len(flatten_documents_to_task_rows(documents)),
+            "total_count": len(all_documents),
+            "excel_path": excel_path,
+            "filter": filter_desc,
+            "protocol_merge": protocol_merge_stats,
+            "attachment_context": attachment_ctx[:1200] if attachment_ctx else "",
+            "odata_source": odata_source,
+            "odata_summary": str(registry_payload.get("summary") or ""),
+        },
+        emit=emit,
+    )
+    emit({"type": "agent_message", "text": answer})
+    return {
+        "answer": answer,
+        "tool": "onec.act_porucheniya_registry",
+        "tool_result": registry_payload,
+        "excel": excel_payload,
+    }
+
+
+def _read_act_desktop_excel(
+    emit: AgentEventCallback,
+    *,
+    run_id: str,
+    user_id: str,
+    workflow_id: str,
+    actor_fio: str,
+    source_path: str = "",
+) -> dict[str, Any] | None:
+    from app.services.act_porucheniya_task import act_desktop_excel_candidates
+
+    desktop_names: list[str] = []
+    if (source_path or "").strip():
+        desktop_names.append(source_path.strip())
+    desktop_names.extend(
+        act_desktop_excel_candidates(
+            actor_fio=actor_fio,
+            workflow_id=workflow_id,
+        )
+    )
+    seen: set[str] = set()
+    for desktop_name in desktop_names:
+        key = desktop_name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        emit({"type": "status", "text": f"Читаю Excel с рабочего стола: {desktop_name}…"})
+        try:
+            excel_read = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                tool="excel.read_workbook",
+                arguments={
+                    "desktop_path": desktop_name,
+                    "sheet": "Задачи ACT",
+                    "max_rows": 10000,
+                    "runtime_context": {"workflow_id": workflow_id, "agent_id": workflow_id},
+                },
+                timeout_s=90.0,
+            )
+        except AgentRuntimeError:
+            continue
+        if int(excel_read.get("row_count") or 0) >= 2:
+            return excel_read
+    return None
+
+
+def _load_act_documents_from_desktop(
+    emit: AgentEventCallback,
+    *,
+    run_id: str,
+    user_id: str,
+    workflow_id: str,
+    actor_fio: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    from app.services.act_porucheniya_report import documents_from_excel_payload
+
+    excel_read = _read_act_desktop_excel(
+        emit,
+        run_id=run_id,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        actor_fio=actor_fio,
+    )
+    if not excel_read:
+        return [], {}
+
+    documents = documents_from_excel_payload(excel_read)
+    if not documents:
+        return [], {}
+
+    task_count = sum(int(doc.get("task_line_count") or 0) for doc in documents)
+    payload = {
+        "summary": f"База из Excel на рабочем столе: {len(documents)} ACT, {task_count} задач",
+        "count": len(documents),
+        "task_count": task_count,
+        "documents": documents,
+        "source": "excel-desktop",
+    }
+    emit(
+        {
+            "type": "status",
+            "text": (
+                f"Загружено из Excel: {len(documents)} ACT, {task_count} задач "
+                "(OData не вызываю)."
+            ),
+        }
+    )
+    return documents, payload
+
+
+def _run_act_freeform_chat(
+    *,
+    emit: AgentEventCallback,
+    workflow: Workflow,
+    task: str,
+) -> dict[str, Any]:
+    from app.services.agent_llm_reply import finalize_agent_answer
+
+    emit({"type": "status", "text": "Отвечаю в чате (без OData и Excel)…"})
+    factual = (
+        "Сообщение не похоже на команду ACT-реестра. "
+        "OData, Excel и фильтры не запускались."
+    )
+    answer = finalize_agent_answer(
+        task=task,
+        handler="act_porucheniya_registry",
+        workflow=workflow,
+        factual_answer=factual,
+        extra_context={"intent": "freeform_chat"},
+        emit=emit,
+    )
+    emit({"type": "agent_message", "text": answer})
+    return {"answer": answer, "intent": "freeform_chat"}
+
+
+def _run_act_analyze_without_data(
+    *,
+    emit: AgentEventCallback,
+    workflow: Workflow,
+    task: str,
+    factual: str = "",
+) -> dict[str, Any]:
+    from app.services.agent_llm_reply import finalize_agent_answer
+
+    emit({"type": "status", "text": "Отвечаю в чате по имеющимся данным…"})
+    if not factual:
+        factual = (
+            "На рабочем столе нет файла act_porucheniya_*.xlsx для ответа по реестру. "
+            "OData не вызывался. Чтобы получить данные: нажмите «Запустить типовую задачу» "
+            "или напишите «выгрузи ACT-реестр на рабочий стол»."
+        )
+    answer = finalize_agent_answer(
+        task=task,
+        handler="act_porucheniya_registry",
+        workflow=workflow,
+        factual_answer=factual,
+        extra_context={"intent": "analyze_chat", "odata_source": "none"},
+        emit=emit,
+    )
+    emit({"type": "agent_message", "text": answer})
+    return {"answer": answer, "intent": "analyze_chat"}
+
+
+def _run_act_reformat_desktop_excel(
+    *,
+    emit: AgentEventCallback,
+    run_id: str,
+    user_id: str,
+    workflow_id: str,
+    workflow: Workflow,
+    task: str,
+    actor_fio: str,
+) -> dict[str, Any]:
+    from app.services.act_porucheniya_report import (
+        build_act_excel_reformat_arguments,
+        compose_act_registry_answer,
+    )
+    from app.services.act_porucheniya_task import extract_excel_path_from_task
+    from app.services.agent_llm_reply import finalize_agent_answer
+
+    emit({"type": "status", "text": "Режим: обновление Excel на рабочем столе (без OData)…"})
+    excel_read = _read_act_desktop_excel(
+        emit,
+        run_id=run_id,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        actor_fio=actor_fio,
+        source_path=extract_excel_path_from_task(task),
+    )
+    if not excel_read:
+        factual = (
+            "На рабочем столе не найден act_porucheniya_*.xlsx. "
+            "OData не вызывался. Сначала выгрузите реестр («выгрузи ACT-реестр») "
+            "или укажите путь к файлу."
+        )
+        answer = finalize_agent_answer(
+            task=task,
+            handler="act_porucheniya_registry",
+            workflow=workflow,
+            factual_answer=factual,
+            extra_context={"intent": "reformat_excel", "odata_source": "none"},
+            emit=emit,
+        )
+        emit({"type": "agent_message", "text": answer})
+        return {"answer": answer, "intent": "reformat_excel"}
+
+    excel_args = build_act_excel_reformat_arguments(
+        excel_read,
+        workflow_id=workflow_id,
+        actor_fio=actor_fio,
+    )
+    if not excel_args:
+        factual = (
+            f"Файл {excel_read.get('filename') or 'Excel'} прочитан, но в листе «Задачи ACT» "
+            "нет строк для пересохранения. OData не вызывался."
+        )
+        answer = finalize_agent_answer(
+            task=task,
+            handler="act_porucheniya_registry",
+            workflow=workflow,
+            factual_answer=factual,
+            extra_context={"intent": "reformat_excel", "odata_source": "none"},
+            emit=emit,
+        )
+        emit({"type": "agent_message", "text": answer})
+        return {"answer": answer, "intent": "reformat_excel"}
+
+    row_count = len(excel_args.get("rows") or [])
+    registry_payload = {
+        "summary": f"Пересохранение Excel: {row_count} строк задач (новая палитра, без OData).",
+        "count": row_count,
+        "task_count": row_count,
+        "source": "excel-desktop",
+        "filter": "пересохранение Excel (без OData)",
+    }
+    excel_payload: dict[str, Any] | None = None
+    emit({"type": "status", "text": "Пересохраняю Excel с обновлённой палитрой…"})
+    try:
+        excel_payload = _request_desktop_tool(
+            emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            tool="excel.create_workbook",
+            arguments=excel_args,
+            timeout_s=120.0,
+        )
+        emit({"type": "tool_result", "tool": "excel.create_workbook", "result": excel_payload})
+    except AgentRuntimeError as exc:
+        emit({"type": "status", "text": f"Excel не обновлён: {exc}"})
+
+    factual = compose_act_registry_answer(registry_payload, excel_payload)
+    excel_path = ""
+    if excel_payload:
+        excel_path = str(excel_payload.get("desktop_path") or excel_payload.get("path") or "")
+    answer = finalize_agent_answer(
+        task=task,
+        handler="act_porucheniya_registry",
+        workflow=workflow,
+        factual_answer=factual,
+        extra_context={
+            "intent": "reformat_excel",
+            "task_count": row_count,
+            "excel_path": excel_path,
+            "odata_source": "excel-desktop",
+        },
+        emit=emit,
+    )
+    emit({"type": "agent_message", "text": answer})
+    return {
+        "answer": answer,
+        "tool": "excel.create_workbook",
+        "tool_result": registry_payload,
+        "excel": excel_payload,
+        "intent": "reformat_excel",
+    }
+
+
+def _run_act_summarize_excel(
+    *,
+    emit: AgentEventCallback,
+    run_id: str,
+    user_id: str,
+    workflow_id: str,
+    workflow: Workflow,
+    task: str,
+) -> dict[str, Any]:
+    from app.services.act_porucheniya_report import compose_excel_workbook_summary
+    from app.services.act_porucheniya_task import extract_excel_path_from_task
+
+    source_path = extract_excel_path_from_task(task)
+    if not source_path:
+        emit({"type": "status", "text": "Путь к Excel не найден в задаче."})
+        raise AgentRuntimeError("Укажите путь к .xlsx на рабочем столе, например act_porucheniya_….xlsx")
+
+    emit({"type": "status", "text": f"Читаю Excel: {source_path}…"})
+    read_args = {
+        "desktop_path": source_path,
+        "sheet": "Задачи ACT",
+        "max_rows": 5000,
+        "runtime_context": {"workflow_id": workflow_id, "agent_id": workflow_id},
+    }
+    try:
+        excel_payload = _request_desktop_tool(
+            emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            tool="excel.read_workbook",
+            arguments=read_args,
+            timeout_s=90.0,
+        )
+    except AgentRuntimeError as exc:
+        emit({"type": "error", "message": str(exc)})
+        raise
+
+    emit({"type": "tool_result", "tool": "excel.read_workbook", "result": excel_payload})
+    factual = compose_excel_workbook_summary(excel_payload, source_path=source_path)
+
+    from app.services.agent_llm_reply import finalize_agent_answer
+
+    answer = finalize_agent_answer(
+        task=task,
+        handler="act_porucheniya_registry",
+        workflow=workflow,
+        factual_answer=factual,
+        extra_context={
+            "intent": "summarize_excel",
+            "excel_path": source_path,
+            "row_count": excel_payload.get("row_count"),
+        },
+        emit=emit,
+    )
+    emit({"type": "agent_message", "text": answer})
+    return {
+        "answer": answer,
+        "tool": "excel.read_workbook",
+        "tool_result": excel_payload,
+        "intent": "summarize_excel",
+    }
+
+
+def _agent_domain(workflow: Workflow, *, task: str = "") -> str:
+    from app.services.act_porucheniya_report import workflow_runtime_kind
+    from app.services.assignments_report import _workflow_text_blob, task_implies_assignments
+
     plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
-    runtime = plan.get("runtime") if isinstance(plan.get("runtime"), dict) else {}
-    kind = str(runtime.get("kind") or "").strip().casefold()
-    if kind in {"outlook_calendar", "site_search_excel", "browser_task", "onec"}:
+    kind = workflow_runtime_kind(workflow)
+    if kind in {
+        "outlook_calendar",
+        "site_search_excel",
+        "browser_task",
+        "onec",
+        "act_porucheniya",
+        "act_registry",
+        "action_tracker",
+        "assignments",
+        "user_tasks",
+        "porucheniya",
+        "porucheniya_smart",
+        "action_tracker",
+    }:
+        if kind in {"act_porucheniya", "act_registry"}:
+            return "onec"
+        if kind in {
+            "assignments",
+            "user_tasks",
+            "porucheniya",
+            "porucheniya_smart",
+            "action_tracker",
+            "onec",
+        }:
+            return "onec"
         return kind
     answered = plan.get("answered_questions") or []
     answered_text = ""
@@ -326,19 +999,28 @@ def _agent_domain(workflow: Workflow) -> str:
             for x in open_qs
             if isinstance(x, dict)
         )
-    blob = " ".join(
-        [
-            str(workflow.title or ""),
-            str(workflow.notes or ""),
-            str(plan.get("title") or ""),
-            str(plan.get("goal") or ""),
-            " ".join(str(x) for x in (plan.get("constraints") or [])),
-            " ".join(str(x) for x in (plan.get("test_criteria") or [])),
-            answered_text,
-            open_text,
-        ]
-    ).casefold()
-    if any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm", "задач")) and "outlook" not in blob:
+    blob = f"{_workflow_text_blob(workflow, task=task)} {answered_text} {open_text}".casefold()
+    if task_implies_assignments(task):
+        return "onec"
+    if any(
+        tip in blob
+        for tip in (
+            "1с",
+            "1c",
+            "onec",
+            "odata",
+            "erp_pm",
+            "задач",
+            "поручен",
+            "smart",
+            "формулиров",
+            "action tracker",
+            "act00",
+            "аст00",
+            "act_porucheniya",
+            "реестр поручений",
+        )
+    ) and "outlook" not in blob:
         return "onec"
     if any(
         tip in blob

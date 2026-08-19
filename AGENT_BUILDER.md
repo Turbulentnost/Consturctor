@@ -9,6 +9,7 @@
 | Документ | Для кого | Содержание |
 |----------|----------|------------|
 | **[AGENT_BUILDER.md](AGENT_BUILDER.md)** *(этот файл)* | Агент-разработчик | Карта репо, tools, API, 1С ERP (OData vs COM), запуск |
+| **[ACT_REGISTRY.md](ACT_REGISTRY.md)** | ACT-реестр | Регламент агента: OData, tools, Excel построчно, скрипты, TODO |
 | [AGENT_INTERACTION.md](AGENT_INTERACTION.md) | Рабочий агент | Граница: задачи агента ≠ tools ≠ KPI |
 | [PLATFORM.md](PLATFORM.md) | DevOps | Docker, порты, скрипты, тесты |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Архитектор | Gateway → Runtime → RabbitMQ → workers |

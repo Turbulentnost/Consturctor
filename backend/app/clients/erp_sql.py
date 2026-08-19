@@ -193,8 +193,14 @@ def _windows_impersonation(user: str, password: str) -> Generator[None, None, No
 
 
 def _use_windows_impersonation() -> bool:
-    """Domain user + password → Trusted_Connection under impersonation."""
-    return bool(settings.erp_sql_user.strip() and settings.erp_sql_password)
+    """Domain user + password → Trusted_Connection under impersonation (только Windows)."""
+    import sys
+
+    if sys.platform != "win32":
+        return False
+    return bool(settings.erp_sql_user.strip() and settings.erp_sql_password) and bool(
+        settings.erp_sql_trusted_connection
+    )
 
 
 def _build_connection_string() -> str:

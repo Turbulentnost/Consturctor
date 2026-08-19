@@ -463,6 +463,414 @@ def _rows_from_table(table: Any, *, source: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _row_field(row: Any, *names: str) -> str:
+    for name in names:
+        value = getattr(row, name, None)
+        if value not in (None, ""):
+            return _safe_str(value, 2000)
+    return ""
+
+
+_READ_QUERY_PREFIXES = ("ВЫБРАТЬ", "SELECT")
+_FORBIDDEN_QUERY_TOKENS = (
+    "ИЗМЕНИТЬ",
+    "УДАЛИТЬ",
+    "ВСТАВИТЬ",
+    "ОБНОВИТЬ",
+    "DROP ",
+    "INSERT ",
+    "UPDATE ",
+    "DELETE ",
+    "CREATE ",
+    "ALTER ",
+)
+
+
+def validate_readonly_query(query_text: str) -> str:
+    text = (query_text or "").strip()
+    if not text:
+        raise ValueError("query_text is required")
+    collapsed = " ".join(text.split())
+    upper = collapsed.upper()
+    if not any(upper.startswith(prefix) for prefix in _READ_QUERY_PREFIXES):
+        raise ValueError("Only read-only queries (ВЫБРАТЬ/SELECT) are allowed")
+    for token in _FORBIDDEN_QUERY_TOKENS:
+        if token in f"{upper} ":
+            raise ValueError(f"Forbidden token in query: {token.strip()}")
+    return collapsed
+
+
+def serialize_cell(value: Any) -> Any:
+    if value is None or value is False:
+        return None
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, (str, bytes)):
+        text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+        text = text.strip()
+        if text.startswith("0001-01-01") or text.startswith("0100-01-01"):
+            return None
+        return text[:4000]
+    if hasattr(value, "year") and hasattr(value, "month"):
+        return _safe_str(value, 64)
+    if hasattr(value, "Наименование"):
+        return _safe_str(getattr(value, "Наименование", ""), 500)
+    if hasattr(value, "Number") or hasattr(value, "Номер"):
+        return _safe_str(getattr(value, "Number", None) or getattr(value, "Номер", ""), 120)
+    text = _safe_str(value, 500)
+    if text.startswith("<COMObject"):
+        return None
+    return text
+
+
+def unload_query_result(table: Any, *, limit: int = 200) -> dict[str, Any]:
+    columns: list[str] = []
+    if hasattr(table, "Columns"):
+        columns = [table.Columns.Get(i).Name for i in range(table.Columns.Count())]
+    rows: list[dict[str, Any]] = []
+    max_rows = max(1, min(int(limit or 200), 500))
+    for i in range(min(max_rows, table.Count())):
+        row = table.Get(i)
+        item: dict[str, Any] = {}
+        if columns:
+            for name in columns:
+                item[name] = serialize_cell(getattr(row, name, None))
+        else:
+            item["value"] = serialize_cell(row)
+        rows.append(item)
+    return {"columns": columns, "rows": rows, "count": len(rows), "total": table.Count()}
+
+
+def execute_query(
+    app: Any,
+    query_text: str,
+    *,
+    parameters: dict[str, Any] | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    validated = validate_readonly_query(query_text)
+    query = app.NewObject("Query", validated)
+    for key, value in (parameters or {}).items():
+        if key:
+            query.SetParameter(str(key), value)
+    table = query.Execute().Unload()
+    payload = unload_query_result(table, limit=limit)
+    payload["query"] = validated[:500]
+    return payload
+
+
+_METADATA_KINDS = (
+    "Documents",
+    "Catalogs",
+    "InformationRegisters",
+    "Reports",
+    "DataProcessors",
+    "Tasks",
+    "BusinessProcesses",
+    "CommonModules",
+)
+
+
+def search_metadata(
+    app: Any,
+    *,
+    pattern: str = "",
+    kinds: list[str] | None = None,
+    limit: int = 50,
+) -> list[dict[str, str]]:
+    needle = (pattern or "").strip().casefold()
+    max_items = max(1, min(int(limit or 50), 200))
+    selected = [k for k in (kinds or _METADATA_KINDS) if k in _METADATA_KINDS]
+    if not selected:
+        selected = list(_METADATA_KINDS)
+    hits: list[dict[str, str]] = []
+    md = app.Metadata
+    for kind in selected:
+        coll = getattr(md, kind, None)
+        if coll is None:
+            continue
+        for i in range(coll.Count()):
+            obj = coll.Get(i)
+            name = str(getattr(obj, "Name", "") or "")
+            synonym = str(getattr(obj, "Synonym", "") or "")
+            blob = f"{name} {synonym}".casefold()
+            if needle and needle not in blob:
+                continue
+            hits.append({"kind": kind, "name": name, "synonym": synonym})
+            if len(hits) >= max_items:
+                return hits
+    return hits
+
+
+def list_assignment_sources() -> list[dict[str, str]]:
+    return [
+        {
+            "id": "docflow_protocol",
+            "title": "Документооборот: задачи протоколов (ТД_ЗадачиПротоколов)",
+        },
+        {
+            "id": "docflow_orders",
+            "title": "Документооборот: поручения (ТД) — Document.ТД_Поручения",
+        },
+        {
+            "id": "erp_performer_tasks",
+            "title": "ERP: Задача.ЗадачаИсполнителя",
+        },
+        {
+            "id": "crm_user_tasks",
+            "title": "CRM: регистр CRM_ЗадачиПользователей",
+        },
+        {
+            "id": "business_process_assignment",
+            "title": "Бизнес-процесс: Задание",
+        },
+    ]
+
+
+def _normalize_work_item(row: dict[str, Any], *, default_source: str) -> dict[str, Any]:
+    title = str(
+        row.get("title")
+        or row.get("description")
+        or row.get("task")
+        or row.get("Задача")
+        or ""
+    ).strip()
+    due = _normalize_due_value(
+        str(row.get("due_at") or row.get("due_date") or row.get("СрокИсполнения") or "")
+    )
+    return {
+        "number": str(row.get("number") or row.get("doc_number") or ""),
+        "title": title,
+        "description": title,
+        "date": str(row.get("date") or row.get("created_at") or "")[:19],
+        "due_date": due,
+        "due_at": due,
+        "executor": str(row.get("executor") or row.get("performer") or ""),
+        "performer": str(row.get("performer") or row.get("executor") or ""),
+        "author": str(row.get("author") or ""),
+        "meeting_topic": str(row.get("meeting_topic") or ""),
+        "about": str(row.get("about") or ""),
+        "priority": str(row.get("priority") or ""),
+        "status": str(row.get("status") or "открыта"),
+        "source": str(row.get("source") or default_source),
+    }
+
+
+def _normalize_due_value(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text or text.startswith("0100-") or text.startswith("0001-01-01"):
+        return ""
+    return text.replace("T", " ")[:19]
+
+
+def query_work_items(
+    app: Any,
+    *,
+    user_name: str = "",
+    scope: str = "all",
+    limit: int = 100,
+    only_open: bool = True,
+) -> dict[str, Any]:
+    """Aggregate work items from multiple 1C sources (not only ЗадачаИсполнителя)."""
+    actor = (user_name or get_current_user_name(app)).strip()
+    safe_name = actor.replace('"', '""')
+    scope_key = (scope or "all").strip().casefold()
+    scopes = {
+        "docflow",
+        "docflow_protocol",
+        "docflow_orders",
+        "erp_tasks",
+        "crm",
+        "business_process",
+        "all",
+    }
+    if scope_key not in scopes:
+        raise ValueError(f"Unknown scope: {scope}. Allowed: {', '.join(sorted(scopes))}")
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    sources_used: list[str] = []
+    per_source = max(1, min(int(limit or 100), 200))
+
+    def _add_rows(rows: list[dict[str, Any]], source_id: str) -> None:
+        if not rows:
+            return
+        sources_used.append(source_id)
+        for row in rows:
+            item = _normalize_work_item(row, default_source=source_id)
+            if not item.get("title"):
+                continue
+            key = f"{source_id}:{item.get('number')}:{item['title'][:80]}"
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+
+    if scope_key in {"all", "docflow", "docflow_protocol"}:
+        _add_rows(
+            _fetch_docflow_protocol_rows(app, safe_name=safe_name, limit=per_source, only_open=only_open),
+            "td_задачи_протоколов",
+        )
+    if scope_key in {"all", "docflow", "docflow_orders"}:
+        _add_rows(
+            _fetch_docflow_orders_rows(app, safe_name=safe_name, limit=per_source, only_open=only_open),
+            "td_поручения",
+        )
+    if scope_key in {"all", "erp_tasks"}:
+        erp_rows, erp_source = query_performer_tasks(
+            app, mine_only=True, limit=per_source, prefer_crm=False
+        )
+        _add_rows(erp_rows, erp_source)
+    if scope_key in {"all", "crm"}:
+        _add_rows(query_crm_my_tasks(app, user_name=actor, limit=per_source), "crm_мои_задачи")
+    if scope_key in {"all", "business_process"}:
+        _add_rows(
+            _fetch_business_process_rows(app, safe_name=safe_name, limit=per_source, only_open=only_open),
+            "bp_задание",
+        )
+
+    return {
+        "fio": actor,
+        "scope": scope_key,
+        "only_open": only_open,
+        "count": len(merged[:per_source]),
+        "tasks": merged[:per_source],
+        "sources": sources_used,
+        "available_sources": list_assignment_sources(),
+    }
+
+
+def _fetch_docflow_protocol_rows(
+    app: Any, *, safe_name: str, limit: int, only_open: bool
+) -> list[dict[str, Any]]:
+    open_filter = "И НЕ Р.Выполнена" if only_open else ""
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ {limit}
+        Р.НомерПунктаПротокола КАК ItemNumber,
+        Р.Задача КАК Description,
+        Р.СрокИсполнения КАК DueDate,
+        Р.ДатаПостановкиЗадачи КАК Date,
+        Р.Ответственный.Наименование КАК Executor,
+        Р.Автор.Наименование КАК Author,
+        Р.ТемаСовещания.Наименование КАК MeetingTopic,
+        Р.Выполнена КАК Done
+        ИЗ РегистрСведений.ТД_ЗадачиПротоколов КАК Р
+        ГДЕ Р.Ответственный.Наименование = "{safe_name}"
+            {open_filter}
+        УПОРЯДОЧИТЬ ПО Р.СрокИсполнения, Р.ДатаПостановкиЗадачи УБЫВ"""
+    try:
+        table = app.NewObject("Query", query_text).Execute().Unload()
+    except Exception:
+        return []
+    rows: list[dict[str, Any]] = []
+    for i in range(table.Count()):
+        row = table.Get(i)
+        title = _row_field(row, "Description")
+        if not title:
+            continue
+        item_no = _row_field(row, "ItemNumber")
+        rows.append(
+            {
+                "number": f"ТД-п.{item_no}" if item_no else "",
+                "description": title,
+                "title": title,
+                "date": _row_field(row, "Date"),
+                "due_date": _row_field(row, "DueDate"),
+                "executor": _row_field(row, "Executor"),
+                "author": _row_field(row, "Author"),
+                "meeting_topic": _row_field(row, "MeetingTopic"),
+                "status": "выполнена"
+                if str(_row_field(row, "Done")).lower() in {"true", "истина", "1", "да"}
+                else "открыта",
+            }
+        )
+    return rows
+
+
+def _fetch_docflow_orders_rows(
+    app: Any, *, safe_name: str, limit: int, only_open: bool
+) -> list[dict[str, Any]]:
+    _ = only_open
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ {limit}
+        Д.Номер КАК DocNumber,
+        Д.Дата КАК DocDate,
+        Д.ОЧем КАК About,
+        Стр.Мероприятие КАК Description,
+        Стр.СрокИсполнения КАК DueDate,
+        Стр.ОтветственноеЛицо.Наименование КАК Executor,
+        Стр.Приоритет КАК Priority
+        ИЗ Документ.ТД_Поручения.Поручения КАК Стр
+        ЛЕВОЕ СОЕДИНЕНИЕ Документ.ТД_Поручения КАК Д
+            ПО Стр.Ссылка = Д.Ссылка
+        ГДЕ НЕ Д.ПометкаУдаления
+            И Стр.ОтветственноеЛицо.Наименование = "{safe_name}"
+        УПОРЯДОЧИТЬ ПО Стр.СрокИсполнения УБЫВ, Д.Дата УБЫВ"""
+    try:
+        table = app.NewObject("Query", query_text).Execute().Unload()
+    except Exception:
+        return []
+    rows: list[dict[str, Any]] = []
+    for i in range(table.Count()):
+        row = table.Get(i)
+        title = _row_field(row, "Description")
+        if not title:
+            continue
+        rows.append(
+            {
+                "number": _row_field(row, "DocNumber"),
+                "description": title,
+                "title": title,
+                "date": _row_field(row, "DocDate"),
+                "due_date": _row_field(row, "DueDate"),
+                "executor": _row_field(row, "Executor"),
+                "about": _row_field(row, "About"),
+                "priority": _row_field(row, "Priority"),
+                "status": "открыта",
+            }
+        )
+    return rows
+
+
+def _fetch_business_process_rows(
+    app: Any, *, safe_name: str, limit: int, only_open: bool
+) -> list[dict[str, Any]]:
+    open_filter = "И НЕ Б.Завершен" if only_open else ""
+    query_text = f"""ВЫБРАТЬ ПЕРВЫЕ {limit}
+        Б.Номер КАК Number,
+        Б.Наименование КАК Description,
+        Б.Дата КАК Date,
+        Б.СрокИсполнения КАК DueDate,
+        Б.Исполнитель.Наименование КАК Executor,
+        Б.Автор.Наименование КАК Author
+        ИЗ БизнесПроцесс.Задание КАК Б
+        ГДЕ Б.Стартован
+            {open_filter}
+            И Б.Исполнитель.Наименование = "{safe_name}"
+        УПОРЯДОЧИТЬ ПО Б.Дата УБЫВ"""
+    try:
+        table = app.NewObject("Query", query_text).Execute().Unload()
+    except Exception:
+        return []
+    return _rows_from_table(table, source="bp_задание")
+
+
+def query_docflow_assignments(
+    app: Any,
+    *,
+    user_name: str = "",
+    limit: int = 100,
+    only_open: bool = True,
+) -> list[dict[str, Any]]:
+    """Поручения (ТД) — регистр ТД_ЗадачиПротоколов + табличная часть Document.ТД_Поручения."""
+    payload = query_work_items(
+        app,
+        user_name=user_name,
+        scope="docflow",
+        limit=limit,
+        only_open=only_open,
+    )
+    return list(payload.get("tasks") or [])
+
+
 def query_crm_my_tasks(app: Any, *, user_name: str, limit: int = 30) -> list[dict[str, Any]]:
     """CRM «Мои задачи» — register CRM_ЗадачиПользователей (start page widget)."""
     limit = max(1, min(100, int(limit)))

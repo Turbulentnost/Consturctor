@@ -118,6 +118,17 @@ def format_tiles_frequency(tiles: list[KpiTile]) -> str:
     return "Плитки обновляются: " + " · ".join(labels)
 
 
+def format_agent_kpi_summary(kpi: AgentKpi) -> str:
+    parts: list[str] = []
+    summary = (kpi.summary or "").strip()
+    if summary:
+        parts.append(summary)
+    freq = format_tiles_frequency(kpi.tiles)
+    if freq and freq not in parts:
+        parts.append(freq)
+    return "\n\n".join(parts) if parts else "KPI появятся после первого расчёта."
+
+
 class PlanFactTile(QFrame):
     def __init__(self, tile: KpiTile, parent: QWidget | None = None, *, paused: bool = False) -> None:
         super().__init__(parent)
@@ -499,7 +510,7 @@ class KpiPage(QWidget):
         if agent is not None and agent.paused:
             self._detail_summary.setText("KPI приостановлены — агент остановлен.")
         else:
-            self._detail_summary.setText(format_tiles_frequency(payload.tiles))
+            self._detail_summary.setText(format_agent_kpi_summary(payload))
         self._clear_tiles()
         if not payload.tiles:
             empty = QLabel("Для этого агента KPI ещё не сформированы.")

@@ -47,6 +47,7 @@ from app.ui.pages.agent_passport_page import AgentPassportPage
 from app.ui.pages.agent_kpi_preview_page import AgentKpiPreviewPage
 from app.ui.pages.agent_schedule_page import AgentSchedulePage
 from app.ui.pages.agent_implementation_page import AgentImplementationPage
+from app.ui.pages.agent_settings_page import AgentSettingsPage
 from app.ui.pages.agent_run_page import AgentRunPage
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
@@ -165,6 +166,8 @@ class MainShell(QWidget):
     _role_match_failed = Signal(str)
     _readiness_ready = Signal(object)
     _readiness_failed = Signal(str)
+    _agent_start_failed = Signal(str)
+    _agent_nav_failed = Signal()
     _revision_ready = Signal(object)
     _draft_ready = Signal(object)
     _drafts_ready = Signal(object)
@@ -173,6 +176,7 @@ class MainShell(QWidget):
     _passport_ready = Signal(object)
     _passport_failed = Signal(str)
     _published_agent_ready = Signal(object)
+    _agent_settings_ready = Signal(object)
     _workflow_page_ready = Signal(object)
     _chat_ready = Signal(object)
     _creation_session_ready = Signal(object)
@@ -199,6 +203,8 @@ class MainShell(QWidget):
         self._page_implementation_agents = AgentImplementationPage()
         self._page_workflows = WorkflowPage(self._api)
         self._page_agent_run = AgentRunPage(self._api)
+        self._page_agent_settings = AgentSettingsPage(self._api)
+        self._agent_run_auto_start = False
         self._page_saved_workflows = SavedWorkflowsPage(self._api)
         self._page_kpi = KpiPage(self._api)
         self._page_dashboard = MyDashboardPage(self._api)
@@ -218,6 +224,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_implementation_agents)
         self._pages.addWidget(self._page_workflows)
         self._pages.addWidget(self._page_agent_run)
+        self._pages.addWidget(self._page_agent_settings)
         self._pages.addWidget(self._page_saved_workflows)
         self._pages.addWidget(self._page_kpi)
         self._pages.addWidget(self._page_dashboard)
@@ -238,20 +245,21 @@ class MainShell(QWidget):
             "implementation_agents": 2,
             "workflows": 3,
             "agent_run": 4,
-            "saved_workflows": 5,
-            "kpi": 6,
-            "dashboard": 7,
-            "settings": 8,
-            "review": 9,
-            "role_match": 10,
-            "readiness": 11,
-            "revision": 12,
-            "creation_chat": 13,
-            "passport": 14,
-            "schedule": 15,
-            "loading": 16,
-            "kpi_preview": 17,
-            "notifications": 18,
+            "agent_settings": 5,
+            "saved_workflows": 6,
+            "kpi": 7,
+            "dashboard": 8,
+            "settings": 9,
+            "review": 10,
+            "role_match": 11,
+            "readiness": 12,
+            "revision": 13,
+            "creation_chat": 14,
+            "passport": 15,
+            "schedule": 16,
+            "loading": 17,
+            "kpi_preview": 18,
+            "notifications": 19,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
@@ -264,6 +272,7 @@ class MainShell(QWidget):
         self._page_kpi_preview.back_requested.connect(self._on_kpi_back)
         self._page_kpi_preview.confirm_requested.connect(self._on_kpi_confirm)
         self._page_saved_workflows.open_requested.connect(self._on_open_saved_workflow)
+        self._page_saved_workflows.agent_run_requested.connect(self._on_launch_workflow_agent)
         self._page_implementation_agents.create_requested.connect(self._on_create_agent_from_inline_suggestion)
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_agents.continue_requested.connect(self._on_continue_agent_draft)
@@ -274,7 +283,13 @@ class MainShell(QWidget):
         self._page_agents.delete_agent_requested.connect(self._on_delete_published_agent)
         self._page_agents.stop_auto_run_requested.connect(self._on_stop_published_agent)
         self._page_agents.run_agent_requested.connect(self._on_run_published_agent)
+        self._page_agents.edit_agent_requested.connect(self._on_edit_published_agent)
         self._page_agents.history_requested.connect(self._on_agent_history_requested)
+        self._page_agent_settings.back_requested.connect(
+            lambda: self._pages.setCurrentIndex(self._page_index["agents"])
+        )
+        self._page_agent_settings.save_requested.connect(self._on_agent_settings_saved)
+        self._page_agent_settings.chat_requested.connect(self._on_launch_workflow_agent)
         self._page_passport.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["agents"]))
         self._page_passport.draft_requested.connect(self._on_passport_draft_requested)
         self._page_passport.answer_requested.connect(self._on_passport_answer_requested)
@@ -306,6 +321,8 @@ class MainShell(QWidget):
         self._role_match_failed.connect(self._show_role_match_error)
         self._readiness_ready.connect(self._show_readiness_result)
         self._readiness_failed.connect(self._show_readiness_error)
+        self._agent_start_failed.connect(self._show_agent_start_error)
+        self._agent_nav_failed.connect(self._return_to_agents_page)
         self._revision_ready.connect(self._show_revision_result)
         self._draft_ready.connect(self._show_draft_result)
         self._drafts_ready.connect(self._show_drafts_result)
@@ -314,6 +331,7 @@ class MainShell(QWidget):
         self._passport_ready.connect(self._show_passport_result)
         self._passport_failed.connect(self._show_passport_error)
         self._published_agent_ready.connect(self._on_launch_workflow_agent)
+        self._agent_settings_ready.connect(self._open_agent_settings)
         self._workflow_page_ready.connect(self._on_open_saved_workflow)
         self._chat_ready.connect(self._show_chat_result)
         self._creation_session_ready.connect(self._show_creation_session)
@@ -462,6 +480,7 @@ class MainShell(QWidget):
         self.sidebar.set_active_key("create", animate=False)
         self._pages.setCurrentIndex(0)
         QTimer.singleShot(0, self._refresh_profile)
+        QTimer.singleShot(0, self._load_agent_drafts)
 
     def _apply_user(self, user: UserProfile) -> None:
         self._user = user
@@ -917,7 +936,20 @@ class MainShell(QWidget):
 
     def _show_readiness_error(self, message: str) -> None:
         self._pages.setCurrentIndex(self._page_index["role_match"])
-        QMessageBox.warning(self, "Готовность регламента", message)
+        text = (message or "").strip()
+        if "токен" in text.casefold():
+            text = "Сессия истекла. Войдите в приложение заново (ФИО + пароль 1С)."
+        QMessageBox.warning(self, "Готовность регламента", text)
+
+    def _show_agent_start_error(self, message: str) -> None:
+        text = (message or "").strip()
+        if "токен" in text.casefold() or "авториз" in text.casefold():
+            text = "Сессия истекла. Войдите в приложение заново (ФИО + пароль 1С)."
+        QMessageBox.warning(self, "Запуск агента", text or "Не удалось открыть агента")
+
+    def _return_to_agents_page(self) -> None:
+        self.sidebar.set_active_key("agents", animate=False)
+        self._pages.setCurrentIndex(self._page_index["agents"])
 
     def _on_readiness_answer(self, question_id: str, answer: str) -> None:
         if self._current_readiness is None or not answer.strip():
@@ -1284,6 +1316,7 @@ class MainShell(QWidget):
     def _load_agent_drafts(self) -> None:
         def run() -> None:
             try:
+                self._api.sync_workflows_from_catalog()
                 drafts = self._api.list_agent_drafts()
                 workflows = self._api.list_workflows()
             except ApiError as exc:
@@ -1463,8 +1496,10 @@ class MainShell(QWidget):
     def _on_launch_workflow_agent(self, record: object) -> None:
         if not isinstance(record, WorkflowRecord):
             return
+        auto_run = self._agent_run_auto_start
+        self._agent_run_auto_start = False
         self.sidebar.set_active_key("agents", animate=False)
-        self._page_agent_run.start(record)
+        self._page_agent_run.start(record, auto_run=auto_run)
         self._pages.setCurrentIndex(self._page_index["agent_run"])
 
     def _on_schedule_requested(self, record: object) -> None:
@@ -1709,7 +1744,33 @@ class MainShell(QWidget):
 
         Thread(target=run, daemon=True).start()
 
-    def navigate_to_agent_run(self, workflow_id: str) -> None:
+    def navigate_to_agent_run(self, workflow_id: str, *, auto_run: bool = False) -> None:
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return
+        self._agent_run_auto_start = auto_run
+        self._pages.setCurrentIndex(self._page_index["loading"])
+
+        def run() -> None:
+            try:
+                record = self._api.get_workflow(wid)
+            except ApiError as exc:
+                if exc.status_code != 401:
+                    self._agent_start_failed.emit(exc.message)
+                self._agent_nav_failed.emit()
+                return
+            if str(getattr(record, "phase", "") or "") == "done":
+                self._published_agent_ready.emit(record)
+            else:
+                self._agent_run_auto_start = False
+                self._workflow_page_ready.emit(record)
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_run_published_agent(self, workflow_id: str) -> None:
+        self.navigate_to_agent_run(workflow_id, auto_run=True)
+
+    def _on_edit_published_agent(self, workflow_id: str) -> None:
         wid = (workflow_id or "").strip()
         if not wid:
             return
@@ -1718,17 +1779,31 @@ class MainShell(QWidget):
             try:
                 record = self._api.get_workflow(wid)
             except ApiError as exc:
-                self._readiness_failed.emit(exc.message)
+                if exc.status_code != 401:
+                    self._agent_start_failed.emit(exc.message)
                 return
-            if str(getattr(record, "phase", "") or "") == "done":
-                self._published_agent_ready.emit(record)
-            else:
-                self._workflow_page_ready.emit(record)
+            self._agent_settings_ready.emit(record)
 
         Thread(target=run, daemon=True).start()
 
-    def _on_run_published_agent(self, workflow_id: str) -> None:
-        self.navigate_to_agent_run(workflow_id)
+    def _on_agent_settings_saved(self, record: object) -> None:
+        if not isinstance(record, WorkflowRecord):
+            return
+
+        def run() -> None:
+            try:
+                workflows = self._api.list_workflows()
+            except ApiError:
+                workflows = []
+            self._agents_table_ready.emit(workflows)
+
+        Thread(target=run, daemon=True).start()
+
+    def _open_agent_settings(self, record: object) -> None:
+        if not isinstance(record, WorkflowRecord):
+            return
+        self._page_agent_settings.load(record)
+        self._pages.setCurrentIndex(self._page_index["agent_settings"])
 
     def _on_agent_history_requested(self, workflow_id: str, title: str) -> None:
         def run() -> None:

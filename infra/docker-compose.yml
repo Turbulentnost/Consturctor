@@ -8,7 +8,7 @@ x-platform-env: &platform-env
   DATABASE_URL: postgresql+psycopg://constructor:constructor@postgres:5432/constructor
   CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
   CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-rpc://}
-  USE_STUBS: ${USE_STUBS:-true}
+  USE_STUBS: ${USE_STUBS:-false}
 
 x-tool-urls: &tool-urls
   # IMAP/browser can run on Windows host to avoid Docker anti-bot / mail quirks:
@@ -131,7 +131,7 @@ services:
       ERP_SQL_USER: ${ERP_SQL_USER:-}
       ERP_SQL_PASSWORD: ${ERP_SQL_PASSWORD:-}
       ODATA_INCOMING_DOC_ENTITY: ${ODATA_INCOMING_DOC_ENTITY:-Document_ТД_ВходящаяКорреспонденция}
-      ODATA_TIMEOUT_SEC: ${ODATA_TIMEOUT_SEC:-60}
+      ODATA_TIMEOUT_SEC: ${ODATA_TIMEOUT_SEC:-120}
     ports:
       - "7822:7822"
     depends_on:
@@ -160,7 +160,7 @@ services:
       ERP_SQL_USER: ${ERP_SQL_USER:-}
       ERP_SQL_PASSWORD: ${ERP_SQL_PASSWORD:-}
       ODATA_INCOMING_DOC_ENTITY: ${ODATA_INCOMING_DOC_ENTITY:-Document_ТД_ВходящаяКорреспонденция}
-      ODATA_TIMEOUT_SEC: ${ODATA_TIMEOUT_SEC:-60}
+      ODATA_TIMEOUT_SEC: ${ODATA_TIMEOUT_SEC:-120}
     depends_on:
       postgres:
         condition: service_healthy
@@ -260,16 +260,37 @@ services:
       <<: [*platform-env, *tool-urls]
       API_HOST: 0.0.0.0
       API_PORT: "7812"
-      AUTH_STUB: ${AUTH_STUB:-true}
+      AUTH_STUB: ${AUTH_STUB:-false}
       DEV_MODE: ${DEV_MODE:-false}
+      ALLOW_LOCAL_REGISTRATION: ${ALLOW_LOCAL_REGISTRATION:-false}
+      LLM_PROVIDER: ${LLM_PROVIDER:-cursor}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+      CHAD_AI: ${CHAD_AI:-}
+      CLAUDEHUB_MODEL: ${CLAUDEHUB_MODEL:-claude-sonnet-4.6}
       CURSOR_API_KEY: ${CURSOR_API_KEY:-}
+      CURSOR_REGULATION_MODEL: ${CURSOR_REGULATION_MODEL:-composer-2.5}
+      CURSOR_WORKFLOW_MODEL: ${CURSOR_WORKFLOW_MODEL:-composer-2.5}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production-stub-key-32b}
-      ERP_SQL_SERVER: ${ERP_SQL_SERVER:-host.docker.internal}
+      AUTH_SERVER_URL: ${AUTH_SERVER_URL:-}
+      ERP_SQL_SERVER: ${ERP_SQL_SERVER:-ii1}
       ERP_SQL_DATABASE: ${ERP_SQL_DATABASE:-erp_pm}
       ERP_SQL_DRIVER: ${ERP_SQL_DRIVER:-ODBC Driver 18 for SQL Server}
       ERP_SQL_TRUSTED_CONNECTION: ${ERP_SQL_TRUSTED_CONNECTION:-no}
       ERP_SQL_USER: ${ERP_SQL_USER:-}
       ERP_SQL_PASSWORD: ${ERP_SQL_PASSWORD:-}
+      ODATA_BASE_URL: ${ODATA_BASE_URL:-}
+      ODATA_USERNAME: ${ODATA_USERNAME:-}
+      ODATA_PASSWORD: ${ODATA_PASSWORD:-}
+      ODATA_INCOMING_DOC_ENTITY: ${ODATA_INCOMING_DOC_ENTITY:-Document_ТД_ВходящаяКорреспонденция}
+      ODATA_TIMEOUT_SEC: ${ODATA_TIMEOUT_SEC:-120}
+      ERP_LOGIN: ${ERP_LOGIN:-}
+      ERP_PASSWORD: ${ERP_PASSWORD:-}
+      IMAP_HOST: ${IMAP_HOST:-}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_USERNAME: ${IMAP_USERNAME:-}
+      IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+      IMAP_MAILBOX: ${IMAP_MAILBOX:-INBOX}
+      TOOL_ONEC_COM_URL: ${TOOL_ONEC_COM_URL:-http://host.docker.internal:7831}
       TOOL_MANIFEST_PATH: /app/backend/data/tool_manifest.json
     volumes:
       - ../backend/data/tool_manifest.json:/app/backend/data/tool_manifest.json:ro

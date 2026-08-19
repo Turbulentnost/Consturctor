@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 WorkflowEmit = Callable[..., None]
 
 _tool_ctx: ContextVar[tuple[str, str] | None] = ContextVar("creation_tool_ctx", default=None)
+_allowed_tools: ContextVar[frozenset[str] | None] = ContextVar("allowed_agent_tools", default=None)
 
 _TOOL_BLOCK_RE = re.compile(
     r"```(?:constructor_tool|tool)\s*\n(\{.*?\})\s*```",
@@ -57,13 +58,21 @@ def set_tool_context(run_id: str, user_id: str) -> None:
 
 def clear_tool_context() -> None:
     _tool_ctx.set(None)
+    _allowed_tools.set(None)
+
+
+def set_allowed_tools(names: list[str] | None) -> None:
+    if names:
+        _allowed_tools.set(frozenset(str(x).strip() for x in names if str(x).strip()))
+    else:
+        _allowed_tools.set(None)
 
 
 def current_tool_context() -> tuple[str, str] | None:
     return _tool_ctx.get()
 
 
-def tools_prompt_block() -> str:
+def tools_prompt_block(*, allowed_names: frozenset[str] | None = None) -> str:
     lines = [
         "Реестр Constructor. ```constructor_tool — markdown в ответе, не tool Cursor. "
         "Backend перехватывает блок и вызывает tool на сервере. "
@@ -78,11 +87,17 @@ def tools_prompt_block() -> str:
         "Дождись ответа системы и только потом продолжи.",
         "Когда Constructor tool уже ответил и объём ясен — финальный ответ "
         "без блока constructor_tool. Если объём всё ещё неясен — CLARIFY, не RESULT.",
-        "Каталог:",
     ]
+    if allowed_names:
+        lines.append(
+            f"Для этого агента разрешены только: {', '.join(sorted(allowed_names))}."
+        )
+    lines.append("Каталог:")
     for item in list_tools():
         name = str(item.get("name") or "")
         if not name:
+            continue
+        if allowed_names is not None and name not in allowed_names:
             continue
         desc = str(item.get("description") or "").replace("\n", " ")
         schema = item.get("input_schema") if isinstance(item.get("input_schema"), dict) else {}
@@ -96,13 +111,17 @@ def tools_prompt_block() -> str:
     return "\n".join(lines)
 
 
-def with_tools_if_desktop(prompt: str) -> str:
+def with_tools_if_desktop(
+    prompt: str,
+    *,
+    allowed_names: frozenset[str] | None = None,
+) -> str:
     """Always attach the Constructor catalog.
 
     The published agent used to skip this when tool context was not set yet,
     so Cursor Cloud tried MCP / OIDC / curl on the VM instead of constructor_tool.
     """
-    return prompt.rstrip() + "\n\n" + tools_prompt_block() + "\n"
+    return prompt.rstrip() + "\n\n" + tools_prompt_block(allowed_names=allowed_names) + "\n"
 
 
 def extract_tool_calls(text: str) -> list[dict[str, Any]]:
@@ -247,6 +266,14 @@ def invoke_creation_tool(
     if workflow_id:
         args.setdefault("workflow_id", workflow_id)
         args.setdefault("agent_id", workflow_id)
+    allowed = _allowed_tools.get()
+    if allowed is not None and tool not in allowed:
+        sample = ", ".join(sorted(allowed)[:6])
+        extra = "…" if len(allowed) > 6 else ""
+        raise RuntimeError(
+            f"Инструмент «{tool}» не включён для этого агента. "
+            f"Доступны: {sample}{extra}. Настройте инструменты в «Доработать»."
+        )
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, args)
     if tool in _ONEC_TOOLS:

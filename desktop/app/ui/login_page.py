@@ -17,8 +17,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.api_client import ApiClient, ApiError, LoginResult
-from app.config import backend_url
-from app.session_store import clear_session, remember_preference, save_backend_url, save_session, saved_fio
+from app.config import auth_url, backend_url
+from app.session_store import clear_session, remember_preference, save_auth_url, save_backend_url, save_session, saved_fio
 from app.ui.theme import app_font, circular_pixmap
 from app.ui.widgets.fio_suggest import FioSuggestEdit
 from app.ui.widgets.gradient_bg import GlassPanel, GradientBackground
@@ -80,7 +80,7 @@ class LoginPage(QWidget):
         self._subtitle.setStyleSheet("color: rgba(255,255,255,0.72); background: transparent;")
         self._subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._hint = QLabel("Укажите ФИО и пароль из erp_pm")
+        self._hint = QLabel("Вход — на общем сервере 1С; агенты работают локально на этом ПК")
         self._hint.setFont(app_font(12))
         self._hint.setStyleSheet("color: rgba(255,255,255,0.45); background: transparent;")
         self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -113,9 +113,13 @@ class LoginPage(QWidget):
         self.department_edit.returnPressed.connect(self._submit)
         self.department_edit.setVisible(False)
 
-        self.server_edit = QLineEdit(backend_url())
+        self.server_edit = QLineEdit(auth_url())
         self.server_edit.setPlaceholderText("http://192.168.1.157:7812")
         self.server_edit.setStyleSheet(field_qss)
+
+        self.local_edit = QLineEdit(backend_url())
+        self.local_edit.setPlaceholderText("http://127.0.0.1:7812")
+        self.local_edit.setStyleSheet(field_qss)
 
         fio_label = QLabel("ФИО")
         fio_label.setStyleSheet("color: rgba(255,255,255,0.65); background: transparent;")
@@ -127,9 +131,12 @@ class LoginPage(QWidget):
         self._dept_label.setStyleSheet("color: rgba(255,255,255,0.65); background: transparent;")
         self._dept_label.setFont(app_font(11, QFont.Weight.DemiBold))
         self._dept_label.setVisible(False)
-        server_label = QLabel("Сервер backend")
+        server_label = QLabel("Сервер входа (1С)")
         server_label.setStyleSheet("color: rgba(255,255,255,0.65); background: transparent;")
         server_label.setFont(app_font(11, QFont.Weight.DemiBold))
+        local_label = QLabel("Локальный backend (агенты)")
+        local_label.setStyleSheet("color: rgba(255,255,255,0.65); background: transparent;")
+        local_label.setFont(app_font(11, QFont.Weight.DemiBold))
 
         self.remember_check = QCheckBox("Запомнить пользователя")
         self.remember_check.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -247,6 +254,8 @@ class LoginPage(QWidget):
         server_row.addWidget(self.server_edit, 1)
         server_row.addWidget(self.test_btn)
         card_layout.addLayout(server_row)
+        card_layout.addWidget(local_label)
+        card_layout.addWidget(self.local_edit)
         card_layout.addWidget(self.server_status)
         card_layout.addSpacing(4)
         card_layout.addWidget(self.remember_check)
@@ -268,6 +277,27 @@ class LoginPage(QWidget):
 
         self._card.setFixedWidth(460)
 
+        self._apply_server_urls_on_init()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._apply_server_urls_on_init()
+
+    def _apply_server_urls_on_init(self) -> None:
+        """Подхватить AUTH_URL/BACKEND_URL из .env при каждом показе экрана входа."""
+        import os
+
+        from app.config import auth_url as cfg_auth, backend_url as cfg_backend
+
+        env_auth = os.getenv("AUTH_URL", "").strip().rstrip("/")
+        env_local = os.getenv("BACKEND_URL", "").strip().rstrip("/")
+        auth = env_auth or cfg_auth()
+        local = env_local or cfg_backend()
+        self.server_edit.setText(auth)
+        self.local_edit.setText(local)
+        self._api.set_auth_url(auth)
+        self._api.set_base_url(local)
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._bg.setGeometry(self.rect())
@@ -283,37 +313,54 @@ class LoginPage(QWidget):
         if fio:
             self.fio_edit.setText(fio)
 
-    def _apply_server_url(self) -> bool:
-        url = self.server_edit.text().strip().rstrip("/")
+    def set_session_message(self, message: str) -> None:
+        self.error_label.setText(message.strip())
+
+    def _normalize_url(self, raw: str, *, field_name: str) -> str | None:
+        url = raw.strip().rstrip("/")
         if not url:
-            self.error_label.setText("Укажите адрес сервера backend")
-            return False
+            self.error_label.setText(f"Укажите адрес: {field_name}")
+            return None
         if not url.startswith("http://") and not url.startswith("https://"):
             url = f"http://{url}"
-            self.server_edit.setText(url)
-        self._api.set_base_url(url)
-        save_backend_url(url)
+        return url
+
+    def _apply_server_urls(self) -> bool:
+        auth = self._normalize_url(self.server_edit.text(), field_name="сервер входа")
+        if auth is None:
+            return False
+        local = self._normalize_url(self.local_edit.text(), field_name="локальный backend")
+        if local is None:
+            return False
+        self.server_edit.setText(auth)
+        self.local_edit.setText(local)
+        self._api.set_auth_url(auth)
+        self._api.set_base_url(local)
+        save_auth_url(auth)
+        save_backend_url(local)
         return True
 
     def _test_server(self) -> None:
-        if not self._apply_server_url():
+        if not self._apply_server_urls():
             return
         self.server_status.setText("Проверка…")
         self.test_btn.setEnabled(False)
         try:
-            health = self._api.health()
+            auth_health = self._api.health(target="auth")
+            local_health = self._api.health(target="api")
         except ApiError as exc:
             self.server_status.setText(f"Нет связи: {exc.message}")
             self._registration_enabled = False
         else:
-            erp = "1С доступна" if health.erp_reachable else "1С недоступна"
-            reg = "регистрация открыта" if health.registration_enabled else "только вход 1С"
-            dev = "режим разработчика" if health.dev_mode else "прод"
+            erp = "1С доступна" if auth_health.erp_reachable else "1С на сервере входа недоступна"
+            reg = "регистрация открыта" if auth_health.registration_enabled else "только вход 1С"
+            local_llm = local_health.llm_provider or "—"
             self.server_status.setText(
-                f"Сервер {health.status}. {erp}. LLM: {health.llm_provider}. {reg}. {dev}."
+                f"Вход: {auth_health.status}, {erp}. "
+                f"Локально: {local_health.status}, LLM: {local_llm}. {reg}."
             )
-            self._registration_enabled = health.registration_enabled
-            if not health.registration_enabled and self._register_mode:
+            self._registration_enabled = auth_health.registration_enabled
+            if not auth_health.registration_enabled and self._register_mode:
                 self._toggle_mode(force_login=True)
         finally:
             self.test_btn.setEnabled(True)
@@ -334,14 +381,13 @@ class LoginPage(QWidget):
                 self.error_label.setText("Регистрация отключена на этом сервере")
         else:
             self._subtitle.setText("Вход через учётную запись 1С")
-            self._hint.setText("Укажите ФИО и пароль из erp_pm")
+            self._hint.setText("Вход — на общем сервере 1С; агенты работают локально на этом ПК")
             self.login_btn.setText("Войти")
             self.mode_btn.setText("Нет аккаунта? Зарегистрироваться")
             self.error_label.setText("")
 
     def _search_fios(self, query: str) -> list[str]:
-        if not self._apply_server_url():
-            return []
+        self._apply_server_urls_on_init()
         try:
             return self._api.search_users(query)
         except ApiError:
@@ -355,7 +401,7 @@ class LoginPage(QWidget):
         if not fio or not password:
             self.error_label.setText("Введите ФИО и пароль")
             return
-        if not self._apply_server_url():
+        if not self._apply_server_urls():
             return
 
         self.login_btn.setEnabled(False)

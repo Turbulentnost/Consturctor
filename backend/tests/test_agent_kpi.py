@@ -1,14 +1,18 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from app.services.agent_kpi import (
     MIN_INTERVAL_SECONDS,
     apply_calc_updates,
+    build_deterministic_calc_updates,
     build_kpi_record,
+    compute_score_from_plan_fact,
     interval_minutes,
     is_tile_due,
     normalize_method,
     parse_calc_payload,
     parse_kpi_payload,
+    refresh_kpi_from_runs,
     tile_color,
     advance_next_run_at,
 )
@@ -221,3 +225,42 @@ def test_calc_prompt_includes_runs_and_method() -> None:
     assert "score_percent" in prompt
     assert "evidence" in prompt
     assert "готово" in prompt
+
+
+def _run(status: str, *, source: str = "chat", started_at: datetime | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        status=status,
+        source=source,
+        started_at=started_at or datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc),
+    )
+
+
+def test_compute_score_from_plan_fact() -> None:
+    assert compute_score_from_plan_fact("success_rate", 100, 80) == 80
+    assert compute_score_from_plan_fact("fail_count", 0, 0) == 100
+    assert compute_score_from_plan_fact("fail_count", 0, 2) == 50
+    assert compute_score_from_plan_fact("runs_count", 10, 5) == 50
+    assert compute_score_from_plan_fact("expected_interval", 60, 60) == 100
+    assert compute_score_from_plan_fact("expected_interval", 60, 90) == 50
+
+
+def test_refresh_kpi_from_runs_success_rate() -> None:
+    kpi = build_kpi_record(None, title="A", goal="B", schedule={})
+    runs = [_run("ok"), _run("ok"), _run("error")]
+    refreshed = refresh_kpi_from_runs(kpi, runs, {})
+    tile = next(item for item in refreshed["tiles"] if item["measure"]["kind"] == "success_rate")
+    assert tile["fact"]["value"] == 66.7
+    assert tile["score_percent"] == 66.7
+    assert tile["color"] == "red"
+    assert "ok: 2" in tile["evidence"]
+
+
+def test_build_deterministic_calc_updates_respects_due_ids() -> None:
+    schedule = {"triggers": [{"kind": "interval", "interval_value": 1, "interval_unit": "hours"}]}
+    kpi = build_kpi_record(None, title="A", goal="B", schedule=schedule)
+    success_id = next(item["id"] for item in kpi["tiles"] if item["measure"]["kind"] == "success_rate")
+    runs = [_run("ok")]
+    updates = build_deterministic_calc_updates(kpi, runs, schedule, due_ids={success_id})
+    assert len(updates) == 1
+    assert updates[0]["id"] == success_id
+    assert updates[0]["score_percent"] == 100

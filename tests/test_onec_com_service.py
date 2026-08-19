@@ -50,6 +50,57 @@ def test_onec_com_query_tasks_stub(onec_com_client: TestClient) -> None:
     assert body["data"]["count"] >= 1
 
 
+def test_onec_com_execute_query_stub(onec_com_client: TestClient) -> None:
+    response = onec_com_client.post(
+        "/api/v1/tools/onec.com.execute_query/invoke",
+        json={
+            "run_id": "00000000-0000-0000-0000-000000000002",
+            "payload": {"query_text": "ВЫБРАТЬ 1 КАК N"},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["source"] == "stub"
+    assert body["data"]["count"] >= 1
+
+
+def test_onec_com_query_work_items_stub(onec_com_client: TestClient) -> None:
+    response = onec_com_client.post(
+        "/api/v1/tools/onec.com.query_work_items/invoke",
+        json={
+            "run_id": "00000000-0000-0000-0000-000000000003",
+            "payload": {"scope": "docflow", "limit": 5},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["source"] == "stub"
+    assert body["data"]["count"] >= 1
+
+
+def test_onec_com_list_assignment_sources_stub(onec_com_client: TestClient) -> None:
+    response = onec_com_client.post(
+        "/api/v1/tools/onec.com.list_assignment_sources/invoke",
+        json={"run_id": "00000000-0000-0000-0000-000000000004", "payload": {}},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["count"] >= 1
+
+
+def test_validate_readonly_query_rejects_writes() -> None:
+    from platform_tool_onec_com.onec_com import validate_readonly_query
+
+    assert validate_readonly_query("ВЫБРАТЬ 1") == "ВЫБРАТЬ 1"
+    with pytest.raises(ValueError, match="read-only"):
+        validate_readonly_query("ИЗМЕНИТЬ РегистрСведений.X УСТАНОВИТЬ")
+    with pytest.raises(ValueError, match="Forbidden"):
+        validate_readonly_query("ВЫБРАТЬ 1; УДАЛИТЬ ИЗ X")
+
+
 def test_require_32bit_on_windows_real_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("USE_STUBS", "false")
     from platform_tool_onec_com import onec_com
