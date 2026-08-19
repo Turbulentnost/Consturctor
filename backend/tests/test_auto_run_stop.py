@@ -8,7 +8,7 @@ from app.models.notification import Notification
 from app.models.trigger import AgentTrigger
 from app.models.user import AppUser
 from app.models.workflow import Workflow
-from app.services.notifications.service import list_inbox
+from app.services.notifications.service import clear_inbox, list_inbox
 from app.services.triggers.service import cancel_triggers_for_workflow, due_commands
 from app.services.workflows.kpi_calc import list_due_workflows
 from app.services.workflows.service import delete_workflow, list_workflows, stop_auto_run
@@ -144,3 +144,6 @@ def test_inbox_hides_link_to_missing_workflow() -> None:
     items = list_inbox(db, user_id=user_id)
     assert items[0].id == "n-orphan"
     assert items[0].workflow_id == ""
+    assert items[0].agent_deleted is True
+    assert clear_inbox(db, user_id=user_id) == 1
+    assert list_inbox(db, user_id=user_id) == []

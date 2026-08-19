@@ -477,6 +477,7 @@ class InboxNotification:
     unread: bool = True
     created_at: str = ""
     send_at: str = ""
+    agent_deleted: bool = False
 
 
 @dataclass
@@ -1741,6 +1742,7 @@ class ApiClient:
                     unread=bool(item.get("unread", item.get("read_at") in (None, ""))),
                     created_at=str(item.get("created_at") or ""),
                     send_at=str(item.get("send_at") or ""),
+                    agent_deleted=bool(item.get("agent_deleted")),
                 )
             )
         try:
@@ -1763,6 +1765,15 @@ class ApiClient:
 
     def mark_all_notifications_read(self) -> None:
         self._request("POST", "/api/v1/notifications/read-all", timeout=15.0)
+
+    def clear_notifications(self) -> int:
+        data = self._request("POST", "/api/v1/notifications/clear", timeout=20.0)
+        if isinstance(data, dict):
+            try:
+                return int(data.get("deleted") or 0)
+            except (TypeError, ValueError):
+                return 0
+        return 0
 
     def propose_schedule_draft(self, workflow_id: str) -> ScheduleDraft:
         data = self._request("POST", f"/api/v1/workflows/{workflow_id}/schedule-draft", timeout=90.0)

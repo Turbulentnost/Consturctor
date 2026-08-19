@@ -31,6 +31,13 @@ QFrame#NotifyCard[unread="true"] {
     border: 1px solid #B7D4E8;
 }
 """
+_GONE_CARD = """
+QFrame#NotifyCard {
+    background: #E6E9E8;
+    border: 1px solid rgba(16,24,23,0.08);
+    border-radius: 14px;
+}
+"""
 _SECONDARY = """
 QPushButton {
     background: #FFFFFF; color: #06483D;
@@ -44,6 +51,7 @@ QPushButton:hover { background: #F4F7F6; }
 class NotificationsPage(QWidget):
     open_workflow_requested = Signal(str)
     mark_all_requested = Signal()
+    clear_requested = Signal()
     item_opened = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -61,12 +69,20 @@ class NotificationsPage(QWidget):
         self._mark_all.setFixedHeight(36)
         self._mark_all.setStyleSheet(_SECONDARY)
         self._mark_all.clicked.connect(self.mark_all_requested.emit)
+        self._mark_all.hide()
+        self._clear = QPushButton("Очистить уведомления")
+        self._clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear.setFixedHeight(36)
+        self._clear.setStyleSheet(_SECONDARY)
+        self._clear.clicked.connect(self.clear_requested.emit)
+        self._clear.hide()
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, _USER_MENU_RESERVE, 0)
         header.setSpacing(16)
         header.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
         header.addWidget(self._mark_all, 0, Qt.AlignmentFlag.AlignVCenter)
+        header.addWidget(self._clear, 0, Qt.AlignmentFlag.AlignVCenter)
         header.addStretch(1)
 
         self._list = QVBoxLayout()
@@ -99,45 +115,57 @@ class NotificationsPage(QWidget):
                 widget.deleteLater()
         self._empty.setVisible(not items)
         self._mark_all.setVisible(any(item.unread for item in items))
+        self._clear.setVisible(bool(items))
         for item in items:
             self._list.addWidget(self._card(item))
 
     def _card(self, item: InboxNotification) -> QFrame:
+        gone = bool(item.agent_deleted)
         card = QFrame()
         card.setObjectName("NotifyCard")
-        card.setProperty("unread", "true" if item.unread else "false")
-        card.setStyleSheet(_CARD)
+        card.setProperty("unread", "true" if item.unread and not gone else "false")
+        card.setStyleSheet(_GONE_CARD if gone else _CARD)
         card.setCursor(
             Qt.CursorShape.PointingHandCursor
-            if item.workflow_id
+            if item.workflow_id and not gone
             else Qt.CursorShape.ArrowCursor
         )
         title = QLabel(item.title)
         title.setFont(app_font(15, QFont.Weight.DemiBold))
         title.setWordWrap(True)
-        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        title.setStyleSheet(
+            "color: #7A8682; background: transparent;"
+            if gone
+            else f"color: {MAIN_TEXT.name()}; background: transparent;"
+        )
         body = QLabel(item.body or "—")
         body.setFont(app_font(13))
         body.setWordWrap(True)
-        body.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        body.setStyleSheet(
+            "color: #8A9692; background: transparent;"
+            if gone
+            else f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;"
+        )
         meta = QLabel(_meta_line(item))
         meta.setFont(app_font(11))
-        meta.setStyleSheet("color: #6B7773; background: transparent;")
+        meta.setStyleSheet("color: #8A9692; background: transparent;" if gone else "color: #6B7773; background: transparent;")
         lay = QVBoxLayout(card)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(6)
         lay.addWidget(title)
         lay.addWidget(body)
         lay.addWidget(meta)
-        card.mousePressEvent = lambda event, nid=item.id, wid=item.workflow_id: self._on_click(  # type: ignore[method-assign]
-            event, nid, wid
+        card.mousePressEvent = lambda event, nid=item.id, wid=item.workflow_id, dead=gone: self._on_click(  # type: ignore[method-assign]
+            event, nid, wid, dead
         )
         return card
 
-    def _on_click(self, event, notification_id: str, workflow_id: str) -> None:
+    def _on_click(self, event, notification_id: str, workflow_id: str, agent_deleted: bool = False) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
             return
         self.item_opened.emit(notification_id)
+        if agent_deleted:
+            return
         if (workflow_id or "").strip():
             self.open_workflow_requested.emit(workflow_id)
 
@@ -149,7 +177,9 @@ def _meta_line(item: InboxNotification) -> str:
     stamp = _pretty_time(item.created_at or item.send_at)
     if stamp:
         parts.append(stamp)
-    if item.unread:
+    if item.agent_deleted:
+        parts.append("агент удалён")
+    elif item.unread:
         parts.append("новое")
     return " · ".join(parts)
 

@@ -37,6 +37,7 @@ class NotificationOut(BaseModel):
     created_at: datetime | None = None
     sender_fio: str = ""
     unread: bool = True
+    agent_deleted: bool = False
 
 
 class NotificationInbox(BaseModel):

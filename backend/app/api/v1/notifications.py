@@ -18,6 +18,7 @@ from app.schemas.notification import (
 from app.services.notifications.hub import hub
 from app.services.notifications.service import (
     NotificationError,
+    clear_inbox,
     create_notification,
     due_undelivered,
     list_directory_users,
@@ -81,6 +82,14 @@ def read_all_notifications(
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
     return {"updated": mark_all_read(db, user_id=auth.user_id)}
+
+
+@router.post("/clear")
+def clear_notifications(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    return {"deleted": clear_inbox(db, user_id=auth.user_id)}
 
 
 @router.get("/pending", response_model=list[NotificationOut])

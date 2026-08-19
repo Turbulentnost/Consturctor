@@ -340,6 +340,7 @@ class MainShell(QWidget):
         self.user_menu.settings_requested.connect(self._open_settings)
         self.user_menu.notifications_requested.connect(self._open_notifications)
         self._page_notifications.mark_all_requested.connect(self._mark_all_notifications_read)
+        self._page_notifications.clear_requested.connect(self._clear_notifications)
         self._page_notifications.item_opened.connect(self._on_notification_opened)
         self._page_notifications.open_workflow_requested.connect(self._on_launch_workflow_from_inbox)
         self._notify_timer = QTimer(self)
@@ -517,6 +518,22 @@ class MainShell(QWidget):
             QMessageBox.information(self, "Уведомления", exc.message)
             return
         self._reload_notifications_page()
+
+    def _clear_notifications(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Очистить уведомления",
+            "Удалить все уведомления? Это действие нельзя отменить.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._api.clear_notifications()
+        except ApiError as exc:
+            QMessageBox.information(self, "Уведомления", exc.message)
+            return
+        self._reload_notifications_page()
+        self.refresh_notification_badge()
 
     def _on_notification_opened(self, notification_id: str) -> None:
         try:

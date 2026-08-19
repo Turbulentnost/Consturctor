@@ -170,8 +170,9 @@ def list_inbox(db: Session, *, user_id: str, limit: int = 80) -> list[Notificati
     items: list[NotificationOut] = []
     for row in rows:
         item = _to_out(row, sender_fio=senders.get(row.sender_user_id, ""))
-        if item.workflow_id and item.workflow_id not in alive_ids:
-            item = item.model_copy(update={"workflow_id": ""})
+        linked = (item.workflow_id or "").strip()
+        if linked and linked not in alive_ids:
+            item = item.model_copy(update={"workflow_id": "", "agent_deleted": True})
         items.append(item)
     return items
 
@@ -207,6 +208,16 @@ def mark_read(db: Session, *, user_id: str, notification_id: str) -> None:
     if row.read_at is None:
         row.read_at = datetime.now(timezone.utc)
         db.commit()
+
+
+def clear_inbox(db: Session, *, user_id: str) -> int:
+    count = (
+        db.query(Notification)
+        .filter(Notification.recipient_user_id == user_id)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return int(count or 0)
 
 
 def mark_all_read(db: Session, *, user_id: str) -> int:
