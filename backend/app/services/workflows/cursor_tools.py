@@ -294,6 +294,8 @@ def invoke_creation_tool(
         from app.services.agent_runtime import _invoke_turboproject_server
 
         return _invoke_turboproject_server(tool, args)
+    if tool in {"users.current", "current_user"}:
+        return _invoke_users_current()
     if tool in {"users.list", "users"}:
         return _invoke_users_list(args)
     if tool in {"notify.send", "notify"}:
@@ -538,6 +540,12 @@ def stream_cursor_with_tools(
                     on_event,
                     "decision",
                     "«users.list»: читаю справочник пользователей…",
+                )
+            if name in {"users.current", "current_user"}:
+                _emit(
+                    on_event,
+                    "decision",
+                    "«users.current»: читаю текущего пользователя…",
                 )
             if name in {"notify.send", "notify"}:
                 _emit(
@@ -794,6 +802,8 @@ def _followup_prompt(
             "не сказано в ТЗ — верни CLARIFY и остановись, не обрабатывай весь каталог. "
             "Если это уже явно в ТЗ или человек ответил — предметный RESULT: текст обязателен, "
             "плюс файлы/действия/уведомления если они были. "
+            "Если в задаче сказано «текущий пользователь», «данный пользователь», «мои проекты» "
+            "или «мои задачи» — сначала вызови users.current. "
             "Не вызывай users.list / turboproject «на всякий случай». "
             "Если нужен ДРУГОЙ tool — только ```constructor_tool. "
             "Не ставь FAIL из-за отсутствия BACKEND_URL на Cloud VM."
@@ -929,6 +939,49 @@ def _invoke_users_list(arguments: dict[str, Any]) -> dict[str, Any]:
     if ignored:
         payload["ignored_query"] = ignored
     return payload
+
+
+def _invoke_users_current() -> dict[str, Any]:
+    from app.clients.erp_sql import ErpSqlError, find_user_by_id
+    from app.db.session import SessionLocal
+    from app.models.user import AppUser
+
+    ctx = current_tool_context()
+    user_id = ctx[1] if ctx else ""
+    if not user_id:
+        raise RuntimeError("Нет пользователя сессии для users.current")
+
+    db = SessionLocal()
+    try:
+        app_user = db.get(AppUser, user_id)
+        if app_user is not None:
+            user = {
+                "id": app_user.id,
+                "fio": app_user.fio or "",
+                "position": app_user.position or "",
+                "department": app_user.department or "",
+                "source": "constructor_session",
+            }
+            return {"user": user, "ok": True}
+    finally:
+        db.close()
+
+    try:
+        erp_user = find_user_by_id(user_id)
+    except ErpSqlError as exc:
+        raise RuntimeError(f"Не удалось прочитать текущего пользователя из ERP: {exc}") from exc
+    if erp_user is None:
+        raise RuntimeError("Текущий пользователь не найден в ERP")
+    return {
+        "user": {
+            "id": erp_user.id,
+            "fio": erp_user.fio,
+            "position": erp_user.position,
+            "department": erp_user.department,
+            "source": "erp_pm",
+        },
+        "ok": True,
+    }
 
 
 def _row_title(row: Any) -> str:

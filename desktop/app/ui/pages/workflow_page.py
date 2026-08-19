@@ -164,13 +164,8 @@ QRadioButton::indicator:checked {
 
 
 def _quick_answers_for_question(question: WorkflowOpenQuestion) -> list[str]:
-    options = [str(item).strip() for item in (question.options or []) if str(item).strip()]
-    if options:
-        return options[:4]
-    text = (question.question or "").casefold()
-    if "outlook" in text or "календар" in text:
-        return ["Microsoft Outlook", "Google Calendar", "1С / внутренняя система", "Другое"]
-    return ["Да", "Нет", "Пока неизвестно"]
+    """Только варианты агента. Запасные «Да/Нет» не подставляем."""
+    return [str(item).strip() for item in (question.options or []) if str(item).strip()][:4]
 
 
 def _clear_layout(layout) -> None:

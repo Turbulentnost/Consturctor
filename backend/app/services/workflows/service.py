@@ -267,8 +267,8 @@ def design_workflow(
     workflow_id: str,
     on_event: WorkflowEventCallback | None = None,
 ) -> WorkflowSchema:
-    """Спроектировать черновик инструкции по регламенту — без живых данных."""
-    from app.services.workflows.cursor_tools import tool_catalog_block
+    """Спроектировать черновик инструкции; tools разрешены для видимости контекста."""
+    from app.services.workflows.cursor_tools import tools_prompt_block
 
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     attachments = _load_attachments_payload(workflow_id)
@@ -282,9 +282,9 @@ def design_workflow(
         title=row.title,
         notes=row.notes or "",
         document_name=row.document_name,
-        catalog=tool_catalog_block(),
+        catalog=tools_prompt_block(),
     )
-    _emit(on_event, "decision", "Проектирую инструкцию по регламенту, без обращения к данным.")
+    _emit(on_event, "decision", "Проектирую инструкцию по регламенту и проверяю доступный контекст.")
     _emit(on_event, "progress", "пишу черновик инструкции")
     try:
         if row.exec_agent_id:
@@ -304,7 +304,13 @@ def design_workflow(
     row.phase = "designing"
     db.commit()
 
-    result = _stream_run(agent_id, run_id, on_event=on_event)
+    result = _stream_run_with_tools(
+        agent_id,
+        run_id,
+        on_event=on_event,
+        workflow_id=workflow_id,
+        mode="execute",
+    )
     draft = prompts.parse_playbook_draft(result.text or "")
     draft, validation = _validate_and_store_draft(db, row=row, draft=draft)
 
@@ -337,7 +343,13 @@ def _repair_draft(
         run_id = str(run.get("id") or "")
         if not run_id:
             return draft, validation
-        result = _stream_run(row.exec_agent_id, run_id, on_event=on_event)
+        result = _stream_run_with_tools(
+            row.exec_agent_id,
+            run_id,
+            on_event=on_event,
+            workflow_id=row.id,
+            mode="execute",
+        )
     except CursorAgentError as exc:
         logger.warning("Draft repair failed id=%s: %s", row.id, exc)
         return draft, validation
@@ -1714,31 +1726,40 @@ def _create_exec_agent(title: str, prompt: str) -> tuple[str, str]:
     return agent_id, run_id
 
 
+def _param_value(params: list[Any], param_id: str) -> str:
+    for item in params:
+        if isinstance(item, dict) and str(item.get("id") or "") == param_id:
+            return str(item.get("value") or "").casefold()
+    return ""
+
+
 def _effort_params(record: dict[str, Any] | None, effort: str) -> list[dict[str, str]] | None:
-    """Параметр effort уходит только моделям, которые его объявляют."""
+    """Полный вариант модели: API принимает только объявленные id+params."""
     value = (effort or "").strip().casefold()
-    if not value:
-        return None
     if record is None:
-        return [{"id": "effort", "value": value}]
-    for param in record.get("parameters") or []:
-        if not isinstance(param, dict) or str(param.get("id") or "") != "effort":
-            continue
-        allowed = {
-            str(item.get("value") or "").casefold()
-            for item in (param.get("values") or [])
-            if isinstance(item, dict)
-        }
-        if not allowed or value in allowed:
-            return [{"id": "effort", "value": value}]
-        logger.warning(
-            "Cursor model %s не поддерживает effort=%s, доступны %s",
-            record.get("id"),
-            value,
-            sorted(allowed),
-        )
+        params = [{"id": "effort", "value": value}] if value else []
+        params.append({"id": "fast", "value": "true"})
+        return params
+
+    variants = [item for item in (record.get("variants") or []) if isinstance(item, dict)]
+    matching = [
+        variant
+        for variant in variants
+        if not value or _param_value(list(variant.get("params") or []), "effort") == value
+    ]
+    if not matching and variants:
+        matching = [variant for variant in variants if variant.get("isDefault")] or variants
+    chosen = next((variant for variant in matching if variant.get("isDefault")), None) or (
+        matching[0] if matching else None
+    )
+    if chosen is None:
         return None
-    return None
+    params = [
+        {"id": str(item.get("id") or ""), "value": str(item.get("value") or "")}
+        for item in (chosen.get("params") or [])
+        if isinstance(item, dict) and item.get("id")
+    ]
+    return params or None
 
 
 def _resolve_model_variant() -> tuple[str | None, list[dict[str, str]] | None]:

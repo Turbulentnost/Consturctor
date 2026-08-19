@@ -1,7 +1,9 @@
 from app.services.local_mcp import list_tools
 from app.services.workflows.cursor_tools import (
+    clear_tool_context,
     invoke_creation_tool,
     required_live_tools_from_plan,
+    set_tool_context,
     should_run_tool_calls,
 )
 from app.services.workflows.plan_models import (
@@ -61,6 +63,16 @@ def test_users_list_catalog_is_server() -> None:
     assert item.get("execution") == "server"
 
 
+def test_users_current_catalog_is_server_read_tool() -> None:
+    item = next(tool for tool in list_tools() if tool.get("name") == "users.current")
+
+    assert item.get("execution") == "server"
+    assert item.get("system") == "constructor"
+    assert item.get("entity") == "user"
+    assert item.get("operation") == "read"
+    assert item.get("result_fields") == ["user"]
+
+
 def test_users_list_runs_on_server(monkeypatch) -> None:
     class _User:
         def model_dump(self, mode: str = "json") -> dict:
@@ -78,3 +90,29 @@ def test_users_list_runs_on_server(monkeypatch) -> None:
     result = invoke_creation_tool(tool="users.list", arguments={"query": "Ив"}, on_event=None)
     assert result["count"] == 1
     assert result["users"][0]["id"] == "u1"
+
+
+def test_users_current_runs_from_session_user(monkeypatch) -> None:
+    class _Db:
+        def get(self, model, user_id: str):
+            class _User:
+                id = user_id
+                fio = "Мангасарян Давид Каренович"
+                position = "Руководитель сектора"
+                department = "Сектор"
+
+            return _User()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("app.db.session.SessionLocal", lambda: _Db())
+    set_tool_context("run-1", "user-1")
+    try:
+        result = invoke_creation_tool(tool="users.current", arguments={}, on_event=None)
+    finally:
+        clear_tool_context()
+
+    assert result["ok"] is True
+    assert result["user"]["id"] == "user-1"
+    assert result["user"]["fio"] == "Мангасарян Давид Каренович"

@@ -12,7 +12,9 @@ from app.services.workflows.playbook_validation import (
     KIND_AMBIGUOUS,
     KIND_CLARIFY,
     KIND_CONFIG_ERROR,
+    DraftIssue,
     attach_tool_candidates,
+    issues_to_questions,
     validate_draft,
 )
 from app.services.workflows.service import (
@@ -103,12 +105,36 @@ def test_valid_draft_has_no_issues() -> None:
 
 def test_missing_business_param_is_clarify() -> None:
     draft = _draft()
-    draft["required_clarifications"] = ["За какой период строить отчёт?"]
+    draft["required_clarifications"] = [
+        {
+            "question": "За какой период строить отчёт?",
+            "options": ["Текущий месяц", "Последние 30 дней", "Укажу даты"],
+        }
+    ]
 
     validation = validate_draft(attach_tool_candidates(draft))
 
     assert [issue.kind for issue in validation.issues] == [KIND_CLARIFY]
     assert not validation.config_errors
+    assert validation.issues[0].options == ["Текущий месяц", "Последние 30 дней", "Укажу даты"]
+
+
+def test_clarification_without_options_is_ambiguous() -> None:
+    draft = _draft()
+    draft["required_clarifications"] = ["За какой период строить отчёт?"]
+
+    kinds = [issue.kind for issue in validate_draft(attach_tool_candidates(draft)).issues]
+
+    assert kinds == [KIND_AMBIGUOUS]
+
+
+def test_issues_to_questions_keep_cursor_options() -> None:
+    options = ["Текущий месяц, SLA 7 дней", "Последние 30 дней, SLA 3 дня"]
+    questions = issues_to_questions(
+        [DraftIssue(kind=KIND_CLARIFY, message="Период и горизонт SLA", options=options)]
+    )
+
+    assert questions[0].options == options
 
 
 def test_no_compatible_tool_is_config_error() -> None:
@@ -368,8 +394,9 @@ def test_publish_allows_verified_playbook() -> None:
     _require_verified_playbook(row, {"status": "verified", "instructions": "x"})
 
 
-def test_draft_prompt_forbids_tool_calls() -> None:
+def test_draft_prompt_allows_tools_for_visibility_only() -> None:
     prompt = prompts.build_playbook_draft_prompt(document_text="регламент", title="Агент")
 
     assert "constructor_tool" in prompt
-    assert "запрещ" in prompt
+    assert "видимости контекста" in prompt
+    assert "НЕ выполняй бизнес-задачу" in prompt

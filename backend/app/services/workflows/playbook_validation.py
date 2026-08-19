@@ -25,6 +25,7 @@ class DraftIssue:
     message: str
     step_id: str = ""
     detail: str = ""
+    options: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -32,6 +33,7 @@ class DraftIssue:
             "message": self.message,
             "step_id": self.step_id,
             "detail": self.detail,
+            "options": list(self.options),
         }
 
 
@@ -125,16 +127,41 @@ def validate_draft(draft: dict[str, Any], *, allow_web: bool = False) -> DraftVa
     if not str(draft.get("goal") or "").strip():
         issues.append(DraftIssue(kind=KIND_AMBIGUOUS, message="Не сформулирована цель агента."))
 
-    for question in draft.get("required_clarifications") or []:
-        text = str(question).strip()
-        if text:
-            issues.append(DraftIssue(kind=KIND_CLARIFY, message=text))
+    for item in draft.get("required_clarifications") or []:
+        if isinstance(item, str):
+            question, options, why = item.strip(), [], ""
+        elif isinstance(item, dict):
+            question = str(item.get("question") or "").strip()
+            options = [str(opt).strip() for opt in (item.get("options") or []) if str(opt).strip()]
+            why = str(item.get("why") or "").strip()
+        else:
+            continue
+        if not question:
+            continue
+        if len(options) < 2:
+            issues.append(
+                DraftIssue(
+                    kind=KIND_AMBIGUOUS,
+                    message=f"Уточнение «{question}»: нет вариантов ответа.",
+                    detail="Варианты пишет Cursor-проектировщик, не backend.",
+                )
+            )
+            continue
+        issues.append(
+            DraftIssue(
+                kind=KIND_CLARIFY,
+                message=question,
+                detail=why,
+                options=options[:4],
+            )
+        )
 
     if not str(draft.get("recipient") or "").strip():
         issues.append(
             DraftIssue(
-                kind=KIND_CLARIFY,
-                message="Кому отдавать результат работы агента?",
+                kind=KIND_AMBIGUOUS,
+                message="Не указан получатель результата.",
+                detail="Заполни recipient или добавь уточнение с вариантами ответа.",
             )
         )
 
@@ -198,7 +225,7 @@ def validate_draft(draft: dict[str, Any], *, allow_web: bool = False) -> DraftVa
 
 
 def issues_to_questions(issues: list[DraftIssue]) -> list[OpenQuestion]:
-    """Только clarify превращается в вопросы человеку."""
+    """Только clarify с вариантами Cursor уходит человеку. Варианты сами не придумываем."""
     questions: list[OpenQuestion] = []
     for index, issue in enumerate(issues, start=1):
         if issue.kind != KIND_CLARIFY:
@@ -207,7 +234,8 @@ def issues_to_questions(issues: list[DraftIssue]) -> list[OpenQuestion]:
             OpenQuestion(
                 id=f"draft-q{index}",
                 question=issue.message,
-                why="В регламенте этот бизнес-параметр не определён.",
+                why=issue.detail or "В регламенте этот бизнес-параметр не определён.",
+                options=list(issue.options),
             )
         )
     return questions

@@ -229,7 +229,9 @@ _DEMO_CLARIFY_HINT = (
     "- в каком виде и кому отдавать результат;\n"
     "- что считать успехом / просрочкой / «важным», если формулировка двусмысленна.\n"
     "Спрашивай только то, чего нет в ЭТОМ ТЗ. Не выдумывай формулировку вопроса заранее.\n"
-    "После CLARIFY не обрабатывай каталог и не вызывай tool на полный разбор в том же ответе:\n"
+    "После CLARIFY не обрабатывай каталог и не вызывай tool на полный разбор в том же ответе.\n"
+    "OPTIONS обязательны: 2–4 конкретных ответа по смыслу вопроса. "
+    "Их придумываешь ты. Не пиши «Да/Нет», если вопрос про даты, период, людей или объекты.\n"
     "CLARIFY:\n"
     "QUESTION: …\n"
     "OPTIONS:\n"
@@ -351,7 +353,13 @@ _DRAFT_SCHEMA = (
     "{\n"
     '  "goal": "зачем агент нужен и чем заканчивается его работа",\n'
     '  "inputs": ["что нужно на входе"],\n'
-    '  "required_clarifications": ["бизнес-параметр, которого нет в регламенте"],\n'
+    '  "required_clarifications": [\n'
+    "    {\n"
+    '      "question": "вопрос человеку про бизнес-параметр, которого нет в регламенте",\n'
+    '      "options": ["конкретный вариант 1", "конкретный вариант 2", "свой текст"],\n'
+    '      "why": "почему без этого нельзя идти дальше"\n'
+    "    }\n"
+    "  ],\n"
     '  "result": "что получается на выходе",\n'
     '  "recipient": "кому уходит результат",\n'
     '  "confirmation_points": ["где нужно подтверждение человека"],\n'
@@ -382,18 +390,26 @@ def build_playbook_draft_prompt(
     document_name: str = "",
     catalog: str = "",
 ) -> str:
-    """Проектирование инструкции по регламенту — без обращения к живым данным."""
+    """Проектирование инструкции по регламенту; tools разрешены только для видимости."""
     body = _clip_demo_materials(document_text=document_text, notes=notes)
     catalog_block = f"\n===== КАТАЛОГ ИНСТРУМЕНТОВ =====\n{catalog}\n===== КОНЕЦ КАТАЛОГА =====\n" if catalog else ""
     return (
         "Ты проектировщик ИИ-агента Constructor. По регламенту составь черновик инструкции.\n"
-        "Сейчас НЕ выполняй задачу и НЕ вызывай инструменты: "
-        "блок ```constructor_tool в этом ответе запрещён, живых данных не запрашивай.\n"
+        "Сейчас НЕ выполняй бизнес-задачу и НЕ формируй итоговый отчёт. "
+        "Можно вызывать ```constructor_tool только для видимости контекста и проверки, "
+        "какие данные/пользователь/сущности доступны. После таких вызовов всё равно верни "
+        "ТОЛЬКО JSON черновика по схеме ниже.\n"
         "Инструмент для шага выбирай по контракту каталога: система, сущность, операция. "
         "Похожее название — не основание. Если шаг про 1С, web_search и site_browser "
         "не подходят, пока регламент прямо не требует внешний сайт.\n"
         "В required_clarifications пиши только бизнес-параметры, которых нет в регламенте "
         "(период, объекты, получатель, критерий успеха). "
+        "Для каждого уточнения сам придумай 2–4 варианта ответа по смыслу вопроса: "
+        "даты, горизонт, ФИО, объекты — не «Да/Нет», если вопрос не да/нет. "
+        "Варианты пишет только ты, backend их не подставляет.\n"
+        "Если в регламенте сказано «текущий пользователь», «данный пользователь», "
+        "«мои задачи/проекты» — это не вопрос человеку: вызови users.current для видимости, "
+        "а в черновик добавь шаг system=constructor, entity=user, operation=read.\n"
         "Технические вопросы (поля, OData, COM, имена tools, логины) туда не входят — "
         "это твоя зона ответственности.\n"
         "У каждого шага обязательно заполни done_when, on_empty и on_error.\n"
@@ -430,6 +446,24 @@ def _draft_step_from_dict(data: dict[str, Any], index: int) -> dict[str, Any]:
     }
 
 
+def _draft_clarification_from(raw: Any) -> dict[str, Any] | None:
+    """Вопрос проектировщика: текст + его варианты ответа."""
+    if isinstance(raw, str):
+        question = raw.strip()
+        return {"question": question, "options": [], "why": ""} if question else None
+    if not isinstance(raw, dict):
+        return None
+    question = str(raw.get("question") or raw.get("message") or "").strip()
+    if not question:
+        return None
+    options = [str(item).strip() for item in (raw.get("options") or []) if str(item).strip()]
+    return {
+        "question": question,
+        "options": options[:4],
+        "why": str(raw.get("why") or "").strip(),
+    }
+
+
 def parse_playbook_draft(text: str) -> dict[str, Any]:
     """Черновик из ответа проектировщика. Пустой steps — значит черновик не получился."""
     data = _extract_json_blob(text) or {}
@@ -444,9 +478,12 @@ def parse_playbook_draft(text: str) -> dict[str, Any]:
         "goal": str(data.get("goal") or "").strip(),
         "inputs": [str(x).strip() for x in (data.get("inputs") or []) if str(x).strip()],
         "required_clarifications": [
-            str(x).strip()
-            for x in (data.get("required_clarifications") or [])
-            if str(x).strip()
+            item
+            for item in (
+                _draft_clarification_from(raw)
+                for raw in (data.get("required_clarifications") or [])
+            )
+            if item
         ],
         "result": str(data.get("result") or "").strip(),
         "recipient": str(data.get("recipient") or "").strip(),
@@ -470,6 +507,8 @@ def build_playbook_repair_prompt(*, draft: dict[str, Any], issues: list[dict[str
         "Черновик инструкции неполный. Исправь замечания и верни ЦЕЛИКОМ обновлённый JSON "
         "по той же схеме — только JSON, без пояснений.\n"
         "Инструменты не вызывай: блок ```constructor_tool запрещён.\n"
+        "Если не хватает вариантов ответа — сам придумай 2–4 конкретных option к вопросу. "
+        "Не оставляй required_clarifications строками без options.\n"
         "Замечания:\n"
         + "\n".join(lines)
         + "\n\n===== ТЕКУЩИЙ ЧЕРНОВИК =====\n"

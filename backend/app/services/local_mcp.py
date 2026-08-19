@@ -543,6 +543,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("report.build_task_report", "Собрать отчёт по поручениям из собранных данных.", {}),
         ("report.build_meeting_summary", "Сводка/протокол совещания из собранных данных.", {}),
         ("report.build_schedule_recommendations", "Рекомендации по графику из календаря.", {}),
+        ("users.current", "Текущий пользователь сессии Constructor: id, ФИО, должность, подразделение. Если регламент говорит «текущий пользователь», «данный пользователь» или «мои данные» — вызови этот tool, не спрашивай человека.", {}),
         ("users.list", "Список пользователей Constructor: id, ФИО, должность, подразделение. Вызови перед notify.send, чтобы выбрать получателя.", {
             "query": {"type": "string"},
         }, []),
@@ -565,7 +566,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "trigger_id": {"type": "string"},
         }, ["trigger_id"]),
     ]
-    server_tools = {"users.list", "notify.send"}
+    server_tools = {"users.current", "users.list", "notify.send"}
     tools: list[dict[str, Any]] = []
     for item in items:
         name, description, properties = item[0], item[1], item[2]
@@ -684,6 +685,7 @@ _CONTRACTS: dict[str, tuple[str, str, str, list[str], list[str], str]] = {
     "report.build_task_report": ("desktop", "report", "export", [], ["file"], "none"),
     "report.build_meeting_summary": ("desktop", "report", "export", [], ["file"], "none"),
     "report.build_schedule_recommendations": ("desktop", "report", "export", [], ["file"], "none"),
+    "users.current": ("constructor", "user", "read", [], ["user"], "none"),
     "users.list": ("constructor", "user", "list", [], ["users"], "count"),
     "notify.send": (
         "constructor",

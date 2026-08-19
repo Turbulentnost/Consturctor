@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from app.services.workflows.service import _effort_params, _resolve_model_variant
 
+_GROK_HIGH = [{"id": "effort", "value": "high"}, {"id": "fast", "value": "true"}]
+_COMPOSER_FAST = [{"id": "fast", "value": "true"}]
+
 _GROK = {
     "id": "grok-4.6",
     "displayName": "Cursor Grok 4.6",
@@ -12,28 +15,37 @@ _GROK = {
         },
         {"id": "fast", "values": [{"value": "false"}, {"value": "true"}]},
     ],
+    "variants": [
+        {"params": [{"id": "effort", "value": "low"}, {"id": "fast", "value": "true"}]},
+        {"params": _GROK_HIGH, "isDefault": True},
+        {"params": [{"id": "effort", "value": "xhigh"}, {"id": "fast", "value": "true"}]},
+    ],
 }
 _COMPOSER = {
     "id": "composer-2.5",
     "aliases": ["composer-latest", "composer"],
     "parameters": [{"id": "fast", "values": [{"value": "false"}, {"value": "true"}]}],
+    "variants": [
+        {"params": _COMPOSER_FAST, "isDefault": True},
+        {"params": [{"id": "fast", "value": "false"}]},
+    ],
 }
 
 
-def test_effort_goes_to_model_that_declares_it() -> None:
-    assert _effort_params(_GROK, "high") == [{"id": "effort", "value": "high"}]
+def test_effort_picks_complete_high_variant() -> None:
+    assert _effort_params(_GROK, "high") == _GROK_HIGH
 
 
-def test_effort_skipped_for_model_without_the_parameter() -> None:
-    assert _effort_params(_COMPOSER, "high") is None
+def test_model_without_effort_uses_its_default_variant() -> None:
+    assert _effort_params(_COMPOSER, "high") == _COMPOSER_FAST
 
 
-def test_unsupported_effort_value_is_dropped() -> None:
-    assert _effort_params(_GROK, "ultra") is None
+def test_unknown_effort_falls_back_to_default_variant() -> None:
+    assert _effort_params(_GROK, "ultra") == _GROK_HIGH
 
 
-def test_no_effort_configured_means_no_params() -> None:
-    assert _effort_params(_GROK, "") is None
+def test_empty_effort_uses_default_variant() -> None:
+    assert _effort_params(_GROK, "") == _GROK_HIGH
 
 
 def test_resolves_grok_high_variant(monkeypatch) -> None:
@@ -48,10 +60,10 @@ def test_resolves_grok_high_variant(monkeypatch) -> None:
         "app.services.workflows.service.settings.cursor_workflow_model_effort", "high"
     )
 
-    assert _resolve_model_variant() == ("grok-4.6", [{"id": "effort", "value": "high"}])
+    assert _resolve_model_variant() == ("grok-4.6", _GROK_HIGH)
 
 
-def test_alias_still_resolves_and_keeps_params_empty(monkeypatch) -> None:
+def test_composer_alias_uses_complete_default_variant(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.workflows.service.cursor_client.list_models",
         lambda: [_COMPOSER, _GROK],
@@ -63,4 +75,4 @@ def test_alias_still_resolves_and_keeps_params_empty(monkeypatch) -> None:
         "app.services.workflows.service.settings.cursor_workflow_model_effort", "high"
     )
 
-    assert _resolve_model_variant() == ("composer-2.5", None)
+    assert _resolve_model_variant() == ("composer-2.5", _COMPOSER_FAST)
