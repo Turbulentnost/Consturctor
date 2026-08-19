@@ -112,6 +112,23 @@ def _missing_params(step: dict[str, Any], candidates: list[str]) -> list[str]:
     return shortest or []
 
 
+def _off_vocabulary(step: dict[str, Any]) -> str:
+    """Система и операция должны быть из контрактов, иначе шаг неисполним."""
+    from app.services.local_mcp import contract_vocabulary
+    from app.services.workflow_tool_routing import normalize_operation
+
+    vocab = contract_vocabulary()
+    system = str(step.get("system") or "").strip().casefold()
+    operation = normalize_operation(str(step.get("operation") or ""))
+    known_systems = {str(item).casefold() for item in vocab["systems"]}
+    known_operations = {str(item).casefold() for item in vocab["operations"]}
+    if system not in known_systems:
+        return f"системы «{step.get('system')}» нет в словаре контрактов."
+    if operation not in known_operations:
+        return f"операции «{step.get('operation')}» нет в словаре контрактов."
+    return ""
+
+
 def validate_draft(draft: dict[str, Any], *, allow_web: bool = False) -> DraftValidation:
     """Проверить черновик до прогона. Инструменты уже должны быть подобраны."""
     issues: list[DraftIssue] = []
@@ -177,6 +194,18 @@ def validate_draft(draft: dict[str, Any], *, allow_web: bool = False) -> DraftVa
                     kind=KIND_AMBIGUOUS,
                     step_id=step_id,
                     message=f"Шаг «{title}»: не указана система или операция.",
+                )
+            )
+            continue
+
+        off_vocabulary = _off_vocabulary(step)
+        if off_vocabulary:
+            issues.append(
+                DraftIssue(
+                    kind=KIND_CONFIG_ERROR,
+                    step_id=step_id,
+                    message=f"Шаг «{title}»: {off_vocabulary}",
+                    detail="Возьми system, entity и operation из словаря контрактов.",
                 )
             )
             continue

@@ -70,7 +70,7 @@ def _validation_rules_block() -> str:
 
 
 def tool_catalog_block() -> str:
-    """Только контракты инструментов, без правил вызова — для проектировщика."""
+    """Полный каталог по контрактам — запасной блок, когда шагов ещё нет."""
     lines = ["Каталог по системам (system · entity · operation):"]
     by_system: dict[str, list[str]] = {}
     for item in list_tools():
@@ -103,39 +103,103 @@ def tool_catalog_block() -> str:
     return "\n".join(lines)
 
 
-def tools_prompt_block() -> str:
+def contract_vocabulary_block() -> str:
+    """Измерения контрактов для проектировщика: без имён инструментов."""
+    from app.services.local_mcp import contract_vocabulary
+
+    vocab = contract_vocabulary()
     lines = [
-        "Реестр Constructor. ```constructor_tool — markdown в ответе, не tool Cursor. "
-        "Backend перехватывает блок и вызывает tool на сервере. "
-        "Не пиши «нет доступа к constructor_tool».",
-        "Если в ТЗ не сказано, кого/что брать, когда запускать и в каком виде отдавать — "
-        "сначала CLARIFY, не вызывай tool на весь каталог и не ставь default «все».",
-        "Когда объём ясен, вызов выглядит так (без кода вокруг):",
-        "```constructor_tool",
-        '{"name": "имя_из_каталога", "arguments": {}}',
-        "```",
-        "Не вызывай BACKEND_URL, curl и HTTP с Cloud VM. Не выдумывай результат. "
-        "Дождись ответа системы и только потом продолжи.",
-        "Когда Constructor tool уже ответил и объём ясен — финальный ответ "
-        "без блока constructor_tool. Если объём всё ещё неясен — CLARIFY, не RESULT.",
-        "Инструмент выбирай по контракту: система, сущность, операция. "
-        "Похожее название — не основание. Для задачи по 1С web_search и site_browser "
-        "не подходят, даже если в них есть слово «поиск».",
-        "Указывай шаг черновика, к которому относится вызов: "
-        '{"name": "...", "step": "s1", "arguments": {}}.',
-        _validation_rules_block(),
-        tool_catalog_block(),
+        "СЛОВАРЬ КОНТРАКТОВ. Для шага бери system, entity и operation только отсюда.",
+        "systems: " + ", ".join(vocab["systems"]),
+        "operations: " + ", ".join(vocab["operations"]),
+        "Допустимые сочетания (system · entity · operation → обязательные параметры → поля результата):",
     ]
+    for item in vocab["combinations"]:
+        required = ", ".join(item["required_params"]) or "—"
+        fields = ", ".join(item["result_fields"]) or "—"
+        entity = item["entity"] or "—"
+        lines.append(
+            f"- {item['system']} · {entity} · {item['operation']} → {required} → {fields}"
+        )
     return "\n".join(lines)
 
 
-def with_tools_if_desktop(prompt: str) -> str:
-    """Always attach the Constructor catalog.
+_TRANSPORT_HINT = (
+    "ВЫЗОВ ИНСТРУМЕНТА. Это markdown-блок в твоём ответе, backend выполнит его сам:\n"
+    "```constructor_tool\n"
+    '{"name": "имя_из_разрешённых", "step": "s1", "arguments": {}}\n'
+    "```\n"
+    "Не ходи в HTTP, curl и BACKEND_URL. Не придумывай результат: дождись ответа backend."
+)
 
-    The published agent used to skip this when tool context was not set yet,
-    so Cursor Cloud tried MCP / OIDC / curl on the VM instead of constructor_tool.
+
+def design_tools_block() -> str:
+    """Разрешённые на проектировании tools берём из контрактов, не из текста промпта."""
+    from app.services.local_mcp import design_context_tools
+
+    allowed = design_context_tools()
+    if not allowed:
+        return "На этапе проектирования инструменты не вызываются."
+    lines = [
+        "Доступные сейчас инструменты (только контекст, бизнес-данные не читаем):",
+    ]
+    for tool in allowed:
+        name = str(tool.get("name") or "")
+        entity = str(tool.get("entity") or "—")
+        lines.append(
+            f"- {name}: {tool.get('system')} · {entity} · {tool.get('operation')}"
+        )
+    lines.append("Другие инструменты сейчас отклоняются backend.")
+    lines.append(_TRANSPORT_HINT)
+    return "\n".join(lines)
+
+
+def step_candidates_block(draft: dict[str, Any] | None) -> str:
+    """Исполнителю показываем только кандидатов его шагов, не весь каталог."""
+    steps = [step for step in ((draft or {}).get("steps") or []) if isinstance(step, dict)]
+    if not steps:
+        return ""
+    lines = ["РАЗРЕШЁННЫЕ ИНСТРУМЕНТЫ ПО ШАГАМ. Вне этого списка вызовы отклоняются."]
+    for index, step in enumerate(steps, start=1):
+        step_id = str(step.get("id") or f"s{index}")
+        candidates = [str(item) for item in (step.get("tool_candidates") or [])]
+        names = ", ".join(candidates) if candidates else "нет кандидатов"
+        required = ", ".join(str(item) for item in (step.get("required_params") or []))
+        tail = f" параметры: {required}." if required else ""
+        lines.append(f"- {step_id}: {names}.{tail}")
+    lines.append(_TRANSPORT_HINT)
+    return "\n".join(lines)
+
+
+def tools_prompt_block(
+    *,
+    phase: str = "execute",
+    draft: dict[str, Any] | None = None,
+) -> str:
+    """Блок инструментов по фазе: проектирование видит контекст, прогон — кандидатов шага."""
+    from app.services.local_mcp import DESIGN_PHASE
+
+    if phase == DESIGN_PHASE:
+        return design_tools_block()
+    scoped = step_candidates_block(draft)
+    if scoped:
+        return "\n".join([scoped, _validation_rules_block()])
+    return "\n".join([_TRANSPORT_HINT, _validation_rules_block(), tool_catalog_block()])
+
+
+def with_tools_if_desktop(
+    prompt: str,
+    *,
+    phase: str = "execute",
+    draft: dict[str, Any] | None = None,
+) -> str:
+    """Прикладываем только то, что разрешено фазе.
+
+    Полный реестр в промпте заставлял модель рассуждать про транспорт вместо задачи,
+    поэтому для прогона отдаём кандидатов шагов, а для проектирования — контекст.
     """
-    return prompt.rstrip() + "\n\n" + tools_prompt_block() + "\n"
+    block = tools_prompt_block(phase=phase, draft=draft)
+    return prompt.rstrip() + "\n\n" + block + "\n"
 
 
 def extract_tool_calls(text: str) -> list[dict[str, Any]]:
@@ -426,6 +490,7 @@ def stream_cursor_with_tools(
     required_live_tools: list[str] | None = None,
     assumption_check: bool = False,
     draft: dict[str, Any] | None = None,
+    phase: str = "execute",
 ) -> Any:
     """Stream a Cursor run; if it asks for constructor_tool, execute and continue."""
     last = stream_run(agent_id, run_id, on_event=on_event)
@@ -499,7 +564,7 @@ def stream_cursor_with_tools(
             family = tool_family(name)
             arguments = call.get("arguments") or {}
             step = ledger.resolve(call) if ledger.enabled else None
-            rejection = _reject_off_contract(step, name)
+            rejection = _reject_off_phase(phase, name) or _reject_off_contract(step, name)
             if rejection:
                 results.append(
                     {
@@ -509,7 +574,7 @@ def stream_cursor_with_tools(
                         "validation": {
                             "data_status": "mismatch",
                             "reasons": [rejection],
-                            "next_action": "Возьми инструмент из кандидатов шага.",
+                            "next_action": "Возьми инструмент из разрешённых для этого шага.",
                         },
                         "error": rejection,
                     }
@@ -669,6 +734,22 @@ def stream_cursor_with_tools(
     return _attach_live_ok(last, successful, ledger)
 
 
+def _reject_off_phase(phase: str, name: str) -> str:
+    """Фазу объявляет контракт: на проектировании бизнес-данные не читаем."""
+    from app.services.local_mcp import tool_contracts
+
+    contract = tool_contracts().get(name)
+    if contract is None:
+        return ""
+    if phase in (contract.get("phases") or []):
+        return ""
+    return (
+        f"{name} недоступен на этапе проектирования "
+        f"({contract.get('system')}·{contract.get('entity')}·{contract.get('operation')}). "
+        "Опиши шаг в черновике, данные возьмём в пробном прогоне."
+    )
+
+
 def _reject_off_contract(step: dict[str, Any] | None, name: str) -> str:
     """Вызов вне кандидатов шага не исполняем — это ошибка выбора инструмента."""
     if step is None:
@@ -720,7 +801,7 @@ def _nudge_live_tools_prompt(pending: list[str]) -> str:
         "Ты ещё не получил ответ Constructor tool для: "
         f"{names}.\n"
         "Не используй BACKEND_URL, curl и HTTP с Cloud VM — на VM их нет, это не FAIL.\n"
-        "Верни ТОЛЬКО один блок ```constructor_tool с name из каталога Constructor "
+        "Верни ТОЛЬКО один блок ```constructor_tool с name из разрешённых для шага "
         f"(сейчас нужен {names}). Дождись фактов от backend, не останавливайся."
     )
 

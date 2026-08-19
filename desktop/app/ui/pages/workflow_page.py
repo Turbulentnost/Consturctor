@@ -295,6 +295,24 @@ def _take_words(text: str, count: int) -> str:
     return text[:end]
 
 
+def _stream_delta(streamed: str, chunk: str) -> str:
+    """Хвост куска с учётом перекрытия: backend может присылать скользящее окно."""
+    if not chunk:
+        return ""
+    if not streamed:
+        return chunk
+    if chunk.startswith(streamed):
+        return chunk[len(streamed) :]
+    if streamed.endswith(chunk) or chunk in streamed:
+        return ""
+    overlap = min(len(streamed), len(chunk))
+    while overlap > 0:
+        if streamed.endswith(chunk[:overlap]):
+            return chunk[overlap:]
+        overlap -= 1
+    return chunk
+
+
 def _visible_thinking(text: str) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
@@ -2361,7 +2379,10 @@ class WorkflowPage(QWidget):
             if shown.strip():
                 last = self._events[-1] if self._events else None
                 if last is not None and last.title == "Агент" and last.kind == "agent":
-                    last.body = (last.body or "") + shown
+                    delta = _stream_delta(last.body or "", shown)
+                    if not delta:
+                        return
+                    last.body = (last.body or "") + delta
                     if self._assistant_live is not None:
                         self._assistant_live.set_body_text(last.body)
                         self._scroll_feed_to_bottom()
@@ -2376,15 +2397,12 @@ class WorkflowPage(QWidget):
     def _append_thinking(self, incoming: str) -> None:
         if not incoming:
             return
-        if incoming.startswith(self._thinking_received) and len(incoming) >= len(self._thinking_received):
-            delta = incoming[len(self._thinking_received) :]
-            self._thinking_received = incoming
-        else:
-            delta = incoming
-            self._thinking_received += incoming
+        delta = _stream_delta(self._thinking_received, incoming)
+        if not delta:
+            return
+        self._thinking_received += delta
         self._thinking_text = self._thinking_received
-        if delta:
-            self._note_thinking_chunk(delta)
+        self._note_thinking_chunk(delta)
         self._ensure_thinking_pacer()
 
     def _note_thinking_chunk(self, delta: str) -> None:

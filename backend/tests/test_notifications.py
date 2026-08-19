@@ -30,9 +30,31 @@ def test_required_live_tools_include_notify() -> None:
     assert "notify" in required_live_tools_from_plan(plan)
 
 
-def test_continue_prompt_requires_notify_tool() -> None:
+def test_continue_prompt_requires_real_call_for_every_step() -> None:
     text = build_demo_continue_prompt(document_text="Следить за сроками")
-    assert "notify.send" in text
+    assert "закрывается вызовом инструмента" in text
+    assert "не считается выполнением" in text
+
+
+def test_notify_step_gets_notify_tool_as_candidate() -> None:
+    from app.services.workflows.cursor_tools import step_candidates_block
+    from app.services.workflows.playbook_validation import attach_tool_candidates
+
+    draft = attach_tool_candidates(
+        {
+            "steps": [
+                {
+                    "id": "s1",
+                    "title": "Сообщить получателю",
+                    "system": "constructor",
+                    "entity": "notification",
+                    "operation": "notify",
+                }
+            ]
+        }
+    )
+
+    assert "notify.send" in step_candidates_block(draft)
 
 
 def test_published_prompt_requires_notify_when_asked() -> None:

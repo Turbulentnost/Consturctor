@@ -285,8 +285,12 @@ def design_workflow(
     workflow_id: str,
     on_event: WorkflowEventCallback | None = None,
 ) -> WorkflowSchema:
-    """Спроектировать черновик инструкции; tools разрешены для видимости контекста."""
-    from app.services.workflows.cursor_tools import tools_prompt_block
+    """Спроектировать черновик инструкции; на этой фазе доступен только контекст."""
+    from app.services.local_mcp import DESIGN_PHASE
+    from app.services.workflows.cursor_tools import (
+        contract_vocabulary_block,
+        with_tools_if_desktop,
+    )
 
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     attachments = _load_attachments_payload(workflow_id)
@@ -295,12 +299,15 @@ def design_workflow(
     if not has_text and not images:
         raise WorkflowError("Нет материалов — загрузите описание бизнес-процесса или файлы.")
 
-    prompt = prompts.build_playbook_draft_prompt(
-        document_text=row.document_text,
-        title=row.title,
-        notes=row.notes or "",
-        document_name=row.document_name,
-        catalog=tools_prompt_block(),
+    prompt = with_tools_if_desktop(
+        prompts.build_playbook_draft_prompt(
+            document_text=row.document_text,
+            title=row.title,
+            notes=row.notes or "",
+            document_name=row.document_name,
+            vocabulary=contract_vocabulary_block(),
+        ),
+        phase=DESIGN_PHASE,
     )
     _emit(on_event, "decision", "Проектирую инструкцию по регламенту и проверяю доступный контекст.")
     _emit(on_event, "progress", "пишу черновик инструкции")
@@ -329,6 +336,7 @@ def design_workflow(
         workflow_id=workflow_id,
         mode="execute",
         assistant_as_thinking=True,
+        phase=DESIGN_PHASE,
     )
     draft = prompts.parse_playbook_draft(result.text or "")
     draft, validation = _validate_and_store_draft(db, row=row, draft=draft)
@@ -376,6 +384,9 @@ def _repair_draft(
     attempt: int = 1,
 ) -> tuple[dict[str, Any], Any]:
     """Неоднозначные шаги и несовместимые инструменты возвращаем проектировщику."""
+    from app.services.local_mcp import DESIGN_PHASE
+    from app.services.workflows.cursor_tools import contract_vocabulary_block
+
     if not row.exec_agent_id:
         return draft, validation
     _emit(
@@ -386,6 +397,7 @@ def _repair_draft(
     prompt = prompts.build_playbook_repair_prompt(
         draft=draft,
         issues=[issue.to_dict() for issue in validation.issues],
+        vocabulary=contract_vocabulary_block(),
     )
     try:
         run = cursor_client.create_run(row.exec_agent_id, prompt=prompt, mode="agent")
@@ -399,6 +411,7 @@ def _repair_draft(
             workflow_id=row.id,
             mode="execute",
             assistant_as_thinking=True,
+            phase=DESIGN_PHASE,
         )
     except CursorAgentError as exc:
         logger.warning("Draft repair failed id=%s: %s", row.id, exc)
@@ -533,7 +546,8 @@ def demo_workflow(
             notes=row.notes or "",
             document_name=row.document_name,
             draft=draft,
-        )
+        ),
+        draft=draft,
     )
     _emit(on_event, "decision", "Запускаю пробный прогон по описанию бизнес-процесса.")
     _emit(on_event, "progress", "создаю агента Cursor")
@@ -1362,7 +1376,8 @@ def _continue_demo_after_answers(
             document_name=row.document_name,
             plan=plan,
             draft=draft_of(row),
-        )
+        ),
+        draft=draft_of(row),
     )
     _emit(on_event, "decision", "Учитываю ответы и продолжаю пробный прогон.")
     _emit(on_event, "progress", "продолжаю прогон")
@@ -1911,6 +1926,7 @@ def _stream_run_with_tools(
     assumption_check: bool = False,
     draft: dict[str, Any] | None = None,
     assistant_as_thinking: bool = False,
+    phase: str = "execute",
 ):
     from app.services.workflows.cursor_tools import stream_cursor_with_tools
 
@@ -1932,6 +1948,7 @@ def _stream_run_with_tools(
         required_live_tools=required_live_tools,
         assumption_check=assumption_check,
         draft=draft,
+        phase=phase,
     )
 
 
@@ -1975,6 +1992,28 @@ def _payload_field_text(payload: dict, *keys: str) -> str:
             if isinstance(inner, str) and inner.strip():
                 return inner.replace("\ufffd", "")
     return ""
+
+
+def stream_delta(streamed: str, chunk: str) -> str:
+    """Хвост нового куска с учётом перекрытия.
+
+    Cursor присылает не только чистое продолжение, но и скользящее окно
+    (`ABCD`, затем `CDEF`). Без склейки по overlap текст в ленте заикается.
+    """
+    if not chunk:
+        return ""
+    if not streamed:
+        return chunk
+    if chunk.startswith(streamed):
+        return chunk[len(streamed) :]
+    if streamed.endswith(chunk) or chunk in streamed:
+        return ""
+    overlap = min(len(streamed), len(chunk))
+    while overlap > 0:
+        if streamed.endswith(chunk[:overlap]):
+            return chunk[overlap:]
+        overlap -= 1
+    return chunk
 
 
 def _cursor_chunks(event: str, payload: dict) -> list[tuple[str, str]]:
@@ -2021,16 +2060,10 @@ def _stream_run(
                     if not chunk:
                         continue
                     streamed = streamed_by_kind[kind]
-                    if chunk.startswith(streamed):
-                        delta = chunk[len(streamed) :]
-                        streamed_by_kind[kind] = chunk
-                    elif streamed and streamed.startswith(chunk):
-                        continue
-                    else:
-                        delta = chunk
-                        streamed_by_kind[kind] = streamed + chunk
+                    delta = stream_delta(streamed, chunk)
                     if not delta:
                         continue
+                    streamed_by_kind[kind] = streamed + delta
                     if kind == "thinking" or assistant_as_thinking:
                         thinking_parts.append(delta)
                         _emit(on_event, "thinking", delta)

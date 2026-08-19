@@ -467,9 +467,86 @@ def test_publish_allows_verified_playbook() -> None:
     _require_verified_playbook(row, {"status": "verified", "instructions": "x"})
 
 
-def test_draft_prompt_allows_tools_for_visibility_only() -> None:
+def test_draft_prompt_asks_for_json_only_without_transport_lecture() -> None:
     prompt = prompts.build_playbook_draft_prompt(document_text="регламент", title="Агент")
 
-    assert "constructor_tool" in prompt
-    assert "видимости контекста" in prompt
-    assert "НЕ выполняй бизнес-задачу" in prompt
+    # Транспорт вызова прикладывает фаза, проектировщик про него не рассуждает.
+    assert "constructor_tool" not in prompt
+    assert "вернуть JSON черновика" in prompt
+    assert "не решай" in prompt.casefold()
+
+
+def test_draft_prompt_carries_contract_vocabulary() -> None:
+    from app.services.workflows.cursor_tools import contract_vocabulary_block
+
+    prompt = prompts.build_playbook_draft_prompt(
+        document_text="регламент",
+        title="Агент",
+        vocabulary=contract_vocabulary_block(),
+    )
+
+    assert "СЛОВАРЬ КОНТРАКТОВ" in prompt
+    assert "из допустимых сочетаний" in prompt
+
+
+def test_design_phase_block_offers_only_context_tools() -> None:
+    from app.services.local_mcp import DESIGN_PHASE, design_context_tools
+    from app.services.workflows.cursor_tools import tools_prompt_block
+
+    block = tools_prompt_block(phase=DESIGN_PHASE)
+    allowed = {str(tool.get("name")) for tool in design_context_tools()}
+
+    assert allowed
+    for name in allowed:
+        assert name in block
+    # Бизнес-инструменты на проектировании не предлагаем.
+    assert "onec.sql_query" not in block
+    assert "turboproject" not in block
+
+
+def test_design_phase_rejects_business_tool() -> None:
+    from app.services.local_mcp import DESIGN_PHASE
+    from app.services.workflows.cursor_tools import _reject_off_phase
+
+    assert _reject_off_phase(DESIGN_PHASE, "onec.sql_query")
+    assert _reject_off_phase(DESIGN_PHASE, "users.current") == ""
+    assert _reject_off_phase("execute", "onec.sql_query") == ""
+
+
+def test_execute_block_scopes_tools_to_step_candidates() -> None:
+    from app.services.workflows.cursor_tools import tools_prompt_block
+
+    draft = attach_tool_candidates(_draft())
+    block = tools_prompt_block(draft=draft)
+
+    assert "s1" in block
+    assert "onec.erp_tasks_period" in block
+    # Полный каталог в промпт исполнителя не попадает.
+    assert "excel.create_workbook" not in block
+
+
+def test_step_outside_vocabulary_is_config_error() -> None:
+    draft = attach_tool_candidates(_draft(_onec_step(system="megacrm", operation="list")))
+
+    validation = validate_draft(draft)
+
+    assert validation.config_errors
+    assert "словаре контрактов" in validation.config_errors[0].message
+
+
+def test_unknown_operation_is_config_error() -> None:
+    draft = attach_tool_candidates(_draft(_onec_step(operation="teleport")))
+
+    validation = validate_draft(draft)
+
+    assert validation.config_errors
+
+
+def test_stream_delta_merges_overlapping_window() -> None:
+    from app.services.workflows.service import stream_delta
+
+    assert stream_delta("ABCD", "CDEF") == "EF"
+    assert stream_delta("ABCD", "ABCDEF") == "EF"
+    assert stream_delta("", "ABCD") == "ABCD"
+    assert stream_delta("ABCD", "BC") == ""
+    assert stream_delta("ABCD", "XY") == "XY"

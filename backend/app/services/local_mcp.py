@@ -700,6 +700,21 @@ _CONTRACTS: dict[str, tuple[str, str, str, list[str], list[str], str]] = {
 }
 
 
+DESIGN_PHASE = "design"
+EXECUTE_PHASE = "execute"
+
+# Фазы объявляет контракт, а не промпт. На проектировании доступны только tools,
+# которые показывают контекст самого агента и не читают бизнес-данные.
+# Новый context-tool достаточно добавить сюда — промпты не меняются.
+_DESIGN_PHASE_TOOLS = frozenset({"users.current"})
+
+
+def _phases_for(name: str) -> list[str]:
+    if name in _DESIGN_PHASE_TOOLS:
+        return [DESIGN_PHASE, EXECUTE_PHASE]
+    return [EXECUTE_PHASE]
+
+
 def _contract_for(name: str, execution: str) -> dict[str, Any]:
     system, entity, operation, filters, fields, pagination = _CONTRACTS.get(
         name, (execution or "desktop", "", "execute", [], [], "none")
@@ -711,6 +726,7 @@ def _contract_for(name: str, execution: str) -> dict[str, Any]:
         "required_filters": list(filters),
         "result_fields": list(fields),
         "pagination": pagination,
+        "phases": _phases_for(name),
     }
 
 
@@ -725,6 +741,67 @@ def list_tools() -> list[dict[str, Any]]:
 
 def tool_contracts() -> dict[str, dict[str, Any]]:
     return {str(tool["name"]): tool for tool in list_tools() if tool.get("name")}
+
+
+def tools_for_phase(phase: str) -> list[dict[str, Any]]:
+    wanted = (phase or "").strip().casefold() or EXECUTE_PHASE
+    return [tool for tool in list_tools() if wanted in (tool.get("phases") or [])]
+
+
+def design_context_tools() -> list[dict[str, Any]]:
+    """Tools, которые разрешены на проектировании: контекст, без бизнес-данных."""
+    return tools_for_phase(DESIGN_PHASE)
+
+
+def contract_vocabulary() -> dict[str, Any]:
+    """Измерения контрактов без имён инструментов — вход для проектировщика.
+
+    Проектировщик выбирает system/entity/operation отсюда, поэтому новый tool
+    расширяет словарь сам, без правок промптов.
+    """
+    systems: set[str] = set()
+    entities: set[str] = set()
+    operations: set[str] = set()
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for tool in list_tools():
+        system = str(tool.get("system") or "").strip()
+        entity = str(tool.get("entity") or "").strip()
+        operation = str(tool.get("operation") or "").strip()
+        if not system or not operation:
+            continue
+        systems.add(system)
+        operations.add(operation)
+        if entity:
+            entities.add(entity)
+        key = (system, entity, operation)
+        required = [str(item) for item in (tool.get("required_filters") or [])]
+        fields = [str(item) for item in (tool.get("result_fields") or [])]
+        group = grouped.get(key)
+        if group is None:
+            grouped[key] = {
+                "system": system,
+                "entity": entity,
+                "operation": operation,
+                # Минимально достаточный набор: его хватает хотя бы одному инструменту.
+                "required_params": sorted(required),
+                "result_fields": set(fields),
+                "pagination": str(tool.get("pagination") or "none"),
+            }
+            continue
+        if len(required) < len(group["required_params"]):
+            group["required_params"] = sorted(required)
+        group["result_fields"].update(fields)
+    combinations = [
+        {**group, "result_fields": sorted(group["result_fields"])}
+        for group in grouped.values()
+    ]
+    combinations.sort(key=lambda item: (item["system"], item["entity"], item["operation"]))
+    return {
+        "systems": sorted(systems),
+        "entities": sorted(entities),
+        "operations": sorted(operations),
+        "combinations": combinations,
+    }
 
 
 def candidates_for(
