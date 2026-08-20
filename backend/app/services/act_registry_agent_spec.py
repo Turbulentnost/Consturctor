@@ -24,6 +24,22 @@ DEFAULT_TASK = (
     "Сохрани act_porucheniya_*.xlsx на рабочий стол."
 )
 
+CURSOR_EXAMPLE_RUN = (
+    "Типовой прогон:\n"
+    "1. ```constructor_tool\n"
+    '{"name": "onec.act_porucheniya_registry", "arguments": {}}\n'
+    "```\n"
+    "2. ```constructor_tool\n"
+    '{"name": "excel.create_workbook", "arguments": {"filename": "act_porucheniya.xlsx", '
+    '"sheet": "Задачи ACT", "rows": []}}\n'
+    "```\n"
+    "3. При необходимости ```constructor_tool\n"
+    '{"name": "files.rename", "arguments": {"source": "file:///C:/Users/.../act.xlsx", '
+    '"dest_name": "Поручения"}}\n'
+    "```\n"
+    "RESULT: Excel на рабочем столе, краткий отчёт по числу ACT и задач."
+)
+
 GOAL = (
     "ACT-реестр: OData Document_ТД_Поручения → Excel «Задачи ACT» на рабочем столе — "
     "одна строка на задачу; дополнение из протокола совещания (--- ПРОТОКОЛ ---). "
@@ -37,7 +53,7 @@ CONSTRAINTS: list[str] = [
     "Handler: act_porucheniya_registry — см. ACT_REGISTRY.md §3–7.",
     "Цвет строки (заметная пастель): «Принято» — зелёный; иначе по сроку задачи (просрочено / ≤3 / 4–7 / 8–14 / >14 дн.). "
     "Колонка «Статус» — как в 1С (В работе, Принято, Создано, Отменено), не метка критичности.",
-    "Файл: act_porucheniya_{инициалы}_{workflow_id[:8]}.xlsx на Desktop.",
+    "Файл: act_porucheniya_{инициалы}_{workflow_id[:8]}.xlsx в out/ рабочей папки агента.",
 ]
 
 OUT_OF_SCOPE: list[str] = [
@@ -68,7 +84,7 @@ STEPS: list[dict[str, str]] = [
         "id": "excel",
         "title": "Excel",
         "action": "excel.create_workbook через DesktopHost",
-        "done_when": "desktop_path в tool_result",
+        "done_when": "workspace_path в tool_result",
     },
     {
         "id": "chat",
@@ -101,9 +117,32 @@ def build_agent_route_dict() -> dict[str, Any]:
         "version": 2,
         "tools": [
             "onec.act_porucheniya_registry",
-            "act_protocol_merge",
+            "excel.read_workbook",
             "excel.create_workbook",
+            "excel.edit_workbook",
+            "files.copy",
+            "files.rename",
+            "files.inspect",
+            "document.write_docx",
+            "document.append_docx",
+            "outlook.read_calendar",
+            "outlook.search_mail",
+            "code.write_python",
+            "code.run_python",
+            "notify.send",
+            "users.list",
         ],
+    }
+
+
+def build_playbook_dict(*, regulation: str = "") -> dict[str, Any]:
+    reg = (regulation or load_regulation_text()).strip()
+    return {
+        "instructions": reg[:12000],
+        "example_run": CURSOR_EXAMPLE_RUN,
+        "name": "ACT-реестр поручений",
+        "expected_result": "Excel на рабочем столе, ответ в чате.",
+        "from_regulation": True,
     }
 
 
@@ -156,7 +195,7 @@ def build_workflow_import_payload(
             "published": True,
             "can_publish": False,
             "tests_status": "pass",
-            "execution_backend": "mcp",
+            "execution_backend": "cursor",
             "runtime": {
                 "kind": "act_porucheniya",
                 "handler": "act_porucheniya_registry",
@@ -167,10 +206,11 @@ def build_workflow_import_payload(
             "seed": "act_porucheniya",
             "agent_route": route,
             "tools": route["tools"],
+            "playbook": build_playbook_dict(regulation=regulation),
         },
         "plan_agent_id": "",
         "plan_run_id": "",
-        "exec_agent_id": "mcp:act_porucheniya_registry",
+        "exec_agent_id": "",
         "exec_run_id": "",
         "last_result": "TESTS: PASS\nACT registry agent ready. See ACT_REGISTRY.md",
         "branch": "",

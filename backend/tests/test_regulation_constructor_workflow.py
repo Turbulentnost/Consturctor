@@ -24,7 +24,8 @@ def test_outlook_regulation_constructor() -> None:
     route = resolve_agent_route(wf)
     assert route.handler == "outlook_calendar"
     assert wf.phase == "tested"
-    assert (wf.local_run or {}).get("execution_backend") == "mcp"
+    assert (wf.local_run or {}).get("execution_backend") == "cursor"
+    assert (wf.local_run or {}).get("playbook", {}).get("instructions")
     tools = (wf.local_run or {}).get("tools") or []
     assert isinstance(tools, list)
 

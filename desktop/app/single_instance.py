@@ -14,9 +14,15 @@ class SingleInstance(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._server = QLocalServer(self)
-        QLocalServer.removeServer(APP_KEY)
         self._server.newConnection.connect(self._on_connection)
-        self._server.listen(APP_KEY)
+        if not self._server.listen(APP_KEY):
+            if not send_to_running("raise"):
+                QLocalServer.removeServer(APP_KEY)
+                self._server.listen(APP_KEY)
+
+    @property
+    def is_listening(self) -> bool:
+        return self._server.isListening()
 
     def _on_connection(self) -> None:
         socket = self._server.nextPendingConnection()

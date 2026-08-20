@@ -1,21 +1,19 @@
-"""Human-in-the-loop: карточка остаётся для редких опасных операций.
-
-Опубликованный агент работает как Cursor: обычные tools идут без подтверждения,
-чтобы он мог сам вызывать шаги и чинить ошибки."""
+"""Human-in-the-loop: запись — только после подтверждения на странице агента."""
 
 from __future__ import annotations
 
 import json
-import os
+import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from PySide6.QtCore import QEventLoop, QObject, Qt, QThread, Signal, Slot
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -24,30 +22,62 @@ from PySide6.QtWidgets import (
 
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 
-AUTONOMY_LEVEL = 3
+logger = logging.getLogger(__name__)
+
+AUTONOMY_LEVEL = 1
 HUMAN_REJECTED = "отклонено человеком"
 
-_CONFIRM_EXACT = frozenset(
+_NEVER_CONFIRM = frozenset({"notify.send", "notify"})
+
+_READ_EXACT = frozenset(
     {
-        "onec.odata_post",
-        "onec.odata_patch",
-        "onec.attach_file",
+        "web_search",
+        "site_browser",
+        "browser.search_web",
+        "browser.open_page",
+        "browser.list_installed_browsers",
+        "browser.screenshot",
+        "browser.get_page_html",
+        "outlook.search_mail",
+        "outlook.read_calendar",
+        "excel.list_files",
+        "excel.read_workbook",
+        "onec.odata_catalog",
+        "onec.odata_get",
+        "onec.sql_query",
+        "onec.erp_tasks_current",
+        "onec.erp_tasks_period",
+        "onec.erp_subordinate_tasks",
+        "onec.docflow_tasks",
+        "onec.meeting_service_notes",
+        "agent.wait",
+        "turboproject",
+        "users.list",
+        "users.current",
+        "users.subordinates",
+        "agent.schedule",
+        "agent.schedule.cancel",
     }
 )
-_READ_EXACT = frozenset()
-_READ_PREFIXES = ()
+_READ_PREFIXES = ("onec.search_", "onec.get_", "imap.")
 
 _host: "_ConfirmHost | None" = None
-_reveal: Callable[[], None] | None = None
-_inline_hosts: list[QWidget] = []
-_pending_loop: QEventLoop | None = None
-_pending_ok = False
+_away_notify: Callable[[str, str, str], None] | None = None
+_inline_hosts: dict[int, tuple[QWidget, str]] = {}
+_pending: list["_PendingConfirm"] = []
 
 _CARD_QSS = """
 QFrame#HitlCard {
     background: #E8F3FB;
     border: 1px solid #B7D4E8;
     border-radius: 16px;
+}
+"""
+_RESOLVED_QSS = """
+QFrame#HitlCard {
+    background: #F4F7F6;
+    border: 1px solid rgba(16,24,23,0.10);
+    border-radius: 10px;
 }
 """
 _ACCEPT_QSS = """
@@ -69,73 +99,360 @@ QPushButton:disabled { background: #F4F7F6; color: #9DB3AD; border-color: rgba(1
 """
 
 
+def never_confirm(name: str) -> bool:
+    return (name or "").strip() in _NEVER_CONFIRM
+
+
 def is_read_tool(name: str) -> bool:
     tool = (name or "").strip()
-    if tool in _CONFIRM_EXACT:
+    if tool in _NEVER_CONFIRM or tool in _READ_EXACT:
+        return True
+    return any(tool.startswith(prefix) for prefix in _READ_PREFIXES)
+
+
+def needs_confirmation(name: str) -> bool:
+    if never_confirm(name):
+        return False
+    return not is_read_tool(name)
+
+
+def workflow_id_from_arguments(arguments: dict | None) -> str:
+    args = arguments if isinstance(arguments, dict) else {}
+    ctx = args.get("runtime_context") if isinstance(args.get("runtime_context"), dict) else {}
+    return str(
+        args.get("workflow_id")
+        or args.get("agent_id")
+        or ctx.get("workflow_id")
+        or ctx.get("agent_id")
+        or ""
+    ).strip()
+
+
+_TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
+    "onec.odata_post": (
+        "Запись в 1С",
+        "Создаёт новый документ или элемент справочника в 1С. Это изменение базы, не чтение.",
+    ),
+    "onec.odata_patch": (
+        "Изменение в 1С",
+        "Меняет уже существующий объект в 1С. Указанные поля будут перезаписаны.",
+    ),
+    "onec.attach_file": (
+        "Файл в 1С",
+        "Прикрепляет файл из папки агента к документу в 1С.",
+    ),
+    "outlook.send_mail": (
+        "Отправка письма",
+        "Отправляет письмо через Outlook. Получатели его увидят сразу.",
+    ),
+    "email.send": (
+        "Отправка письма",
+        "Отправляет письмо через Outlook. Получатели его увидят сразу.",
+    ),
+    "email.create_draft": (
+        "Черновик письма",
+        "Создаёт черновик в Outlook. Письмо ещё не уйдёт, пока его не отправят.",
+    ),
+    "excel.create_workbook": (
+        "Создание Excel",
+        "Создаёт новую книгу Excel в папке агента.",
+    ),
+    "outlook.create_event": (
+        "Встреча в Outlook",
+        "Создаёт событие в календаре Outlook. В теме и тексте будет пометка, что это ИИ-агент.",
+    ),
+    "excel.edit_workbook": (
+        "Изменение Excel",
+        "Правит существующую книгу Excel в папке агента.",
+    ),
+    "code.write_python": (
+        "Запись кода",
+        "Сохраняет Python-файл в папке агента.",
+    ),
+    "code.run_python": (
+        "Запуск кода",
+        "Запускает Python-скрипт на этом компьютере.",
+    ),
+    "workspace.powershell_run": (
+        "Команда PowerShell",
+        "Выполняет команду PowerShell в папке агента.",
+    ),
+    "browser.click": (
+        "Клик в браузере",
+        "Нажимает элемент на открытой странице.",
+    ),
+    "browser.type_text": (
+        "Ввод в браузере",
+        "Вводит текст в поле на открытой странице.",
+    ),
+    "browser.navigate": (
+        "Переход в браузере",
+        "Открывает указанный адрес в браузере агента.",
+    ),
+    "plan_export": (
+        "Выгрузка с ЭТП",
+        "Ищет закупки по ключам и сохраняет Excel на рабочий стол.",
+    ),
+}
+
+_ENTITY_KINDS = (
+    ("Document_", "документ"),
+    ("Catalog_", "справочник"),
+    ("InformationRegister_", "регистр сведений"),
+    ("AccumulationRegister_", "регистр накопления"),
+    ("ChartOfCharacteristicTypes_", "план видов характеристик"),
+    ("Enum_", "перечисление"),
+)
+
+
+def _human_entity(entity: str) -> str:
+    raw = str(entity or "").strip()
+    if not raw:
+        return ""
+    kind = "объект 1С"
+    name = raw
+    for prefix, label in _ENTITY_KINDS:
+        if raw.startswith(prefix):
+            kind = label
+            name = raw[len(prefix) :]
+            break
+    name = name.replace("_", " ").strip()
+    if name:
+        return f"{kind} «{name}»"
+    return kind
+
+
+def _body_facts(body: object) -> list[str]:
+    if not isinstance(body, dict):
+        return []
+    facts: list[str] = []
+    number = str(body.get("Number") or body.get("Номер") or "").strip()
+    if number:
+        facts.append(f"номер {number}")
+    date = str(body.get("Date") or body.get("Дата") or "").strip()
+    if date:
+        facts.append(f"дата {date}")
+    posted = body.get("Posted")
+    if posted is False:
+        facts.append("черновик, без проведения")
+    elif posted is True:
+        facts.append("с проведением")
+    comment = str(body.get("Comment") or body.get("Комментарий") or "").strip()
+    if comment:
+        clipped = comment if len(comment) <= 220 else comment[:217].rstrip() + "…"
+        facts.append(f"комментарий: {clipped}")
+    return facts
+
+
+def explain_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
+    """Человеческое название и что сделает этот вызов."""
+    tool = (name or "").strip()
+    args = arguments if isinstance(arguments, dict) else {}
+    title, base = _TOOL_EXPLAIN.get(
+        tool,
+        (tool or "инструмент", "Выполнит действие во внешней системе. Без подтверждения операция не пройдёт."),
+    )
+    extra: list[str] = []
+    if tool in {"onec.odata_post", "onec.odata_patch"}:
+        entity = _human_entity(str(args.get("entity") or args.get("entitySet") or ""))
+        if entity:
+            verb = "создать" if tool == "onec.odata_post" else "изменить"
+            extra.append(f"Сейчас агент хочет {verb} {entity}.")
+        extra.extend(_body_facts(args.get("body")))
+        ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
+        if tool == "onec.odata_patch" and ref_key:
+            extra.append(f"объект {ref_key}")
+    elif tool == "onec.attach_file":
+        filename = str(args.get("filename") or "").strip()
+        if filename:
+            extra.append(f"Файл: {filename}.")
+    elif tool in {"excel.create_workbook", "excel.edit_workbook"}:
+        filename = str(args.get("filename") or args.get("path") or "").strip()
+        if filename:
+            extra.append(f"Файл: {filename}.")
+    elif tool == "outlook.create_event":
+        subject = str(args.get("subject") or args.get("title") or "").strip()
+        start = str(args.get("start") or args.get("start_at") or "").strip()
+        batch = args.get("events")
+        if isinstance(batch, list) and batch:
+            extra.append(f"Встреч: {len(batch)}.")
+        if subject:
+            extra.append(f"Тема: {subject}.")
+        if start:
+            extra.append(f"Начало: {start}.")
+    elif tool in {"outlook.send_mail", "email.send", "email.create_draft"}:
+        to = args.get("to") or args.get("recipients") or args.get("email")
+        subject = str(args.get("subject") or args.get("тема") or "").strip()
+        if to:
+            extra.append(f"Кому: {to}.")
+        if subject:
+            extra.append(f"Тема: {subject}.")
+    parts = [base]
+    if extra:
+        parts.append(" ".join(extra))
+    return title, " ".join(part for part in parts if part).strip()
+
+
+def host_is_eligible(*, wanted: str, host_workflow_id: str, visible: bool) -> bool:
+    """Синий блок только на видимой formation/run. Чужой агент не перехватывает."""
+    if not visible:
+        return False
+    if wanted and host_workflow_id and host_workflow_id != wanted:
+        return False
+    return True
+
+
+def page_is_in_view(host: QWidget) -> bool:
+    if host is None or not host.isVisible():
+        return False
+    window = host.window()
+    if window is None or not window.isVisible() or bool(window.isMinimized()):
         return False
     return True
 
 
 def install_confirm_host(parent: QObject | None = None) -> None:
-    """Создать диалог подтверждения на GUI-потоке (вызывать из окна приложения)."""
     global _host
     if _host is None:
         _host = _ConfirmHost(parent)
 
 
 def set_reveal_callback(callback: Callable[[], None] | None) -> None:
-    global _reveal
-    _reveal = callback
+    """Сохранено для совместимости. Окно больше не поднимаем сами."""
+    _ = callback
 
 
-def register_inline_host(host: QWidget) -> None:
-    if host not in _inline_hosts:
-        _inline_hosts.append(host)
+def set_away_notify_callback(callback: Callable[[str, str, str], None] | None) -> None:
+    global _away_notify
+    _away_notify = callback
+
+
+def register_inline_host(host: QWidget, workflow_id: str = "") -> None:
+    _inline_hosts[id(host)] = (host, str(workflow_id or "").strip())
+
+
+def set_host_workflow_id(host: QWidget, workflow_id: str) -> None:
+    wid = str(workflow_id or "").strip()
+    _inline_hosts[id(host)] = (host, wid)
+    if wid:
+        attach_pending_for(wid)
 
 
 def unregister_inline_host(host: QWidget) -> None:
-    if host in _inline_hosts:
-        _inline_hosts.remove(host)
+    _inline_hosts.pop(id(host), None)
 
 
-def _active_inline_host() -> QWidget | None:
-    visible: QWidget | None = None
-    fallback: QWidget | None = None
-    for host in reversed(_inline_hosts):
+def has_pending_for(workflow_id: str) -> bool:
+    wanted = str(workflow_id or "").strip()
+    return any(item.workflow_id == wanted and not item.answered for item in _pending)
+
+
+def notification_opens_live(workflow_id: str) -> bool:
+    """Клик по уведомлению: живой агент, если ждём подтверждение."""
+    return has_pending_for(workflow_id)
+
+
+def attach_feed_widget(widget: QWidget, workflow_id: str = "") -> bool:
+    """Повесить виджет в ленту видимой formation/run страницы."""
+    host = _active_inline_host(str(workflow_id or "").strip())
+    attach = getattr(host, "attach_hitl_card", None) if host is not None else None
+    if not callable(attach):
+        return False
+    attach(widget)
+    return True
+
+
+def attach_pending_for(workflow_id: str) -> None:
+    wanted = str(workflow_id or "").strip()
+    if not wanted:
+        return
+    host = _active_inline_host(wanted)
+    if host is None:
+        return
+    attach = getattr(host, "attach_hitl_card", None)
+    if not callable(attach):
+        return
+    for item in _pending:
+        if item.workflow_id != wanted or item.attached:
+            continue
+        attach(item.card)
+        item.attached = True
+
+
+def _active_inline_host(workflow_id: str = "") -> QWidget | None:
+    wanted = str(workflow_id or "").strip()
+    unbound: QWidget | None = None
+    for host, wid in reversed(list(_inline_hosts.values())):
         if not hasattr(host, "attach_hitl_card"):
             continue
-        fallback = host
-        if host.isVisible():
-            visible = host
-            break
-    return visible or fallback
+        visible = page_is_in_view(host)
+        if not host_is_eligible(wanted=wanted, host_workflow_id=wid, visible=visible):
+            continue
+        if wanted and wid == wanted:
+            return host
+        if wanted and not wid:
+            unbound = host
+            continue
+        if not wanted:
+            return host
+    return unbound
+
+
+@dataclass
+class _PendingConfirm:
+    workflow_id: str
+    card: QWidget
+    attached: bool = False
+    answered: bool = False
 
 
 class HitlConfirmCard(QFrame):
     accepted = Signal()
     rejected = Signal()
 
-    def __init__(self, tool: str, preview: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        tool: str,
+        preview: str,
+        parent: QWidget | None = None,
+        arguments: dict | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("HitlCard")
         self.setStyleSheet(_CARD_QSS)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        title = QLabel(f"Агент хочет выполнить «{tool}».")
-        title.setFont(app_font(13, QFont.Weight.DemiBold))
-        title.setWordWrap(True)
-        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        body = QLabel(preview or "Без аргументов.")
-        body.setFont(app_font(12))
-        body.setWordWrap(True)
-        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        body.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        hint = QLabel("Разрешить выполнение? Без подтверждения операция будет отклонена.")
-        hint.setFont(app_font(11))
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #5B6B74; background: transparent;")
+        self._human_title, explanation = explain_tool(tool, arguments)
+        self._title = QLabel(f"Агент хочет: {self._human_title}")
+        self._title.setFont(app_font(13, QFont.Weight.DemiBold))
+        self._title.setWordWrap(True)
+        self._title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        self._tech = QLabel(f"Инструмент «{tool}».")
+        self._tech.setFont(app_font(11))
+        self._tech.setWordWrap(True)
+        self._tech.setStyleSheet("color: #5B6B74; background: transparent;")
+        self._what = QLabel(explanation)
+        self._what.setFont(app_font(12))
+        self._what.setWordWrap(True)
+        self._what.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._what.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        self._body = QLabel(preview or "")
+        self._body.setFont(app_font(11))
+        self._body.setWordWrap(True)
+        self._body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._body.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        self._params = QLabel("Параметры запроса")
+        self._params.setFont(app_font(11, QFont.Weight.DemiBold))
+        self._params.setStyleSheet("color: #5B6B74; background: transparent;")
+        self._hint = QLabel("Разрешить выполнение? Без подтверждения операция будет отклонена.")
+        self._hint.setFont(app_font(11))
+        self._hint.setWordWrap(True)
+        self._hint.setStyleSheet("color: #5B6B74; background: transparent;")
+        self._params.hide()
+        self._body.hide()
+        self._hint.hide()
         self._status = QLabel("")
-        self._status.setFont(app_font(11, QFont.Weight.DemiBold))
-        self._status.setStyleSheet("color: #08745F; background: transparent;")
+        self._status.setFont(app_font(12, QFont.Weight.Medium))
+        self._status.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         self._status.hide()
         self._reject = QPushButton("не принимать")
         self._reject.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -150,58 +467,50 @@ class HitlConfirmCard(QFrame):
         self._accept.setStyleSheet(_ACCEPT_QSS)
         self._reject.clicked.connect(self.rejected.emit)
         self._accept.clicked.connect(self.accepted.emit)
-        buttons = QHBoxLayout()
+        self._buttons = QWidget()
+        self._buttons.setStyleSheet("background: transparent;")
+        buttons = QHBoxLayout(self._buttons)
         buttons.setContentsMargins(0, 4, 0, 0)
         buttons.setSpacing(8)
         buttons.addWidget(self._reject, 0)
         buttons.addStretch(1)
         buttons.addWidget(self._accept, 0)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(8)
-        lay.addWidget(title)
-        if preview:
-            lay.addWidget(body)
-        lay.addWidget(hint)
-        lay.addWidget(self._status)
-        lay.addLayout(buttons)
+        self._detail = [
+            self._title,
+            self._tech,
+            self._what,
+            self._params,
+            self._body,
+            self._hint,
+            self._buttons,
+        ]
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(12, 10, 12, 10)
+        self._layout.setSpacing(6)
+        self._layout.addWidget(self._title)
+        self._layout.addWidget(self._tech)
+        self._layout.addWidget(self._what)
+        self._layout.addWidget(self._status)
+        self._layout.addWidget(self._buttons)
 
     def set_resolved(self, accepted: bool) -> None:
-        self._reject.setEnabled(False)
-        self._accept.setEnabled(False)
-        self._status.setText("Принято" if accepted else "Отклонено")
-        self._status.setStyleSheet(
-            ("color: #08745F; background: transparent;" if accepted else "color: #9B1C1C; background: transparent;")
-        )
+        for widget in self._detail:
+            widget.hide()
+        self.setStyleSheet(_RESOLVED_QSS)
+        self._layout.setContentsMargins(12, 8, 12, 8)
+        self._layout.setSpacing(0)
+        verb = "подтвердили" if accepted else "отклонили"
+        self._status.setText(f"Вы {verb}: {self._human_title}")
+        self._status.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         self._status.show()
 
-
-def _auto_approve_enabled() -> bool:
-    return os.environ.get("AUTO_APPROVE_AGENT_TOOLS", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
+    def resolved_text(self) -> str:
+        return self._status.text()
 
 
-def reject_pending_confirm() -> None:
-    global _pending_ok, _pending_loop
-    loop = _pending_loop
-    _pending_ok = False
-    if loop is not None:
-        loop.quit()
-
-
-def confirm_level1_tool(
-    tool: str,
-    arguments: dict | None = None,
-    *,
-    auto_approve: bool = False,
-) -> bool:
-    """True — можно вызывать инструмент. Read-инструменты без диалога."""
-    if auto_approve or _auto_approve_enabled():
-        return True
-    if is_read_tool(tool):
+def confirm_level1_tool(tool: str, arguments: dict | None = None) -> bool:
+    """True — можно вызывать инструмент."""
+    if not needs_confirmation(tool):
         return True
     if QApplication.instance() is None:
         return False
@@ -209,7 +518,7 @@ def confirm_level1_tool(
 
 
 class _ConfirmHost(QObject):
-    asked = Signal(str, str)
+    asked = Signal(str, object)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -218,77 +527,82 @@ class _ConfirmHost(QObject):
 
     def confirm(self, tool: str, arguments: dict) -> bool:
         preview = _preview_arguments(arguments)
+        workflow_id = workflow_id_from_arguments(arguments)
         app = QApplication.instance()
         if app is not None and QThread.currentThread() is app.thread():
-            return self._show(tool, preview)
-        self.asked.emit(tool, preview)
+            return self._show(tool, preview, workflow_id, arguments)
+        self.asked.emit(tool, (preview, workflow_id, arguments))
         return self._ok
 
-    @Slot(str, str)
-    def _on_ask(self, tool: str, preview: str) -> None:
-        self._ok = self._show(tool, preview)
+    @Slot(str, object)
+    def _on_ask(self, tool: str, payload: object) -> None:
+        preview, workflow_id, arguments = "", "", {}
+        if isinstance(payload, tuple) and len(payload) >= 2:
+            preview = str(payload[0] or "")
+            workflow_id = str(payload[1] or "")
+            if len(payload) >= 3 and isinstance(payload[2], dict):
+                arguments = payload[2]
+        else:
+            preview = str(payload or "")
+        self._ok = self._show(tool, preview, workflow_id, arguments)
 
-    def _show(self, tool: str, preview: str) -> bool:
-        if _reveal is not None:
-            try:
-                _reveal()
-            except Exception:  # noqa: BLE001
-                pass
-        host = _active_inline_host()
-        if host is not None:
-            return self._show_inline(host, tool, preview)
-        return self._show_box(tool, preview)
-
-    def _show_inline(self, host: QWidget, tool: str, preview: str) -> bool:
-        global _pending_loop, _pending_ok
+    def _show(self, tool: str, preview: str, workflow_id: str, arguments: dict | None = None) -> bool:
         loop = QEventLoop(self)
-        _pending_loop = loop
-        _pending_ok = False
         answered = False
-        card = HitlConfirmCard(tool, preview)
+        accepted = False
+        card = HitlConfirmCard(tool, preview, arguments=arguments)
+        item = _PendingConfirm(workflow_id=workflow_id, card=card, attached=False)
+        _pending.append(item)
 
         def _accept() -> None:
-            nonlocal answered
-            global _pending_ok
+            nonlocal answered, accepted
             answered = True
-            _pending_ok = True
+            accepted = True
+            item.answered = True
             card.set_resolved(True)
             loop.quit()
 
         def _reject() -> None:
-            nonlocal answered
-            global _pending_ok
+            nonlocal answered, accepted
             answered = True
-            _pending_ok = False
+            accepted = False
+            item.answered = True
             card.set_resolved(False)
             loop.quit()
 
         card.accepted.connect(_accept)
         card.rejected.connect(_reject)
-        attach = getattr(host, "attach_hitl_card", None)
-        if callable(attach):
-            attach(card)
-        # Rebuilds or window activate can stop the loop without a click.
-        # Do not treat that as «отклонено человеком».
+
+        host = _active_inline_host(workflow_id)
+        if host is not None:
+            attach = getattr(host, "attach_hitl_card", None)
+            if callable(attach):
+                attach(card)
+                item.attached = True
+        _notify_away(workflow_id, tool, preview, arguments)
+
         while not answered:
             loop.exec()
-        _pending_loop = None
-        return _pending_ok
+        if item in _pending:
+            _pending.remove(item)
+        return accepted
 
-    def _show_box(self, tool: str, preview: str) -> bool:
-        parent = _active_window()
-        text = f"Агент хочет выполнить «{tool}»."
-        if preview:
-            text += f"\n\nАргументы:\n{preview}"
-        text += "\n\nРазрешить выполнение? Без подтверждения операция будет отклонена."
-        answer = QMessageBox.question(
-            parent,
-            "Подтверждение человека",
-            text,
-            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        return answer == QMessageBox.StandardButton.Ok
+
+def _notify_away(
+    workflow_id: str,
+    tool: str,
+    preview: str,
+    arguments: dict | None = None,
+) -> None:
+    if _away_notify is None:
+        return
+    title, explanation = explain_tool(tool, arguments)
+    body = f"{title}. {explanation}".strip()
+    _ = preview
+    try:
+        _away_notify(workflow_id, tool, body)
+    except Exception:  # noqa: BLE001
+        logger.warning("HITL Windows notify failed tool=%s", tool, exc_info=True)
 
 
 def _bridge() -> _ConfirmHost:
@@ -301,20 +615,17 @@ def _bridge() -> _ConfirmHost:
     return _host
 
 
-def _active_window() -> QWidget | None:
-    app = QApplication.instance()
-    if app is None:
-        return None
-    return app.activeWindow()
-
-
 def _preview_arguments(arguments: dict) -> str:
     if not arguments:
         return ""
+    skip = {"runtime_context", "workflow_id", "agent_id"}
+    shown = {key: value for key, value in arguments.items() if key not in skip}
+    if not shown:
+        return ""
     try:
-        text = json.dumps(arguments, ensure_ascii=False, indent=2, default=str)
+        text = json.dumps(shown, ensure_ascii=False, indent=2, default=str)
     except TypeError:
-        text = str(arguments)
+        text = str(shown)
     if len(text) > 4000:
         return text[:4000].rstrip() + "…"
     return text

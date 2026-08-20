@@ -527,10 +527,30 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "filename": {"type": "string"},
             "operations": {"type": "array"},
         }),
-        ("files.copy", "Скопировать локальный файл (Desktop, file:///) под новым именем.", {
+        ("files.copy", "Скопировать локальный файл в рабочую папку агента (out/).", {
             "source": {"type": "string"},
             "dest": {"type": "string"},
             "dest_name": {"type": "string"},
+        }),
+        ("files.rename", "Переименовать файл в рабочей папке агента.", {
+            "source": {"type": "string"},
+            "dest_name": {"type": "string"},
+        }),
+        ("files.inspect", "Проверить файлы: FullName, размер (байты), дата изменения. Вызови перед RESULT для каждого созданного файла.", {
+            "paths": {"type": "array", "items": {"type": "string"}},
+            "path": {"type": "string"},
+        }),
+        ("document.write_docx", "Создать .docx в out/ рабочей папки агента (title + paragraphs).", {
+            "filename": {"type": "string"},
+            "path": {"type": "string"},
+            "title": {"type": "string"},
+            "paragraphs": {"type": "array", "items": {"type": "string"}},
+            "save_to_desktop": {"type": "boolean"},
+        }),
+        ("document.append_docx", "Дописать раздел в конец .docx.", {
+            "path": {"type": "string"},
+            "heading": {"type": "string"},
+            "paragraphs": {"type": "array", "items": {"type": "string"}},
         }),
         ("workspace.powershell_run", "PowerShell только в папке агента.", {
             "command": {"type": "string"},

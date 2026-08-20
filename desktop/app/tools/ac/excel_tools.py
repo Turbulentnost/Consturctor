@@ -71,6 +71,32 @@ def _ensure_xlsx(name: str) -> str:
     return name
 
 
+def _resolve_workbook_path(workspace, filename: str, *, must_exist: bool = False) -> Path:
+    """Путь к .xlsx в out/ или корне рабочей папки агента."""
+    name = _ensure_xlsx(filename)
+    candidates = [
+        workspace.resolve_output(name, must_exist=False),
+        workspace.resolve(name, must_exist=False),
+    ]
+    if must_exist:
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        raise WorkspaceError(f"Файл не найден: {name}")
+    return candidates[0]
+
+
+def _glob_desktop_xlsx(pattern: str) -> list[Path]:
+    """Найти .xlsx на рабочем столе Windows (самые новые первыми)."""
+    from app.tools.plan_export import desktop_dir
+
+    return sorted(
+        desktop_dir().glob(pattern),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+
+
 def _resolve_excel_read_path(input_data: dict[str, Any], workspace) -> Path:
     """Прочитать .xlsx из папки агента или с рабочего стола пользователя."""
     from urllib.parse import unquote, urlparse
@@ -89,19 +115,23 @@ def _resolve_excel_read_path(input_data: dict[str, Any], workspace) -> Path:
         else:
             candidate = raw
         path = Path(candidate).expanduser()
-        if "*" in path.name or "?" in path.name:
-            from app.tools.plan_export import desktop_dir
+        is_bare_name = not path.is_absolute() and len(path.parts) == 1
 
+        if is_bare_name or "*" in path.name or "?" in path.name:
             pattern = path.name
-            matches = sorted(
-                desktop_dir().glob(pattern),
-                key=lambda item: item.stat().st_mtime,
-                reverse=True,
-            )
+            matches = _glob_desktop_xlsx(pattern)
             if not matches:
-                raise WorkspaceError(f"На рабочем столе нет файлов по маске: {pattern}")
-            path = matches[0]
-        path = path.resolve()
+                if "*" in pattern or "?" in pattern:
+                    raise WorkspaceError(f"На рабочем столе нет файлов по маске: {pattern}")
+                raise WorkspaceError(f"На рабочем столе нет файла: {pattern}")
+            path = matches[0].resolve()
+        else:
+            path = path.resolve()
+            if path.suffix.lower() != ".xlsx":
+                raise WorkspaceError("Нужен файл .xlsx")
+            if not path.is_file():
+                raise WorkspaceError(f"Файл не найден: {path}")
+
         if path.suffix.lower() != ".xlsx":
             raise WorkspaceError("Нужен файл .xlsx")
         if not path.is_file():
@@ -114,6 +144,10 @@ def _resolve_excel_read_path(input_data: dict[str, Any], workspace) -> Path:
     filename = str(input_data.get("filename") or "").strip()
     if not filename:
         raise WorkspaceError("Укажите filename или desktop_path")
+    try:
+        return _resolve_workbook_path(workspace, filename, must_exist=True)
+    except WorkspaceError:
+        pass
     desktop_candidate = desktop_dir() / Path(filename).name
     if desktop_candidate.is_file():
         return desktop_candidate.resolve()
@@ -306,7 +340,7 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
                         },
                         "save_to_desktop": {
                             "type": "boolean",
-                            "description": "Дополнительно сохранить копию на рабочий стол Windows",
+                            "description": "Копия на рабочий стол — только если пользователь явно просил",
                         },
                         "overwrite": {"type": "boolean"},
                     },
@@ -323,7 +357,7 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
 
         try:
             workspace = self._workspace(input_data)
-            path = workspace.resolve(_ensure_xlsx(input_data.get("filename", "")))
+            path = workspace.resolve_output(_ensure_xlsx(input_data.get("filename", "")))
         except WorkspaceError as exc:
             return self._fail("WORKSPACE_ERROR", str(exc))
 
@@ -402,12 +436,24 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
         try:
             workbook.save(path)
             if input_data.get("save_to_desktop"):
+                from datetime import datetime
+
                 from app.tools.plan_export import desktop_dir
 
-                desktop_path = desktop_dir() / path.name
                 import shutil
 
-                shutil.copy2(path, desktop_path)
+                desktop_target = desktop_dir() / path.name
+                try:
+                    shutil.copy2(path, desktop_target)
+                    desktop_path = desktop_target
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) != 32:
+                        raise
+                    alt = desktop_target.with_stem(
+                        f"{desktop_target.stem}_{datetime.now().strftime('%H%M%S')}"
+                    )
+                    shutil.copy2(path, alt)
+                    desktop_path = alt
         except Exception as exc:  # noqa: BLE001
             return self._fail("EXCEL_WRITE_ERROR", str(exc))
         finally:
@@ -472,8 +518,10 @@ class ExcelEditWorkbookTool(_WorkspaceTool):
 
         try:
             workspace = self._workspace(input_data)
-            path = workspace.resolve(
-                _ensure_xlsx(input_data.get("filename", "")), must_exist=True
+            path = _resolve_workbook_path(
+                workspace,
+                str(input_data.get("filename", "")),
+                must_exist=True,
             )
         except WorkspaceError as exc:
             return self._fail("WORKSPACE_ERROR", str(exc))

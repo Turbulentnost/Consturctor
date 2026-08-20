@@ -40,16 +40,17 @@ def launcher_executable(root: Path | None = None) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _frozen_self_command(*flags: str) -> list[str]:
+    return [str(Path(sys.executable).resolve()), *flags]
+
+
 def build_host_command(*, root: Path | None = None) -> list[str]:
     base = root or constructor_root()
     bundled = host_executable(base)
     if bundled is not None:
         return [str(bundled)]
     if getattr(sys, "frozen", False):
-        py = shutil.which("py")
-        if py:
-            return [py, "-3.12", "-m", "platform_desktop_host.main"]
-        raise RuntimeError("DesktopHost.exe не найден рядом с ConstructorDesktop.exe")
+        return _frozen_self_command("--desktop-host")
     py = shutil.which("py") or sys.executable
     cmd = [py]
     if py.casefold().endswith("py.exe") or Path(py).name.casefold() == "py":
@@ -64,10 +65,7 @@ def build_launcher_command(*, root: Path | None = None) -> list[str]:
     if bundled is not None:
         return [str(bundled)]
     if getattr(sys, "frozen", False):
-        py = shutil.which("py")
-        if py:
-            return [py, "-3.12", "-m", "platform_desktop_launcher.main"]
-        raise RuntimeError("DesktopLauncher.exe не найден рядом с ConstructorDesktop.exe")
+        return _frozen_self_command("--desktop-launcher")
     py = shutil.which("py") or sys.executable
     cmd = [py]
     if py.casefold().endswith("py.exe") or Path(py).name.casefold() == "py":

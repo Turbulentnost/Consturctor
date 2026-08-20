@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -19,6 +20,7 @@ from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 from app.ui.widgets.markdown_body import MarkdownBody
 
 _LONG_PREVIEW = 360
+_TOOL_DETAIL_MAX_H = 220
 
 _COLLAPSE_HEADER = """
 QFrame#cursorcollapse {
@@ -77,6 +79,8 @@ def resolve_feed_kind(*, role: str = "", title: str = "", kind: str = "") -> str
     folded = (title or "").strip().casefold()
     if folded in {"план", "шаги плана"}:
         return "plan"
+    if folded in {"результат", "результат тестового прогона"}:
+        return "result"
     if folded == "ошибка":
         return "error"
     if folded in {"thinking", "планирование"}:
@@ -122,19 +126,14 @@ def format_collection_result(result: Any) -> str | None:
 
 
 def format_tool_detail(arguments: Any = None, result: Any = None) -> str:
+    """Только выход инструмента. Вход (arguments) в ленту не кладём."""
+    _ = arguments
     friendly = format_collection_result(result)
     if friendly:
         return friendly
-    parts: list[str] = []
-    if arguments not in (None, {}, ""):
-        parts.append("Аргументы")
-        parts.append(_pretty(arguments))
     if result not in (None, {}, ""):
-        parts.append("Результат")
-        parts.append(_pretty(result))
-    elif arguments not in (None, {}, ""):
-        parts.append("Ожидание результата…")
-    return "\n\n".join(parts) if parts else "Нет данных"
+        return _pretty(result)
+    return "Ожидание результата…"
 
 
 def _row_title(row: Any) -> str:
@@ -171,61 +170,32 @@ class _WrapLabel(QLabel):
         super().__init__(text, parent)
         self.setWordWrap(True)
         self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-
-    def setText(self, text: str) -> None:  # noqa: N802
-        super().setText(text)
-        self.updateGeometry()
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
         return True
 
-    def _layout_width(self) -> int:
-        width = self.width()
-        if width >= 40:
-            return width
-        max_w = self.maximumWidth()
-        if 0 < max_w < 16777215:
-            return max_w
+    def _available_width(self) -> int:
+        w = self.width()
+        if w >= 80:
+            return w
         parent = self.parentWidget()
         while parent is not None:
-            parent_max = parent.maximumWidth()
-            if 0 < parent_max < 16777215:
-                return max(40, parent_max)
-            if parent.width() >= 40:
+            if parent.width() >= 80:
                 return parent.width()
             parent = parent.parentWidget()
         return 420
 
-    def _text_height(self, width: int) -> int:
-        text = self.text() or ""
-        if not text.strip():
-            return self.fontMetrics().height()
-        rect = self.fontMetrics().boundingRect(
-            0,
-            0,
-            max(40, width),
-            10000,
-            int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
-            text,
-        )
-        return max(self.fontMetrics().height(), rect.height() + 4)
-
     def heightForWidth(self, width: int) -> int:  # noqa: N802
-        return self._text_height(width)
+        return max(super().heightForWidth(max(80, width)), 0)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        width = self._layout_width()
-        return QSize(width, self._text_height(width))
+        w = self._available_width()
+        return QSize(w, self.heightForWidth(w))
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
-        width = min(self._layout_width(), 200)
-        return QSize(0, self._text_height(width))
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self.updateGeometry()
+        return QSize(0, 0)
 
 
 class _CollapseHeader(QFrame):
@@ -261,6 +231,9 @@ class _CollapseHeader(QFrame):
         self._title.setWordWrap(True)
         row.addWidget(self._chevron, 0, Qt.AlignmentFlag.AlignTop)
         row.addWidget(self._title, 1)
+
+    def set_title(self, title: str) -> None:
+        self._title.setText(title)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
@@ -304,7 +277,6 @@ class CursorFeedItem(QFrame):
         action_key: str = "",
         event_key: str = "",
         expanded: bool = False,
-        text_color: str = "",
         arguments: Any = None,
         result: Any = None,
         parent: QWidget | None = None,
@@ -318,14 +290,13 @@ class CursorFeedItem(QFrame):
         self._action_key = action_key
         self._event_key = event_key
         self._expanded = expanded
-        self._text_color = (text_color or "").strip()
         if kind == "tool" and not self._detail:
             self._detail = format_tool_detail(arguments, result)
         if not self._detail:
             self._detail = self._text
         self.setStyleSheet("background: transparent;")
         self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._header: _CollapseHeader | None = None
         self._detail_frame: QFrame | None = None
         self._detail_label: _WrapLabel | None = None
@@ -345,7 +316,6 @@ class CursorFeedItem(QFrame):
                 self._plain_label.set_markdown(self._text)
             elif hasattr(self._plain_label, "setText"):
                 self._plain_label.setText(self._text)
-        self.updateGeometry()
 
     def set_tool_detail(self, detail: str) -> None:
         """Обновить вывод инструмента, не трогая шапку и не пересобирая ленту."""
@@ -354,12 +324,33 @@ class CursorFeedItem(QFrame):
         self._detail = body
         if self._detail_label is not None:
             self._detail_label.setText(body)
+        if self._kind == "tool" and body and body not in {"Выполняется…", "Готово"}:
+            self.set_expanded(True)
+
+    def set_header_title(self, title: str) -> None:
+        self._title = title or self._title
+        if self._header is not None:
+            self._header.set_title(self._title)
+
+    def set_expanded(self, expanded: bool) -> None:
+        if bool(self._expanded) == bool(expanded):
+            return
+        self._expanded = bool(expanded)
+        if self._header is not None:
+            self._header.set_expanded(self._expanded)
+        if self._detail_frame is not None:
+            self._detail_frame.setVisible(self._expanded)
+        if self._preview is not None:
+            self._preview.setVisible(not self._expanded)
+        if self._toggle is not None:
+            self._toggle.setText("Свернуть" if self._expanded else "Показать полностью")
+        self.expand_toggled.emit(self._event_key, self._expanded)
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 2, 0, 8)
         root.setSpacing(4)
-        if self._kind in {"thinking", "plan", "tool"}:
+        if self._kind in {"thinking", "plan", "tool", "result"}:
             self._build_collapsible(root)
         elif self._is_long_plain():
             self._build_long_plain(root)
@@ -387,6 +378,8 @@ class CursorFeedItem(QFrame):
             return "Thinking"
         if self._kind == "plan":
             return "План"
+        if self._kind == "result":
+            return "Результат"
         if self._kind == "tool":
             return "Инструмент"
         return "Подробнее"
@@ -421,18 +414,6 @@ class CursorFeedItem(QFrame):
         self._detail_frame = self._plain_body(self._text)
         self._detail_frame.setVisible(self._expanded)
         self._toggle = _ToggleLink("Свернуть" if self._expanded else "Показать полностью")
-        if (self._text_color or "").upper() in {"#FFFFFF", "#FFF"}:
-            self._toggle.setStyleSheet(
-                """
-                QLabel#cursortoggle {
-                    color: #C8E6DF;
-                    background: transparent;
-                }
-                QLabel#cursortoggle:hover {
-                    color: #FFFFFF;
-                }
-                """
-            )
         self._toggle.clicked.connect(self._toggle_expand)
         root.addWidget(self._preview)
         root.addWidget(self._detail_frame)
@@ -441,16 +422,14 @@ class CursorFeedItem(QFrame):
     def _plain_body(self, text: str) -> QWidget:
         if self._kind == "agent":
             return MarkdownBody(text, font_size=14, weight=QFont.Weight.Medium)
-        color = self._text_color or MAIN_TEXT.name()
+        color = MAIN_TEXT.name()
         weight = QFont.Weight.Medium
         if self._kind == "error":
-            color = self._text_color or "#B00020"
+            color = "#B00020"
         elif self._kind == "system":
-            color = self._text_color or COLOR_CONTENT_MUTED.name()
+            color = COLOR_CONTENT_MUTED.name()
         elif self._kind == "user":
             weight = QFont.Weight.DemiBold
-            if not self._text_color:
-                color = MAIN_TEXT.name()
         label = _WrapLabel(text)
         label.setFont(app_font(14, weight))
         label.setStyleSheet(f"color: {color}; background: transparent;")
@@ -468,7 +447,19 @@ class CursorFeedItem(QFrame):
         body.setFont(app_font(12))
         body.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         self._detail_label = body
-        lay.addWidget(body)
+        if self._kind == "tool":
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setMaximumHeight(_TOOL_DETAIL_MAX_H)
+            scroll.setWidget(body)
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+            scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+            lay.addWidget(scroll)
+        else:
+            lay.addWidget(body)
         return box
 
     def _toggle_expand(self) -> None:

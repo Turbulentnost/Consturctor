@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QApplication,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -29,7 +28,6 @@ from app.api_client import (
     PassportSession,
     RegulationParseResult,
     RegulationRevisionResult,
-    RoleCompatibilityResult,
     RoleMatchResult,
     AgentDraft,
     AgentSuggestion,
@@ -47,11 +45,11 @@ from app.ui.pages.agent_passport_page import AgentPassportPage
 from app.ui.pages.agent_kpi_preview_page import AgentKpiPreviewPage
 from app.ui.pages.agent_schedule_page import AgentSchedulePage
 from app.ui.pages.agent_implementation_page import AgentImplementationPage
-from app.ui.pages.agent_settings_page import AgentSettingsPage
+from app.ui.pages.agent_history_page import AgentHistoryPage
 from app.ui.pages.agent_run_page import AgentRunPage
 from app.ui.pages.create_agent_page import CreateAgentPage
 from app.ui.pages.kpi_page import KpiPage
-from app.ui.pages.my_agents_page import AgentHistoryDialog, MyAgentsPage
+from app.ui.pages.my_agents_page import MyAgentsPage
 from app.ui.pages.my_dashboard_page import MyDashboardPage
 from app.ui.pages.regulation_review_page import RegulationReviewPage
 from app.ui.pages.regulation_creation_page import RegulationCreationPage
@@ -161,13 +159,10 @@ class MainShell(QWidget):
     logout_requested = Signal()
     _regulation_ready = Signal(object)
     _regulation_failed = Signal(str)
-    _compat_preview_ready = Signal(object)
     _role_match_ready = Signal(object)
     _role_match_failed = Signal(str)
     _readiness_ready = Signal(object)
     _readiness_failed = Signal(str)
-    _agent_start_failed = Signal(str)
-    _agent_nav_failed = Signal()
     _revision_ready = Signal(object)
     _draft_ready = Signal(object)
     _drafts_ready = Signal(object)
@@ -176,7 +171,6 @@ class MainShell(QWidget):
     _passport_ready = Signal(object)
     _passport_failed = Signal(str)
     _published_agent_ready = Signal(object)
-    _agent_settings_ready = Signal(object)
     _workflow_page_ready = Signal(object)
     _chat_ready = Signal(object)
     _creation_session_ready = Signal(object)
@@ -203,8 +197,6 @@ class MainShell(QWidget):
         self._page_implementation_agents = AgentImplementationPage()
         self._page_workflows = WorkflowPage(self._api)
         self._page_agent_run = AgentRunPage(self._api)
-        self._page_agent_settings = AgentSettingsPage(self._api)
-        self._agent_run_auto_start = False
         self._page_saved_workflows = SavedWorkflowsPage(self._api)
         self._page_kpi = KpiPage(self._api)
         self._page_dashboard = MyDashboardPage(self._api)
@@ -219,12 +211,12 @@ class MainShell(QWidget):
         self._page_kpi_preview = AgentKpiPreviewPage(self._api)
         self._page_loading = LoadingPage()
         self._page_notifications = NotificationsPage()
+        self._page_history = AgentHistoryPage(self._api)
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_implementation_agents)
         self._pages.addWidget(self._page_workflows)
         self._pages.addWidget(self._page_agent_run)
-        self._pages.addWidget(self._page_agent_settings)
         self._pages.addWidget(self._page_saved_workflows)
         self._pages.addWidget(self._page_kpi)
         self._pages.addWidget(self._page_dashboard)
@@ -239,27 +231,28 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_loading)
         self._pages.addWidget(self._page_kpi_preview)
         self._pages.addWidget(self._page_notifications)
+        self._pages.addWidget(self._page_history)
         self._page_index = {
             "create": 0,
             "agents": 1,
             "implementation_agents": 2,
             "workflows": 3,
             "agent_run": 4,
-            "agent_settings": 5,
-            "saved_workflows": 6,
-            "kpi": 7,
-            "dashboard": 8,
-            "settings": 9,
-            "review": 10,
-            "role_match": 11,
-            "readiness": 12,
-            "revision": 13,
-            "creation_chat": 14,
-            "passport": 15,
-            "schedule": 16,
-            "loading": 17,
-            "kpi_preview": 18,
-            "notifications": 19,
+            "saved_workflows": 5,
+            "kpi": 6,
+            "dashboard": 7,
+            "settings": 8,
+            "review": 9,
+            "role_match": 10,
+            "readiness": 11,
+            "revision": 12,
+            "creation_chat": 13,
+            "passport": 14,
+            "schedule": 15,
+            "loading": 16,
+            "kpi_preview": 17,
+            "notifications": 18,
+            "agent_history": 19,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
@@ -272,7 +265,6 @@ class MainShell(QWidget):
         self._page_kpi_preview.back_requested.connect(self._on_kpi_back)
         self._page_kpi_preview.confirm_requested.connect(self._on_kpi_confirm)
         self._page_saved_workflows.open_requested.connect(self._on_open_saved_workflow)
-        self._page_saved_workflows.agent_run_requested.connect(self._on_launch_workflow_agent)
         self._page_implementation_agents.create_requested.connect(self._on_create_agent_from_inline_suggestion)
         self._page_settings.profile_updated.connect(self._on_profile_updated)
         self._page_agents.continue_requested.connect(self._on_continue_agent_draft)
@@ -283,13 +275,11 @@ class MainShell(QWidget):
         self._page_agents.delete_agent_requested.connect(self._on_delete_published_agent)
         self._page_agents.stop_auto_run_requested.connect(self._on_stop_published_agent)
         self._page_agents.run_agent_requested.connect(self._on_run_published_agent)
-        self._page_agents.edit_agent_requested.connect(self._on_edit_published_agent)
         self._page_agents.history_requested.connect(self._on_agent_history_requested)
-        self._page_agent_settings.back_requested.connect(
+        self._page_history.back_requested.connect(
             lambda: self._pages.setCurrentIndex(self._page_index["agents"])
         )
-        self._page_agent_settings.save_requested.connect(self._on_agent_settings_saved)
-        self._page_agent_settings.chat_requested.connect(self._on_launch_workflow_agent)
+        self._page_history.failed.connect(self._readiness_failed.emit)
         self._page_passport.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["agents"]))
         self._page_passport.draft_requested.connect(self._on_passport_draft_requested)
         self._page_passport.answer_requested.connect(self._on_passport_answer_requested)
@@ -316,13 +306,10 @@ class MainShell(QWidget):
         self._page_creation_chat.finished_requested.connect(self._show_regulation_result)
         self._regulation_ready.connect(self._show_regulation_result)
         self._regulation_failed.connect(self._show_regulation_error)
-        self._compat_preview_ready.connect(self._show_compatibility_preview)
         self._role_match_ready.connect(self._show_role_match_result)
         self._role_match_failed.connect(self._show_role_match_error)
         self._readiness_ready.connect(self._show_readiness_result)
         self._readiness_failed.connect(self._show_readiness_error)
-        self._agent_start_failed.connect(self._show_agent_start_error)
-        self._agent_nav_failed.connect(self._return_to_agents_page)
         self._revision_ready.connect(self._show_revision_result)
         self._draft_ready.connect(self._show_draft_result)
         self._drafts_ready.connect(self._show_drafts_result)
@@ -331,7 +318,6 @@ class MainShell(QWidget):
         self._passport_ready.connect(self._show_passport_result)
         self._passport_failed.connect(self._show_passport_error)
         self._published_agent_ready.connect(self._on_launch_workflow_agent)
-        self._agent_settings_ready.connect(self._open_agent_settings)
         self._workflow_page_ready.connect(self._on_open_saved_workflow)
         self._chat_ready.connect(self._show_chat_result)
         self._creation_session_ready.connect(self._show_creation_session)
@@ -356,8 +342,6 @@ class MainShell(QWidget):
         self._current_passport_suggestion = None
         self._auto_finalize_running = False
         self._supplement_in_progress = False
-        self._dev_mode = False
-        self._suggested_roles: list[str] = []
 
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
@@ -471,19 +455,15 @@ class MainShell(QWidget):
         self._collapse_btn.setToolTip("Развернуть меню" if collapsed else "Свернуть меню")
         QTimer.singleShot(0, self._position_overlays)
 
-    def set_dev_mode(self, enabled: bool) -> None:
-        self._dev_mode = enabled
-        self._page_create.set_dev_mode(enabled)
-
     def set_user(self, user: UserProfile) -> None:
         self._apply_user(user)
         self.sidebar.set_active_key("create", animate=False)
         self._pages.setCurrentIndex(0)
         QTimer.singleShot(0, self._refresh_profile)
-        QTimer.singleShot(0, self._load_agent_drafts)
 
     def _apply_user(self, user: UserProfile) -> None:
         self._user = user
+        self._api._user_id = user.id
         self.user_menu.set_user(fio=user.fio, position=user.position)
         self._load_avatar(user)
         pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap
@@ -571,12 +551,12 @@ class MainShell(QWidget):
             return
         self.refresh_notification_badge()
 
-    def _on_launch_workflow_from_inbox(self, workflow_id: str) -> None:
+    def _on_launch_workflow_from_inbox(self, workflow_id: str, run_id: str = "") -> None:
         wid = (workflow_id or "").strip()
         if not wid:
             return
         try:
-            record = self._api.get_workflow(wid)
+            self._api.get_workflow(wid)
         except ApiError as exc:
             QMessageBox.information(
                 self,
@@ -587,7 +567,12 @@ class MainShell(QWidget):
             )
             self._reload_notifications_page()
             return
-        self._on_launch_workflow_agent(record)
+        from app.tools.hitl import notification_opens_live
+
+        if notification_opens_live(wid):
+            self.show_live_agent(wid)
+            return
+        self.navigate_to_agent_history(wid, run_id)
 
     def _open_settings(self) -> None:
         if self._user is not None:
@@ -685,56 +670,38 @@ class MainShell(QWidget):
         self._current_role_match = None
         self._page_review.set_result(result)
         self._pages.setCurrentIndex(self._page_index["review"])
-        self._start_compatibility_preview(result)
 
-    def _start_compatibility_preview(self, result: RegulationParseResult) -> None:
+    def _show_regulation_error(self, message: str) -> None:
+        self._page_create.set_processing(False)
+        QMessageBox.warning(self, "Создание регламента", message)
+
+    def _back_to_create(self) -> None:
+        self._page_review.set_fullscreen(False)
+        self._pages.setCurrentIndex(self._page_index["create"])
+
+    def _on_continue_after_review(self) -> None:
+        if self._current_regulation is None:
+            return
         position = (self._user.position if self._user is not None else "").strip()
         department = (self._user.department if self._user is not None else "").strip()
         if not position:
-            return
-
-        def run() -> None:
-            try:
-                preview = self._api.check_role_compatibility(
-                    result.regulation_id,
-                    position=position,
-                    department=department or "—",
-                )
-            except ApiError:
+            position, ok = QInputDialog.getText(
+                self,
+                "Выбор должности",
+                "Должность не найдена в профиле. Укажите должность для поиска фрагментов:",
+            )
+            position = position.strip()
+            if not ok or not position:
                 return
-            self._compat_preview_ready.emit(preview)
-
-        Thread(target=run, daemon=True).start()
-
-    def _show_compatibility_preview(self, preview: object) -> None:
-        if not isinstance(preview, RoleCompatibilityResult):
-            return
-        self._suggested_roles = list(preview.suggested_roles)
-        self._page_review.set_compatibility_hint(preview.hint, compatible=preview.compatible)
-
-    def _confirm_role_compatibility(self, compat: RoleCompatibilityResult) -> bool:
-        if self._dev_mode or compat.compatible:
-            return True
-        suggested = "\n".join(f"• {role}" for role in compat.suggested_roles[:8])
-        message = compat.hint
-        if suggested:
-            message = f"{message}\n\nРоли из документа:\n{suggested}"
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("Роль не найдена в регламенте")
-        box.setText(message)
-        change_btn = box.addButton("Изменить роль", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
-        force_btn = box.addButton("Всё равно анализировать", QMessageBox.ButtonRole.DestructiveRole)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is change_btn:
-            return False
-        return clicked is force_btn
-
-    def _run_function_extraction(self, position: str, department: str) -> None:
-        if self._current_regulation is None:
-            return
+        if not department:
+            department, ok = QInputDialog.getText(
+                self,
+                "Выбор подразделения",
+                "Подразделение не найдено в профиле. Укажите подразделение для поиска фрагментов:",
+            )
+            department = department.strip()
+            if not ok or not department:
+                return
         self._page_loading.set_message(
             "Cursor Agent выделяет функциональные блоки",
             (
@@ -758,81 +725,6 @@ class MainShell(QWidget):
             self._role_match_ready.emit(result)
 
         Thread(target=run, daemon=True).start()
-
-    def _show_regulation_error(self, message: str) -> None:
-        self._page_create.set_processing(False)
-        QMessageBox.warning(self, "Создание регламента", message)
-
-    def _back_to_create(self) -> None:
-        self._page_review.set_fullscreen(False)
-        self._pages.setCurrentIndex(self._page_index["create"])
-
-    def _prompt_regulation_role(self) -> tuple[str, str] | None:
-        """Role/department for function extraction — may differ from ERP profile."""
-        default_position = (self._user.position if self._user is not None else "").strip()
-        default_department = (self._user.department if self._user is not None else "").strip()
-        if self._dev_mode and self._suggested_roles and not default_position:
-            default_position = self._suggested_roles[0]
-        if "псд" in default_position.casefold() or "псд" in default_department.casefold():
-            if not default_department:
-                default_department = "ПСД"
-            for role in self._suggested_roles:
-                if "секретар" in role.casefold() or "pmo" in role.casefold():
-                    if default_position.casefold() in {"помощник псд", "помощник", "разработчик"}:
-                        default_position = role
-                    break
-        title = "Роль агента (режим разработчика)" if self._dev_mode else "Роль в регламенте"
-        prompt = (
-            "Режим разработчика: из документа будут извлечены все функции.\n"
-            "Укажите роль для профиля агента (метка, можно любую из документа)."
-            if self._dev_mode
-            else "Укажите должность из документа (как в таблице RACI или «ответственный»).\n"
-            "Это может отличаться от вашей должности в 1С — например: «помощник ПСД», «PMO»."
-        )
-        position, ok = QInputDialog.getText(
-            self,
-            title,
-            prompt,
-            text=default_position,
-        )
-        position = position.strip()
-        if not ok or not position:
-            return None
-        department, ok = QInputDialog.getText(
-            self,
-            "Подразделение в регламенте",
-            "Подразделение или блок из документа (можно оставить из профиля):",
-            text=default_department,
-        )
-        department = department.strip()
-        if not ok or not department:
-            return None
-        return position, department
-
-    def _on_continue_after_review(self) -> None:
-        if self._current_regulation is None:
-            return
-        while True:
-            role = self._prompt_regulation_role()
-            if role is None:
-                return
-            position, department = role
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            try:
-                compat = self._api.check_role_compatibility(
-                    self._current_regulation.regulation_id,
-                    position=position,
-                    department=department,
-                )
-            except ApiError as exc:
-                QMessageBox.warning(self, "Проверка совместимости", exc.message)
-                return
-            finally:
-                QApplication.restoreOverrideCursor()
-            self._page_review.set_compatibility_hint(compat.hint, compatible=compat.compatible)
-            if self._confirm_role_compatibility(compat):
-                self._run_function_extraction(position, department)
-                return
 
     def _show_role_match_result(self, result: object) -> None:
         if not isinstance(result, RoleMatchResult):
@@ -936,20 +828,7 @@ class MainShell(QWidget):
 
     def _show_readiness_error(self, message: str) -> None:
         self._pages.setCurrentIndex(self._page_index["role_match"])
-        text = (message or "").strip()
-        if "токен" in text.casefold():
-            text = "Сессия истекла. Войдите в приложение заново (ФИО + пароль 1С)."
-        QMessageBox.warning(self, "Готовность регламента", text)
-
-    def _show_agent_start_error(self, message: str) -> None:
-        text = (message or "").strip()
-        if "токен" in text.casefold() or "авториз" in text.casefold():
-            text = "Сессия истекла. Войдите в приложение заново (ФИО + пароль 1С)."
-        QMessageBox.warning(self, "Запуск агента", text or "Не удалось открыть агента")
-
-    def _return_to_agents_page(self) -> None:
-        self.sidebar.set_active_key("agents", animate=False)
-        self._pages.setCurrentIndex(self._page_index["agents"])
+        QMessageBox.warning(self, "Готовность регламента", message)
 
     def _on_readiness_answer(self, question_id: str, answer: str) -> None:
         if self._current_readiness is None or not answer.strip():
@@ -1316,7 +1195,6 @@ class MainShell(QWidget):
     def _load_agent_drafts(self) -> None:
         def run() -> None:
             try:
-                self._api.sync_workflows_from_catalog()
                 drafts = self._api.list_agent_drafts()
                 workflows = self._api.list_workflows()
             except ApiError as exc:
@@ -1496,10 +1374,8 @@ class MainShell(QWidget):
     def _on_launch_workflow_agent(self, record: object) -> None:
         if not isinstance(record, WorkflowRecord):
             return
-        auto_run = self._agent_run_auto_start
-        self._agent_run_auto_start = False
         self.sidebar.set_active_key("agents", animate=False)
-        self._page_agent_run.start(record, auto_run=auto_run)
+        self._page_agent_run.start(record)
         self._pages.setCurrentIndex(self._page_index["agent_run"])
 
     def _on_schedule_requested(self, record: object) -> None:
@@ -1735,6 +1611,9 @@ class MainShell(QWidget):
         def run() -> None:
             try:
                 self._api.delete_workflow(workflow_id)
+                from app.tools.workspace_cleanup import cleanup_on_delete
+
+                cleanup_on_delete(workflow_id)
                 drafts = self._api.list_agent_drafts()
                 workflows = self._api.list_workflows()
             except ApiError as exc:
@@ -1744,33 +1623,48 @@ class MainShell(QWidget):
 
         Thread(target=run, daemon=True).start()
 
-    def navigate_to_agent_run(self, workflow_id: str, *, auto_run: bool = False) -> None:
+    def show_live_agent(self, workflow_id: str) -> None:
+        """Открыть живой прогон агента, не историю и не новый чат."""
+        from app.tools.hitl import attach_pending_for
+
         wid = (workflow_id or "").strip()
         if not wid:
             return
-        self._agent_run_auto_start = auto_run
-        self._pages.setCurrentIndex(self._page_index["loading"])
+        run_rec = getattr(self._page_agent_run, "_workflow", None)
+        if run_rec is not None and str(getattr(run_rec, "id", "") or "") == wid:
+            self.sidebar.set_active_key("agents", animate=False)
+            self._pages.setCurrentIndex(self._page_index["agent_run"])
+            attach_pending_for(wid)
+            return
+        wf_rec = getattr(self._page_workflows, "_record", None)
+        if wf_rec is not None and str(getattr(wf_rec, "id", "") or "") == wid:
+            self._pages.setCurrentIndex(self._page_index["workflows"])
+            attach_pending_for(wid)
+            return
+        self.navigate_to_agent_run(wid)
+
+    def navigate_to_agent_run(self, workflow_id: str, run_id: str = "") -> None:
+        if (run_id or "").strip():
+            self.navigate_to_agent_history(workflow_id, run_id)
+            return
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return
 
         def run() -> None:
             try:
                 record = self._api.get_workflow(wid)
             except ApiError as exc:
-                if exc.status_code != 401:
-                    self._agent_start_failed.emit(exc.message)
-                self._agent_nav_failed.emit()
+                self._readiness_failed.emit(exc.message)
                 return
             if str(getattr(record, "phase", "") or "") == "done":
                 self._published_agent_ready.emit(record)
             else:
-                self._agent_run_auto_start = False
                 self._workflow_page_ready.emit(record)
 
         Thread(target=run, daemon=True).start()
 
-    def _on_run_published_agent(self, workflow_id: str) -> None:
-        self.navigate_to_agent_run(workflow_id, auto_run=True)
-
-    def _on_edit_published_agent(self, workflow_id: str) -> None:
+    def navigate_to_agent_history(self, workflow_id: str, run_id: str = "") -> None:
         wid = (workflow_id or "").strip()
         if not wid:
             return
@@ -1779,31 +1673,31 @@ class MainShell(QWidget):
             try:
                 record = self._api.get_workflow(wid)
             except ApiError as exc:
-                if exc.status_code != 401:
-                    self._agent_start_failed.emit(exc.message)
+                self._readiness_failed.emit(exc.message)
                 return
-            self._agent_settings_ready.emit(record)
-
-        Thread(target=run, daemon=True).start()
-
-    def _on_agent_settings_saved(self, record: object) -> None:
-        if not isinstance(record, WorkflowRecord):
-            return
-
-        def run() -> None:
+            if str(getattr(record, "phase", "") or "") != "done":
+                self._workflow_page_ready.emit(record)
+                return
             try:
-                workflows = self._api.list_workflows()
-            except ApiError:
-                workflows = []
-            self._agents_table_ready.emit(workflows)
+                runs = self._api.list_agent_runs(wid)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            wanted = (run_id or "").strip()
+            if not wanted and runs:
+                wanted = runs[0].id
+            detail = None
+            if wanted:
+                try:
+                    detail = self._api.get_agent_run(wid, wanted)
+                except ApiError:
+                    detail = next((item for item in runs if item.id == wanted), None)
+            self._agent_history_ready.emit((record.title, wid, runs, detail))
 
         Thread(target=run, daemon=True).start()
 
-    def _open_agent_settings(self, record: object) -> None:
-        if not isinstance(record, WorkflowRecord):
-            return
-        self._page_agent_settings.load(record)
-        self._pages.setCurrentIndex(self._page_index["agent_settings"])
+    def _on_run_published_agent(self, workflow_id: str) -> None:
+        self.navigate_to_agent_run(workflow_id)
 
     def _on_agent_history_requested(self, workflow_id: str, title: str) -> None:
         def run() -> None:
@@ -1812,14 +1706,33 @@ class MainShell(QWidget):
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._agent_history_ready.emit((title, runs))
+            self._agent_history_ready.emit((title, workflow_id, runs))
 
         Thread(target=run, daemon=True).start()
 
     def _show_agent_history(self, payload: object) -> None:
-        title, runs = payload if isinstance(payload, tuple) else ("ИИ-агент", [])
-        dialog = AgentHistoryDialog(title=str(title or "ИИ-агент"), runs=list(runs or []), parent=self)
-        dialog.exec()
+        title, workflow_id, runs = ("ИИ-агент", "", [])
+        detail = None
+        if isinstance(payload, tuple) and len(payload) >= 3:
+            title = str(payload[0] or "ИИ-агент")
+            workflow_id = str(payload[1] or "")
+            runs = list(payload[2] or [])
+            if len(payload) >= 4:
+                detail = payload[3]
+        elif isinstance(payload, tuple) and len(payload) >= 2:
+            title = str(payload[0] or "ИИ-агент")
+            runs = list(payload[1] or [])
+        self.sidebar.set_active_key("agents", animate=False)
+        if detail is not None:
+            self._page_history.open_run(
+                title=title,
+                workflow_id=workflow_id,
+                runs=runs,
+                detail=detail,
+            )
+        else:
+            self._page_history.show_history(title=title, workflow_id=workflow_id, runs=runs)
+        self._pages.setCurrentIndex(self._page_index["agent_history"])
 
 
 def _suggestions_from_role_match(role_match: RoleMatchResult | None) -> list[AgentSuggestion]:

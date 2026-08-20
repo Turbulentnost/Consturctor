@@ -49,7 +49,7 @@ QPushButton:hover { background: #F4F7F6; }
 
 
 class NotificationsPage(QWidget):
-    open_workflow_requested = Signal(str)
+    open_workflow_requested = Signal(str, str)
     mark_all_requested = Signal()
     clear_requested = Signal()
     item_opened = Signal(str)
@@ -155,19 +155,26 @@ class NotificationsPage(QWidget):
         lay.addWidget(title)
         lay.addWidget(body)
         lay.addWidget(meta)
-        card.mousePressEvent = lambda event, nid=item.id, wid=item.workflow_id, dead=gone: self._on_click(  # type: ignore[method-assign]
-            event, nid, wid, dead
+        card.mousePressEvent = lambda event, nid=item.id, wid=item.workflow_id, rid=item.run_id, dead=gone: self._on_click(  # type: ignore[method-assign]
+            event, nid, wid, rid, dead
         )
         return card
 
-    def _on_click(self, event, notification_id: str, workflow_id: str, agent_deleted: bool = False) -> None:
+    def _on_click(
+        self,
+        event,
+        notification_id: str,
+        workflow_id: str,
+        run_id: str = "",
+        agent_deleted: bool = False,
+    ) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
             return
         self.item_opened.emit(notification_id)
         if agent_deleted:
             return
         if (workflow_id or "").strip():
-            self.open_workflow_requested.emit(workflow_id)
+            self.open_workflow_requested.emit(workflow_id, (run_id or "").strip())
 
 
 def _meta_line(item: InboxNotification) -> str:

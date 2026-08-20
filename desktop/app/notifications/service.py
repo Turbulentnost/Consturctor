@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -24,7 +25,7 @@ _PS_AUMID = (
 
 class NotificationService(QObject):
     open_workflow_requested = Signal(str)
-    toast_requested = Signal(str, str, str)
+    toast_requested = Signal(str, str, str, str)
     command_received = Signal(dict)
     inbox_changed = Signal()
 
@@ -139,18 +140,28 @@ class NotificationService(QObject):
         title = str(payload.get("title") or "Уведомление")
         body = str(payload.get("body") or "")
         workflow_id = str(payload.get("workflow_id") or "")
-        if not show_windows_toast(title, body, workflow_id):
-            self.toast_requested.emit(title, body, workflow_id)
+        run_id = str(payload.get("run_id") or "")
+        if not show_windows_toast(title, body, workflow_id, run_id):
+            self.toast_requested.emit(title, body, workflow_id, run_id)
         self.inbox_changed.emit()
         return True
 
 
-def show_windows_toast(title: str, body: str, workflow_id: str = "") -> bool:
-    launch = _launch_command(workflow_id)
+def show_windows_toast(
+    title: str,
+    body: str,
+    workflow_id: str = "",
+    run_id: str = "",
+    *,
+    from_foreground: bool = False,
+) -> bool:
+    launch = _launch_command(workflow_id, run_id)
     icon = _toast_icon()
-    message = (body or "Открыть агента")[:240]
-    heading = title[:120]
-    for app_id in (_PS_AUMID, APP_ID):
+    message = _toast_text(body or "Открыть агента", 240)
+    heading = _toast_text(title, 120)
+    # PowerShell AUMID — Windows не глотает тост, даже если наше окно на переднем плане.
+    app_ids = [_PS_AUMID] if from_foreground else (_PS_AUMID, APP_ID)
+    for app_id in app_ids:
         try:
             from winotify import Notification
 
@@ -165,23 +176,65 @@ def show_windows_toast(title: str, body: str, workflow_id: str = "") -> bool:
             if launch:
                 toast.add_actions(label="Открыть", launch=launch)
             toast.show()
+            logger.info("Windows toast shown title=%s app_id=%s", heading, app_id)
             return True
         except Exception:  # noqa: BLE001
-            logger.debug("winotify failed app_id=%s", app_id, exc_info=True)
+            logger.warning("winotify failed app_id=%s", app_id, exc_info=True)
     logger.warning("winotify unavailable, tray balloon will be used")
     return False
 
 
+def _toast_text(value: str, limit: int) -> str:
+    text = (value or "").replace("]]>", " ").replace('"', "'").replace("`", "").replace("$", "")
+    return text[:limit]
+
+
 def _toast_icon() -> str:
     logo = Path(__file__).resolve().parents[1] / "ui" / "temp" / "logo.png"
-    return str(logo) if logo.exists() else ""
+    if not logo.exists():
+        return ""
+    return logo.resolve().as_uri()
 
 
-def _launch_command(workflow_id: str) -> str:
+def _launch_command(workflow_id: str, run_id: str = "") -> str:
+    """URI для клика по тосту. Не командная строка: кавычки ломают XML winotify."""
     if not workflow_id:
         return ""
+    folder = Path(tempfile.gettempdir()) / "constructor-toasts"
+    folder.mkdir(parents=True, exist_ok=True)
+    safe = "".join(ch for ch in workflow_id if ch.isalnum())[:32] or "agent"
+    script = folder / f"open-{safe}.py"
+    cmd_path = folder / f"open-{safe}.cmd"
+    exe = Path(sys.executable).resolve()
+    rid = (run_id or "").strip()
     if getattr(sys, "frozen", False):
-        exe = Path(sys.executable).resolve()
-        return f'"{exe}" --open-workflow={workflow_id}'
-    main = Path(__file__).resolve().parents[2] / "main.py"
-    return f'"{sys.executable}" "{main}" --open-workflow={workflow_id}'
+        payload = (
+            "import subprocess\n"
+            f"exe = {str(exe)!r}\n"
+            f"wid = {workflow_id!r}\n"
+            f"rid = {rid!r}\n"
+            "args = [exe, f'--open-workflow={wid}']\n"
+            "if rid:\n"
+            "    args.append(f'--open-run={rid}')\n"
+            "subprocess.Popen(args, close_fds=True)\n"
+        )
+    else:
+        main = Path(__file__).resolve().parents[2] / "main.py"
+        payload = (
+            "import subprocess\n"
+            f"exe = {str(exe)!r}\n"
+            f"main = {str(main)!r}\n"
+            f"wid = {workflow_id!r}\n"
+            f"rid = {rid!r}\n"
+            "args = [exe, main, f'--open-workflow={wid}']\n"
+            "if rid:\n"
+            "    args.append(f'--open-run={rid}')\n"
+            "subprocess.Popen(args, close_fds=True)\n"
+        )
+    script.write_text(payload, encoding="utf-8")
+    line = f'@echo off\r\n"{exe}" "{script}"\r\n'
+    try:
+        cmd_path.write_text(line, encoding="ascii")
+    except UnicodeEncodeError:
+        cmd_path.write_text(line, encoding="utf-8-sig")
+    return cmd_path.resolve().as_uri()

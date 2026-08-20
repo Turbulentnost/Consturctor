@@ -8,13 +8,8 @@ from app.models.workflow import Workflow
 
 _HANDLER_UI: dict[str, str] = {
     "act_porucheniya_registry": (
-        "ACT-реестр: по задаче — выгрузка OData→Excel, сводка по указанному .xlsx на рабочем столе, "
-        "или ответ в чате без нового Excel (фильтры, ACT00-***). "
-        "Произвольные сообщения («привет», опечатки) — только ответ в чате, без OData. "
-        "«Обнови excel» — пересохранение файла с рабочего стола (без OData, если файл есть). "
-        "Дополнение: «добавь/дополни задачу», протокол или --- ПРОТОКОЛ --- — "
-        "база берётся из Excel на рабочем столе (без OData), затем пересохранение. "
-        "Строки из протокола — в колонке «Статус»; цвет строки по сроку задачи (критичность)."
+        "ACT-реестр: OData→Excel, сводка/фильтр по .xlsx, дополнение из протокола, "
+        "правка строк Excel на рабочем столе (перенос, номер ACT), пересохранение без OData."
     ),
     "assignments_smart": "Проверка SMART-формулировок поручений (если включён маршрут).",
     "assignments_action_tracker": "Контроль исполнения поручений (если включён маршрут).",
@@ -73,7 +68,7 @@ def finalize_agent_answer(
     prompt = _user_prompt(task=task, factual_answer=factual, extra_context=extra_context)
     reply = runtime_llm.generate(prompt, system=system, max_tokens=1200, quick=True)
     if reply and reply.strip():
-        return reply.strip()
+        return _sanitize_agent_reply(reply.strip())
 
     err = runtime_llm.last_error() or "нет ответа"
     return factual + f"\n\n—\nНе удалось получить ответ LLM ({err}). Выше — технический отчёт."
@@ -97,16 +92,26 @@ def _system_prompt(*, handler: str, workflow: Workflow) -> str:
         f"Этот агент («{title}»), handler={h}:\n{capability}\n"
         "Правила ответа:\n"
         "1. Опирайся только на блок «Фактический результат» — не выдумывай цифры и файлы.\n"
-        "2. Кратко: что сделано, сколько записей, путь к Excel (если есть).\n"
-        "3. Отдельным абзацем «Что могу из этого экрана» — 2–4 пункта по UI.\n"
-        "4. Отдельным абзацем «Чего не могу из UI» — 1–3 пункта (код, routing, публикация…).\n"
-        "5. Если данных 0 или ошибка OData/COM — объясни возможную причину и что проверить.\n"
-        "6. При ошибке OData (timed out, HTTP) — это сбой связи с 1С, не «пустая база», "
-        "если в факте указано OData error.\n"
-        "7. Цвет строк Excel — только по критичности срока; не упоминай «голубые» строки.\n"
-        "8. Строки из протокола отличаются колонкой «Статус» («Из протокола»), не цветом.\n"
-        "9. Без markdown-заголовков #, без JSON, без списка инструментов API."
+        "2. Ответ 3–6 строк: что сделано, ключевые числа, путь к Excel (если есть).\n"
+        "3. Не добавляй блоки «Что могу из этого экрана», «Чего не могу из UI», примеры промптов.\n"
+        "4. Если данных 0 или ошибка — объясни причину и что проверить.\n"
+        "5. Без markdown-заголовков #, без JSON, без списка инструментов API."
     )
+
+
+def _sanitize_agent_reply(text: str) -> str:
+    """Убрать служебные UI-блоки, если LLM всё же их добавил."""
+    import re
+
+    cleaned = (text or "").strip()
+    for marker in (
+        r"\n\s*Что могу из этого экрана",
+        r"\n\s*Чего не могу из UI",
+        r"\n\s*Примеры следующих сообщений",
+        r"\n\s*Примеры \(каждая задача",
+    ):
+        cleaned = re.split(marker, cleaned, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    return cleaned
 
 
 def _user_prompt(
@@ -144,9 +149,5 @@ def _user_prompt(
         odata_summary = extra_context.get("odata_summary")
         if odata_summary:
             lines.append(f"Сводка OData: {odata_summary}")
-    lines.append(
-        "\nСформулируй итоговый ответ для пользователя в приложении. "
-        "Для ACT-реестра: предложи 1–2 примера следующих сообщений в чат "
-        "(например «только просроченные», «добавь колонку …»)."
-    )
+    lines.append("\nСформулируй краткий итог для пользователя (3–6 строк).")
     return "\n".join(lines)

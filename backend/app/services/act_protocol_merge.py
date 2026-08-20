@@ -46,15 +46,38 @@ _INLINE_TASK_RE = re.compile(
     r"(?:\s*,\s*статус\s*(?::|\s+)\s*(.+))?$",
     re.IGNORECASE,
 )
+_STRUCTURED_ADD_RE = re.compile(
+    r"исполнитель\s*[—:\-]\s*(?P<executor>.+?)\s*,\s*"
+    r"срок\s*(?P<deadline>\d{1,2}\.\d{1,2}\.\d{2,4})\s*,\s*"
+    r"задача\s*[—:\-]\s*[\"«']?(?P<task>.+?)(?:[\"»']|\)|\.(?=\s)|$)",
+    re.IGNORECASE | re.UNICODE | re.DOTALL,
+)
+_RECORD_ADD_RE = re.compile(
+    r"добав(?:ь|ить|лю|ля(?:й|те)?)"
+    r".*?"
+    r"запис(?:ь|и)?"
+    r"\s+"
+    r"(?P<executor>(?:[А-ЯЁA-Z][а-яёa-z\-]+(?:\s+|-)?){1,4})"
+    r"\s+"
+    r"(?P<deadline>\d{1,2}\.\d{1,2}\.\d{2,4})"
+    r"\s+"
+    r"(?P<task>.+?)\s*$",
+    re.IGNORECASE | re.UNICODE | re.DOTALL,
+)
 
 
 def looks_like_inline_task_addition(task: str) -> bool:
     return bool(_INLINE_TASK_RE.search(task or ""))
 
 
+def looks_like_record_addition(task: str) -> bool:
+    """«добавь … запись Иванов И.И. 29.09.26 Текст задачи» или structured add."""
+    return bool(_RECORD_ADD_RE.search(task or "") or _STRUCTURED_ADD_RE.search(task or ""))
+
+
 def task_implies_protocol_merge(task: str) -> bool:
     blob = (task or "").casefold()
-    if looks_like_inline_task_addition(task):
+    if looks_like_inline_task_addition(task) or looks_like_record_addition(task):
         return True
     if any(m in blob for m in _MERGE_HINTS):
         return True
@@ -76,7 +99,7 @@ def _looks_like_freeform_protocol(text: str) -> bool:
 def extract_protocol_text(task: str, *, workflow_text: str = "") -> str:
     """Текст протокола из задачи (блок после --- ПРОТОКОЛ ---) или workflow."""
     task = task or ""
-    if looks_like_inline_task_addition(task):
+    if looks_like_inline_task_addition(task) or looks_like_record_addition(task):
         return task
     for marker in ("--- ПРОТОКОЛ ---", "---ПРОТОКОЛ---", "--- протокол ---"):
         if marker.casefold() in task.casefold():
@@ -131,6 +154,75 @@ def _normalize_short_year_deadline(display: str) -> str:
     return text
 
 
+def _document_from_chat_task(
+    *,
+    task_text: str,
+    executor: str,
+    deadline: str,
+    status: str = "В работе",
+    number_display: str = "",
+    about: str = "",
+) -> dict[str, Any]:
+    deadline = _normalize_short_year_deadline(deadline)
+    act = number_display or _protocol_number_from_date(deadline)
+    return {
+        "number": act,
+        "number_display": act,
+        "about": about or f"Добавлено из чата ({deadline})",
+        "status": status or "В работе",
+        "reporter": "",
+        "secretary": "",
+        "task_lines": [
+            {
+                "line_number": 1,
+                "task": task_text.strip().rstrip(","),
+                "executor": executor.strip().rstrip(","),
+                "deadline": deadline,
+                "deadline_raw": _deadline_raw_from_display(deadline),
+                "priority": "",
+                "source": "protocol",
+            }
+        ],
+        "task_line_count": 1,
+        "source": "protocol",
+    }
+
+
+def _parse_structured_addition(text: str) -> list[dict[str, Any]]:
+    match = _STRUCTURED_ADD_RE.search(text or "")
+    if not match:
+        return []
+    return [
+        _document_from_chat_task(
+            task_text=match.group("task").strip().strip("«»\"'"),
+            executor=match.group("executor").strip(),
+            deadline=match.group("deadline").strip(),
+        )
+    ]
+
+
+def _parse_record_addition(text: str) -> list[dict[str, Any]]:
+    """«добавь … запись ФИО DD.MM.YY текст задачи»."""
+    structured = _parse_structured_addition(text)
+    if structured:
+        return structured
+    match = _RECORD_ADD_RE.search(text or "")
+    if not match:
+        return []
+    executor = re.sub(r"\s+", " ", match.group("executor").strip())
+    deadline = match.group("deadline").strip()
+    task_text = match.group("task").strip().rstrip(",")
+    if not executor or not deadline or not task_text:
+        return []
+    return [
+        _document_from_chat_task(
+            task_text=task_text,
+            executor=executor,
+            deadline=deadline,
+        )
+    ]
+
+
 def _parse_inline_task_addition(text: str) -> list[dict[str, Any]]:
     """Одна задача в чате: «Задача: …, Исполнитель: …, срок до DD.MM.YY»."""
     match = _INLINE_TASK_RE.search(text or "")
@@ -141,31 +233,13 @@ def _parse_inline_task_addition(text: str) -> list[dict[str, Any]]:
     executor = match.group(2).strip().rstrip(",")
     deadline = _normalize_short_year_deadline(match.group(3).strip())
     status = (match.group(4) or "В работе").strip().rstrip(",") or "В работе"
-    number_display = _protocol_number_from_date(deadline)
-    about = f"Добавлено из чата ({deadline})"
-
     return [
-        {
-            "number": number_display,
-            "number_display": number_display,
-            "about": about,
-            "status": status,
-            "reporter": "",
-            "secretary": "",
-            "task_lines": [
-                {
-                    "line_number": 1,
-                    "task": task_text,
-                    "executor": executor,
-                    "deadline": deadline,
-                    "deadline_raw": _deadline_raw_from_display(deadline),
-                    "priority": "",
-                    "source": "protocol",
-                }
-            ],
-            "task_line_count": 1,
-            "source": "protocol",
-        }
+        _document_from_chat_task(
+            task_text=task_text,
+            executor=executor,
+            deadline=deadline,
+            status=status,
+        )
     ]
 
 
@@ -253,6 +327,10 @@ def parse_protocol_to_documents(protocol_text: str) -> list[dict[str, Any]]:
     """Протокол → список документов с task_lines (как OData)."""
     if not (protocol_text or "").strip():
         return []
+
+    record_add = _parse_record_addition(protocol_text)
+    if record_add:
+        return record_add
 
     inline = _parse_inline_task_addition(protocol_text)
     if inline:

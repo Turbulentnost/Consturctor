@@ -327,7 +327,7 @@ def _build_smart_excel_arguments(
         "rows": rows,
         "row_fills": row_fills,
         "overwrite": True,
-        "save_to_desktop": True,
+        "save_to_desktop": False,
         "runtime_context": {"workflow_id": workflow_id, "agent_id": workflow_id},
     }
 

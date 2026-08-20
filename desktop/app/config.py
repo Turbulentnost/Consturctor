@@ -4,7 +4,12 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*_args, **_kwargs):  # type: ignore[misc]
+        """Fallback for helper Python environments without python-dotenv."""
+        return False
 
 
 def _desktop_root() -> Path:
@@ -25,57 +30,47 @@ DESKTOP_ROOT = _desktop_root()
 BUNDLE_ROOT = _bundle_root()
 REPO_ROOT = DESKTOP_ROOT.parent if not getattr(sys, "frozen", False) else DESKTOP_ROOT
 
-# Prefer .env beside the exe / desktop folder (override stale QSettings / old defaults).
-load_dotenv(DESKTOP_ROOT / ".env", override=True)
+# Sidecar .env beside the exe wins; bundled copy inside onefile is fallback.
+load_dotenv(DESKTOP_ROOT / ".env")
 if getattr(sys, "frozen", False):
     load_dotenv(BUNDLE_ROOT / ".env", override=False)
 
-from app.session_store import saved_auth_url, saved_backend_url
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def auth_skip_login_page() -> bool:
+    return _env_flag("AUTH_SKIP_LOGIN_PAGE")
+
+
+def erp_login() -> str:
+    return os.getenv("ERP_LOGIN", "").strip()
+
+
+def erp_password() -> str:
+    return os.getenv("ERP_PASSWORD", "")
 
 
 def backend_url() -> str:
-    """Локальный gateway: агенты, workflow, LLM, инструменты через Docker."""
-    env_url = os.getenv("BACKEND_URL", "").strip().rstrip("/")
-    if env_url:
-        return env_url
-    if getattr(sys, "frozen", False):
-        return "http://127.0.0.1:7812"
-    saved = saved_backend_url().rstrip("/")
-    stale_markers = ()
-    if saved and not any(marker in saved for marker in stale_markers):
-        return saved
-    return "http://127.0.0.1:7812"
+    host = os.getenv("HOST_IP", "").strip()
+    default = f"http://{host}:7812" if host else "http://127.0.0.1:7812"
+    return os.getenv("BACKEND_URL", default).rstrip("/")
+
+
+def host_ip() -> str:
+    return os.getenv("HOST_IP", "").strip()
 
 
 def auth_url() -> str:
-    """Общий сервер входа (ERP SQL / 1С). Если не задан — тот же, что BACKEND_URL."""
-    env_url = os.getenv("AUTH_URL", "").strip().rstrip("/")
-    if env_url:
-        return env_url
-    saved = saved_auth_url().rstrip("/")
-    if saved:
-        return saved
-    return backend_url()
+    """URL сервера входа (1С). Если не задан — совпадает с BACKEND_URL."""
+    host = host_ip()
+    default = f"http://{host}:7812" if host else backend_url()
+    return os.getenv("AUTH_URL", default).rstrip("/")
 
 
-def catalog_url() -> str:
-    """Каталог опубликованных агентов (общий сервер)."""
-    env_url = os.getenv("WORKFLOWS_URL", "").strip().rstrip("/")
-    if env_url:
-        return env_url
-    auth = auth_url()
-    local = backend_url()
-    if auth.rstrip("/") != local.rstrip("/"):
-        return auth
-    return local
-
-
-def skip_login_fio() -> str:
-    flag = os.getenv("SKIP_LOGIN", "").strip().lower()
-    fio = os.getenv("SKIP_LOGIN_FIO", "").strip()
-    if flag in {"1", "true", "yes", "on"} or fio:
-        return fio or "Жалыбин Максим Дмитриевич"
-    return ""
+def auth_uses_remote_server() -> bool:
+    return auth_url().casefold() != backend_url().casefold()
 
 
 def repo_root() -> Path:

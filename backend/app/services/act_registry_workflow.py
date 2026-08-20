@@ -10,6 +10,7 @@ from app.services.act_registry_agent_spec import (
     NOTES_HEADER,
     build_agent_route_dict,
     build_plan_dict,
+    build_playbook_dict,
     load_regulation_text,
 )
 from app.services.agent_route import (
@@ -99,8 +100,9 @@ def apply_act_registry_spec_to_workflow(row: Workflow) -> bool:
             "seed": "act_porucheniya",
             "agent_route": agent_route_dict_for_local(route),
             "tools": list(route_dict.get("tools") or []),
+            "playbook": build_playbook_dict(regulation=regulation),
             "tests_status": "pass",
-            "execution_backend": "mcp",
+            "execution_backend": "cursor",
             "runtime": {
                 "kind": "act_porucheniya",
                 "handler": "act_porucheniya_registry",
@@ -112,7 +114,8 @@ def apply_act_registry_spec_to_workflow(row: Workflow) -> bool:
         }
     )
     row.local_run = local
-    row.exec_agent_id = row.exec_agent_id or "mcp:act_porucheniya_registry"
+    if str(row.exec_agent_id or "").startswith("mcp:"):
+        row.exec_agent_id = ""
     if not (row.last_result or "").strip():
         row.last_result = "TESTS: PASS\nACT registry agent ready (constructor + ACT_REGISTRY.md)."
     if row.phase in {"", "document", "plan"}:
@@ -122,6 +125,29 @@ def apply_act_registry_spec_to_workflow(row: Workflow) -> bool:
 
 def act_registry_tools() -> list[str]:
     return list(build_agent_route_dict().get("tools") or [])
+
+
+def regulation_playbook_for_workflow(workflow: Workflow) -> dict[str, Any]:
+    """Playbook из регламента workflow — для Cursor runtime."""
+    doc = str(getattr(workflow, "document_text", "") or "").strip()
+    notes = str(getattr(workflow, "notes", "") or "").strip()
+    regulation = doc or notes or load_regulation_text()
+    return build_playbook_dict(regulation=regulation)
+
+
+def workflow_uses_cursor_runtime(workflow: Workflow) -> bool:
+    """True — задачи идут через Cursor + constructor_tool, не hardcoded MCP."""
+    local = workflow.local_run if isinstance(workflow.local_run, dict) else {}
+    backend = str(local.get("execution_backend") or "").casefold()
+    if backend == "cursor":
+        return True
+    if backend == "mcp":
+        return False
+    if str(workflow.exec_agent_id or "").startswith("mcp:"):
+        return False
+    if workflow_looks_like_act_registry(workflow):
+        return True
+    return False
 
 
 def act_registry_goal() -> str:

@@ -272,6 +272,8 @@ services:
       CURSOR_WORKFLOW_MODEL: ${CURSOR_WORKFLOW_MODEL:-composer-2.5}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production-stub-key-32b}
       AUTH_SERVER_URL: ${AUTH_SERVER_URL:-}
+      SKIP_LOGIN: ${SKIP_LOGIN:-false}
+      SKIP_LOGIN_FIO: ${SKIP_LOGIN_FIO:-}
       ERP_SQL_SERVER: ${ERP_SQL_SERVER:-ii1}
       ERP_SQL_DATABASE: ${ERP_SQL_DATABASE:-erp_pm}
       ERP_SQL_DRIVER: ${ERP_SQL_DRIVER:-ODBC Driver 18 for SQL Server}
@@ -297,7 +299,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "7812:7812"
+      - "0.0.0.0:7812:7812"
     depends_on:
       postgres:
         condition: service_healthy

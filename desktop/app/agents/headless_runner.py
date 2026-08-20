@@ -53,7 +53,7 @@ class HeadlessRunner(QObject):
                 return
             result = self._api.stream_trigger_check(trigger_id)
             matched = bool(result.get("matched"))
-            evidence = str(result.get("evidence") or "")
+            evidence = str(result.get("changed") or result.get("evidence") or "")
             if not matched:
                 logger.info("Trigger %s not matched: %s", trigger_id, evidence[:200])
                 return
@@ -67,6 +67,7 @@ class HeadlessRunner(QObject):
                     "title": payload.get("title") or "",
                     "acked": True,
                     "evidence": evidence,
+                    "condition_text": payload.get("condition_text") or payload.get("condition") or "",
                 }
             )
         except ApiError as exc:
@@ -101,7 +102,8 @@ class HeadlessRunner(QObject):
                 message,
                 lambda _payload: None,
                 source="trigger",
-                auto_approve=True,
+                trigger_id=trigger_id,
+                evidence=str(payload.get("evidence") or ""),
             )
             if trigger_id and not payload.get("acked"):
                 self._api.ack_trigger_fired(trigger_id, evidence=str(payload.get("evidence") or "запущен"))

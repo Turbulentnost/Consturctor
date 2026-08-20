@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from PySide6.QtCore import QSettings
+
+logger = logging.getLogger(__name__)
+
+
+def _trace(message: str) -> None:
+    print(message, flush=True)
+    logger.info(message)
 
 
 def _settings() -> QSettings:
@@ -34,32 +42,13 @@ def saved_fio() -> str:
     return str(_settings().value("session/fio", "", type=str) or "").strip()
 
 
-def saved_backend_url() -> str:
-    return str(_settings().value("server/backend_url", "", type=str) or "").strip()
-
-
-def saved_auth_url() -> str:
-    return str(_settings().value("server/auth_url", "", type=str) or "").strip()
-
-
-def save_backend_url(url: str) -> None:
-    s = _settings()
-    s.setValue("server/backend_url", url.strip().rstrip("/"))
-    s.sync()
-
-
-def save_auth_url(url: str) -> None:
-    s = _settings()
-    s.setValue("server/auth_url", url.strip().rstrip("/"))
-    s.sync()
-
-
 def save_session(*, access_token: str, fio: str = "") -> None:
     s = _settings()
     s.setValue("session/remember", True)
     s.setValue("session/access_token", access_token)
     s.setValue("session/fio", fio.strip())
     s.sync()
+    _trace(f"Session saved fio={fio.strip() or '-'}")
 
 
 def clear_session(*, keep_fio: bool = False) -> None:
@@ -72,3 +61,4 @@ def clear_session(*, keep_fio: bool = False) -> None:
     else:
         s.remove("session/fio")
     s.sync()
+    _trace(f"Session cleared keep_fio={keep_fio} fio={fio or '-'}")

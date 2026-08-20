@@ -103,6 +103,21 @@ def test_parse_merge_add_intent() -> None:
     assert parse_act_task_intent(task) == "merge_add"
 
 
+def test_parse_composite_workflow_intent() -> None:
+    task = (
+        "Вытащи из 1С OData реестр ACT на рабочий стол. "
+        "Добавь запись исполнитель — Иванов, срок 15.10.26, задача — тест. "
+        "Составь отчёт в Word docx. Зайди в Outlook и допиши совещания."
+    )
+    assert parse_act_task_intent(task) == "composite_workflow"
+    task = (
+        "добавь в таблицу поручения ещё одну запись "
+        "Евдокимов Карл Густович 29.09.26 Закупка 50 поршневых двигателей из Формулы 1"
+    )
+    assert parse_act_task_intent(task) == "merge_add"
+    assert parse_act_task_intent(task) != "edit_excel"
+
+
 def test_inline_add_does_not_apply_status_filter() -> None:
     task = (
         "добавь ещё Задача: выполнить работы по созданию агента, "
@@ -127,3 +142,34 @@ def test_compose_excel_workbook_summary() -> None:
     text = compose_excel_workbook_summary(payload, source_path="C:\\Desktop\\act.xlsx")
     assert "Строк задач: 1" in text
     assert "просроч" in text.casefold()
+
+
+def test_parse_edit_excel_intent() -> None:
+    from app.services.act_porucheniya_task import resolve_desktop_excel_filename
+
+    task = (
+        "в файле поручения на рабочем столе изменить последнюю строчку (новую запись): "
+        "номер на порядковый 91 и перенеси её наверх"
+    )
+    assert parse_act_task_intent(task) == "edit_excel"
+    assert resolve_desktop_excel_filename(task, actor_fio="ЖМД", workflow_id="7e81ded8") == "Поручения.xlsx"
+    filt = parse_act_filter_from_task(task)
+    assert filt["refresh_excel"] is False
+    assert filt["act_numbers"] == []
+
+
+def test_move_last_row_to_top_with_next_act() -> None:
+    from app.services.act_porucheniya_report import move_last_row_to_top_with_next_act
+
+    rows = [
+        ["Номер ACT", "Задача", "Исполнитель", "Срок", "Статус"],
+        ["ACT00-00090", "Top task", "A", "26.08.2026", "Создано"],
+        ["ACT00-00001", "Old", "B", "01.01.2020", "В работе"],
+        ["ACT00-LOCAL", "New task", "C", "29.08.2026", "Новая"],
+    ]
+    new_rows, new_act, meta = move_last_row_to_top_with_next_act(rows)
+    assert new_act == "ACT00-00091"
+    assert new_rows[1][0] == "ACT00-00091"
+    assert new_rows[1][1] == "New task"
+    assert new_rows[2][0] == "ACT00-00090"
+    assert meta["old_act"] == "ACT00-LOCAL"

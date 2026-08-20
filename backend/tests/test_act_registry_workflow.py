@@ -35,11 +35,14 @@ def test_apply_act_registry_spec_sets_route_and_tools() -> None:
     assert apply_act_registry_spec_to_workflow(wf) is True
     route = resolve_agent_route(wf)
     assert route.handler == "act_porucheniya_registry"
-    assert wf.exec_agent_id == "mcp:act_porucheniya_registry"
+    assert wf.exec_agent_id in {"", None}
+    assert (wf.local_run or {}).get("execution_backend") == "cursor"
+    playbook = (wf.local_run or {}).get("playbook") or {}
+    assert playbook.get("instructions")
     assert wf.phase == "tested"
     tools = (wf.local_run or {}).get("tools") or []
     assert "excel.create_workbook" in tools
-    assert "act_protocol_merge" in tools
+    assert "files.rename" in tools
 
 
 def test_generic_porucheniya_without_act_markers_not_forced() -> None:

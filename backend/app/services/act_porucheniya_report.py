@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -238,6 +239,114 @@ def criticality_for_deadline(deadline_raw: str, *, now: datetime | None = None) 
     }
 
 
+_ACT_CELL_NUM_RE = re.compile(r"(?:ACT|АСТ)\s*00\s*-\s*(\d+)", re.IGNORECASE)
+
+
+def max_act_sequence_in_rows(rows: list[list[Any]]) -> int:
+    """Максимальный порядковый номер ACT00-NNNNN среди строк данных."""
+    max_num = 0
+    for row in rows:
+        act = str(row[0] if row else "")
+        match = _ACT_CELL_NUM_RE.search(act)
+        if match:
+            max_num = max(max_num, int(match.group(1)))
+    return max_num
+
+
+def max_act_sequence_in_documents(documents: list[dict[str, Any]]) -> int:
+    """Максимальный порядковый номер ACT00-NNNNN среди документов реестра."""
+    max_num = 0
+    for doc in documents:
+        act = str(doc.get("number_display") or doc.get("number") or "")
+        match = _ACT_CELL_NUM_RE.search(act)
+        if match:
+            max_num = max(max_num, int(match.group(1)))
+    return max_num
+
+
+def assign_next_act_numbers(
+    protocol_documents: list[dict[str, Any]],
+    *,
+    existing_documents: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Назначить ACT00-NNNNN вместо ACT00-PROTO-* для задач из чата."""
+    next_num = max_act_sequence_in_documents(existing_documents) + 1
+    updated: list[dict[str, Any]] = []
+    for doc in protocol_documents:
+        current = str(doc.get("number_display") or doc.get("number") or "")
+        if current.upper().startswith("ACT00-PROTO"):
+            act = f"ACT00-{next_num:05d}"
+            next_num += 1
+            patched = dict(doc)
+            patched["number"] = act
+            patched["number_display"] = act
+            updated.append(patched)
+        else:
+            updated.append(doc)
+    return updated
+
+
+def move_last_row_to_top_with_next_act(
+    rows: list[list[Any]],
+) -> tuple[list[list[Any]], str, dict[str, Any]]:
+    """Последнюю строку данных переименовать в ACT00-(max+1) и поставить сразу после заголовка."""
+    if len(rows) < 2:
+        raise ValueError("В Excel нет строк данных")
+    header = list(rows[0])
+    data: list[list[Any]] = []
+    for row in rows[1:]:
+        cells = list(row)
+        if any(str(cell or "").strip() for cell in cells):
+            data.append(cells)
+    if not data:
+        raise ValueError("В Excel нет непустых строк задач")
+
+    last = list(data[-1])
+    while len(last) < len(header):
+        last.append("")
+    others = data[:-1]
+    old_act = str(last[0] or "").strip()
+    new_act = f"ACT00-{max_act_sequence_in_rows(others) + 1:05d}"
+    last[0] = new_act
+    new_rows = [header, last, *others]
+    meta = {
+        "old_act": old_act,
+        "new_act": new_act,
+        "moved_task": str(last[1] if len(last) > 1 else "")[:120],
+        "row_count": len(data),
+    }
+    return new_rows, new_act, meta
+
+
+def build_act_excel_move_last_row_arguments(
+    excel_payload: dict[str, Any],
+    *,
+    target_filename: str,
+    workflow_id: str,
+    actor_fio: str = "",
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Перенос последней строки наверх + следующий номер ACT; сохранение на рабочий стол."""
+    rows = list(excel_payload.get("rows") or [])
+    try:
+        new_rows, new_act, meta = move_last_row_to_top_with_next_act(rows)
+    except ValueError as exc:
+        return None, {"error": str(exc)}
+
+    payload = dict(excel_payload)
+    payload["rows"] = new_rows
+    args = build_act_excel_reformat_arguments(
+        payload,
+        workflow_id=workflow_id,
+        actor_fio=actor_fio,
+    )
+    if not args:
+        return None, {**meta, "error": "Не удалось собрать аргументы Excel"}
+    args["filename"] = target_filename
+    args["overwrite"] = True
+    args["save_to_desktop"] = False
+    return args, {**meta, "new_act": new_act}
+
+
 def build_act_excel_reformat_arguments(
     excel_payload: dict[str, Any],
     *,
@@ -289,7 +398,7 @@ def build_act_excel_reformat_arguments(
         "column_widths": _COLUMN_WIDTHS,
         "freeze_header": True,
         "overwrite": True,
-        "save_to_desktop": True,
+        "save_to_desktop": False,
         "runtime_context": {"workflow_id": workflow_id, "agent_id": workflow_id},
         **_ACT_EXCEL_TABLE_STYLE,
     }
@@ -338,7 +447,7 @@ def build_act_excel_arguments(
         "column_widths": _COLUMN_WIDTHS,
         "freeze_header": True,
         "overwrite": True,
-        "save_to_desktop": True,
+        "save_to_desktop": False,
         "runtime_context": {"workflow_id": workflow_id, "agent_id": workflow_id},
         **_ACT_EXCEL_TABLE_STYLE,
     }

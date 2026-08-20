@@ -12,6 +12,7 @@ from app.tools.ac.com_backed_tools import (
     OutlookReadCalendarComTool,
     OutlookSearchMailComTool,
 )
+from app.tools.ac.document_tools import register_document_tools
 from app.tools.ac.excel_tools import register_excel_tools
 from app.tools.ac.files_tools import register_files_tools
 from app.tools.ac.onec_tools import register_onec_readonly_tools
@@ -32,8 +33,25 @@ class AcToolError(RuntimeError):
 
 
 def _workspaces_root() -> Path:
+    override = os.environ.get("AGENT_WORKSPACES_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
     local = os.environ.get("LOCALAPPDATA") or str(Path.home())
     return Path(local) / "Constructor" / "agent_workspaces"
+
+
+_RESOLVER: AgentWorkspaceResolver | None = None
+
+
+def get_workspace_resolver() -> AgentWorkspaceResolver:
+    global _RESOLVER
+    if _RESOLVER is None:
+        _RESOLVER = AgentWorkspaceResolver(_workspaces_root())
+    return _RESOLVER
+
+
+def workspaces_root() -> Path:
+    return get_workspace_resolver().root
 
 
 def _ensure_agent_id(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -53,7 +71,7 @@ def _ensure_agent_id(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def build_registry() -> ToolRegistry:
     registry = ToolRegistry()
-    resolver = AgentWorkspaceResolver(_workspaces_root())
+    resolver = get_workspace_resolver()
     outlook_worker = SubprocessComWorker()
     registry.register(OutlookSearchMailComTool(outlook_worker))
     registry.register(OutlookReadCalendarComTool(outlook_worker))
@@ -61,7 +79,8 @@ def build_registry() -> ToolRegistry:
     register_report_tools(registry, skip_existing=True)
     register_web_tools(registry, skip_existing=True, workspace_resolver=resolver)
     register_excel_tools(registry, resolver, skip_existing=True)
-    register_files_tools(registry, skip_existing=True)
+    register_document_tools(registry, resolver, skip_existing=True)
+    register_files_tools(registry, resolver, skip_existing=True)
     register_powershell_tools(registry, resolver, skip_existing=True)
     register_code_execution_tools(registry, resolver, skip_existing=True)
     register_wait_tool(registry, skip_existing=True)
@@ -84,6 +103,10 @@ def get_registry() -> ToolRegistry:
 def invoke_ac_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     args = _ensure_agent_id(arguments if isinstance(arguments, dict) else {})
     registry = get_registry()
+    if not registry.has_tool(name):
+        global _REGISTRY
+        _REGISTRY = build_registry()
+        registry = _REGISTRY
     if not registry.has_tool(name):
         raise AcToolError(f"Неизвестный инструмент: {name}")
     result = registry.get(name).execute(args)

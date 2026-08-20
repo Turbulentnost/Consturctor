@@ -158,8 +158,33 @@ def _plan_export(arguments: dict[str, Any]) -> dict[str, Any]:
     return run_plan_export(arguments)
 
 
+def _files_tool_result(result: Any) -> dict[str, Any]:
+    from app.tools.ac.tooling import ToolCallResult
+
+    if not isinstance(result, ToolCallResult):
+        raise ToolHostError("Некорректный результат инструмента")
+    if result.ok:
+        return result.output_data if isinstance(result.output_data, dict) else {}
+    message = result.error_message or result.error_type or "Ошибка инструмента"
+    raise ToolHostError(str(message))
+
+
+def _files_copy(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.tools.ac.files_tools import FilesCopyTool
+
+    return _files_tool_result(FilesCopyTool().execute(arguments))
+
+
+def _files_rename(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.tools.ac.files_tools import FilesRenameTool
+
+    return _files_tool_result(FilesRenameTool().execute(arguments))
+
+
 _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "web_search": _web_search,
     "site_browser": _site_browser,
     "plan_export": _plan_export,
+    "files.copy": _files_copy,
+    "files.rename": _files_rename,
 }

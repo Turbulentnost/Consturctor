@@ -62,186 +62,20 @@ def run_agent_task(
     if not task:
         raise AgentRuntimeError("Пустая задача")
 
-    emit({"type": "status", "text": "Получил задачу, готовлю запуск…"})
-    if (source or "") == "chat":
-        emit({"type": "agent_message", "text": f"Выполняю команду из чата: {task}"})
-    else:
-        emit({"type": "agent_message", "text": f"Запускаю «{workflow.title or 'ИИ-агент'}»."})
+    from app.services.cursor_chat_runtime import ensure_cursor_chat_runtime
 
-    copy_args = _parse_file_copy_command(task)
-    if copy_args:
-        try:
-            result = _request_desktop_tool(
-                emit,
-                run_id=run_id,
-                user_id=user_id,
-                workflow_id=workflow_id,
-                tool="files.copy",
-                arguments=copy_args,
-            )
-        except AgentRuntimeError as exc:
-            emit({"type": "error", "message": str(exc)})
-            raise
-        path = str(result.get("path") or result.get("name") or "")
-        answer = f"Скопировал файл как «{result.get('name') or path}».\n{path}".strip()
-        emit({"type": "tool_result", "tool": "files.copy", "result": result})
-        emit({"type": "agent_message", "text": answer})
-        extra = tool_bridge.drain_chat(run_id)
-        if extra:
-            from app.services.workflows.service import playbook_of as _playbook_of
-
-            return _run_with_playbook(
-                db,
-                workflow=workflow,
-                user_id=user_id,
-                message="\n".join(extra),
-                emit=emit,
-                run_id=run_id,
-                playbook=_playbook_of(workflow),
-                source="chat",
-            )
-        return {"answer": answer, "tool": "files.copy", "tool_result": result}
-
-    from app.services.agent_route import resolve_agent_route
-    from app.services.workflows.service import playbook_of
-
-    playbook = playbook_of(workflow)
-    if str(playbook.get("instructions") or "").strip():
-        return _run_with_playbook(
-            db,
-            workflow=workflow,
-            user_id=user_id,
-            message=task,
-            emit=emit,
-            run_id=run_id,
-            playbook=playbook,
-            source=source,
-        )
-
-    route = resolve_agent_route(workflow, override_handler=agent_kind)
-    handler = route.handler
-
-    if handler in {"act_porucheniya_registry", "assignments_action_tracker", "assignments_smart"}:
-        return _run_act_porucheniya_registry(
-            db,
-            emit=emit,
-            run_id=run_id,
-            user_id=user_id,
-            workflow_id=workflow_id,
-            workflow=workflow,
-            task=task,
-        )
-
-    emit({"type": "status", "text": "Получил задачу, готовлю запуск…"})
-
-    if handler == "outlook_calendar":
-        emit({"type": "status", "text": "Читаю Outlook на этом компьютере…"})
-        outlook_tool, outlook_args = _outlook_tool_request(task)
-        try:
-            tool_result = _request_desktop_tool(
-                emit,
-                run_id=run_id,
-                user_id=user_id,
-                workflow_id=workflow_id,
-                tool=outlook_tool,
-                arguments=outlook_args,
-            )
-        except AgentRuntimeError as exc:
-            emit({"type": "error", "message": str(exc)})
-            raise
-        emit({"type": "tool_result", "tool": outlook_tool, "result": tool_result})
-        answer = _compose_outlook_tool_answer(task, outlook_tool, tool_result)
-        from app.services.agent_llm_reply import finalize_agent_answer
-
-        answer = finalize_agent_answer(
-            task=task,
-            handler="outlook_calendar",
-            workflow=workflow,
-            factual_answer=answer,
-            emit=emit,
-        )
-        emit({"type": "agent_message", "text": answer})
-        return {"answer": answer, "tool": outlook_tool, "tool_result": tool_result}
-
-    if handler == "site_search_excel" or uses_plan_export(workflow):
-        emit({"type": "status", "text": "Читаю правила из паспорта и запускаю поиск…"})
-        try:
-            arguments = build_plan_export_arguments(workflow)
-        except PlanRunError as exc:
-            emit({"type": "error", "message": str(exc)})
-            raise AgentRuntimeError(str(exc)) from exc
-
-        try:
-            result = _request_desktop_tool(
-                emit,
-                run_id=run_id,
-                user_id=user_id,
-                workflow_id=workflow_id,
-                tool="plan_export",
-                arguments=arguments,
-            )
-        except AgentRuntimeError as exc:
-            emit({"type": "error", "message": str(exc)})
-            raise
-
-        answer = format_plan_run_answer(result)
-        emit({"type": "tool_result", "tool": "plan_export", "result": result})
-        from app.services.agent_llm_reply import finalize_agent_answer
-
-        answer = finalize_agent_answer(
-            task=task,
-            handler="site_search_excel",
-            workflow=workflow,
-            factual_answer=answer,
-            extra_context={"excel_path": result.get("file") or result.get("path")},
-            emit=emit,
-        )
-        emit({"type": "agent_message", "text": answer})
-        return {"answer": answer, "tool": "plan_export", "tool_result": result}
-
-    tool_name = ""
-    tool_result: dict[str, Any] | None = None
-    arguments: dict[str, Any] = {}
-
-    browser_args = _site_browser_args(task, workflow)
-    if browser_args:
-        tool_name = "site_browser"
-        arguments = browser_args
-        emit({"type": "thinking", "text": "Открываю указанный сайт и собираю данные.\n"})
-    else:
-        query = _search_query(task, workflow)
-        if query:
-            tool_name = "web_search"
-            arguments = {"query": query, "max_results": 8, "fetch_top": False}
-            emit({"type": "thinking", "text": "Ищу информацию в интернете.\n"})
-
-    if tool_name:
-        try:
-            tool_result = _request_desktop_tool(
-                emit,
-                run_id=run_id,
-                user_id=user_id,
-                workflow_id=workflow_id,
-                tool=tool_name,
-                arguments=arguments,
-            )
-        except AgentRuntimeError as exc:
-            emit({"type": "error", "message": str(exc)})
-            raise
-        emit({"type": "tool_result", "tool": tool_name, "result": tool_result})
-
-    answer = _compose_answer(task, tool_name, tool_result)
-    from app.services.agent_llm_reply import finalize_agent_answer
-
-    answer = finalize_agent_answer(
-        task=task,
-        handler=handler,
+    emit({"type": "status", "text": "Думаю…"})
+    playbook = ensure_cursor_chat_runtime(db, workflow)
+    return _run_with_playbook(
+        db,
         workflow=workflow,
-        factual_answer=answer,
+        user_id=user_id,
+        message=task,
         emit=emit,
+        run_id=run_id,
+        playbook=playbook,
+        source=source,
     )
-    emit({"type": "agent_message", "text": answer})
-    return {"answer": answer, "tool": tool_name, "tool_result": tool_result or {}}
 
 
 _FILE_URL_RE = re.compile(r"file:///\S+", re.IGNORECASE)
@@ -250,6 +84,76 @@ _COPY_NAME_RE = re.compile(
     r"назван\w*\s+([^\r\n]+)",
     re.IGNORECASE,
 )
+_RENAME_TARGET_RE = re.compile(
+    r"(?:назван(?:ие|ия)|имя)\s+файла\s+(?:на\s+)?[«\"']?([^»\"'\n,.]+)[»\"']?",
+    re.IGNORECASE,
+)
+_RENAME_TO_RE = re.compile(
+    r"переимен(?:уй|ить)(?:\s+файл)?[^\n]*?(?:в|на)\s+[«\"']?([^»\"'\n]+?)[»\"']?(?:\s*$|\s+и\s+)",
+    re.IGNORECASE,
+)
+_RENAME_PORUCHENIYA_RE = re.compile(
+    r"переимен(?:уй|ить)?\s+(?:файл\s+)?(?:поручен\w*|act[_\s-]?porucheniya\w*)\s+(?:в|на)\s+(.+)$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_rename_dest_name(dest_raw: str, task_low: str) -> str:
+    dest = dest_raw.strip().strip(" «»\"'")
+    dest = re.sub(r"\s+и\s+(?:сегодняшн\w*|сегодня).*$", "", dest, flags=re.I).strip()
+    if any(x in task_low for x in ("сегодняшн", "сегодня")):
+        from datetime import date
+
+        suffix = date.today().strftime("%d.%m.%Y")
+        if suffix not in dest:
+            dest = f"{dest}_{suffix}"
+    return dest
+
+
+def _extract_rename_dest_name(text: str, low: str) -> str:
+    for pattern in (_RENAME_TARGET_RE, _RENAME_PORUCHENIYA_RE, _RENAME_TO_RE, _COPY_NAME_RE):
+        named = pattern.search(text)
+        if named:
+            dest_name = _normalize_rename_dest_name(named.group(1), low)
+            if dest_name.casefold().startswith("файла "):
+                dest_name = dest_name[6:].strip()
+            if dest_name.casefold().startswith("на "):
+                dest_name = dest_name[3:].strip()
+            return dest_name
+    return ""
+
+
+def _parse_file_rename_command(task: str) -> dict[str, str] | None:
+    text = (task or "").strip()
+    low = text.casefold()
+    if not any(
+        hint in low
+        for hint in (
+            "название файла",
+            "имя файла",
+            "переимен",
+            "rename",
+            "назови файл",
+            "измени название",
+        )
+    ):
+        return None
+    if not any(hint in low for hint in ("файл", ".xlsx", "file:", "excel", "поручен")):
+        return None
+
+    dest_name = _extract_rename_dest_name(text, low)
+    if not dest_name:
+        return None
+
+    match = _FILE_URL_RE.search(text) or _WIN_PATH_RE.search(text)
+    if match is not None:
+        source = match.group(0).rstrip(".,;")
+        return {"source": source, "dest_name": dest_name}
+
+    if "поручен" in low or "porucheniya" in low:
+        return {"source": "desktop:porucheniya", "dest_name": dest_name}
+
+    return None
 
 
 def _parse_file_copy_command(task: str) -> dict[str, str] | None:
@@ -286,7 +190,7 @@ def _run_with_playbook(
     from app.clients import cursor as cursor_client
     from app.clients.cursor import CursorAgentError
     from app.services.workflows import prompts
-    from app.services.agent_route import resolve_agent_tool_names
+    from app.services.cursor_chat_runtime import resolve_chat_tool_names
     from app.services.workflows.cursor_tools import (
         set_allowed_tools,
         set_tool_context,
@@ -297,9 +201,14 @@ def _run_with_playbook(
     from app.services.workflows.service import _create_exec_agent, _stream_run
 
     set_tool_context(run_id, user_id)
-    tool_names = resolve_agent_tool_names(workflow)
+    tool_names = resolve_chat_tool_names(workflow)
     set_allowed_tools(tool_names)
     allowed = frozenset(tool_names) if tool_names else None
+    regulation = str(getattr(workflow, "document_text", "") or "").strip()
+    if not regulation:
+        regulation = str(playbook.get("instructions") or "")
+    plan = workflow.plan_json if isinstance(workflow.plan_json, dict) else {}
+    goal = str(plan.get("goal") or "").strip()
     prompt = with_tools_if_desktop(
         prompts.build_published_run_prompt(
             instructions=str(playbook.get("instructions") or ""),
@@ -307,10 +216,12 @@ def _run_with_playbook(
             user_message=message,
             title=workflow.title or "",
             source=source,
+            regulation=regulation,
+            goal=goal,
         ),
         allowed_names=allowed,
     )
-    emit({"type": "status", "text": "Запускаю Cursor по инструкции и примеру прогона…"})
+    emit({"type": "status", "text": "Планирую шаги и вызываю tools…"})
 
     def on_event(event_type: str, text: str = "", extra: dict[str, Any] | None = None) -> None:
         payload: dict[str, Any] = {"type": event_type}
@@ -322,6 +233,8 @@ def _run_with_playbook(
 
     try:
         agent_id = str(workflow.exec_agent_id or "")
+        if agent_id.startswith("mcp:"):
+            agent_id = ""
         if agent_id:
             try:
                 run = cursor_client.create_run_when_ready(
@@ -341,11 +254,20 @@ def _run_with_playbook(
             db.commit()
         if not agent_id or not cursor_run_id:
             raise AgentRuntimeError("Cursor не вернул agent/run")
-        required = ["notify"] if wants_notifications(
-            str(playbook.get("instructions") or ""),
-            message,
-            str(workflow.notes or ""),
-        ) else []
+        required = (
+            ["notify"]
+            if (source or "") != "chat"
+            and wants_notifications(
+                str(playbook.get("instructions") or ""),
+                message,
+                str(workflow.notes or ""),
+            )
+            else (
+                ["notify"]
+                if wants_notifications(message)
+                else []
+            )
+        )
         phase = stream_cursor_with_tools(
             agent_id=agent_id,
             run_id=cursor_run_id,
@@ -374,6 +296,7 @@ def _run_with_playbook(
             "notifications": work.get("notifications") or [],
         }
     )
+    emit({"type": "agent_message", "text": answer})
     local = dict(workflow.local_run or {})
     local["work_result"] = work
     workflow.local_run = local
@@ -449,6 +372,29 @@ def _run_act_porucheniya_registry(
             actor_fio=actor_fio,
         )
 
+    if intent == "composite_workflow":
+        return _run_act_composite_workflow(
+            db,
+            emit=emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            workflow=workflow,
+            task=task,
+            actor_fio=actor_fio,
+        )
+
+    if intent == "edit_excel":
+        return _run_act_edit_desktop_excel(
+            emit=emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            workflow=workflow,
+            task=task,
+            actor_fio=actor_fio,
+        )
+
     attachment_ctx = workflow_attachment_context(workflow)
     if attachment_ctx:
         emit({"type": "status", "text": "Учитываю материалы из вложений workflow…"})
@@ -472,6 +418,7 @@ def _run_act_porucheniya_registry(
             user_id=user_id,
             workflow_id=workflow_id,
             actor_fio=actor_fio,
+            task=task,
         )
         if excel_read:
             from app.services.act_porucheniya_report import documents_from_excel_payload
@@ -527,6 +474,7 @@ def _run_act_porucheniya_registry(
                 user_id=user_id,
                 workflow_id=workflow_id,
                 actor_fio=actor_fio,
+                task=task,
             )
             if excel_read:
                 from app.services.act_porucheniya_report import documents_from_excel_payload
@@ -603,8 +551,14 @@ def _run_act_porucheniya_registry(
     if task_implies_protocol_merge(task) or intent == "merge_add":
         protocol_text = extract_protocol_text(task, workflow_text=attachment_ctx)
         if protocol_text.strip():
-            emit({"type": "status", "text": "Разбираю протокол и дополняю реестр новыми ACT…"})
+            from app.services.act_porucheniya_report import assign_next_act_numbers
+
+            emit({"type": "status", "text": "Разбираю задачу и дополняю реестр новой записью…"})
             protocol_docs = parse_protocol_to_documents(protocol_text)
+            protocol_docs = assign_next_act_numbers(
+                protocol_docs,
+                existing_documents=working_documents,
+            )
             working_documents, protocol_merge_stats = merge_protocol_documents(
                 working_documents, protocol_docs
             )
@@ -612,10 +566,21 @@ def _run_act_porucheniya_registry(
                 {
                     "type": "status",
                     "text": (
-                        f"Из протокола: +{protocol_merge_stats.get('added_documents', 0)} ACT, "
+                        f"Добавлено: +{protocol_merge_stats.get('added_documents', 0)} ACT, "
                         f"+{protocol_merge_stats.get('added_task_lines', 0)} задач."
                     ),
                 }
+            )
+        elif intent == "merge_add":
+            return _run_act_analyze_without_data(
+                emit=emit,
+                workflow=workflow,
+                task=task,
+                factual=(
+                    "Не удалось разобрать новую запись в задаче. "
+                    "Примеры: «добавь запись Иванов Иван 29.09.26 Текст задачи» или "
+                    "«добавь Задача: …, Исполнитель: …, срок до 29.09.26»."
+                ),
             )
         else:
             emit({"type": "status", "text": "Протокол в задаче не найден — только OData."})
@@ -704,12 +669,24 @@ def _read_act_desktop_excel(
     workflow_id: str,
     actor_fio: str,
     source_path: str = "",
+    task: str = "",
 ) -> dict[str, Any] | None:
-    from app.services.act_porucheniya_task import act_desktop_excel_candidates
+    from app.services.act_porucheniya_task import (
+        act_desktop_excel_candidates,
+        resolve_desktop_excel_filename,
+    )
 
     desktop_names: list[str] = []
     if (source_path or "").strip():
         desktop_names.append(source_path.strip())
+    if (task or "").strip():
+        resolved = resolve_desktop_excel_filename(
+            task,
+            actor_fio=actor_fio,
+            workflow_id=workflow_id,
+        )
+        if resolved:
+            desktop_names.append(resolved)
     desktop_names.extend(
         act_desktop_excel_candidates(
             actor_fio=actor_fio,
@@ -761,6 +738,7 @@ def _load_act_documents_from_desktop(
         user_id=user_id,
         workflow_id=workflow_id,
         actor_fio=actor_fio,
+        task=task,
     )
     if not excel_read:
         return [], {}
@@ -842,6 +820,374 @@ def _run_act_analyze_without_data(
     return {"answer": answer, "intent": "analyze_chat"}
 
 
+def _run_act_composite_workflow(
+    db: Session,
+    *,
+    emit: AgentEventCallback,
+    run_id: str,
+    user_id: str,
+    workflow_id: str,
+    workflow: Workflow,
+    task: str,
+    actor_fio: str,
+) -> dict[str, Any]:
+    """OData → Excel + новая запись → Word-отчёт → Outlook в тот же docx."""
+    from datetime import datetime
+
+    from app.services.act_porucheniya_odata import fetch_act_porucheniya_registry
+    from app.services.act_porucheniya_report import (
+        assign_next_act_numbers,
+        build_act_excel_arguments,
+        compose_act_registry_answer,
+        flatten_documents_to_task_rows,
+    )
+    from app.services.act_protocol_merge import (
+        extract_protocol_text,
+        merge_protocol_documents,
+        parse_protocol_to_documents,
+    )
+    from app.services.agent_llm_reply import finalize_agent_answer
+
+    emit({"type": "status", "text": "Комплексная задача: OData → Excel → Word → Outlook…"})
+
+    def _odata_progress(message: str) -> None:
+        emit({"type": "status", "text": message})
+
+    registry_payload = fetch_act_porucheniya_registry(on_progress=_odata_progress)
+    all_documents = list(registry_payload.get("documents") or [])
+    odata_source = str(registry_payload.get("source") or "")
+    emit(
+        {
+            "type": "status",
+            "text": (
+                f"OData: {len(all_documents)} ACT, "
+                f"{int(registry_payload.get('task_count') or 0)} задач."
+            ),
+        }
+    )
+    emit({"type": "tool_result", "tool": "onec.act_porucheniya_registry", "result": registry_payload})
+
+    protocol_text = extract_protocol_text(task, workflow_text="")
+    protocol_merge_stats: dict[str, Any] = {}
+    working_documents = list(all_documents)
+    if protocol_text.strip():
+        emit({"type": "status", "text": "Добавляю новую запись в реестр…"})
+        protocol_docs = parse_protocol_to_documents(protocol_text)
+        protocol_docs = assign_next_act_numbers(protocol_docs, existing_documents=working_documents)
+        working_documents, protocol_merge_stats = merge_protocol_documents(
+            working_documents, protocol_docs
+        )
+        emit(
+            {
+                "type": "status",
+                "text": (
+                    f"Добавлено: +{protocol_merge_stats.get('added_task_lines', 0)} задач, "
+                    f"+{protocol_merge_stats.get('added_documents', 0)} ACT."
+                ),
+            }
+        )
+    else:
+        emit({"type": "status", "text": "Новая запись в задаче не распознана — продолжаю без дополнения."})
+
+    documents = working_documents
+    excel_payload: dict[str, Any] | None = None
+    if documents:
+        emit({"type": "status", "text": "Формирую Excel на рабочем столе…"})
+        excel_args = build_act_excel_arguments(
+            workflow_id=workflow_id,
+            documents=documents,
+            actor_fio=actor_fio,
+        )
+        try:
+            excel_payload = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                tool="excel.create_workbook",
+                arguments=excel_args,
+                timeout_s=120.0,
+            )
+            emit({"type": "tool_result", "tool": "excel.create_workbook", "result": excel_payload})
+        except AgentRuntimeError as exc:
+            emit({"type": "status", "text": f"Excel не создан: {exc}"})
+
+    report_body = compose_act_registry_answer(
+        {
+            **registry_payload,
+            "documents": documents,
+            "count": len(documents),
+            "task_count": len(flatten_documents_to_task_rows(documents)),
+            "protocol_merge": protocol_merge_stats,
+        },
+        excel_payload,
+    )
+    docx_name = f"act_porucheniya_report_{datetime.now().strftime('%Y%m%d')}.docx"
+    docx_payload: dict[str, Any] | None = None
+    emit({"type": "status", "text": f"Создаю Word-отчёт {docx_name}…"})
+    try:
+        docx_payload = _request_desktop_tool(
+            emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            tool="document.write_docx",
+            arguments={
+                "filename": docx_name,
+                "title": "Отчёт по поручениям ACT",
+                "paragraphs": report_body.splitlines(),
+                "save_to_desktop": False,
+            },
+            timeout_s=90.0,
+        )
+        emit({"type": "tool_result", "tool": "document.write_docx", "result": docx_payload})
+    except AgentRuntimeError as exc:
+        emit({"type": "status", "text": f"Word-отчёт не создан: {exc}"})
+
+    calendar_payload: dict[str, Any] | None = None
+    emit({"type": "status", "text": "Читаю календарь Outlook (совещания на сегодня)…"})
+    try:
+        calendar_payload = _request_desktop_tool(
+            emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            tool="outlook.read_calendar",
+            arguments={"days_forward": 1, "max_results": 40},
+            timeout_s=120.0,
+        )
+        emit({"type": "tool_result", "tool": "outlook.read_calendar", "result": calendar_payload})
+    except AgentRuntimeError as exc:
+        emit({"type": "status", "text": f"Outlook недоступен: {exc}"})
+
+    docx_path = str((docx_payload or {}).get("desktop_path") or (docx_payload or {}).get("path") or "")
+    meeting_lines: list[str] = []
+    today = datetime.now().date()
+    today_str = today.strftime("%Y-%m-%d")
+    for event in (calendar_payload or {}).get("events") or []:
+        if not isinstance(event, dict):
+            continue
+        start_raw = str(event.get("start_at") or event.get("start") or "")
+        title = str(event.get("title") or event.get("subject") or "Совещание").strip()
+        if today_str not in start_raw:
+            continue
+        location = str(event.get("location") or "").strip()
+        line = f"• {start_raw[:16]} — {title}"
+        if location:
+            line += f" ({location})"
+        meeting_lines.append(line)
+
+    if docx_path and meeting_lines:
+        emit({"type": "status", "text": "Дописываю совещания в конец Word-файла…"})
+        try:
+            append_payload = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                tool="document.append_docx",
+                arguments={
+                    "path": docx_path,
+                    "heading": f"Совещания на {today.strftime('%d.%m.%Y')}",
+                    "paragraphs": meeting_lines,
+                },
+                timeout_s=90.0,
+            )
+            emit({"type": "tool_result", "tool": "document.append_docx", "result": append_payload})
+        except AgentRuntimeError as exc:
+            emit({"type": "status", "text": f"Не удалось дописать Outlook в Word: {exc}"})
+    elif docx_path:
+        emit({"type": "status", "text": "Совещаний на сегодня в Outlook не найдено."})
+
+    excel_path = str((excel_payload or {}).get("desktop_path") or (excel_payload or {}).get("path") or "")
+    factual = (
+        f"Комплексная задача выполнена.\n"
+        f"OData: {len(all_documents)} ACT → Excel: {excel_path or '—'}.\n"
+        f"Добавлено из задачи: +{protocol_merge_stats.get('added_task_lines', 0)} строк.\n"
+        f"Word: {docx_path or '—'}.\n"
+        f"Outlook: совещаний на сегодня — {len(meeting_lines)}."
+    )
+    answer = finalize_agent_answer(
+        task=task,
+        handler="act_porucheniya_registry",
+        workflow=workflow,
+        factual_answer=factual,
+        extra_context={
+            "intent": "composite_workflow",
+            "excel_path": excel_path,
+            "count": len(documents),
+            "task_count": len(flatten_documents_to_task_rows(documents)),
+            "odata_source": odata_source,
+            "protocol_merge": protocol_merge_stats,
+        },
+        emit=emit,
+    )
+    emit({"type": "agent_message", "text": answer})
+    return {
+        "answer": answer,
+        "intent": "composite_workflow",
+        "excel": excel_payload,
+        "document": docx_payload,
+        "calendar": calendar_payload,
+        "protocol_merge": protocol_merge_stats,
+    }
+
+
+def _run_act_edit_desktop_excel(
+    *,
+    emit: AgentEventCallback,
+    run_id: str,
+    user_id: str,
+    workflow_id: str,
+    workflow: Workflow,
+    task: str,
+    actor_fio: str,
+) -> dict[str, Any]:
+    from app.services.act_porucheniya_report import build_act_excel_move_last_row_arguments
+    from app.services.act_porucheniya_task import (
+        resolve_desktop_excel_filename,
+        task_wants_move_last_row_to_top,
+    )
+    from app.services.agent_llm_reply import finalize_agent_answer
+
+    emit({"type": "status", "text": "Режим: правка Excel на рабочем столе (без OData)…"})
+    if not task_wants_move_last_row_to_top(task):
+        factual = (
+            "Поняла запрос на правку Excel, но не распознала операцию. "
+            "Пример: «в файле Поручения на рабочем столе измени последнюю строку: "
+            "номер ACT00-… и перенеси наверх»."
+        )
+        answer = finalize_agent_answer(
+            task=task,
+            handler="act_porucheniya_registry",
+            workflow=workflow,
+            factual_answer=factual,
+            extra_context={"intent": "edit_excel", "odata_source": "none"},
+            emit=emit,
+        )
+        emit({"type": "agent_message", "text": answer})
+        return {"answer": answer, "intent": "edit_excel"}
+
+    target_name = resolve_desktop_excel_filename(
+        task,
+        actor_fio=actor_fio,
+        workflow_id=workflow_id,
+    )
+    emit({"type": "status", "text": f"Читаю Excel с рабочего стола: {target_name}…"})
+    try:
+        excel_read = _request_desktop_tool(
+            emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            tool="excel.read_workbook",
+            arguments={
+                "desktop_path": target_name,
+                "sheet": "Задачи ACT",
+                "max_rows": 10000,
+                "runtime_context": {"workflow_id": workflow_id, "agent_id": workflow_id},
+            },
+            timeout_s=90.0,
+        )
+        emit({"type": "tool_result", "tool": "excel.read_workbook", "result": excel_read})
+    except AgentRuntimeError as exc:
+        factual = f"Не удалось прочитать Excel на рабочем столе ({target_name}): {exc}"
+        answer = finalize_agent_answer(
+            task=task,
+            handler="act_porucheniya_registry",
+            workflow=workflow,
+            factual_answer=factual,
+            extra_context={"intent": "edit_excel", "odata_source": "none"},
+            emit=emit,
+        )
+        emit({"type": "agent_message", "text": answer})
+        return {"answer": answer, "intent": "edit_excel"}
+
+    save_name = target_name if "*" not in target_name else str(excel_read.get("filename") or "Поручения.xlsx")
+
+    excel_args, meta = build_act_excel_move_last_row_arguments(
+        excel_read,
+        target_filename=save_name,
+        workflow_id=workflow_id,
+        actor_fio=actor_fio,
+    )
+    if not excel_args:
+        factual = str(meta.get("error") or "Не удалось подготовить правку Excel.")
+        answer = finalize_agent_answer(
+            task=task,
+            handler="act_porucheniya_registry",
+            workflow=workflow,
+            factual_answer=factual,
+            extra_context={"intent": "edit_excel", "odata_source": "none"},
+            emit=emit,
+        )
+        emit({"type": "agent_message", "text": answer})
+        return {"answer": answer, "intent": "edit_excel"}
+
+    new_act = str(meta.get("new_act") or "")
+    old_act = str(meta.get("old_act") or "")
+    emit(
+        {
+            "type": "status",
+            "text": f"Переношу последнюю строку наверх: {old_act} → {new_act}…",
+        }
+    )
+    excel_payload: dict[str, Any] | None = None
+    try:
+        excel_payload = _request_desktop_tool(
+            emit,
+            run_id=run_id,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            tool="excel.create_workbook",
+            arguments=excel_args,
+            timeout_s=120.0,
+        )
+        emit({"type": "tool_result", "tool": "excel.create_workbook", "result": excel_payload})
+    except AgentRuntimeError as exc:
+        factual = f"Excel не сохранён: {exc}"
+        answer = finalize_agent_answer(
+            task=task,
+            handler="act_porucheniya_registry",
+            workflow=workflow,
+            factual_answer=factual,
+            extra_context={"intent": "edit_excel", "odata_source": "none"},
+            emit=emit,
+        )
+        emit({"type": "agent_message", "text": answer})
+        return {"answer": answer, "intent": "edit_excel"}
+
+    dest_path = ""
+    if excel_payload:
+        dest_path = str(excel_payload.get("desktop_path") or excel_payload.get("path") or "")
+    factual = (
+        f"Последняя строка переименована {old_act} → {new_act} и перенесена наверх "
+        f"(всего строк задач: {meta.get('row_count', '?')}). "
+        f"Файл: {dest_path or save_name}. OData не вызывался."
+    )
+    answer = finalize_agent_answer(
+        task=task,
+        handler="act_porucheniya_registry",
+        workflow=workflow,
+        factual_answer=factual,
+        extra_context={
+            "intent": "edit_excel",
+            "excel_path": dest_path,
+            "new_act": new_act,
+            "odata_source": "none",
+        },
+        emit=emit,
+    )
+    emit({"type": "agent_message", "text": answer})
+    return {
+        "answer": answer,
+        "tool": "excel.create_workbook",
+        "excel": excel_payload,
+        "intent": "edit_excel",
+        "meta": meta,
+    }
+
+
 def _run_act_reformat_desktop_excel(
     *,
     emit: AgentEventCallback,
@@ -867,6 +1213,7 @@ def _run_act_reformat_desktop_excel(
         workflow_id=workflow_id,
         actor_fio=actor_fio,
         source_path=extract_excel_path_from_task(task),
+        task=task,
     )
     if not excel_read:
         factual = (

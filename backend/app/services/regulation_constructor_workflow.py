@@ -130,14 +130,19 @@ def _apply_generic_regulation_spec(row: Workflow, route: AgentRoute) -> bool:
 
     local = dict(row.local_run or {})
     passport_title = str(local.get("passport_title") or row.title or plan.title or "").strip()
+    from app.services.cursor_chat_runtime import _generic_playbook_from_workflow
+
+    playbook = _generic_playbook_from_workflow(row)
+
     local.update(
         {
             "passport_title": passport_title,
             "from_regulation_constructor": True,
             "agent_route": agent_route_dict_for_local(route),
             "tools": tools,
+            "playbook": playbook,
             "tests_status": "pass",
-            "execution_backend": "mcp",
+            "execution_backend": "cursor",
             "runtime": {
                 "kind": route.kind or route.handler,
                 "handler": route.handler,
@@ -146,8 +151,8 @@ def _apply_generic_regulation_spec(row: Workflow, route: AgentRoute) -> bool:
         }
     )
     row.local_run = local
-    if route.handler != "generic":
-        row.exec_agent_id = row.exec_agent_id or f"mcp:{route.handler}"
+    if str(row.exec_agent_id or "").startswith("mcp:"):
+        row.exec_agent_id = ""
     if not (row.last_result or "").strip():
         row.last_result = (
             f"TESTS: PASS\nRegulation constructor agent ready ({route.handler})."
@@ -177,9 +182,8 @@ def apply_regulation_constructor_workflow(row: Workflow) -> bool:
 
 
 def should_skip_cursor_demo_for_workflow(row: Workflow) -> bool:
-    """Пробный Cursor-прогон не нужен — runtime MCP уже настроен из регламента."""
+    """Пробный Cursor-прогон не нужен — chat runtime уже на Cursor + tools."""
     if not is_regulation_constructor_workflow(row):
         return False
-    route = resolve_route_for_regulation_workflow(row)
     local = row.local_run if isinstance(row.local_run, dict) else {}
-    return route.handler != "generic" or bool(local.get("tests_status") == "pass")
+    return bool(local.get("tests_status") == "pass" and local.get("playbook"))

@@ -1,8 +1,9 @@
 #Requires -Version 5.1
 param(
     [string]$SourceDir = "",
-    [string]$BackendDir = "",
-    [string]$BackendUrl = "http://127.0.0.1:7812",
+    [string]$BackendUrl = "http://192.168.2.91:7812",
+    [string]$AuthUrl = "http://192.168.2.91:7812",
+    [string]$HostIp = "192.168.2.91",
     [switch]$NoShortcuts
 )
 
@@ -19,7 +20,7 @@ if (-not $SourceDir) {
 $SourceDir = (Resolve-Path $SourceDir).Path
 $exeSrc = Join-Path $SourceDir "NewConstructor.exe"
 if (-not (Test-Path $exeSrc)) {
-    throw "NewConstructor.exe not found in $SourceDir. Build desktop first (build_exe.bat)."
+    throw "NewConstructor.exe not found in $SourceDir."
 }
 
 $installRoot = Join-Path $env:LOCALAPPDATA "NewConstructor"
@@ -38,31 +39,19 @@ foreach ($name in @(
     }
 }
 
-if (-not $BackendDir) {
-    $probe = @(
-        (Join-Path $SourceDir "..\..\..\backend"),
-        (Join-Path $SourceDir "..\..\backend"),
-        "c:\Users\a.komarkova\Documents\projects\NewConstructor\backend"
-    )
-    foreach ($p in $probe) {
-        try { $full = [System.IO.Path]::GetFullPath($p) } catch { continue }
-        if (Test-Path (Join-Path $full "app\main.py")) {
-            $BackendDir = $full
-            break
-        }
-    }
-}
-
-$envLines = @("BACKEND_URL=$BackendUrl")
-if ($BackendDir -and (Test-Path (Join-Path $BackendDir "app\main.py"))) {
-    $envLines += "BACKEND_DIR=$BackendDir"
-    $envLines += "BACKEND_AUTOSTART=1"
-    Write-Step "Backend autostart: $BackendDir"
+$envTemplate = Join-Path $SourceDir ".env"
+if (Test-Path $envTemplate) {
+    Copy-Item -Force $envTemplate (Join-Path $installRoot ".env")
+    Write-Step "Config from bundled .env"
 } else {
-    $envLines += "BACKEND_AUTOSTART=0"
-    Write-Step "Backend folder not found; server must already run at $BackendUrl"
+    $auth = if ($AuthUrl) { $AuthUrl.TrimEnd("/") } else { $BackendUrl.TrimEnd("/") }
+    @(
+        "HOST_IP=$HostIp",
+        "BACKEND_URL=$($BackendUrl.TrimEnd('/'))",
+        "AUTH_URL=$auth"
+    ) | Set-Content -Encoding UTF8 (Join-Path $installRoot ".env")
+    Write-Step "Config: BACKEND_URL=$BackendUrl AUTH_URL=$auth"
 }
-$envLines | Set-Content -Encoding ASCII (Join-Path $installRoot ".env")
 
 function New-Shortcut([string]$Path, [string]$Target, [string]$Args, [string]$WorkDir, [string]$Icon) {
     $w = New-Object -ComObject WScript.Shell
@@ -111,6 +100,7 @@ Write-Host "NewConstructor removed."
 Set-Content -Encoding ASCII (Join-Path $installRoot "Uninstall-NewConstructor.ps1") -Value $uninstall
 
 Write-Host ""
-Write-Host "OK. Use Desktop shortcut 'NewConstructor' or:" -ForegroundColor Green
-Write-Host "  $installRoot\Start-NewConstructor.cmd"
+Write-Host "OK. turbobot installed." -ForegroundColor Green
+Write-Host "  Server: $BackendUrl"
+Write-Host "  Launch: $installRoot\Start-NewConstructor.cmd"
 Write-Host ""

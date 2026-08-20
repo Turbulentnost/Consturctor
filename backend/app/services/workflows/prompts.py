@@ -98,20 +98,71 @@ _PLACEHOLDER_TITLES = {
 }
 
 _RESULT_HINT = (
-    "Сначала пойми, зачем этот агент нужен и чем заканчивается его работа.\n"
-    "В конце прогона всегда верни предметный результат — не «Готово» и не JSON инструмента.\n"
-    "Формат (текст обязателен):\n"
+    "Сначала вызови нужные Constructor tools и дождись ответа.\n"
+    "RESULT: пиши ТОЛЬКО после успешных tools — не заранее и не «от себя».\n"
+    "Все новые файлы создавай ТОЛЬКО в рабочей папке агента "
+    "(%LOCALAPPDATA%\\Constructor\\agent_workspaces\\<workflow_id>\\out\\). "
+    "Не сохраняй на рабочий стол и не разбрасывай по диску, "
+    "если пользователь явно не попросил.\n"
+    "Перед RESULT для каждого созданного/изменённого файла вызови files.inspect "
+    "(или перечисли пути в FILES — UI добавит таблицу размеров).\n"
+    "Формат финала (когда задача реально сделана):\n"
     "RESULT:\n"
-    "<3–12 предложений: что проверил, что нашёл, что сделал, кому сообщил>\n"
+    "<2–6 предложений: что сделал, что получилось>\n"
     "FILES:\n"
-    "- путь или нет\n"
+    "- полный путь к каждому файлу (C:\\Users\\...\\out\\file.docx)\n"
     "ACTIONS:\n"
     "- действие или нет\n"
     "NOTIFICATIONS:\n"
-    "- кому и что или нет\n"
+    "- кому и что — или «нет»\n"
     "SCHEDULE:\n"
-    "- каждые 15 мин / ежедневно в 12:00 / при событии: … / только вручную\n"
+    "- только вручную / по расписанию — или «только вручную»\n"
+    "В RESULT не перечисляй промежуточные Python-скрипты — только итог для человека.\n"
 )
+
+_TOOL_SEMANTICS = (
+    "Подбор tool по смыслу задачи (не по регламенту по умолчанию):\n"
+    "• Word / docx / «ворд» → document.write_docx, document.append_docx\n"
+    "• Excel / xlsx / таблица → excel.read_workbook, excel.create_workbook, excel.edit_workbook\n"
+    "• Переименовать / скопировать файл → files.rename, files.copy\n"
+    "• Проверить созданные файлы (размер, дата) → files.inspect\n"
+    "• Реестр ACT / OData / поручения 1С → onec.act_porucheniya_registry + excel при выгрузке\n"
+    "• Outlook / календарь / почта → outlook.read_calendar, outlook.search_mail\n"
+    "• Сайт / URL → site_browser или browser.*\n"
+    "• code.write_python / code.run_python — только если нет готового tool "
+    "(не пиши скрипт для docx/xlsx/rename, если есть document.* / excel.* / files.*).\n"
+    "• notify.send — ТОЛЬКО если пользователь явно просил уведомить кого-то в текущей задаче.\n"
+)
+
+
+def distill_agent_essence(
+    *,
+    title: str = "",
+    regulation: str = "",
+    goal: str = "",
+) -> str:
+    """Краткая суть роли агента — не полный регламент."""
+    parts: list[str] = []
+    name = (title or "").strip()
+    if name:
+        parts.append(f"Ты — «{name}».")
+    mission = (goal or "").strip()
+    if mission:
+        parts.append(f"Миссия: {mission[:600]}")
+    reg = (regulation or "").strip()
+    for block in reg.split("\n\n"):
+        line = block.strip().lstrip("#").strip()
+        if len(line) < 40 or line.startswith("```"):
+            continue
+        if line.casefold().startswith(("шаг ", "step ", "§")):
+            continue
+        parts.append(line[:700])
+        break
+    parts.append(
+        "Регламент ниже — экспертиза и границы роли, не скрипт на каждый запрос. "
+        "Текущая задача пользователя важнее типового примера и OData/Excel по умолчанию."
+    )
+    return "\n".join(parts)
 
 
 def is_placeholder_title(value: str) -> bool:
@@ -363,6 +414,90 @@ def build_playbook_prompt(
     )
 
 
+def _cursor_agent_behavior_rules(*, source: str = "chat") -> str:
+    if (source or "") == "chat":
+        role_line = (
+            "Работаешь как Cursor Composer: сначала пойми текущую задачу пользователя, "
+            "затем сам выбери tools и доведи до результата.\n"
+            "Задача из блока «ТЕКУЩАЯ ЗАДАЧА» — главный приоритет. "
+            "Регламент задаёт роль и экспертизу, но не подменяет задачу "
+            "(не выгружай ACT/OData, если просили Word; не Excel, если просили docx).\n"
+        )
+    else:
+        role_line = (
+            "Сейчас типовой/фоновый прогон агента по регламенту. "
+            "Если пользователь напишет в чат — его команда важнее, выполни её и вернись к работе.\n"
+        )
+    return (
+        "Ты полноценный агент Constructor — поведение как у Cursor Composer в IDE.\n"
+        f"{role_line}"
+        f"{_TOOL_SEMANTICS}\n"
+        "Алгоритм: (1) понять задачу → (2) вызвать tools → (3) проверить результат → "
+        "(4) при ошибке исправить → (5) только потом RESULT.\n"
+        "Инструменты — блок ```constructor_tool (для системы, не показывай пользователю).\n"
+        "Не выдумывай пути к файлам и не пиши «готово», пока tool не вернул успех.\n"
+        "Не ищи BACKEND_URL, MCP, curl с Cloud VM — backend вызовет server tools сам.\n"
+        "CLARIFY — только если без ответа человека нельзя продолжить.\n"
+        "Пример прогона — образец для типовых задач, не обязательный сценарий для каждого чата.\n"
+        f"{_RESULT_HINT}\n"
+    )
+
+
+def build_cursor_system_prompt(
+    *,
+    regulation: str = "",
+    instructions: str = "",
+    example_run: str = "",
+    title: str = "",
+    context: str = "",
+    source: str = "chat",
+    goal: str = "",
+) -> str:
+    """Роль агента + регламент-справочник + правила Composer (без текущей задачи)."""
+    context_block = ""
+    if (context or "").strip():
+        context_block = (
+            "===== КОНТЕКСТ =====\n"
+            f"{context.strip()}\n"
+            "===== КОНЕЦ КОНТЕКСТА =====\n\n"
+        )
+    reg_text = (regulation or instructions or "").strip()
+    essence = distill_agent_essence(title=title, regulation=reg_text, goal=goal)
+    parts = [
+        "===== КТО ТЫ (СУТЬ РОЛИ) =====\n",
+        essence,
+        "\n===== КОНЕЦ СУТИ =====\n\n",
+        context_block,
+        "===== ПРАВИЛА (как Cursor Composer) =====\n",
+        _cursor_agent_behavior_rules(source=source),
+        "\n===== КОНЕЦ ПРАВИЛ =====\n",
+    ]
+    if reg_text:
+        cap = 6000 if (source or "") == "chat" else 12000
+        parts.extend(
+            [
+                "\n===== РЕГЛАМЕНТ (справочник, не скрипт) =====\n",
+                reg_text[:cap],
+                "\n===== КОНЕЦ РЕГЛАМЕНТА =====\n",
+            ]
+        )
+    example = (example_run or "").strip()
+    if example and example != "—":
+        parts.extend(
+            [
+                "\n===== ПРИМЕР ТИПОВОГО ПРОГОНА (не для каждой задачи) =====\n",
+                example[:2500],
+                "\n===== КОНЕЦ ПРИМЕРА =====\n",
+            ]
+        )
+    return "".join(parts)
+
+
+def build_cursor_user_prompt(*, user_message: str) -> str:
+    """Только текущая задача пользователя."""
+    return (user_message or "").strip()
+
+
 def build_published_run_prompt(
     *,
     instructions: str,
@@ -371,61 +506,26 @@ def build_published_run_prompt(
     title: str = "",
     context: str = "",
     source: str = "chat",
+    regulation: str = "",
+    goal: str = "",
 ) -> str:
-    context_block = ""
-    if (context or "").strip():
-        context_block = (
-            "===== КОНТЕКСТ АГЕНТА =====\n"
-            f"{context.strip()}\n"
-            "===== КОНЕЦ КОНТЕКСТА =====\n\n"
-        )
-    role_line = (
-        "Сейчас ты выполняешь СВОЮ рабочую задачу агента. "
-        "Если пользователь напишет в чат — это дополнительная команда, "
-        "её нужно сделать и вернуться к основной работе.\n"
-        if (source or "") != "chat"
-        else (
-            "Это команда из чата. Сделай ИМЕННО её. "
-            "Не перезапускай типовой сценарий агента (реестр, OData, Excel), "
-            "если пользователь этого не просил. "
-            "Для копирования файла используй files.copy.\n"
-        )
+    """Composer-style: текущая задача первая, роль и регламент — контекст."""
+    reg = (regulation or instructions or "").strip()
+    task = build_cursor_user_prompt(user_message=user_message)
+    system = build_cursor_system_prompt(
+        regulation=reg,
+        instructions=instructions,
+        example_run=example_run,
+        title=title,
+        context=context,
+        source=source,
+        goal=goal,
     )
     return (
-        "Ты полноценный агент Constructor — такой же, как Cursor в IDE: "
-        "сам планируешь шаги, вызываешь несколько tools подряд, читаешь ошибки "
-        "и сам себя исправляешь, пока задача не будет сделана.\n"
-        f"{role_line}"
-        "Инструменты вызывай отдельным блоком ```constructor_tool — это для системы, не для человека.\n"
-        "В обычный чат пиши только понятный русский текст: что делаешь и что получилось. "
-        "Не пиши JSON, OData, $filter, имена entity, constructor_tool и аргументы tools.\n"
-        "Не ищи MCP Constructor, OIDC, BACKEND_URL и не делай curl с Cloud VM — "
-        "серверные инструменты вызываются блоком constructor_tool, backend выполнит их сам.\n"
-        "Если tool вернул ошибку — не останавливайся и не спрашивай разрешения. "
-        "Смени аргументы, выбери другой tool, напиши/запусти Python "
-        "(code.write_python / code.run_python) или разбей задачу и повтори.\n"
-        "CLARIFY только если без ответа человека физически нельзя продолжить "
-        "(нет ФИО, URL или периода). Не спрашивай «можно ли вызвать tool».\n"
-        "Следуй инструкции. Пример прогона — образец, не догма: "
-        "если задача чуть другая, адаптируй вызовы.\n"
-        "Если в инструкции и задаче сейчас не сказано, какие объекты брать "
-        "(проекты, люди, период) — спроси человека блоком CLARIFY и остановись. "
-        "Не бери весь каталог по умолчанию.\n"
-        "Не спрашивай про поля и протоколы. Не составляй план-JSON.\n"
-        "Если инструкция или задача требуют уведомить человека — вызови notify.send "
-        "(user_id из users.list). Без этого tool уведомление на компьютер не уйдёт.\n"
-        f"{_RESULT_HINT}\n"
-        f"Агент: {title or 'ИИ-агент'}\n\n"
-        f"{context_block}"
-        "===== ИНСТРУКЦИЯ =====\n"
-        f"{(instructions or '').strip() or 'Выполни задачу по смыслу бизнес-процесса.'}\n"
-        "===== КОНЕЦ ИНСТРУКЦИИ =====\n\n"
-        "===== ПРИМЕР УСПЕШНОГО ПРОГОНА =====\n"
-        f"{(example_run or '').strip() or '—'}\n"
-        "===== КОНЕЦ ПРИМЕРА =====\n\n"
-        "===== ЗАДАЧА СЕЙЧАС =====\n"
-        f"{(user_message or '').strip()}\n"
-        "===== КОНЕЦ ЗАДАЧИ ====="
+        "===== ТЕКУЩАЯ ЗАДАЧА (главный приоритет — выполни именно её) =====\n"
+        f"{task}\n"
+        "===== КОНЕЦ ЗАДАЧИ =====\n\n"
+        f"{system}"
     )
 
 

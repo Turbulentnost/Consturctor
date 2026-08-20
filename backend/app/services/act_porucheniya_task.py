@@ -40,6 +40,7 @@ _SUMMARIZE_HINTS = (
 )
 _EXPORT_HINTS = (
     "выгруз",
+    "вытащ",
     "создай excel",
     "полный реестр",
     "реестр из odata",
@@ -48,6 +49,8 @@ _EXPORT_HINTS = (
     "на рабочий стол",
     "act-реестр",
     "act реестр",
+    "типовой",
+    "типовую",
 )
 _REFORMAT_HINTS = (
     "обнови excel",
@@ -62,6 +65,21 @@ _REFORMAT_HINTS = (
     "палитр",
     "перекрась",
     "сделай цвет",
+)
+_EDIT_HINTS = (
+    "измен",
+    "исправ",
+    "перенес",
+    "перестав",
+    "наверх",
+    "последн",
+    "строк",
+    "строч",
+    "запис",
+    "порядков",
+    "номер",
+    "подними",
+    "вверх",
 )
 _CHAT_HINTS = (
     "без excel",
@@ -152,6 +170,56 @@ def task_implies_reformat_excel(task: str) -> bool:
     return any(h in blob for h in _REFORMAT_HINTS)
 
 
+def task_implies_composite_workflow(task: str) -> bool:
+    """Несколько шагов: OData/Excel + добавление + Word + Outlook."""
+    blob = (task or "").casefold()
+    flags = (
+        any(h in blob for h in _EXPORT_HINTS) or "1с" in blob or "odata" in blob,
+        "добав" in blob,
+        any(w in blob for w in ("word", "docx", "ворд", "отчёт", "отчет", ".doc")),
+        any(w in blob for w in ("outlook", "совещан", "календар")),
+    )
+    return sum(1 for flag in flags if flag) >= 3
+
+
+def task_implies_edit_excel(task: str) -> bool:
+    """Правка строк Excel на рабочем столе (без OData)."""
+    blob = (task or "").casefold()
+    from app.services.act_protocol_merge import (
+        looks_like_inline_task_addition,
+        looks_like_record_addition,
+    )
+
+    if looks_like_inline_task_addition(task) or looks_like_record_addition(task):
+        return False
+    if any(h in blob for h in _MERGE_ADD_HINTS) and not task_wants_move_last_row_to_top(task):
+        return False
+    if not any(h in blob for h in _EDIT_HINTS):
+        return False
+    return any(w in blob for w in ("excel", "xlsx", "файл", "поручен", "строк", "строч", "запис"))
+
+
+def task_wants_move_last_row_to_top(task: str) -> bool:
+    blob = (task or "").casefold()
+    move = any(w in blob for w in ("наверх", "перенес", "перестав", "подними", "вверх"))
+    last = any(w in blob for w in ("последн", "новую запись", "новая запись", "новой запис"))
+    return move and last
+
+
+def resolve_desktop_excel_filename(task: str, *, actor_fio: str, workflow_id: str) -> str:
+    """Имя или маска .xlsx на рабочем столе из задачи."""
+    from pathlib import PureWindowsPath
+
+    path = extract_excel_path_from_task(task)
+    if path:
+        return PureWindowsPath(path.replace("/", "\\")).name
+    blob = (task or "").casefold()
+    if "поручен" in blob and "act_porucheniya" not in blob:
+        return "Поручения.xlsx"
+    slug = fio_initials_slug(actor_fio, fallback="act")
+    return f"act_porucheniya_{slug}_*.xlsx"
+
+
 def task_implies_act_registry_action(task: str) -> bool:
     """Есть ли в сообщении команда/вопрос по ACT-реестру (не произвольный чат)."""
     blob = (task or "").casefold().strip()
@@ -172,6 +240,8 @@ def task_implies_act_registry_action(task: str) -> bool:
         return True
     if task_implies_full_odata_export(task) or task_implies_reformat_excel(task):
         return True
+    if task_implies_edit_excel(task):
+        return True
     domain_hints = _CHAT_HINTS + _SUMMARIZE_HINTS + _MERGE_ADD_HINTS + (
         "excel",
         "xlsx",
@@ -190,13 +260,14 @@ def task_implies_act_registry_action(task: str) -> bool:
 
 
 def parse_act_task_intent(task: str) -> str:
-    """export | reformat_excel | merge_add | summarize_excel | analyze_chat | freeform_chat."""
+    """export | reformat_excel | edit_excel | merge_add | summarize_excel | analyze_chat | freeform_chat."""
     blob = (task or "").casefold().strip()
     if not blob:
         return "export"
 
     from app.services.act_protocol_merge import (
         looks_like_inline_task_addition,
+        looks_like_record_addition,
         task_implies_protocol_merge,
     )
 
@@ -205,16 +276,25 @@ def parse_act_task_intent(task: str) -> str:
     wants_export = task_implies_full_odata_export(task)
     wants_reformat = task_implies_reformat_excel(task)
 
+    if task_implies_composite_workflow(task):
+        return "composite_workflow"
+
+    if (
+        looks_like_inline_task_addition(task)
+        or looks_like_record_addition(task)
+        or (task_implies_protocol_merge(task) and not wants_export and not wants_reformat)
+    ):
+        return "merge_add"
+
+    if task_implies_edit_excel(task):
+        return "edit_excel"
+
     if excel_path and wants_reformat and not wants_summary:
         return "reformat_excel"
     if excel_path:
         if wants_export and not wants_summary:
             return "export"
         return "summarize_excel"
-    if looks_like_inline_task_addition(task) or (
-        task_implies_protocol_merge(task) and not wants_export and not wants_reformat
-    ):
-        return "merge_add"
     if wants_reformat and not wants_summary:
         return "reformat_excel"
     if wants_export and not wants_summary:
@@ -230,9 +310,20 @@ def parse_act_task_intent(task: str) -> str:
 
 def parse_act_filter_from_task(task: str) -> dict[str, Any]:
     """Эвристики фильтра из чата — без LLM."""
+    if parse_act_task_intent(task) == "edit_excel":
+        return {
+            "act_numbers": [],
+            "criticality_levels": [],
+            "status_keys": [],
+            "keywords": [],
+            "only_open": False,
+            "refresh_excel": False,
+        }
+
     blob = (task or "").casefold()
     from app.services.act_protocol_merge import (
         looks_like_inline_task_addition,
+        looks_like_record_addition,
         task_implies_protocol_merge,
     )
 
@@ -245,7 +336,11 @@ def parse_act_filter_from_task(task: str) -> dict[str, Any]:
         "refresh_excel": True,
     }
 
-    merge_or_add = looks_like_inline_task_addition(task) or task_implies_protocol_merge(task)
+    merge_or_add = (
+        looks_like_inline_task_addition(task)
+        or looks_like_record_addition(task)
+        or task_implies_protocol_merge(task)
+    )
     explicit_filter = any(
         x in blob for x in ("только просроч", "только критич", "покажи только", "фильтр")
     )

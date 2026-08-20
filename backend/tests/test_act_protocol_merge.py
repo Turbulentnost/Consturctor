@@ -96,6 +96,23 @@ def test_parse_inline_task_addition() -> None:
     assert line["deadline"] == "20.08.2026"
 
 
+def test_parse_record_addition() -> None:
+    from app.services.act_porucheniya_report import assign_next_act_numbers
+
+    task = (
+        "добавь в таблицу поручения ещё одну запись "
+        "Евдокимов Карл Густович 29.09.26 Закупка 50 поршневых двигателей из Формулы 1"
+    )
+    docs = parse_protocol_to_documents(task)
+    assert len(docs) == 1
+    line = docs[0]["task_lines"][0]
+    assert line["executor"] == "Евдокимов Карл Густович"
+    assert line["deadline"] == "29.09.2026"
+    assert "поршневых" in line["task"].casefold()
+    numbered = assign_next_act_numbers(docs, existing_documents=[{"number_display": "ACT00-00091"}])
+    assert numbered[0]["number_display"] == "ACT00-00092"
+
+
 def test_extract_freeform_from_task() -> None:
     text = FREEFORM.read_text(encoding="utf-8")
     task = f"Дополни ACT-реестр по протоколу ниже\n\n{text}"

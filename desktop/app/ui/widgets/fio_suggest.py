@@ -214,16 +214,27 @@ class FioSuggestEdit(QLineEdit):
         # Empty query → browse catalog; non-empty → server search (needed because
         # the empty catalog is only TOP N alphabetically and may miss the target FIO).
         self._request_token = key
+        if not self._popup.isVisible() or self._list.count() == 0:
+            self._populate_message("Загружаем список…")
+            self._show_popup()
         Thread(target=self._fetch_in_background, args=(query, key), daemon=True).start()
 
     def _fetch_in_background(self, query: str, key: str) -> None:
         try:
             items = self._fetch(query)
-        except Exception:
-            items = []
+        except Exception as exc:
+            message = str(getattr(exc, "message", "") or exc).strip() or "Не удалось загрузить список"
+            self._suggestions_ready.emit(key, {"error": message})
+            return
         self._suggestions_ready.emit(key, items)
 
     def _apply_async_suggestions(self, key: str, items_obj: object) -> None:
+        if isinstance(items_obj, dict) and items_obj.get("error"):
+            if key != self._request_token:
+                return
+            self._populate_message(str(items_obj["error"]))
+            self._show_popup()
+            return
         items = [str(x) for x in (items_obj or [])]
         if key:
             items = [name for name in items if self._matches_query(name, key)]
@@ -234,12 +245,7 @@ class FioSuggestEdit(QLineEdit):
             self._hide_popup()
             return
         if not items:
-            hint = "Ничего не найдено — введите ФИО полностью и нажмите «Войти»"
-            if len(self.text().strip()) >= 3:
-                self._hide_popup()
-            else:
-                self._populate_message(hint)
-                self._show_popup()
+            self._populate_message("Ничего не найдено")
         else:
             self._populate(items)
         self._show_popup()

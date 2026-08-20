@@ -5,7 +5,6 @@ from datetime import datetime
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -16,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import AgentDraft, AgentRunHistoryItem, AgentSuggestion, WorkflowListItem
+from app.api_client import AgentDraft, AgentSuggestion, WorkflowListItem
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 
 
@@ -58,6 +57,35 @@ QPushButton {
 QPushButton:hover { background: #F4F7F6; }
 QPushButton:pressed { background: #EAF1EE; }
 """
+_AGENT_CARD_QSS = """
+QFrame#PublishedAgentRow {
+    background: #FFFFFF;
+    border: 1px solid rgba(16,24,23,0.10);
+    border-radius: 16px;
+}
+"""
+_AGENT_CARD_PAUSED_QSS = """
+QFrame#PublishedAgentRow {
+    background: #E6E9E8;
+    border: 1px solid rgba(16,24,23,0.08);
+    border-radius: 16px;
+}
+"""
+_AGENT_OPEN_QSS = """
+QPushButton#AgentOpenChat {
+    background: transparent;
+    border: none;
+    border-radius: 12px;
+    padding: 4px 6px;
+    text-align: left;
+}
+QPushButton#AgentOpenChat:hover {
+    background: rgba(8, 116, 95, 0.08);
+}
+QPushButton#AgentOpenChat:pressed {
+    background: rgba(8, 116, 95, 0.14);
+}
+"""
 
 
 class MyAgentsPage(QWidget):
@@ -69,7 +97,6 @@ class MyAgentsPage(QWidget):
     delete_agent_requested = Signal(str)
     stop_auto_run_requested = Signal(str)
     run_agent_requested = Signal(str)
-    edit_agent_requested = Signal(str)
     history_requested = Signal(str, str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -221,10 +248,7 @@ class MyAgentsPage(QWidget):
 
     def _render_agents(self) -> None:
         if not self._agents:
-            empty = QLabel(
-                "Пока нет опубликованных ИИ-агентов. "
-                "При входе через общий сервер (192.168.1.157) они подтянутся сюда автоматически."
-            )
+            empty = QLabel("Пока нет опубликованных ИИ-агентов. Созданные и опубликованные агенты появятся здесь.")
             empty.setWordWrap(True)
             empty.setFont(app_font(18))
             empty.setStyleSheet("color: #6B7773; background: transparent;")
@@ -368,23 +392,7 @@ class MyAgentsPage(QWidget):
         paused = bool(agent.paused)
         card = QFrame()
         card.setObjectName("PublishedAgentRow")
-        card.setStyleSheet(
-            """
-            QFrame#PublishedAgentRow {
-                background: #E6E9E8;
-                border: 1px solid rgba(16,24,23,0.08);
-                border-radius: 16px;
-            }
-            """
-            if paused
-            else """
-            QFrame#PublishedAgentRow {
-                background: #FFFFFF;
-                border: 1px solid rgba(16,24,23,0.10);
-                border-radius: 16px;
-            }
-            """
-        )
+        card.setStyleSheet(_AGENT_CARD_PAUSED_QSS if paused else _AGENT_CARD_QSS)
         layout = QGridLayout(card)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setHorizontalSpacing(18)
@@ -396,10 +404,10 @@ class MyAgentsPage(QWidget):
             else "color: #101817; background: transparent;"
         )
         title.setWordWrap(True)
-        title.setFixedWidth(_TITLE_COL_WIDTH)
+        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         status = "Остановлен" if paused else ("Автозапуск включён" if agent.auto_run else "Автозапуск выключен")
         description = QLabel(
-            "Опубликован"
+            "Опубликован · нажмите, чтобы открыть чат"
             + f"\n{status}"
             + (f"\nДокумент: {agent.document_name}" if agent.document_name else "")
             + (f"\nОбновлён: {agent.updated_at[:19]}" if agent.updated_at else "")
@@ -411,18 +419,20 @@ class MyAgentsPage(QWidget):
             else "color: #6B7773; background: transparent;"
         )
         description.setWordWrap(True)
-        description.setFixedWidth(_DESC_COL_WIDTH)
-        run = QPushButton("Запустить")
-        run.setCursor(Qt.CursorShape.PointingHandCursor)
-        run.setStyleSheet(_PRIMARY_ACTION_QSS)
-        run.clicked.connect(
+        description.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        open_chat = QPushButton()
+        open_chat.setObjectName("AgentOpenChat")
+        open_chat.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_chat.setFlat(True)
+        open_chat.setStyleSheet(_AGENT_OPEN_QSS)
+        open_chat.setToolTip("Открыть чат агента")
+        open_layout = QVBoxLayout(open_chat)
+        open_layout.setContentsMargins(0, 0, 0, 0)
+        open_layout.setSpacing(4)
+        open_layout.addWidget(title)
+        open_layout.addWidget(description)
+        open_chat.clicked.connect(
             lambda _checked=False, workflow_id=agent.id: self.run_agent_requested.emit(workflow_id)
-        )
-        edit = QPushButton("Доработать")
-        edit.setCursor(Qt.CursorShape.PointingHandCursor)
-        edit.setStyleSheet(_SECONDARY_ACTION_QSS)
-        edit.clicked.connect(
-            lambda _checked=False, workflow_id=agent.id: self.edit_agent_requested.emit(workflow_id)
         )
         stop = QPushButton("Остановить")
         stop.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -448,123 +458,11 @@ class MyAgentsPage(QWidget):
         delete.setCursor(Qt.CursorShape.PointingHandCursor)
         delete.setStyleSheet(_DANGER_ACTION_QSS)
         delete.clicked.connect(lambda _checked=False, workflow_id=agent.id: self.delete_agent_requested.emit(workflow_id))
-        layout.addWidget(title, 0, 0)
-        layout.addWidget(description, 0, 1)
-        layout.addWidget(_actions_widget(run, edit, stop, history, delete), 0, 2)
+        layout.addWidget(open_chat, 0, 0, 1, 2)
+        layout.addWidget(_actions_widget(stop, history, delete), 0, 2)
         layout.setColumnStretch(0, 2)
         layout.setColumnStretch(1, 3)
         return card
-
-
-class AgentHistoryDialog(QDialog):
-    def __init__(
-        self,
-        *,
-        title: str,
-        runs: list[AgentRunHistoryItem],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("История запусков")
-        self.setModal(True)
-        self.resize(560, 520)
-        self.setStyleSheet("QDialog { background: #F4F7F6; }")
-
-        heading = QLabel(title or "ИИ-агент")
-        heading.setFont(app_font(18, QFont.Weight.DemiBold))
-        heading.setWordWrap(True)
-        heading.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        subtitle = QLabel("История запусков")
-        subtitle.setFont(app_font(12))
-        subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-
-        card = QFrame()
-        card.setObjectName("HistoryCard")
-        card.setStyleSheet(
-            """
-            QFrame#HistoryCard {
-                background: #FFFFFF;
-                border: 1px solid rgba(16,24,23,0.10);
-                border-radius: 16px;
-            }
-            """
-        )
-        list_layout = QVBoxLayout(card)
-        list_layout.setContentsMargins(16, 14, 16, 14)
-        list_layout.setSpacing(10)
-        if not runs:
-            empty = QLabel("Запусков ещё не было")
-            empty.setFont(app_font(13))
-            empty.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-            list_layout.addWidget(empty)
-        else:
-            for item in runs:
-                list_layout.addWidget(_history_row(item))
-        list_layout.addStretch(1)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(card)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-
-        close_btn = QPushButton("Закрыть")
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.setFixedHeight(36)
-        close_btn.setStyleSheet(_SECONDARY_ACTION_QSS)
-        close_btn.clicked.connect(self.accept)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(12)
-        root.addWidget(heading)
-        root.addWidget(subtitle)
-        root.addWidget(scroll, 1)
-        root.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignRight)
-
-
-def _history_row(item: AgentRunHistoryItem) -> QWidget:
-    row = QFrame()
-    row.setStyleSheet(
-        "QFrame { background: #F7FAF9; border: 1px solid #EAF1EE; border-radius: 12px; }"
-    )
-    layout = QVBoxLayout(row)
-    layout.setContentsMargins(12, 10, 12, 10)
-    layout.setSpacing(4)
-    when = _format_iso(item.started_at) or "—"
-    source = "триггер" if item.source == "trigger" else "чат"
-    status = "готово" if item.status == "ok" else ("ошибка" if item.status == "error" else item.status or "в работе")
-    meta = QLabel(f"{when}  ·  {source}  ·  {status}")
-    meta.setFont(app_font(11, QFont.Weight.DemiBold))
-    meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-    task = QLabel(item.message.strip() or "Типовая задача агента")
-    task.setFont(app_font(13, QFont.Weight.DemiBold))
-    task.setWordWrap(True)
-    task.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-    answer = (item.answer or "").strip()
-    if len(answer) > 280:
-        answer = answer[:280].rstrip() + "…"
-    body = QLabel(answer or "Нет текста результата")
-    body.setFont(app_font(12))
-    body.setWordWrap(True)
-    body.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-    layout.addWidget(meta)
-    layout.addWidget(task)
-    layout.addWidget(body)
-    return row
-
-
-def _format_iso(value: str) -> str:
-    raw = (value or "").strip()
-    if not raw:
-        return ""
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return raw[:19].replace("T", " ")
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone()
-    return parsed.strftime("%d.%m.%Y %H:%M")
 
 
 def _agent_title(draft: AgentDraft) -> str:

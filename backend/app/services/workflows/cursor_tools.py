@@ -643,8 +643,9 @@ def _followup_prompt(
         tail = (
             "Constructor tool несколько раз вернул ошибку. "
             f"Не сдавайся: {detail}. "
-            "Смени подход — другие аргументы, другой tool из каталога, "
-            "или напиши и запусти Python (code.write_python / code.run_python). "
+            "Смени подход — другие аргументы, другой tool из каталога "
+            "(document.* / excel.* / files.* вместо Python, если задача про файлы). "
+            "Python (code.write_python / code.run_python) — только если готового tool нет. "
             "Верни только ```constructor_tool. Не пиши TESTS: FAIL и не вини Cloud VM."
         )
     else:
@@ -658,13 +659,13 @@ def _followup_prompt(
                 if done_line
                 else ""
             )
-            + "Если решение (кого/что брать, когда/как часто, в каком виде отдавать) "
-            "не сказано в ТЗ и без него нельзя продолжить — верни CLARIFY. "
-            "Иначе доведи задачу: предметный RESULT, плюс файлы/действия/уведомления. "
-            "Если предыдущий шаг слабый или ошибочный — вызови другой tool и поправь себя. "
-            "Не вызывай users.list / turboproject «на всякий случай». "
+            + "Если решение не сказано в задаче и без него нельзя продолжить — верни CLARIFY. "
+            "Иначе доведи задачу: сначала tools, потом files.inspect по созданным файлам, "
+            "потом RESULT с путями в FILES. "
+            "notify.send — только если пользователь явно просил уведомление в задаче. "
+            "Не вызывай users.list / notify / turboproject «на всякий случай». "
             "Если нужен ДРУГОЙ tool — только ```constructor_tool. "
-            "Не ставь FAIL из-за отсутствия BACKEND_URL на Cloud VM."
+            "Не пиши RESULT до успешного tool. Не ставь FAIL из-за Cloud VM."
         )
     return (
         "Результаты вызовов инструментов Constructor (факты с сервера/desktop, не с VM):\n"

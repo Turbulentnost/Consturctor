@@ -7,13 +7,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Callable
-from threading import Event, Thread
+from threading import Thread
 from urllib.parse import quote
 
 import httpx
 
-from app.config import auth_url, backend_url
-from app.config import catalog_url as cfg_catalog_url
+from app.config import auth_url, auth_uses_remote_server, backend_url
 
 
 class ApiError(Exception):
@@ -21,11 +20,6 @@ class ApiError(Exception):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
-
-
-class AgentRunCancelled(ApiError):
-    def __init__(self, message: str = "Остановлено пользователем.") -> None:
-        super().__init__(message, status_code=499)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,89 +39,6 @@ class HealthStatus:
     erp_reachable: bool
     erp_server: str
     llm_provider: str
-    auth_stub: bool = False
-    registration_enabled: bool = False
-    dev_mode: bool = False
-    platform_services: tuple[tuple[str, bool, str], ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class KpiMetricTemplate:
-    metric_id: str
-    title: str
-    kind: str
-    source: str
-    threshold_min: float | None = None
-    threshold_max: float | None = None
-    weight: float = 1.0
-    description: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class AgentKpiMetric:
-    metric_id: str
-    title: str
-    kind: str
-    source: str
-    threshold_min: float | None = None
-    threshold_max: float | None = None
-    weight: float = 1.0
-    task_ids: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class AgentCardKpi:
-    agent_id: str
-    title: str
-    department: str
-    kpi_metrics: tuple[AgentKpiMetric, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class KpiSummary:
-    total_runs: int
-    success_rate: float
-    error_rate: float
-    hitl_rate: float
-    operator_keep_rate: float | None
-    tool_failure_rate: float
-    task_success_rate: float = 0.0
-    tasks_correct: int = 0
-    tasks_total: int = 0
-    tasks_lifetime_total: int = 0
-    completed_tasks_total: int = 0
-    avg_execution_duration_sec: float = 0.0
-    tasks_failed: int = 0
-    task_error_rate: float = 0.0
-    tasks_in_progress: int = 0
-    median_execution_duration_sec: float = 0.0
-    tasks_per_day: float = 0.0
-    success_rate_delta: float | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionHistoryItem:
-    process_seq: int
-    started_at: str
-    is_started: bool
-    is_completed: bool
-    duration_sec: float | None = None
-    status: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class AgentKpiOverview:
-    card: AgentCardKpi
-    summary: KpiSummary
-    history: tuple[ExecutionHistoryItem, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class RunStatus:
-    run_id: str
-    agent_id: str
-    status: str
-    tool_events_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,18 +157,6 @@ class RoleMatch:
     fragment: RegulationFragment
     signals: list[MatchSignal]
     function: RoleFunction | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RoleCompatibilityResult:
-    compatible: bool
-    position: str
-    department: str
-    fragments_total: int
-    candidates_total: int
-    matched_terms: list[str]
-    suggested_roles: list[str]
-    hint: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -513,17 +412,6 @@ class WorkflowAttachment:
 
 
 @dataclass(frozen=True, slots=True)
-class AgentRouteRecord:
-    handler: str = "generic"
-    kind: str = ""
-    mode: str = ""
-    default_task: str = ""
-    source: str = ""
-    version: int = 1
-    tools: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class WorkflowRecord:
     id: str
     title: str
@@ -543,7 +431,6 @@ class WorkflowRecord:
     pr_url: str = ""
     created_at: str = ""
     updated_at: str = ""
-    agent_route: AgentRouteRecord | None = None
 
     @property
     def name(self) -> str:
@@ -558,8 +445,12 @@ class AgentRunHistoryItem:
     status: str = ""
     answer: str = ""
     source: str = "chat"
+    trigger_id: str = ""
+    trigger_kind: str = ""
+    trigger_reason: str = ""
     started_at: str = ""
     finished_at: str = ""
+    events: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -586,6 +477,7 @@ class InboxNotification:
     title: str
     body: str = ""
     workflow_id: str = ""
+    run_id: str = ""
     sender_fio: str = ""
     unread: bool = True
     created_at: str = ""
@@ -622,6 +514,10 @@ class KpiMethod:
     plan_update: str = ""
     fact_update: str = ""
     percent_formula: str = ""
+    plan_explanation: str = ""
+    fact_explanation: str = ""
+    score_explanation: str = ""
+    system: str = ""
     green_min: float = 90
     yellow_min: float = 70
     schedule: KpiSchedule = field(default_factory=KpiSchedule)
@@ -656,6 +552,24 @@ def _interval_seconds(value: float, unit: str) -> int:
     amount = max(0.0, float(value or 0))
     factor = {"minutes": 60, "hours": 3600, "days": 86400}.get((unit or "hours").strip().casefold(), 3600)
     return int(amount * factor)
+
+
+def _parse_agent_run(data: dict, workflow_id: str = "") -> AgentRunHistoryItem:
+    events = [item for item in data.get("events") or [] if isinstance(item, dict)]
+    return AgentRunHistoryItem(
+        id=str(data.get("id") or ""),
+        workflow_id=str(data.get("workflow_id") or workflow_id),
+        message=str(data.get("message") or ""),
+        status=str(data.get("status") or ""),
+        answer=str(data.get("answer") or ""),
+        source=str(data.get("source") or "chat"),
+        trigger_id=str(data.get("trigger_id") or ""),
+        trigger_kind=str(data.get("trigger_kind") or ""),
+        trigger_reason=str(data.get("trigger_reason") or ""),
+        started_at=str(data.get("started_at") or ""),
+        finished_at=str(data.get("finished_at") or ""),
+        events=events,
+    )
 
 
 def _parse_schedule_draft(data: dict) -> ScheduleDraft:
@@ -725,6 +639,10 @@ def _parse_kpi_method(data: dict | None) -> KpiMethod:
         plan_update=str(raw.get("plan_update") or ""),
         fact_update=str(raw.get("fact_update") or ""),
         percent_formula=str(raw.get("percent_formula") or ""),
+        plan_explanation=str(raw.get("plan_explanation") or ""),
+        fact_explanation=str(raw.get("fact_explanation") or ""),
+        score_explanation=str(raw.get("score_explanation") or ""),
+        system=str(raw.get("system") or ""),
         green_min=green,
         yellow_min=yellow,
         schedule=KpiSchedule(
@@ -819,21 +737,18 @@ class QuestionChatSession:
     messages: list[QuestionChatMessage]
 
 
-_AUTH_PREFIX = "/api/v1/auth"
-
-
 class ApiClient:
-    def __init__(self, base_url: str | None = None, timeout: float = 20.0) -> None:
+    def __init__(self, base_url: str | None = None, timeout: float = 600.0) -> None:
         self.base_url = (base_url or backend_url()).rstrip("/")
-        self.auth_url = auth_url().rstrip("/")
+        self.auth_base_url = auth_url().rstrip("/")
         self._timeout = timeout
         self._token: str | None = None
-        self._on_unauthorized: Callable[[], None] | None = None
-        self._agent_cancel = Event()
-        self._active_agent_run_id = ""
+        self._user_id: str = ""
 
-    def set_on_unauthorized(self, callback: Callable[[], None] | None) -> None:
-        self._on_unauthorized = callback
+    def _service_label(self, base: str) -> str:
+        if base.casefold() == self.auth_base_url.casefold() and auth_uses_remote_server():
+            return f"серверу входа ({base})"
+        return f"backend ({base})"
 
     @property
     def token(self) -> str | None:
@@ -848,252 +763,44 @@ class ApiClient:
             headers["Authorization"] = f"Bearer {self._token}"
         return headers
 
-    def set_base_url(self, base_url: str) -> None:
-        self.base_url = base_url.rstrip("/")
-
-    def set_auth_url(self, url: str) -> None:
-        self.auth_url = url.rstrip("/")
-
-    @property
-    def workflows_catalog_url(self) -> str:
-        return cfg_catalog_url().rstrip("/")
-
-    def _api_root(self, path: str) -> str:
-        if path.startswith(_AUTH_PREFIX):
-            return self.auth_url
-        return self.base_url
-
-    @staticmethod
-    def _parse_agent_kpi_metric(data: dict) -> AgentKpiMetric:
-        threshold_min = data.get("threshold_min")
-        threshold_max = data.get("threshold_max")
-        return AgentKpiMetric(
-            metric_id=str(data.get("metric_id", "")),
-            title=str(data.get("title", "")),
-            kind=str(data.get("kind", "rate")),
-            source=str(data.get("source", "")),
-            threshold_min=float(threshold_min) if threshold_min is not None else None,
-            threshold_max=float(threshold_max) if threshold_max is not None else None,
-            weight=float(data.get("weight") or 1.0),
-            task_ids=tuple(str(x) for x in (data.get("task_ids") or [])),
-        )
-
-    @staticmethod
-    def _parse_agent_card_kpi(data: dict) -> AgentCardKpi:
-        metrics = [
-            ApiClient._parse_agent_kpi_metric(metric)
-            for metric in data.get("kpi_metrics") or []
-            if isinstance(metric, dict)
-        ]
-        return AgentCardKpi(
-            agent_id=str(data.get("agent_id", "")),
-            title=str(data.get("title", "")),
-            department=str(data.get("department", "")),
-            kpi_metrics=tuple(metrics),
-        )
-
-    @staticmethod
-    def _parse_kpi_summary(data: dict) -> KpiSummary:
-        rate = data.get("operator_keep_rate")
-        delta = data.get("success_rate_delta")
-        return KpiSummary(
-            total_runs=int(data.get("total_runs") or 0),
-            success_rate=float(data.get("success_rate") or 0.0),
-            error_rate=float(data.get("error_rate") or 0.0),
-            hitl_rate=float(data.get("hitl_rate") or 0.0),
-            operator_keep_rate=float(rate) if rate is not None else None,
-            tool_failure_rate=float(data.get("tool_failure_rate") or 0.0),
-            task_success_rate=float(data.get("task_success_rate") or 0.0),
-            tasks_correct=int(data.get("tasks_correct") or 0),
-            tasks_total=int(data.get("tasks_total") or 0),
-            tasks_lifetime_total=int(data.get("tasks_lifetime_total") or 0),
-            completed_tasks_total=int(data.get("completed_tasks_total") or 0),
-            avg_execution_duration_sec=float(data.get("avg_execution_duration_sec") or 0.0),
-            tasks_failed=int(data.get("tasks_failed") or 0),
-            task_error_rate=float(data.get("task_error_rate") or 0.0),
-            tasks_in_progress=int(data.get("tasks_in_progress") or 0),
-            median_execution_duration_sec=float(data.get("median_execution_duration_sec") or 0.0),
-            tasks_per_day=float(data.get("tasks_per_day") or 0.0),
-            success_rate_delta=float(delta) if delta is not None else None,
-        )
-
-    @staticmethod
-    def _parse_execution_history(data: dict) -> tuple[ExecutionHistoryItem, ...]:
-        items: list[ExecutionHistoryItem] = []
-        for item in data.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            duration = item.get("duration_sec")
-            items.append(
-                ExecutionHistoryItem(
-                    process_seq=int(item.get("process_seq") or 0),
-                    started_at=str(item.get("started_at") or ""),
-                    is_started=bool(item.get("is_started")),
-                    is_completed=bool(item.get("is_completed")),
-                    duration_sec=float(duration) if duration is not None else None,
-                    status=str(item.get("status") or ""),
-                )
-            )
-        return tuple(items)
-
-    def health(self, *, target: str = "api") -> HealthStatus:
-        root = self.auth_url if target == "auth" else self.base_url
-        data = self._request("GET", "/health", root=root)
-        services = []
-        for item in data.get("platform_services") or []:
-            services.append(
-                (
-                    str(item.get("name", "")),
-                    bool(item.get("reachable")),
-                    str(item.get("status", "")),
-                )
-            )
+    def health(self) -> HealthStatus:
+        data = self._request("GET", "/health")
         return HealthStatus(
             status=str(data.get("status", "")),
             erp_reachable=bool(data.get("erp_reachable")),
             erp_server=str(data.get("erp_server", "")),
             llm_provider=str(data.get("llm_provider", "")),
-            auth_stub=bool(data.get("auth_stub")),
-            registration_enabled=bool(data.get("registration_enabled")),
-            dev_mode=bool(data.get("dev_mode")),
-            platform_services=tuple(services),
-        )
-
-    def kpi_metric_templates(self) -> list[KpiMetricTemplate]:
-        data = self._request("GET", "/api/v1/kpi/metric-templates")
-        items = []
-        for item in data.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            threshold_min = item.get("threshold_min")
-            threshold_max = item.get("threshold_max")
-            items.append(
-                KpiMetricTemplate(
-                    metric_id=str(item.get("metric_id", "")),
-                    title=str(item.get("title", "")),
-                    kind=str(item.get("kind", "rate")),
-                    source=str(item.get("source", "")),
-                    threshold_min=float(threshold_min) if threshold_min is not None else None,
-                    threshold_max=float(threshold_max) if threshold_max is not None else None,
-                    weight=float(item.get("weight") or 1.0),
-                    description=str(item.get("description", "")),
-                )
-            )
-        return items
-
-    def list_agent_kpi_cards(self) -> list[AgentCardKpi]:
-        data = self._request("GET", "/api/v1/kpi/agent-cards")
-        return [
-            self._parse_agent_card_kpi(item)
-            for item in data.get("items") or []
-            if isinstance(item, dict)
-        ]
-
-    def update_agent_kpi_metrics(
-        self,
-        agent_id: str,
-        metrics: list[dict],
-    ) -> AgentCardKpi:
-        data = self._request(
-            "PUT",
-            f"/api/v1/kpi/agent-cards/{agent_id}/metrics",
-            json={"kpi_metrics": metrics},
-        )
-        return self._parse_agent_card_kpi(data)
-
-    def kpi_summary(self, *, agent_id: str = "", hours: int = 168) -> KpiSummary:
-        params: dict[str, str] = {"hours": str(hours)}
-        if agent_id:
-            params["agent_id"] = agent_id
-        data = self._request("GET", "/api/v1/kpi/summary", params=params)
-        return self._parse_kpi_summary(data)
-
-    def kpi_execution_history(
-        self,
-        agent_id: str = "",
-        *,
-        limit: int = 50,
-    ) -> tuple[ExecutionHistoryItem, ...]:
-        params: dict[str, str] = {"limit": str(limit)}
-        if agent_id:
-            params["agent_id"] = agent_id
-        data = self._request("GET", "/api/v1/kpi/execution-history", params=params)
-        return self._parse_execution_history(data)
-
-    def kpi_agent_overview(
-        self,
-        agent_id: str,
-        *,
-        hours: int = 168,
-        limit: int = 50,
-    ) -> AgentKpiOverview:
-        params: dict[str, str] = {"hours": str(hours), "limit": str(limit)}
-        data = self._request(
-            "GET", f"/api/v1/kpi/agent-overview/{agent_id}", params=params
-        )
-        return AgentKpiOverview(
-            card=self._parse_agent_card_kpi(data.get("card") or {}),
-            summary=self._parse_kpi_summary(data.get("summary") or {}),
-            history=self._parse_execution_history(data.get("history") or {}),
-        )
-
-    def start_run(self, agent_id: str, tools: list[str] | None = None) -> RunStatus:
-        data = self._request(
-            "POST",
-            "/api/v1/runs",
-            json={
-                "agent_id": agent_id,
-                "tools": tools or ["imap.list_unread"],
-                "config": {},
-            },
-        )
-        return RunStatus(
-            run_id=str(data.get("run_id", "")),
-            agent_id=str(data.get("agent_id", "")),
-            status=str(data.get("status", "")),
-            tool_events_count=int(data.get("tool_events_count") or 0),
-        )
-
-    def get_run(self, run_id: str) -> RunStatus:
-        data = self._request("GET", f"/api/v1/runs/{run_id}")
-        return RunStatus(
-            run_id=str(data.get("run_id", "")),
-            agent_id=str(data.get("agent_id", "")),
-            status=str(data.get("status", "")),
-            tool_events_count=int(data.get("tool_events_count") or 0),
         )
 
     def search_users(self, search: str = "") -> list[str]:
         params = {"search": search} if search.strip() else None
-        data = self._request("GET", "/api/v1/auth/users", params=params)
+        data = self._request(
+            "GET",
+            "/api/v1/auth/users",
+            params=params,
+            base_url=self.auth_base_url,
+        )
         items = data.get("items") or []
         return [str(x) for x in items]
-
-    def register(self, fio: str, password: str, department: str = "") -> LoginResult:
-        data = self._request(
-            "POST",
-            "/api/v1/auth/register",
-            json={"fio": fio, "password": password, "department": department},
-        )
-        user = self._parse_user(data.get("user") or {})
-        token = str(data.get("access_token", ""))
-        self._token = token
-        return LoginResult(access_token=token, user=user)
 
     def login(self, fio: str, password: str) -> LoginResult:
         data = self._request(
             "POST",
             "/api/v1/auth/login",
             json={"fio": fio, "password": password},
+            base_url=self.auth_base_url,
         )
         user = self._parse_user(data.get("user") or {})
         token = str(data.get("access_token", ""))
         self._token = token
+        self._user_id = user.id
         return LoginResult(access_token=token, user=user)
 
     def me(self) -> UserProfile:
         data = self._request("GET", "/api/v1/auth/me")
-        return self._parse_user(data)
+        user = self._parse_user(data)
+        self._user_id = user.id
+        return user
 
     def fetch_bytes(self, path_or_url: str) -> bytes:
         if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
@@ -1120,7 +827,7 @@ class ApiClient:
         path = Path(file_path)
         if not path.is_file():
             raise ApiError("Файл не найден")
-        url = f"{self.auth_url}/api/v1/auth/me/avatar"
+        url = f"{self.base_url}/api/v1/auth/me/avatar"
         mime = {
             ".png": "image/png",
             ".jpg": "image/jpeg",
@@ -1319,30 +1026,6 @@ class ApiClient:
     def get_regulation(self, regulation_id: str) -> RegulationParseResult:
         data = self._request("GET", f"/api/v1/regulations/{regulation_id}")
         return self._parse_regulation(data)
-
-    def check_role_compatibility(
-        self,
-        regulation_id: str,
-        *,
-        position: str,
-        department: str,
-    ) -> RoleCompatibilityResult:
-        data = self._request(
-            "POST",
-            f"/api/v1/regulations/{regulation_id}/role-compatibility",
-            json={"position": position.strip(), "department": department.strip()},
-            timeout=max(self._timeout, 45.0),
-        )
-        return RoleCompatibilityResult(
-            compatible=bool(data.get("compatible")),
-            position=str(data.get("position") or ""),
-            department=str(data.get("department") or ""),
-            fragments_total=int(data.get("fragmentsTotal") or 0),
-            candidates_total=int(data.get("candidatesTotal") or 0),
-            matched_terms=[str(x) for x in (data.get("matchedTerms") or [])],
-            suggested_roles=[str(x) for x in (data.get("suggestedRoles") or [])],
-            hint=str(data.get("hint") or ""),
-        )
 
     def create_role_matches(
         self,
@@ -1746,43 +1429,6 @@ class ApiClient:
             if isinstance(x, dict)
         ]
 
-    def sync_workflows_from_catalog(self) -> int:
-        """Скопировать опубликованные агенты с общего сервера в локальный backend."""
-        remote = self.workflows_catalog_url.rstrip("/")
-        local = self.base_url.rstrip("/")
-        if not remote or remote == local or not self._token:
-            return 0
-        try:
-            remote_items = self._request("GET", "/api/v1/workflows", root=remote, timeout=60.0)
-        except ApiError:
-            return 0
-        if not isinstance(remote_items, list):
-            return 0
-        imported = 0
-        for item in remote_items:
-            if not isinstance(item, dict) or str(item.get("phase") or "") != "done":
-                continue
-            workflow_id = str(item.get("id") or "").strip()
-            if not workflow_id:
-                continue
-            try:
-                detail = self._request(
-                    "GET",
-                    f"/api/v1/workflows/{workflow_id}",
-                    root=remote,
-                    timeout=60.0,
-                )
-                self._request(
-                    "POST",
-                    "/api/v1/workflows/import",
-                    json=detail if isinstance(detail, dict) else {},
-                    timeout=60.0,
-                )
-                imported += 1
-            except ApiError:
-                continue
-        return imported
-
     def get_workflow(self, workflow_id: str) -> WorkflowRecord:
         data = self._request("GET", f"/api/v1/workflows/{workflow_id}", timeout=60.0)
         return self._parse_workflow(data)
@@ -1867,7 +1513,11 @@ class ApiClient:
         workflow_id: str,
         on_event: Callable[[str, str], None],
     ) -> WorkflowRecord:
-        return self.stream_demo_workflow(workflow_id, on_event)
+        return self._stream_workflow(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/plan/stream",
+            on_event=on_event,
+        )
 
     def stream_demo_workflow(
         self,
@@ -1980,15 +1630,9 @@ class ApiClient:
         data = self._request("GET", "/api/v1/workflows/agent-tools", timeout=60.0)
         return [item for item in (data.get("tools") or []) if isinstance(item, dict)]
 
-    def _handle_sse_tool_request(
-        self,
-        payload: dict,
-        *,
-        fallback_run_id: str = "",
-        auto_approve: bool = False,
-    ) -> None:
+    def _handle_sse_tool_request(self, payload: dict, *, fallback_run_id: str = "") -> None:
         from app.tools import ToolHostError, invoke_tool
-        from app.tools.hitl import confirm_level1_tool
+        from app.tools.hitl import HUMAN_REJECTED, confirm_level1_tool
 
         req_run = str(payload.get("run_id") or fallback_run_id)
         request_id = str(payload.get("request_id") or "")
@@ -1996,22 +1640,42 @@ class ApiClient:
         arguments = (
             dict(payload.get("arguments")) if isinstance(payload.get("arguments"), dict) else {}
         )
-        workflow_id = str(arguments.get("workflow_id") or arguments.get("agent_id") or "")
+        workflow_id = str(
+            arguments.get("workflow_id")
+            or arguments.get("agent_id")
+            or payload.get("workflow_id")
+            or ""
+        )
         if workflow_id and not isinstance(arguments.get("runtime_context"), dict):
             arguments["runtime_context"] = {"workflow_id": workflow_id, "agent_id": workflow_id}
+        if workflow_id:
+            arguments.setdefault("workflow_id", workflow_id)
+            arguments.setdefault("agent_id", workflow_id)
         try:
-            if not confirm_level1_tool(tool, arguments, auto_approve=auto_approve):
+            if not confirm_level1_tool(tool, arguments):
                 self.post_agent_tool_result(
                     req_run,
                     request_id=request_id,
                     ok=False,
-                    error=(
-                        "Нужно подтверждение в карточке «принять», "
-                        "чтобы выполнить эту операцию. Повторите запуск."
-                    ),
+                    error=HUMAN_REJECTED,
+                )
+                return
+            if payload.get("confirm_only"):
+                self.post_agent_tool_result(
+                    req_run,
+                    request_id=request_id,
+                    ok=True,
+                    result={"confirmed": True},
                 )
                 return
             tool_result = invoke_tool(tool, arguments)
+            from app.tools.result_files import publish_result_files
+
+            publish_result_files(
+                tool_result,
+                tool=tool,
+                workflow_id=workflow_id,
+            )
             self.post_agent_tool_result(
                 req_run,
                 request_id=request_id,
@@ -2066,28 +1730,6 @@ class ApiClient:
                 return
             raise
 
-    def send_agent_chat(self, workflow_id: str, message: str) -> bool:
-        data = self._request(
-            "POST",
-            f"/api/v1/workflows/{workflow_id}/agent-chat",
-            json={"message": message},
-            timeout=20.0,
-        )
-        return bool(isinstance(data, dict) and data.get("queued"))
-
-    def cancel_active_agent_run(self) -> None:
-        self._agent_cancel.set()
-        run_id = self._active_agent_run_id
-        path = (
-            f"/api/v1/workflows/agent-runs/{run_id}/stop"
-            if run_id
-            else "/api/v1/workflows/agent-runs/current/stop"
-        )
-        try:
-            self._request("POST", path, timeout=15.0)
-        except ApiError:
-            return
-
     def stream_workflow_agent_run(
         self,
         workflow_id: str,
@@ -2095,95 +1737,79 @@ class ApiClient:
         on_event: Callable[[dict], None],
         *,
         source: str = "chat",
-        auto_approve: bool = False,
-        agent_kind: str = "",
+        trigger_id: str = "",
+        evidence: str = "",
     ) -> dict:
         url = f"{self.base_url}/api/v1/workflows/{workflow_id}/agent-runs/stream"
         final_result: dict | None = None
         run_id = ""
-        payload_body: dict = {
-            "message": message,
-            "source": source or "chat",
-        }
-        if agent_kind:
-            payload_body["agent_kind"] = agent_kind
-
-        def handle_payload(payload: dict) -> None:
-            nonlocal final_result, run_id
-            payload_type = str(payload.get("type") or "")
-            if payload_type == "run":
-                run_id = str(payload.get("run_id") or "")
-                on_event(payload)
-            elif payload_type == "tool_request":
-                tool = str(payload.get("tool") or "")
-                on_event(
-                    {
-                        "type": "status",
-                        "text": f"Выполняю на этом компьютере: {tool}…",
-                    }
-                )
-                Thread(
-                    target=self._handle_sse_tool_request,
-                    kwargs={
-                        "payload": payload,
-                        "fallback_run_id": run_id,
-                        "auto_approve": auto_approve
-                        or (source or "").strip().casefold() == "script",
-                    },
-                    daemon=True,
-                ).start()
-            elif payload_type in {"heartbeat", "ping"}:
-                return
-            elif payload_type == "error":
-                raise ApiError(str(payload.get("message") or "Ошибка запуска агента"))
-            elif payload_type == "done":
-                final_result = (
-                    payload.get("result") if isinstance(payload.get("result"), dict) else {}
-                )
-            else:
-                on_event(payload)
-
-        last_transport: Exception | None = None
         try:
-            for attempt in range(2):
-                try:
-                    with httpx.Client(timeout=None) as client:
-                        with client.stream(
-                            "POST",
-                            url,
-                            headers={**self._headers(), "Accept": "text/event-stream"},
-                            json=payload_body,
-                        ) as response:
-                            if response.status_code >= 400:
-                                body = response.read().decode("utf-8", errors="replace")
-                                raise ApiError(
-                                    body or "Ошибка запуска агента",
-                                    status_code=response.status_code,
-                                )
-                            for payload in _iter_sse_payloads(response):
-                                handle_payload(payload)
-                    last_transport = None
-                    break
-                except httpx.ConnectError as exc:
-                    last_transport = exc
-                    if attempt == 0 and final_result is None:
-                        time.sleep(0.6)
-                        continue
-                    raise ApiError(
-                        f"Не удалось подключиться к backend ({self.base_url})"
-                    ) from exc
-                except httpx.RemoteProtocolError as exc:
-                    last_transport = exc
-                    if attempt == 0 and final_result is None:
-                        time.sleep(0.6)
-                        continue
-                    raise ApiError(_humanize_agent_stream_error(exc)) from exc
-            if last_transport is not None:
-                raise ApiError(_humanize_agent_stream_error(last_transport))
-        except ApiError:
-            raise
+            with httpx.Client(timeout=None) as client:
+                with client.stream(
+                    "POST",
+                    url,
+                    headers={**self._headers(), "Accept": "text/event-stream"},
+                    json={
+                        "message": message,
+                        "source": source or "chat",
+                        "trigger_id": trigger_id or "",
+                        "evidence": evidence or "",
+                    },
+                ) as response:
+                    if response.status_code >= 400:
+                        body = response.read().decode("utf-8", errors="replace")
+                        raise ApiError(body or "Ошибка запуска агента", status_code=response.status_code)
+                    data_lines: list[str] = []
+                    for line in response.iter_lines():
+                        if line == "":
+                            if data_lines:
+                                payload = _parse_sse_payload("\n".join(data_lines))
+                                payload_type = str(payload.get("type") or "")
+                                if payload_type == "run":
+                                    run_id = str(payload.get("run_id") or "")
+                                    on_event(payload)
+                                elif payload_type == "tool_request":
+                                    tool = str(payload.get("tool") or "")
+                                    on_event(
+                                        {
+                                            "type": "status",
+                                            "text": f"Выполняю на этом компьютере: {tool}…",
+                                        }
+                                    )
+                                    Thread(
+                                        target=self._handle_sse_tool_request,
+                                        kwargs={
+                                            "payload": payload,
+                                            "fallback_run_id": run_id,
+                                        },
+                                        daemon=True,
+                                    ).start()
+                                elif payload_type in {"heartbeat", "ping"}:
+                                    continue
+                                elif payload_type == "error":
+                                    raise ApiError(str(payload.get("message") or "Ошибка запуска агента"))
+                                elif payload_type == "done":
+                                    final_result = (
+                                        payload.get("result")
+                                        if isinstance(payload.get("result"), dict)
+                                        else {}
+                                    )
+                                else:
+                                    on_event(payload)
+                            data_lines = []
+                            continue
+                        if line.startswith("data:"):
+                            data_lines.append(line.split(":", 1)[1].strip())
+        except httpx.ConnectError as exc:
+            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
         except httpx.HTTPError as exc:
-            raise ApiError(_humanize_agent_stream_error(exc)) from exc
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+        try:
+            from app.tools.workspace_cleanup import cleanup_after_run
+
+            cleanup_after_run(workflow_id)
+        except Exception:  # noqa: BLE001
+            pass
         return final_result or {}
 
     def list_inbox(self) -> tuple[list[InboxNotification], int]:
@@ -2199,6 +1825,7 @@ class ApiClient:
                     title=str(item.get("title") or "Уведомление"),
                     body=str(item.get("body") or ""),
                     workflow_id=str(item.get("workflow_id") or ""),
+                    run_id=str(item.get("run_id") or ""),
                     sender_fio=str(item.get("sender_fio") or ""),
                     unread=bool(item.get("unread", item.get("read_at") in (None, ""))),
                     created_at=str(item.get("created_at") or ""),
@@ -2211,6 +1838,29 @@ class ApiClient:
         except (TypeError, ValueError):
             unread = sum(1 for item in items if item.unread)
         return items, unread
+
+    def create_inbox_notification(
+        self,
+        *,
+        title: str,
+        body: str = "",
+        workflow_id: str = "",
+        recipient_user_id: str = "",
+    ) -> dict:
+        user_id = (recipient_user_id or self._user_id).strip()
+        if not user_id:
+            user_id = self.me().id
+        return self._request(
+            "POST",
+            "/api/v1/notifications",
+            json={
+                "recipient_user_id": user_id,
+                "title": title,
+                "body": body,
+                "workflow_id": workflow_id,
+            },
+            timeout=20.0,
+        )
 
     def unread_notification_count(self) -> int:
         data = self._request("GET", "/api/v1/notifications/unread-count", timeout=15.0)
@@ -2272,19 +1922,16 @@ class ApiClient:
         data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs", timeout=60.0)
         items = data if isinstance(data, list) else []
         return [
-            AgentRunHistoryItem(
-                id=str(item.get("id") or ""),
-                workflow_id=str(item.get("workflow_id") or workflow_id),
-                message=str(item.get("message") or ""),
-                status=str(item.get("status") or ""),
-                answer=str(item.get("answer") or ""),
-                source=str(item.get("source") or "chat"),
-                started_at=str(item.get("started_at") or ""),
-                finished_at=str(item.get("finished_at") or ""),
-            )
+            _parse_agent_run(item, workflow_id)
             for item in items
             if isinstance(item, dict)
         ]
+
+    def get_agent_run(self, workflow_id: str, run_id: str) -> AgentRunHistoryItem:
+        data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs/{run_id}", timeout=60.0)
+        if not isinstance(data, dict):
+            raise ApiError("Не удалось загрузить ход выполнения")
+        return _parse_agent_run(data, workflow_id)
 
     def stream_trigger_check(
         self,
@@ -2480,14 +2127,12 @@ class ApiClient:
         dest = DESKTOP_ROOT / "data" / "outputs" / workflow_id
         dest.mkdir(parents=True, exist_ok=True)
         try:
-            with httpx.Client(timeout=120.0) as client:
+            with httpx.Client(timeout=300.0) as client:
                 response = client.post(url, headers=self._headers(), json={})
         except httpx.ConnectError as exc:
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
         except httpx.TimeoutException as exc:
-            raise ApiError(
-                "Превышено время скачивания артефактов (Cursor API медленно или файлов нет)"
-            ) from exc
+            raise ApiError("Превышено время скачивания артефактов") from exc
         except httpx.HTTPError as exc:
             raise ApiError(f"Ошибка сети: {exc}") from exc
         if response.status_code >= 400:
@@ -2517,19 +2162,6 @@ class ApiClient:
             timeout=60.0,
         )
         return self._parse_workflow(data)
-
-    def get_agent_route(self, workflow_id: str) -> AgentRouteRecord:
-        data = self._request("GET", f"/api/v1/workflows/{workflow_id}/agent-route", timeout=30.0)
-        return self._parse_agent_route(data)
-
-    def update_agent_route(self, workflow_id: str, patch: dict) -> AgentRouteRecord:
-        data = self._request(
-            "PATCH",
-            f"/api/v1/workflows/{workflow_id}/agent-route",
-            json=patch,
-            timeout=60.0,
-        )
-        return self._parse_agent_route(data)
 
     def publish_workflow(self, workflow_id: str) -> WorkflowRecord:
         data = self._request(
@@ -2609,8 +2241,6 @@ class ApiClient:
             for a in (data.get("attachments") or [])
             if isinstance(a, dict)
         ]
-        route_data = data.get("agent_route")
-        agent_route = self._parse_agent_route(route_data) if isinstance(route_data, dict) else None
         return WorkflowRecord(
             id=str(data.get("id") or ""),
             title=str(data.get("title") or "Без названия"),
@@ -2630,22 +2260,6 @@ class ApiClient:
             pr_url=str(data.get("pr_url") or ""),
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
-            agent_route=agent_route,
-        )
-
-    @staticmethod
-    def _parse_agent_route(data: dict | None) -> AgentRouteRecord:
-        payload = data if isinstance(data, dict) else {}
-        tools_raw = payload.get("tools") or []
-        tools = tuple(str(x) for x in tools_raw if str(x).strip()) if isinstance(tools_raw, list) else ()
-        return AgentRouteRecord(
-            handler=str(payload.get("handler") or "generic"),
-            kind=str(payload.get("kind") or ""),
-            mode=str(payload.get("mode") or ""),
-            default_task=str(payload.get("default_task") or ""),
-            source=str(payload.get("source") or ""),
-            version=int(payload.get("version") or 1) or 1,
-            tools=tools,
         )
 
     @staticmethod
@@ -2694,10 +2308,11 @@ class ApiClient:
         json: dict | None = None,
         params: dict | None = None,
         timeout: float | None = None,
-        root: str | None = None,
+        base_url: str | None = None,
     ):
-        base = (root or self._api_root(path)).rstrip("/")
-        url = f"{base}{path}"
+        root = (base_url or self.base_url).rstrip("/")
+        url = f"{root}{path}"
+        service = self._service_label(root)
         last_connect: httpx.ConnectError | None = None
         for attempt in range(3):
             try:
@@ -2714,25 +2329,17 @@ class ApiClient:
             except httpx.ConnectError as exc:
                 last_connect = exc
                 if attempt == 2:
-                    raise ApiError(
-                        f"Не удалось подключиться к backend ({base})"
-                    ) from exc
+                    raise ApiError(f"Не удалось подключиться к {service}") from exc
                 time.sleep(0.4 * (attempt + 1))
             except httpx.TimeoutException as exc:
                 raise ApiError("Превышено время ожидания ответа backend") from exc
             except httpx.HTTPError as exc:
                 raise ApiError(f"Ошибка сети: {exc}") from exc
         if last_connect is not None:
-            raise ApiError(
-                f"Не удалось подключиться к backend ({base})"
-            ) from last_connect
+            raise ApiError(f"Не удалось подключиться к {service}") from last_connect
 
         if response.status_code >= 400:
             detail = _extract_detail(response)
-            if response.status_code == 401 and path != "/api/v1/auth/login":
-                self._token = None
-                if self._on_unauthorized:
-                    self._on_unauthorized()
             raise ApiError(detail, status_code=response.status_code)
 
         if not response.content:
@@ -3065,23 +2672,12 @@ def _extract_detail(response: httpx.Response) -> str:
             if msg:
                 return str(msg)
     except Exception:
-        pass
+        body = response.text.strip()
+        if body:
+            return body
     if response.status_code == 401:
         return "Неверный логин или пароль"
     return f"Ошибка сервера ({response.status_code})"
-
-
-def _humanize_agent_stream_error(exc: Exception) -> str:
-    text = str(exc).strip()
-    lowered = text.casefold()
-    if "incomplete chunked read" in lowered or "peer closed connection" in lowered:
-        return (
-            "Соединение с backend прервалось во время длительной загрузки OData (~1 мин). "
-            "Проверьте, что Docker gateway запущен, и повторите «Запустить типовую задачу»."
-        )
-    if text:
-        return f"Ошибка сети: {text}"
-    return "Ошибка сети при запуске агента"
 
 
 def _iter_sse_payloads(response: httpx.Response):

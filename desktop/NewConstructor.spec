@@ -5,6 +5,7 @@ from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 root = Path(SPECPATH)
+repo = root.parent
 
 datas = [
     (str(root / "app" / "ui" / "temp"), "app/ui/temp"),
@@ -17,7 +18,33 @@ elif (root / ".env.example").exists():
     datas.append((str(root / ".env.example"), "."))
 
 binaries = []
-hiddenimports = ["httpx", "dotenv", "certifi", "winotify", "PySide6.QtWebSockets"]
+hiddenimports = [
+    "httpx",
+    "dotenv",
+    "certifi",
+    "winotify",
+    "PySide6.QtWebSockets",
+    "platform_desktop_host.main",
+    "platform_desktop_launcher.main",
+]
+pathex = [str(root)]
+for rel in (
+    "platform-contracts",
+    "platform-db",
+    "platform-service-common",
+    "services/platform-desktop-host",
+    "services/platform-desktop-launcher",
+    "services/platform-tool-com",
+    "services/platform-tool-filesystem",
+    "services/platform-tool-shell",
+    "services/platform-tool-imap",
+    "services/platform-tool-browser",
+    "services/platform-tool-onec",
+    "services/platform-tool-onec-com",
+):
+    candidate = repo / rel
+    if candidate.is_dir():
+        pathex.append(str(candidate))
 
 tmp_ret = collect_all("PySide6")
 datas += tmp_ret[0]
@@ -26,7 +53,7 @@ hiddenimports += tmp_ret[2]
 
 a = Analysis(
     [str(root / "main.py")],
-    pathex=[str(root)],
+    pathex=pathex,
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
