@@ -1671,6 +1671,13 @@ class ApiClient:
                 result=tool_result,
             )
         except ToolHostError as exc:
+            from app.tools.result_files import publish_answer_files
+
+            publish_answer_files(
+                workflow_id=workflow_id,
+                arguments=arguments,
+                tool=tool,
+            )
             try:
                 self.post_agent_tool_result(
                     req_run,

@@ -38,6 +38,10 @@ def _workspaces_root() -> Path:
     return Path(local) / "Constructor" / "agent_workspaces"
 
 
+def workspaces_root() -> Path:
+    return _workspaces_root()
+
+
 def _ensure_agent_id(arguments: dict[str, Any]) -> dict[str, Any]:
     payload = dict(arguments)
     if not payload.get("agent_id") and payload.get("workflow_id"):

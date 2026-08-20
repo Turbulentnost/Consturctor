@@ -180,7 +180,7 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
             ToolDefinition(
                 name="excel.create_workbook",
                 title="Создание Excel",
-                description="Создаёт новый .xlsx с заголовками и строками.",
+                description="Создаёт или перезаписывает .xlsx с заголовками и строками.",
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.LOCAL,
                 requires_human_approval=False,
@@ -202,48 +202,18 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
 
     def execute(self, input_data: dict) -> ToolCallResult:
         """Создать новую книгу Excel с данными."""
-        from openpyxl import Workbook
-
         try:
             workspace = self._workspace(input_data)
             path = workspace.resolve(_ensure_xlsx(input_data.get("filename", "")))
         except WorkspaceError as exc:
             return self._fail("WORKSPACE_ERROR", str(exc))
 
-        if path.exists() and not input_data.get("overwrite"):
-            return self._fail(
-                "FILE_EXISTS",
-                f"Файл {path.name} уже существует. Передайте overwrite=true "
-                "или используйте excel.edit_workbook.",
-            )
-
-        workbook = Workbook()
-        worksheet = workbook.active
-        worksheet.title = str(input_data.get("sheet") or "Лист1")[:31]
-        headers = input_data.get("headers") or []
-        if headers:
-            worksheet.append([str(header) for header in headers])
-        for row in input_data.get("rows") or []:
-            worksheet.append(list(row) if isinstance(row, (list, tuple)) else [row])
-
-        try:
-            workbook.save(path)
-        except Exception as exc:  # noqa: BLE001
-            return self._fail("EXCEL_WRITE_ERROR", str(exc))
-        finally:
-            workbook.close()
-
-        return ToolCallResult(
-            ok=True,
+        return _save_workbook(
+            path,
+            sheet=str(input_data.get("sheet") or "Лист1"),
+            headers=input_data.get("headers") or [],
+            rows=input_data.get("rows") or [],
             tool_name=self.definition.name,
-            output_data={
-                "file": str(path),
-                "filename": path.name,
-                "sheet": worksheet.title,
-                "written_rows": len(input_data.get("rows") or [])
-                + (1 if headers else 0),
-                "path": str(path),
-            },
         )
 
 
@@ -287,6 +257,23 @@ class ExcelEditWorkbookTool(_WorkspaceTool):
         from openpyxl import load_workbook
 
         operations = input_data.get("operations")
+        headers = input_data.get("headers")
+        rows = input_data.get("rows")
+        if (not isinstance(operations, list) or not operations) and (
+            headers or rows is not None
+        ):
+            try:
+                workspace = self._workspace(input_data)
+                path = workspace.resolve(_ensure_xlsx(input_data.get("filename", "")))
+            except WorkspaceError as exc:
+                return self._fail("WORKSPACE_ERROR", str(exc))
+            return _save_workbook(
+                path,
+                sheet=str(input_data.get("sheet") or "Лист1"),
+                headers=headers or [],
+                rows=rows or [],
+                tool_name=self.definition.name,
+            )
         if not isinstance(operations, list) or not operations:
             return self._fail(
                 "INVALID_OPERATIONS", "Передайте непустой список operations."
@@ -395,3 +382,46 @@ def register_excel_tools(
         if skip_existing and registry.has_tool(tool.definition.name):
             continue
         registry.register(tool)
+
+
+def _save_workbook(
+    path: Path,
+    *,
+    sheet: str,
+    headers: object,
+    rows: object,
+    tool_name: str,
+) -> ToolCallResult:
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = (sheet or "Лист1")[:31]
+    header_list = list(headers) if isinstance(headers, (list, tuple)) else []
+    if header_list:
+        worksheet.append([str(header) for header in header_list])
+    row_list = list(rows) if isinstance(rows, (list, tuple)) else []
+    for row in row_list:
+        worksheet.append(list(row) if isinstance(row, (list, tuple)) else [row])
+    try:
+        workbook.save(path)
+    except Exception as exc:  # noqa: BLE001
+        return ToolCallResult(
+            ok=False,
+            tool_name=tool_name,
+            error_type="EXCEL_WRITE_ERROR",
+            error_message=str(exc),
+        )
+    finally:
+        workbook.close()
+    return ToolCallResult(
+        ok=True,
+        tool_name=tool_name,
+        output_data={
+            "file": str(path),
+            "filename": path.name,
+            "sheet": worksheet.title,
+            "written_rows": len(row_list) + (1 if header_list else 0),
+            "path": str(path),
+        },
+    )

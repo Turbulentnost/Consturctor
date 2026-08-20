@@ -2690,17 +2690,9 @@ class WorkflowPage(QWidget):
         work = (result.local_run or {}).get("work_result") or {}
         if not isinstance(work, dict):
             work = {}
-        from app.tools.result_files import publish_result_files, remembered_result_files
+        from app.tools.result_files import publish_answer_files
 
         wid = str(result.id or "")
-        remembered = remembered_result_files(wid)
-        if remembered:
-            publish_result_files(
-                {"files": [str(path) for path in remembered]},
-                workflow_id=wid,
-            )
-        else:
-            publish_result_files(work, workflow_id=wid)
         self._render_chips()
         report = str(work.get("text") or result.last_result or "").strip()
         extras: list[str] = []
@@ -2712,6 +2704,7 @@ class WorkflowPage(QWidget):
             extras.append(f"Уведомление: {item}")
         if extras:
             report = (report + "\n\n" + "\n".join(extras)).strip()
+        publish_answer_files(workflow_id=wid, work=work, text=report)
         if report:
             self._push_event("Результат", report[:4000])
         self._tests_ok = bool(playbook.get("demo_ok") or result.phase in {"tested", "ready"})

@@ -559,17 +559,19 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "sheet": _prop("string", "Имя листа. Пусто — первый"),
             "max_rows": _prop("integer", "Максимум строк"),
         }),
-        ("excel.create_workbook", "Создать .xlsx в папке агента.", {
-            "filename": _prop("string", "Имя нового файла, например report.xlsx"),
+        ("excel.create_workbook", "Создать или перезаписать .xlsx в папке агента. Если файл уже есть — перезапишет, отдельный overwrite не нужен.", {
+            "filename": _prop("string", "Имя файла, например report.xlsx"),
             "headers": _prop("array", "Заголовки колонок", items={"type": "string"}),
             "rows": _prop("array", "Строки таблицы: список списков или объектов"),
         }),
-        ("excel.edit_workbook", "Изменить уже существующий .xlsx в папке агента. Новый файл не создаёт.", {
-            "filename": _prop("string", "Имя существующего файла в папке агента"),
+        ("excel.edit_workbook", "Изменить .xlsx в папке агента. Можно operations или сразу headers+rows (тогда файл перезапишется).", {
+            "filename": _prop("string", "Имя файла в папке агента"),
             "operations": _prop(
                 "array",
                 "Правки листа: action add_sheet, delete_sheet, append_row или set_cell. Не export.",
             ),
+            "headers": _prop("array", "Если нет operations — заголовки для полной перезаписи"),
+            "rows": _prop("array", "Если нет operations — строки для полной перезаписи"),
         }),
         ("workspace.powershell_run", "PowerShell только в папке агента.", {
             "command": _prop("string", "Команда PowerShell без выхода из папки агента"),

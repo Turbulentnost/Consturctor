@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 DOCUMENT_SUFFIXES = frozenset(
@@ -32,6 +33,10 @@ _SKIP_TOOLS = frozenset(
     }
 )
 _PATH_KEYS = ("path", "file", "absolute_path", "filepath", "dest")
+_FILE_IN_TEXT = re.compile(
+    r"[A-Za-z0-9_.\-]+\.(?:xlsx|xls|xlsm|csv|docx|doc|pdf|pptx|txt|md)",
+    re.IGNORECASE,
+)
 _remembered: dict[str, list[str]] = {}
 _pending_attach: list[tuple[str, str]] = []
 
@@ -40,17 +45,56 @@ def is_document_path(path: Path) -> bool:
     return path.suffix.lower() in DOCUMENT_SUFFIXES
 
 
-def extract_result_files(result: object, *, tool: str = "") -> list[Path]:
+def _as_document(raw: object, *, workspace: Path | None = None) -> Path | None:
+    text = str(raw or "").strip()
+    if not text or text in {".", ".."} or "\n" in text:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        if workspace is None:
+            return None
+        path = workspace / path.name
+    try:
+        path = path.resolve()
+    except OSError:
+        return None
+    if workspace is not None:
+        try:
+            path.relative_to(workspace.resolve())
+        except ValueError:
+            return None
+    if not path.is_file() or not is_document_path(path):
+        return None
+    return path
+
+
+def workspace_for(workflow_id: str) -> Path | None:
+    wid = (workflow_id or "").strip()
+    if not wid:
+        return None
+    from app.tools.ac.dispatch import workspaces_root
+    from app.tools.ac.agent_workspace import AgentWorkspace
+
+    return AgentWorkspace(workspaces_root(), wid).directory
+
+
+def extract_result_files(
+    result: object,
+    *,
+    tool: str = "",
+    workflow_id: str = "",
+) -> list[Path]:
     """Локальные документы из ответа инструмента — только существующие файлы."""
     if (tool or "").strip() in _SKIP_TOOLS:
         return []
     if not isinstance(result, dict):
         return []
+    workspace = workspace_for(workflow_id)
     found: list[Path] = []
     seen: set[str] = set()
 
     def _add(raw: object) -> None:
-        path = _as_document(raw)
+        path = _as_document(raw, workspace=workspace)
         if path is None:
             return
         key = str(path)
@@ -61,9 +105,7 @@ def extract_result_files(result: object, *, tool: str = "") -> list[Path]:
 
     for key in _PATH_KEYS:
         _add(result.get(key))
-    filename = result.get("filename")
-    if filename and result.get("path"):
-        _add(result.get("path"))
+    _add(result.get("filename"))
     files = result.get("files")
     if isinstance(files, list):
         for item in files:
@@ -71,25 +113,10 @@ def extract_result_files(result: object, *, tool: str = "") -> list[Path]:
                 for key in _PATH_KEYS:
                     _add(item.get(key))
                 _add(item.get("name"))
+                _add(item.get("filename"))
             else:
                 _add(item)
     return found
-
-
-def _as_document(raw: object) -> Path | None:
-    text = str(raw or "").strip()
-    if not text or text in {".", ".."} or "\n" in text:
-        return None
-    path = Path(text)
-    if not path.is_absolute():
-        return None
-    try:
-        path = path.resolve()
-    except OSError:
-        return None
-    if not path.is_file() or not is_document_path(path):
-        return None
-    return path
 
 
 def remember_result_files(paths: list[Path], *, workflow_id: str = "") -> None:
@@ -136,10 +163,62 @@ def clear_remembered_result_files(workflow_id: str = "") -> None:
 
 
 def publish_result_files(result: object, *, tool: str = "", workflow_id: str = "") -> None:
-    files = extract_result_files(result, tool=tool)
+    files = extract_result_files(result, tool=tool, workflow_id=workflow_id)
     if not files:
         return
     remember_result_files(files, workflow_id=workflow_id)
     from app.ui.widgets.result_file_card import offer_result_files
 
     offer_result_files(files, workflow_id=workflow_id)
+
+
+def publish_answer_files(
+    *,
+    workflow_id: str,
+    work: dict | None = None,
+    text: str = "",
+    arguments: dict | None = None,
+    tool: str = "",
+) -> None:
+    """Прикрепить документы ответа: Excel/файлы прогона и текстовый итог."""
+    wid = (workflow_id or "").strip()
+    payload = dict(work or {})
+    if arguments:
+        for key in ("filename", "path", "file"):
+            if arguments.get(key) and key not in payload:
+                payload[key] = arguments.get(key)
+    files = extract_result_files(payload, tool=tool, workflow_id=wid)
+    files.extend(remembered_result_files(wid))
+    name = str((arguments or {}).get("filename") or payload.get("filename") or "").strip()
+    workspace = workspace_for(wid)
+    if workspace is not None and name:
+        extra = _as_document(name, workspace=workspace)
+        if extra is not None:
+            files.append(extra)
+    if workspace is not None:
+        for match in _FILE_IN_TEXT.findall(text or str(payload.get("text") or "")):
+            extra = _as_document(match, workspace=workspace)
+            if extra is not None:
+                files.append(extra)
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in files:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    answer = (text or str(payload.get("text") or "")).strip()
+    if answer and workspace is not None:
+        note = workspace / "Результат.md"
+        try:
+            note.write_text(answer, encoding="utf-8")
+            unique.append(note)
+        except OSError:
+            pass
+    if not unique:
+        return
+    remember_result_files(unique, workflow_id=wid)
+    from app.ui.widgets.result_file_card import offer_result_files
+
+    offer_result_files(unique, workflow_id=wid)

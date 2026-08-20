@@ -298,7 +298,6 @@ class MainShell(QWidget):
         self._page_readiness.answer_requested.connect(self._on_readiness_answer)
         self._page_readiness.change_decision_requested.connect(self._on_readiness_change_decision)
         self._page_readiness.finalize_requested.connect(self._on_readiness_finalize)
-        self._page_readiness.skip_to_agents_requested.connect(self._on_skip_readiness_to_agents)
         self._page_readiness.supplement_requested.connect(self._on_start_readiness_supplement)
         self._page_revision.download_requested.connect(self._on_revision_download)
         self._page_revision.next_requested.connect(self._on_revision_next)
@@ -860,27 +859,6 @@ class MainShell(QWidget):
                 self._readiness_failed.emit(exc.message)
                 return
             self._chat_ready.emit(chat)
-
-        Thread(target=run, daemon=True).start()
-
-    def _on_skip_readiness_to_agents(self) -> None:
-        if self._current_draft is None:
-            return
-        self._page_loading.set_message(
-            "Готовим ИИ-агента",
-            "Сохраняем подтверждённые функции без изменения регламента.",
-        )
-        self._pages.setCurrentIndex(self._page_index["loading"])
-
-        def run() -> None:
-            try:
-                draft = self._api.update_agent_draft_status(self._current_draft.draft_id, "ready")
-                workflows = self._api.list_workflows()
-            except ApiError as exc:
-                self._readiness_failed.emit(exc.message)
-                return
-            suggestions = draft.agent_suggestions or _suggestions_from_role_match(self._current_role_match)
-            self._implementation_agents_ready.emit((suggestions, workflows, draft.draft_id))
 
         Thread(target=run, daemon=True).start()
 

@@ -64,7 +64,6 @@ class ReadinessPage(QWidget):
     chat_message_requested = Signal(str, str)
     change_decision_requested = Signal(str, str, str)
     finalize_requested = Signal()
-    skip_to_agents_requested = Signal()
     supplement_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -180,7 +179,7 @@ class ReadinessPage(QWidget):
         title.setFont(app_font(20, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         title.setWordWrap(True)
-        message = QLabel("Хотите дополнить регламент перед созданием ИИ-агента?")
+        message = QLabel("Нужно дополнить регламент, прежде чем создавать ИИ-агента.")
         message.setFont(app_font(14))
         message.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         message.setWordWrap(True)
@@ -189,15 +188,10 @@ class ReadinessPage(QWidget):
 
         actions = QHBoxLayout()
         actions.setSpacing(10)
-        skip = QPushButton("Нет, к ИИ-агентам")
-        skip.setCursor(Qt.CursorShape.PointingHandCursor)
-        skip.setStyleSheet(_secondary_button_qss())
-        skip.clicked.connect(self.skip_to_agents_requested.emit)
         supplement = QPushButton("Дописать")
         supplement.setCursor(Qt.CursorShape.PointingHandCursor)
         supplement.setStyleSheet(_primary_button_qss())
         supplement.clicked.connect(self.supplement_requested.emit)
-        actions.addWidget(skip)
         actions.addWidget(supplement)
         actions.addStretch(1)
         layout.addLayout(actions)

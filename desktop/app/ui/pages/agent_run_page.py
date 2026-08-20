@@ -136,6 +136,9 @@ class AgentRunPage(QWidget):
         if wid:
             set_host_workflow_id(self, wid)
             attach_pending_for(wid)
+            from app.ui.widgets.result_file_card import flush_pending_result_files
+
+            flush_pending_result_files()
 
     def _build(self) -> None:
         self._title = QLabel("Агент")
@@ -380,10 +383,16 @@ class AgentRunPage(QWidget):
         work = result.get("work_result") if isinstance(result, dict) else None
         if not isinstance(work, dict):
             work = {}
-        from app.tools.result_files import publish_result_files
+        from app.tools.result_files import publish_answer_files
+        from app.ui.widgets.result_file_card import flush_pending_result_files
 
-        publish_result_files(work, workflow_id=str(getattr(self._workflow, "id", "") or ""))
         text = str(work.get("text") or (result.get("answer") if isinstance(result, dict) else "") or "").strip()
+        publish_answer_files(
+            workflow_id=str(getattr(self._workflow, "id", "") or ""),
+            work=work,
+            text=text,
+        )
+        flush_pending_result_files()
         already = any(
             ev.get("type") in {"work_result", "agent_message"}
             and text

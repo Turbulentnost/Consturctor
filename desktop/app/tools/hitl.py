@@ -377,6 +377,9 @@ def attach_pending_for(workflow_id: str) -> None:
             continue
         attach(item.card)
         item.attached = True
+    from app.ui.widgets.result_file_card import flush_pending_result_files
+
+    flush_pending_result_files()
 
 
 def _active_inline_host(workflow_id: str = "") -> QWidget | None:

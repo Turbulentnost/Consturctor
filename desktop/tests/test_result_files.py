@@ -53,3 +53,36 @@ def test_remembered_absolute_paths_survive_relative_files(tmp_path: Path) -> Non
     assert remembered == [book.resolve()]
     assert "plan-serii.xlsx" in remembered_result_names("wf-1")
     clear_remembered_result_files("wf-1")
+
+
+def test_extract_relative_name_via_workspace(tmp_path: Path, monkeypatch) -> None:
+    book = tmp_path / "plan_serii_soveshchaniy.xlsx"
+    book.write_bytes(b"xlsx")
+    monkeypatch.setattr("app.tools.result_files.workspace_for", lambda _wid: tmp_path)
+    files = extract_result_files(
+        {"files": ["plan_serii_soveshchaniy.xlsx"]},
+        tool="excel.create_workbook",
+        workflow_id="wf-1",
+    )
+    assert files == [book.resolve()]
+
+
+def test_publish_answer_picks_excel_from_text(tmp_path: Path, monkeypatch) -> None:
+    from app.tools.result_files import publish_answer_files
+
+    book = tmp_path / "plan_serii_soveshchaniy.xlsx"
+    book.write_bytes(b"xlsx")
+    monkeypatch.setattr("app.tools.result_files.workspace_for", lambda _wid: tmp_path)
+    offered: list[list] = []
+    monkeypatch.setattr(
+        "app.ui.widgets.result_file_card.offer_result_files",
+        lambda files, workflow_id="": offered.append(list(files)),
+    )
+    publish_answer_files(
+        workflow_id="wf-1",
+        work={"text": "Файл `plan_serii_soveshchaniy.xlsx` уже есть."},
+        text="Файл `plan_serii_soveshchaniy.xlsx` уже есть.",
+    )
+    names = {path.name for batch in offered for path in batch}
+    assert "plan_serii_soveshchaniy.xlsx" in names
+    assert "Результат.md" in names
