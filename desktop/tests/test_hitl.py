@@ -42,6 +42,8 @@ def test_write_tools_need_confirmation() -> None:
     assert needs_confirmation("onec.odata_patch")
     assert needs_confirmation("onec.attach_file")
     assert needs_confirmation("outlook.send_mail")
+    assert needs_confirmation("outlook.create_event")
+    assert not needs_confirmation("outlook.read_calendar")
 
 
 def test_workflow_id_from_arguments() -> None:
@@ -109,14 +111,44 @@ def test_away_notify_callback_keeps_pending_loop_intact() -> None:
     assert seen["workflow_id"] == "wf-1"
     assert seen["tool"] == "onec.odata_post"
     assert "Запись в 1С" in seen["preview"]
-    assert "Catalog_Foo" in seen["preview"]
+    assert "Catalog_Foo" not in seen["preview"]
+
+
+def test_explain_excel_mentions_filename_not_json() -> None:
+    title, text = explain_tool(
+        "excel.create_workbook",
+        {"filename": "kalendar.xlsx", "rows": [1, 2, 3]},
+    )
+    assert title == "Создание Excel"
+    assert "kalendar.xlsx" in text
+    assert "{" not in text
+
+
+def test_confirm_card_is_compact_without_parameters() -> None:
+    _ensure_app()
+    card = HitlConfirmCard(
+        "excel.create_workbook",
+        '{"filename": "a.xlsx", "rows": []}',
+        arguments={"filename": "a.xlsx"},
+    )
+    assert card._params.isHidden()
+    assert card._body.isHidden()
+    assert card._hint.isHidden()
+    assert not card._title.isHidden()
+    assert not card._tech.isHidden()
+    assert not card._what.isHidden()
+    assert not card._buttons.isHidden()
+    assert "{" not in card._what.text()
+    assert "Параметры" not in card._title.text()
+    assert "a.xlsx" in card._what.text()
 
 
 def test_set_resolved_collapses_to_grey_receipt() -> None:
     _ensure_app()
     card = HitlConfirmCard("excel.create_workbook", '{"sheets": 1}', arguments={})
     assert not card._buttons.isHidden()
-    assert not card._params.isHidden()
+    assert card._params.isHidden()
+    assert card._body.isHidden()
     card.set_resolved(True)
     assert card._buttons.isHidden()
     assert card._title.isHidden()

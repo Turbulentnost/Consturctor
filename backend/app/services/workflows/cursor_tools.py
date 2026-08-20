@@ -24,10 +24,14 @@ _TOOL_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 _MAX_ROUNDS_PLAN = 6
-_MAX_ROUNDS_EXECUTE = 10
+_MAX_ROUNDS_EXECUTE = 14
 _MAX_CALLS_PER_ROUND = 3
 _MAX_TOOL_FAILURES = 2
 _MAX_NUDGES = 2
+_STOP_EMPTY_RE = re.compile(
+    r"остановиться|завершить без|записи не выполнять|не переходить",
+    re.IGNORECASE,
+)
 
 _GENERIC_USER_QUERIES = (
     "все",
@@ -238,8 +242,8 @@ def helper_tools_block() -> str:
     if not allowed:
         return ""
     lines = [
-        "ВСПОМОГАТЕЛЬНЫЕ ИНСТРУМЕНТЫ. Их можно вызывать на любом шаге, даже если их нет в кандидатах.",
-        "Если ответ усечён или нужна выборка — вызови helper constructor · dataset · execute с dataset_id.",
+        "ВСПОМОГАТЕЛЬНЫЕ ИНСТРУМЕНТЫ. Не закрывают шаг и не заменяют кандидатов шага.",
+        "Их можно вызывать, только если ответ шага усечён и есть dataset_id.",
     ]
     for tool in allowed:
         name = str(tool.get("name") or "")
@@ -695,21 +699,53 @@ class StepLedger:
                 return self.steps[index + 1] if index + 1 < len(self.steps) else None
         return None
 
+    def _status_of(self, step: dict[str, Any] | None) -> str:
+        if not isinstance(step, dict):
+            return ""
+        entry = self.entries.get(str(step.get("id") or "")) or {}
+        return str(entry.get("status") or "")
+
+    def closed(self, step: dict[str, Any] | None) -> bool:
+        return self._status_of(step) in {"completed", "skipped"}
+
+    def _step_for_tool(self, name: str, *, open_only: bool) -> dict[str, Any] | None:
+        for step in self.steps:
+            if name not in (step.get("tool_candidates") or []):
+                continue
+            if open_only and self.closed(step):
+                continue
+            if not open_only and not self.closed(step):
+                continue
+            return step
+        return None
+
+    def closed_step_for_tool(self, name: str) -> dict[str, Any] | None:
+        return self._step_for_tool(name, open_only=False)
+
+    def should_skip_invoke(self, name: str, step: dict[str, Any] | None) -> bool:
+        """Повтор COM/IO не нужен, если этот шаг (или единственный с этим tool) уже закрыт."""
+        if _is_helper_tool(name):
+            return False
+        if step is not None:
+            return self.closed(step)
+        if self._step_for_tool(name, open_only=True) is not None:
+            return False
+        return self._step_for_tool(name, open_only=False) is not None
+
     def resolve(self, call: dict[str, Any]) -> dict[str, Any] | None:
         """Шаг из блока вызова, иначе — первый незакрытый шаг с таким инструментом."""
+        name = str(call.get("name") or "")
+        if _is_helper_tool(name):
+            return None
         declared = str(call.get("step") or "").strip()
         if declared:
             found = self.step_by_id(declared)
             if found is not None:
+                owner = self._step_for_tool(name, open_only=True)
+                if owner is not None:
+                    return owner
                 return found
-        name = str(call.get("name") or "")
-        for step in self.steps:
-            entry = self.entries.get(str(step.get("id") or ""), {})
-            if entry.get("status") == "completed":
-                continue
-            if name in (step.get("tool_candidates") or []):
-                return step
-        return None
+        return self._step_for_tool(name, open_only=True)
 
     def unmet_needs(self, step: dict[str, Any] | None) -> list[str]:
         """Обязательные шаги, чьи поля этот шаг берёт, но они ещё не закрыты."""
@@ -728,7 +764,7 @@ class StepLedger:
             if not bool(source.get("required", True)):
                 continue
             entry = self.entries.get(source_id) or {}
-            if entry.get("status") != "completed":
+            if entry.get("status") not in {"completed", "skipped"}:
                 blocked.append(source_id)
         return blocked
 
@@ -736,7 +772,10 @@ class StepLedger:
         for step in self.steps:
             step_id = str(step.get("id") or "")
             entry = self.entries.get(step_id) or {}
-            if bool(step.get("required", True)) and entry.get("status") != "completed":
+            if bool(step.get("required", True)) and entry.get("status") not in {
+                "completed",
+                "skipped",
+            }:
                 return step
         return None
 
@@ -756,28 +795,60 @@ class StepLedger:
         verdict: Any,
         error: str = "",
     ) -> None:
+        if _is_helper_tool(name):
+            return
         if step is None:
+            return
+        if _is_companion_tool(step, name):
             return
         entry = self.entries.get(str(step.get("id") or ""))
         if entry is None:
             return
         entry["attempts"] = int(entry.get("attempts") or 0) + 1
-        entry["tool"] = name
-        entry["error"] = error
         if error:
+            if entry.get("status") in {"completed", "skipped"}:
+                return
+            entry["tool"] = name
+            entry["error"] = error
             entry["status"] = "failed"
             entry["data_status"] = "mismatch"
             entry["reasons"] = [error[:300]]
             return
+        entry["tool"] = name
+        entry["error"] = ""
         entry["data_status"] = verdict.data_status
         entry["reasons"] = list(verdict.reasons)
         entry["status"] = "completed" if verdict.accepted else "failed"
+        if (
+            verdict.accepted
+            and str(verdict.data_status or "") == "empty_valid"
+            and _empty_stops_followup(step)
+        ):
+            self._skip_followup(str(step.get("id") or ""))
+
+    def _skip_followup(self, from_step_id: str) -> None:
+        seen = False
+        for step in self.steps:
+            step_id = str(step.get("id") or "")
+            if step_id == from_step_id:
+                seen = True
+                continue
+            if not seen:
+                continue
+            entry = self.entries.get(step_id)
+            if entry is None or entry.get("status") == "completed":
+                continue
+            entry["status"] = "skipped"
+            entry["data_status"] = "empty_valid"
+            entry["reasons"] = [
+                f"пропущен: шаг {from_step_id} завершился пустым — дальше не записываем"
+            ]
 
     def missing_required(self) -> list[str]:
         return [
             entry["id"]
             for entry in self.entries.values()
-            if entry.get("required") and entry.get("status") != "completed"
+            if entry.get("required") and entry.get("status") not in {"completed", "skipped"}
         ]
 
     def as_list(self) -> list[dict[str, Any]]:
@@ -844,7 +915,12 @@ def _stream_cursor_with_tools_body(
 
     def missing_required() -> list[str]:
         if ledger.enabled:
-            return ledger.open_required_tools()
+            names = ledger.open_required_tools()
+            return [
+                name
+                for name in names
+                if tool_family(name) not in unreachable
+            ]
         return [
             name
             for name in required
@@ -853,7 +929,7 @@ def _stream_cursor_with_tools_body(
 
     for _round_n in range(max_rounds):
         last_text = getattr(last, "text", None) or ""
-        if _should_pause_for_clarify(last_text):
+        if mode != "execute" and _should_pause_for_clarify(last_text):
             return _attach_live_ok(last, successful, ledger)
         calls = should_run_tool_calls(last_text, mode=mode)
         if not calls and mode == "execute":
@@ -925,6 +1001,45 @@ def _stream_cursor_with_tools_body(
                     }
                 )
                 _emit(on_event, "decision", f"«{name}» отклонён: {rejection}")
+                continue
+            if family and family in unreachable and not _is_helper_tool(name):
+                msg = last_errors.get(family) or "инструмент недоступен после повторяющихся ошибок"
+                packed = {
+                    "name": name,
+                    "ok": False,
+                    "step": str((step or {}).get("id") or ""),
+                    "error": msg,
+                    "validation": {
+                        "data_status": "mismatch",
+                        "reasons": [msg[:300]],
+                        "next_action": "Этот источник сейчас недоступен. Закрой шаг по on_error или переходи к следующему.",
+                    },
+                    **envelope,
+                }
+                results.append(packed)
+                _emit(on_event, "decision", f"«{name}»: пропускаю, источник недоступен.")
+                continue
+            if ledger.enabled and ledger.should_skip_invoke(name, step):
+                closed_id = str((step or ledger.closed_step_for_tool(name) or {}).get("id") or "")
+                packed = {
+                    "name": name,
+                    "ok": True,
+                    "skipped": True,
+                    "step": closed_id,
+                    "result": {"already_done": True, "step": closed_id},
+                    "validation": {
+                        "data_status": "complete",
+                        "reasons": ["шаг уже выполнен, повтор не нужен"],
+                        "next_action": "Переходи к следующему незакрытому шагу.",
+                    },
+                    **envelope,
+                }
+                results.append(packed)
+                _emit(
+                    on_event,
+                    "decision",
+                    f"«{name}»: шаг {closed_id or 'уже'} выполнен, повтор не вызываю.",
+                )
                 continue
             cache_key = _tool_cache_key(name, arguments)
             cached = result_cache.get(cache_key)
@@ -1042,7 +1157,7 @@ def _stream_cursor_with_tools_body(
                 _emit(
                     on_event,
                     "tool_result",
-                    f"{name}\n{exc}",
+                    f"{name}\nОшибка: {exc}",
                     {"tool": name, "ok": False},
                 )
                 _emit(on_event, "decision", f"«{name}»: {exc}")
@@ -1104,15 +1219,49 @@ def _reject_off_phase(phase: str, name: str) -> str:
     )
 
 
+def _empty_stops_followup(step: dict[str, Any] | None) -> bool:
+    if not isinstance(step, dict):
+        return False
+    return bool(_STOP_EMPTY_RE.search(str(step.get("on_empty") or "")))
+
+
 def _is_helper_tool(name: str) -> bool:
     from app.services.local_mcp import tool_contracts
 
     return bool((tool_contracts().get(name) or {}).get("helper"))
 
 
+_COMPANION_TOOLS: dict[str, frozenset[str]] = {
+    "outlook.create_event": frozenset({"outlook.read_calendar"}),
+}
+
+
+def _is_companion_tool(step: dict[str, Any] | None, name: str) -> bool:
+    """Чтение той же сущности на шаге create не off-contract."""
+    if not isinstance(step, dict) or not name:
+        return False
+    candidates = [str(item) for item in (step.get("tool_candidates") or [])]
+    if name in candidates:
+        return False
+    for candidate in candidates:
+        if name in _COMPANION_TOOLS.get(candidate, ()):
+            return True
+    system = str(step.get("system") or "").strip().casefold()
+    from app.services.workflow_tool_routing import normalize_entity, normalize_operation
+
+    entity = normalize_entity(str(step.get("entity") or ""))
+    operation = normalize_operation(str(step.get("operation") or ""))
+    return (
+        name == "outlook.read_calendar"
+        and system == "outlook"
+        and entity == "calendar_event"
+        and operation == "create"
+    )
+
+
 def _reject_off_contract(step: dict[str, Any] | None, name: str) -> str:
     """Вызов вне кандидатов шага не исполняем — это ошибка выбора инструмента."""
-    if _is_helper_tool(name):
+    if _is_helper_tool(name) or _is_companion_tool(step, name):
         return ""
     if step is None:
         return ""
@@ -1206,8 +1355,9 @@ def _verdict_lines(results: list[dict[str, Any]]) -> str:
         "Проверка данных не пройдена:\n"
         + "\n".join(lines)
         + "\nЭто не выполненные шаги. Не делай выводов по этим данным и не переходи дальше: "
-        "исправь параметры, дочитай страницы, возьми другой инструмент шага "
-        "или обработай полный набор кодом (helper constructor · dataset · execute). "
+        "исправь параметры, дочитай страницы или возьми другой инструмент шага. "
+        "Helper constructor · dataset · execute — только если ответ усечён и есть dataset_id; "
+        "он не закрывает шаг и не заменяет кандидатов. "
         "Если признак должен быть в данных, но неясно где его искать и в материалах этого нет — "
         "CLARIFY с 2–4 вариантами. "
         "FAILED_VALIDATION — когда источник ответил, обработка сделана, "
@@ -1377,19 +1527,24 @@ def _invoke_notify_send(arguments: dict[str, Any]) -> dict[str, Any]:
             payload.send_at = None
     db = SessionLocal()
     try:
-        from app.services.notifications.service import NotificationError
+        from app.services.notifications.service import NotificationError, payload_dict
 
         item = create_notification(db, sender_user_id=sender, payload=payload)
     except NotificationError as exc:
         raise RuntimeError(exc.message) from exc
     finally:
         db.close()
+    from app.services.notifications.hub import hub
+
+    queued = hub.schedule_push(item.recipient_user_id, payload_dict(item))
     return {
         "id": item.id,
         "ok": True,
-        "delivered": "на компьютер получателя",
+        "saved": True,
+        "queued": queued,
         "recipient_user_id": item.recipient_user_id,
         "title": item.title,
+        "body": str(arguments.get("body") or ""),
     }
 
 
@@ -1484,11 +1639,24 @@ def _row_title(row: Any) -> str:
 def _format_tool_output(_name: str, result: dict[str, Any], *, limit: int = 1600) -> str:
     if not result:
         return "Готово"
-    if result.get("delivered") or (
-        _name in {"notify.send", "notify"} and result.get("ok") and result.get("id")
-    ):
+    if _name in {"notify.send", "notify"}:
         title = str(result.get("title") or "").strip()
-        return f"Готово · уведомление на компьютер" + (f": {title}" if title else "")
+        blob = f"{title} {result.get('body') or ''}".casefold()
+        failed = any(
+            marker in blob
+            for marker in ("не построен", "не записан", "не отправ", "провал")
+        )
+        if failed or result.get("ok") is False:
+            return "Уведомление сохранено (серия не удалась)" + (f": {title}" if title else "")
+        if result.get("delivered"):
+            return "Готово · уведомление на компьютер" + (f": {title}" if title else "")
+        return "Уведомление записано, отправка на компьютер" + (f": {title}" if title else "")
+    from pathlib import Path as _Path
+
+    for key in ("file", "path", "filename"):
+        raw = str(result.get(key) or "").strip()
+        if raw and _Path(raw).suffix.lower() in {".xlsx", ".xls", ".xlsm", ".csv", ".docx"}:
+            return f"Создан файл {_Path(raw).name} — откройте карточку в чате"
     labels = {
         "projects": "проектов",
         "users": "пользователей",

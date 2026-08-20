@@ -60,6 +60,15 @@ def test_users_list_ignores_generic_query() -> None:
     assert is_directory_search_query("user@example.com")
 
 
+def test_format_excel_create_mentions_filename() -> None:
+    text = _format_tool_output(
+        "excel.create_workbook",
+        {"path": r"C:\tmp\plan-serii.xlsx", "filename": "plan-serii.xlsx", "written_rows": 4},
+    )
+    assert "plan-serii.xlsx" in text
+    assert "откройте" in text.casefold()
+
+
 def test_format_tool_output_empty_users() -> None:
     text = _format_tool_output("users.list", {"users": [], "count": 0})
     assert "0" in text

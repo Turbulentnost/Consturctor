@@ -69,7 +69,21 @@ def test_published_prompt_requires_notify_when_asked() -> None:
 def test_format_notify_output() -> None:
     text = _format_tool_output(
         "notify.send",
-        {"id": "n1", "ok": True, "delivered": "на компьютер получателя", "title": "Просрочка"},
+        {"id": "n1", "ok": True, "saved": True, "title": "Просрочка"},
     )
     assert "уведомление" in text.casefold()
+    assert "готово · уведомление на компьютер" not in text.casefold()
     assert "{" not in text
+
+
+def test_format_notify_failure_series() -> None:
+    text = _format_tool_output(
+        "notify.send",
+        {
+            "id": "n1",
+            "ok": True,
+            "saved": True,
+            "title": "План серии: серия не построена, встречи не записаны",
+        },
+    )
+    assert "не удалась" in text.casefold()

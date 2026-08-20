@@ -581,8 +581,10 @@ def demo_workflow(
     )
     _emit(on_event, "decision", "Запускаю пробный прогон по описанию бизнес-процесса.")
     _emit(on_event, "progress", "создаю агента Cursor")
+    local_state = dict(row.local_run or {})
+    reuse_agent = bool(row.exec_agent_id) and bool(local_state.get("demo_ok"))
     try:
-        if row.exec_agent_id:
+        if reuse_agent:
             try:
                 run = cursor_client.create_run(row.exec_agent_id, prompt=prompt, mode="agent")
                 agent_id = row.exec_agent_id
@@ -1239,13 +1241,13 @@ def _finish_demo_stream(
     work = prompts.parse_work_result(phase.text or "")
     row.last_result = work.get("text") or (phase.text or "")[:4000]
     row.branch = phase.branch or row.branch
+    draft = draft_of(row)
     questions = prompts.parse_clarify_from_text(phase.text or "")
-    if questions:
+    if questions and not (draft.get("steps") or []):
         return _pause_demo_for_questions(
             db, row=row, phase=phase, questions=questions, on_event=on_event
         )
     tools = list(phase.successful_live_tools or [])
-    draft = draft_of(row)
     report = _demo_validation_report(phase, draft)
     if not report["ok"]:
         return _fail_demo_validation(db, row=row, draft=draft, report=report, on_event=on_event)
@@ -1512,10 +1514,12 @@ def _demo_validation_report(phase: PhaseResult, draft: dict[str, Any]) -> dict[s
             "reasons": list(item.get("reasons") or []),
         }
         for item in ledger
-        if item.get("required")
-        and (
-            str(item.get("status") or "") != "completed"
-            or str(item.get("data_status") or "") not in _ACCEPTED_DATA_STATUS
+        if item.get("required") and (
+            str(item.get("status") or "") not in {"completed", "skipped"}
+            or (
+                str(item.get("status") or "") == "completed"
+                and str(item.get("data_status") or "") not in _ACCEPTED_DATA_STATUS
+            )
         )
     ]
     has_steps = bool(draft.get("steps"))

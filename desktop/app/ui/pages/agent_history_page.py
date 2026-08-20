@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.api_client import AgentRunHistoryItem, ApiClient, ApiError
+from app.tools.result_files import extract_result_files
 from app.ui.pages.agent_run_page import _event_card, _friendly_event
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 
@@ -383,6 +384,10 @@ def _events_for_run(item: AgentRunHistoryItem) -> list[dict]:
         if str(friendly.get("type") or "") == "status":
             continue
         events.append(friendly)
+        kind = str(friendly.get("type") or "")
+        payload = friendly.get("result") if kind in {"tool", "tool_result"} else raw
+        for path in extract_result_files(payload, tool=str(friendly.get("tool") or "")):
+            events.append({"type": "file", "path": str(path), "text": path.name})
     if events:
         return events
     if item.message.strip():

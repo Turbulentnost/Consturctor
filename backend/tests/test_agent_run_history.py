@@ -91,6 +91,13 @@ def test_notify_send_writes_history_run_id(monkeypatch) -> None:
         )
         or _Item(),
     )
+    from app.services.notifications.hub import hub as notify_hub
+
+    monkeypatch.setattr(notify_hub, "schedule_push", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "app.services.notifications.service.payload_dict",
+        lambda item: {"id": item.id, "title": item.title, "type": "notification"},
+    )
     set_tool_context("bridge-1", "user-1", "run-hist")
     try:
         result = _invoke_notify_send(
@@ -104,6 +111,8 @@ def test_notify_send_writes_history_run_id(monkeypatch) -> None:
     finally:
         clear_tool_context()
     assert result["ok"] is True
+    assert result["saved"] is True
+    assert "delivered" not in result
     assert captured["run_id"] == "run-hist"
     assert captured["workflow_id"] == "wf-1"
     assert captured["sender"] == "user-1"

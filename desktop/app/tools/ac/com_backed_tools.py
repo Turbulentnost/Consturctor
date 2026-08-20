@@ -13,6 +13,9 @@ from app.tools.ac.registry import ToolRegistry
 from app.tools.ac.workers.base import BaseWorker
 from app.tools.ac.workers.models import WorkerTask
 
+# Outlook COM (Iterate + recurrences) часто дольше дефолтных 30 секунд.
+OUTLOOK_COM_TIMEOUT_SECONDS = 180
+
 
 class ComBackedTool(BaseTool):
     """Инструмент, делегирующий выполнение BaseWorker через WorkerTask."""
@@ -69,6 +72,7 @@ class OutlookSearchMailComTool(ComBackedTool):
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
                 input_schema={"type": "object"},
                 output_schema={"type": "object"},
             ),
@@ -85,10 +89,35 @@ class OutlookReadCalendarComTool(ComBackedTool):
             ToolDefinition(
                 name="outlook.read_calendar",
                 title="Чтение календаря Outlook",
-                description="Читает события календаря Outlook через COM Worker.",
+                description="Читает все запланированные встречи Outlook за период (по умолчанию год).",
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookCreateEventComTool(ComBackedTool):
+    """COM-backed создание встречи в календаре Outlook."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        """Создать инструмент записи встречи Outlook."""
+        super().__init__(
+            ToolDefinition(
+                name="outlook.create_event",
+                title="Встреча в Outlook",
+                description=(
+                    "Создаёт встречи в календаре Outlook в указанных слотах. "
+                    "Тема и текст помечаются как ИИ-агент."
+                ),
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=True,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
                 input_schema={"type": "object"},
                 output_schema={"type": "object"},
             ),
@@ -109,6 +138,7 @@ class OutlookReadTasksComTool(ComBackedTool):
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
                 input_schema={"type": "object"},
                 output_schema={"type": "object"},
             ),
@@ -160,6 +190,7 @@ def register_outlook_com_tools(registry: ToolRegistry, worker: BaseWorker) -> No
     """Зарегистрировать Outlook COM-backed инструменты в ToolRegistry."""
     registry.register(OutlookSearchMailComTool(worker))
     registry.register(OutlookReadCalendarComTool(worker))
+    registry.register(OutlookCreateEventComTool(worker))
     registry.register(OutlookReadTasksComTool(worker))
     registry.register(EmailCreateDraftComTool(worker))
     registry.register(EmailSendComTool(worker))

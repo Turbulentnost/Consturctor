@@ -237,6 +237,7 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
             ok=True,
             tool_name=self.definition.name,
             output_data={
+                "file": str(path),
                 "filename": path.name,
                 "sheet": worksheet.title,
                 "written_rows": len(input_data.get("rows") or [])
@@ -320,7 +321,12 @@ class ExcelEditWorkbookTool(_WorkspaceTool):
         return ToolCallResult(
             ok=True,
             tool_name=self.definition.name,
-            output_data={"filename": path.name, "applied": applied, "path": str(path)},
+            output_data={
+                "file": str(path),
+                "filename": path.name,
+                "applied": applied,
+                "path": str(path),
+            },
         )
 
     def _apply_operation(self, workbook, operation: dict, applied: list[str]) -> str | None:

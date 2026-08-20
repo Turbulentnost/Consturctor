@@ -13,6 +13,7 @@ from app.clients.erp_sql import (
     list_departments,
     search_user_fios,
 )
+from app.config import settings
 from app.core.jwt import create_access_token
 from app.schemas.auth import LoginResponse, UserOut
 from app.services import app_users
@@ -46,6 +47,57 @@ def _apply_position_override(fio: str, position: str) -> str:
     return position or ""
 
 
+def _fio_key(value: str) -> str:
+    return " ".join((value or "").split()).casefold()
+
+
+def _erp_sql_bypass_enabled() -> bool:
+    return bool(settings.auth_skip_erp_sql)
+
+
+def _bypass_credentials_ok(fio: str, password: str) -> bool:
+    expected_fio = settings.erp_login.strip()
+    expected_password = settings.erp_password
+    if not expected_fio or not expected_password:
+        return False
+    return _fio_key(fio) == _fio_key(expected_fio) and password == expected_password
+
+
+def _bypass_session_identity(fio: str) -> tuple[str, str, str, str]:
+    canon = settings.erp_login.strip() or fio
+    existing = app_users.find_app_user_by_fio(canon) or app_users.find_app_user_by_fio(fio)
+    if existing is not None:
+        return existing.id, existing.fio, existing.department or "", existing.position or ""
+    user_id = settings.auth_bypass_user_id.strip()
+    if not user_id:
+        raise AuthError("Не задан пользователь для временного входа", status_code=503)
+    return user_id, canon, "", ""
+
+
+def _login_via_bypass(fio: str, password: str) -> LoginResponse:
+    if not _bypass_credentials_ok(fio, password):
+        raise AuthError("Неверный логин или пароль", status_code=401)
+    user_id, canon_fio, department, position = _bypass_session_identity(fio)
+    position = _apply_position_override(canon_fio, position)
+    token = create_access_token(
+        user_id=user_id,
+        fio=canon_fio,
+        department=department,
+        position=position,
+    )
+    user_out = _to_user_out(
+        user_id=user_id,
+        fio=canon_fio,
+        department=department,
+        position=position,
+    )
+    _trace(
+        f"Auth login bypass id={user_id} fio={canon_fio} "
+        f"department={department or '-'} position={position or '-'}"
+    )
+    return LoginResponse(access_token=token, user=user_out)
+
+
 def _to_user_out(*, user_id: str, fio: str, department: str, position: str = "") -> UserOut:
     try:
         app_user = app_users.upsert_app_user(
@@ -73,6 +125,8 @@ async def login(fio: str, password: str) -> LoginResponse:
         raise AuthError("Неверный логин или пароль", status_code=401)
 
     _trace(f"Auth login start fio={fio}")
+    if _erp_sql_bypass_enabled():
+        return await asyncio.to_thread(_login_via_bypass, fio, password)
 
     try:
         erp_user = await asyncio.to_thread(find_user_by_fio, fio)
@@ -120,6 +174,13 @@ async def login(fio: str, password: str) -> LoginResponse:
 
 
 async def list_user_fios(search: str | None = None) -> list[str]:
+    if _erp_sql_bypass_enabled():
+        fio = settings.erp_login.strip()
+        if not fio:
+            return []
+        if search and _fio_key(search) not in _fio_key(fio):
+            return []
+        return [fio]
     try:
         return await asyncio.to_thread(search_user_fios, search)
     except ErpSqlError as exc:
@@ -136,6 +197,21 @@ async def list_department_names() -> list[str]:
 
 
 async def get_current_user_profile(user_id: str, fio_hint: str | None = None) -> UserOut:
+    if _erp_sql_bypass_enabled():
+        app_user = app_users.get_app_user(user_id)
+        if app_user is None and fio_hint:
+            app_user = app_users.find_app_user_by_fio(fio_hint)
+        if app_user is not None:
+            return app_users.to_user_out(app_user)
+        fio = (fio_hint or settings.erp_login).strip()
+        return await asyncio.to_thread(
+            _to_user_out,
+            user_id=user_id,
+            fio=fio,
+            department="",
+            position="",
+        )
+
     try:
         erp_user = await asyncio.to_thread(find_user_by_id, user_id)
     except ErpSqlError as exc:

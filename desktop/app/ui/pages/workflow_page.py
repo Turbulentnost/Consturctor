@@ -1840,6 +1840,9 @@ class WorkflowPage(QWidget):
             self._feed_layout.addWidget(card)
         for card in self._hitl_cards:
             self._feed_layout.addWidget(card)
+        from app.ui.widgets.result_file_card import flush_pending_result_files
+
+        flush_pending_result_files()
 
     def _render_chips(self) -> None:
         while self._chips_layout.count():
@@ -1851,6 +1854,9 @@ class WorkflowPage(QWidget):
         if self._record:
             names.extend(att.name for att in (self._record.attachments or []) if att.name)
         names.extend(Path(p).name for p in self._pending_paths)
+        from app.tools.result_files import remembered_result_names
+
+        result_names = remembered_result_names(str(getattr(self._record, "id", "") or ""))
         for name in names[:8]:
             chip = QFrame()
             chip.setObjectName("filechip")
@@ -1863,8 +1869,20 @@ class WorkflowPage(QWidget):
             lbl.setStyleSheet("background: transparent; color: #06483D;")
             lay.addWidget(lbl)
             self._chips_layout.addWidget(chip)
+        for name in result_names[:8]:
+            chip = QFrame()
+            chip.setObjectName("filechip")
+            chip.setStyleSheet(_CHIP)
+            lay = QHBoxLayout(chip)
+            lay.setContentsMargins(10, 4, 8, 4)
+            lay.setSpacing(6)
+            lbl = QLabel(name)
+            lbl.setFont(app_font(11))
+            lbl.setStyleSheet("background: transparent; color: #08745F;")
+            lay.addWidget(lbl)
+            self._chips_layout.addWidget(chip)
         self._chips_layout.addStretch(1)
-        self._chips_wrap.setVisible(bool(names))
+        self._chips_wrap.setVisible(bool(names or result_names))
 
     def _next_event_key(self) -> str:
         self._event_seq += 1
@@ -1896,6 +1914,10 @@ class WorkflowPage(QWidget):
             title = ""
         if kind == "tool":
             expanded = key not in self._collapsed_keys
+            if "не выполнено" in (event.title or "").casefold() or self._tool_body_is_error(
+                event.body
+            ):
+                expanded = True
         else:
             expanded = key in self._expanded_keys
         widget = CursorFeedItem(
@@ -2171,6 +2193,13 @@ class WorkflowPage(QWidget):
             text = text[:97] + "…"
         self._activity_banner.setText(f"{frame} Система работает — {text}")
 
+    def _tool_body_is_error(self, body: str) -> bool:
+        low = (body or "").casefold()
+        return any(
+            marker in low
+            for marker in ("ошибка", "не выполнено", "отклонён", "не записан")
+        )
+
     def _upsert_live_tool(self, name: str, *, status: str, detail: str = "") -> None:
         tool_name = (name or "").strip() or "инструмент"
         if self._planning_stream and not self._is_catalog_tool_name(tool_name):
@@ -2233,7 +2262,7 @@ class WorkflowPage(QWidget):
             return title, detail or "Выполняется…"
         if status == "ok":
             return title, detail or "Готово"
-        return title, detail or "Ошибка"
+        return f"Инструмент: {name} — не выполнено", detail or "Ошибка"
 
     def _refresh_live_tool_widget(self, tool: dict) -> None:
         key = str(tool.get("key") or "")
@@ -2241,20 +2270,29 @@ class WorkflowPage(QWidget):
         if widget is None:
             self._append_live_tool_widget(tool)
             return
-        _title, body = self._tool_card_body(tool)
+        title, body = self._tool_card_body(tool)
         widget.set_tool_detail(body)
+        widget.set_header_title(title)
+        if str(tool.get("status") or "") == "error":
+            widget.set_expanded(True)
+            self._collapsed_keys.discard(key)
+            self._expanded_keys.add(key)
 
     def _append_live_tool_widget(self, tool: dict) -> None:
         key = str(tool.get("key") or self._next_event_key())
         tool["key"] = key
         title, body = self._tool_card_body(tool)
+        error = str(tool.get("status") or "") == "error"
+        if error:
+            self._collapsed_keys.discard(key)
+            self._expanded_keys.add(key)
         widget = CursorFeedItem(
             kind="tool",
             text=body,
             title=title,
             detail=body,
             event_key=key,
-            expanded=key not in self._collapsed_keys,
+            expanded=error or key not in self._collapsed_keys,
         )
         widget.expand_toggled.connect(self._on_expand_toggled)
         self._live_tool_widgets[key] = widget
@@ -2295,14 +2333,17 @@ class WorkflowPage(QWidget):
             detail = str(tool.get("detail") or "").strip()
             if status == "ok":
                 body = detail or "Готово"
+                title = f"Инструмент: {name}"
             elif status == "error":
                 body = detail or "Ошибка"
+                title = f"Инструмент: {name} — не выполнено"
             else:
                 body = detail or "Вызов завершён"
+                title = f"Инструмент: {name}"
             key = str(tool.get("key") or self._next_event_key())
             self._events.append(
                 FeedEvent(
-                    title=f"Инструмент: {name}",
+                    title=title,
                     body=body,
                     time=self._now(),
                     kind="tool",
@@ -2400,7 +2441,7 @@ class WorkflowPage(QWidget):
                 name, body = "инструмент", raw
             self._upsert_live_tool(
                 name.strip() or "инструмент",
-                status="ok" if "ошибка" not in (body or "").casefold() else "error",
+                status="error" if self._tool_body_is_error(body) else "ok",
                 detail=(body or "Готово").strip(),
             )
             self._tick_activity()
@@ -2649,6 +2690,18 @@ class WorkflowPage(QWidget):
         work = (result.local_run or {}).get("work_result") or {}
         if not isinstance(work, dict):
             work = {}
+        from app.tools.result_files import publish_result_files, remembered_result_files
+
+        wid = str(result.id or "")
+        remembered = remembered_result_files(wid)
+        if remembered:
+            publish_result_files(
+                {"files": [str(path) for path in remembered]},
+                workflow_id=wid,
+            )
+        else:
+            publish_result_files(work, workflow_id=wid)
+        self._render_chips()
         report = str(work.get("text") or result.last_result or "").strip()
         extras: list[str] = []
         for item in work.get("files") or []:
@@ -2724,6 +2777,10 @@ class WorkflowPage(QWidget):
             self._hitl_cards.append(card)
         self._feed_layout.addWidget(card)
         self._scroll_feed_to_bottom()
+        from app.ui.widgets.result_file_card import flush_pending_result_files
+
+        flush_pending_result_files()
+        self._render_chips()
 
     def _sync_question_state(self, plan: WorkflowPlan) -> None:
         unanswered = plan.unanswered()
@@ -3009,6 +3066,12 @@ class WorkflowPage(QWidget):
         )
 
     def _show_test_run_result(self, *, files: list[str], dest_dir: str) -> None:
+        from app.tools.result_files import publish_result_files
+
+        publish_result_files(
+            {"files": files},
+            workflow_id=str(getattr(self._record, "id", "") or ""),
+        )
         result_md = _result_md_from_files(files)
         report = (self._last_exec_report or "").strip()
         if self._record and (self._record.last_result or "").strip():
@@ -3202,6 +3265,9 @@ class WorkflowPage(QWidget):
         self._live_tool_widgets = {}
         self._activity_banner = None
         self._hitl_cards = []
+        from app.tools.result_files import clear_remembered_result_files
+
+        clear_remembered_result_files()
         self._clear_questions()
         self._events = []
         self._event_seq = 0

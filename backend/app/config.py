@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     docflow_odata_password: str = ""
     erp_login: str = ""
     erp_password: str = ""
+    # Temporary: issue JWT as ERP_LOGIN without querying erp_pm SQL.
+    auth_skip_erp_sql: bool = False
+    auth_bypass_user_id: str = ""
     onec_sql_allowlist: str = ""
     onec_odata_entity_allowlist: str = ""
 

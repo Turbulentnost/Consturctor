@@ -443,12 +443,24 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "query": _prop("string", "Подстрока в теме или отправителе, не список людей"),
             "max_results": _prop("integer", "Максимум писем"),
         }),
-        ("outlook.read_calendar", "Чтение календаря Outlook через COM на desktop.", {
+        ("outlook.read_calendar", "Все запланированные встречи Outlook за период. Без дат — ближайший год с сегодня, не неделя. В ответе events и free_slots.", {
             "date": _prop("string", "Один день YYYY-MM-DD"),
             "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
             "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
-            "days_forward": _prop("integer", "Сколько дней вперёд от сегодня, если дат нет"),
-            "max_results": _prop("integer", "Максимум событий"),
+            "days_forward": _prop("integer", "Сколько дней вперёд от сегодня, если дат нет. По умолчанию 365"),
+            "max_results": _prop("integer", "Максимум событий, до 500"),
+        }),
+        ("outlook.create_event", "Создать встречи в свободных слотах календаря Outlook. Тема и текст помечаются как ИИ-агент. Нужно подтверждение человека.", {
+            "subject": _prop("string", "Тема встречи без префикса ИИ-агент — его добавит инструмент"),
+            "start": _prop("string", "Начало ISO datetime, слот должен быть свободным"),
+            "end": _prop("string", "Конец ISO datetime"),
+            "duration_minutes": _prop("integer", "Длительность в минутах, если end нет"),
+            "body": _prop("string", "Текст встречи; в конец добавится подпись ИИ-агента"),
+            "location": _prop("string", "Место или ссылка"),
+            "events": _prop(
+                "array",
+                "Несколько встреч за один вызов: subject, start, end или duration_minutes",
+            ),
         }),
         ("browser.list_installed_browsers", "Список установленных браузеров на desktop.", {}),
         ("browser.open_browser", "Открыть установленный браузер (штатный профиль).", {
@@ -731,6 +743,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     ),
     "outlook.search_mail": ("outlook", "mail_message", "search", [], ["messages"], "count"),
     "outlook.read_calendar": ("outlook", "calendar_event", "list", [], ["events"], "count"),
+    "outlook.create_event": (
+        "outlook",
+        "calendar_event",
+        "create",
+        ["subject", "start"],
+        ["event"],
+        "none",
+    ),
     "browser.list_installed_browsers": ("web", "browser", "list", [], ["items"], "none"),
     "browser.open_browser": ("web", "browser", "execute", ["browser_id"], [], "none"),
     "browser.search_web": ("web", "web_page", "search", ["query"], ["results"], "none"),

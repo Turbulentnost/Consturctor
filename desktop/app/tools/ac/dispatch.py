@@ -9,6 +9,7 @@ from typing import Any
 from app.tools.ac.agent_workspace import AgentWorkspaceResolver
 from app.tools.ac.code_execution_tools import register_code_execution_tools
 from app.tools.ac.com_backed_tools import (
+    OutlookCreateEventComTool,
     OutlookReadCalendarComTool,
     OutlookSearchMailComTool,
 )
@@ -24,6 +25,7 @@ from app.tools.ac.wait_tool import register_wait_tool
 from app.tools.ac.web_tools import register_web_tools
 from app.tools.ac.workers import com_availability
 from app.tools.ac.workers.onec_worker import OneCReadOnlyWorker
+from app.tools.ac.workers.outlook_com_worker import OutlookComWorker
 from app.tools.ac.workers.subprocess_com_worker import SubprocessComWorker
 
 
@@ -54,9 +56,12 @@ def _ensure_agent_id(arguments: dict[str, Any]) -> dict[str, Any]:
 def build_registry() -> ToolRegistry:
     registry = ToolRegistry()
     resolver = AgentWorkspaceResolver(_workspaces_root())
-    outlook_worker = SubprocessComWorker()
-    registry.register(OutlookSearchMailComTool(outlook_worker))
-    registry.register(OutlookReadCalendarComTool(outlook_worker))
+    outlook_read = SubprocessComWorker()
+    # Запись в календарь — в процессе GUI: subprocess Outlook отклоняет Save («Не выполнено»).
+    outlook_write = OutlookComWorker(safe_mode=True, allow_direct_com_calls=True)
+    registry.register(OutlookSearchMailComTool(outlook_read))
+    registry.register(OutlookReadCalendarComTool(outlook_read))
+    registry.register(OutlookCreateEventComTool(outlook_write))
     register_onec_readonly_tools(registry, _onec_com_worker())
     register_report_tools(registry, skip_existing=True)
     register_web_tools(registry, skip_existing=True, workspace_resolver=resolver)

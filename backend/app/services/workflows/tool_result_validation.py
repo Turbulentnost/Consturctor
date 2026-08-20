@@ -41,6 +41,11 @@ _COLLECTION_KEYS = (
 _COUNT_KEYS = ("count", "total", "total_count", "found", "matched")
 _MORE_KEYS = ("truncated", "has_more", "more", "next_page", "next_cursor", "is_truncated")
 _LIMIT_KEYS = ("limit", "top", "max_results", "max_items", "limit_per_person")
+_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "file": ("file", "path", "filename", "file_id", "filepath"),
+    "files": ("files", "file_ids"),
+    "event": ("event", "events", "entry_id"),
+}
 
 
 @dataclass
@@ -129,11 +134,28 @@ def _is_empty(payload: dict[str, Any]) -> bool:
     return not meaningful
 
 
+def _argument_present(arguments: dict[str, Any], param: str) -> bool:
+    if arguments.get(param) not in (None, "", []):
+        return True
+    events = arguments.get("events")
+    if isinstance(events, list) and events:
+        return all(
+            isinstance(item, dict) and item.get(param) not in (None, "", [])
+            for item in events
+        )
+    return False
+
+
+def _payload_has_field(payload: dict[str, Any], field_name: str) -> bool:
+    aliases = _FIELD_ALIASES.get(field_name, (field_name,))
+    return any(alias in payload for alias in aliases)
+
+
 def _missing_result_fields(payload: dict[str, Any], contract: dict[str, Any]) -> list[str]:
     expected = [str(f) for f in (contract.get("result_fields") or [])]
     if not expected:
         return []
-    if any(field_name in payload for field_name in expected):
+    if any(_payload_has_field(payload, field_name) for field_name in expected):
         return []
     return expected
 
@@ -156,6 +178,18 @@ def evaluate_tool_result(
     ignored = ignored if isinstance(ignored, dict) else {}
     payload = _as_dict(result)
     contract = contract if contract is not None else (tool_contracts().get(name) or {})
+    if contract.get("helper"):
+        # Helper не закрывает шаг черновика — его не сверяем с system/operation шага.
+        step = {}
+    elif name == "outlook.read_calendar":
+        from app.services.workflow_tool_routing import normalize_entity, normalize_operation
+
+        if (
+            str(step.get("system") or "").strip().casefold() == "outlook"
+            and normalize_entity(str(step.get("entity") or "")) == "calendar_event"
+            and normalize_operation(str(step.get("operation") or "")) == "create"
+        ):
+            step = {}
 
     reasons: list[str] = []
     checks: dict[str, bool] = {}
@@ -214,7 +248,7 @@ def evaluate_tool_result(
     missing_params = [
         str(param)
         for param in (step.get("required_params") or [])
-        if str(param) not in arguments or arguments.get(str(param)) in (None, "", [])
+        if not _argument_present(arguments, str(param))
     ]
     checks["coverage"] = not missing_params
     if missing_params:
@@ -223,7 +257,18 @@ def evaluate_tool_result(
     found = _collection(payload)
     items = found[1] if found else []
     empty = _is_empty(payload)
+    verify_after_create = "нов" in str(step.get("done_when") or "").casefold() and (
+        "календар" in str(step.get("done_when") or "").casefold()
+        or "встреч" in str(step.get("done_when") or "").casefold()
+    )
     if empty:
+        if verify_after_create:
+            return ToolVerdict(
+                data_status=MISMATCH,
+                reasons=[*reasons, "после записи в календарь проверка не видит встреч"],
+                checks={**checks, "fields": False},
+                next_action="Повтори outlook.create_event, затем снова прочитай календарь.",
+            )
         if missing_params or not arguments or ignored:
             if ignored:
                 reasons.append(

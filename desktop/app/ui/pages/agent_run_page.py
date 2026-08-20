@@ -26,6 +26,7 @@ from app.tools.hitl import (
 )
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 from app.ui.widgets.cursor_feed import CursorFeedItem, format_collection_result, format_tool_detail
+from app.ui.widgets.result_file_card import ResultFileCard
 
 
 _PRIMARY = """
@@ -60,6 +61,7 @@ _TOOL_LABELS = {
     "site_browser": "Просмотр сайта",
     "outlook.search_mail": "Поиск писем Outlook",
     "outlook.read_calendar": "Календарь Outlook",
+    "outlook.create_event": "Встреча в Outlook",
     "browser.list_installed_browsers": "Список браузеров",
     "browser.open_browser": "Открытие браузера",
     "browser.search_web": "Поиск в интернете",
@@ -378,6 +380,9 @@ class AgentRunPage(QWidget):
         work = result.get("work_result") if isinstance(result, dict) else None
         if not isinstance(work, dict):
             work = {}
+        from app.tools.result_files import publish_result_files
+
+        publish_result_files(work, workflow_id=str(getattr(self._workflow, "id", "") or ""))
         text = str(work.get("text") or (result.get("answer") if isinstance(result, dict) else "") or "").strip()
         already = any(
             ev.get("type") in {"work_result", "agent_message"}
@@ -434,7 +439,8 @@ class AgentRunPage(QWidget):
             if last is not None and last.widget() is None and last.spacerItem() is not None:
                 stretch = self._feed_layout.takeAt(self._feed_layout.count() - 1)
         card = _event_card(event, expanded=_feed_expanded(event, self._expanded_keys))
-        card.expand_toggled.connect(self._on_expand_toggled)
+        if hasattr(card, "expand_toggled"):
+            card.expand_toggled.connect(self._on_expand_toggled)
         self._feed_layout.addWidget(card)
         if str(event.get("type") or "") == "thinking":
             self._live_thinking = card
@@ -458,7 +464,8 @@ class AgentRunPage(QWidget):
         self._clear_feed()
         for event in self._events:
             card = _event_card(event, expanded=_feed_expanded(event, self._expanded_keys))
-            card.expand_toggled.connect(self._on_expand_toggled)
+            if hasattr(card, "expand_toggled"):
+                card.expand_toggled.connect(self._on_expand_toggled)
             self._feed_layout.addWidget(card)
             if str(event.get("type") or "") == "thinking":
                 self._live_thinking = card
@@ -617,8 +624,10 @@ def _feed_expanded(event: dict, expanded_keys: set[str]) -> bool:
     return kind in {"tool", "tool_result", "work_result", "result"}
 
 
-def _event_card(event: dict, *, expanded: bool = False) -> CursorFeedItem:
+def _event_card(event: dict, *, expanded: bool = False) -> QWidget:
     event_type = str(event.get("type") or "system")
+    if event_type == "file":
+        return ResultFileCard(str(event.get("path") or event.get("text") or ""))
     key = str(event.get("event_key") or "")
     text = str(event.get("text") or event.get("message") or "")
     if event_type in {"tool", "tool_result"}:

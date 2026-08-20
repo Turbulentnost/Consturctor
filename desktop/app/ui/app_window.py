@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Thread
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QStackedWidget, QSystemTrayIcon
 
 from app.agents.headless_runner import HeadlessRunner
 from app.api_client import ApiClient, ApiError, LoginResult
+from app.config import auth_skip_login_page, erp_login, erp_password
 from app.notifications.service import NotificationService, show_windows_toast
-from app.session_store import clear_session, load_session
+from app.session_store import clear_session, load_session, save_session
 from app.tools.hitl import (
     install_confirm_host,
     notification_opens_live,
@@ -59,6 +61,8 @@ class AppWindow(QMainWindow):
 
         self.login_page.logged_in.connect(self._on_logged_in)
         self.main_shell.logout_requested.connect(self._on_logout)
+        if auth_skip_login_page():
+            self.main_shell.user_menu.set_logout_visible(False)
 
         self._notify = NotificationService(self)
         self._runner = HeadlessRunner(self.api, self)
@@ -72,6 +76,11 @@ class AppWindow(QMainWindow):
         install_confirm_host(self)
         set_away_notify_callback(self._on_away_confirmation)
 
+        if auth_skip_login_page():
+            if self._try_auto_login():
+                return
+            self._stack.setCurrentWidget(self.login_page)
+            return
         if not self._try_restore_session():
             self._stack.setCurrentWidget(self.login_page)
 
@@ -117,32 +126,45 @@ class AppWindow(QMainWindow):
             return (getattr(rec, "title", "") or "").strip() or "агент"
         page = getattr(self.main_shell, "_page_workflows", None)
         rec = getattr(page, "_record", None)
-        if rec is not None and str(getattr(rec, "id", "") or "") == wid:
+        if rec is not None and (not wid or str(getattr(rec, "id", "") or "") == wid):
             return (getattr(rec, "title", "") or "").strip() or "агент"
-        if not wid:
-            return "агент"
-        try:
-            return (self.api.get_workflow(wid).title or "").strip() or "агент"
-        except ApiError:
-            return "агент"
+        return "агент"
 
     def _on_away_confirmation(self, workflow_id: str, tool: str, preview: str) -> None:
         name = self._agent_title(workflow_id)
         title = f"Агент «{name}» ждёт вашего подтверждения"
         body = (preview or "").strip() or f"Нужно разрешить «{tool}»."
-        if len(body) > 400:
-            body = body[:397].rstrip() + "…"
-        if not show_windows_toast(title, body, workflow_id):
+        if body.lstrip().startswith("{"):
+            body = f"Нужно разрешить «{tool}»."
+        if len(body) > 180:
+            body = body[:177].rstrip() + "…"
+        wid = (workflow_id or "").strip()
+        QTimer.singleShot(0, lambda: self._deliver_hitl_notice(title, body, wid))
+
+    def _deliver_hitl_notice(self, title: str, body: str, workflow_id: str) -> None:
+        shown = show_windows_toast(
+            title,
+            body,
+            workflow_id,
+            from_foreground=True,
+        )
+        if not shown:
             self._on_tray_toast(title, body, workflow_id)
+        Thread(
+            target=self._post_hitl_inbox,
+            args=(title, body, workflow_id),
+            daemon=True,
+        ).start()
+
+    def _post_hitl_inbox(self, title: str, body: str, workflow_id: str) -> None:
         try:
             self.api.create_inbox_notification(
                 title=title,
                 body=body,
                 workflow_id=workflow_id,
             )
-            self.main_shell.refresh_notification_badge()
         except ApiError:
-            pass
+            return
 
     def _setup_tray(self, logo: Path | None) -> None:
         self._tray = QSystemTrayIcon(self)
@@ -196,6 +218,19 @@ class AppWindow(QMainWindow):
         self._enter_main(user)
         return True
 
+    def _try_auto_login(self) -> bool:
+        fio = erp_login()
+        password = erp_password()
+        if not fio or not password:
+            return False
+        try:
+            result = self.api.login(fio, password)
+        except ApiError:
+            return False
+        save_session(access_token=result.access_token, fio=result.user.fio)
+        self._enter_main(result.user)
+        return True
+
     def _on_logged_in(self, result: LoginResult) -> None:
         self.login_page.fio_edit.hide_suggestions()
         self._enter_main(result.user)
@@ -225,6 +260,8 @@ class AppWindow(QMainWindow):
         self._terminate_creation_sessions()
         clear_session(keep_fio=True)
         self.api.set_token(None)
+        if auth_skip_login_page() and self._try_auto_login():
+            return
         self.login_page.reset_form()
         self._stack.setCurrentWidget(self.login_page)
 

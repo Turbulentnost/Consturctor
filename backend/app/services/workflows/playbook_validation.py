@@ -11,7 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.services.workflow_tool_routing import select_candidates
+from app.services.workflow_tool_routing import (
+    normalize_entity,
+    normalize_operation,
+    select_candidates,
+)
 from app.services.workflows.plan_models import OpenQuestion
 from app.services.workflows.schedule_draft import (
     WHEN_TO_RUN_OPTIONS,
@@ -174,6 +178,128 @@ def _ref_params_of(step: dict[str, Any], candidates: list[str]) -> list[str]:
     return params
 
 
+def _step_system(step: dict[str, Any]) -> str:
+    return str(step.get("system") or "").strip().casefold()
+
+
+def _step_entity(step: dict[str, Any]) -> str:
+    return normalize_entity(str(step.get("entity") or ""))
+
+
+def _step_operation(step: dict[str, Any]) -> str:
+    return normalize_operation(str(step.get("operation") or ""))
+
+
+def _is_calendar_create(step: dict[str, Any]) -> bool:
+    return (
+        _step_system(step) == "outlook"
+        and _step_entity(step) == "calendar_event"
+        and _step_operation(step) == "create"
+    )
+
+
+def _is_calendar_list(step: dict[str, Any]) -> bool:
+    return (
+        _step_system(step) == "outlook"
+        and _step_entity(step) == "calendar_event"
+        and _step_operation(step) == "list"
+    )
+
+
+def _calendar_list_step(step_id: str, *, title: str, purpose: str) -> dict[str, Any]:
+    return {
+        "id": step_id,
+        "title": title,
+        "required": True,
+        "system": "outlook",
+        "entity": "calendar_event",
+        "operation": "list",
+        "required_params": [],
+        "data_expectation": "события календаря за широкий период и свободные слоты",
+        "done_when": purpose,
+        "on_empty": "если встреч нет — это валидный ответ только до записи; после create пусто недопустимо",
+        "on_error": "повторить чтение календаря",
+        "provides": ["events", "free_slots"],
+    }
+
+
+def _ensure_calendar_list_around_create(draft: dict[str, Any]) -> dict[str, Any]:
+    """Перед записью в Outlook нужна занятость, после — проверка, что встречи видны."""
+    steps = [step for step in (draft.get("steps") or []) if isinstance(step, dict)]
+    create_indexes = [index for index, step in enumerate(steps) if _is_calendar_create(step)]
+    if not create_indexes:
+        return draft
+    first_create = create_indexes[0]
+    last_create = create_indexes[-1]
+    has_list_before = any(_is_calendar_list(step) for step in steps[:first_create])
+    has_list_after = any(_is_calendar_list(step) for step in steps[last_create + 1 :])
+    out = list(steps)
+    if not has_list_after:
+        verify = _calendar_list_step(
+            _next_step_id(out),
+            title="Проверить записанные встречи",
+            purpose="новые встречи видны в календаре",
+        )
+        insert_at = last_create + 1
+        out = out[:insert_at] + [verify] + out[insert_at:]
+    if not has_list_before:
+        occupancy = _calendar_list_step(
+            _next_step_id(out),
+            title="Прочитать занятость календаря",
+            purpose="получены события и свободные слоты за период планирования",
+        )
+        out = out[:first_create] + [occupancy] + out[first_create:]
+    return {**draft, "steps": out}
+
+
+def _is_spreadsheet_export(step: dict[str, Any]) -> bool:
+    if _step_operation(step) != "export":
+        return False
+    system = _step_system(step)
+    entity = _step_entity(step)
+    return system in {"desktop", "excel"} or entity == "spreadsheet"
+
+
+def _is_notify_step(step: dict[str, Any]) -> bool:
+    return _step_operation(step) == "notify" or _step_entity(step) == "notification"
+
+
+def _next_step_id(steps: list[dict[str, Any]]) -> str:
+    used = {str(step.get("id") or "") for step in steps}
+    index = len(steps) + 1
+    while f"s{index}" in used:
+        index += 1
+    return f"s{index}"
+
+
+def _ensure_plan_file_for_calendar_create(draft: dict[str, Any]) -> dict[str, Any]:
+    """Встречи в Outlook без файла плана — неполный результат. Добавляем выгрузку."""
+    steps = [step for step in (draft.get("steps") or []) if isinstance(step, dict)]
+    if not any(_is_calendar_create(step) for step in steps):
+        return draft
+    if any(_is_spreadsheet_export(step) for step in steps):
+        return draft
+    export_step = {
+        "id": _next_step_id(steps),
+        "title": "Сформировать файл плана совещаний",
+        "required": True,
+        "system": "desktop",
+        "entity": "spreadsheet",
+        "operation": "export",
+        "required_params": ["filename"],
+        "data_expectation": "xlsx с датами, темами и участниками запланированных встреч",
+        "done_when": "файл создан, в результате есть путь к нему",
+        "on_empty": "если встреч нет — файл с пояснением, что записей нет",
+        "on_error": "повторить выгрузку",
+        "provides": ["file"],
+    }
+    insert_at = next(
+        (index for index, step in enumerate(steps) if _is_notify_step(step)),
+        len(steps),
+    )
+    return {**draft, "steps": steps[:insert_at] + [export_step] + steps[insert_at:]}
+
+
 def attach_handoff(draft: dict[str, Any]) -> dict[str, Any]:
     """Явная передача: что шаг отдаёт и какие ссылки берёт из предыдущих."""
     available: dict[str, str] = {}
@@ -199,6 +325,8 @@ def attach_handoff(draft: dict[str, Any]) -> dict[str, Any]:
 
 def attach_tool_candidates(draft: dict[str, Any], *, allow_web: bool = False) -> dict[str, Any]:
     """Проставить каждому шагу инструменты и передачу данных между шагами."""
+    draft = _ensure_calendar_list_around_create(draft)
+    draft = _ensure_plan_file_for_calendar_create(draft)
     steps = list(draft.get("steps") or [])
     enriched: list[dict[str, Any]] = []
     for index, step in enumerate(steps):

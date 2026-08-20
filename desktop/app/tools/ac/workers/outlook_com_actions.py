@@ -25,16 +25,17 @@ SENT_FOLDER = "Sent"
 ALL_MAIL_FOLDERS = "All"
 CALENDAR_FOLDER = "Calendar"
 DEFAULT_DAYS = 7
-DEFAULT_DAYS_FORWARD = 7
+DEFAULT_DAYS_FORWARD = 365
 DEFAULT_MAX_RESULTS = 50
-DEFAULT_CALENDAR_MAX_RESULTS = 20
+DEFAULT_CALENDAR_MAX_RESULTS = 200
 MAX_DAYS = 365
 MAX_RESULTS = 50
+MAX_CALENDAR_RESULTS = 500
 
 # Транзиентные COM/RPC HRESULT-ы: Outlook занят или сервер ещё поднимается.
 # При них имеет смысл короткий повтор вместо провала всего запуска.
 TRANSIENT_COM_HRESULTS = {
-    -2147467259,  # E_FAIL — "Неопознанная ошибка"
+    -2147467263,  # E_UNEXPECTED — Outlook «Не выполнено» на Save/Start
     -2147467260,  # E_ABORT — "Операция прервана"
     -2147418111,  # RPC_E_CALL_REJECTED — вызов отклонён callee
     -2147417846,  # RPC_E_SERVERCALL_RETRYLATER — сервер занят
@@ -117,9 +118,13 @@ def _load_pywin32_modules():
 def _is_transient_com_error(exc: Exception) -> bool:
     """Определить, что COM-ошибка транзиентная (Outlook занят / сервер поднимается)."""
     args = getattr(exc, "args", None)
-    if args and isinstance(args[0], int):
-        return args[0] in TRANSIENT_COM_HRESULTS
-    return False
+    if args and isinstance(args[0], int) and args[0] in TRANSIENT_COM_HRESULTS:
+        return True
+    nested = args[2] if args and len(args) > 2 and isinstance(args[2], tuple) else ()
+    if nested and isinstance(nested[-1], int) and nested[-1] in TRANSIENT_COM_HRESULTS:
+        return True
+    text = str(exc).casefold()
+    return "не выполнено" in text or "rpc_e_servercall_retrylater" in text
 
 
 def _is_class_not_registered_error(exc: Exception) -> bool:
@@ -172,14 +177,24 @@ def _run_com_read(operation: Callable[[Any], dict], access_error_prefix: str) ->
                     com_initialized = False
                 time.sleep(COM_RETRY_DELAY_SECONDS * attempt)
                 continue
-            raise OutlookAccessError(f"{access_error_prefix}: {exc}") from exc
+            raise OutlookAccessError(
+                f"{access_error_prefix}: {exc}. "
+                "Классический Outlook должен быть открыт, календарь — свой (не только чтение). "
+                "Файл → Параметры → центр управления безопасностью → программный доступ: "
+                "не блокировать автоматизацию."
+            ) from exc
         finally:
             if com_initialized:
                 try:
                     pythoncom.CoUninitialize()
                 except Exception:
                     pass
-    raise OutlookAccessError(f"{access_error_prefix}: {last_exc}")
+    raise OutlookAccessError(
+        f"{access_error_prefix}: {last_exc}. "
+        "Классический Outlook должен быть открыт, календарь — свой (не только чтение). "
+        "Файл → Параметры → центр управления безопасностью → программный доступ: "
+        "не блокировать автоматизацию."
+    )
 
 
 def _safe_str(value: Any) -> str:
@@ -327,7 +342,7 @@ def read_calendar(input_data: dict) -> dict:
         input_data.get("max_results"),
         DEFAULT_CALENDAR_MAX_RESULTS,
         1,
-        MAX_RESULTS,
+        MAX_CALENDAR_RESULTS,
     )
     max_scan_items = _clamp_int(
         input_data.get("max_scan_items"),
@@ -385,6 +400,7 @@ def read_calendar(input_data: dict) -> dict:
         return {
             "events": events,
             "count": len(events),
+            "free_slots": _compute_free_slots(events, start_at, end_at),
             "scanned_count": checked_count,
             "source": "outlook_com",
             "folder": CALENDAR_FOLDER,
@@ -393,6 +409,286 @@ def read_calendar(input_data: dict) -> dict:
         }
 
     return _run_com_read(_read, "Ошибка доступа к Outlook Calendar")
+
+
+AI_AGENT_SUBJECT_PREFIX = "[ИИ-агент] "
+AI_AGENT_BODY_FOOTER = "Создано ИИ-агентом Constructor."
+AI_AGENT_CATEGORY = "ИИ-агент"
+DEFAULT_MEETING_MINUTES = 60
+
+
+def stamp_ai_agent_meeting(subject: str, body: str = "") -> tuple[str, str]:
+    """Пометить тему и текст, что встречу создал ИИ-агент."""
+    title = (subject or "").strip() or "Совещание"
+    if not title.casefold().startswith("[ии-агент]"):
+        title = f"{AI_AGENT_SUBJECT_PREFIX}{title}"
+    text = (body or "").strip()
+    if AI_AGENT_BODY_FOOTER.casefold() not in text.casefold():
+        text = f"{text}\n\n{AI_AGENT_BODY_FOOTER}".strip()
+    return title, text
+
+
+def create_event(input_data: dict) -> dict:
+    """Создать одну или несколько встреч в календаре Outlook. Письма не отправляет."""
+    items = _meeting_specs(input_data)
+    if not items:
+        raise OutlookComError("Нужны subject и start или массив events")
+
+    def _write(win32com_client: Any) -> dict:
+        _log_progress("step=dispatch_outlook start")
+        outlook = _dispatch_outlook(win32com_client)
+        _log_progress("step=dispatch_outlook ok")
+        created: list[dict] = []
+        for spec in items:
+            appt = _new_appointment(outlook)
+            appt.Subject = spec["subject"]
+            _set_appointment_times(appt, spec["start"], spec["end"])
+            try:
+                appt.ReminderSet = False
+            except Exception:
+                pass
+            appt.Save()
+            entry_id = _verify_saved_appointment(outlook, appt)
+            if spec["body"]:
+                try:
+                    appt.Body = spec["body"]
+                    appt.Save()
+                except Exception:
+                    _log_progress("step=body skipped")
+            if spec["location"]:
+                try:
+                    appt.Location = spec["location"]
+                    appt.Save()
+                except Exception:
+                    _log_progress("step=location skipped")
+            try:
+                appt.Categories = AI_AGENT_CATEGORY
+                appt.Save()
+            except Exception:
+                _log_progress("step=category skipped")
+            created.append(
+                {
+                    "entry_id": entry_id,
+                    "subject": spec["subject"],
+                    "start": spec["start"].isoformat(timespec="minutes"),
+                    "end": spec["end"].isoformat(timespec="minutes"),
+                    "location": spec["location"],
+                    "ai_agent": True,
+                }
+            )
+        _log_progress(f"step=create_event ok count={len(created)}")
+        return {
+            "ok": True,
+            "event": created[0] if created else {},
+            "events": created,
+            "count": len(created),
+            "source": "outlook_com",
+        }
+
+    return _run_com_read(_write, "Ошибка записи встречи в Outlook Calendar")
+
+
+def _dispatch_outlook(win32com_client: Any) -> Any:
+    """Взять уже открытый Outlook, иначе создать COM-сессию."""
+    _log_progress("step=dispatch_outlook start")
+    try:
+        return win32com_client.GetActiveObject("Outlook.Application")
+    except Exception:
+        return win32com_client.Dispatch("Outlook.Application")
+
+
+def _verify_saved_appointment(outlook: Any, appt: Any) -> str:
+    """Save без ошибки ещё не значит, что встреча в календаре. Перечитываем."""
+    entry_id = _safe_str(getattr(appt, "EntryID", ""))
+    if not entry_id:
+        raise OutlookAccessError(
+            "Ошибка записи встречи: Outlook не вернул идентификатор после Save. "
+            "Встреча в календарь не попала. Нужен классический Outlook и свой календарь для записи."
+        )
+    try:
+        namespace = outlook.GetNamespace("MAPI")
+        found = namespace.GetItemFromID(entry_id)
+    except Exception as exc:
+        raise OutlookAccessError(
+            "Ошибка записи встречи: после Save элемент не читается из календаря. "
+            f"{exc}"
+        ) from exc
+    if found is None:
+        raise OutlookAccessError(
+            "Ошибка записи встречи: после Save элемент в календаре не найден."
+        )
+    subject = _safe_str(getattr(found, "Subject", ""))
+    if not subject:
+        raise OutlookAccessError(
+            "Ошибка записи встречи: сохранённый элемент без темы, запись не подтверждена."
+        )
+    _log_progress(f"step=verify_save ok entry_id={entry_id[:12]}")
+    return entry_id
+
+
+def _new_appointment(outlook: Any) -> Any:
+    """Создать встречу в календаре профиля, не «висящий» CreateItem."""
+    try:
+        namespace = outlook.GetNamespace("MAPI")
+        calendar = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
+        try:
+            return calendar.Items.Add()
+        except Exception:
+            return calendar.Items.Add(1)
+    except Exception:
+        return outlook.CreateItem(1)
+
+
+def _set_appointment_times(appt: Any, start: datetime, end: datetime) -> None:
+    """Start/End: pywintypes, затем datetime, затем строка — Outlook капризен к типу."""
+    try:
+        pywintypes = importlib.import_module("pywintypes")
+        appt.Start = pywintypes.Time(start)
+        appt.End = pywintypes.Time(end)
+        return
+    except Exception:
+        _log_progress("step=pywintypes_time_failed")
+    try:
+        appt.Start = start
+        appt.End = end
+        return
+    except Exception:
+        _log_progress("step=datetime_assign_failed")
+    start_text = start.strftime("%Y-%m-%d %H:%M:%S")
+    end_text = end.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        appt.Start = start_text
+        appt.End = end_text
+        return
+    except Exception:
+        _log_progress("step=start_iso_failed try_locale")
+    appt.Start = start.strftime("%d.%m.%Y %H:%M:%S")
+    appt.End = end.strftime("%d.%m.%Y %H:%M:%S")
+
+
+def _meeting_specs(input_data: dict) -> list[dict]:
+    raw_events = input_data.get("events")
+    rows: list[dict]
+    if isinstance(raw_events, list) and raw_events:
+        rows = [item for item in raw_events if isinstance(item, dict)]
+    else:
+        rows = [input_data]
+    specs: list[dict] = []
+    for row in rows:
+        subject, body = stamp_ai_agent_meeting(
+            str(row.get("subject") or row.get("title") or ""),
+            str(row.get("body") or row.get("text") or ""),
+        )
+        start = _coerce_datetime(row.get("start") or row.get("start_at"))
+        if start is None:
+            continue
+        end = _coerce_datetime(row.get("end") or row.get("end_at"))
+        if end is None:
+            minutes = _clamp_int(
+                row.get("duration_minutes") or input_data.get("duration_minutes"),
+                DEFAULT_MEETING_MINUTES,
+                15,
+                24 * 60,
+            )
+            end = start + timedelta(minutes=minutes)
+        if end <= start:
+            end = start + timedelta(minutes=DEFAULT_MEETING_MINUTES)
+        specs.append(
+            {
+                "subject": subject,
+                "body": body,
+                "start": start,
+                "end": end,
+                "location": _safe_str(row.get("location") or "").strip(),
+            }
+        )
+    return specs
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    text = _safe_str(value).strip()
+    if not text:
+        return None
+    text = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+        return parsed.replace(tzinfo=None)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M"):
+        try:
+            return datetime.strptime(text[:19] if len(text) >= 19 else text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _compute_free_slots(
+    events: list[dict],
+    range_start: datetime,
+    range_end: datetime,
+    *,
+    work_start_hour: int = 9,
+    work_end_hour: int = 18,
+    min_minutes: int = 30,
+) -> list[dict]:
+    """Рабочие окна без занятых встреч Outlook — свободные ячейки календаря."""
+    busy: list[tuple[datetime, datetime]] = []
+    for event in events:
+        start = _coerce_datetime(event.get("start"))
+        end = _coerce_datetime(event.get("end"))
+        if start is None:
+            continue
+        if end is None:
+            end = start + timedelta(minutes=30)
+        if end <= range_start or start >= range_end:
+            continue
+        busy.append((max(start, range_start), min(end, range_end)))
+    busy.sort()
+    merged: list[list[datetime]] = []
+    for start, end in busy:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    slots: list[dict] = []
+    day = range_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    while day < range_end:
+        if day.weekday() < 5:
+            win_s = max(day.replace(hour=work_start_hour), range_start)
+            win_e = min(day.replace(hour=work_end_hour), range_end)
+            if win_e > win_s:
+                cursor = win_s
+                for b_s, b_e in merged:
+                    if b_e <= cursor or b_s >= win_e:
+                        continue
+                    gap_end = min(b_s, win_e)
+                    minutes = int((gap_end - cursor).total_seconds() // 60)
+                    if minutes >= min_minutes:
+                        slots.append(
+                            {
+                                "start": cursor.isoformat(timespec="minutes"),
+                                "end": gap_end.isoformat(timespec="minutes"),
+                                "minutes": minutes,
+                            }
+                        )
+                    cursor = max(cursor, b_e)
+                    if cursor >= win_e:
+                        break
+                minutes = int((win_e - cursor).total_seconds() // 60)
+                if minutes >= min_minutes:
+                    slots.append(
+                        {
+                            "start": cursor.isoformat(timespec="minutes"),
+                            "end": win_e.isoformat(timespec="minutes"),
+                            "minutes": minutes,
+                        }
+                    )
+        day += timedelta(days=1)
+    return slots
 
 
 def send_mail_disabled(input_data: dict) -> dict:

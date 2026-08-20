@@ -232,6 +232,9 @@ class _CollapseHeader(QFrame):
         row.addWidget(self._chevron, 0, Qt.AlignmentFlag.AlignTop)
         row.addWidget(self._title, 1)
 
+    def set_title(self, title: str) -> None:
+        self._title.setText(title)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
@@ -323,6 +326,11 @@ class CursorFeedItem(QFrame):
             self._detail_label.setText(body)
         if self._kind == "tool" and body and body not in {"Выполняется…", "Готово"}:
             self.set_expanded(True)
+
+    def set_header_title(self, title: str) -> None:
+        self._title = title or self._title
+        if self._header is not None:
+            self._header.set_title(self._title)
 
     def set_expanded(self, expanded: bool) -> None:
         if bool(self._expanded) == bool(expanded):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -20,6 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
+
+logger = logging.getLogger(__name__)
 
 AUTONOMY_LEVEL = 1
 HUMAN_REJECTED = "отклонено человеком"
@@ -154,6 +157,10 @@ _TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
         "Создание Excel",
         "Создаёт новую книгу Excel в папке агента.",
     ),
+    "outlook.create_event": (
+        "Встреча в Outlook",
+        "Создаёт событие в календаре Outlook. В теме и тексте будет пометка, что это ИИ-агент.",
+    ),
     "excel.edit_workbook": (
         "Изменение Excel",
         "Правит существующую книгу Excel в папке агента.",
@@ -259,6 +266,20 @@ def explain_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
         filename = str(args.get("filename") or "").strip()
         if filename:
             extra.append(f"Файл: {filename}.")
+    elif tool in {"excel.create_workbook", "excel.edit_workbook"}:
+        filename = str(args.get("filename") or args.get("path") or "").strip()
+        if filename:
+            extra.append(f"Файл: {filename}.")
+    elif tool == "outlook.create_event":
+        subject = str(args.get("subject") or args.get("title") or "").strip()
+        start = str(args.get("start") or args.get("start_at") or "").strip()
+        batch = args.get("events")
+        if isinstance(batch, list) and batch:
+            extra.append(f"Встреч: {len(batch)}.")
+        if subject:
+            extra.append(f"Тема: {subject}.")
+        if start:
+            extra.append(f"Начало: {start}.")
     elif tool in {"outlook.send_mail", "email.send", "email.create_draft"}:
         to = args.get("to") or args.get("recipients") or args.get("email")
         subject = str(args.get("subject") or args.get("тема") or "").strip()
@@ -329,6 +350,16 @@ def has_pending_for(workflow_id: str) -> bool:
 def notification_opens_live(workflow_id: str) -> bool:
     """Клик по уведомлению: живой агент, если ждём подтверждение."""
     return has_pending_for(workflow_id)
+
+
+def attach_feed_widget(widget: QWidget, workflow_id: str = "") -> bool:
+    """Повесить виджет в ленту видимой formation/run страницы."""
+    host = _active_inline_host(str(workflow_id or "").strip())
+    attach = getattr(host, "attach_hitl_card", None) if host is not None else None
+    if not callable(attach):
+        return False
+    attach(widget)
+    return True
 
 
 def attach_pending_for(workflow_id: str) -> None:
@@ -416,6 +447,9 @@ class HitlConfirmCard(QFrame):
         self._hint.setFont(app_font(11))
         self._hint.setWordWrap(True)
         self._hint.setStyleSheet("color: #5B6B74; background: transparent;")
+        self._params.hide()
+        self._body.hide()
+        self._hint.hide()
         self._status = QLabel("")
         self._status.setFont(app_font(12, QFont.Weight.Medium))
         self._status.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
@@ -451,18 +485,11 @@ class HitlConfirmCard(QFrame):
             self._buttons,
         ]
         self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(14, 12, 14, 12)
-        self._layout.setSpacing(8)
+        self._layout.setContentsMargins(12, 10, 12, 10)
+        self._layout.setSpacing(6)
         self._layout.addWidget(self._title)
         self._layout.addWidget(self._tech)
         self._layout.addWidget(self._what)
-        if preview:
-            self._layout.addWidget(self._params)
-            self._layout.addWidget(self._body)
-        else:
-            self._params.hide()
-            self._body.hide()
-        self._layout.addWidget(self._hint)
         self._layout.addWidget(self._status)
         self._layout.addWidget(self._buttons)
 
@@ -570,13 +597,12 @@ def _notify_away(
     if _away_notify is None:
         return
     title, explanation = explain_tool(tool, arguments)
-    body = f"{title}. {explanation}"
-    if preview:
-        body = f"{body}\n{preview}"
+    body = f"{title}. {explanation}".strip()
+    _ = preview
     try:
         _away_notify(workflow_id, tool, body)
     except Exception:  # noqa: BLE001
-        pass
+        logger.warning("HITL Windows notify failed tool=%s", tool, exc_info=True)
 
 
 def _bridge() -> _ConfirmHost:

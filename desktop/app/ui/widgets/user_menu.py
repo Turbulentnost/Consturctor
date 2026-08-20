@@ -214,9 +214,9 @@ class UserMenuHeader(QWidget):
             """
         )
         settings_action = menu.addAction("Настроить")
-        logout_action = menu.addAction("Выйти")
+        self._logout_action = menu.addAction("Выйти")
         settings_action.triggered.connect(self.settings_requested.emit)
-        logout_action.triggered.connect(self.logout_requested.emit)
+        self._logout_action.triggered.connect(self.logout_requested.emit)
         self.avatar.setMenu(menu)
 
         self._fio = ElidedLabel("—")
@@ -247,6 +247,9 @@ class UserMenuHeader(QWidget):
         root.addLayout(text_col, 1)
         self.setFixedWidth(_HEADER_WIDTH)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+
+    def set_logout_visible(self, visible: bool) -> None:
+        self._logout_action.setVisible(visible)
 
     def set_user(self, *, fio: str, position: str = "") -> None:
         self._fio.setText(fio or "—")

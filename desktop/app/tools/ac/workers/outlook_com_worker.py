@@ -3,6 +3,7 @@
 from app.tools.ac.workers.base import BaseWorker
 from app.tools.ac.workers.models import WorkerResult, WorkerTask
 from app.tools.ac.workers.outlook_com_actions import (
+    create_event,
     read_calendar,
     search_mail,
 )
@@ -84,6 +85,16 @@ class OutlookComWorker(BaseWorker):
             if not self.allow_direct_com_calls:
                 return self._direct_com_disabled_result(task)
             output_data = read_calendar(task.input_data)
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=True,
+                output_data=output_data,
+            )
+
+        if task.tool_name == "outlook.create_event":
+            if not self.allow_direct_com_calls:
+                return self._direct_com_disabled_result(task)
+            output_data = create_event(task.input_data)
             return WorkerResult(
                 task_id=task.task_id,
                 ok=True,

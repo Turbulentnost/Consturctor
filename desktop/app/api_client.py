@@ -1628,9 +1628,17 @@ class ApiClient:
         arguments = (
             dict(payload.get("arguments")) if isinstance(payload.get("arguments"), dict) else {}
         )
-        workflow_id = str(arguments.get("workflow_id") or arguments.get("agent_id") or "")
+        workflow_id = str(
+            arguments.get("workflow_id")
+            or arguments.get("agent_id")
+            or payload.get("workflow_id")
+            or ""
+        )
         if workflow_id and not isinstance(arguments.get("runtime_context"), dict):
             arguments["runtime_context"] = {"workflow_id": workflow_id, "agent_id": workflow_id}
+        if workflow_id:
+            arguments.setdefault("workflow_id", workflow_id)
+            arguments.setdefault("agent_id", workflow_id)
         try:
             if not confirm_level1_tool(tool, arguments):
                 self.post_agent_tool_result(
@@ -1649,6 +1657,13 @@ class ApiClient:
                 )
                 return
             tool_result = invoke_tool(tool, arguments)
+            from app.tools.result_files import publish_result_files
+
+            publish_result_files(
+                tool_result,
+                tool=tool,
+                workflow_id=workflow_id,
+            )
             self.post_agent_tool_result(
                 req_run,
                 request_id=request_id,

@@ -9,6 +9,29 @@ from app.services.workflows.prompts import (
 from app.services.workflows.service import _cursor_chunks
 
 
+def test_demo_prompt_with_draft_does_not_stop_for_clarify() -> None:
+    text = build_demo_prompt(
+        document_text="Распланировать серию совещаний по служебным запискам.",
+        title="Серия совещаний",
+        draft={
+            "status": "draft",
+            "steps": [
+                {
+                    "id": "s2",
+                    "title": "Найти СЗ",
+                    "system": "onec",
+                    "entity": "service_note",
+                    "operation": "search",
+                }
+            ],
+        },
+    )
+    low = text.casefold()
+    assert "не задавай clarify" in low
+    assert "после clarify не вызывай" not in low
+    assert "черновик инструкции" in low
+
+
 def test_demo_prompt_requires_content_questions() -> None:
     text = build_demo_prompt(
         document_text="Следить за сроками в TurboProject и писать руководителю.",

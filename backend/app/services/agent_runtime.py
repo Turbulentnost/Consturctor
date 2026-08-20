@@ -563,7 +563,7 @@ def _outlook_tool_request(task: str) -> tuple[str, dict[str, Any]]:
             "folder": "All",
             "max_results": 20,
         }
-    return "outlook.read_calendar", {"days_forward": 7, "max_results": 30}
+    return "outlook.read_calendar", {"days_forward": 365, "max_results": 200}
 
 
 def _compose_outlook_tool_answer(

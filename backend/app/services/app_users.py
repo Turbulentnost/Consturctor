@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from sqlalchemy import select
+
 from app.config import settings
 from app.db.session import SessionLocal
 from app.models.user import AppUser
@@ -96,6 +98,30 @@ def upsert_app_user(
 def get_app_user(user_id: str) -> AppUser | None:
     with SessionLocal() as db:
         user = db.get(AppUser, user_id)
+        if user is None:
+            return None
+        db.expunge(user)
+        return user
+
+
+def find_app_user_by_fio(fio: str) -> AppUser | None:
+    needle = " ".join((fio or "").split())
+    if not needle:
+        return None
+    with SessionLocal() as db:
+        user = db.execute(select(AppUser).where(AppUser.fio == needle)).scalar_one_or_none()
+        if user is None:
+            matches = db.execute(
+                select(AppUser).where(AppUser.fio.ilike(f"%{needle}%")).limit(3)
+            ).scalars().all()
+            if len(matches) == 1:
+                user = matches[0]
+            else:
+                key = needle.casefold()
+                user = next(
+                    (item for item in matches if (item.fio or "").casefold().startswith(key)),
+                    None,
+                )
         if user is None:
             return None
         db.expunge(user)

@@ -140,6 +140,12 @@ def test_project_read_uses_turboproject_not_onec_cards() -> None:
     )
     assert update == ["excel.edit_workbook"]
 
+    calendar_write = select_candidates(
+        {"system": "outlook", "entity": "calendar_event", "operation": "create"}
+    )
+    assert calendar_write == ["outlook.create_event"]
+    assert "outlook.read_calendar" not in calendar_write
+
 
 def _full_step(step_id: str, **overrides) -> dict:
     step = {
@@ -889,6 +895,261 @@ def test_helper_is_not_off_contract() -> None:
 
     assert _reject_off_contract(step, "data.process") == ""
     assert _reject_off_contract(step, "excel.create_workbook")
+
+
+def test_helper_does_not_overwrite_excel_step() -> None:
+    from app.services.workflows.cursor_tools import StepLedger
+
+    draft = attach_tool_candidates(
+        {
+            "status": "draft",
+            "steps": [
+                _full_step(
+                    "s6",
+                    system="desktop",
+                    entity="spreadsheet",
+                    operation="export",
+                    required_params=["filename"],
+                    provides=["file"],
+                    on_empty="не создавать пустой файл",
+                )
+            ],
+        }
+    )
+    ledger = StepLedger(draft)
+    step = ledger.step_by_id("s6")
+    good = evaluate_tool_result(
+        step=step,
+        name="excel.create_workbook",
+        arguments={"filename": "kalendar.xlsx"},
+        result={"path": r"C:\tmp\kalendar.xlsx", "filename": "kalendar.xlsx"},
+    )
+    ledger.record(step=step, name="excel.create_workbook", verdict=good)
+    helper = evaluate_tool_result(
+        step=step,
+        name="data.process",
+        arguments={"code": "result = 1"},
+        result={"result": 1},
+    )
+    ledger.record(step=step, name="data.process", verdict=helper)
+
+    assert good.accepted
+    assert helper.accepted
+    assert ledger.as_list()[0]["tool"] == "excel.create_workbook"
+    assert ledger.as_list()[0]["status"] == "completed"
+    assert ledger.missing_required() == []
+    assert ledger.resolve({"name": "data.process", "step": "s6"}) is None
+
+
+def test_calendar_create_gets_export_file_step() -> None:
+    draft = attach_tool_candidates(
+        _draft(
+            _full_step(
+                "s4",
+                system="outlook",
+                entity="calendar_event",
+                operation="list",
+            ),
+            _full_step(
+                "s6",
+                system="outlook",
+                entity="calendar_event",
+                operation="create",
+                required_params=["subject", "start"],
+            ),
+            _full_step(
+                "s7",
+                system="constructor",
+                entity="notification",
+                operation="notify",
+                required_params=["title", "user_id"],
+            ),
+        )
+    )
+    ids = [str(step.get("id") or "") for step in draft["steps"]]
+    ops = [str(step.get("operation") or "") for step in draft["steps"]]
+    export = [step for step in draft["steps"] if step.get("operation") == "export"]
+    assert len(export) == 1
+    assert export[0]["system"] == "desktop"
+    assert export[0]["tool_candidates"] == ["excel.create_workbook"]
+    assert ids.index(str(export[0]["id"])) < ids.index("s7")
+    assert ops.count("list") >= 2
+    assert ops.index("list") < ops.index("create")
+    assert ops[ops.index("create") + 1] == "list"
+
+
+def test_calendar_create_inserts_list_before_and_after() -> None:
+    draft = attach_tool_candidates(
+        _draft(
+            _full_step(
+                "s6",
+                system="outlook",
+                entity="calendar_event",
+                operation="create",
+                required_params=["subject", "start"],
+            )
+        )
+    )
+    ops = [str(step.get("operation") or "") for step in draft["steps"]]
+    assert ops[0] == "list"
+    assert "create" in ops
+    assert ops[ops.index("create") + 1] == "list"
+    assert "outlook.read_calendar" in draft["steps"][0]["tool_candidates"]
+
+
+def test_read_calendar_is_companion_on_create_step() -> None:
+    from app.services.workflows.cursor_tools import _reject_off_contract
+
+    step = {
+        "id": "s6",
+        "system": "outlook",
+        "entity": "calendar_event",
+        "operation": "create",
+        "tool_candidates": ["outlook.create_event"],
+    }
+    assert _reject_off_contract(step, "outlook.read_calendar") == ""
+    assert _reject_off_contract(step, "excel.create_workbook")
+
+
+def test_calendar_create_does_not_duplicate_existing_export() -> None:
+    draft = attach_tool_candidates(
+        _draft(
+            _full_step(
+                "s6",
+                system="outlook",
+                entity="calendar_event",
+                operation="create",
+                required_params=["subject", "start"],
+            ),
+            _full_step(
+                "s7",
+                system="desktop",
+                entity="spreadsheet",
+                operation="export",
+                required_params=["filename"],
+            ),
+        )
+    )
+    exports = [step for step in draft["steps"] if step.get("operation") == "export"]
+    assert len(exports) == 1
+    assert exports[0]["id"] == "s7"
+    ops = [str(step.get("operation") or "") for step in draft["steps"]]
+    assert ops.count("list") >= 2
+
+
+def test_verify_list_empty_after_create_is_mismatch() -> None:
+    from app.services.workflows.tool_result_validation import evaluate_tool_result
+
+    draft = attach_tool_candidates(
+        _draft(
+            _full_step(
+                "s6",
+                system="outlook",
+                entity="calendar_event",
+                operation="create",
+                required_params=["subject", "start"],
+            )
+        )
+    )
+    verify = next(
+        step
+        for step in draft["steps"]
+        if step.get("operation") == "list" and "нов" in str(step.get("done_when") or "")
+    )
+    verdict = evaluate_tool_result(
+        step=verify,
+        name="outlook.read_calendar",
+        arguments={"days_forward": 365},
+        result={"events": [], "count": 0, "free_slots": []},
+    )
+    assert not verdict.accepted
+    assert verdict.data_status == "mismatch"
+
+
+def test_closed_calendar_step_skips_second_invoke() -> None:
+    from app.services.workflows.cursor_tools import StepLedger
+
+    draft = attach_tool_candidates(
+        _draft(
+            _full_step(
+                "s4",
+                system="outlook",
+                entity="calendar_event",
+                operation="list",
+            ),
+            _full_step(
+                "s5",
+                system="constructor",
+                entity="user",
+                operation="list",
+            ),
+        )
+    )
+    ledger = StepLedger(draft)
+    step = ledger.step_by_id("s4")
+    good = evaluate_tool_result(
+        step=step,
+        name="outlook.read_calendar",
+        arguments={"date_from": "2026-08-20"},
+        result={"events": [{"subject": "планёрка"}], "count": 1, "free_slots": []},
+    )
+    ledger.record(step=step, name="outlook.read_calendar", verdict=good)
+    ledger.record(
+        step=step,
+        name="outlook.read_calendar",
+        verdict=None,
+        error="COM worker не ответил за 30 секунд",
+    )
+
+    resolved = ledger.resolve({"name": "outlook.read_calendar", "step": "s4"})
+    assert good.accepted
+    assert ledger.as_list()[0]["status"] == "completed"
+    assert ledger.should_skip_invoke("outlook.read_calendar", resolved)
+    assert not ledger.should_skip_invoke(
+        "users.list", ledger.resolve({"name": "users.list"})
+    )
+
+
+def test_empty_valid_stop_skips_later_writes() -> None:
+    from app.services.workflows.cursor_tools import StepLedger
+
+    draft = attach_tool_candidates(
+        {
+            "status": "draft",
+            "steps": [
+                _full_step(
+                    "s2",
+                    system="onec",
+                    entity="service_note",
+                    operation="search",
+                    provides=["notes"],
+                    on_empty="завершить без календаря: подходящих СЗ нет, записи не выполнять",
+                ),
+                _full_step(
+                    "s6",
+                    system="outlook",
+                    entity="calendar_event",
+                    operation="create",
+                    provides=["event"],
+                    required_params=["subject", "start"],
+                    needs_from=[{"step": "s2", "field": "notes", "as": "notes"}],
+                ),
+            ],
+        }
+    )
+    ledger = StepLedger(draft)
+    search = ledger.step_by_id("s2")
+    empty = evaluate_tool_result(
+        step=search,
+        name="onec.meeting_service_notes",
+        arguments={"date": "2026-08-20"},
+        result={"notes": [], "count": 0},
+    )
+    ledger.record(step=search, name="onec.meeting_service_notes", verdict=empty)
+
+    assert empty.data_status == "empty_valid"
+    assert ledger.as_list()[1]["status"] == "skipped"
+    assert ledger.missing_required() == []
 
 
 def test_contract_vocabulary_skips_helper() -> None:

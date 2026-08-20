@@ -36,6 +36,22 @@ if getattr(sys, "frozen", False):
     load_dotenv(DESKTOP_ROOT / ".env", override=False)
 
 
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def auth_skip_login_page() -> bool:
+    return _env_flag("AUTH_SKIP_LOGIN_PAGE")
+
+
+def erp_login() -> str:
+    return os.getenv("ERP_LOGIN", "").strip()
+
+
+def erp_password() -> str:
+    return os.getenv("ERP_PASSWORD", "")
+
+
 def backend_url() -> str:
     return os.getenv("BACKEND_URL", "http://127.0.0.1:7812").rstrip("/")
 
