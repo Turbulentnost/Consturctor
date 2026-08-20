@@ -13,6 +13,7 @@ from app.tools.ac.com_backed_tools import (
     OutlookSearchMailComTool,
 )
 from app.tools.ac.excel_tools import register_excel_tools
+from app.tools.ac.files_tools import register_files_tools
 from app.tools.ac.onec_tools import register_onec_readonly_tools
 from app.tools.ac.powershell_tools import register_powershell_tools
 from app.tools.ac.registry import ToolRegistry
@@ -60,6 +61,7 @@ def build_registry() -> ToolRegistry:
     register_report_tools(registry, skip_existing=True)
     register_web_tools(registry, skip_existing=True, workspace_resolver=resolver)
     register_excel_tools(registry, resolver, skip_existing=True)
+    register_files_tools(registry, skip_existing=True)
     register_powershell_tools(registry, resolver, skip_existing=True)
     register_code_execution_tools(registry, resolver, skip_existing=True)
     register_wait_tool(registry, skip_existing=True)

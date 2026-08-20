@@ -153,7 +153,8 @@ def _clean_agent_title(value: str) -> str:
 
 def parse_work_result(text: str) -> dict[str, Any]:
     raw = text or ""
-    cleaned = re.sub(r"```(?:constructor_tool|tool).*?```", "", raw, flags=re.S | re.I)
+    cleaned = re.sub(r"```\s*(?:constructor_tool|tool)\b.*?```", "", raw, flags=re.S | re.I)
+    cleaned = re.sub(r"```\s*(?:constructor_tool|tool)\b", "", cleaned, flags=re.I)
     files = _bullet_section(cleaned, "FILES")
     actions = _bullet_section(cleaned, "ACTIONS")
     notifications = _bullet_section(cleaned, "NOTIFICATIONS")
@@ -211,6 +212,10 @@ def _fallback_result_text(text: str) -> str:
         if low.startswith(("clarify", "question:", "options:", "why:", "thinking")):
             continue
         if "constructor_tool" in low:
+            continue
+        if any(token in stripped for token in ('"name":', '"arguments":', "$filter", "$top")):
+            continue
+        if stripped.startswith("{") or stripped.startswith("}"):
             continue
         if stripped:
             parts.append(stripped)
@@ -364,12 +369,43 @@ def build_published_run_prompt(
     example_run: str,
     user_message: str,
     title: str = "",
+    context: str = "",
+    source: str = "chat",
 ) -> str:
+    context_block = ""
+    if (context or "").strip():
+        context_block = (
+            "===== КОНТЕКСТ АГЕНТА =====\n"
+            f"{context.strip()}\n"
+            "===== КОНЕЦ КОНТЕКСТА =====\n\n"
+        )
+    role_line = (
+        "Сейчас ты выполняешь СВОЮ рабочую задачу агента. "
+        "Если пользователь напишет в чат — это дополнительная команда, "
+        "её нужно сделать и вернуться к основной работе.\n"
+        if (source or "") != "chat"
+        else (
+            "Это команда из чата. Сделай ИМЕННО её. "
+            "Не перезапускай типовой сценарий агента (реестр, OData, Excel), "
+            "если пользователь этого не просил. "
+            "Для копирования файла используй files.copy.\n"
+        )
+    )
     return (
-        "Ты тот же агент Constructor, что уже успешно делал эту задачу.\n"
-        "Работай как Cursor: tools через ```constructor_tool, потом понятный ответ.\n"
+        "Ты полноценный агент Constructor — такой же, как Cursor в IDE: "
+        "сам планируешь шаги, вызываешь несколько tools подряд, читаешь ошибки "
+        "и сам себя исправляешь, пока задача не будет сделана.\n"
+        f"{role_line}"
+        "Инструменты вызывай отдельным блоком ```constructor_tool — это для системы, не для человека.\n"
+        "В обычный чат пиши только понятный русский текст: что делаешь и что получилось. "
+        "Не пиши JSON, OData, $filter, имена entity, constructor_tool и аргументы tools.\n"
         "Не ищи MCP Constructor, OIDC, BACKEND_URL и не делай curl с Cloud VM — "
         "серверные инструменты вызываются блоком constructor_tool, backend выполнит их сам.\n"
+        "Если tool вернул ошибку — не останавливайся и не спрашивай разрешения. "
+        "Смени аргументы, выбери другой tool, напиши/запусти Python "
+        "(code.write_python / code.run_python) или разбей задачу и повтори.\n"
+        "CLARIFY только если без ответа человека физически нельзя продолжить "
+        "(нет ФИО, URL или периода). Не спрашивай «можно ли вызвать tool».\n"
         "Следуй инструкции. Пример прогона — образец, не догма: "
         "если задача чуть другая, адаптируй вызовы.\n"
         "Если в инструкции и задаче сейчас не сказано, какие объекты брать "
@@ -380,6 +416,7 @@ def build_published_run_prompt(
         "(user_id из users.list). Без этого tool уведомление на компьютер не уйдёт.\n"
         f"{_RESULT_HINT}\n"
         f"Агент: {title or 'ИИ-агент'}\n\n"
+        f"{context_block}"
         "===== ИНСТРУКЦИЯ =====\n"
         f"{(instructions or '').strip() or 'Выполни задачу по смыслу бизнес-процесса.'}\n"
         "===== КОНЕЦ ИНСТРУКЦИИ =====\n\n"

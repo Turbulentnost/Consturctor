@@ -30,7 +30,7 @@ from app.schemas.workflow import (
 )
 from app.services.agent_runs import answer_from_result, finish_agent_run, list_agent_runs, start_agent_run
 from app.services.agent_runtime import AgentRuntimeError, available_tools, run_agent_task
-from app.services.tool_bridge import ToolBridgeError, tool_bridge
+from app.services.tool_bridge import AgentCancelled, ToolBridgeError, tool_bridge
 from app.services.workflows import (
     WorkflowError,
     build_artifacts_zip,
@@ -137,7 +137,7 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: s
     queue: Queue[dict | None] = Queue()
     stop = Event()
     run_id = tool_bridge.new_run_id()
-    tool_bridge.register_run(run_id, user_id)
+    tool_bridge.register_run(run_id, user_id, workflow_id)
 
     def emit(payload: dict) -> None:
         queue.put(payload)
@@ -164,11 +164,16 @@ def _agent_run_stream(*, user_id: str, workflow_id: str, message: str, source: s
                 message=message,
                 emit=emit,
                 run_id=run_id,
+                source=source,
                 agent_kind=agent_kind,
             )
             status = "ok"
             answer = answer_from_result(result)
             queue.put({"type": "done", "result": result})
+        except AgentCancelled:
+            status = "cancelled"
+            answer = "Остановлено пользователем."
+            queue.put({"type": "done", "result": {"answer": answer, "stopped": True}})
         except AgentRuntimeError as exc:
             answer = str(exc)
             queue.put({"type": "error", "message": str(exc)})
@@ -248,6 +253,22 @@ async def read_workflows(
     return list_workflows(db, user_id=auth.user_id)
 
 
+@router.post("/{workflow_id}/agent-chat")
+async def post_agent_chat(
+    workflow_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_current_user),
+) -> dict[str, object]:
+    body = await request.json()
+    message = str((body or {}).get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Пустая команда")
+    run_id = tool_bridge.latest_run_id(auth.user_id, workflow_id)
+    if run_id and tool_bridge.push_chat(run_id=run_id, user_id=auth.user_id, message=message):
+        return {"queued": True, "run_id": run_id}
+    return {"queued": False, "run_id": ""}
+
+
 @router.post("/{workflow_id}/agent-runs/stream")
 async def run_workflow_agent_stream(
     workflow_id: str,
@@ -269,6 +290,34 @@ async def run_workflow_agent_stream(
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )
+
+
+@router.post("/agent-runs/current/stop")
+def stop_current_agent_run(
+    auth: AuthContext = Depends(get_current_user),
+) -> dict[str, bool]:
+    return stop_agent_run(tool_bridge.latest_run_id(auth.user_id), auth)
+
+
+@router.post("/agent-runs/{run_id}/stop")
+def stop_agent_run(
+    run_id: str,
+    auth: AuthContext = Depends(get_current_user),
+) -> dict[str, bool]:
+    try:
+        cursor = tool_bridge.request_cancel(run_id=run_id, user_id=auth.user_id)
+    except ToolBridgeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    agent_id = str(cursor.get("agent_id") or "")
+    cursor_run_id = str(cursor.get("cursor_run_id") or "")
+    if agent_id and cursor_run_id:
+        try:
+            from app.clients import cursor as cursor_client
+
+            cursor_client.cancel_run(agent_id, cursor_run_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to cancel Cursor run %s/%s", agent_id, cursor_run_id)
+    return {"ok": True}
 
 
 @router.post("/agent-runs/{run_id}/tool-results")

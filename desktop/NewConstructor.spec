@@ -7,10 +7,14 @@ block_cipher = None
 root = Path(SPECPATH)
 
 datas = [
-    (str(root / "assets"), "assets"),
     (str(root / "app" / "ui" / "temp"), "app/ui/temp"),
-    (str(root / ".env.example"), "."),
 ]
+if (root / "assets").exists():
+    datas.append((str(root / "assets"), "assets"))
+if (root / ".env").exists():
+    datas.append((str(root / ".env"), "."))
+elif (root / ".env.example").exists():
+    datas.append((str(root / ".env.example"), "."))
 
 binaries = []
 hiddenimports = ["httpx", "dotenv", "certifi", "winotify", "PySide6.QtWebSockets"]

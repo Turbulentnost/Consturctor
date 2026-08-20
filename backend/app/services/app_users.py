@@ -102,6 +102,18 @@ def get_app_user(user_id: str) -> AppUser | None:
         return user
 
 
+def get_app_user_by_fio(fio: str) -> AppUser | None:
+    needle = (fio or "").strip()
+    if not needle:
+        return None
+    with SessionLocal() as db:
+        user = db.query(AppUser).filter(AppUser.fio == needle).first()
+        if user is None:
+            return None
+        db.expunge(user)
+        return user
+
+
 def resolve_avatar_file(user_id: str) -> Path | None:
     user = get_app_user(user_id)
     if user is None or not user.avatar_path:

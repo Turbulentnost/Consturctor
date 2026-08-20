@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     docflow_odata_password: str = ""
     erp_login: str = ""
     erp_password: str = ""
+    auth_server_url: str = Field(default="", validation_alias="AUTH_SERVER_URL")
+    skip_login: bool = Field(default=False, validation_alias="SKIP_LOGIN")
+    skip_login_fio: str = Field(default="", validation_alias="SKIP_LOGIN_FIO")
     onec_sql_allowlist: str = ""
     onec_odata_entity_allowlist: str = ""
 

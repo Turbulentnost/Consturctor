@@ -77,3 +77,39 @@ def test_tool_bridge_late_submit_is_ignored() -> None:
         result={"late": True},
     )
     bridge.unregister_run(run_id)
+
+
+def test_tool_bridge_cancel_unblocks_wait() -> None:
+    bridge = ToolBridgeRegistry()
+    run_id = bridge.new_run_id()
+    request_id = bridge.new_request_id()
+    user_id = "user-1"
+    bridge.register_run(run_id, user_id)
+    bridge.begin_wait(request_id=request_id, user_id=user_id, run_id=run_id)
+    result_box: dict = {}
+
+    def waiter() -> None:
+        result_box["payload"] = bridge.await_result(request_id=request_id, timeout_s=5.0)
+
+    thread = threading.Thread(target=waiter, daemon=True)
+    thread.start()
+    time.sleep(0.05)
+    bridge.request_cancel(run_id=run_id, user_id=user_id)
+    thread.join(timeout=2.0)
+    assert result_box["payload"]["ok"] is False
+    assert "остановлено" in str(result_box["payload"]["error"])
+    assert bridge.is_cancelled(run_id)
+    bridge.unregister_run(run_id)
+
+
+def test_tool_bridge_chat_inbox() -> None:
+    bridge = ToolBridgeRegistry()
+    run_id = bridge.new_run_id()
+    bridge.register_run(run_id, "user-1", "wf-1")
+    assert bridge.latest_run_id("user-1", "wf-1") == run_id
+    assert bridge.push_chat(run_id=run_id, user_id="user-1", message="сделай ещё Excel")
+    assert bridge.push_chat(run_id=run_id, user_id="other", message="нет") is False
+    assert bridge.drain_chat(run_id) == ["сделай ещё Excel"]
+    assert bridge.drain_chat(run_id) == []
+    bridge.unregister_run(run_id)
+    assert bridge.latest_run_id("user-1", "wf-1") == ""

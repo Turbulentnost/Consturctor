@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Callable
-from threading import Thread
+from threading import Event, Thread
 from urllib.parse import quote
 
 import httpx
@@ -21,6 +21,11 @@ class ApiError(Exception):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+
+
+class AgentRunCancelled(ApiError):
+    def __init__(self, message: str = "Остановлено пользователем.") -> None:
+        super().__init__(message, status_code=499)
 
 
 @dataclass(frozen=True, slots=True)
@@ -824,6 +829,8 @@ class ApiClient:
         self._timeout = timeout
         self._token: str | None = None
         self._on_unauthorized: Callable[[], None] | None = None
+        self._agent_cancel = Event()
+        self._active_agent_run_id = ""
 
     def set_on_unauthorized(self, callback: Callable[[], None] | None) -> None:
         self._on_unauthorized = callback
@@ -1981,7 +1988,7 @@ class ApiClient:
         auto_approve: bool = False,
     ) -> None:
         from app.tools import ToolHostError, invoke_tool
-        from app.tools.hitl import HUMAN_REJECTED, confirm_level1_tool
+        from app.tools.hitl import confirm_level1_tool
 
         req_run = str(payload.get("run_id") or fallback_run_id)
         request_id = str(payload.get("request_id") or "")
@@ -1998,7 +2005,10 @@ class ApiClient:
                     req_run,
                     request_id=request_id,
                     ok=False,
-                    error=HUMAN_REJECTED,
+                    error=(
+                        "Нужно подтверждение в карточке «принять», "
+                        "чтобы выполнить эту операцию. Повторите запуск."
+                    ),
                 )
                 return
             tool_result = invoke_tool(tool, arguments)
@@ -2055,6 +2065,28 @@ class ApiClient:
             if exc.status_code == 404:
                 return
             raise
+
+    def send_agent_chat(self, workflow_id: str, message: str) -> bool:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/agent-chat",
+            json={"message": message},
+            timeout=20.0,
+        )
+        return bool(isinstance(data, dict) and data.get("queued"))
+
+    def cancel_active_agent_run(self) -> None:
+        self._agent_cancel.set()
+        run_id = self._active_agent_run_id
+        path = (
+            f"/api/v1/workflows/agent-runs/{run_id}/stop"
+            if run_id
+            else "/api/v1/workflows/agent-runs/current/stop"
+        )
+        try:
+            self._request("POST", path, timeout=15.0)
+        except ApiError:
+            return
 
     def stream_workflow_agent_run(
         self,

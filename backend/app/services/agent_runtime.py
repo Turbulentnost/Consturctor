@@ -49,6 +49,7 @@ def run_agent_task(
     emit: AgentEventCallback,
     run_id: str,
     agent_kind: str = "",
+    source: str = "chat",
 ) -> dict[str, Any]:
     workflow = (
         db.query(Workflow)
@@ -60,6 +61,46 @@ def run_agent_task(
     task = message.strip()
     if not task:
         raise AgentRuntimeError("Пустая задача")
+
+    emit({"type": "status", "text": "Получил задачу, готовлю запуск…"})
+    if (source or "") == "chat":
+        emit({"type": "agent_message", "text": f"Выполняю команду из чата: {task}"})
+    else:
+        emit({"type": "agent_message", "text": f"Запускаю «{workflow.title or 'ИИ-агент'}»."})
+
+    copy_args = _parse_file_copy_command(task)
+    if copy_args:
+        try:
+            result = _request_desktop_tool(
+                emit,
+                run_id=run_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                tool="files.copy",
+                arguments=copy_args,
+            )
+        except AgentRuntimeError as exc:
+            emit({"type": "error", "message": str(exc)})
+            raise
+        path = str(result.get("path") or result.get("name") or "")
+        answer = f"Скопировал файл как «{result.get('name') or path}».\n{path}".strip()
+        emit({"type": "tool_result", "tool": "files.copy", "result": result})
+        emit({"type": "agent_message", "text": answer})
+        extra = tool_bridge.drain_chat(run_id)
+        if extra:
+            from app.services.workflows.service import playbook_of as _playbook_of
+
+            return _run_with_playbook(
+                db,
+                workflow=workflow,
+                user_id=user_id,
+                message="\n".join(extra),
+                emit=emit,
+                run_id=run_id,
+                playbook=_playbook_of(workflow),
+                source="chat",
+            )
+        return {"answer": answer, "tool": "files.copy", "tool_result": result}
 
     from app.services.agent_route import resolve_agent_route
     from app.services.workflows.service import playbook_of
@@ -74,6 +115,7 @@ def run_agent_task(
             emit=emit,
             run_id=run_id,
             playbook=playbook,
+            source=source,
         )
 
     route = resolve_agent_route(workflow, override_handler=agent_kind)
@@ -202,6 +244,34 @@ def run_agent_task(
     return {"answer": answer, "tool": tool_name, "tool_result": tool_result or {}}
 
 
+_FILE_URL_RE = re.compile(r"file:///\S+", re.IGNORECASE)
+_WIN_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s\"'<>]+")
+_COPY_NAME_RE = re.compile(
+    r"назван\w*\s+([^\r\n]+)",
+    re.IGNORECASE,
+)
+
+
+def _parse_file_copy_command(task: str) -> dict[str, str] | None:
+    text = (task or "").strip()
+    low = text.casefold()
+    if not any(hint in low for hint in ("дубл", "копир", "скопир", "copy")):
+        return None
+    match = _FILE_URL_RE.search(text) or _WIN_PATH_RE.search(text)
+    if match is None:
+        return None
+    source = match.group(0).rstrip(".,;")
+    dest_name = ""
+    named = _COPY_NAME_RE.search(text)
+    if named:
+        dest_name = named.group(1).strip().strip(" «»\"'")
+        dest_name = dest_name.split(".xlsx")[0].strip() if dest_name.lower().endswith(".xlsx") else dest_name
+    args = {"source": source}
+    if dest_name:
+        args["dest_name"] = dest_name
+    return args
+
+
 def _run_with_playbook(
     db: Session,
     *,
@@ -211,6 +281,7 @@ def _run_with_playbook(
     emit: AgentEventCallback,
     run_id: str,
     playbook: dict[str, Any],
+    source: str = "chat",
 ) -> dict[str, Any]:
     from app.clients import cursor as cursor_client
     from app.clients.cursor import CursorAgentError
@@ -235,6 +306,7 @@ def _run_with_playbook(
             example_run=str(playbook.get("example_run") or ""),
             user_message=message,
             title=workflow.title or "",
+            source=source,
         ),
         allowed_names=allowed,
     )

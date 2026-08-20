@@ -10,7 +10,13 @@ from typing import Any, Callable
 
 from app.clients import cursor as cursor_client
 from app.services.local_mcp import list_tools
-from app.services.tool_bridge import DEFAULT_TIMEOUT_S, tool_bridge
+from app.services.tool_bridge import (
+    CANCELLED_ERROR,
+    DEFAULT_TIMEOUT_S,
+    AgentCancelled,
+    raise_if_cancelled,
+    tool_bridge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,15 +25,13 @@ WorkflowEmit = Callable[..., None]
 _tool_ctx: ContextVar[tuple[str, str] | None] = ContextVar("creation_tool_ctx", default=None)
 _allowed_tools: ContextVar[frozenset[str] | None] = ContextVar("allowed_agent_tools", default=None)
 
-_TOOL_BLOCK_RE = re.compile(
-    r"```(?:constructor_tool|tool)\s*\n(\{.*?\})\s*```",
-    re.DOTALL,
-)
-_MAX_ROUNDS_PLAN = 6
-_MAX_ROUNDS_EXECUTE = 10
-_MAX_CALLS_PER_ROUND = 3
-_MAX_TOOL_FAILURES = 2
-_MAX_NUDGES = 2
+_TOOL_FENCE_RE = re.compile(r"```\s*(?:constructor_tool|tool)\b", re.IGNORECASE)
+_TOOL_NAME_RE = re.compile(r"^[\w.-]{2,80}$")
+_MAX_ROUNDS_PLAN = 8
+_MAX_ROUNDS_EXECUTE = 24
+_MAX_CALLS_PER_ROUND = 6
+_MAX_TOOL_FAILURES = 6
+_MAX_NUDGES = 4
 
 _GENERIC_USER_QUERIES = (
     "все",
@@ -77,6 +81,8 @@ def tools_prompt_block(*, allowed_names: frozenset[str] | None = None) -> str:
         "Реестр Constructor. ```constructor_tool — markdown в ответе, не tool Cursor. "
         "Backend перехватывает блок и вызывает tool на сервере. "
         "Не пиши «нет доступа к constructor_tool».",
+        "Если tool вернул ошибку — исправь себя сам: другие args, другой tool, "
+        "code.write_python / code.run_python. Не останавливайся после первой ошибки.",
         "Если в ТЗ не сказано, кого/что брать, когда запускать и в каком виде отдавать — "
         "сначала CLARIFY, не вызывай tool на весь каталог и не ставь default «все».",
         "Когда объём ясен, вызов выглядит так (без кода вокруг):",
@@ -124,20 +130,59 @@ def with_tools_if_desktop(
     return prompt.rstrip() + "\n\n" + tools_prompt_block(allowed_names=allowed_names) + "\n"
 
 
+def _decode_json_object(text: str, start: int = 0) -> tuple[Any, int] | None:
+    brace = (text or "").find("{", start)
+    if brace < 0:
+        return None
+    try:
+        data, end = json.JSONDecoder().raw_decode(text[brace:])
+    except json.JSONDecodeError:
+        return None
+    return data, brace + end
+
+
+def _is_constructor_tool_name(name: str) -> bool:
+    raw = (name or "").strip()
+    if not raw or not _TOOL_NAME_RE.fullmatch(raw):
+        return False
+    if raw.startswith(("http://", "https://")):
+        return False
+    if "." in raw:
+        return True
+    return raw.casefold() in {"turboproject", "notify", "users"}
+
+
 def extract_tool_calls(text: str) -> list[dict[str, Any]]:
+    blob = text or ""
     calls: list[dict[str, Any]] = []
-    for match in _TOOL_BLOCK_RE.finditer(text or ""):
-        try:
-            data = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
+    seen: set[tuple[str, str]] = set()
+
+    def add(data: Any) -> None:
         if not isinstance(data, dict):
-            continue
+            return
         name = str(data.get("name") or data.get("tool") or "").strip()
-        if not name:
-            continue
+        if not _is_constructor_tool_name(name):
+            return
         arguments = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
+        key = (name, json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str))
+        if key in seen:
+            return
+        seen.add(key)
         calls.append({"name": name, "arguments": arguments})
+
+    for match in _TOOL_FENCE_RE.finditer(blob):
+        decoded = _decode_json_object(blob, match.end())
+        if decoded:
+            add(decoded[0])
+    idx = 0
+    while True:
+        decoded = _decode_json_object(blob, idx)
+        if decoded is None:
+            break
+        data, end = decoded
+        if isinstance(data, dict) and ("arguments" in data or data.get("name") or data.get("tool")):
+            add(data)
+        idx = max(end, idx + 1)
     return calls
 
 
@@ -293,8 +338,9 @@ def invoke_creation_tool(
     if ctx is None:
         raise RuntimeError("Нет desktop-сессии для вызова инструмента")
     run_id, user_id = ctx
+    raise_if_cancelled(run_id)
     request_id = tool_bridge.new_request_id()
-    tool_bridge.begin_wait(request_id=request_id, user_id=user_id)
+    tool_bridge.begin_wait(request_id=request_id, user_id=user_id, run_id=run_id)
     _emit(
         on_event,
         "tool_request",
@@ -308,7 +354,10 @@ def invoke_creation_tool(
     )
     payload = tool_bridge.await_result(request_id=request_id, timeout_s=DEFAULT_TIMEOUT_S)
     if not payload.get("ok"):
-        raise RuntimeError(str(payload.get("error") or f"Ошибка инструмента {tool}"))
+        error = str(payload.get("error") or f"Ошибка инструмента {tool}")
+        if error == CANCELLED_ERROR or tool_bridge.is_cancelled(run_id):
+            raise AgentCancelled()
+        raise RuntimeError(error)
     result = payload.get("result")
     return result if isinstance(result, dict) else {}
 
@@ -326,6 +375,10 @@ def stream_cursor_with_tools(
 ) -> Any:
     """Stream a Cursor run; if it asks for constructor_tool, execute and continue."""
     last = stream_run(agent_id, run_id, on_event=on_event)
+    ctx = current_tool_context()
+    constructor_run_id = ctx[0] if ctx else ""
+    if constructor_run_id:
+        tool_bridge.set_cursor(constructor_run_id, agent_id=agent_id, cursor_run_id=run_id)
     required = [tool_family(name) for name in (required_live_tools or []) if tool_family(name)]
     successful: set[str] = set()
     fail_counts: dict[str, int] = {}
@@ -343,10 +396,35 @@ def stream_cursor_with_tools(
             if not _covers_required(name, successful) and name not in unreachable
         ]
 
+    def _continue_with_prompt(prompt: str) -> Any:
+        run = cursor_client.create_run_when_ready(
+            agent_id,
+            prompt=prompt,
+            mode="agent",
+            previous_run_id=str(getattr(last, "run_id", "") or run_id),
+        )
+        next_id = str(run.get("id") or "")
+        if not next_id:
+            return None
+        if constructor_run_id:
+            tool_bridge.set_cursor(constructor_run_id, agent_id=agent_id, cursor_run_id=next_id)
+        return stream_run(agent_id, next_id, on_event=on_event)
+
     for _round_n in range(max_rounds):
+        raise_if_cancelled(constructor_run_id)
+        extra = tool_bridge.drain_chat(constructor_run_id) if constructor_run_id else []
+        if extra:
+            preview = extra[0] if len(extra) == 1 else f"{len(extra)} команд"
+            _emit(on_event, "status", f"Принял команду из чата: {preview}")
         last_text = getattr(last, "text", None) or ""
-        if _should_pause_for_clarify(last_text):
+        if _should_pause_for_clarify(last_text) and not extra:
             return _attach_live_ok(last, successful)
+        if extra and (not should_run_tool_calls(last_text, mode=mode) or _should_pause_for_clarify(last_text)):
+            nxt = _continue_with_prompt(_chat_commands_prompt(extra))
+            if nxt is None:
+                return _attach_live_ok(last, successful)
+            last = nxt
+            continue
         calls = should_run_tool_calls(last_text, mode=mode)
         if not calls and mode == "execute":
             pending = missing_required()
@@ -367,6 +445,10 @@ def stream_cursor_with_tools(
                 next_id = str(run.get("id") or "")
                 if not next_id:
                     return _attach_live_ok(last, successful)
+                if constructor_run_id:
+                    tool_bridge.set_cursor(
+                        constructor_run_id, agent_id=agent_id, cursor_run_id=next_id
+                    )
                 last = stream_run(agent_id, next_id, on_event=on_event)
                 continue
             return _attach_live_ok(last, successful)
@@ -425,6 +507,7 @@ def stream_cursor_with_tools(
                     "decision",
                     "«notify.send»: отправляю уведомление на компьютер…",
                 )
+            raise_if_cancelled(constructor_run_id)
             try:
                 result = invoke_creation_tool(
                     tool=name,
@@ -448,6 +531,8 @@ def stream_cursor_with_tools(
                     {"tool": name, "result": clipped},
                 )
                 _emit(on_event, "decision", f"«{name}»: готово.")
+            except AgentCancelled:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Creation tool %s failed: %s", name, exc)
                 results.append({"name": name, "ok": False, "error": str(exc)})
@@ -482,6 +567,8 @@ def stream_cursor_with_tools(
                 unreachable=sorted(unreachable),
                 last_errors=last_errors,
             )
+            if extra:
+                follow = f"{follow}\n\n{_chat_commands_prompt(extra)}"
         run = cursor_client.create_run_when_ready(
             agent_id,
             prompt=follow,
@@ -491,6 +578,8 @@ def stream_cursor_with_tools(
         next_id = str(run.get("id") or "")
         if not next_id:
             return _attach_live_ok(last, successful)
+        if constructor_run_id:
+            tool_bridge.set_cursor(constructor_run_id, agent_id=agent_id, cursor_run_id=next_id)
         last = stream_run(agent_id, next_id, on_event=on_event)
     return _attach_live_ok(last, successful)
 
@@ -500,6 +589,18 @@ def _attach_live_ok(last: Any, successful: set[str]) -> Any:
     if last is not None and hasattr(last, "successful_live_tools"):
         last.successful_live_tools = names
     return last
+
+
+def _chat_commands_prompt(messages: list[str]) -> str:
+    blob = "\n".join(f"- {item}" for item in messages if str(item).strip())
+    return (
+        "Пользователь написал дополнительные команды в чат агента, "
+        "пока ты выполнял свою задачу:\n"
+        f"{blob}\n\n"
+        "Сделай эти команды сейчас. Если нужен Constructor tool — верни только "
+        "```constructor_tool. Основную задачу агента не бросай: после команд "
+        "продолжи её, если она ещё не закончена. Не спрашивай разрешения."
+    )
 
 
 def _nudge_live_tools_prompt(pending: list[str]) -> str:
@@ -540,9 +641,11 @@ def _followup_prompt(
         errors = last_errors or {}
         detail = "; ".join(f"{name}: {errors.get(name) or 'ошибка'}" for name in unreachable)
         tail = (
-            "Constructor tool повторно вернул ошибку. "
-            f"Цель недостижима: {detail}. "
-            "Запиши это в RESULT.md и TESTS: FAIL. Не вини Cloud VM / BACKEND_URL."
+            "Constructor tool несколько раз вернул ошибку. "
+            f"Не сдавайся: {detail}. "
+            "Смени подход — другие аргументы, другой tool из каталога, "
+            "или напиши и запусти Python (code.write_python / code.run_python). "
+            "Верни только ```constructor_tool. Не пиши TESTS: FAIL и не вини Cloud VM."
         )
     else:
         done = [str(item.get("name") or "") for item in results if item.get("ok")]
@@ -556,9 +659,9 @@ def _followup_prompt(
                 else ""
             )
             + "Если решение (кого/что брать, когда/как часто, в каком виде отдавать) "
-            "не сказано в ТЗ — верни CLARIFY и остановись, не обрабатывай весь каталог. "
-            "Если это уже явно в ТЗ или человек ответил — предметный RESULT: текст обязателен, "
-            "плюс файлы/действия/уведомления если они были. "
+            "не сказано в ТЗ и без него нельзя продолжить — верни CLARIFY. "
+            "Иначе доведи задачу: предметный RESULT, плюс файлы/действия/уведомления. "
+            "Если предыдущий шаг слабый или ошибочный — вызови другой tool и поправь себя. "
             "Не вызывай users.list / turboproject «на всякий случай». "
             "Если нужен ДРУГОЙ tool — только ```constructor_tool. "
             "Не ставь FAIL из-за отсутствия BACKEND_URL на Cloud VM."

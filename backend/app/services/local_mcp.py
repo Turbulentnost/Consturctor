@@ -527,6 +527,11 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "filename": {"type": "string"},
             "operations": {"type": "array"},
         }),
+        ("files.copy", "Скопировать локальный файл (Desktop, file:///) под новым именем.", {
+            "source": {"type": "string"},
+            "dest": {"type": "string"},
+            "dest_name": {"type": "string"},
+        }),
         ("workspace.powershell_run", "PowerShell только в папке агента.", {
             "command": {"type": "string"},
             "timeout_seconds": {"type": "integer"},

@@ -27,7 +27,8 @@ REPO_ROOT = DESKTOP_ROOT.parent if not getattr(sys, "frozen", False) else DESKTO
 
 # Prefer .env beside the exe / desktop folder (override stale QSettings / old defaults).
 load_dotenv(DESKTOP_ROOT / ".env", override=True)
-
+if getattr(sys, "frozen", False):
+    load_dotenv(BUNDLE_ROOT / ".env", override=False)
 
 from app.session_store import saved_auth_url, saved_backend_url
 
@@ -67,6 +68,14 @@ def catalog_url() -> str:
     if auth.rstrip("/") != local.rstrip("/"):
         return auth
     return local
+
+
+def skip_login_fio() -> str:
+    flag = os.getenv("SKIP_LOGIN", "").strip().lower()
+    fio = os.getenv("SKIP_LOGIN_FIO", "").strip()
+    if flag in {"1", "true", "yes", "on"} or fio:
+        return fio or "Жалыбин Максим Дмитриевич"
+    return ""
 
 
 def repo_root() -> Path:

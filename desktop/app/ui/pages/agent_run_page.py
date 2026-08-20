@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from threading import Thread
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -145,10 +146,14 @@ _TOOL_LABELS = {
     "onec.erp_tasks_period": "Задачи 1С за период",
     "onec.erp_subordinate_tasks": "Задачи подчинённых 1С",
     "onec.docflow_tasks": "Задачи документооборота",
+    "onec.odata_get": "Запрос к 1С",
+    "onec.odata_post": "Запись в 1С",
+    "onec.odata_patch": "Изменение в 1С",
     "excel.list_files": "Файлы агента",
     "excel.read_workbook": "Чтение Excel",
     "excel.create_workbook": "Создание Excel",
     "excel.edit_workbook": "Изменение Excel",
+    "files.copy": "Копирование файла",
     "workspace.powershell_run": "PowerShell в папке агента",
     "code.write_python": "Запись Python-кода",
     "code.run_python": "Запуск Python-кода",
@@ -183,6 +188,7 @@ class AgentRunPage(QWidget):
         self._auto_run_pending = False
         self._live_thinking: CursorFeedItem | None = None
         self._live_assistant: CursorFeedItem | None = None
+        self._assistant_raw = ""
         self._event_ready.connect(self._append_event)
         self._done.connect(self._on_done)
         self._ready_for_task.connect(self._on_ready_for_task)
@@ -501,6 +507,21 @@ class AgentRunPage(QWidget):
     def _append_event(self, event: object) -> None:
         if not isinstance(event, dict):
             return
+        orig_type = str(event.get("type") or "")
+        if orig_type in {"tool_call", "tool_request", "tool_result"}:
+            self._assistant_raw = ""
+        if orig_type == "assistant":
+            raw = str(event.get("text") or "")
+            if raw.startswith(self._assistant_raw) and len(raw) >= len(self._assistant_raw):
+                self._assistant_raw = raw
+            elif self._assistant_raw and raw in self._assistant_raw:
+                return
+            else:
+                self._assistant_raw += raw
+            visible = _visible_assistant_text(self._assistant_raw)
+            if not visible:
+                return
+            event = {"type": "agent_message", "text": visible}
         friendly = _friendly_event(event)
         if friendly is None:
             return
@@ -715,14 +736,14 @@ def _friendly_event(event: dict) -> dict | None:
             "text": _summarize_tool_result(tool, result),
         }
     if event_type == "work_result":
-        text = str(event.get("text") or "").strip()
+        text = _visible_assistant_text(str(event.get("text") or "").strip())
         payload = _work_result_event(event, text) if text else None
         if payload is None:
             return None
         payload["type"] = "work_result"
         return payload
     if event_type == "agent_message":
-        text = str(event.get("text") or "").strip()
+        text = _visible_assistant_text(str(event.get("text") or ""))
         return {"type": "agent_message", "text": text} if text else None
     if event_type == "user_message":
         return event
@@ -736,23 +757,44 @@ def _friendly_event(event: dict) -> dict | None:
 
 
 def _visible_assistant_text(text: str) -> str:
-    """Show the agent's written answer, not constructor_tool fences."""
+    """Show the agent's written answer, not constructor_tool fences or JSON."""
     cleaned = (text or "").replace("\ufffd", "")
-    if "```constructor_tool" in cleaned or "```tool" in cleaned:
-        parts: list[str] = []
-        skip = False
-        for line in cleaned.splitlines():
-            fence = line.strip()
-            if fence.startswith("```constructor_tool") or fence.startswith("```tool"):
-                skip = True
-                continue
-            if skip and fence.startswith("```"):
-                skip = False
-                continue
-            if not skip:
-                parts.append(line)
-        cleaned = "\n".join(parts)
-    return cleaned.strip()
+    cleaned = re.sub(r"```\s*(?:constructor_tool|tool)\b.*?```", " ", cleaned, flags=re.S | re.I)
+    cleaned = re.sub(r"```\s*(?:constructor_tool|tool)\b.*", " ", cleaned, flags=re.S | re.I)
+    cleaned = re.sub(
+        r"\{\s*\"(?:name|tool)\"\s*:\s*\"[^\"]+\".*",
+        " ",
+        cleaned,
+        flags=re.S,
+    )
+    lines: list[str] = []
+    for line in cleaned.splitlines():
+        stripped = line.strip()
+        low = stripped.casefold()
+        if not stripped:
+            continue
+        if stripped.startswith(("{", "}", "```")):
+            continue
+        if any(
+            token in low
+            for token in (
+                "constructor_tool",
+                "$filter",
+                "$top",
+                "$select",
+                "odata",
+                '"arguments"',
+                '"name":',
+                "onec.",
+                "files.copy",
+                "excel.",
+            )
+        ):
+            continue
+        if re.search(r"Document_[A-Za-zА-Яа-яЁё_0-9]+", stripped):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def _work_result_event(work: dict, text: str) -> dict:

@@ -1,4 +1,7 @@
-"""Human-in-the-loop: уровень 1 — запись и прочие операции только после подтверждения."""
+"""Human-in-the-loop: карточка остаётся для редких опасных операций.
+
+Опубликованный агент работает как Cursor: обычные tools идут без подтверждения,
+чтобы он мог сам вызывать шаги и чинить ошибки."""
 
 from __future__ import annotations
 
@@ -21,38 +24,18 @@ from PySide6.QtWidgets import (
 
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 
-AUTONOMY_LEVEL = 1
+AUTONOMY_LEVEL = 3
 HUMAN_REJECTED = "отклонено человеком"
 
-_READ_EXACT = frozenset(
+_CONFIRM_EXACT = frozenset(
     {
-        "web_search",
-        "site_browser",
-        "browser.search_web",
-        "browser.open_page",
-        "browser.list_installed_browsers",
-        "browser.screenshot",
-        "browser.get_page_html",
-        "outlook.search_mail",
-        "outlook.read_calendar",
-        "excel.list_files",
-        "excel.read_workbook",
-        "onec.odata_catalog",
-        "onec.odata_get",
-        "onec.sql_query",
-        "onec.erp_tasks_current",
-        "onec.erp_tasks_period",
-        "onec.erp_subordinate_tasks",
-        "onec.docflow_tasks",
-        "agent.wait",
-        "turboproject",
-        "users.list",
-        "notify.send",
-        "agent.schedule",
-        "agent.schedule.cancel",
+        "onec.odata_post",
+        "onec.odata_patch",
+        "onec.attach_file",
     }
 )
-_READ_PREFIXES = ("onec.search_", "onec.get_", "imap.")
+_READ_EXACT = frozenset()
+_READ_PREFIXES = ()
 
 _host: "_ConfirmHost | None" = None
 _reveal: Callable[[], None] | None = None
@@ -88,9 +71,9 @@ QPushButton:disabled { background: #F4F7F6; color: #9DB3AD; border-color: rgba(1
 
 def is_read_tool(name: str) -> bool:
     tool = (name or "").strip()
-    if tool in _READ_EXACT:
-        return True
-    return any(tool.startswith(prefix) for prefix in _READ_PREFIXES)
+    if tool in _CONFIRM_EXACT:
+        return False
+    return True
 
 
 def install_confirm_host(parent: QObject | None = None) -> None:
@@ -199,6 +182,14 @@ def _auto_approve_enabled() -> bool:
         "true",
         "yes",
     }
+
+
+def reject_pending_confirm() -> None:
+    global _pending_ok, _pending_loop
+    loop = _pending_loop
+    _pending_ok = False
+    if loop is not None:
+        loop.quit()
 
 
 def confirm_level1_tool(

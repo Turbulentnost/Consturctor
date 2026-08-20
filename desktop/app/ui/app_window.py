@@ -8,9 +8,9 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QStackedWidget, 
 
 from app.agents.headless_runner import HeadlessRunner
 from app.api_client import ApiClient, ApiError, LoginResult
-from app.config import auth_url, backend_url
+from app.config import auth_url, backend_url, skip_login_fio
 from app.notifications.service import NotificationService
-from app.session_store import clear_session, load_session
+from app.session_store import clear_session, load_session, save_session
 from app.tools.hitl import install_confirm_host, set_reveal_callback
 from app.tools.runtime_api import configure as configure_runtime_api
 from app.ui.login_page import LoginPage
@@ -63,7 +63,7 @@ class AppWindow(QMainWindow):
         install_confirm_host(self)
         set_reveal_callback(self.reveal)
 
-        if not self._try_restore_session():
+        if not self._try_restore_session() and not self._try_skip_login():
             self._stack.setCurrentWidget(self.login_page)
 
     def handle_external_command(self, command: str) -> None:
@@ -143,6 +143,18 @@ class AppWindow(QMainWindow):
             self.api.set_token(None)
             return False
         self._enter_main(user)
+        return True
+
+    def _try_skip_login(self) -> bool:
+        fio = skip_login_fio()
+        if not fio:
+            return False
+        try:
+            result = self.api.login(fio, "skip")
+        except ApiError:
+            return False
+        save_session(access_token=result.access_token, fio=result.user.fio)
+        self._enter_main(result.user)
         return True
 
     def _on_logged_in(self, result: LoginResult) -> None:

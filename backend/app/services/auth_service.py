@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import httpx
+
 from app.clients.erp_sql import (
     AmbiguousUserError,
     ErpSqlError,
@@ -103,10 +105,87 @@ def _to_user_out(*, user_id: str, fio: str, department: str, position: str = "")
             department=department or "",
             position=position or "",
         )
-    except Exception as exc:
-        logger.exception("Failed to upsert app user id=%s", user_id)
-        raise AuthError("Не удалось сохранить пользователя в базе", status_code=503) from exc
-    return app_users.to_user_out(app_user)
+        return app_users.to_user_out(app_user)
+    except Exception:
+        logger.exception("Failed to upsert app user id=%s, using JWT profile", user_id)
+        return UserOut(
+            id=user_id,
+            fio=fio,
+            department=department or "",
+            position=position or "",
+        )
+
+
+def _skip_login_fio() -> str:
+    if not settings.skip_login and not settings.skip_login_fio.strip():
+        return ""
+    return (settings.skip_login_fio or settings.erp_login or "").strip()
+
+
+def _issue_login(*, user_id: str, fio: str, department: str = "", position: str = "") -> LoginResponse:
+    position = _apply_position_override(fio, position)
+    token = create_access_token(
+        user_id=user_id,
+        fio=fio,
+        department=department or "",
+        position=position or "",
+    )
+    user_out = _to_user_out(
+        user_id=user_id,
+        fio=fio,
+        department=department or "",
+        position=position or "",
+    )
+    return LoginResponse(access_token=token, user=user_out)
+
+
+def _login_skip(fio: str) -> LoginResponse:
+    target = fio.strip() or _skip_login_fio()
+    if settings.erp_password and _auth_server_base():
+        try:
+            return _login_via_auth_server(target, settings.erp_password)
+        except AuthError:
+            logger.warning("Skip-login via AUTH_SERVER failed, using local profile")
+
+    try:
+        erp_user = find_user_by_fio(target)
+    except (UserNotFoundError, AmbiguousUserError, ErpSqlError):
+        erp_user = None
+    if erp_user is not None:
+        department = erp_user.department
+        position = erp_user.position
+        if not department or not position:
+            try:
+                profile = get_user_profile_by_fio(erp_user.fio)
+                department = department or profile.department
+                position = position or profile.position
+            except ErpSqlError:
+                pass
+        return _issue_login(
+            user_id=erp_user.id,
+            fio=erp_user.fio,
+            department=department or "",
+            position=position or "",
+        )
+
+    try:
+        app_user = app_users.get_app_user_by_fio(target)
+    except Exception:
+        app_user = None
+    if app_user is not None:
+        return _issue_login(
+            user_id=app_user.id,
+            fio=app_user.fio,
+            department=app_user.department or "",
+            position=app_user.position or "",
+        )
+
+    return _issue_login(
+        user_id="dev-skip-zhalybin",
+        fio=target,
+        department="Сектор по внедрению искусственного интеллекта",
+        position="Промпт-инженер 2 категории",
+    )
 
 
 def _login_local_user(fio: str, password: str) -> LoginResponse:
@@ -154,8 +233,87 @@ async def register(fio: str, password: str, department: str = "") -> LoginRespon
     return LoginResponse(access_token=token, user=app_users.to_user_out(user))
 
 
+def _auth_server_base() -> str:
+    return settings.auth_server_url.strip().rstrip("/")
+
+
+def _login_via_auth_server(fio: str, password: str) -> LoginResponse:
+    base = _auth_server_base()
+    if not base:
+        raise AuthError("Сервис аутентификации недоступен", status_code=503)
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(
+                f"{base}/api/v1/auth/login",
+                json={"fio": fio, "password": password},
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Auth server login failed: %s", exc)
+        raise AuthError("Сервис аутентификации недоступен", status_code=503) from exc
+
+    if response.status_code == 401:
+        raise AuthError("Неверный логин или пароль", status_code=401)
+    if response.status_code >= 400:
+        detail = ""
+        try:
+            payload = response.json()
+            detail = str(payload.get("detail") or "")
+        except Exception:
+            detail = response.text[:200]
+        logger.warning("Auth server login HTTP %s: %s", response.status_code, detail)
+        raise AuthError(detail or "Сервис аутентификации недоступен", status_code=503)
+
+    payload = response.json()
+    user = payload.get("user") or {}
+    user_id = str(user.get("id") or "").strip()
+    user_fio = str(user.get("fio") or fio).strip()
+    department = str(user.get("department") or "")
+    position = _apply_position_override(user_fio, str(user.get("position") or ""))
+    if not user_id:
+        raise AuthError("Сервис аутентификации недоступен", status_code=503)
+
+    token = create_access_token(
+        user_id=user_id,
+        fio=user_fio,
+        department=department,
+        position=position,
+    )
+    user_out = _to_user_out(
+        user_id=user_id,
+        fio=user_fio,
+        department=department,
+        position=position,
+    )
+    logger.info("User logged in via AUTH_SERVER: id=%s", user_id)
+    return LoginResponse(access_token=token, user=user_out)
+
+
+def _list_user_fios_via_auth_server(search: str | None) -> list[str]:
+    base = _auth_server_base()
+    if not base:
+        raise AuthError("Не удалось загрузить список пользователей", status_code=503)
+    params = {"search": search} if search else None
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(f"{base}/api/v1/auth/users", params=params)
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPError as exc:
+        logger.warning("Auth server user list failed: %s", exc)
+        raise AuthError("Не удалось загрузить список пользователей", status_code=503) from exc
+    items = payload.get("items") if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        return []
+    return [str(item) for item in items if str(item).strip()]
+
+
 async def login(fio: str, password: str) -> LoginResponse:
     fio = fio.strip()
+    skip_fio = _skip_login_fio()
+    if skip_fio and (not fio or _normalize_fio_key(fio) == _normalize_fio_key(skip_fio)):
+        logger.warning("Skip-login enabled, issuing session for %s", skip_fio)
+        return await asyncio.to_thread(_login_skip, skip_fio)
     if not fio or not password:
         raise AuthError("Неверный логин или пароль", status_code=401)
 
@@ -170,6 +328,9 @@ async def login(fio: str, password: str) -> LoginResponse:
     except AmbiguousUserError as exc:
         raise AuthError("Найдено несколько пользователей с таким ФИО", status_code=409) from exc
     except ErpSqlError as exc:
+        if _auth_server_base():
+            logger.warning("ERP SQL unavailable, login via AUTH_SERVER")
+            return await asyncio.to_thread(_login_via_auth_server, fio, password)
         if settings.auth_stub:
             logger.warning("ERP SQL unavailable, using AUTH_STUB login for %s", fio)
             return _stub_login(fio)
@@ -223,6 +384,12 @@ async def list_user_fios(search: str | None = None) -> list[str]:
     try:
         erp_items = await asyncio.to_thread(search_user_fios, search)
     except ErpSqlError:
+        if _auth_server_base():
+            logger.warning("ERP SQL unavailable, listing users via AUTH_SERVER")
+            try:
+                return await asyncio.to_thread(_list_user_fios_via_auth_server, search)
+            except AuthError:
+                return local_items
         return local_items
     merged: list[str] = []
     seen: set[str] = set()
@@ -264,6 +431,13 @@ async def get_current_user_profile(user_id: str, fio_hint: str | None = None) ->
     try:
         erp_user = await asyncio.to_thread(find_user_by_id, user_id)
     except ErpSqlError as exc:
+        app_user = app_users.get_app_user(user_id)
+        if app_user is not None:
+            logger.warning("ERP SQL unavailable, using local profile for id=%s", user_id)
+            return app_users.to_user_out(app_user)
+        if fio_hint:
+            logger.warning("ERP SQL unavailable, using JWT profile for id=%s", user_id)
+            return _to_user_out(user_id=user_id, fio=fio_hint, department="", position="")
         logger.exception("ERP SQL error loading profile")
         raise AuthError("Сервис аутентификации недоступен", status_code=503) from exc
 
@@ -271,6 +445,8 @@ async def get_current_user_profile(user_id: str, fio_hint: str | None = None) ->
         app_user = app_users.get_app_user(user_id)
         if app_user is not None:
             return app_users.to_user_out(app_user)
+        if fio_hint:
+            return _to_user_out(user_id=user_id, fio=fio_hint, department="", position="")
         raise AuthError("Пользователь не найден", status_code=404)
 
     department = erp_user.department
