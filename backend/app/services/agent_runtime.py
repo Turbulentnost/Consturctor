@@ -49,6 +49,7 @@ def run_agent_task(
     message: str,
     emit: AgentEventCallback,
     run_id: str,
+    history_id: str = "",
 ) -> dict[str, Any]:
     workflow = (
         db.query(Workflow)
@@ -76,6 +77,7 @@ def run_agent_task(
             emit=emit,
             run_id=run_id,
             playbook=playbook,
+            history_id=history_id,
         )
 
     domain = _agent_domain(workflow)
@@ -205,6 +207,7 @@ def _run_with_playbook(
     emit: AgentEventCallback,
     run_id: str,
     playbook: dict[str, Any],
+    history_id: str = "",
 ) -> dict[str, Any]:
     from app.clients import cursor as cursor_client
     from app.clients.cursor import CursorAgentError
@@ -217,7 +220,10 @@ def _run_with_playbook(
     )
     from app.services.workflows.service import _create_exec_agent, _stream_run
 
-    set_tool_context(run_id, user_id)
+    set_tool_context(run_id, user_id, history_id)
+    plan_text = _playbook_plan_text(playbook, workflow)
+    if plan_text:
+        emit({"type": "plan", "title": "План", "text": plan_text})
     prompt = with_tools_if_desktop(
         prompts.build_published_run_prompt(
             instructions=str(playbook.get("instructions") or ""),
@@ -301,6 +307,32 @@ def _run_with_playbook(
         "tool": "cursor",
         "tool_result": {"tools": list(phase.successful_live_tools or [])},
     }
+
+
+def _playbook_plan_text(playbook: dict[str, Any], workflow: Workflow) -> str:
+    steps = playbook.get("steps") if isinstance(playbook.get("steps"), list) else []
+    if not steps:
+        local = workflow.local_run if isinstance(workflow.local_run, dict) else {}
+        draft = local.get("playbook_draft") if isinstance(local.get("playbook_draft"), dict) else {}
+        steps = draft.get("steps") if isinstance(draft.get("steps"), list) else []
+    lines: list[str] = []
+    goal = str(playbook.get("goal") or "").strip()
+    if goal:
+        lines.append(f"Цель: {goal}")
+    numbered = [step for step in steps if isinstance(step, dict)]
+    if numbered:
+        if lines:
+            lines.append("")
+        lines.append("Шаги:")
+        for index, step in enumerate(numbered, start=1):
+            sid = str(step.get("id") or f"s{index}").strip()
+            title = str(step.get("title") or "").strip()
+            action = str(step.get("action") or "").strip()
+            head = f"{sid} — {title}".strip(" —") if sid or title else f"шаг {index}"
+            lines.append(head)
+            if action:
+                lines.append(f"  {action}")
+    return "\n".join(lines).strip()
 
 
 def _agent_domain(workflow: Workflow) -> str:

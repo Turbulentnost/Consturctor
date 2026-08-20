@@ -182,6 +182,7 @@ def _agent_run_stream(
                 message=message,
                 emit=lambda payload: _record_and_emit(payload, events, emit),
                 run_id=run_id,
+                history_id=history_id,
             )
             status = "ok"
             answer = answer_from_result(result)

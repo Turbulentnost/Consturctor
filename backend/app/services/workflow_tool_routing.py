@@ -267,6 +267,8 @@ _OPERATION_SYNONYMS = {
     "post": "create",
     "modify": "update",
     "patch": "update",
+    "edit": "update",
+    "правка": "update",
     "download": "export",
     "report": "export",
     "run": "execute",

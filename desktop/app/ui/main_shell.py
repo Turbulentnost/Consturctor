@@ -551,12 +551,12 @@ class MainShell(QWidget):
             return
         self.refresh_notification_badge()
 
-    def _on_launch_workflow_from_inbox(self, workflow_id: str) -> None:
+    def _on_launch_workflow_from_inbox(self, workflow_id: str, run_id: str = "") -> None:
         wid = (workflow_id or "").strip()
         if not wid:
             return
         try:
-            record = self._api.get_workflow(wid)
+            self._api.get_workflow(wid)
         except ApiError as exc:
             QMessageBox.information(
                 self,
@@ -567,7 +567,12 @@ class MainShell(QWidget):
             )
             self._reload_notifications_page()
             return
-        self._on_launch_workflow_agent(record)
+        from app.tools.hitl import notification_opens_live
+
+        if notification_opens_live(wid):
+            self.show_live_agent(wid)
+            return
+        self.navigate_to_agent_history(wid, run_id)
 
     def _open_settings(self) -> None:
         if self._user is not None:
@@ -1615,7 +1620,30 @@ class MainShell(QWidget):
 
         Thread(target=run, daemon=True).start()
 
-    def navigate_to_agent_run(self, workflow_id: str) -> None:
+    def show_live_agent(self, workflow_id: str) -> None:
+        """Открыть живой прогон агента, не историю и не новый чат."""
+        from app.tools.hitl import attach_pending_for
+
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return
+        run_rec = getattr(self._page_agent_run, "_workflow", None)
+        if run_rec is not None and str(getattr(run_rec, "id", "") or "") == wid:
+            self.sidebar.set_active_key("agents", animate=False)
+            self._pages.setCurrentIndex(self._page_index["agent_run"])
+            attach_pending_for(wid)
+            return
+        wf_rec = getattr(self._page_workflows, "_record", None)
+        if wf_rec is not None and str(getattr(wf_rec, "id", "") or "") == wid:
+            self._pages.setCurrentIndex(self._page_index["workflows"])
+            attach_pending_for(wid)
+            return
+        self.navigate_to_agent_run(wid)
+
+    def navigate_to_agent_run(self, workflow_id: str, run_id: str = "") -> None:
+        if (run_id or "").strip():
+            self.navigate_to_agent_history(workflow_id, run_id)
+            return
         wid = (workflow_id or "").strip()
         if not wid:
             return
@@ -1630,6 +1658,38 @@ class MainShell(QWidget):
                 self._published_agent_ready.emit(record)
             else:
                 self._workflow_page_ready.emit(record)
+
+        Thread(target=run, daemon=True).start()
+
+    def navigate_to_agent_history(self, workflow_id: str, run_id: str = "") -> None:
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return
+
+        def run() -> None:
+            try:
+                record = self._api.get_workflow(wid)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            if str(getattr(record, "phase", "") or "") != "done":
+                self._workflow_page_ready.emit(record)
+                return
+            try:
+                runs = self._api.list_agent_runs(wid)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            wanted = (run_id or "").strip()
+            if not wanted and runs:
+                wanted = runs[0].id
+            detail = None
+            if wanted:
+                try:
+                    detail = self._api.get_agent_run(wid, wanted)
+                except ApiError:
+                    detail = next((item for item in runs if item.id == wanted), None)
+            self._agent_history_ready.emit((record.title, wid, runs, detail))
 
         Thread(target=run, daemon=True).start()
 
@@ -1649,15 +1709,26 @@ class MainShell(QWidget):
 
     def _show_agent_history(self, payload: object) -> None:
         title, workflow_id, runs = ("ИИ-агент", "", [])
+        detail = None
         if isinstance(payload, tuple) and len(payload) >= 3:
             title = str(payload[0] or "ИИ-агент")
             workflow_id = str(payload[1] or "")
             runs = list(payload[2] or [])
+            if len(payload) >= 4:
+                detail = payload[3]
         elif isinstance(payload, tuple) and len(payload) >= 2:
             title = str(payload[0] or "ИИ-агент")
             runs = list(payload[1] or [])
         self.sidebar.set_active_key("agents", animate=False)
-        self._page_history.show_history(title=title, workflow_id=workflow_id, runs=runs)
+        if detail is not None:
+            self._page_history.open_run(
+                title=title,
+                workflow_id=workflow_id,
+                runs=runs,
+                detail=detail,
+            )
+        else:
+            self._page_history.show_history(title=title, workflow_id=workflow_id, runs=runs)
         self._pages.setCurrentIndex(self._page_index["agent_history"])
 
 

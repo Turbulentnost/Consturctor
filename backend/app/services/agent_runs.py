@@ -126,6 +126,10 @@ def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
         result = raw.get("result")
         if isinstance(result, dict):
             item["result"] = _clip_json(result)
+        for key in ("files", "actions", "notifications"):
+            value = raw.get(key)
+            if isinstance(value, list) and value:
+                item[key] = _clip_json(value)
         stored.append(item)
         if len(stored) >= 300:
             break

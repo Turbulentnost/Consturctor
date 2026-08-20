@@ -1,0 +1,109 @@
+from types import SimpleNamespace
+
+from app.services.agent_runtime import _playbook_plan_text
+from app.services.agent_runs import slim_run_events
+from app.services.workflows.cursor_tools import (
+    clear_tool_context,
+    current_history_run_id,
+    set_tool_context,
+)
+
+
+def test_slim_run_events_keeps_tool_and_work_result() -> None:
+    stored = slim_run_events(
+        [
+            {"type": "run", "run_id": "bridge"},
+            {
+                "type": "tool_result",
+                "text": "users.subordinates\n6 человек",
+                "tool": "users.subordinates",
+                "result": {"users": [{"fio": "Иванов"}], "count": 1},
+            },
+            {
+                "type": "work_result",
+                "text": "Сводка готова",
+                "files": ["artifacts/RESULT.md"],
+                "actions": ["открыть отчёт"],
+                "notifications": ["руководителю"],
+            },
+            {"type": "done"},
+        ]
+    )
+    assert [item["type"] for item in stored] == ["tool_result", "work_result"]
+    assert stored[0]["tool"] == "users.subordinates"
+    assert stored[0]["result"]["count"] == 1
+    assert stored[1]["files"] == ["artifacts/RESULT.md"]
+    assert stored[1]["actions"] == ["открыть отчёт"]
+    assert stored[1]["notifications"] == ["руководителю"]
+
+
+def test_slim_run_events_keeps_decision_and_plan() -> None:
+    stored = slim_run_events(
+        [
+            {"type": "plan", "title": "План", "text": "s1 — Список"},
+            {"type": "decision", "text": "читаю подчинённых"},
+            {"type": "thinking", "text": "сверяю штатку"},
+        ]
+    )
+    assert [item["type"] for item in stored] == ["plan", "decision", "thinking"]
+    assert stored[0]["text"] == "s1 — Список"
+
+
+def test_playbook_plan_text_from_steps() -> None:
+    workflow = SimpleNamespace(local_run={})
+    text = _playbook_plan_text(
+        {
+            "goal": "Контроль сектора",
+            "steps": [
+                {"id": "s1", "title": "Список", "action": "вызови users.subordinates"},
+            ],
+        },
+        workflow,
+    )
+    assert "Цель: Контроль сектора" in text
+    assert "s1 — Список" in text
+    assert "users.subordinates" in text
+
+
+def test_history_run_id_from_tool_context() -> None:
+    set_tool_context("bridge-1", "user-1", "history-9")
+    try:
+        assert current_history_run_id() == "history-9"
+    finally:
+        clear_tool_context()
+    assert current_history_run_id() == ""
+
+
+def test_notify_send_writes_history_run_id(monkeypatch) -> None:
+    from app.services.workflows.cursor_tools import _invoke_notify_send
+
+    captured: dict = {}
+
+    class _Item:
+        id = "n1"
+        recipient_user_id = "u2"
+        title = "Просрочка"
+
+    monkeypatch.setattr(
+        "app.services.notifications.service.create_notification",
+        lambda db, sender_user_id, payload: captured.update(
+            {"sender": sender_user_id, "run_id": payload.run_id, "workflow_id": payload.workflow_id}
+        )
+        or _Item(),
+    )
+    set_tool_context("bridge-1", "user-1", "run-hist")
+    try:
+        result = _invoke_notify_send(
+            {
+                "user_id": "u2",
+                "title": "Просрочка",
+                "body": "есть просрочки",
+                "workflow_id": "wf-1",
+            }
+        )
+    finally:
+        clear_tool_context()
+    assert result["ok"] is True
+    assert captured["run_id"] == "run-hist"
+    assert captured["workflow_id"] == "wf-1"
+    assert captured["sender"] == "user-1"

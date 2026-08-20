@@ -93,6 +93,10 @@ def _ensure_columns() -> None:
         notif_cols = {str(r[0]) for r in notif_rows}
         if notif_cols and "read_at" not in notif_cols:
             conn.execute(text("ALTER TABLE notifications ADD COLUMN read_at TIMESTAMPTZ NULL"))
+        if notif_cols and "run_id" not in notif_cols:
+            conn.execute(
+                text("ALTER TABLE notifications ADD COLUMN run_id VARCHAR(64) NOT NULL DEFAULT ''")
+            )
         run_rows = conn.execute(
             text(
                 """

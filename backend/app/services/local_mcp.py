@@ -552,9 +552,12 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "headers": _prop("array", "Заголовки колонок", items={"type": "string"}),
             "rows": _prop("array", "Строки таблицы: список списков или объектов"),
         }),
-        ("excel.edit_workbook", "Изменить .xlsx в папке агента.", {
+        ("excel.edit_workbook", "Изменить уже существующий .xlsx в папке агента. Новый файл не создаёт.", {
             "filename": _prop("string", "Имя существующего файла в папке агента"),
-            "operations": _prop("array", "Список операций правки листа"),
+            "operations": _prop(
+                "array",
+                "Правки листа: action add_sheet, delete_sheet, append_row или set_cell. Не export.",
+            ),
         }),
         ("workspace.powershell_run", "PowerShell только в папке агента.", {
             "command": _prop("string", "Команда PowerShell без выхода из папки агента"),
@@ -746,7 +749,7 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     "excel.list_files": ("desktop", "file", "list", [], ["files"], "none"),
     "excel.read_workbook": ("desktop", "spreadsheet", "read", ["filename"], ["rows"], "count"),
     "excel.create_workbook": ("desktop", "spreadsheet", "export", ["filename"], ["file"], "none"),
-    "excel.edit_workbook": ("desktop", "spreadsheet", "export", ["filename"], ["file"], "none"),
+    "excel.edit_workbook": ("desktop", "spreadsheet", "update", ["filename"], ["file"], "none"),
     "workspace.powershell_run": ("desktop", "shell", "execute", ["command"], ["text"], "none"),
     "code.write_python": ("desktop", "code", "create", ["code"], ["file"], "none"),
     "code.run_python": ("desktop", "code", "execute", [], ["text"], "none"),

@@ -222,11 +222,19 @@ class FioSuggestEdit(QLineEdit):
     def _fetch_in_background(self, query: str, key: str) -> None:
         try:
             items = self._fetch(query)
-        except Exception:
-            items = []
+        except Exception as exc:
+            message = str(getattr(exc, "message", "") or exc).strip() or "Не удалось загрузить список"
+            self._suggestions_ready.emit(key, {"error": message})
+            return
         self._suggestions_ready.emit(key, items)
 
     def _apply_async_suggestions(self, key: str, items_obj: object) -> None:
+        if isinstance(items_obj, dict) and items_obj.get("error"):
+            if key != self._request_token:
+                return
+            self._populate_message(str(items_obj["error"]))
+            self._show_popup()
+            return
         items = [str(x) for x in (items_obj or [])]
         if key:
             items = [name for name in items if self._matches_query(name, key)]

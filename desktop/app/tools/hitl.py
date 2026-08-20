@@ -70,6 +70,13 @@ QFrame#HitlCard {
     border-radius: 16px;
 }
 """
+_RESOLVED_QSS = """
+QFrame#HitlCard {
+    background: #F4F7F6;
+    border: 1px solid rgba(16,24,23,0.10);
+    border-radius: 10px;
+}
+"""
 _ACCEPT_QSS = """
 QPushButton {
     background: #08745F; color: #FFFFFF; border: none;
@@ -319,6 +326,11 @@ def has_pending_for(workflow_id: str) -> bool:
     return any(item.workflow_id == wanted and not item.answered for item in _pending)
 
 
+def notification_opens_live(workflow_id: str) -> bool:
+    """Клик по уведомлению: живой агент, если ждём подтверждение."""
+    return has_pending_for(workflow_id)
+
+
 def attach_pending_for(workflow_id: str) -> None:
     wanted = str(workflow_id or "").strip()
     if not wanted:
@@ -378,32 +390,35 @@ class HitlConfirmCard(QFrame):
         self.setObjectName("HitlCard")
         self.setStyleSheet(_CARD_QSS)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        human_title, explanation = explain_tool(tool, arguments)
-        title = QLabel(f"Агент хочет: {human_title}")
-        title.setFont(app_font(13, QFont.Weight.DemiBold))
-        title.setWordWrap(True)
-        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        tech = QLabel(f"Инструмент «{tool}».")
-        tech.setFont(app_font(11))
-        tech.setWordWrap(True)
-        tech.setStyleSheet("color: #5B6B74; background: transparent;")
-        what = QLabel(explanation)
-        what.setFont(app_font(12))
-        what.setWordWrap(True)
-        what.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        what.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        body = QLabel(preview or "")
-        body.setFont(app_font(11))
-        body.setWordWrap(True)
-        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        body.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        hint = QLabel("Разрешить выполнение? Без подтверждения операция будет отклонена.")
-        hint.setFont(app_font(11))
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #5B6B74; background: transparent;")
+        self._human_title, explanation = explain_tool(tool, arguments)
+        self._title = QLabel(f"Агент хочет: {self._human_title}")
+        self._title.setFont(app_font(13, QFont.Weight.DemiBold))
+        self._title.setWordWrap(True)
+        self._title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        self._tech = QLabel(f"Инструмент «{tool}».")
+        self._tech.setFont(app_font(11))
+        self._tech.setWordWrap(True)
+        self._tech.setStyleSheet("color: #5B6B74; background: transparent;")
+        self._what = QLabel(explanation)
+        self._what.setFont(app_font(12))
+        self._what.setWordWrap(True)
+        self._what.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._what.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        self._body = QLabel(preview or "")
+        self._body.setFont(app_font(11))
+        self._body.setWordWrap(True)
+        self._body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._body.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        self._params = QLabel("Параметры запроса")
+        self._params.setFont(app_font(11, QFont.Weight.DemiBold))
+        self._params.setStyleSheet("color: #5B6B74; background: transparent;")
+        self._hint = QLabel("Разрешить выполнение? Без подтверждения операция будет отклонена.")
+        self._hint.setFont(app_font(11))
+        self._hint.setWordWrap(True)
+        self._hint.setStyleSheet("color: #5B6B74; background: transparent;")
         self._status = QLabel("")
-        self._status.setFont(app_font(11, QFont.Weight.DemiBold))
-        self._status.setStyleSheet("color: #08745F; background: transparent;")
+        self._status.setFont(app_font(12, QFont.Weight.Medium))
+        self._status.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         self._status.hide()
         self._reject = QPushButton("не принимать")
         self._reject.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -418,36 +433,52 @@ class HitlConfirmCard(QFrame):
         self._accept.setStyleSheet(_ACCEPT_QSS)
         self._reject.clicked.connect(self.rejected.emit)
         self._accept.clicked.connect(self.accepted.emit)
-        buttons = QHBoxLayout()
+        self._buttons = QWidget()
+        self._buttons.setStyleSheet("background: transparent;")
+        buttons = QHBoxLayout(self._buttons)
         buttons.setContentsMargins(0, 4, 0, 0)
         buttons.setSpacing(8)
         buttons.addWidget(self._reject, 0)
         buttons.addStretch(1)
         buttons.addWidget(self._accept, 0)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(8)
-        lay.addWidget(title)
-        lay.addWidget(tech)
-        lay.addWidget(what)
+        self._detail = [
+            self._title,
+            self._tech,
+            self._what,
+            self._params,
+            self._body,
+            self._hint,
+            self._buttons,
+        ]
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(14, 12, 14, 12)
+        self._layout.setSpacing(8)
+        self._layout.addWidget(self._title)
+        self._layout.addWidget(self._tech)
+        self._layout.addWidget(self._what)
         if preview:
-            params = QLabel("Параметры запроса")
-            params.setFont(app_font(11, QFont.Weight.DemiBold))
-            params.setStyleSheet("color: #5B6B74; background: transparent;")
-            lay.addWidget(params)
-            lay.addWidget(body)
-        lay.addWidget(hint)
-        lay.addWidget(self._status)
-        lay.addLayout(buttons)
+            self._layout.addWidget(self._params)
+            self._layout.addWidget(self._body)
+        else:
+            self._params.hide()
+            self._body.hide()
+        self._layout.addWidget(self._hint)
+        self._layout.addWidget(self._status)
+        self._layout.addWidget(self._buttons)
 
     def set_resolved(self, accepted: bool) -> None:
-        self._reject.setEnabled(False)
-        self._accept.setEnabled(False)
-        self._status.setText("Принято" if accepted else "Отклонено")
-        self._status.setStyleSheet(
-            ("color: #08745F; background: transparent;" if accepted else "color: #9B1C1C; background: transparent;")
-        )
+        for widget in self._detail:
+            widget.hide()
+        self.setStyleSheet(_RESOLVED_QSS)
+        self._layout.setContentsMargins(12, 8, 12, 8)
+        self._layout.setSpacing(0)
+        verb = "подтвердили" if accepted else "отклонили"
+        self._status.setText(f"Вы {verb}: {self._human_title}")
+        self._status.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
         self._status.show()
+
+    def resolved_text(self) -> str:
+        return self._status.text()
 
 
 def confirm_level1_tool(tool: str, arguments: dict | None = None) -> bool:
@@ -521,8 +552,7 @@ class _ConfirmHost(QObject):
             if callable(attach):
                 attach(card)
                 item.attached = True
-        else:
-            _notify_away(workflow_id, tool, preview, arguments)
+        _notify_away(workflow_id, tool, preview, arguments)
 
         while not answered:
             loop.exec()

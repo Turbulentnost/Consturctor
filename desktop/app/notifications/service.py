@@ -24,7 +24,7 @@ _PS_AUMID = (
 
 class NotificationService(QObject):
     open_workflow_requested = Signal(str)
-    toast_requested = Signal(str, str, str)
+    toast_requested = Signal(str, str, str, str)
     command_received = Signal(dict)
     inbox_changed = Signal()
 
@@ -139,14 +139,15 @@ class NotificationService(QObject):
         title = str(payload.get("title") or "Уведомление")
         body = str(payload.get("body") or "")
         workflow_id = str(payload.get("workflow_id") or "")
-        if not show_windows_toast(title, body, workflow_id):
-            self.toast_requested.emit(title, body, workflow_id)
+        run_id = str(payload.get("run_id") or "")
+        if not show_windows_toast(title, body, workflow_id, run_id):
+            self.toast_requested.emit(title, body, workflow_id, run_id)
         self.inbox_changed.emit()
         return True
 
 
-def show_windows_toast(title: str, body: str, workflow_id: str = "") -> bool:
-    launch = _launch_command(workflow_id)
+def show_windows_toast(title: str, body: str, workflow_id: str = "", run_id: str = "") -> bool:
+    launch = _launch_command(workflow_id, run_id)
     icon = _toast_icon()
     message = (body or "Открыть агента")[:240]
     heading = title[:120]
@@ -177,11 +178,12 @@ def _toast_icon() -> str:
     return str(logo) if logo.exists() else ""
 
 
-def _launch_command(workflow_id: str) -> str:
+def _launch_command(workflow_id: str, run_id: str = "") -> str:
     if not workflow_id:
         return ""
+    extra = f" --open-run={run_id}" if (run_id or "").strip() else ""
     if getattr(sys, "frozen", False):
         exe = Path(sys.executable).resolve()
-        return f'"{exe}" --open-workflow={workflow_id}'
+        return f'"{exe}" --open-workflow={workflow_id}{extra}'
     main = Path(__file__).resolve().parents[2] / "main.py"
-    return f'"{sys.executable}" "{main}" --open-workflow={workflow_id}'
+    return f'"{sys.executable}" "{main}" --open-workflow={workflow_id}{extra}'

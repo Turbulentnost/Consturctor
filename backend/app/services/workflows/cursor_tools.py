@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 WorkflowEmit = Callable[..., None]
 
-_tool_ctx: ContextVar[tuple[str, str] | None] = ContextVar("creation_tool_ctx", default=None)
+_tool_ctx: ContextVar[tuple[str, str, str] | None] = ContextVar("creation_tool_ctx", default=None)
 _datasets: ContextVar["DatasetRegistry | None"] = ContextVar("creation_datasets", default=None)
 
 _TOOL_BLOCK_RE = re.compile(
@@ -52,8 +52,8 @@ _GENERIC_USER_QUERIES = (
 )
 
 
-def set_tool_context(run_id: str, user_id: str) -> None:
-    _tool_ctx.set((run_id, user_id))
+def set_tool_context(run_id: str, user_id: str, history_id: str = "") -> None:
+    _tool_ctx.set((run_id, user_id, (history_id or "").strip()))
 
 
 def clear_tool_context() -> None:
@@ -61,7 +61,17 @@ def clear_tool_context() -> None:
 
 
 def current_tool_context() -> tuple[str, str] | None:
-    return _tool_ctx.get()
+    ctx = _tool_ctx.get()
+    if ctx is None:
+        return None
+    return ctx[0], ctx[1]
+
+
+def current_history_run_id() -> str:
+    ctx = _tool_ctx.get()
+    if ctx is None:
+        return ""
+    return str(ctx[2] or "").strip() if len(ctx) >= 3 else ""
 
 
 class DatasetRegistry:
@@ -701,6 +711,43 @@ class StepLedger:
                 return step
         return None
 
+    def unmet_needs(self, step: dict[str, Any] | None) -> list[str]:
+        """Обязательные шаги, чьи поля этот шаг берёт, но они ещё не закрыты."""
+        if not isinstance(step, dict):
+            return []
+        blocked: list[str] = []
+        for item in step.get("needs_from") or []:
+            if not isinstance(item, dict):
+                continue
+            source_id = str(item.get("step") or "").strip()
+            if not source_id:
+                continue
+            source = self.step_by_id(source_id)
+            if source is None:
+                continue
+            if not bool(source.get("required", True)):
+                continue
+            entry = self.entries.get(source_id) or {}
+            if entry.get("status") != "completed":
+                blocked.append(source_id)
+        return blocked
+
+    def first_open_required(self) -> dict[str, Any] | None:
+        for step in self.steps:
+            step_id = str(step.get("id") or "")
+            entry = self.entries.get(step_id) or {}
+            if bool(step.get("required", True)) and entry.get("status") != "completed":
+                return step
+        return None
+
+    def open_required_tools(self) -> list[str]:
+        """Кандидаты первого незакрытого обязательного шага — чем его закрыть."""
+        step = self.first_open_required()
+        if step is None:
+            return []
+        names = [str(name).strip() for name in (step.get("tool_candidates") or []) if str(name).strip()]
+        return names or [str(step.get("id") or "")]
+
     def record(
         self,
         *,
@@ -796,6 +843,8 @@ def _stream_cursor_with_tools_body(
     max_rounds = _MAX_ROUNDS_EXECUTE if mode == "execute" else _MAX_ROUNDS_PLAN
 
     def missing_required() -> list[str]:
+        if ledger.enabled:
+            return ledger.open_required_tools()
         return [
             name
             for name in required
@@ -855,7 +904,11 @@ def _stream_cursor_with_tools_body(
             arguments = call.get("arguments") or {}
             envelope = build_tool_envelope(name, arguments)
             step = ledger.resolve(call) if ledger.enabled else None
-            rejection = _reject_off_phase(phase, name) or _reject_off_contract(step, name)
+            rejection = (
+                _reject_off_phase(phase, name)
+                or _reject_off_contract(step, name)
+                or _reject_blocked_handoff(ledger, step)
+            )
             if rejection:
                 results.append(
                     {
@@ -1073,6 +1126,24 @@ def _reject_off_contract(step: dict[str, Any] | None, name: str) -> str:
     )
 
 
+def _reject_blocked_handoff(ledger: "StepLedger | None", step: dict[str, Any] | None) -> str:
+    """Шаг, который берёт поля у предыдущих, не исполняем, пока те не закрыты."""
+    if ledger is None or not ledger.enabled or step is None:
+        return ""
+    blocked = ledger.unmet_needs(step)
+    if not blocked:
+        return ""
+    details: list[str] = []
+    for step_id in blocked:
+        source = ledger.step_by_id(step_id)
+        tools = [str(name) for name in ((source or {}).get("tool_candidates") or []) if str(name)]
+        details.append(f"{step_id}: {', '.join(tools)}" if tools else step_id)
+    return (
+        f"Шаг {step.get('id')} берёт данные из ещё не закрытых шагов "
+        f"({'; '.join(details)}). Сначала вызови инструмент того шага."
+    )
+
+
 def _verdict_for(
     *,
     step: dict[str, Any] | None,
@@ -1161,6 +1232,8 @@ def _followup_prompt(
             + ", ".join(steps_left)
             + ". Итог и example_run до этого не пиши.\n"
         )
+        if not pending:
+            pending = list(steps_left)
     if mode == "plan":
         tail = (
             "Учти результаты инструментов. "
@@ -1292,6 +1365,7 @@ def _invoke_notify_send(arguments: dict[str, Any]) -> dict[str, Any]:
         title=title,
         body=str(arguments.get("body") or ""),
         workflow_id=str(arguments.get("workflow_id") or arguments.get("agent_id") or ""),
+        run_id=str(arguments.get("run_id") or current_history_run_id() or ""),
     )
     send_at = str(arguments.get("send_at") or "").strip()
     if send_at:

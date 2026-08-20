@@ -265,8 +265,14 @@ class ExcelEditWorkbookTool(_WorkspaceTool):
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "filename": {"type": "string"},
-                        "operations": {"type": "array"},
+                        "filename": {"type": "string", "description": "Существующий .xlsx в папке агента"},
+                        "operations": {
+                            "type": "array",
+                            "description": (
+                                "Правки существующего листа: add_sheet, delete_sheet, "
+                                "append_row, set_cell. Новый файл так не создают."
+                            ),
+                        },
                     },
                     "required": ["filename", "operations"],
                 },
@@ -360,7 +366,11 @@ class ExcelEditWorkbookTool(_WorkspaceTool):
             applied.append(f"set_cell:{worksheet.title}!{cell}")
             return None
 
-        return f"Неизвестное действие: {action!r}"
+        return (
+            f"Неизвестное действие: {action!r}. "
+            "Допустимы add_sheet, delete_sheet, append_row, set_cell. "
+            "Новый файл — excel.create_workbook (filename, headers, rows), не action=export."
+        )
 
 
 def register_excel_tools(

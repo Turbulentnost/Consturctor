@@ -433,7 +433,7 @@ class AgentRunPage(QWidget):
             last = self._feed_layout.itemAt(self._feed_layout.count() - 1)
             if last is not None and last.widget() is None and last.spacerItem() is not None:
                 stretch = self._feed_layout.takeAt(self._feed_layout.count() - 1)
-        card = _event_card(event, expanded=str(event.get("event_key") or "") in self._expanded_keys)
+        card = _event_card(event, expanded=_feed_expanded(event, self._expanded_keys))
         card.expand_toggled.connect(self._on_expand_toggled)
         self._feed_layout.addWidget(card)
         if str(event.get("type") or "") == "thinking":
@@ -457,7 +457,7 @@ class AgentRunPage(QWidget):
     def _render(self) -> None:
         self._clear_feed()
         for event in self._events:
-            card = _event_card(event, expanded=str(event.get("event_key") or "") in self._expanded_keys)
+            card = _event_card(event, expanded=_feed_expanded(event, self._expanded_keys))
             card.expand_toggled.connect(self._on_expand_toggled)
             self._feed_layout.addWidget(card)
             if str(event.get("type") or "") == "thinking":
@@ -479,9 +479,15 @@ def _friendly_event(event: dict) -> dict | None:
         tool = str(event.get("tool") or "")
         label = _TOOL_LABELS.get(tool, tool or "инструмент")
         return {"type": "status", "text": f"Выполняю на этом ПК: «{label}»…"}
-    if event_type in {"status", "decision", "progress"}:
+    if event_type == "status":
         text = str(event.get("text") or "").strip()
         return {"type": "status", "text": text or "Агент работает…"}
+    if event_type in {"decision", "progress"}:
+        text = str(event.get("text") or "").strip()
+        return {"type": "system", "text": text} if text else None
+    if event_type == "plan":
+        text = str(event.get("text") or "").strip()
+        return {"type": "plan", "title": "План", "text": text} if text else None
     if event_type == "thinking":
         text = str(event.get("text") or "").strip()
         if text and (text.startswith("{") or "traceback" in text.casefold()):
@@ -516,9 +522,6 @@ def _friendly_event(event: dict) -> dict | None:
     if event_type == "work_result":
         text = str(event.get("text") or "").strip()
         payload = _work_result_event(event, text) if text else None
-        if payload is None:
-            return None
-        payload["type"] = "work_result"
         return payload
     if event_type == "agent_message":
         text = str(event.get("text") or "").strip()
@@ -562,7 +565,7 @@ def _work_result_event(work: dict, text: str) -> dict:
         extras.append(f"Действие: {item}")
     for item in work.get("notifications") or []:
         extras.append(f"Уведомление: {item}")
-    return {"type": "agent_message", "text": "\n".join(extras).strip()}
+    return {"type": "work_result", "title": "Результат", "text": "\n".join(extras).strip()}
 
 
 def _summarize_tool_result(tool: str, result: dict) -> str:
@@ -606,11 +609,19 @@ def _side_item(text: str) -> QLabel:
     return label
 
 
+def _feed_expanded(event: dict, expanded_keys: set[str]) -> bool:
+    kind = str(event.get("type") or "")
+    key = str(event.get("event_key") or "")
+    if key and key in expanded_keys:
+        return True
+    return kind in {"tool", "tool_result", "work_result", "result"}
+
+
 def _event_card(event: dict, *, expanded: bool = False) -> CursorFeedItem:
     event_type = str(event.get("type") or "system")
     key = str(event.get("event_key") or "")
     text = str(event.get("text") or event.get("message") or "")
-    if event_type == "tool":
+    if event_type in {"tool", "tool_result"}:
         return CursorFeedItem(
             kind="tool",
             text=text,
@@ -630,10 +641,27 @@ def _event_card(event: dict, *, expanded: bool = False) -> CursorFeedItem:
             event_key=key,
             expanded=expanded,
         )
+    if event_type == "plan":
+        return CursorFeedItem(
+            kind="plan",
+            text=text,
+            title="План",
+            detail=text,
+            event_key=key,
+            expanded=expanded,
+        )
+    if event_type in {"work_result", "result"}:
+        return CursorFeedItem(
+            kind="result",
+            text=text,
+            title="Результат",
+            detail=text,
+            event_key=key,
+            expanded=True,
+        )
     kind = {
         "user_message": "user",
         "agent_message": "agent",
-        "work_result": "agent",
         "error": "error",
         "system": "system",
     }.get(event_type, "system")

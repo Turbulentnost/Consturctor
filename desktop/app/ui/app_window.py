@@ -8,9 +8,13 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QStackedWidget, 
 
 from app.agents.headless_runner import HeadlessRunner
 from app.api_client import ApiClient, ApiError, LoginResult
-from app.notifications.service import NotificationService
+from app.notifications.service import NotificationService, show_windows_toast
 from app.session_store import clear_session, load_session
-from app.tools.hitl import install_confirm_host, set_away_notify_callback
+from app.tools.hitl import (
+    install_confirm_host,
+    notification_opens_live,
+    set_away_notify_callback,
+)
 from app.tools.runtime_api import configure as configure_runtime_api
 from app.ui.login_page import LoginPage
 from app.ui.main_shell import MainShell
@@ -18,11 +22,20 @@ from app.ui.theme import WINDOW_HEIGHT, WINDOW_WIDTH
 
 
 class AppWindow(QMainWindow):
-    def __init__(self, api: ApiClient | None = None, *, open_workflow_id: str = "") -> None:
+    def __init__(
+        self,
+        api: ApiClient | None = None,
+        *,
+        open_workflow_id: str = "",
+        open_run_id: str = "",
+    ) -> None:
         super().__init__()
         self.api = api or ApiClient()
         self._force_quit = False
         self._pending_workflow_id = (open_workflow_id or "").strip()
+        self._pending_run_id = (open_run_id or "").strip()
+        self._pending_open_live = False
+        self._last_toast_run_id = ""
         self.setWindowTitle("turbobot")
         logo = Path(__file__).resolve().parent / "temp" / "logo.png"
         if logo.exists():
@@ -65,7 +78,9 @@ class AppWindow(QMainWindow):
     def handle_external_command(self, command: str) -> None:
         text = (command or "").strip()
         if text.startswith("open-workflow:"):
-            self.open_workflow(text.split(":", 1)[1].strip())
+            rest = text.split(":", 1)[1].strip()
+            workflow_id, _, run_id = rest.partition("|")
+            self.open_workflow(workflow_id, run_id)
             return
         if text in {"ping", "hide"}:
             if text == "hide":
@@ -73,15 +88,21 @@ class AppWindow(QMainWindow):
             return
         self.reveal()
 
-    def open_workflow(self, workflow_id: str) -> None:
+    def open_workflow(self, workflow_id: str, run_id: str = "") -> None:
         wid = (workflow_id or "").strip()
         if not wid:
             return
         self.reveal()
+        open_live = notification_opens_live(wid)
         if self._stack.currentWidget() is self.main_shell:
-            self.main_shell.navigate_to_agent_run(wid)
+            if open_live:
+                self.main_shell.show_live_agent(wid)
+            else:
+                self.main_shell.navigate_to_agent_history(wid, run_id)
         else:
             self._pending_workflow_id = wid
+            self._pending_run_id = (run_id or "").strip()
+            self._pending_open_live = open_live
 
     def reveal(self) -> None:
         self.showNormal()
@@ -111,6 +132,8 @@ class AppWindow(QMainWindow):
         body = (preview or "").strip() or f"Нужно разрешить «{tool}»."
         if len(body) > 400:
             body = body[:397].rstrip() + "…"
+        if not show_windows_toast(title, body, workflow_id):
+            self._on_tray_toast(title, body, workflow_id)
         try:
             self.api.create_inbox_notification(
                 title=title,
@@ -119,7 +142,7 @@ class AppWindow(QMainWindow):
             )
             self.main_shell.refresh_notification_badge()
         except ApiError:
-            self._on_tray_toast(title, body, workflow_id)
+            pass
 
     def _setup_tray(self, logo: Path | None) -> None:
         self._tray = QSystemTrayIcon(self)
@@ -148,13 +171,14 @@ class AppWindow(QMainWindow):
         ):
             self.reveal()
 
-    def _on_tray_toast(self, title: str, body: str, workflow_id: str) -> None:
+    def _on_tray_toast(self, title: str, body: str, workflow_id: str, run_id: str = "") -> None:
         self._last_toast_workflow_id = (workflow_id or "").strip()
+        self._last_toast_run_id = (run_id or "").strip()
         self._tray.showMessage(title, body or "Открыть агента", QSystemTrayIcon.MessageIcon.Information, 10000)
 
     def _on_tray_message_clicked(self) -> None:
         if self._last_toast_workflow_id:
-            self.open_workflow(self._last_toast_workflow_id)
+            self.open_workflow(self._last_toast_workflow_id, self._last_toast_run_id)
         else:
             self.reveal()
 
@@ -183,9 +207,16 @@ class AppWindow(QMainWindow):
         if self.api.token:
             self._notify.start(token=self.api.token, base_url=self.api.base_url)
         pending = self._pending_workflow_id
+        pending_run = self._pending_run_id
+        pending_live = self._pending_open_live
         self._pending_workflow_id = ""
+        self._pending_run_id = ""
+        self._pending_open_live = False
         if pending:
-            self.main_shell.navigate_to_agent_run(pending)
+            if pending_live:
+                self.main_shell.show_live_agent(pending)
+            else:
+                self.main_shell.navigate_to_agent_history(pending, pending_run)
 
     def _on_logout(self) -> None:
         current_fio = self._user.fio if getattr(self, "_user", None) is not None else "-"

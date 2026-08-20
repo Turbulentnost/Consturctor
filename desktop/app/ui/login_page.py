@@ -219,10 +219,7 @@ class LoginPage(QWidget):
             self.fio_edit.setText(fio)
 
     def _search_fios(self, query: str) -> list[str]:
-        try:
-            return self._api.search_users(query)
-        except ApiError:
-            return []
+        return self._api.search_users(query)
 
     def _submit(self) -> None:
         fio = self.fio_edit.text().strip()

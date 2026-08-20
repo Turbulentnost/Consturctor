@@ -39,6 +39,7 @@ def _to_out(row: Notification, *, sender_fio: str = "") -> NotificationOut:
         title=row.title,
         body=row.body or "",
         workflow_id=row.workflow_id or "",
+        run_id=row.run_id or "",
         send_at=row.send_at,
         delivered_at=row.delivered_at,
         read_at=row.read_at,
@@ -113,6 +114,7 @@ def create_notification(
         title=payload.title.strip(),
         body=(payload.body or "").strip(),
         workflow_id=(payload.workflow_id or "").strip(),
+        run_id=(payload.run_id or "").strip(),
         send_at=send_at,
     )
     db.add(row)

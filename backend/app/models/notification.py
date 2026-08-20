@@ -21,6 +21,7 @@ class Notification(Base):
     title: Mapped[str] = mapped_column(String(256), nullable=False, default="")
     body: Mapped[str] = mapped_column(Text, nullable=False, default="")
     workflow_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     send_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

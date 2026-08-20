@@ -22,6 +22,7 @@ class NotificationCreate(BaseModel):
     body: str = ""
     send_at: datetime | None = None
     workflow_id: str = ""
+    run_id: str = ""
 
 
 class NotificationOut(BaseModel):
@@ -31,6 +32,7 @@ class NotificationOut(BaseModel):
     title: str
     body: str = ""
     workflow_id: str = ""
+    run_id: str = ""
     send_at: datetime
     delivered_at: datetime | None = None
     read_at: datetime | None = None

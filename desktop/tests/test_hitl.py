@@ -1,12 +1,26 @@
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+
+from app.tools import hitl as hitl_mod
 from app.tools.hitl import (
+    HitlConfirmCard,
+    confirm_level1_tool,
     explain_tool,
+    has_pending_for,
     host_is_eligible,
     needs_confirmation,
     never_confirm,
+    notification_opens_live,
+    register_inline_host,
     set_away_notify_callback,
+    unregister_inline_host,
     workflow_id_from_arguments,
 )
 from app.tools.hitl import _notify_away
+
+
+def _ensure_app() -> QApplication:
+    return QApplication.instance() or QApplication([])
 
 
 def test_notify_send_never_asks_hitl() -> None:
@@ -96,3 +110,80 @@ def test_away_notify_callback_keeps_pending_loop_intact() -> None:
     assert seen["tool"] == "onec.odata_post"
     assert "Запись в 1С" in seen["preview"]
     assert "Catalog_Foo" in seen["preview"]
+
+
+def test_set_resolved_collapses_to_grey_receipt() -> None:
+    _ensure_app()
+    card = HitlConfirmCard("excel.create_workbook", '{"sheets": 1}', arguments={})
+    assert not card._buttons.isHidden()
+    assert not card._params.isHidden()
+    card.set_resolved(True)
+    assert card._buttons.isHidden()
+    assert card._title.isHidden()
+    assert card._params.isHidden()
+    assert card._what.isHidden()
+    assert card._hint.isHidden()
+    assert not card._status.isHidden()
+    assert card.resolved_text() == "Вы подтвердили: Создание Excel"
+    assert "#F4F7F6" in card.styleSheet()
+    card.set_resolved(False)
+    assert card.resolved_text() == "Вы отклонили: Создание Excel"
+    assert card._buttons.isHidden()
+
+
+def test_show_always_notifies_even_with_visible_host() -> None:
+    app = _ensure_app()
+    seen: list[tuple[str, str, str]] = []
+
+    def on_away(workflow_id: str, tool: str, preview: str) -> None:
+        seen.append((workflow_id, tool, preview))
+
+    class _Host(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cards: list[QWidget] = []
+            QVBoxLayout(self)
+
+        def attach_hitl_card(self, card: QWidget) -> None:
+            self.cards.append(card)
+            self.layout().addWidget(card)
+
+    host = _Host()
+    host.show()
+    app.processEvents()
+    set_away_notify_callback(on_away)
+    register_inline_host(host, "wf-live")
+    try:
+
+        def accept_pending() -> None:
+            for item in list(hitl_mod._pending):
+                item.card._accept.click()
+
+        QTimer.singleShot(0, accept_pending)
+        ok = confirm_level1_tool("excel.create_workbook", {"workflow_id": "wf-live"})
+    finally:
+        unregister_inline_host(host)
+        set_away_notify_callback(None)
+        host.close()
+    assert ok is True
+    assert host.cards
+    assert seen
+    assert seen[0][0] == "wf-live"
+    assert seen[0][1] == "excel.create_workbook"
+
+
+def test_notification_opens_live_when_pending() -> None:
+    _ensure_app()
+    assert notification_opens_live("wf-pending") is False
+    item = hitl_mod._PendingConfirm(workflow_id="wf-pending", card=QWidget())
+    hitl_mod._pending.append(item)
+    try:
+        assert has_pending_for("wf-pending") is True
+        assert notification_opens_live("wf-pending") is True
+        assert notification_opens_live("other") is False
+        item.answered = True
+        assert has_pending_for("wf-pending") is False
+        assert notification_opens_live("wf-pending") is False
+    finally:
+        if item in hitl_mod._pending:
+            hitl_mod._pending.remove(item)

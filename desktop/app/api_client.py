@@ -477,6 +477,7 @@ class InboxNotification:
     title: str
     body: str = ""
     workflow_id: str = ""
+    run_id: str = ""
     sender_fio: str = ""
     unread: bool = True
     created_at: str = ""
@@ -1791,6 +1792,7 @@ class ApiClient:
                     title=str(item.get("title") or "Уведомление"),
                     body=str(item.get("body") or ""),
                     workflow_id=str(item.get("workflow_id") or ""),
+                    run_id=str(item.get("run_id") or ""),
                     sender_fio=str(item.get("sender_fio") or ""),
                     unread=bool(item.get("unread", item.get("read_at") in (None, ""))),
                     created_at=str(item.get("created_at") or ""),

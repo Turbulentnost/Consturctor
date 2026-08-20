@@ -216,6 +216,35 @@ class AgentHistoryPage(QWidget):
         self._render_list()
         self._show_list()
 
+    def open_run(
+        self,
+        *,
+        title: str,
+        workflow_id: str,
+        run_id: str = "",
+        runs: list[AgentRunHistoryItem] | None = None,
+        detail: AgentRunHistoryItem | None = None,
+    ) -> None:
+        self._agent_title = (title or "").strip() or "ИИ-агент"
+        self._workflow_id = workflow_id
+        if runs is not None:
+            self._runs = list(runs)
+            self._render_list()
+        self._title.setText(self._agent_title)
+        if detail is not None:
+            self._show_run_detail(detail)
+            return
+        wanted = (run_id or "").strip()
+        item = next((row for row in self._runs if row.id == wanted), None) if wanted else None
+        if item is None and self._runs:
+            item = self._runs[0]
+        if item is None and wanted:
+            item = AgentRunHistoryItem(id=wanted, workflow_id=workflow_id)
+        if item is None:
+            self._show_list()
+            return
+        self._open_run(item)
+
     def _show_list(self) -> None:
         self._stack.setCurrentIndex(0)
 
@@ -280,7 +309,9 @@ class AgentHistoryPage(QWidget):
         for index, event in enumerate(events, start=1):
             item = dict(event)
             item.setdefault("event_key", f"h{index}")
-            self._feed_layout.addWidget(_event_card(item, expanded=False))
+            kind = str(item.get("type") or "")
+            expanded = kind in {"tool", "tool_result", "work_result", "result"}
+            self._feed_layout.addWidget(_event_card(item, expanded=expanded))
         if not events:
             empty = QLabel("Ход выполнения этого запуска не сохранился.")
             empty.setWordWrap(True)
@@ -347,7 +378,9 @@ def _events_for_run(item: AgentRunHistoryItem) -> list[dict]:
         if not isinstance(raw, dict):
             continue
         friendly = _friendly_event(raw)
-        if friendly is None or str(friendly.get("type") or "") == "status":
+        if friendly is None:
+            continue
+        if str(friendly.get("type") or "") == "status":
             continue
         events.append(friendly)
     if events:

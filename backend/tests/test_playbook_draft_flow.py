@@ -129,6 +129,17 @@ def test_project_read_uses_turboproject_not_onec_cards() -> None:
     )
     assert notes[0] == "onec.meeting_service_notes"
 
+    export = select_candidates(
+        {"system": "desktop", "entity": "spreadsheet", "operation": "export"}
+    )
+    assert export == ["excel.create_workbook"]
+    assert "excel.edit_workbook" not in export
+
+    update = select_candidates(
+        {"system": "desktop", "entity": "spreadsheet", "operation": "правка"}
+    )
+    assert update == ["excel.edit_workbook"]
+
 
 def _full_step(step_id: str, **overrides) -> dict:
     step = {
@@ -606,6 +617,61 @@ def test_ledger_marks_step_completed_only_on_accepted_verdict() -> None:
     assert ledger.as_list()[0]["attempts"] == 2
 
 
+def test_ledger_blocks_step_until_needs_from_are_closed() -> None:
+    from app.services.workflows.cursor_tools import _followup_prompt, _reject_blocked_handoff
+
+    draft = attach_tool_candidates(
+        {
+            "status": "draft",
+            "steps": [
+                _full_step(
+                    "s1",
+                    system="onec",
+                    entity="service_note",
+                    operation="search",
+                    provides=["notes"],
+                ),
+                _full_step(
+                    "s2",
+                    system="outlook",
+                    entity="calendar_event",
+                    operation="list",
+                    provides=["events"],
+                    needs_from=[{"step": "s1", "field": "notes", "as": "series_window"}],
+                ),
+                _full_step(
+                    "s3",
+                    system="desktop",
+                    entity="spreadsheet",
+                    operation="export",
+                    provides=["file"],
+                    required_params=["filename"],
+                    needs_from=[{"step": "s2", "field": "events", "as": "calendar_events"}],
+                ),
+            ],
+        }
+    )
+    ledger = StepLedger(draft)
+    outlook = ledger.step_by_id("s2")
+    export = ledger.step_by_id("s3")
+
+    assert ledger.open_required_tools() == ["onec.meeting_service_notes"]
+    assert ledger.unmet_needs(outlook) == ["s1"]
+    assert "s1" in _reject_blocked_handoff(ledger, outlook)
+    assert "excel.create_workbook" in (export.get("tool_candidates") or [])
+    assert "excel.edit_workbook" not in (export.get("tool_candidates") or [])
+
+    text = _followup_prompt(
+        [{"name": "notify.send", "ok": True}],
+        mode="execute",
+        pending=None,
+        steps_left=ledger.missing_required(),
+    )
+    assert "обязательные шаги" in text
+    assert "constructor_tool" in text
+    assert "RESULT" not in text or "не пиши" in text
+
+
 # --- гейт итога ----------------------------------------------------------
 
 
@@ -731,6 +797,8 @@ def test_draft_prompt_asks_for_json_only_without_transport_lecture() -> None:
     assert "вернуть JSON черновика" in prompt
     assert "не решай" in prompt.casefold()
     assert "когда запускать" in prompt.casefold()
+    assert "service_note" in prompt
+    assert "6.4" in prompt
 
 
 def test_draft_prompt_carries_contract_vocabulary() -> None:
