@@ -533,6 +533,37 @@ def test_wrong_system_is_mismatch() -> None:
     assert verdict.data_status == "mismatch"
 
 
+def test_com_timeout_error_asks_to_retry_same_call() -> None:
+    step = {
+        "id": "s2",
+        "system": "onec",
+        "entity": "service_note",
+        "operation": "search",
+        "tool_candidates": ["onec.meeting_service_notes"],
+    }
+    timed_out = evaluate_tool_result(
+        step=step,
+        name="onec.meeting_service_notes",
+        arguments={"date": "2026-08-20"},
+        result={
+            "error": (
+                "Command '['C:\\\\Windows\\\\SysWOW64\\\\cscript.exe', '//Nologo']' "
+                "timed out after 150 seconds"
+            )
+        },
+    )
+    assert timed_out.data_status == "mismatch"
+    assert "повтори" in timed_out.next_action.casefold()
+    assert "исправь" not in timed_out.next_action.casefold()
+    human = evaluate_tool_result(
+        step=step,
+        name="onec.meeting_service_notes",
+        arguments={"date": "2026-08-20"},
+        result={"error": "1С не ответила через COM за 180 с. Повтори тот же вызов."},
+    )
+    assert "повтори" in human.next_action.casefold()
+
+
 def test_turboproject_read_is_complete_even_if_step_said_onec() -> None:
     step = {
         "id": "s1",

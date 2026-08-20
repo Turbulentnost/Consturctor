@@ -18,6 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from app.frozen_runtime import agent_python_command
 from app.tools.ac.tooling import (
     ToolCallResult,
     ToolDefinition,
@@ -58,11 +59,11 @@ def _python_command_prefix() -> list[str] | None:
     """Вернуть команду запуска Python-кода агента.
 
     В исходниках используем текущий Python. В frozen exe отдельного python.exe
-    может не быть, поэтому вызываем сам AgentConstructor.exe во внутреннем
-    runner-режиме: он выполнит скрипт через встроенный Python runtime PyInstaller.
+    может не быть, поэтому вызываем консольный ConstructorComWorker.exe
+    в режиме --agent-python-runner (встроенный runtime PyInstaller).
     """
     if getattr(sys, "frozen", False) and sys.executable:
-        return [sys.executable, "--agent-python-runner"]
+        return agent_python_command(sys.executable, frozen=True)
     if sys.executable:
         return [sys.executable]
     for name in ("python", "python3", "py"):

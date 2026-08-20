@@ -160,6 +160,22 @@ def _missing_result_fields(payload: dict[str, Any], contract: dict[str, Any]) ->
     return expected
 
 
+def _is_transient_tool_error(text: str) -> bool:
+    low = str(text or "").casefold()
+    markers = (
+        "timed out",
+        "timeout",
+        "не ответила",
+        "не ответил",
+        "сеанс 1с",
+        "com worker",
+        "cscript",
+        "run.vbs",
+        "com32",
+    )
+    return any(marker in low for marker in markers)
+
+
 def evaluate_tool_result(
     *,
     step: dict[str, Any] | None,
@@ -229,11 +245,17 @@ def evaluate_tool_result(
     elif payload.get("ok") is False:
         error_text = str(payload.get("message") or "инструмент вернул ok=false")
     if error_text:
+        transient = _is_transient_tool_error(error_text)
         return ToolVerdict(
             data_status=MISMATCH,
             reasons=[*reasons, f"ошибка инструмента: {error_text[:300]}"],
             checks={**checks, "source": False},
-            next_action="Исправь параметры вызова или возьми другой инструмент из кандидатов шага.",
+            next_action=(
+                "Повтори тот же вызов без смены параметров. "
+                "1С не ответила вовремя — это не пустой список."
+                if transient
+                else "Исправь параметры вызова или возьми другой инструмент из кандидатов шага."
+            ),
         )
 
     if mismatch:

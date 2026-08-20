@@ -4,12 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-try:
-    from dotenv import load_dotenv
-except ImportError:
-    def load_dotenv(*_args, **_kwargs):  # type: ignore[misc]
-        """Fallback for helper Python environments without python-dotenv."""
-        return False
+from app.envfile import load_env_file
 
 
 def _desktop_root() -> Path:
@@ -31,9 +26,12 @@ BUNDLE_ROOT = _bundle_root()
 REPO_ROOT = DESKTOP_ROOT.parent if not getattr(sys, "frozen", False) else DESKTOP_ROOT
 
 # Prefer .env beside the exe / desktop folder.
-load_dotenv(DESKTOP_ROOT / ".env")
+load_env_file(DESKTOP_ROOT / ".env")
 if getattr(sys, "frozen", False):
-    load_dotenv(DESKTOP_ROOT / ".env", override=False)
+    load_env_file(DESKTOP_ROOT / ".env", override=False)
+    _bundled_browsers = DESKTOP_ROOT / "ms-playwright"
+    if _bundled_browsers.is_dir() and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_bundled_browsers)
 
 
 def _env_flag(name: str) -> bool:

@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 from pydantic import ValidationError
 
+from app.frozen_runtime import com_worker_command, desktop_root
 from app.tools.ac.workers.base import BaseWorker
 from app.tools.ac.workers.models import WorkerResult, WorkerTask
 
@@ -87,11 +87,13 @@ def _parse_worker_result(task_id: str, stdout: str) -> WorkerResult | None:
 
 
 def _desktop_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+    return desktop_root()
 
 
 def _worker_env() -> dict[str, str]:
     env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        return env
     desktop = str(_desktop_root())
     current = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = desktop if not current else f"{desktop}{os.pathsep}{current}"
@@ -112,9 +114,11 @@ def _hidden_run_kwargs() -> dict:
 
 def _build_worker_command(module_name: str) -> list[str]:
     """Собрать команду запуска COM-worker для обычного Python и frozen exe."""
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "--com-worker"]
-    return [sys.executable, "-m", module_name]
+    return com_worker_command(
+        sys.executable,
+        module_name,
+        frozen=bool(getattr(sys, "frozen", False)),
+    )
 
 
 def _build_process_error_message(stderr: str) -> str:

@@ -14,8 +14,10 @@ from app.tools.ac.base import BaseTool
 from app.tools.ac.registry import ToolRegistry
 from app.tools.ac.workers.base import BaseWorker
 from app.tools.ac.workers.models import WorkerTask
+from app.tools.ac.workers.onec_com32_helper import com32_worker_timeout_seconds
 
 ONEC_COM32_RUNTIME = "com32"
+ONEC_COM32_TIMEOUT_SECONDS = com32_worker_timeout_seconds()
 ONEC_COM32_TOOLS = frozenset(
     {
         "onec.search_documents",
@@ -125,7 +127,7 @@ class OneCMeetingServiceNotesTool(OneCReadOnlyTool):
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
-                timeout_seconds=180,
+                timeout_seconds=ONEC_COM32_TIMEOUT_SECONDS,
                 runtime=ONEC_COM32_RUNTIME,
                 input_schema={
                     "type": "object",
@@ -174,7 +176,7 @@ def _definition(name: str, title: str) -> ToolDefinition:
         side_effect_level=ToolSideEffectLevel.READ,
         execution_mode=ToolExecutionMode.COM_WORKER,
         requires_human_approval=False,
-        timeout_seconds=180,
+        timeout_seconds=ONEC_COM32_TIMEOUT_SECONDS,
         input_schema={"type": "object"},
         output_schema={"type": "object"},
         runtime=ONEC_COM32_RUNTIME,

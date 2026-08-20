@@ -47,11 +47,27 @@ cd Constructor
 python desktop\build_exe.py
 ```
 
-Скрипт собирает onedir-дистрибутив в `dist/ConstructorDesktop`:
+Скрипт собирает onedir-дистрибутив в `desktop/dist/ConstructorDesktop`. Переносите **всю папку**, не один файл:
 
-- `ConstructorDesktop.exe` — desktop-приложение без необходимости ставить Python пользователю.
-- `.env` рядом с exe — адрес серверного backend (`BACKEND_URL`).
-- `tools/roseltorg_tender_search/roseltorg_tender_search.exe` — локальный инструмент поиска Росэлторг без Python.
-- `tools/roseltorg_tender_search/ms-playwright` — браузеры Playwright для инструмента.
+- `ConstructorDesktop.exe` — GUI без установленного Python.
+- `ConstructorComWorker.exe` — консольный процесс для COM (Outlook/1С) и `code.run_python`. Не запускайте вручную.
+- `.env` рядом с exe — `BACKEND_URL` на LAN IP машины сборки (`http://<ip>:7812`), не `127.0.0.1`.
+- `tools/` — web_search, site_browser, roseltorg.
+- `ms-playwright/` — Chromium для Playwright, если он был в кэше при сборке.
 
-Backend не поставляется вместе с desktop: он должен быть запущен на сервере, указанном в `.env`.
+На целевом ПК нужны установленный Outlook и 32-bit `V83.COMConnector` (плюс `SysWOW64\cscript.exe`). Backend должен быть запущен на адресе из `.env`.
+
+## Установщик Windows
+
+После `python desktop\build_exe.py`:
+
+```powershell
+python desktop\installer\build_installer.py
+```
+
+Результат: `desktop/dist/ConstructorDesktop-Setup.exe`.
+
+- Ставит в `%LOCALAPPDATA%\ConstructorDesktop` без прав администратора.
+- Ярлыки в меню Пуск и на рабочем столе.
+- `BACKEND_URL` — LAN IP машины сборки, не `127.0.0.1`. При обновлении пароли в `.env` сохраняются, адрес сервера переписывается.
+- В Setup попадает текущий `.env` из сборки — не выкладывайте установщик в общий доступ.

@@ -16,14 +16,7 @@ elif str(ROOT) not in sys.path:
 for _noisy_logger in ("httpx", "httpcore", "urllib3"):
     logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QIcon
-from PySide6.QtWidgets import QApplication
-
-from app.config import bundle_path
-from app.single_instance import SingleInstance, send_to_running
-from app.ui.app_window import AppWindow
-from app.ui.theme import app_font, load_fonts, qss_global
+from app.frozen_runtime import entry_mode, run_agent_python, run_com_worker
 
 APP_ID = "NewConstructor"
 
@@ -71,8 +64,16 @@ def _wants_background(argv: list[str]) -> bool:
     return "--background" in argv or "--hidden" in argv
 
 
-def main() -> int:
-    _configure_console_encoding()
+def _run_gui() -> int:
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QFont, QIcon
+    from PySide6.QtWidgets import QApplication
+
+    from app.config import bundle_path
+    from app.single_instance import SingleInstance, send_to_running
+    from app.ui.app_window import AppWindow
+    from app.ui.theme import app_font, load_fonts, qss_global
+
     _set_app_user_model_id()
     workflow_id = _open_workflow_id(sys.argv)
     run_id = _open_run_id(sys.argv)
@@ -111,6 +112,16 @@ def main() -> int:
     if not background:
         window.show()
     return app.exec()
+
+
+def main() -> int:
+    _configure_console_encoding()
+    mode = entry_mode()
+    if mode == "com-worker":
+        return run_com_worker()
+    if mode == "agent-python":
+        return run_agent_python()
+    return _run_gui()
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ __pycache__/
 .venv/
 venv/
 *.egg
-
+installer/
 # Build / packaging outputs (any depth)
 build/
 dist/

@@ -75,6 +75,7 @@ def test_tool_is_readonly_and_registered() -> None:
     assert tool.definition.requires_human_approval is False
     assert "не записывает" in (tool.definition.description or "").casefold()
     assert tool.definition.runtime == ONEC_COM32_RUNTIME
+    assert tool.definition.timeout_seconds >= 360
 
 
 def test_latin_query_has_ascii_aliases() -> None:
@@ -220,7 +221,7 @@ def test_com32_dispatch_search_and_card(monkeypatch) -> None:
     from app.tools.ac.workers.models import WorkerTask
     from app.tools.ac.workers.onec_com_actions import _dispatch_via_com32
 
-    def fake_select(attempts, timeout=150):
+    def fake_select(attempts, timeout=None):
         _ = attempts, timeout
         return (
             [
@@ -262,3 +263,51 @@ def test_mock_action_does_not_invent_writes() -> None:
     assert result["readonly"] is True
     assert result["notes"] == []
     assert result["theme"] == "организация совещаний"
+
+
+def test_select_timeout_retries_then_succeeds(monkeypatch) -> None:
+    from app.tools.ac.workers.onec_com32_helper import (
+        Com32TimeoutError,
+        run_select_first,
+    )
+
+    calls = {"n": 0}
+
+    def fake_once(attempts, timeout):
+        _ = attempts
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise Com32TimeoutError(timeout)
+        return ([{"Number": "000013243"}], 0)
+
+    monkeypatch.setattr(
+        "app.tools.ac.workers.onec_com32_helper._run_select_first_once",
+        fake_once,
+    )
+    monkeypatch.setattr("app.tools.ac.workers.onec_com32_helper.COM32_RETRY_PAUSE_SEC", 0)
+    rows, chosen = run_select_first([("ВЫБРАТЬ 1 КАК Number", ["Number"])])
+    assert calls["n"] == 2
+    assert chosen == 0
+    assert rows[0]["Number"] == "000013243"
+
+
+def test_meeting_notes_timeout_is_connection_error(monkeypatch) -> None:
+    import pytest
+
+    from app.tools.ac.workers.onec_com32_helper import Com32TimeoutError
+    from app.tools.ac.workers.onec_com_actions import _list_meeting_service_notes_com32
+    from app.tools.ac.workers.onec_errors import OneCConnectionError
+
+    def boom(*_args, **_kwargs):
+        raise Com32TimeoutError(180)
+
+    monkeypatch.setattr(
+        "app.tools.ac.workers.onec_com32_helper.run_select_first",
+        boom,
+    )
+    with pytest.raises(OneCConnectionError) as caught:
+        _list_meeting_service_notes_com32({"date": "2026-08-20"})
+    text = str(caught.value).casefold()
+    assert "не ответила" in text
+    assert "cscript" not in text
+    assert "run.vbs" not in text

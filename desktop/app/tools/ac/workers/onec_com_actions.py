@@ -67,11 +67,13 @@ def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
     com_initialized = False
     session = None
     output_data: dict[str, Any] = {}
+    used_com32 = False
     try:
         from app.tools.ac.workers.com_availability import prefers_com32
 
         if prefers_com32() or not _native_connector_creatable():
             print("[COM_DIAG] step=com32-helper", file=sys.stderr, flush=True)
+            used_com32 = True
             output_data = _dispatch_via_com32(task)
         else:
             pythoncom, _ = _load_pywin32_modules()
@@ -85,11 +87,20 @@ def execute_onec_com_readonly(task: WorkerTask) -> WorkerResult:
             print("[COM_DIAG] step=dispatched", file=sys.stderr, flush=True)
     except ImportError as exc:
         try:
+            used_com32 = True
             output_data = _dispatch_via_com32(task)
         except Exception:
             return _com_not_available(task, f"pywin32 недоступен: {exc}")
     except OneCConnectionError as exc:
+        if used_com32:
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=False,
+                error_type="ONEC_CONNECTION_ERROR",
+                error_message=str(exc),
+            )
         try:
+            used_com32 = True
             output_data = _dispatch_via_com32(task)
         except Exception as helper_exc:
             return WorkerResult(
@@ -156,8 +167,56 @@ def _dispatch_via_com32(task: WorkerTask) -> dict[str, Any]:
     )
 
 
-def _list_meeting_service_notes_com32(input_data: dict[str, Any]) -> dict[str, Any]:
-    from app.tools.ac.workers.onec_com32_helper import run_select_first
+def _com32_select(
+    attempts: list[tuple[str, list[str]]],
+    *,
+    timeout: int | None = None,
+) -> tuple[list[dict[str, str]], int]:
+    from app.tools.ac.workers.onec_com32_helper import Com32TimeoutError, run_select_first
+
+    try:
+        return run_select_first(attempts, timeout=timeout)
+    except Com32TimeoutError as exc:
+        raise OneCConnectionError(str(exc)) from exc
+    except Exception as exc:
+        _reraise_transient_com32(exc)
+        raise
+
+
+def _reraise_transient_com32(exc: BaseException) -> None:
+    message = str(exc).strip()
+    low = message.casefold()
+    if message.startswith(("CREATE", "CONNECT", "TIMEOUT")) or "timed out" in low:
+        raise OneCConnectionError(_human_com32_error(message)) from exc
+
+
+def _human_com32_error(message: str) -> str:
+    text = str(message or "").strip()
+    low = text.casefold()
+    if "timed out" in low or low.startswith("timeout"):
+        return (
+            "1С не ответила через COM за отведённое время. "
+            "Повтори тот же вызов — это таймаут сеанса, не пустой список документов."
+        )
+    if "cscript.exe" in low or "run.vbs" in low:
+        return (
+            "1С не ответила через COM. "
+            "Повтори тот же вызов — не меняй параметры поиска."
+        )
+    if text.startswith("CONNECT"):
+        detail = text[len("CONNECT") :].strip()
+        return f"Не удалось открыть сеанс 1С: {detail}" if detail else "Не удалось открыть сеанс 1С."
+    if text.startswith("CREATE"):
+        detail = text[len("CREATE") :].strip()
+        return f"Не удалось создать COMConnector: {detail}" if detail else "Не удалось создать COMConnector."
+    return text
+
+
+def _list_meeting_service_notes_com32(
+    input_data: dict[str, Any],
+    *,
+    timeout: int | None = None,
+) -> dict[str, Any]:
     from app.tools.ac.workers.onec_meeting_notes import (
         build_meeting_notes_query_latin,
         note_from_com32_row,
@@ -219,11 +278,14 @@ def _list_meeting_service_notes_com32(input_data: dict[str, Any]) -> dict[str, A
                 )
             )
     try:
-        rows, chosen = run_select_first([(query, columns) for query, columns, *_ in specs])
+        rows, chosen = _com32_select(
+            [(query, columns) for query, columns, *_ in specs],
+            timeout=timeout,
+        )
+    except OneCConnectionError:
+        raise
     except Exception as exc:  # noqa: BLE001
         message = str(exc).strip()
-        if message.startswith(("CREATE", "CONNECT")):
-            raise OneCConnectionError(message) from exc
         return {
             "notes": [],
             "count": 0,
@@ -256,9 +318,12 @@ def _list_meeting_service_notes_com32(input_data: dict[str, Any]) -> dict[str, A
     }
 
 
-def _search_documents_com32(input_data: dict[str, Any]) -> dict[str, Any]:
+def _search_documents_com32(
+    input_data: dict[str, Any],
+    *,
+    timeout: int | None = None,
+) -> dict[str, Any]:
     """Поиск документов 1С через 32-bit SELECT. Без записи."""
-    from app.tools.ac.workers.onec_com32_helper import run_select_first
     from app.tools.ac.workers.onec_meeting_notes import (
         build_document_search_query_latin,
         build_incoming_search_query_latin,
@@ -323,11 +388,14 @@ def _search_documents_com32(input_data: dict[str, Any]) -> dict[str, Any]:
                 )
             )
     try:
-        rows, chosen = run_select_first([(text, columns) for text, columns, *_ in specs])
+        rows, chosen = _com32_select(
+            [(text, columns) for text, columns, *_ in specs],
+            timeout=timeout,
+        )
+    except OneCConnectionError:
+        raise
     except Exception as exc:  # noqa: BLE001
         message = str(exc).strip()
-        if message.startswith(("CREATE", "CONNECT")):
-            raise OneCConnectionError(message) from exc
         return {
             "documents": [],
             "count": 0,
@@ -354,7 +422,11 @@ def _search_documents_com32(input_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _get_document_card_com32(input_data: dict[str, Any]) -> dict[str, Any]:
+def _get_document_card_com32(
+    input_data: dict[str, Any],
+    *,
+    timeout: int | None = None,
+) -> dict[str, Any]:
     """Карточка документа 1С через 32-bit SELECT. Без записи."""
     args = input_data if isinstance(input_data, dict) else {}
     query = str(
@@ -370,7 +442,8 @@ def _get_document_card_com32(input_data: dict[str, Any]) -> dict[str, Any]:
             "number": query if _looks_like_document_number(query) else "",
             "query": query,
             "max_results": 1,
-        }
+        },
+        timeout=timeout,
     )
     documents = raw.get("documents") if isinstance(raw.get("documents"), list) else []
     document = documents[0] if documents and isinstance(documents[0], dict) else {}

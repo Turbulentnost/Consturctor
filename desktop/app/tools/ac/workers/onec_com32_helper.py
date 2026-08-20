@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from app.tools.ac.workers.onec_meeting_notes import assert_select_only
@@ -18,6 +19,30 @@ ENV_REF = "ONEC_COM_REF"
 ENV_LOGIN = "ERP_LOGIN"
 ENV_PASSWORD = "ERP_PASSWORD"
 DEFAULT_PROGID = "V83.COMConnector"
+# CONNECT к erp_pm часто 60–90 с; 150 с обрывало живой сеанс и уходило в чат как mismatch.
+COM32_SELECT_TIMEOUT = 180
+COM32_TIMEOUT_RETRIES = 1
+COM32_RETRY_PAUSE_SEC = 3
+
+
+class Com32TimeoutError(RuntimeError):
+    """cscript завис на CONNECT/Execute — это не пустой SELECT."""
+
+    def __init__(self, seconds: int) -> None:
+        self.seconds = int(seconds)
+        super().__init__(
+            f"1С не ответила через COM за {self.seconds} с. "
+            "Повтори тот же вызов — это таймаут сеанса, не пустой список документов."
+        )
+
+
+def com32_worker_timeout_seconds() -> int:
+    """Бюджет subprocess-worker: попытка + повтор + пауза."""
+    return (
+        COM32_SELECT_TIMEOUT * (1 + COM32_TIMEOUT_RETRIES)
+        + COM32_RETRY_PAUSE_SEC
+        + 20
+    )
 
 
 def cscript32() -> Path:
@@ -43,13 +68,21 @@ def is_com32_available() -> tuple[bool, str]:
             'WScript.StdOut.WriteLine "ok"',
         ]
     )
-    code, stdout, stderr = _run_vbs(script, timeout=20)
+    try:
+        code, stdout, stderr = _run_vbs(script, timeout=20)
+    except Com32TimeoutError as exc:
+        return False, str(exc)
     if code == 0 and "ok" in (stdout or ""):
         return True, "32-bit COMConnector доступен"
     return False, (stderr or stdout or f"helper exit {code}").strip()
 
 
-def run_select(query_text: str, columns: list[str], *, timeout: int = 150) -> list[dict[str, str]]:
+def run_select(
+    query_text: str,
+    columns: list[str],
+    *,
+    timeout: int | None = None,
+) -> list[dict[str, str]]:
     """Выполнить один SELECT в 1С через 32-bit COMConnector. Без записи."""
     rows, _index = run_select_first([(query_text, columns)], timeout=timeout)
     return rows
@@ -58,9 +91,28 @@ def run_select(query_text: str, columns: list[str], *, timeout: int = 150) -> li
 def run_select_first(
     attempts: list[tuple[str, list[str]]],
     *,
-    timeout: int = 150,
+    timeout: int | None = None,
 ) -> tuple[list[dict[str, str]], int]:
     """Один CONNECT, затем варианты SELECT. Без записи в 1С."""
+    seconds = int(timeout or COM32_SELECT_TIMEOUT)
+    last: BaseException | None = None
+    for attempt in range(COM32_TIMEOUT_RETRIES + 1):
+        try:
+            return _run_select_first_once(attempts, timeout=seconds)
+        except Com32TimeoutError as exc:
+            last = exc
+            if attempt >= COM32_TIMEOUT_RETRIES:
+                break
+            time.sleep(COM32_RETRY_PAUSE_SEC)
+    assert last is not None
+    raise last
+
+
+def _run_select_first_once(
+    attempts: list[tuple[str, list[str]]],
+    *,
+    timeout: int,
+) -> tuple[list[dict[str, str]], int]:
     if not attempts:
         raise RuntimeError("Нет SELECT-запросов для 32-bit helper")
     conn = connection_string()
@@ -229,13 +281,47 @@ def _run_vbs(script: str, *, args: list[str] | None = None, timeout: int = 60) -
         path = Path(raw_dir) / "run.vbs"
         path.write_text(script, encoding="utf-16")
         command = [str(exe), "//Nologo", str(path), *(args or [])]
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-        )
-    return completed.returncode, completed.stdout or "", completed.stderr or ""
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            _kill_hung(exc)
+            raise Com32TimeoutError(timeout) from None
+    return (
+        completed.returncode,
+        _decode_stream(completed.stdout),
+        _decode_stream(completed.stderr),
+    )
+
+
+def _kill_hung(exc: subprocess.TimeoutExpired) -> None:
+    proc = getattr(exc, "process", None)
+    if proc is None:
+        return
+    try:
+        proc.kill()
+    except OSError:
+        return
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        return
+
+
+def _decode_stream(raw: bytes | str | None) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    for encoding in ("utf-8", "utf-16", "cp1251"):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if "\ufffd" not in text:
+            return text
+    return raw.decode("cp1251", errors="replace")
