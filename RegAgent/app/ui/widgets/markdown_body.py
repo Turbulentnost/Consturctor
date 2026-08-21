@@ -159,14 +159,14 @@ class MarkdownBody(QTextBrowser):
         )
         self.document().setDefaultStyleSheet(
             f"""
-            body {{ color: {color}; font-family: '{family}'; font-size: {font_size}px; }}
-            h1, h2, h3 {{ color: {color}; font-weight: 600; margin: 10px 0 6px 0; }}
-            p {{ margin: 0 0 8px 0; }}
-            ul, ol {{ margin: 4px 0 8px 18px; }}
+            body {{ color: {color}; font-family: '{family}'; font-size: {font_size}px; line-height: 1.45; }}
+            h1, h2, h3 {{ color: {color}; font-weight: 600; font-size: {font_size + 1}px; margin: 8px 0 4px 0; }}
+            p {{ margin: 0 0 6px 0; }}
+            ul, ol {{ margin: 2px 0 6px 16px; }}
             code {{ background: #F4F7F6; padding: 1px 4px; }}
             pre {{ background: #F4F7F6; padding: 8px; }}
-            table {{ border-collapse: collapse; margin: 8px 0 12px 0; }}
-            th, td {{ border: 1px solid #D5DEDA; padding: 6px 10px; }}
+            table {{ border-collapse: collapse; margin: 6px 0 8px 0; }}
+            th, td {{ border: 1px solid #D5DEDA; padding: 4px 8px; }}
             th {{ background: #F4F7F6; font-weight: 600; }}
             """
         )

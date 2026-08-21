@@ -1,35 +1,54 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QMouseEvent
 from PySide6.QtWidgets import (
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from app.models import Card
-from app.ui.styles import (
-    card_qss,
-    danger_button_qss,
-    primary_button_qss,
-    secondary_button_qss,
-    tab_link_qss,
+from app.ui.styles import card_qss, icon_button_qss, primary_button_qss, tab_link_qss
+from app.ui.theme import (
+    COLOR_CONTENT_MUTED,
+    ICON_DOWNLOAD,
+    ICON_GEAR,
+    ICON_HISTORY,
+    ICON_TRASH,
+    MAIN_TEXT,
+    NERD_FAMILY,
+    app_font,
+    nerd_font,
+    scroll_bar_qss,
 )
-from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 from app.ui.widgets.empty_state import EmptyState
 from app.ui.widgets.status_chip import StatusChip
 
-_TITLE_COL_WIDTH = 300
-_DESC_COL_WIDTH = 360
-_ACTION_COL_WIDTH = 160
+
+class _ClickCard(QFrame):
+    clicked = Signal()
+
+    def __init__(self, object_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName(object_name)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(card_qss(object_name, hover=True))
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
 
 
 class HomePage(QWidget):
@@ -38,6 +57,8 @@ class HomePage(QWidget):
     delete_requested = Signal(str)
     continue_requested = Signal(str)
     history_requested = Signal(str, str)
+    export_requested = Signal(str)
+    settings_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -62,7 +83,7 @@ class HomePage(QWidget):
         links.addStretch(1)
 
         self._list = QVBoxLayout()
-        self._list.setSpacing(12)
+        self._list.setSpacing(10)
         list_widget = QWidget()
         list_widget.setStyleSheet("background: transparent;")
         list_widget.setLayout(self._list)
@@ -136,9 +157,8 @@ class HomePage(QWidget):
             empty.action_clicked.connect(self.create_requested.emit)
             self._list.addWidget(empty, 1)
             return
-        self._list.addWidget(self._table_header())
         for card in self._drafts:
-            self._list.addWidget(self._draft_row(card))
+            self._list.addWidget(self._draft_card(card))
         self._list.addStretch(1)
 
     def _render_agents(self) -> None:
@@ -151,174 +171,178 @@ class HomePage(QWidget):
             empty.action_clicked.connect(self.create_requested.emit)
             self._list.addWidget(empty, 1)
             return
-        self._list.addWidget(self._table_header())
         for card in self._agents:
-            self._list.addWidget(self._agent_row(card))
+            self._list.addWidget(self._agent_card(card))
         self._list.addStretch(1)
 
-    def _table_header(self) -> QWidget:
-        header = QWidget()
-        header.setStyleSheet("background: transparent;")
-        layout = QGridLayout(header)
-        layout.setContentsMargins(16, 0, 16, 0)
-        layout.setHorizontalSpacing(18)
-        title = QLabel("Название агента")
-        description = QLabel("Описание")
-        action = QLabel("")
-        for label in (title, description):
-            label.setFont(app_font(12, QFont.Weight.DemiBold))
-            label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        title.setFixedWidth(_TITLE_COL_WIDTH)
-        description.setFixedWidth(_DESC_COL_WIDTH)
-        layout.addWidget(title, 0, 0)
-        layout.addWidget(description, 0, 1)
-        layout.addWidget(action, 0, 2)
-        layout.setColumnStretch(0, 2)
-        layout.setColumnStretch(1, 3)
-        return header
-
-    def _draft_row(self, card: Card) -> QWidget:
-        frame = QFrame()
-        frame.setObjectName("AgentDraftRow")
-        frame.setStyleSheet(card_qss("AgentDraftRow", hover=True))
-        layout = QGridLayout(frame)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setHorizontalSpacing(18)
+    def _agent_card(self, card: Card) -> QWidget:
+        frame = _ClickCard("PublishedAgentRow")
+        frame.clicked.connect(lambda cid=card.id: self.open_requested.emit(cid))
+        frame.setToolTip("Открыть чат агента")
 
         title = QLabel(card.title or "ИИ-агент")
         title.setFont(app_font(16, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         title.setWordWrap(True)
-        title.setFixedWidth(_TITLE_COL_WIDTH)
 
-        status = "требует уточнений" if card.ui_spec.needs_clarification else "черновик"
-        updated = _format_dt(card.updated_at)
-        meta = QVBoxLayout()
-        meta.setContentsMargins(0, 0, 0, 0)
-        meta.setSpacing(6)
-        chip = StatusChip(status, variant="warning")
-        chip.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        meta.addWidget(chip, 0, Qt.AlignmentFlag.AlignLeft)
-        desc = QLabel(card.summary or "Без описания")
-        desc.setFont(app_font(12))
-        desc.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        desc.setWordWrap(True)
-        desc.setFixedWidth(_DESC_COL_WIDTH)
-        meta.addWidget(desc)
-        if updated:
-            stamp = QLabel(f"изменён {updated}")
-            stamp.setFont(app_font(11))
-            stamp.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-            meta.addWidget(stamp)
-        meta_wrap = QWidget()
-        meta_wrap.setStyleSheet("background: transparent;")
-        meta_wrap.setLayout(meta)
-        meta_wrap.setFixedWidth(_DESC_COL_WIDTH)
+        chip = StatusChip("опубликован", variant="success", compact=True)
 
-        button = QPushButton("Создать")
-        button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setStyleSheet(primary_button_qss(compact=True))
-        button.clicked.connect(lambda _=False, cid=card.id: self.continue_requested.emit(cid))
-        delete = QPushButton("Удалить")
-        delete.setCursor(Qt.CursorShape.PointingHandCursor)
-        delete.setStyleSheet(danger_button_qss())
-        delete.clicked.connect(lambda _=False, cid=card.id: self.delete_requested.emit(cid))
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(10)
+        head.addWidget(title, 1)
+        head.addWidget(chip, 0, Qt.AlignmentFlag.AlignTop)
 
-        layout.addWidget(title, 0, 0)
-        layout.addWidget(meta_wrap, 0, 1)
-        layout.addWidget(_actions_widget(button, delete, created_at=card.created_at), 0, 2)
-        layout.setColumnStretch(0, 2)
-        layout.setColumnStretch(1, 3)
-        return frame
+        meta = QLabel(_agent_meta(card))
+        meta.setFont(app_font(12))
+        meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        meta.setWordWrap(True)
+        meta.setToolTip(card.summary or "")
 
-    def _agent_row(self, card: Card) -> QWidget:
-        frame = QFrame()
-        frame.setObjectName("PublishedAgentRow")
-        frame.setStyleSheet(card_qss("PublishedAgentRow", hover=True))
-        layout = QGridLayout(frame)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setHorizontalSpacing(18)
-
-        title = QLabel(card.title or "ИИ-агент")
-        title.setFont(app_font(16, QFont.Weight.DemiBold))
-        title.setWordWrap(True)
-        title.setFixedWidth(_TITLE_COL_WIDTH)
-
-        doc = card.regulation_path.split("\\")[-1].split("/")[-1] if card.regulation_path else ""
-        meta = QVBoxLayout()
-        meta.setContentsMargins(0, 0, 0, 0)
-        meta.setSpacing(6)
-        chip = StatusChip("опубликован", variant="success")
-        meta.addWidget(chip, 0, Qt.AlignmentFlag.AlignLeft)
-        lines = ["Автозапуск выключен"]
-        if doc:
-            lines.append(f"Документ: {doc}")
-        if card.updated_at:
-            lines.append(f"Обновлён: {_format_dt(card.updated_at)}")
-        desc = QLabel("\n".join(lines))
-        desc.setFont(app_font(12))
-        desc.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        desc.setWordWrap(True)
-        desc.setFixedWidth(_DESC_COL_WIDTH)
-        meta.addWidget(desc)
-        meta_wrap = QWidget()
-        meta_wrap.setStyleSheet("background: transparent;")
-        meta_wrap.setLayout(meta)
-        meta_wrap.setFixedWidth(_DESC_COL_WIDTH)
-
-        run = QPushButton("Запустить")
-        run.setCursor(Qt.CursorShape.PointingHandCursor)
-        run.setStyleSheet(primary_button_qss(compact=True))
-        run.clicked.connect(lambda _=False, cid=card.id: self.open_requested.emit(cid))
-
-        stop = QPushButton("Остановить")
-        stop.setCursor(Qt.CursorShape.PointingHandCursor)
-        stop.setStyleSheet(secondary_button_qss())
-        stop.setEnabled(False)
-        stop.setToolTip("Автозапуск недоступен в RegAgent")
-
-        history = QPushButton("История")
-        history.setCursor(Qt.CursorShape.PointingHandCursor)
-        history.setStyleSheet(secondary_button_qss())
-        history.clicked.connect(
-            lambda _=False, cid=card.id, name=card.title: self.history_requested.emit(
-                cid, name or "ИИ-агент"
+        icons = QHBoxLayout()
+        icons.setContentsMargins(0, 0, 0, 0)
+        icons.setSpacing(2)
+        icons.addStretch(1)
+        icons.addWidget(
+            _icon_btn(
+                ICON_GEAR,
+                "Настройки",
+                lambda cid=card.id: self.settings_requested.emit(cid),
+            )
+        )
+        download = _icon_btn(
+            ICON_DOWNLOAD,
+            "Выгрузить регламент",
+            lambda cid=card.id: self.export_requested.emit(cid),
+        )
+        download.setEnabled(bool(_regulation_file(card)))
+        icons.addWidget(download)
+        icons.addWidget(
+            _icon_btn(
+                ICON_HISTORY,
+                "История",
+                lambda cid=card.id, name=card.title: self.history_requested.emit(
+                    cid, name or "ИИ-агент"
+                ),
+            )
+        )
+        icons.addWidget(
+            _icon_btn(
+                ICON_TRASH,
+                "Удалить",
+                lambda cid=card.id: self.delete_requested.emit(cid),
+                danger=True,
             )
         )
 
-        delete = QPushButton("Удалить")
-        delete.setCursor(Qt.CursorShape.PointingHandCursor)
-        delete.setStyleSheet(danger_button_qss())
-        delete.clicked.connect(lambda _=False, cid=card.id: self.delete_requested.emit(cid))
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(18, 14, 14, 14)
+        layout.setSpacing(6)
+        layout.addLayout(head)
+        layout.addWidget(meta)
+        layout.addLayout(icons)
+        return frame
 
-        layout.addWidget(title, 0, 0)
-        layout.addWidget(meta_wrap, 0, 1)
-        layout.addWidget(_actions_widget(run, stop, history, delete), 0, 2)
-        layout.setColumnStretch(0, 2)
-        layout.setColumnStretch(1, 3)
+    def _draft_card(self, card: Card) -> QWidget:
+        frame = _ClickCard("AgentDraftRow")
+        frame.clicked.connect(lambda cid=card.id: self.continue_requested.emit(cid))
+        frame.setToolTip("Продолжить создание")
+
+        title = QLabel(card.title or "ИИ-агент")
+        title.setFont(app_font(16, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        title.setWordWrap(True)
+
+        chip = StatusChip(_phase_label(card.phase), variant="warning", compact=True)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(10)
+        head.addWidget(title, 1)
+        head.addWidget(chip, 0, Qt.AlignmentFlag.AlignTop)
+
+        summary = " ".join((card.summary or "Продолжите настройку агента").split())
+        if len(summary) > 120:
+            summary = summary[:120].rsplit(" ", 1)[0] + "…"
+        meta = QLabel(summary)
+        meta.setFont(app_font(12))
+        meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        meta.setWordWrap(True)
+
+        continue_btn = QPushButton("Продолжить")
+        continue_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        continue_btn.setFont(app_font(12, QFont.Weight.DemiBold))
+        continue_btn.setStyleSheet(primary_button_qss(radius=10, compact=True))
+        continue_btn.clicked.connect(lambda _=False, cid=card.id: self.continue_requested.emit(cid))
+
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 4, 0, 0)
+        actions.setSpacing(8)
+        actions.addWidget(continue_btn, 0)
+        actions.addStretch(1)
+        actions.addWidget(
+            _icon_btn(
+                ICON_TRASH,
+                "Удалить",
+                lambda cid=card.id: self.delete_requested.emit(cid),
+                danger=True,
+            )
+        )
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(18, 14, 14, 14)
+        layout.setSpacing(6)
+        layout.addLayout(head)
+        layout.addWidget(meta)
+        layout.addLayout(actions)
         return frame
 
 
-def _actions_widget(*buttons: QPushButton, created_at: str | datetime | None = None) -> QWidget:
-    widget = QWidget()
-    widget.setStyleSheet("background: transparent;")
-    widget.setFixedWidth(_ACTION_COL_WIDTH)
-    layout = QVBoxLayout(widget)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(6)
-    for button in buttons:
-        button.setFixedWidth(_ACTION_COL_WIDTH)
-        button.setFixedHeight(34)
-        button.setFont(app_font(12, QFont.Weight.DemiBold))
-        layout.addWidget(button)
-    stamp = _format_dt(created_at)
+def _icon_btn(glyph: str, tooltip: str, handler, *, danger: bool = False) -> QToolButton:
+    btn = QToolButton()
+    btn.setText(glyph)
+    btn.setToolTip(tooltip)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setFixedSize(36, 36)
+    btn.setFont(nerd_font(16))
+    btn.setStyleSheet(icon_button_qss(danger=danger))
+    btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    btn.clicked.connect(handler)
+    _ = NERD_FAMILY
+    return btn
+
+
+def _regulation_file(card: Card) -> Path | None:
+    raw = (card.regulation_path or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.is_file() else None
+
+
+def _agent_meta(card: Card) -> str:
+    parts: list[str] = []
+    doc = Path(card.regulation_path).name if card.regulation_path else ""
+    if doc:
+        parts.append(doc)
+    stamp = _format_dt(card.updated_at)
     if stamp:
-        date_label = QLabel(stamp)
-        date_label.setFont(app_font(11))
-        date_label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        date_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(date_label)
-    layout.addStretch(1)
-    return widget
+        parts.append(stamp)
+    return " · ".join(parts) or "Нажмите, чтобы открыть чат"
+
+
+def _phase_label(phase: str) -> str:
+    labels = {
+        "intake": "загрузка",
+        "review": "проверка",
+        "functions": "функции",
+        "readiness": "уточнения",
+        "passport": "паспорт",
+        "design": "playbook",
+        "demo": "демо",
+        "schedule": "расписание",
+        "failed": "ошибка",
+    }
+    return labels.get(phase, "черновик")
 
 
 def _format_dt(value: str | datetime | None) -> str:

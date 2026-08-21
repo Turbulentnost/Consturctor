@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QKeyEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -21,12 +21,13 @@ from PySide6.QtWidgets import (
 
 from app.attachment_text import stage_attachments
 from app.models import Card
-from app.storage.session_log import format_transcript, load_session_log, save_session_log
+from app.storage.session_log import load_session_log, save_session_log
 from app.tools.confirm_bridge import clear_confirm_bridge, install_confirm_bridge
 from app.ui.agent_thread import AgentThreadController
 from app.ui.styles import card_qss, ghost_button_qss, primary_button_qss, secondary_button_qss
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 from app.ui.widgets.app_dialog import AppDialog
+from app.ui.widgets.history_list import HistoryList
 from app.ui.widgets.cursor_feed import (
     CursorFeedItem,
     format_tool_event,
@@ -34,7 +35,6 @@ from app.ui.widgets.cursor_feed import (
     should_show_status,
     tool_header_title,
 )
-from app.ui.widgets.markdown_body import MarkdownBody
 from app.ui.widgets.result_file_card import ResultFileCard, paths_from_result
 from app.ui.widgets.status_chip import StatusChip
 
@@ -112,24 +112,97 @@ class _ComposerInput(QPlainTextEdit):
         self.height_sync_requested.emit()
 
 
+def _shorten_text(text: str, limit: int = 96) -> str:
+    compact = " ".join((text or "").split())
+    if len(compact) <= limit:
+        return compact
+    cut = compact[:limit].rsplit(" ", 1)[0].rstrip()
+    return (cut or compact[:limit]) + "…"
+
+
 def _section(text: str) -> QLabel:
     label = QLabel(text)
-    label.setFont(app_font(13, QFont.Weight.DemiBold))
-    label.setStyleSheet("color: #06483D; background: transparent;")
+    label.setFont(app_font(12, QFont.Weight.DemiBold))
+    label.setStyleSheet("color: #06483D; background: transparent; letter-spacing: 0.2px;")
     return label
 
 
-def _side_item(text: str) -> QLabel:
-    label = QLabel(f"• {text}")
-    label.setFont(app_font(12, QFont.Weight.Medium))
-    label.setWordWrap(True)
-    label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-    return label
+class _WrapActionButton(QPushButton):
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setStyleSheet(
+            """
+            QPushButton {
+                background: #FFFFFF;
+                border: 1px solid #D5DEDA;
+                border-radius: 12px;
+                padding: 0;
+            }
+            QPushButton:hover { background: #EAF7F3; border-color: #08745F; }
+            QPushButton:pressed { background: #DFF3EC; border-color: #06483D; }
+            QPushButton:disabled { background: #F7F9F8; border-color: #E4EBE8; }
+            """
+        )
+        self._label = QLabel(text)
+        self._label.setWordWrap(True)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setFont(app_font(12, QFont.Weight.DemiBold))
+        self._label.setStyleSheet("color: #06483D; background: transparent;")
+        self._label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        inner = QVBoxLayout(self)
+        inner.setContentsMargins(10, 10, 10, 10)
+        inner.setSpacing(0)
+        inner.addWidget(self._label)
+        self._sync_enabled_style()
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        inner_w = max(40, width - 20)
+        return max(40, self._label.heightForWidth(inner_w) + 20)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        width = self.width() if self.width() > 1 else 260
+        return QSize(width, self.heightForWidth(width))
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.EnabledChange:
+            self._sync_enabled_style()
+
+    def _sync_enabled_style(self) -> None:
+        color = "#9DB3AD" if not self.isEnabled() else "#06483D"
+        self._label.setStyleSheet(f"color: {color}; background: transparent;")
+
+
+def _step_row(index: int, text: str) -> QWidget:
+    row = QWidget()
+    row.setStyleSheet("background: transparent;")
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(10)
+    badge = QLabel(str(index))
+    badge.setFixedSize(22, 22)
+    badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    badge.setFont(app_font(11, QFont.Weight.DemiBold))
+    badge.setStyleSheet(
+        "color: #08745F; background: #EAF7F3; border-radius: 11px;"
+    )
+    caption = QLabel(text)
+    caption.setFont(app_font(12, QFont.Weight.Medium))
+    caption.setWordWrap(True)
+    caption.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+    layout.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
+    layout.addWidget(caption, 1)
+    return row
 
 
 def show_history_dialog(parent: QWidget | None, entries: list[tuple[str, str]]) -> None:
-    transcript = format_transcript(entries)
-    if not transcript:
+    items = [(kind, text) for kind, text in entries if (kind or "").strip() and (text or "").strip()]
+    if not items:
         dialog = AppDialog(
             "История",
             message="В этой сессии пока нет сообщений.",
@@ -139,8 +212,13 @@ def show_history_dialog(parent: QWidget | None, entries: list[tuple[str, str]]) 
         dialog.exec()
         return
     dialog = AppDialog("История сессии", parent=parent, primary="Закрыть")
-    dialog.resize(680, 520)
-    dialog.add_body(MarkdownBody(transcript, font_size=13))
+    dialog.resize(720, 560)
+    dialog.setMinimumSize(480, 380)
+    screen = dialog.screen()
+    if screen is not None:
+        geo = screen.availableGeometry()
+        dialog.setMaximumSize(min(960, geo.width() - 40), min(720, geo.height() - 60))
+    dialog.add_body(HistoryList(items, dialog), stretch=1)
     dialog.exec()
 
 
@@ -171,9 +249,10 @@ class WorkspacePage(QWidget):
         self._title = QLabel("Агент")
         self._title.setFont(app_font(22, QFont.Weight.DemiBold))
         self._title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        self._title.setWordWrap(False)
 
         self._summary = QLabel("Напишите задачу — агент выполнит её сам.")
-        self._summary.setWordWrap(True)
+        self._summary.setWordWrap(False)
         self._summary.setFont(app_font(13))
         self._summary.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
 
@@ -193,9 +272,6 @@ class WorkspacePage(QWidget):
         title_col.addWidget(self._title)
         title_col.addWidget(self._summary)
         top_row.addLayout(title_col, 1)
-
-        self._actions_host = QHBoxLayout()
-        self._actions_host.setSpacing(8)
 
         self._feed_layout = QVBoxLayout()
         self._feed_layout.setContentsMargins(14, 14, 14, 14)
@@ -218,8 +294,8 @@ class WorkspacePage(QWidget):
             """
             QFrame#ComposerBar {
                 background: #FFFFFF;
-                border: 1px solid rgba(16,24,23,0.10);
-                border-radius: 16px;
+                border: 1px solid #D5DEDA;
+                border-radius: 18px;
             }
             """
         )
@@ -254,9 +330,9 @@ class WorkspacePage(QWidget):
         self._attach_btn.clicked.connect(self._pick_files)
 
         self._send_btn = QPushButton("Отправить")
-        self._send_btn.setFixedHeight(36)
+        self._send_btn.setMinimumWidth(118)
         self._send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._send_btn.setFont(app_font(12, QFont.Weight.DemiBold))
+        self._send_btn.setFont(app_font(13, QFont.Weight.DemiBold))
         self._send_btn.setStyleSheet(primary_button_qss(radius=12, compact=True))
         self._send_btn.clicked.connect(self._send_chat)
 
@@ -280,16 +356,15 @@ class WorkspacePage(QWidget):
 
         self._quick_btn = QPushButton("Запустить типовую задачу")
         self._quick_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._quick_btn.setFixedHeight(40)
-        self._quick_btn.setFont(app_font(12, QFont.Weight.DemiBold))
-        self._quick_btn.setStyleSheet(primary_button_qss(radius=14))
+        self._quick_btn.setFont(app_font(13, QFont.Weight.DemiBold))
+        self._quick_btn.setStyleSheet(primary_button_qss(radius=12))
         self._quick_btn.clicked.connect(self._run_default_task)
 
         self._stop_btn = QPushButton("Остановить")
         self._stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._stop_btn.setFixedHeight(40)
-        self._stop_btn.setFont(app_font(12, QFont.Weight.DemiBold))
-        self._stop_btn.setStyleSheet(secondary_button_qss(radius=14))
+        self._stop_btn.setMinimumWidth(128)
+        self._stop_btn.setFont(app_font(13, QFont.Weight.DemiBold))
+        self._stop_btn.setStyleSheet(secondary_button_qss(radius=12))
         self._stop_btn.setEnabled(False)
         self._stop_btn.setToolTip("Прервать текущую работу агента")
         self._stop_btn.clicked.connect(self._stop_agent)
@@ -312,13 +387,32 @@ class WorkspacePage(QWidget):
         side_card = QFrame()
         side_card.setObjectName("AgentRunSide")
         side_card.setStyleSheet(card_qss("AgentRunSide", radius=18))
-        side_card.setFixedWidth(260)
+        side_card.setFixedWidth(300)
         side_layout = QVBoxLayout(side_card)
         side_layout.setContentsMargins(16, 16, 16, 16)
-        side_layout.setSpacing(10)
+        side_layout.setSpacing(12)
+        self._scenarios_label = _section("Сценарии")
+        self._scenarios_inner = QWidget()
+        self._scenarios_inner.setStyleSheet("background: transparent;")
+        self._scenarios_host = QVBoxLayout(self._scenarios_inner)
+        self._scenarios_host.setContentsMargins(0, 0, 0, 0)
+        self._scenarios_host.setSpacing(8)
+        self._scenarios_scroll = QScrollArea()
+        self._scenarios_scroll.setWidgetResizable(True)
+        self._scenarios_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scenarios_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scenarios_scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }" + scroll_bar_qss()
+        )
+        self._scenarios_scroll.setWidget(self._scenarios_inner)
+        self._scenarios_scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        side_layout.addWidget(self._scenarios_label)
+        side_layout.addWidget(self._scenarios_scroll, 1)
         side_layout.addWidget(_section("Как это работает"))
-        for text in ("Вы даёте задачу", "Агент выполняет сценарий", "Вы получаете результат"):
-            side_layout.addWidget(_side_item(text))
+        for index, text in enumerate(("Даёте задачу", "Агент выполняет сценарий", "Получаете результат"), start=1):
+            side_layout.addWidget(_step_row(index, text))
         side_layout.addWidget(_section("Статус"))
         self._status = StatusChip("Готов к работе", variant="success")
         self._status.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -334,7 +428,6 @@ class WorkspacePage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
         root.addLayout(top_row)
-        root.addLayout(self._actions_host)
         root.addLayout(body, 1)
 
         self._set_interactive(False)
@@ -377,9 +470,9 @@ class WorkspacePage(QWidget):
         self._sync_files_chips()
         name = card.title or "ИИ-агент"
         self._title.setText(name)
-        self._summary.setText(
-            card.summary or "Агент готов. Нажмите «Запустить типовую задачу» или напишите свою."
-        )
+        summary = card.summary or "Напишите задачу или запустите сценарий справа."
+        self._summary.setText(_shorten_text(summary, 108))
+        self._summary.setToolTip(summary)
         self._set_status("Подключаю агента…", "busy")
         self._clear_feed()
         self._rebuild_actions()
@@ -393,10 +486,7 @@ class WorkspacePage(QWidget):
             finally:
                 self._restoring = False
         else:
-            self._append_feed(
-                "system",
-                f"Агент «{name}» готов к работе. Напишите задачу или запустите типовой сценарий.",
-            )
+            self._append_feed("system", f"«{name}» готов. Напишите задачу или выберите сценарий.")
         self._ensure_agent_ctl().open_card(card)
         if show_history:
             QTimer.singleShot(300, self.show_session_history)
@@ -581,29 +671,25 @@ class WorkspacePage(QWidget):
 
     def _rebuild_actions(self) -> None:
         self._action_buttons.clear()
-        while self._actions_host.count():
-            item = self._actions_host.takeAt(0)
+        while self._scenarios_host.count():
+            item = self._scenarios_host.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-            elif item.layout() is not None:
-                nested = item.layout()
-                while nested.count():
-                    nested_item = nested.takeAt(0)
-                    if nested_item.widget():
-                        nested_item.widget().deleteLater()
-        if self._card is None:
+        actions = list(self._card.ui_spec.actions) if self._card is not None else []
+        visible = bool(actions)
+        self._scenarios_label.setVisible(visible)
+        self._scenarios_scroll.setVisible(visible)
+        if not actions:
             return
-        for action in self._card.ui_spec.actions:
-            btn = QPushButton(action.label)
+        for action in actions[:6]:
+            btn = _WrapActionButton(action.label)
             btn.setEnabled(False)
-            btn.setToolTip(action.hint or action.prompt)
-            btn.setFont(app_font(12, QFont.Weight.DemiBold))
-            btn.setStyleSheet(secondary_button_qss(radius=10))
+            btn.setToolTip(action.hint or action.prompt or action.label)
             btn.clicked.connect(lambda _=False, p=action.prompt: self._run_action(p))
             self._action_buttons.append(btn)
-            self._actions_host.addWidget(btn)
-        self._actions_host.addStretch(1)
+            self._scenarios_host.addWidget(btn)
+        self._scenarios_host.addStretch(1)
 
     def _run_action(self, prompt: str) -> None:
         if self._busy or not self._agent_ready_flag or self._agent_ctl is None:

@@ -85,6 +85,27 @@ run.bat
 
 Dev-режим без exe: [../desktop/README.md](../desktop/README.md).
 
+
+## Конвейер создания агента
+
+Мастер создания карточки агента из регламента (страницы `create` → `review` → `process` → `passport` → `demo` → `schedule` → рабочая область). Логика фаз — `app/models.py` (`CardPhase`), оркестрация — `app/agent/pipeline.py`, промпты — `app/agent/prompts_create.py`.
+
+| Шаг | Фаза (`CardPhase`) | UI | Суть |
+|-----|-------------------|-----|------|
+| 1 | `intake` | загрузка регламента | Файл регламента, создание карточки и workspace |
+| 2 | `review` | review | Разбор регламента, уточнения |
+| 3 | `functions` | process | Группы функций агента (Cursor SDK) |
+| 4 | `passport` | passport | Паспорт агента, KPI |
+| 5 | `demo` | demo | Демо-сценарий в workspace |
+| 6 | `schedule` / `published` | schedule | Публикация карточки |
+| 7 | workspace | workspace | Запуск опубликованного агента |
+
+Промежуточные фазы `readiness` и `design` используются при необходимости между functions и demo.
+
+**Требования:** задан `CURSOR_API_KEY` в `.env`; генерация идёт через **локальный Cursor SDK** (`cursor-sdk` / `app/agent/harness.py`), без облачного агента в этом конвейере.
+
+Тесты конвейера (без API): `python -m pytest tests/test_pipeline.py -q`.
+
 ## Документация
 
 - Поручения / docflow: [docs/task-docflow-porucheniya.md](docs/task-docflow-porucheniya.md)

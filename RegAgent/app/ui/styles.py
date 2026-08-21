@@ -3,52 +3,80 @@
 from __future__ import annotations
 
 
-def primary_button_qss(*, radius: int = 10, compact: bool = False) -> str:
-    pad = "0 14px" if compact else "0 18px"
+def primary_button_qss(*, radius: int = 12, compact: bool = False) -> str:
+    pad = "0 16px" if compact else "0 22px"
+    height = "34px" if compact else "42px"
     return f"""
     QPushButton {{
         background: #08745F;
         color: #FFFFFF;
-        border: none;
+        border: 1px solid #076655;
         border-radius: {radius}px;
         padding: {pad};
+        min-height: {height};
     }}
-    QPushButton:hover {{ background: #0A8670; }}
-    QPushButton:pressed {{ background: #06483D; }}
-    QPushButton:disabled {{ background: #A8C8BF; color: #EAF7F3; }}
+    QPushButton:hover {{
+        background: #0C8A71;
+        border-color: #0C8A71;
+    }}
+    QPushButton:pressed {{
+        background: #06483D;
+        border-color: #05382F;
+    }}
+    QPushButton:disabled {{
+        background: #C5D5D0;
+        color: #F7FBFA;
+        border-color: #C5D5D0;
+    }}
     """
 
 
-def secondary_button_qss(*, radius: int = 10) -> str:
+def secondary_button_qss(*, radius: int = 12) -> str:
     return f"""
     QPushButton {{
         background: #FFFFFF;
         color: #06483D;
-        border: 1px solid rgba(16,24,23,0.12);
+        border: 1px solid #D5DEDA;
         border-radius: {radius}px;
-        padding: 0 14px;
+        padding: 0 16px;
+        min-height: 42px;
     }}
-    QPushButton:hover {{ background: #F4F7F6; }}
-    QPushButton:pressed {{ background: #EAF1EE; }}
-    QPushButton:disabled {{ background: #F4F7F6; color: #9DB3AD; }}
+    QPushButton:hover {{
+        background: #EAF7F3;
+        border-color: #08745F;
+        color: #06483D;
+    }}
+    QPushButton:pressed {{
+        background: #DFF3EC;
+        border-color: #06483D;
+    }}
+    QPushButton:disabled {{
+        background: #F7F9F8;
+        color: #9DB3AD;
+        border-color: #E4EBE8;
+    }}
     """
 
 
-def danger_button_qss(*, radius: int = 10) -> str:
+def danger_button_qss(*, radius: int = 12) -> str:
     return f"""
     QPushButton {{
         background: #FFFFFF;
         color: #9B1C1C;
-        border: 1px solid rgba(155,28,28,0.35);
+        border: 1px solid rgba(155,28,28,0.28);
         border-radius: {radius}px;
-        padding: 0 14px;
+        padding: 0 16px;
+        min-height: 42px;
     }}
-    QPushButton:hover {{ background: #FFF4F4; border-color: #B42318; }}
+    QPushButton:hover {{
+        background: #FFF4F4;
+        border-color: #B42318;
+    }}
     QPushButton:pressed {{ background: #FEE4E2; }}
     QPushButton:disabled {{
-        background: #F4F7F6;
+        background: #F7F9F8;
         color: #9DB3AD;
-        border-color: rgba(16,24,23,0.10);
+        border-color: #E4EBE8;
     }}
     """
 
@@ -59,39 +87,54 @@ def ghost_button_qss() -> str:
         color: #06483D;
         background: transparent;
         border: none;
-        padding: 0 4px 0 0;
+        border-radius: 10px;
+        padding: 6px 10px;
         text-align: left;
     }
-    QPushButton:hover { color: #08745F; }
+    QPushButton:hover {
+        color: #08745F;
+        background: rgba(8,116,95,0.08);
+    }
+    QPushButton:pressed { background: rgba(8,116,95,0.14); }
     """
 
 
-def dark_primary_button_qss(*, radius: int = 23) -> str:
+def dark_primary_button_qss(*, radius: int = 16) -> str:
     return f"""
     QPushButton {{
         background: #06483D;
         color: #F7FBFA;
-        border: none;
+        border: 1px solid #05382F;
         border-radius: {radius}px;
         padding: 0 22px;
+        min-height: 46px;
     }}
-    QPushButton:hover {{ background: #08745F; }}
+    QPushButton:hover {{
+        background: #08745F;
+        border-color: #08745F;
+    }}
     QPushButton:pressed {{ background: #04342C; }}
-    QPushButton:disabled {{ background: #A8C8BF; color: #EAF7F3; }}
+    QPushButton:disabled {{
+        background: #A8C8BF;
+        color: #EAF7F3;
+        border-color: #A8C8BF;
+    }}
     """
 
 
-def input_qss(*, radius: int = 12) -> str:
+def input_qss(*, radius: int = 14) -> str:
     return f"""
     QLineEdit, QPlainTextEdit {{
         background: #FFFFFF;
         color: #101817;
-        border: 1px solid rgba(16,24,23,0.10);
+        border: 1px solid #D5DEDA;
         border-radius: {radius}px;
-        padding: 8px 12px;
+        padding: 10px 14px;
         selection-background-color: #08745F;
     }}
-    QLineEdit:hover, QPlainTextEdit:hover,
+    QLineEdit:hover, QPlainTextEdit:hover {{
+        border: 1px solid #B7C9C3;
+    }}
     QLineEdit:focus, QPlainTextEdit:focus {{
         border: 1px solid #08745F;
     }}
@@ -101,7 +144,7 @@ def input_qss(*, radius: int = 12) -> str:
 def card_qss(
     object_name: str,
     *,
-    radius: int = 16,
+    radius: int = 18,
     hover: bool = False,
     selected: bool = False,
 ) -> str:
@@ -109,7 +152,8 @@ def card_qss(
     if hover:
         hover_block = f"""
         QFrame#{object_name}:hover {{
-            border-color: rgba(8,116,95,0.45);
+            border-color: rgba(8,116,95,0.40);
+            background: #FBFDFC;
         }}
         """
     selected_block = ""
@@ -123,7 +167,7 @@ def card_qss(
     return f"""
     QFrame#{object_name} {{
         background: #FFFFFF;
-        border: 1px solid rgba(16,24,23,0.10);
+        border: 1px solid #E3EBE8;
         border-radius: {radius}px;
     }}
     {hover_block}
@@ -131,7 +175,7 @@ def card_qss(
     """
 
 
-def chip_qss(variant: str = "neutral") -> str:
+def chip_qss(variant: str = "neutral", *, compact: bool = False) -> str:
     colors = {
         "neutral": ("#53625E", "#F4F7F6"),
         "mint": ("#0A5C48", "#DFF5EC"),
@@ -141,13 +185,40 @@ def chip_qss(variant: str = "neutral") -> str:
         "busy": ("#08745F", "#EAF7F3"),
     }
     fg, bg = colors.get(variant, colors["neutral"])
+    pad = "1px 8px" if compact else "5px 12px"
+    radius = "999px"
     return f"""
     QLabel {{
         color: {fg};
         background: {bg};
-        border-radius: 8px;
-        padding: 4px 10px;
+        border-radius: {radius};
+        padding: {pad};
     }}
+    """
+
+
+def icon_button_qss(*, danger: bool = False) -> str:
+    color = "#9B1C1C" if danger else "#06483D"
+    hover_bg = "#FFF4F4" if danger else "#EAF7F3"
+    hover_fg = "#B42318" if danger else "#08745F"
+    from app.ui.theme import NERD_FAMILY
+
+    return f"""
+    QToolButton {{
+        background: transparent;
+        color: {color};
+        border: none;
+        border-radius: 10px;
+        padding: 0;
+        font-family: "{NERD_FAMILY}";
+        font-size: 16px;
+    }}
+    QToolButton:hover {{
+        background: {hover_bg};
+        color: {hover_fg};
+    }}
+    QToolButton:pressed {{ background: #DFF3EC; }}
+    QToolButton:disabled {{ color: #C5D0CC; background: transparent; }}
     """
 
 
@@ -185,7 +256,7 @@ def tab_link_qss(*, active: bool) -> str:
         border: none;
         border-bottom: 2px solid {border};
         color: {color};
-        padding: 4px 0 6px 0;
+        padding: 6px 2px 8px 2px;
         text-align: left;
     }}
     QPushButton:hover {{
@@ -202,7 +273,7 @@ def dialog_qss() -> str:
     }
     QDialog#AppDialog QFrame#AppDialogCard {
         background: #FFFFFF;
-        border: 1px solid rgba(16,24,23,0.10);
-        border-radius: 18px;
+        border: 1px solid #E3EBE8;
+        border-radius: 20px;
     }
     """

@@ -497,7 +497,7 @@ class CursorFeedItem(QFrame):
             bubble = _WrapLabel(text)
             bubble.setFont(app_font(14, QFont.Weight.DemiBold))
             bubble.setStyleSheet(
-                "background: #EAF1EE; color: #101817; border-radius: 14px; padding: 10px 14px;"
+                "background: #EAF7F3; color: #101817; border-radius: 16px; padding: 10px 14px;"
             )
             bubble.setMaximumWidth(520)
             self._plain_label = bubble

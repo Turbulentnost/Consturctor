@@ -67,6 +67,7 @@ class ClarifyPage(QWidget):
         back.setFont(app_font(13, QFont.Weight.DemiBold))
         back.setStyleSheet(secondary_button_qss(radius=12))
         back.clicked.connect(self.cancelled.emit)
+        self._action_buttons = (back, submit)
 
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 8, 0, 0)
@@ -82,14 +83,21 @@ class ClarifyPage(QWidget):
         root.addWidget(scroll, 1)
         root.addLayout(actions)
 
+    def set_actions_enabled(self, enabled: bool) -> None:
+        for btn in self._action_buttons:
+            btn.setEnabled(enabled)
+
     def set_spec(self, spec: UiSpec) -> None:
-        self._spec = spec
+        self.set_spec_questions(spec.needs_clarification)
+
+    def set_spec_questions(self, questions: list[ClarificationQuestion]) -> None:
+        self._spec = None
         while self._form_host.count():
             item = self._form_host.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         self._fields.clear()
-        for q in spec.needs_clarification:
+        for q in questions:
             self._form_host.addWidget(self._question_block(q))
         self._form_host.addStretch(1)
 

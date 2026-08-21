@@ -9,6 +9,8 @@ data/regulations/
 data/workspaces/
 data/exports/
 .pytest_cache/
+build/
+dist/
 *.xlsx
 _probe_*.py
 _probe_*_out.txt

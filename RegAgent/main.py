@@ -5,18 +5,25 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
+if getattr(sys, "frozen", False):
+    ROOT = Path(sys.executable).resolve().parent
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass and str(meipass) not in sys.path:
+        sys.path.insert(0, str(meipass))
+elif str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.config import ensure_data_dirs
 
 
 def main() -> int:
-    from app.frozen_runtime import entry_mode, run_com_worker
+    from app.frozen_runtime import entry_mode, run_agent_python, run_com_worker
 
     mode = entry_mode()
     if mode == "com-worker":
         return run_com_worker()
+    if mode == "agent-python":
+        return run_agent_python()
 
     logging.basicConfig(level=logging.INFO)
     ensure_data_dirs()

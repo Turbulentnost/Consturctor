@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -36,6 +37,7 @@ class AppDialog(QDialog):
 
         card = QFrame()
         card.setObjectName("AppDialogCard")
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         inner = QVBoxLayout(card)
         inner.setContentsMargins(22, 20, 22, 18)
         inner.setSpacing(12)
@@ -84,10 +86,10 @@ class AppDialog(QDialog):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
-        root.addWidget(card)
+        root.addWidget(card, 1)
 
-    def add_body(self, widget: QWidget) -> None:
-        self._body_host.addWidget(widget)
+    def add_body(self, widget: QWidget, stretch: int = 0) -> None:
+        self._body_host.addWidget(widget, stretch)
 
 
 def confirm_dialog(

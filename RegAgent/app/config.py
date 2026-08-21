@@ -6,11 +6,52 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
-load_dotenv(ROOT / ".env")
+def _desktop_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
+def _bundle_root() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    return _desktop_root()
+
+
+DESKTOP_ROOT = _desktop_root()
+BUNDLE_ROOT = _bundle_root()
+ROOT = DESKTOP_ROOT
+
+for _path in (BUNDLE_ROOT, DESKTOP_ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+
+def _configure_cursor_bridge() -> None:
+    """Frozen exe: local Cursor bridge (node.exe), not 1C/gateway."""
+    override = (os.environ.get("CURSOR_SDK_BRIDGE_BIN") or "").strip()
+    candidates: list[Path] = []
+    if override:
+        raw = Path(override)
+        candidates.append(raw if raw.is_absolute() else DESKTOP_ROOT / raw)
+    candidates.append(DESKTOP_ROOT / "cursor-sdk-bridge" / "bin" / "cursor-sdk-bridge.cmd")
+    if getattr(sys, "frozen", False):
+        candidates.append(
+            BUNDLE_ROOT / "cursor_sdk" / "_vendor" / "bridge" / "bin" / "cursor-sdk-bridge.cmd"
+        )
+    for candidate in candidates:
+        if candidate.is_file() and (candidate.parent / "node.exe").is_file():
+            os.environ["CURSOR_SDK_BRIDGE_BIN"] = str(candidate.resolve())
+            return
+
+
+# Рядом с exe важнее; внутри onefile — запасной вариант.
+load_dotenv(DESKTOP_ROOT / ".env")
+if getattr(sys, "frozen", False):
+    load_dotenv(BUNDLE_ROOT / ".env", override=False)
+
+_configure_cursor_bridge()
 
 from app.cursor_sdk_win_patch import apply as _apply_cursor_sdk_win_patch
 
@@ -18,10 +59,10 @@ _apply_cursor_sdk_win_patch()
 
 
 def bundle_path(*parts: str) -> Path:
-    return ROOT.joinpath(*parts)
+    return BUNDLE_ROOT.joinpath(*parts)
 
 
-DATA_DIR = bundle_path("data")
+DATA_DIR = DESKTOP_ROOT / "data"
 CARDS_DB = DATA_DIR / "cards.db"
 REGULATIONS_DIR = DATA_DIR / "regulations"
 WORKSPACES_DIR = DATA_DIR / "workspaces"

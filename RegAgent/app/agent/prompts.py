@@ -42,6 +42,11 @@ def build_setup_prompt(*, regulation_text: str, file_name: str = "", clarificati
 def build_runtime_system(card: Card) -> str:
     spec = card.ui_spec
     actions = spec.actions
+    passport_goal = ""
+    playbook_tools: list[str] = []
+    if card.phase == "published" and card.passport.goal:
+        passport_goal = card.passport.goal
+        playbook_tools = list(card.playbook.tools or card.passport.tools)
     lines = [
         "Ты агент RegAgent. Следуй rules_prompt.",
         "Для 1C и Outlook используй custom tool constructor_integrations (поля tool + arguments).",
@@ -56,9 +61,12 @@ def build_runtime_system(card: Card) -> str:
         "===== RULES =====",
         (card.rules_prompt or spec.rules_prompt or "").strip(),
         "===== КОНЕЦ RULES =====",
-        "",
-        "Кнопки пользователя (готовые сценарии):",
     ]
+    if passport_goal:
+        lines.extend(["", f"Цель агента: {passport_goal}"])
+    if playbook_tools:
+        lines.append(f"Инструменты playbook: {', '.join(playbook_tools)}")
+    lines.extend(["", "Кнопки пользователя (готовые сценарии):"])
     for action in actions:
         lines.append(f"- {action.label}: {action.prompt}")
     if spec.chat_commands:

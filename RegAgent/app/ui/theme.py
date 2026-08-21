@@ -62,13 +62,27 @@ CONTENT_PADDING_X = 36
 CONTENT_PADDING_TOP = 30
 
 FONT_FAMILY = "Manrope"
+NERD_FAMILY = "Symbols Nerd Font"
 _FALLBACK_FAMILY = "Segoe UI"
 _ASSETS = bundle_path("assets", "fonts")
 
+# Nerd Fonts (https://github.com/ryanoasis/nerd-fonts) — FA glyphs
+ICON_TRASH = "\uf1f8"
+ICON_GEAR = "\uf013"
+ICON_DOWNLOAD = "\uf019"
+ICON_HISTORY = "\uf1da"
+
 
 def load_fonts() -> str:
-    global FONT_FAMILY
+    global FONT_FAMILY, NERD_FAMILY
     preferred: list[str] = []
+    nerd = _ASSETS / "SymbolsNerdFont-Regular.ttf"
+    if nerd.exists():
+        nerd_id = QFontDatabase.addApplicationFont(str(nerd))
+        if nerd_id >= 0:
+            families = QFontDatabase.applicationFontFamilies(nerd_id)
+            if families:
+                NERD_FAMILY = families[0]
     for name in (
         "Manrope-Regular.ttf",
         "Manrope-Medium.ttf",
@@ -96,6 +110,16 @@ def load_fonts() -> str:
         return FONT_FAMILY
     FONT_FAMILY = _FALLBACK_FAMILY
     return FONT_FAMILY
+
+
+def nerd_font(size: int = 16) -> QFont:
+    font = QFont(NERD_FAMILY)
+    font.setPixelSize(size)
+    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+    font.setStyleStrategy(
+        QFont.StyleStrategy.PreferQuality | QFont.StyleStrategy.PreferAntialias
+    )
+    return font
 
 
 def app_font(size: int = 14, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
