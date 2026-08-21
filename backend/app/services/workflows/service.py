@@ -196,6 +196,7 @@ def delete_workflow(db: Session, *, user_id: str, workflow_id: str) -> None:
     local["paused"] = True
     row.local_run = local
     db.commit()
+    _notify_board(db, user_id=user_id, workflow_id=workflow_id, reason="deleted")
 
 
 def stop_auto_run(db: Session, *, user_id: str, workflow_id: str) -> AutoRunStopResult:
@@ -207,6 +208,7 @@ def stop_auto_run(db: Session, *, user_id: str, workflow_id: str) -> AutoRunStop
         db, user_id=user_id, workflow_id=workflow_id, commit=False
     )
     db.commit()
+    _notify_board(db, user_id=user_id, workflow_id=workflow_id, reason="paused")
     return AutoRunStopResult(ok=True, stopped=int(stopped or 0))
 
 
@@ -238,7 +240,23 @@ def resume_auto_run(db: Session, *, user_id: str, workflow_id: str) -> AutoRunSt
             trigger.enabled = True
             restored += 1
     db.commit()
+    _notify_board(db, user_id=user_id, workflow_id=workflow_id, reason="resumed")
     return AutoRunStopResult(ok=True, stopped=restored)
+
+
+def _notify_board(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str = "",
+    reason: str = "",
+) -> None:
+    try:
+        from app.services.workflows.board_live import push_board_updated
+
+        push_board_updated(db, user_id=user_id, workflow_id=workflow_id, reason=reason)
+    except Exception:  # noqa: BLE001
+        logger.exception("Board live notify failed user=%s workflow=%s", user_id, workflow_id)
 
 
 def update_local_run(

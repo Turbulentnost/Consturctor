@@ -24,12 +24,26 @@ _PS_AUMID = (
 )
 
 
+def classify_ws_payload(payload: dict) -> str:
+    kind = str(payload.get("type") or "")
+    if kind == "session_replaced":
+        return "kick"
+    if kind in {"evaluate_trigger", "run_agent"}:
+        return "command"
+    if kind == "board_updated":
+        return "board"
+    if kind and kind != "notification":
+        return "ignore"
+    return "notification"
+
+
 class NotificationService(QObject):
     open_workflow_requested = Signal(str)
     toast_requested = Signal(str, str, str, str)
     command_received = Signal(dict)
     inbox_changed = Signal()
     session_kicked = Signal(str)
+    board_updated = Signal(dict)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -112,14 +126,17 @@ class NotificationService(QObject):
             return
         if not isinstance(payload, dict):
             return
-        kind = str(payload.get("type") or "")
-        if kind == "session_replaced":
+        kind = classify_ws_payload(payload)
+        if kind == "kick":
             self._kick(str(payload.get("message") or "Сеанс завершён на другом устройстве."))
             return
-        if kind in {"evaluate_trigger", "run_agent"}:
+        if kind == "command":
             self.command_received.emit(payload)
             return
-        if kind and kind != "notification":
+        if kind == "board":
+            self.board_updated.emit(payload)
+            return
+        if kind != "notification":
             return
         self._present(payload)
 

@@ -72,6 +72,7 @@ class AppWindow(QMainWindow):
         self._notify.toast_requested.connect(self._on_tray_toast)
         self._notify.inbox_changed.connect(self.main_shell.refresh_notification_badge)
         self._notify.command_received.connect(self._runner.handle_command)
+        self._notify.board_updated.connect(self.main_shell.apply_live_board)
         self._notify.session_kicked.connect(self._on_session_kicked)
         self._runner.toast_requested.connect(self._on_tray_toast)
         install_confirm_host(self)

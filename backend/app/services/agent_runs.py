@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.models.agent_run import AgentRun
 from app.models.trigger import AgentTrigger
@@ -50,6 +53,7 @@ def start_agent_run(
     db.add(row)
     db.commit()
     db.refresh(row)
+    _notify_board(db, user_id=user_id, workflow_id=workflow_id, run_id=row.id, status=row.status)
     return row
 
 
@@ -73,6 +77,13 @@ def finish_agent_run(
         stored.insert(0, {"type": "user_message", "text": message.strip()[:8000]})
     row.events_json = stored
     db.commit()
+    _notify_board(
+        db,
+        user_id=row.user_id,
+        workflow_id=row.workflow_id,
+        run_id=row.id,
+        status=row.status,
+    )
 
 
 def list_agent_runs(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRunOut]:
@@ -96,6 +107,28 @@ def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -
     if row is None or row.workflow_id != workflow_id or row.user_id != user_id:
         raise WorkflowError("Запуск не найден", status_code=404)
     return _to_out(row, include_events=True)
+
+
+def _notify_board(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str = "",
+    run_id: str = "",
+    status: str = "",
+) -> None:
+    try:
+        from app.services.workflows.board_live import push_board_updated
+
+        push_board_updated(
+            db,
+            user_id=user_id,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            status=status,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Board live notify failed user=%s run=%s", user_id, run_id)
 
 
 def answer_from_result(result: Any) -> str:

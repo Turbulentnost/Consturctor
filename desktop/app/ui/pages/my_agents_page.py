@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -164,6 +164,10 @@ class MyAgentsPage(QWidget):
         self._stats.setFont(app_font(13))
         self._stats.setStyleSheet("color: #06483D; background: transparent;")
         self._stats.setWordWrap(True)
+        self._stats_tick = QTimer(self)
+        self._stats_tick.setInterval(30000)
+        self._stats_tick.timeout.connect(self._render_stats)
+        self._stats_tick.start()
 
         self._count = QLabel("Агенты")
         self._count.setFont(app_font(16, QFont.Weight.DemiBold))

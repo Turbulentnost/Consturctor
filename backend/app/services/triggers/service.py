@@ -121,6 +121,7 @@ def create_trigger(db: Session, *, owner_user_id: str, payload: TriggerCreate) -
     db.commit()
     db.refresh(row)
     logger.info("Trigger created id=%s workflow=%s condition=%s", row.id, row.workflow_id, bool(condition))
+    _notify_board(db, user_id=owner_user_id, workflow_id=row.workflow_id, reason="scheduled")
     return _to_out(row)
 
 
@@ -145,6 +146,7 @@ def cancel_trigger(db: Session, *, user_id: str, trigger_id: str) -> TriggerOut:
     row.enabled = False
     db.commit()
     db.refresh(row)
+    _notify_board(db, user_id=user_id, workflow_id=row.workflow_id, reason="cancelled")
     return _to_out(row)
 
 
@@ -319,7 +321,17 @@ def mark_skipped(
             row.cooldown_until = now + timedelta(minutes=30)
     db.commit()
     db.refresh(row)
+    _notify_board(db, user_id=user_id, workflow_id=row.workflow_id, reason="skipped")
     return _to_out(row)
+
+
+def _notify_board(db: Session, *, user_id: str, workflow_id: str = "", reason: str = "") -> None:
+    try:
+        from app.services.workflows.board_live import push_board_updated
+
+        push_board_updated(db, user_id=user_id, workflow_id=workflow_id, reason=reason)
+    except Exception:  # noqa: BLE001
+        logger.exception("Board live notify failed user=%s workflow=%s", user_id, workflow_id)
 
 
 _GENERIC_CHANGE = {

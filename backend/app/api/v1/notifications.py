@@ -199,3 +199,35 @@ async def notification_scheduler() -> None:
             await deliver_due_notifications()
         except Exception:  # noqa: BLE001
             logger.exception("Notification scheduler tick failed")
+
+
+async def board_live_subscriber() -> None:
+    from app.services.sessions import _redis
+    from app.services.workflows.board_live import BOARD_CHANNEL, relay_board_message
+
+    while True:
+        client = _redis()
+        if client is None:
+            await asyncio.sleep(3)
+            continue
+        pubsub = None
+        try:
+            pubsub = client.pubsub()
+            pubsub.subscribe(BOARD_CHANNEL)
+            logger.info("Board live subscriber connected")
+            while True:
+                message = await asyncio.to_thread(pubsub.get_message, True, 0.4)
+                if not message:
+                    continue
+                await relay_board_message(message.get("data"))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("Board live subscriber failed")
+            await asyncio.sleep(2)
+        finally:
+            if pubsub is not None:
+                try:
+                    pubsub.close()
+                except Exception:  # noqa: BLE001
+                    pass

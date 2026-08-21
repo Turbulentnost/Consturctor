@@ -42,6 +42,7 @@ from app.api_client import (
     WorkflowListItem,
     WorkflowRecord,
     _parse_schedule_draft,
+    _parse_workflow_board,
 )
 from app.ui.pages.agent_passport_page import AgentPassportPage
 from app.ui.pages.agent_kpi_preview_page import AgentKpiPreviewPage
@@ -330,6 +331,11 @@ class MainShell(QWidget):
         self._draft_ready.connect(self._show_draft_result)
         self._drafts_ready.connect(self._show_drafts_result)
         self._board_reload.connect(self._load_agent_drafts)
+        self._board_live_timer = QTimer(self)
+        self._board_live_timer.setSingleShot(True)
+        self._board_live_timer.setInterval(250)
+        self._board_live_timer.timeout.connect(self._flush_live_board)
+        self._pending_live_board: dict | None = None
         self._agents_table_ready.connect(self._show_agents_table_result)
         self._implementation_agents_ready.connect(self._show_implementation_agents)
         self._passport_ready.connect(self._show_passport_result)
@@ -1202,6 +1208,21 @@ class MainShell(QWidget):
             self._drafts_ready.emit((board, drafts))
 
         Thread(target=run, daemon=True).start()
+
+    def apply_live_board(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        self._pending_live_board = payload
+        self._board_live_timer.start()
+
+    def _flush_live_board(self) -> None:
+        payload = self._pending_live_board
+        self._pending_live_board = None
+        if not isinstance(payload, dict) or not isinstance(payload.get("stats"), dict):
+            self._load_agent_drafts()
+            return
+        board = _parse_workflow_board(payload)
+        self._page_agents.set_board(board)
 
     def _show_drafts_result(self, result: object) -> None:
         if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[0], WorkflowBoard):

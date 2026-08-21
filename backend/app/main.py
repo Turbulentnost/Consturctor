@@ -83,10 +83,11 @@ async def lifespan(_app: FastAPI):
     try:
         init_db()
         logger.info("App Postgres schema ready")
-        from app.api.v1.notifications import notification_scheduler
+        from app.api.v1.notifications import board_live_subscriber, notification_scheduler
 
         scheduler_tasks = [
             asyncio.create_task(notification_scheduler()),
+            asyncio.create_task(board_live_subscriber()),
         ]
     except Exception:
         logger.exception("Failed to initialize app Postgres")
