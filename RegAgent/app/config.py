@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+load_dotenv(ROOT / ".env")
+
+from app.cursor_sdk_win_patch import apply as _apply_cursor_sdk_win_patch
+
+_apply_cursor_sdk_win_patch()
+
+
+def bundle_path(*parts: str) -> Path:
+    return ROOT.joinpath(*parts)
+
+
+DATA_DIR = bundle_path("data")
+CARDS_DB = DATA_DIR / "cards.db"
+REGULATIONS_DIR = DATA_DIR / "regulations"
+WORKSPACES_DIR = DATA_DIR / "workspaces"
+
+
+def ensure_data_dirs() -> None:
+    for path in (DATA_DIR, REGULATIONS_DIR, WORKSPACES_DIR):
+        path.mkdir(parents=True, exist_ok=True)
+
+
+def cursor_api_key() -> str:
+    return (os.environ.get("CURSOR_API_KEY") or "").strip()
+
+
+def cursor_model() -> str:
+    return (os.environ.get("CURSOR_MODEL") or "composer-2.5").strip()
+
+
+def backend_url() -> str:
+    return (os.environ.get("BACKEND_URL") or "http://192.168.1.157:7812").strip()
+
+
+def auth_skip_login_page() -> bool:
+    return (os.environ.get("AUTH_SKIP_LOGIN_PAGE") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def erp_login() -> str:
+    return (os.environ.get("ERP_LOGIN") or "").strip()
+
+
+def erp_password() -> str:
+    return (os.environ.get("ERP_PASSWORD") or "").strip()
+
+
+def regagent_test_login_enabled() -> bool:
+    return (os.environ.get("REGAGENT_TEST_LOGIN") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def regagent_test_fio() -> str:
+    return (
+        os.environ.get("REGAGENT_TEST_FIO") or "Ильченко Екатерина Александровна"
+    ).strip()
+
+
+def regagent_test_password() -> str:
+    return (os.environ.get("REGAGENT_TEST_PASSWORD") or "123").strip()
+
+
+def regagent_test_user_id() -> str:
+    return (os.environ.get("REGAGENT_TEST_USER_ID") or "test-ilchenko").strip()
+
+
+def odata_base_url() -> str:
+    return (os.environ.get("ODATA_BASE_URL") or "").strip().rstrip("/")
+
+
+def odata_username() -> str:
+    return (os.environ.get("ODATA_USERNAME") or "").strip()
+
+
+def odata_password() -> str:
+    return (os.environ.get("ODATA_PASSWORD") or "").strip()
+
+
+def odata_auth() -> tuple[str, str] | None:
+    user = (odata_username() or erp_login()).strip()
+    password = (odata_password() or erp_password()).strip()
+    if user and password:
+        return user, password
+    return None
+
+
+def docflow_odata_base_url() -> str:
+    explicit = (os.environ.get("DOCFLOW_ODATA_BASE_URL") or "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    erp = odata_base_url()
+    if "/erp_pm/" in erp:
+        return erp.replace("/erp_pm/", "/doc/").rstrip("/")
+    return ""
+
+
+def docflow_odata_username() -> str:
+    return (
+        os.environ.get("DOCFLOW_ODATA_USERNAME")
+        or odata_username()
+        or erp_login()
+    ).strip()
+
+
+def docflow_odata_password() -> str:
+    return (
+        os.environ.get("DOCFLOW_ODATA_PASSWORD")
+        or odata_password()
+        or erp_password()
+    ).strip()
+
+
+def odata_timeout_sec() -> int:
+    raw = (os.environ.get("ODATA_TIMEOUT_SEC") or "30").strip()
+    try:
+        return max(5, min(int(raw), 120))
+    except ValueError:
+        return 30
