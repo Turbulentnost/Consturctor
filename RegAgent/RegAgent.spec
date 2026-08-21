@@ -1,4 +1,4 @@
-# -*- mode: python ; coding: utf-8 -*-
+﻿# -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
@@ -15,9 +15,8 @@ for name in ("odata_organization_keys.json", "odata_department_keys.json", "samp
     src = root / "data" / name
     if src.exists():
         datas.append((str(src), "data"))
-if (root / ".env").exists():
-    datas.append((str(root / ".env"), "."))
-elif (root / ".env.example").exists():
+# Release: never bundle .env (secrets). Portable package ships .env.example beside exe.
+if (root / ".env.example").exists():
     datas.append((str(root / ".env.example"), "."))
 
 binaries = []

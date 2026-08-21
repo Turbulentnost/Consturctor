@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -65,7 +66,10 @@ class DemoPage(QWidget):
         self._feed_scroll = QScrollArea()
         self._feed_scroll.setWidgetResizable(True)
         self._feed_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._feed_scroll.setMinimumHeight(280)
+        self._feed_scroll.setMinimumHeight(0)
+        self._feed_scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self._feed_scroll.setWidget(self._feed_host)
         self._feed_scroll.setStyleSheet(
             "QScrollArea { background: transparent; border: none; }" + scroll_bar_qss()
@@ -73,9 +77,10 @@ class DemoPage(QWidget):
 
         feed_frame = QFrame()
         feed_frame.setStyleSheet(card_qss("DemoFeed", radius=16))
+        feed_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         feed_lay = QVBoxLayout(feed_frame)
         feed_lay.setContentsMargins(12, 12, 12, 12)
-        feed_lay.addWidget(self._feed_scroll)
+        feed_lay.addWidget(self._feed_scroll, 1)
 
         self._clarify_host = QHBoxLayout()
         self._clarify_host.setSpacing(8)
@@ -111,6 +116,8 @@ class DemoPage(QWidget):
         layout.addWidget(feed_frame, 1)
         layout.addWidget(clarify_wrap)
         layout.addLayout(actions)
+
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_card(self, card: Card) -> None:
         self._card = card

@@ -64,6 +64,7 @@ class HomePage(QWidget):
         super().__init__(parent)
         self._agents: list[Card] = []
         self._drafts: list[Card] = []
+        self._schedule_counts: dict[str, int] = {}
         self._active_view = "agents"
 
         title = QLabel("Мои агенты")
@@ -109,9 +110,16 @@ class HomePage(QWidget):
     def show_drafts(self) -> None:
         self._set_view("drafts")
 
-    def set_cards(self, agents: list[Card], drafts: list[Card] | None = None) -> None:
+    def set_cards(
+        self,
+        agents: list[Card],
+        drafts: list[Card] | None = None,
+        *,
+        schedule_counts: dict[str, int] | None = None,
+    ) -> None:
         self._agents = agents
         self._drafts = drafts or []
+        self._schedule_counts = schedule_counts or {}
         self._update_nav_links()
         self._render()
 
@@ -186,12 +194,20 @@ class HomePage(QWidget):
         title.setWordWrap(True)
 
         chip = StatusChip("опубликован", variant="success", compact=True)
+        sched_count = self._schedule_counts.get(card.id, 0)
+        if sched_count:
+            chip_sched = StatusChip(f"⏱ {sched_count}", variant="neutral", compact=True)
+            chip_sched.setToolTip("Запланированных задач")
+        else:
+            chip_sched = None
 
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(10)
         head.addWidget(title, 1)
         head.addWidget(chip, 0, Qt.AlignmentFlag.AlignTop)
+        if chip_sched is not None:
+            head.addWidget(chip_sched, 0, Qt.AlignmentFlag.AlignTop)
 
         meta = QLabel(_agent_meta(card))
         meta.setFont(app_font(12))
@@ -215,12 +231,12 @@ class HomePage(QWidget):
             "Выгрузить регламент",
             lambda cid=card.id: self.export_requested.emit(cid),
         )
-        download.setEnabled(bool(_regulation_file(card)))
+        download.setEnabled(_can_export(card))
         icons.addWidget(download)
         icons.addWidget(
             _icon_btn(
                 ICON_HISTORY,
-                "История",
+                "История запросов",
                 lambda cid=card.id, name=card.title: self.history_requested.emit(
                     cid, name or "ИИ-агент"
                 ),
@@ -306,17 +322,36 @@ def _icon_btn(glyph: str, tooltip: str, handler, *, danger: bool = False) -> QTo
     btn.setFont(nerd_font(16))
     btn.setStyleSheet(icon_button_qss(danger=danger))
     btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    btn.clicked.connect(handler)
+    btn.clicked.connect(lambda *args: handler())
     _ = NERD_FAMILY
     return btn
 
 
-def _regulation_file(card: Card) -> Path | None:
+def resolve_regulation_file(card: Card) -> Path | None:
     raw = (card.regulation_path or "").strip()
-    if not raw:
-        return None
-    path = Path(raw)
-    return path if path.is_file() else None
+    if raw:
+        path = Path(raw)
+        if path.is_file():
+            return path
+    try:
+        from app.config import REGULATIONS_DIR
+
+        folder = REGULATIONS_DIR / card.id
+        if folder.is_dir():
+            files = sorted(
+                path
+                for path in folder.iterdir()
+                if path.is_file() and not path.name.startswith(".")
+            )
+            if files:
+                return files[0]
+    except OSError:
+        pass
+    return None
+
+
+def _can_export(card: Card) -> bool:
+    return resolve_regulation_file(card) is not None or bool((card.regulation_text or "").strip())
 
 
 def _agent_meta(card: Card) -> str:

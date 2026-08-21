@@ -9,6 +9,9 @@ import os
 import subprocess
 import sys
 
+from app.subprocess_win import hidden_subprocess_kwargs
+from app.tools.ported.ac.workers.onec_com32_helper import is_com32_available
+
 ONEC_COM_RUNTIME_CSCRIPT32 = "cscript32"
 ONEC_COM_RUNTIME_INPROC = "inproc"
 
@@ -128,8 +131,6 @@ def _check_onec_com_availability() -> tuple[bool, str | None, str]:
             "",
         )
 
-    from app.tools.ported.ac.workers.onec_com32_helper import is_com32_available
-
     com32_ok, com32_reason = is_com32_available()
     if com32_ok:
         return True, None, ONEC_COM_RUNTIME_CSCRIPT32
@@ -173,6 +174,7 @@ def _check_explicit_python32(progid: str) -> tuple[bool, str | None]:
             errors="replace",
             timeout=20,
             check=False,
+            **hidden_subprocess_kwargs(),
         )
     except Exception as exc:  # noqa: BLE001
         return False, f"Helper probe failed: {exc}"

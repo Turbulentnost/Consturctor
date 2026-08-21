@@ -8,19 +8,16 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
-    QPushButton,
     QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from app.ui.styles import secondary_button_qss
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 
 _AVATAR_SIZE = 42
-_WIDTH_DEFAULT = 348
-_WIDTH_WITH_HISTORY = 470
+HEADER_OVERLAY_WIDTH = 320
 _DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
 
 
@@ -95,22 +92,11 @@ class RoundAvatarButton(QToolButton):
         p.end()
 
 
-_HISTORY_BTN_QSS = secondary_button_qss()
-
-
 class UserMenuHeader(QWidget):
     logout_requested = Signal()
-    history_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._history_btn = QPushButton("История")
-        self._history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._history_btn.setFont(app_font(13, QFont.Weight.Medium))
-        self._history_btn.setStyleSheet(_HISTORY_BTN_QSS)
-        self._history_btn.clicked.connect(self.history_requested.emit)
-        self._history_btn.hide()
-
         self.avatar = RoundAvatarButton(self)
         menu = QMenu(self.avatar)
         menu.setFont(app_font(13))
@@ -152,15 +138,10 @@ class UserMenuHeader(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
-        root.addWidget(self._history_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addWidget(self.avatar, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(text_col, 1)
-        self.setFixedWidth(_WIDTH_DEFAULT)
+        self.setFixedWidth(HEADER_OVERLAY_WIDTH)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-
-    def set_history_visible(self, visible: bool) -> None:
-        self._history_btn.setVisible(visible)
-        self.setFixedWidth(_WIDTH_WITH_HISTORY if visible else _WIDTH_DEFAULT)
 
     def set_user(self, *, fio: str, position: str = "") -> None:
         self._fio.setText(fio or "—")

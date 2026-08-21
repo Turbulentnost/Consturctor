@@ -10,6 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from app.subprocess_win import hidden_subprocess_kwargs
 from app.tools.ported.ac.workers.onec_meeting_notes import assert_select_only
 
 ENV_PROGID = "ONEC_COM_PROGID"
@@ -287,6 +288,7 @@ def _run_vbs(script: str, *, args: list[str] | None = None, timeout: int = 60) -
                 capture_output=True,
                 timeout=timeout,
                 check=False,
+                **hidden_subprocess_kwargs(),
             )
         except subprocess.TimeoutExpired as exc:
             _kill_hung(exc)

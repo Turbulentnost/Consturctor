@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -12,6 +13,11 @@ if getattr(sys, "frozen", False):
         sys.path.insert(0, str(meipass))
 elif str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+if sys.platform == "win32":
+    from app.subprocess_win import apply_global_subprocess_patch
+
+    apply_global_subprocess_patch()
 
 from app.config import ensure_data_dirs
 
@@ -27,6 +33,14 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO)
     ensure_data_dirs()
+
+    from app.cursor_sdk_win_patch import prewarm_bridge
+
+    threading.Thread(
+        target=prewarm_bridge,
+        name="cursor-bridge-prewarm",
+        daemon=True,
+    ).start()
 
     from PySide6.QtGui import QFont
     from PySide6.QtWidgets import QApplication

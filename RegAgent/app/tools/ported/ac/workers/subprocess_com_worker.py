@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from app.frozen_runtime import com_worker_command, desktop_root
+from app.subprocess_win import hidden_subprocess_kwargs
 from app.tools.ported.ac.workers.base import BaseWorker
 from app.tools.ported.ac.workers.models import WorkerResult, WorkerTask
 
@@ -103,14 +104,7 @@ def _worker_env() -> dict[str, str]:
 
 def _hidden_run_kwargs() -> dict:
     """Keep the COM worker from flashing a console window on Windows."""
-    if sys.platform != "win32":
-        return {}
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    return {
-        "startupinfo": startupinfo,
-        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    }
+    return hidden_subprocess_kwargs()
 
 
 def _build_worker_command(module_name: str) -> list[str]:

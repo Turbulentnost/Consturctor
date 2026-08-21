@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
 from threading import Thread
 
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
+    QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -17,19 +24,24 @@ from app.agent.pipeline import CardPipelineService, PipelineError
 from app.api_client import ApiClient, UserProfile
 from app.models import Card, phase_page_name
 from app.storage.repository import CardRepository
+from app.storage.scheduled_repository import ScheduledTaskRepository
 from app.storage.session_log import load_session_log
+from app.scheduler.service import TaskSchedulerService
+from app.tools.confirm_bridge import install_confirm_bridge
+from app.ui.pages.calendar_page import CalendarPage
 from app.ui.pages.clarify_page import ClarifyPage
 from app.ui.pages.create_page import CreatePage
 from app.ui.pages.demo_page import DemoPage
-from app.ui.pages.home_page import HomePage
+from app.ui.pages.home_page import HomePage, resolve_regulation_file
 from app.ui.pages.kpi_page import KpiPage
 from app.ui.pages.passport_page import PassportPage
 from app.ui.pages.process_page import ProcessPickerPage
 from app.ui.pages.review_page import ReviewPage
 from app.ui.pages.schedule_page import SchedulePage
 from app.ui.pages.workspace_page import WorkspacePage, show_history_dialog
-from app.ui.theme import COLOR_CONTENT_BG, CONTENT_PADDING_TOP, CONTENT_PADDING_X
-from app.ui.widgets.app_dialog import confirm_dialog, info_dialog
+from app.ui.styles import input_qss
+from app.ui.theme import COLOR_CONTENT_BG, COLOR_CONTENT_MUTED, CONTENT_PADDING_TOP, CONTENT_PADDING_X, MAIN_TEXT, app_font
+from app.ui.widgets.app_dialog import AppDialog, confirm_dialog, info_dialog
 from app.ui.widgets.pipeline_progress import (
     ADVANCE_MESSAGES,
     CREATION_FLOW_PAGES,
@@ -76,6 +88,9 @@ class MainShell(QWidget):
         self._api = api
         self._user: UserProfile | None = None
         self._pipeline = CardPipelineService(CardRepository())
+        self._task_repo = ScheduledTaskRepository()
+        self._scheduler = TaskSchedulerService(self._pipeline.repo, self._task_repo, self)
+        self._confirm = install_confirm_bridge(self)
         self._active_card: Card | None = None
         self._pipeline_busy = False
         self._current_flow_page = ""
@@ -91,7 +106,8 @@ class MainShell(QWidget):
         self._passport = PassportPage()
         self._clarify = ClarifyPage()
         self._demo = DemoPage()
-        self._schedule = SchedulePage()
+        self._schedule = SchedulePage(self._task_repo)
+        self._calendar = CalendarPage(self._task_repo)
         self._kpi = KpiPage()
         self._workspace = WorkspacePage()
 
@@ -105,6 +121,7 @@ class MainShell(QWidget):
             "clarify": self._pages.addWidget(self._clarify),
             "demo": self._pages.addWidget(self._demo),
             "schedule": self._pages.addWidget(self._schedule),
+            "calendar": self._pages.addWidget(self._calendar),
             "kpi": self._pages.addWidget(self._kpi),
             "workspace": self._pages.addWidget(self._workspace),
         }
@@ -114,6 +131,8 @@ class MainShell(QWidget):
         self._home.delete_requested.connect(self._delete_card)
         self._home.continue_requested.connect(self._continue_draft)
         self._home.history_requested.connect(self._open_history)
+        self._home.export_requested.connect(self._export_regulation)
+        self._home.settings_requested.connect(self._edit_card_settings)
         self._create.analyze_requested.connect(self._analyze_regulation)
         self._create.create_regulation_requested.connect(self._on_create_regulation_ai)
         self._review.confirmed.connect(self._review_confirmed)
@@ -129,7 +148,12 @@ class MainShell(QWidget):
         self._demo.cancelled.connect(self._navigate_card_phase)
         self._schedule.finished.connect(self._schedule_done)
         self._schedule.skipped.connect(self._schedule_done)
+        self._schedule.open_calendar.connect(self._open_calendar)
+        self._schedule.task_created.connect(self._on_tasks_changed)
+        self._calendar.task_changed.connect(self._on_tasks_changed)
         self._workspace.back_requested.connect(self._go_home)
+        self._workspace.schedule_requested.connect(self._schedule_from_workspace)
+        self._workspace.agent_busy_changed.connect(self._scheduler.set_card_busy)
         self._workspace.agent_ready.connect(self._on_agent_ready)
         self.pipeline_ready.connect(self._on_pipeline_ready)
         self.pipeline_progress.connect(self._on_pipeline_progress)
@@ -140,7 +164,6 @@ class MainShell(QWidget):
 
         self.user_menu = UserMenuHeader(self)
         self.user_menu.logout_requested.connect(self.logout_requested.emit)
-        self.user_menu.history_requested.connect(self._workspace.show_session_history)
 
         self._content = MainContentWidget()
         content_layout = QVBoxLayout(self._content)
@@ -182,6 +205,7 @@ class MainShell(QWidget):
         self._collapse_btn.clicked.connect(self.sidebar.toggle_collapsed)
         self.sidebar.collapse_toggled.connect(self._on_sidebar_collapse)
         self.sidebar.set_active_key("agents", animate=False)
+        self._scheduler.start()
         QTimer.singleShot(0, self._position_overlays)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -227,7 +251,7 @@ class MainShell(QWidget):
         self.user_menu.set_logout_visible(visible)
 
     def _on_sidebar_page(self, key: str) -> None:
-        if key in ("agents", "create", "kpi"):
+        if key in ("agents", "create", "calendar", "kpi"):
             self._show_page(key)
 
     def _show_page(self, name: str) -> None:
@@ -237,13 +261,14 @@ class MainShell(QWidget):
         self._pages.setCurrentIndex(idx)
         self._current_flow_page = name
         self._sync_pipeline_chrome(name)
-        self.user_menu.set_history_visible(name == "workspace")
         QTimer.singleShot(0, self._position_overlays)
         if name == "agents":
             self._home.show_agents()
             self._refresh_home()
         elif name == "kpi":
             self._refresh_kpi()
+        elif name == "calendar":
+            self._refresh_calendar()
 
     def _go_create(self) -> None:
         self._create.reset()
@@ -266,10 +291,32 @@ class MainShell(QWidget):
         if self._active_card is not None and self._active_card.phase != "published":
             if not any(c.id == self._active_card.id for c in drafts):
                 drafts.insert(0, self._active_card)
-        self._home.set_cards(published, drafts)
+        schedule_counts = self._task_repo.count_by_card()
+        self._home.set_cards(published, drafts, schedule_counts=schedule_counts)
+
+    def _refresh_calendar(self) -> None:
+        published = [c for c in self._pipeline.list_cards() if c.phase == "published"]
+        self._calendar.set_published_cards(published)
+        self._schedule.set_published_cards(published)
+        self._calendar.refresh()
 
     def _refresh_kpi(self) -> None:
         self._kpi.refresh(self._pipeline.list_cards())
+
+    def _on_tasks_changed(self) -> None:
+        self._refresh_home()
+        if self._current_flow_page == "calendar":
+            self._refresh_calendar()
+
+    def _open_calendar(self) -> None:
+        self._show_page("calendar")
+        self.sidebar.set_active_key("calendar", animate=False)
+
+    def _schedule_from_workspace(self, card_id: str) -> None:
+        published = [c for c in self._pipeline.list_cards() if c.phase == "published"]
+        self._calendar.set_published_cards(published)
+        self._calendar.open_task_dialog(card_id=card_id)
+        self._on_tasks_changed()
 
     def _on_create_regulation_ai(self) -> None:
         info_dialog(
@@ -296,7 +343,12 @@ class MainShell(QWidget):
             card = self._pipeline.get(card_id)
             workspace = card.workspace_dir if card is not None else ""
             entries = load_session_log(card_id, workspace)
-        show_history_dialog(self, entries)
+        index = show_history_dialog(self, entries)
+        if index is None:
+            return
+        if self._workspace.current_card_id() != card_id:
+            self._open_card(card_id)
+        QTimer.singleShot(80, lambda i=index: self._workspace.reveal_user_turn(i))
 
     def _analyze_regulation(self) -> None:
         path = self._create.selected_path()
@@ -368,6 +420,7 @@ class MainShell(QWidget):
             info_dialog(self, "RegAgent", str(exc))
             return
         self._pages.setCurrentIndex(self._page_index["schedule"])
+        self._refresh_calendar()
         self._schedule.set_card(self._active_card)
 
     def _schedule_done(self) -> None:
@@ -548,7 +601,6 @@ class MainShell(QWidget):
         self._pages.setCurrentIndex(self._page_index["workspace"])
         self._current_flow_page = "workspace"
         self._sync_pipeline_chrome("workspace")
-        self.user_menu.set_history_visible(True)
         QTimer.singleShot(0, self._position_overlays)
 
     def _delete_card(self, card_id: str) -> None:
@@ -563,6 +615,77 @@ class MainShell(QWidget):
         if self._active_card is not None and self._active_card.id == card_id:
             self._active_card = None
         self._pipeline.delete(card_id)
+        self._refresh_home()
+
+    def _export_regulation(self, card_id: str) -> None:
+        card = self._pipeline.get(card_id)
+        if card is None:
+            info_dialog(self, "Выгрузка", "Карточка не найдена.")
+            return
+        src = resolve_regulation_file(card)
+        default_name = src.name if src is not None else f"{card.title or 'reglament'}.md"
+        dest, _ = QFileDialog.getSaveFileName(
+            self,
+            "Выгрузить регламент",
+            str(Path.home() / "Desktop" / default_name),
+            "Документы (*.docx *.doc *.pdf *.md *.txt);;Все файлы (*.*)",
+        )
+        if not dest:
+            return
+        try:
+            if src is not None:
+                shutil.copy2(src, dest)
+            elif (card.regulation_text or "").strip():
+                Path(dest).write_text(card.regulation_text, encoding="utf-8")
+            else:
+                info_dialog(self, "Выгрузка", "Файл регламента не найден.")
+                return
+        except OSError as exc:
+            info_dialog(self, "Выгрузка", f"Не удалось сохранить файл: {exc}")
+
+    def _edit_card_settings(self, card_id: str) -> None:
+        card = self._pipeline.get(card_id)
+        if card is None:
+            info_dialog(self, "Настройки", "Карточка не найдена.")
+            return
+        dialog = AppDialog(
+            "Настройки агента",
+            parent=self,
+            primary="Сохранить",
+            secondary="Отмена",
+        )
+        title_label = QLabel("Название")
+        title_label.setFont(app_font(12, QFont.Weight.DemiBold))
+        title_label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        title_edit = QLineEdit(card.title)
+        title_edit.setStyleSheet(input_qss(radius=12))
+        summary_label = QLabel("Краткое описание")
+        summary_label.setFont(app_font(12, QFont.Weight.DemiBold))
+        summary_label.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        hint = QLabel("Эти поля видны в списке агентов и в шапке чата.")
+        hint.setWordWrap(True)
+        hint.setFont(app_font(12))
+        hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        summary_edit = QPlainTextEdit(card.summary)
+        summary_edit.setStyleSheet(input_qss(radius=12))
+        summary_edit.setFixedHeight(110)
+        form = QWidget()
+        form_layout = QVBoxLayout(form)
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setSpacing(6)
+        form_layout.addWidget(title_label)
+        form_layout.addWidget(title_edit)
+        form_layout.addWidget(summary_label)
+        form_layout.addWidget(summary_edit)
+        form_layout.addWidget(hint)
+        dialog.add_body(form)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        title = title_edit.text().strip()
+        if title:
+            card.title = title
+        card.summary = summary_edit.toPlainText().strip()
+        self._pipeline.save(card)
         self._refresh_home()
 
     def _on_agent_ready(self, card_id: str, agent_id: str) -> None:

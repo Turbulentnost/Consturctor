@@ -139,6 +139,51 @@ class DemoState(BaseModel):
     error: str = ""
 
 
+TriggerType = Literal["once", "interval", "daily", "weekly"]
+
+
+class ScheduledTask(BaseModel):
+    id: str = Field(default_factory=lambda: f"st-{uuid4().hex[:12]}")
+    card_id: str = ""
+    title: str = ""
+    prompt: str = ""
+    trigger_type: TriggerType = "once"
+    trigger_config: dict[str, Any] = Field(default_factory=dict)
+    next_run_at: str = ""
+    last_run_at: str | None = None
+    last_result: str | None = None
+    enabled: bool = True
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
+    )
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any]) -> ScheduledTask:
+        trigger = str(row.get("trigger_type") or "once")
+        if trigger not in {"once", "interval", "daily", "weekly"}:
+            trigger = "once"
+        raw_cfg = row.get("trigger_config_json") or "{}"
+        if isinstance(raw_cfg, str):
+            import json
+
+            cfg = json.loads(raw_cfg) if raw_cfg.strip() else {}
+        else:
+            cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
+        return cls(
+            id=str(row["id"]),
+            card_id=str(row.get("card_id") or ""),
+            title=str(row.get("title") or ""),
+            prompt=str(row.get("prompt") or ""),
+            trigger_type=trigger,  # type: ignore[arg-type]
+            trigger_config=cfg,
+            next_run_at=str(row.get("next_run_at") or ""),
+            last_run_at=row.get("last_run_at"),
+            last_result=row.get("last_result"),
+            enabled=bool(row.get("enabled", 1)),
+            created_at=str(row.get("created_at") or ""),
+        )
+
+
 class TriggersConfig(BaseModel):
     enabled: bool = False
     items: list[dict[str, Any]] = Field(default_factory=list)

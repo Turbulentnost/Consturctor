@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QKeyEvent
+from PySide6.QtGui import QFont, QKeyEvent, QShowEvent
 from PySide6.QtWidgets import (
     QFrame,
     QFileDialog,
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from app.attachment_text import stage_attachments
 from app.models import Card
-from app.storage.session_log import load_session_log, save_session_log
+from app.storage.session_log import load_session_log, save_session_log, user_turns
 from app.tools.confirm_bridge import clear_confirm_bridge, install_confirm_bridge
 from app.ui.agent_thread import AgentThreadController
 from app.ui.styles import card_qss, ghost_button_qss, primary_button_qss, secondary_button_qss
@@ -37,6 +38,7 @@ from app.ui.widgets.cursor_feed import (
 )
 from app.ui.widgets.result_file_card import ResultFileCard, paths_from_result
 from app.ui.widgets.status_chip import StatusChip
+from app.ui.widgets.user_menu import HEADER_OVERLAY_WIDTH
 
 
 _ATTACH_SUFFIXES = {".doc", ".docx", ".pdf", ".md", ".txt", ".xlsx"}
@@ -84,20 +86,28 @@ def _short_attachment_name(name: str, keep: int = 6) -> str:
     return f"{stem[:keep]}...{suffix}"
 
 
-_INPUT_MAX_LINES = 6
+_INPUT_MIN_LINES = 1
+_INPUT_MAX_LINES = 10
+_DESCENT_SLACK = 3
 
 
 class _ComposerInput(QPlainTextEdit):
+
     submit_requested = Signal()
     height_sync_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setContentsMargins(4, 6, 4, 6)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
-        self.textChanged.connect(self.height_sync_requested.emit)
+        self.document().contentsChanged.connect(self._emit_height_sync)
+        self.textChanged.connect(self._emit_height_sync)
+
+    def _emit_height_sync(self) -> None:
+        self.height_sync_requested.emit()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
@@ -109,7 +119,67 @@ class _ComposerInput(QPlainTextEdit):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self.height_sync_requested.emit()
+        self._emit_height_sync()
+
+    def _line_height(self) -> int:
+        metrics = self.fontMetrics()
+        return max(metrics.lineSpacing(), metrics.height())
+
+    def _text_layout_width(self) -> float:
+        width = self.viewport().width()
+        if width < 40:
+            margins = self.contentsMargins()
+            width = self.width() - margins.left() - margins.right()
+            if width < 40:
+                width = 120
+        return float(width)
+
+    def _vertical_chrome(self) -> int:
+        doc = self.document()
+        margins = self.contentsMargins()
+        return (
+            int(2 * doc.documentMargin())
+            + margins.top()
+            + margins.bottom()
+            + 2 * self.frameWidth()
+            + _DESCENT_SLACK
+        )
+
+    def _document_pixel_height(self) -> float:
+        doc = self.document()
+        doc.setTextWidth(self._text_layout_width())
+        layout = doc.documentLayout()
+        if layout is None:
+            return float(doc.size().height())
+        total = 0.0
+        block = doc.firstBlock()
+        while block.isValid():
+            total += layout.blockBoundingRect(block).height()
+            block = block.next()
+        return total
+
+    def measure_height(self) -> tuple[int, bool]:
+        line_h = self._line_height()
+        chrome = self._vertical_chrome()
+        min_h = line_h * _INPUT_MIN_LINES + chrome
+        max_h = line_h * _INPUT_MAX_LINES + chrome
+
+        doc_h = self._document_pixel_height()
+        needed = math.ceil(doc_h) + chrome
+        height = max(min_h, min(max_h, needed))
+        at_max = needed > max_h
+        return height, at_max
+
+    def target_height(self) -> int:
+        return self.measure_height()[0]
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(super().sizeHint().width(), self.target_height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        chrome = self._vertical_chrome()
+        min_h = self._line_height() * _INPUT_MIN_LINES + chrome
+        return QSize(super().minimumSizeHint().width(), min_h)
 
 
 def _shorten_text(text: str, limit: int = 96) -> str:
@@ -127,32 +197,47 @@ def _section(text: str) -> QLabel:
     return label
 
 
-class _WrapActionButton(QPushButton):
+_SCENARIO_BTN_QSS = """
+QFrame#ScenarioBtn {
+    background: #FFFFFF;
+    border: 1px solid #D5DEDA;
+    border-radius: 12px;
+}
+QFrame#ScenarioBtn:hover { background: #EAF7F3; border-color: #08745F; }
+QFrame#ScenarioBtn:disabled { background: #F7F9F8; border-color: #E4EBE8; }
+"""
+
+
+class _FitWidthScroll(QScrollArea):
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        inner = self.widget()
+        if inner is not None:
+            width = max(1, self.viewport().width())
+            inner.setFixedWidth(width)
+
+
+class _WrapActionButton(QFrame):
+    clicked = Signal()
+
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("ScenarioBtn")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        self.setStyleSheet(
-            """
-            QPushButton {
-                background: #FFFFFF;
-                border: 1px solid #D5DEDA;
-                border-radius: 12px;
-                padding: 0;
-            }
-            QPushButton:hover { background: #EAF7F3; border-color: #08745F; }
-            QPushButton:pressed { background: #DFF3EC; border-color: #06483D; }
-            QPushButton:disabled { background: #F7F9F8; border-color: #E4EBE8; }
-            """
-        )
+        self.setStyleSheet(_SCENARIO_BTN_QSS)
         self._label = QLabel(text)
         self._label.setWordWrap(True)
-        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
         self._label.setFont(app_font(12, QFont.Weight.DemiBold))
-        self._label.setStyleSheet("color: #06483D; background: transparent;")
+        self._label.setMinimumWidth(0)
+        self._label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
         self._label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         inner = QVBoxLayout(self)
-        inner.setContentsMargins(10, 10, 10, 10)
+        inner.setContentsMargins(10, 8, 10, 8)
         inner.setSpacing(0)
         inner.addWidget(self._label)
         self._sync_enabled_style()
@@ -162,16 +247,29 @@ class _WrapActionButton(QPushButton):
 
     def heightForWidth(self, width: int) -> int:  # noqa: N802
         inner_w = max(40, width - 20)
-        return max(40, self._label.heightForWidth(inner_w) + 20)
+        return max(40, self._label.heightForWidth(inner_w) + 16)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        width = self.width() if self.width() > 1 else 260
+        width = self.width() if self.width() > 1 else 240
         return QSize(width, self.heightForWidth(width))
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, 40)
 
     def changeEvent(self, event) -> None:  # noqa: N802
         super().changeEvent(event)
         if event.type() == QEvent.Type.EnabledChange:
             self._sync_enabled_style()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        point = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.isEnabled()
+            and self.rect().contains(point)
+        ):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
 
     def _sync_enabled_style(self) -> None:
         color = "#9DB3AD" if not self.isEnabled() else "#06483D"
@@ -194,36 +292,54 @@ def _step_row(index: int, text: str) -> QWidget:
     caption = QLabel(text)
     caption.setFont(app_font(12, QFont.Weight.Medium))
     caption.setWordWrap(True)
+    caption.setMinimumWidth(0)
+    caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
     caption.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
     layout.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
     layout.addWidget(caption, 1)
     return row
 
 
-def show_history_dialog(parent: QWidget | None, entries: list[tuple[str, str]]) -> None:
-    items = [(kind, text) for kind, text in entries if (kind or "").strip() and (text or "").strip()]
-    if not items:
+def show_history_dialog(parent: QWidget | None, entries: list[tuple[str, str]]) -> int | None:
+    turns = user_turns(entries)
+    if not turns:
         dialog = AppDialog(
-            "История",
-            message="В этой сессии пока нет сообщений.",
+            "История запросов",
+            message="Пока нет запросов. Напишите задачу в чате — она появится здесь.",
             parent=parent,
             primary="Закрыть",
         )
         dialog.exec()
-        return
-    dialog = AppDialog("История сессии", parent=parent, primary="Закрыть")
-    dialog.resize(720, 560)
-    dialog.setMinimumSize(480, 380)
+        return None
+    dialog = AppDialog(
+        "История запросов",
+        message="Нажмите запрос, чтобы перейти к этому месту в диалоге.",
+        parent=parent,
+        primary="Закрыть",
+    )
+    dialog.resize(640, 520)
+    dialog.setMinimumSize(440, 360)
     screen = dialog.screen()
     if screen is not None:
         geo = screen.availableGeometry()
-        dialog.setMaximumSize(min(960, geo.width() - 40), min(720, geo.height() - 60))
-    dialog.add_body(HistoryList(items, dialog), stretch=1)
+        dialog.setMaximumSize(min(860, geo.width() - 40), min(680, geo.height() - 60))
+    chosen: list[int | None] = [None]
+    history = HistoryList(turns, dialog)
+    history.turn_selected.connect(lambda index: _pick_history_turn(dialog, chosen, index))
+    dialog.add_body(history, stretch=1)
     dialog.exec()
+    return chosen[0]
+
+
+def _pick_history_turn(dialog: AppDialog, chosen: list[int | None], index: int) -> None:
+    chosen[0] = index
+    dialog.accept()
 
 
 class WorkspacePage(QWidget):
     back_requested = Signal()
+    schedule_requested = Signal(str)
+    agent_busy_changed = Signal(str, bool)
     failed = Signal(str)
     agent_ready = Signal(str, str)
 
@@ -238,7 +354,7 @@ class WorkspacePage(QWidget):
         self._last_thinking_text = ""
         self._busy = False
         self._agent_ready_flag = False
-        self._action_buttons: list[QPushButton] = []
+        self._action_buttons: list[_WrapActionButton] = []
         self._auto_quick_task = False
         self._restoring = False
         self._pending_files: list[str] = []
@@ -249,10 +365,14 @@ class WorkspacePage(QWidget):
         self._title = QLabel("Агент")
         self._title.setFont(app_font(22, QFont.Weight.DemiBold))
         self._title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        self._title.setWordWrap(False)
+        self._title.setWordWrap(True)
+        self._title.setMinimumWidth(0)
+        self._title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         self._summary = QLabel("Напишите задачу — агент выполнит её сам.")
-        self._summary.setWordWrap(False)
+        self._summary.setWordWrap(True)
+        self._summary.setMinimumWidth(0)
+        self._summary.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._summary.setFont(app_font(13))
         self._summary.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
 
@@ -263,6 +383,23 @@ class WorkspacePage(QWidget):
         back.setStyleSheet(ghost_button_qss())
         back.clicked.connect(self._on_back)
 
+        self._history_btn = QPushButton("История")
+        self._history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._history_btn.setFont(app_font(13, QFont.Weight.DemiBold))
+        self._history_btn.setStyleSheet(secondary_button_qss(radius=12, compact=True))
+        self._history_btn.clicked.connect(self.show_session_history)
+
+        self._schedule_btn = QPushButton("Запланировать")
+        self._schedule_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._schedule_btn.setFont(app_font(13, QFont.Weight.DemiBold))
+        self._schedule_btn.setStyleSheet(secondary_button_qss(radius=12, compact=True))
+        self._schedule_btn.setToolTip("Запланировать задачу для этого агента")
+        self._schedule_btn.clicked.connect(self._on_schedule)
+
+        profile_gap = QWidget()
+        profile_gap.setFixedWidth(HEADER_OVERLAY_WIDTH)
+        profile_gap.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+
         top_row = QHBoxLayout()
         top_row.setSpacing(12)
         top_row.addWidget(back, 0, Qt.AlignmentFlag.AlignTop)
@@ -272,6 +409,9 @@ class WorkspacePage(QWidget):
         title_col.addWidget(self._title)
         title_col.addWidget(self._summary)
         top_row.addLayout(title_col, 1)
+        top_row.addWidget(self._schedule_btn, 0, Qt.AlignmentFlag.AlignTop)
+        top_row.addWidget(self._history_btn, 0, Qt.AlignmentFlag.AlignTop)
+        top_row.addWidget(profile_gap, 0)
 
         self._feed_layout = QVBoxLayout()
         self._feed_layout.setContentsMargins(14, 14, 14, 14)
@@ -283,14 +423,18 @@ class WorkspacePage(QWidget):
         self._feed_scroll = QScrollArea()
         self._feed_scroll.setWidgetResizable(True)
         self._feed_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._feed_scroll.setMinimumHeight(0)
+        self._feed_scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self._feed_scroll.setStyleSheet(
             "QScrollArea { background: transparent; border: none; }" + scroll_bar_qss()
         )
         self._feed_scroll.setWidget(feed_inner)
 
-        composer = QFrame()
-        composer.setObjectName("ComposerBar")
-        composer.setStyleSheet(
+        self._composer = QFrame()
+        self._composer.setObjectName("ComposerBar")
+        self._composer.setStyleSheet(
             """
             QFrame#ComposerBar {
                 background: #FFFFFF;
@@ -306,7 +450,7 @@ class WorkspacePage(QWidget):
             """
             QPlainTextEdit {
                 background: transparent; color: #101817;
-                border: none; padding: 8px 10px;
+                border: none; padding: 0;
                 selection-background-color: #08745F;
             }
             """
@@ -340,31 +484,31 @@ class WorkspacePage(QWidget):
         hint.setFont(app_font(11))
         hint.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
 
-        input_row = QHBoxLayout()
-        input_row.setContentsMargins(0, 0, 0, 0)
-        input_row.setSpacing(8)
-        input_row.addWidget(self._input, 1)
-        input_row.addWidget(self._attach_btn, 0, Qt.AlignmentFlag.AlignBottom)
-        input_row.addWidget(self._send_btn, 0, Qt.AlignmentFlag.AlignBottom)
+        bottom_row = QHBoxLayout()
+        bottom_row.setContentsMargins(0, 0, 0, 0)
+        bottom_row.setSpacing(8)
+        bottom_row.addWidget(hint, 1, Qt.AlignmentFlag.AlignVCenter)
+        bottom_row.addWidget(self._attach_btn, 0, Qt.AlignmentFlag.AlignBottom)
+        bottom_row.addWidget(self._send_btn, 0, Qt.AlignmentFlag.AlignBottom)
 
-        composer_lay = QVBoxLayout(composer)
-        composer_lay.setContentsMargins(12, 8, 12, 8)
-        composer_lay.setSpacing(4)
+        composer_lay = QVBoxLayout(self._composer)
+        composer_lay.setContentsMargins(12, 10, 12, 8)
+        composer_lay.setSpacing(2)
         composer_lay.addWidget(self._files_host)
-        composer_lay.addLayout(input_row)
-        composer_lay.addWidget(hint)
+        composer_lay.addWidget(self._input)
+        composer_lay.addLayout(bottom_row)
 
         self._quick_btn = QPushButton("Запустить типовую задачу")
         self._quick_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._quick_btn.setFont(app_font(13, QFont.Weight.DemiBold))
-        self._quick_btn.setStyleSheet(primary_button_qss(radius=12))
+        self._quick_btn.setFont(app_font(12, QFont.Weight.DemiBold))
+        self._quick_btn.setStyleSheet(primary_button_qss(radius=12, compact=True))
         self._quick_btn.clicked.connect(self._run_default_task)
 
         self._stop_btn = QPushButton("Остановить")
         self._stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._stop_btn.setMinimumWidth(128)
-        self._stop_btn.setFont(app_font(13, QFont.Weight.DemiBold))
-        self._stop_btn.setStyleSheet(secondary_button_qss(radius=12))
+        self._stop_btn.setMinimumWidth(108)
+        self._stop_btn.setFont(app_font(12, QFont.Weight.DemiBold))
+        self._stop_btn.setStyleSheet(secondary_button_qss(radius=12, compact=True))
         self._stop_btn.setEnabled(False)
         self._stop_btn.setToolTip("Прервать текущую работу агента")
         self._stop_btn.clicked.connect(self._stop_agent)
@@ -377,12 +521,14 @@ class WorkspacePage(QWidget):
         center_card = QFrame()
         center_card.setObjectName("AgentRunCard")
         center_card.setStyleSheet(card_qss("AgentRunCard", radius=18))
+        center_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         center_layout = QVBoxLayout(center_card)
         center_layout.setContentsMargins(16, 14, 16, 14)
-        center_layout.setSpacing(10)
+        center_layout.setSpacing(8)
         center_layout.addWidget(self._feed_scroll, 1)
         center_layout.addLayout(task_row, 0)
-        center_layout.addWidget(composer, 0)
+        self._composer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        center_layout.addWidget(self._composer, 0)
 
         side_card = QFrame()
         side_card.setObjectName("AgentRunSide")
@@ -394,10 +540,12 @@ class WorkspacePage(QWidget):
         self._scenarios_label = _section("Сценарии")
         self._scenarios_inner = QWidget()
         self._scenarios_inner.setStyleSheet("background: transparent;")
+        self._scenarios_inner.setMinimumWidth(0)
+        self._scenarios_inner.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
         self._scenarios_host = QVBoxLayout(self._scenarios_inner)
         self._scenarios_host.setContentsMargins(0, 0, 0, 0)
         self._scenarios_host.setSpacing(8)
-        self._scenarios_scroll = QScrollArea()
+        self._scenarios_scroll = _FitWidthScroll()
         self._scenarios_scroll.setWidgetResizable(True)
         self._scenarios_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scenarios_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -405,6 +553,7 @@ class WorkspacePage(QWidget):
             "QScrollArea { background: transparent; border: none; }" + scroll_bar_qss()
         )
         self._scenarios_scroll.setWidget(self._scenarios_inner)
+        self._scenarios_scroll.setMinimumWidth(0)
         self._scenarios_scroll.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
@@ -430,6 +579,7 @@ class WorkspacePage(QWidget):
         root.addLayout(top_row)
         root.addLayout(body, 1)
 
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._set_interactive(False)
         self._persist_timer = QTimer(self)
         self._persist_timer.setSingleShot(True)
@@ -446,7 +596,20 @@ class WorkspacePage(QWidget):
 
     def show_session_history(self) -> None:
         self._flush_session_log()
-        show_history_dialog(self, self._session_log)
+        index = show_history_dialog(self, self._session_log)
+        if index is not None:
+            self.reveal_user_turn(index)
+
+    def reveal_user_turn(self, index: int) -> None:
+        users = [item for item in self._feed_items if item.kind == "user"]
+        if not (0 <= index < len(users)):
+            return
+        item = users[index]
+        self._feed_scroll.ensureWidgetVisible(item, 12, 36)
+        item.setStyleSheet(
+            "QFrame { background: #EAF7F3; border: 1px solid rgba(8,116,95,0.28); border-radius: 12px; }"
+        )
+        QTimer.singleShot(1600, lambda target=item: target.setStyleSheet("background: transparent;"))
 
     def _ensure_agent_ctl(self) -> AgentThreadController:
         if self._agent_ctl is None:
@@ -631,23 +794,21 @@ class WorkspacePage(QWidget):
             return
         self._resizing_input = True
         try:
-            metrics = self._input.fontMetrics()
-            line_h = max(metrics.lineSpacing(), metrics.height())
-            pad = 16
-            min_h = line_h + pad
-            max_h = line_h * _INPUT_MAX_LINES + pad
-            doc = self._input.document()
-            doc.setTextWidth(max(self._input.viewport().width(), 40))
-            needed = int(doc.size().height()) + pad
-            height = max(min_h, min(max_h, needed))
+            height, at_max = self._input.measure_height()
             if self._input.height() != height:
                 self._input.setFixedHeight(height)
-            at_max = needed > max_h
+                self._input.updateGeometry()
+                self._composer.updateGeometry()
             self._input.setVerticalScrollBarPolicy(
                 Qt.ScrollBarPolicy.ScrollBarAsNeeded if at_max else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
             )
+            self._input.ensureCursorVisible()
         finally:
             self._resizing_input = False
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        super().showEvent(event)
+        QTimer.singleShot(0, self._resize_input)
 
     def _stop_agent(self) -> None:
         if not self._busy or self._agent_ctl is None:
@@ -686,16 +847,26 @@ class WorkspacePage(QWidget):
             btn = _WrapActionButton(action.label)
             btn.setEnabled(False)
             btn.setToolTip(action.hint or action.prompt or action.label)
-            btn.clicked.connect(lambda _=False, p=action.prompt: self._run_action(p))
+            btn.clicked.connect(lambda p=action.prompt: self._run_action(p))
             self._action_buttons.append(btn)
             self._scenarios_host.addWidget(btn)
         self._scenarios_host.addStretch(1)
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        if self._card is not None:
+            self.agent_busy_changed.emit(self._card.id, busy)
+
+    def _on_schedule(self) -> None:
+        if self._card is None:
+            return
+        self.schedule_requested.emit(self._card.id)
 
     def _run_action(self, prompt: str) -> None:
         if self._busy or not self._agent_ready_flag or self._agent_ctl is None:
             return
         self._append_feed("user", prompt)
-        self._busy = True
+        self._set_busy(True)
         self._set_status("Агент работает…", "busy")
         self._set_interactive(False)
         self._agent_ctl.send(prompt, action=True)
@@ -718,7 +889,7 @@ class WorkspacePage(QWidget):
             attach_line = f"📎 {names}"
             display = f"{text}\n{attach_line}" if text else attach_line
         self._append_feed("user", display)
-        self._busy = True
+        self._set_busy(True)
         self._set_status("Агент работает…", "busy")
         self._set_interactive(False)
         self._agent_ctl.send(text, action=False, attachments=staged)
@@ -782,7 +953,7 @@ class WorkspacePage(QWidget):
     def _handle_done(self, payload: object) -> None:
         last_agent = self._last_agent_text
         self._reset_live_blocks()
-        self._busy = False
+        self._set_busy(False)
         if self._agent_ready_flag:
             self._set_interactive(True)
             self._set_status("Готов к работе", "success")

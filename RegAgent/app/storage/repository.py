@@ -160,6 +160,7 @@ class CardRepository:
 
     def delete(self, card_id: str) -> None:
         with self._connect() as conn:
+            conn.execute("DELETE FROM scheduled_tasks WHERE card_id = ?", (card_id,))
             conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
 
     def update_agent_id(self, card_id: str, agent_id: str) -> None:

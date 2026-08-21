@@ -78,6 +78,15 @@ def format_transcript(entries: Sequence[LogEntry | dict[str, Any]]) -> str:
     return "\n".join(lines).strip()
 
 
+def user_turns(entries: Sequence[LogEntry | dict[str, Any]]) -> list[str]:
+    turns: list[str] = []
+    for row in entries:
+        kind, text = _parse_row(row)
+        if kind == "user" and text:
+            turns.append(text)
+    return turns
+
+
 def preview_text(text: str, limit: int = _PREVIEW_LIMIT) -> str:
     compact = " ".join((text or "").split())
     if len(compact) <= limit:

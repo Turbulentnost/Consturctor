@@ -113,6 +113,7 @@ def validate_dictionary(
         if name not in registry:
             errors.append(f"Неизвестный инструмент: {name}")
 
+    ent_key = (entity or "").strip().casefold().replace(" ", "_")
     blob = " ".join(resolved + list(operations or []) + [entity, system]).casefold()
     is_porucheniya = (
         any(m in blob for m in ("поручен", "docflow", "тд_поручен", "poruchen"))

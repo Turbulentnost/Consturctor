@@ -31,15 +31,17 @@ def primary_button_qss(*, radius: int = 12, compact: bool = False) -> str:
     """
 
 
-def secondary_button_qss(*, radius: int = 12) -> str:
+def secondary_button_qss(*, radius: int = 12, compact: bool = False) -> str:
+    pad = "0 14px" if compact else "0 16px"
+    height = "34px" if compact else "42px"
     return f"""
     QPushButton {{
         background: #FFFFFF;
         color: #06483D;
         border: 1px solid #D5DEDA;
         border-radius: {radius}px;
-        padding: 0 16px;
-        min-height: 42px;
+        padding: {pad};
+        min-height: {height};
     }}
     QPushButton:hover {{
         background: #EAF7F3;

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, MINT, app_font
+from app.ui.widgets.user_menu import HEADER_OVERLAY_WIDTH
 
 CREATION_STEPS: tuple[tuple[str, str], ...] = (
     ("upload", "Загрузка"),
@@ -162,19 +163,20 @@ class PipelineStepper(QFrame):
         )
         self._cells: list[_StepCell] = []
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 12, 16, 12)
+        root.setContentsMargins(16, 12, 16 + HEADER_OVERLAY_WIDTH, 12)
         root.setSpacing(8)
 
         meta_row = QHBoxLayout()
+        meta_row.setSpacing(10)
         self._meta = QLabel("Создание агента")
         self._meta.setFont(app_font(13, QFont.Weight.DemiBold))
         self._meta.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
         self._pct = QLabel("")
         self._pct.setFont(app_font(12))
         self._pct.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        meta_row.addWidget(self._meta)
+        meta_row.addWidget(self._meta, 0)
+        meta_row.addWidget(self._pct, 0)
         meta_row.addStretch(1)
-        meta_row.addWidget(self._pct)
         root.addLayout(meta_row)
 
         self._bar = QProgressBar()
