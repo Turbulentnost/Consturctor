@@ -63,7 +63,7 @@ desktop (PySide6)  ──HTTP──►  backend :7812  ──ODBC──►  SQL 
 **Важно:** не используйте `localhost` и не указывайте сырой IP в `ERP_SQL_SERVER`.  
 По IP Windows Auth обычно падает с ошибкой 18452 — нужен hostname `ii1`.
 
-Backend слушает **`http://127.0.0.1:7812`**. Desktop ходит на этот адрес (`BACKEND_URL`).
+Backend на сервере **`http://192.168.1.157:7812`** (на той же машине — `http://127.0.0.1:7812`). Desktop ходит на адрес из `BACKEND_URL` (по умолчанию LAN IP сервера).
 
 ---
 
@@ -136,6 +136,12 @@ scripts\start_platform_all.cmd
 Подробнее: **[AGENT_BUILDER.md](AGENT_BUILDER.md)** (карта репо и tools), [PLATFORM.md](PLATFORM.md), [AGENT_INTERACTION.md](AGENT_INTERACTION.md).
 
 **Demo UI** для ручной проверки sandbox: [`platform-demo-ui/`](platform-demo-ui/), URL http://127.0.0.1:8790/
+
+---
+
+## RegAgent (десктоп поручений)
+
+Пошаговый запуск: **[RegAgent/README.md](RegAgent/README.md)** — Python 3.12, `infra` + `constructor-gateway`, `RegAgent\run.bat`, `CURSOR_API_KEY`, тестовый вход `REGAGENT_TEST_*`.
 
 ---
 

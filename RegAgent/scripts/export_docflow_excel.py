@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -17,23 +18,18 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from app.config import regagent_test_fio, regagent_test_login_enabled
-from app.services.docflow_odata import URGENCY_COLORS, URGENCY_LABELS, handle_docflow_tasks
+from app.services.docflow_odata import URGENCY_COLORS, handle_docflow_tasks
 from app.session_store import saved_fio
 
 HEADERS = [
-    "№",
     "Номер",
-    "Строка",
     "О чём",
     "Мероприятие",
     "Статус",
-    "Срочность",
     "Срок",
     "Дата документа",
-    "Основание",
     "Приоритет",
     "Исполнитель",
-    "ID",
 ]
 
 FILL_BY_TIER = {
@@ -47,6 +43,9 @@ HEADER_FILL = PatternFill("solid", fgColor="08745F")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
 THIN = Side(style="thin", color="D1D5DB")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+PRIORITY_COL = HEADERS.index("Приоритет") + 1
+PRIORITY_CRITICAL_FILL = PatternFill("solid", fgColor="FECACA")
+PRIORITY_HIGH_FILL = PatternFill("solid", fgColor="FFE0B2")
 
 
 def _actor_fio() -> str:
@@ -58,6 +57,15 @@ def _actor_fio() -> str:
 
 def _tier_font(_tier: str) -> Font:
     return Font(color="1F2937")
+
+
+def _priority_fill(priority: str) -> PatternFill | None:
+    key = re.sub(r"\s+", "", str(priority or "")).casefold()
+    if key == "критический":
+        return PRIORITY_CRITICAL_FILL
+    if key == "высокий":
+        return PRIORITY_HIGH_FILL
+    return None
 
 
 def export_excel(*, output: Path, only_open: bool = False, limit: int = 200) -> dict:
@@ -75,7 +83,7 @@ def export_excel(*, output: Path, only_open: bool = False, limit: int = 200) -> 
     if warning:
         ws["A1"] = f"Внимание: {warning}"
         ws["A1"].font = Font(color="DC2626", bold=True)
-        ws.merge_cells("A1:M1")
+        ws.merge_cells(f"A1:{get_column_letter(len(HEADERS))}1")
         start_row = 3
     else:
         start_row = 1
@@ -93,28 +101,26 @@ def export_excel(*, output: Path, only_open: bool = False, limit: int = 200) -> 
         fill = FILL_BY_TIER.get(tier, FILL_BY_TIER["none"])
         font = _tier_font(tier)
         values = [
-            idx,
             task.get("number", ""),
-            task.get("line_number", ""),
             task.get("subject", ""),
             task.get("title", ""),
             task.get("status", ""),
-            task.get("urgency_label") or URGENCY_LABELS.get(tier, tier),
             task.get("due_at", ""),
             task.get("created_at", ""),
-            task.get("comment", ""),
             task.get("priority", ""),
             task.get("performer", ""),
-            task.get("id", ""),
         ]
+        wrap_cols = {2, 3}
+        priority_value = str(task.get("priority", "") or "")
+        priority_fill = _priority_fill(priority_value)
         for col, value in enumerate(values, start=1):
             cell = ws.cell(row=row, column=col, value=value)
-            cell.fill = fill
+            cell.fill = priority_fill if col == PRIORITY_COL and priority_fill else fill
             cell.font = font
             cell.border = BORDER
-            cell.alignment = Alignment(vertical="top", wrap_text=col in {4, 5, 10})
+            cell.alignment = Alignment(vertical="top", wrap_text=col in wrap_cols)
 
-    widths = [5, 14, 8, 36, 42, 12, 18, 18, 18, 36, 12, 28, 40]
+    widths = [14, 36, 42, 12, 18, 18, 12, 28]
     for i, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
 
@@ -130,6 +136,8 @@ def export_excel(*, output: Path, only_open: bool = False, limit: int = 200) -> 
         ("accepted", "Принято", URGENCY_COLORS["accepted"], "статус «принято», срок не горит"),
         ("none", "Без срочности", URGENCY_COLORS["none"], "прочие / без срока"),
         ("done_ok", "Выполнено", URGENCY_COLORS["done_ok"], "статус «отменено»"),
+        ("priority_critical", "Критический", "#FECACA", "колонка «Приоритет»"),
+        ("priority_high", "Высокий", "#FFE0B2", "колонка «Приоритет»"),
     ]
     for row_idx, (tier, label, color, cond) in enumerate(legend_rows, start=2):
         legend.cell(row=row_idx, column=1, value=tier)

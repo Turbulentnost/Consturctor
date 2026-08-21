@@ -54,7 +54,7 @@ def erp_password() -> str:
 
 def backend_url() -> str:
     host = os.getenv("HOST_IP", "").strip()
-    default = f"http://{host}:7812" if host else "http://127.0.0.1:7812"
+    default = f"http://{host}:7812" if host else "http://192.168.1.157:7812"
     return os.getenv("BACKEND_URL", default).rstrip("/")
 
 
@@ -63,10 +63,7 @@ def host_ip() -> str:
 
 
 def auth_url() -> str:
-    """URL сервера входа (1С). Если не задан — совпадает с BACKEND_URL."""
-    host = host_ip()
-    default = f"http://{host}:7812" if host else backend_url()
-    return os.getenv("AUTH_URL", default).rstrip("/")
+    return os.getenv("AUTH_URL", (f"http://{host_ip()}:7812" if host_ip() else backend_url())).rstrip("/")
 
 
 def auth_uses_remote_server() -> bool:

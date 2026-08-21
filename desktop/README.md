@@ -46,7 +46,7 @@ python main.py
 Конфиг (`.env`):
 
 ```env
-BACKEND_URL=http://127.0.0.1:7812
+BACKEND_URL=http://192.168.1.157:7812
 ```
 
 Подключение к 1С настраивается только на стороне [backend](../backend/README.md) (`ERP_SQL_SERVER=ii1`).

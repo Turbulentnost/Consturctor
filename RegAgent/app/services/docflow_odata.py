@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Any
+import re
 
 import httpx
 
@@ -97,6 +98,10 @@ def urgency_tier(
     ref = today or date.today()
     status_key = "".join(status.split()).casefold()
 
+    # «Принято» — выполнено с точки зрения готовности; не маркируем как просроченное
+    if status_key == _ACCEPTED:
+        return "accepted", URGENCY_COLORS["accepted"], URGENCY_LABELS["accepted"]
+
     if due_at is not None:
         days_left = (due_at.date() - ref).days
         if days_left < 0:
@@ -105,9 +110,6 @@ def urgency_tier(
             return "due_soon", URGENCY_COLORS["due_soon"], URGENCY_LABELS["due_soon"]
         if days_left <= 3:
             return "due_3days", URGENCY_COLORS["due_3days"], URGENCY_LABELS["due_3days"]
-
-    if status_key == _ACCEPTED:
-        return "accepted", URGENCY_COLORS["accepted"], URGENCY_LABELS["accepted"]
 
     return "none", URGENCY_COLORS["none"], URGENCY_LABELS["none"]
 
@@ -222,6 +224,7 @@ def _map_line(
     today: date | None = None,
 ) -> dict[str, Any]:
     status = str(doc.get("Статус") or "").strip()
+    status_key = "".join(status.split()).casefold()
     done = _status_done(status)
     created = _parse_odata_dt(doc.get("Date"))
     due = _parse_odata_dt(line.get("СрокИсполнения"))
@@ -245,7 +248,10 @@ def _map_line(
         "subject": subject,
         "status": _status_label(status),
         "done": done,
-        "late": (not done) and due is not None and due.date() < (today or date.today()),
+        "late": (not done)
+        and status_key != _ACCEPTED
+        and due is not None
+        and due.date() < (today or date.today()),
         "created_at": created.isoformat(sep=" ") if created else "",
         "due_at": due.isoformat(sep=" ") if due else "",
         "completed_at": "",
@@ -261,14 +267,23 @@ def _map_line(
     }
 
 
-def sort_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    def sort_key(task: dict[str, Any]) -> tuple[int, str]:
-        tier = str(task.get("urgency_tier") or "none")
-        order = TIER_SORT_ORDER.get(tier, 99)
-        due = str(task.get("due_at") or "9999")
-        return order, due
+def _doc_number_key(number: str) -> int:
+    parts = re.findall(r"\d+", str(number or ""))
+    return int(parts[-1]) if parts else 0
 
-    return sorted(tasks, key=sort_key)
+
+def sort_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Сортировка: номер документа по убыванию, затем строка ТЧ."""
+
+    def sort_key(task: dict[str, Any]) -> tuple[int, int]:
+        line_raw = str(task.get("line_number") or "0").strip()
+        try:
+            line_no = int(line_raw)
+        except ValueError:
+            line_no = 0
+        return _doc_number_key(str(task.get("number") or "")), line_no
+
+    return sorted(tasks, key=sort_key, reverse=True)
 
 
 def list_docflow_tasks(

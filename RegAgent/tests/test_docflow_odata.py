@@ -77,17 +77,19 @@ def test_urgency_tier_accepted_green() -> None:
     assert label == "Принято"
 
 
-def test_urgency_tier_overdue_beats_accepted() -> None:
-    tier, _, _ = urgency_tier(
+def test_urgency_tier_accepted_overdue_is_green() -> None:
+    tier, color, label = urgency_tier(
         due_at=datetime(2026, 8, 10, 18, 0, 0),
         done=False,
         status="Принято",
         today=date(2026, 8, 21),
     )
-    assert tier == "overdue"
+    assert tier == "accepted"
+    assert color == "#D4EDDA"
+    assert label == "Принято"
 
 
-def test_map_line_overdue() -> None:
+def test_map_line_accepted_not_overdue_color() -> None:
     doc = {
         "Ref_Key": "a1b2",
         "Number": "АСТ00-00003",
@@ -102,19 +104,26 @@ def test_map_line_overdue() -> None:
         "СрокИсполнения": "2026-08-12T18:00:00",
     }
     item = _map_line(doc, line, performer="Иванов", today=date(2026, 8, 21))
-    assert item["urgency_tier"] == "overdue"
-    assert item["color"] == "#FECACA"
+    assert item["urgency_tier"] == "accepted"
+    assert item["color"] == "#D4EDDA"
+    assert item["late"] is False
 
 
-def test_sort_tasks_by_urgency_then_due() -> None:
+def test_sort_tasks_by_number_desc() -> None:
     tasks = [
-        {"urgency_tier": "due_3days", "due_at": "2026-08-24 18:00:00"},
-        {"urgency_tier": "overdue", "due_at": "2026-08-10 18:00:00"},
-        {"urgency_tier": "due_soon", "due_at": "2026-08-21 18:00:00"},
+        {"number": "АСТ00-00001", "line_number": "1"},
+        {"number": "АСТ00-00090", "line_number": "2"},
+        {"number": "АСТ00-00090", "line_number": "1"},
+        {"number": "АСТ00-00010", "line_number": "1"},
     ]
     sorted_tasks = sort_tasks(tasks)
-    tiers = [t["urgency_tier"] for t in sorted_tasks]
-    assert tiers == ["overdue", "due_soon", "due_3days"]
+    numbers = [(t["number"], t["line_number"]) for t in sorted_tasks]
+    assert numbers == [
+        ("АСТ00-00090", "2"),
+        ("АСТ00-00090", "1"),
+        ("АСТ00-00010", "1"),
+        ("АСТ00-00001", "1"),
+    ]
 
 
 def test_parse_date_end_of_day() -> None:

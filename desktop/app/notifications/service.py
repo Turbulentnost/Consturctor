@@ -66,7 +66,7 @@ class NotificationService(QObject):
             return
         parsed = urlparse(self._base_url)
         scheme = "wss" if parsed.scheme == "https" else "ws"
-        host = parsed.netloc or "127.0.0.1:7812"
+        host = parsed.netloc or "192.168.1.157:7812"
         url = f"{scheme}://{host}/api/v1/notifications/ws?token={quote(self._token)}"
         self._ws.open(QUrl(url))
 

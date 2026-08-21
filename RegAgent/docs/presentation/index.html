@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RegAgent — презентация приложения</title>
+  <style>
+    :root { --bg:#011713; --bg2:#06483D; --accent:#62E0BE; --text:#EAF7F3; --muted:#A8C8BF; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:"Segoe UI",system-ui,sans-serif; background:linear-gradient(160deg,var(--bg),var(--bg2)); color:var(--text); scroll-snap-type:y mandatory; overflow-y:scroll; height:100vh; }
+    .slide { min-height:100vh; scroll-snap-align:start; padding:40px 56px 48px; display:flex; flex-direction:column; justify-content:center; gap:16px; border-bottom:1px solid rgba(98,224,190,.12); }
+    h1,h2 { margin:0; color:var(--accent); }
+    h1 { font-size:2.3rem; } h2 { font-size:1.65rem; }
+    p,li { font-size:1.05rem; line-height:1.5; }
+    .muted { color:var(--muted); }
+    .shot { width:100%; max-height:62vh; object-fit:contain; border-radius:16px; border:1px solid rgba(98,224,190,.25); background:#FAFCFB; box-shadow:0 12px 40px rgba(0,0,0,.35); }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start; }
+    @media (max-width:960px){ .grid2{ grid-template-columns:1fr; } }
+    .tag { display:inline-block; background:rgba(98,224,190,.15); color:var(--accent); padding:4px 10px; border-radius:999px; font-size:.85rem; margin-right:6px; }
+    .footer { position:fixed; bottom:10px; right:16px; color:var(--muted); font-size:.78rem; }
+  </style>
+</head>
+<body>
+
+<section class="slide">
+  <h1>RegAgent</h1>
+  <p>Desktop-приложение для работы по регламенту с ИИ-агентом, 1С и Outlook</p>
+  <p class="muted">ООО НПО «Турбулентность-ДОН» · PySide6 + Cursor SDK · 2026</p>
+</section>
+
+<section class="slide">
+  <h2>1. Вход в систему</h2>
+  <p>Авторизация по ФИО, интеграция с backend или тестовый режим (<code>REGAGENT_TEST_LOGIN</code>).</p>
+  <img class="shot" src="screenshots/01_login.png" alt="Экран входа" />
+</section>
+
+<section class="slide">
+  <h2>2. Главная — «Мои агенты»</h2>
+  <p>Список опубликованных карточек и черновиков. Каждая карточка = регламент + UI-spec + workspace агента.</p>
+  <img class="shot" src="screenshots/02_home_agents.png" alt="Список агентов" />
+</section>
+
+<section class="slide">
+  <h2>3. Создание агента из регламента</h2>
+  <p>Загрузка DOCX/PDF/MD → LLM формирует кнопки, rules_prompt и slash-команды.</p>
+  <img class="shot" src="screenshots/03_create_regulation.png" alt="Создание регламента" />
+</section>
+
+<section class="slide">
+  <h2>4. Workspace — рабочая область агента</h2>
+  <div class="grid2">
+    <div>
+      <p><span class="tag">Чат</span><span class="tag">Кнопки сценариев</span><span class="tag">Cursor SDK</span></p>
+      <ul>
+        <li>Диалог с агентом в реальном времени</li>
+        <li>Готовые кнопки из регламента</li>
+        <li>Стрим tool_call / thinking / ответ</li>
+        <li>История сессии в workspace</li>
+      </ul>
+    </div>
+    <img class="shot" src="screenshots/04_workspace_agent.png" alt="Workspace агента" />
+  </div>
+</section>
+
+<section class="slide">
+  <h2>5. Оболочка приложения (Main Shell)</h2>
+  <p>Боковое меню: Создать · Мои агенты · KPI. Профиль пользователя и история сессии.</p>
+  <img class="shot" src="screenshots/05_main_shell.png" alt="Main shell" />
+</section>
+
+<section class="slide">
+  <h2>6. KPI — мониторинг карточек</h2>
+  <p>Сводная статистика по агентам и статусам публикации.</p>
+  <img class="shot" src="screenshots/06_kpi.png" alt="KPI" />
+</section>
+
+<section class="slide">
+  <h2>7. Интеграции через SDK</h2>
+  <p>Custom tool <code>constructor_integrations</code> — единая точка для Outlook COM и 1C OData.</p>
+  <img class="shot" src="screenshots/07_chat_integrations.png" alt="Интеграции" />
+</section>
+
+<section class="slide">
+  <h2>8. Модуль поручений OData</h2>
+  <p><code>onec.docflow_tasks</code> → <code>Document_ТД_Поручения</code> (erp_pm). Без COM и shell для 1С.</p>
+  <img class="shot" src="screenshots/08_oauth_module.png" alt="OData модуль" />
+</section>
+
+<section class="slide">
+  <h2>9. Экспорт Excel</h2>
+  <p>Пастельная раскраска по статусу и сроку, приоритет Критический/Высокий, сводка на сегодня.</p>
+  <img class="shot" src="screenshots/09_excel_export.png" alt="Excel export" />
+</section>
+
+<section class="slide">
+  <h2>Архитектура модулей</h2>
+  <ul>
+    <li><strong>UI</strong> — PySide6 (login, shell, pages, widgets)</li>
+    <li><strong>Agent</strong> — CardAgentSession + cursor-sdk LocalAgent</li>
+    <li><strong>Tools</strong> — bridge → registry → COM / OData</li>
+    <li><strong>Storage</strong> — cards.db, workspaces, session logs</li>
+    <li><strong>Export</strong> — scripts/export_docflow_*.py → Excel</li>
+  </ul>
+  <p class="muted">Прокрутка ↑↓ между слайдами · скриншоты с реального UI RegAgent</p>
+</section>
+
+<div class="footer">RegAgent · 11 слайдов + скриншоты модулей</div>
+</body>
+</html>
