@@ -712,6 +712,106 @@ class WorkflowListItem:
 
 
 @dataclass(frozen=True, slots=True)
+class BoardStats:
+    active_agents: int = 0
+    runs_today: int = 0
+    errors_today: int = 0
+    needs_attention: int = 0
+    next_run_at: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class BoardAgent:
+    id: str
+    kind: str = "workflow"
+    title: str = ""
+    description: str = ""
+    status: str = "active"
+    last_run_at: str = ""
+    last_run_status: str = ""
+    next_run_at: str = ""
+    next_run_label: str = ""
+    trigger_summary: str = ""
+    trigger_kind: str = ""
+    paused: bool = False
+    phase: str = ""
+    draft_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarEvent:
+    id: str
+    workflow_id: str
+    title: str = ""
+    subtitle: str = ""
+    start_at: str = ""
+    status: str = "scheduled"
+    source: str = "schedule"
+    is_future: bool = False
+    run_id: str = ""
+    trigger_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowBoard:
+    stats: BoardStats = field(default_factory=BoardStats)
+    agents: list[BoardAgent] = field(default_factory=list)
+    events: list[CalendarEvent] = field(default_factory=list)
+
+
+def _parse_workflow_board(data: dict) -> WorkflowBoard:
+    raw_stats = data.get("stats") if isinstance(data.get("stats"), dict) else {}
+    stats = BoardStats(
+        active_agents=int(raw_stats.get("active_agents") or 0),
+        runs_today=int(raw_stats.get("runs_today") or 0),
+        errors_today=int(raw_stats.get("errors_today") or 0),
+        needs_attention=int(raw_stats.get("needs_attention") or 0),
+        next_run_at=str(raw_stats.get("next_run_at") or ""),
+    )
+    agents: list[BoardAgent] = []
+    for item in data.get("agents") or []:
+        if not isinstance(item, dict):
+            continue
+        agents.append(
+            BoardAgent(
+                id=str(item.get("id") or ""),
+                kind=str(item.get("kind") or "workflow"),
+                title=str(item.get("title") or ""),
+                description=str(item.get("description") or ""),
+                status=str(item.get("status") or "active"),
+                last_run_at=str(item.get("last_run_at") or ""),
+                last_run_status=str(item.get("last_run_status") or ""),
+                next_run_at=str(item.get("next_run_at") or ""),
+                next_run_label=str(item.get("next_run_label") or ""),
+                trigger_summary=str(item.get("trigger_summary") or ""),
+                trigger_kind=str(item.get("trigger_kind") or ""),
+                paused=bool(item.get("paused")),
+                phase=str(item.get("phase") or ""),
+                draft_id=str(item.get("draft_id") or ""),
+            )
+        )
+    events: list[CalendarEvent] = []
+    for item in data.get("events") or []:
+        if not isinstance(item, dict):
+            continue
+        events.append(
+            CalendarEvent(
+                id=str(item.get("id") or ""),
+                workflow_id=str(item.get("workflow_id") or ""),
+                title=str(item.get("title") or ""),
+                subtitle=str(item.get("subtitle") or ""),
+                start_at=str(item.get("start_at") or ""),
+                status=str(item.get("status") or "scheduled"),
+                source=str(item.get("source") or "schedule"),
+                is_future=bool(item.get("is_future")),
+                run_id=str(item.get("run_id") or ""),
+                trigger_id=str(item.get("trigger_id") or ""),
+            )
+        )
+    return WorkflowBoard(stats=stats, agents=agents, events=events)
+
+
+@dataclass(frozen=True, slots=True)
 class WorkflowHealth:
     ok: bool
     who: str = ""
@@ -1417,6 +1517,25 @@ class ApiClient:
             if isinstance(x, dict)
         ]
 
+    def get_workflow_board(
+        self,
+        *,
+        window_from: str = "",
+        window_to: str = "",
+        workflow_id: str = "",
+    ) -> WorkflowBoard:
+        params: dict[str, str] = {}
+        if window_from:
+            params["window_from"] = window_from
+        if window_to:
+            params["window_to"] = window_to
+        if workflow_id:
+            params["workflow_id"] = workflow_id
+        data = self._request("GET", "/api/v1/workflows/board", params=params or None, timeout=60.0)
+        if not isinstance(data, dict):
+            return WorkflowBoard()
+        return _parse_workflow_board(data)
+
     def get_workflow(self, workflow_id: str) -> WorkflowRecord:
         data = self._request("GET", f"/api/v1/workflows/{workflow_id}", timeout=60.0)
         return self._parse_workflow(data)
@@ -1479,6 +1598,19 @@ class ApiClient:
         data = self._request(
             "POST",
             f"/api/v1/workflows/{workflow_id}/stop-auto-run",
+            timeout=30.0,
+        )
+        if isinstance(data, dict):
+            try:
+                return int(data.get("stopped") or 0)
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
+    def resume_workflow_auto_run(self, workflow_id: str) -> int:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/resume-auto-run",
             timeout=30.0,
         )
         if isinstance(data, dict):
@@ -1899,6 +2031,22 @@ class ApiClient:
         elif spec.kind == "datetime":
             payload["at"] = spec.at.strip()
         return self._request("POST", "/api/v1/triggers", json=payload, timeout=30.0)
+
+    def create_timed_trigger(self, workflow_id: str, *, at: str, message: str = "") -> dict:
+        return self._request(
+            "POST",
+            "/api/v1/triggers",
+            json={
+                "workflow_id": workflow_id,
+                "at": at,
+                "once": True,
+                "message": (message or "").strip(),
+            },
+            timeout=30.0,
+        )
+
+    def cancel_trigger(self, trigger_id: str) -> None:
+        self._request("POST", f"/api/v1/triggers/{trigger_id}/cancel", timeout=30.0)
 
     def list_triggers(self) -> list[dict]:
         data = self._request("GET", "/api/v1/triggers", timeout=30.0)

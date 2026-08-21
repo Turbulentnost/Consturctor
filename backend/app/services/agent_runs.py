@@ -76,7 +76,7 @@ def finish_agent_run(
 
 
 def list_agent_runs(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRunOut]:
-    _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True)
     rows = (
         db.execute(
             select(AgentRun)
@@ -91,7 +91,7 @@ def list_agent_runs(db: Session, *, user_id: str, workflow_id: str) -> list[Agen
 
 
 def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -> AgentRunOut:
-    _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True)
     row = db.get(AgentRun, run_id)
     if row is None or row.workflow_id != workflow_id or row.user_id != user_id:
         raise WorkflowError("Запуск не найден", status_code=404)

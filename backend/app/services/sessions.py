@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 _SESSION_KEY = "constructor:session:{user_id}"
 _ONLINE_KEY = "constructor:online:{user_id}"
-_ONLINE_TTL_SEC = 90
+_ONLINE_TTL_SEC = 180
+_PRESENT = "1"
 _client = None
 _client_failed = False
 
@@ -23,10 +24,18 @@ SKIP_RUN_TITLE = "Пропущен плановый запуск"
 SKIP_RUN_BODY = (
     "Пользователь не запускал приложение, поэтому система пропустила плановый запуск."
 )
+RECONNECT_EVIDENCE = "ожидание подключения десктопа"
+RECONNECT_RETRY_SEC = 45
 
 
 def new_session_id() -> str:
     return str(uuid.uuid4())
+
+
+def _reset_client() -> None:
+    global _client, _client_failed
+    _client = None
+    _client_failed = False
 
 
 def _redis():
@@ -54,37 +63,64 @@ def _redis():
 
 
 def replace_session(user_id: str, session_id: str) -> None:
+    """Register the active session and keep presence alive across re-login."""
     client = _redis()
     if client is None:
         return
     key = _SESSION_KEY.format(user_id=user_id)
-    client.set(key, session_id)
-    client.delete(_ONLINE_KEY.format(user_id=user_id))
+    online = _ONLINE_KEY.format(user_id=user_id)
+    try:
+        client.set(key, session_id)
+        # Do not clear online: backend restarts / re-login used to drop presence and
+        # Celery falsely skipped scheduled runs while the desktop was open.
+        client.set(online, session_id, ex=_ONLINE_TTL_SEC)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis replace_session failed user=%s: %s", user_id, exc)
+        _reset_client()
 
 
 def current_session_id(user_id: str) -> str:
     client = _redis()
     if client is None:
         return ""
-    return str(client.get(_SESSION_KEY.format(user_id=user_id)) or "")
+    try:
+        return str(client.get(_SESSION_KEY.format(user_id=user_id)) or "")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis current_session_id failed user=%s: %s", user_id, exc)
+        _reset_client()
+        return ""
+
+
+def has_active_session(user_id: str) -> bool:
+    return bool(current_session_id(user_id))
 
 
 def is_current_session(user_id: str, session_id: str) -> bool:
-    if not session_id:
-        return False
+    """True if this token may act for the user.
+
+    Empty Redis session store means locking is not active yet (allow).
+    Empty sid is allowed only while the store is empty (legacy tokens).
+    """
     current = current_session_id(user_id)
     if not current:
         return True
+    if not session_id:
+        return False
     return current == session_id
 
 
-def mark_online(user_id: str, session_id: str) -> None:
+def mark_online(user_id: str, session_id: str = "") -> None:
     client = _redis()
     if client is None:
         return
     if not is_current_session(user_id, session_id):
         return
-    client.set(_ONLINE_KEY.format(user_id=user_id), session_id, ex=_ONLINE_TTL_SEC)
+    value = (session_id or "").strip() or _PRESENT
+    try:
+        client.set(_ONLINE_KEY.format(user_id=user_id), value, ex=_ONLINE_TTL_SEC)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis mark_online failed user=%s: %s", user_id, exc)
+        _reset_client()
 
 
 def mark_offline(user_id: str, session_id: str = "") -> None:
@@ -92,14 +128,24 @@ def mark_offline(user_id: str, session_id: str = "") -> None:
     if client is None:
         return
     key = _ONLINE_KEY.format(user_id=user_id)
-    if session_id:
-        if str(client.get(key) or "") != session_id:
-            return
-    client.delete(key)
+    try:
+        if session_id:
+            current = str(client.get(key) or "")
+            if current and current not in {session_id, _PRESENT}:
+                return
+        client.delete(key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis mark_offline failed user=%s: %s", user_id, exc)
+        _reset_client()
 
 
 def is_user_online(user_id: str) -> bool:
     client = _redis()
     if client is None:
         return False
-    return bool(client.get(_ONLINE_KEY.format(user_id=user_id)))
+    try:
+        return bool(client.get(_ONLINE_KEY.format(user_id=user_id)))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis is_user_online failed user=%s: %s", user_id, exc)
+        _reset_client()
+        return False

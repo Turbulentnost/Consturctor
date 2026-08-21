@@ -89,8 +89,12 @@ class NotificationService(QObject):
         self._poll_pending()
 
     def _on_disconnected(self) -> None:
-        raw = self._ws.closeCode()
-        code = int(getattr(raw, "value", raw) or 0)
+        code = 0
+        try:
+            raw = self._ws.closeCode()
+            code = int(getattr(raw, "value", raw) or 0)
+        except (TypeError, ValueError):
+            code = 0
         if self._kicked or code == 4001:
             return
         self._schedule_reconnect()

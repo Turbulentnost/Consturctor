@@ -111,6 +111,7 @@ def test_execute_scheduled_skips_offline_and_notifies(monkeypatch) -> None:
     db = _session()
     user_id, workflow_id = _seed(db)
     monkeypatch.setattr("app.services.triggers.runner.is_user_online", lambda _user_id: False)
+    monkeypatch.setattr("app.services.triggers.runner.current_session_id", lambda _user_id: "")
     monkeypatch.setattr("app.services.triggers.runner.run_agent_task", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")))
     result = execute_scheduled_agent_run(db, trigger_id="tr-1")
     assert result["ok"] is False
@@ -124,6 +125,23 @@ def test_execute_scheduled_skips_offline_and_notifies(monkeypatch) -> None:
     assert trigger.enabled is True
     assert trigger.fire_at is not None
     assert trigger.last_evidence and "не запускал приложение" in trigger.last_evidence
+
+
+def test_execute_scheduled_defers_when_session_alive_without_toast(monkeypatch) -> None:
+    from app.services.notifications.service import list_inbox
+
+    db = _session()
+    user_id, _workflow_id = _seed(db)
+    monkeypatch.setattr("app.services.triggers.runner.is_user_online", lambda _user_id: False)
+    monkeypatch.setattr("app.services.triggers.runner.current_session_id", lambda _user_id: "sid-alive")
+    monkeypatch.setattr("app.services.triggers.runner.run_agent_task", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")))
+    result = execute_scheduled_agent_run(db, trigger_id="tr-1")
+    assert result["ok"] is False
+    assert result["reason"] == "reconnecting"
+    assert list_inbox(db, user_id=user_id) == []
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    assert trigger.last_evidence and "ожидание подключения" in trigger.last_evidence
 
 
 def test_execute_scheduled_runs_when_online(monkeypatch) -> None:

@@ -87,6 +87,50 @@ class WorkflowListItem(BaseModel):
     paused: bool = False
 
 
+class BoardStats(BaseModel):
+    active_agents: int = 0
+    runs_today: int = 0
+    errors_today: int = 0
+    needs_attention: int = 0
+    next_run_at: str = ""
+
+
+class BoardAgent(BaseModel):
+    id: str
+    kind: str = "workflow"
+    title: str = ""
+    description: str = ""
+    status: str = "active"
+    last_run_at: str = ""
+    last_run_status: str = ""
+    next_run_at: str = ""
+    next_run_label: str = ""
+    trigger_summary: str = ""
+    trigger_kind: str = ""
+    paused: bool = False
+    phase: str = ""
+    draft_id: str = ""
+
+
+class CalendarEvent(BaseModel):
+    id: str
+    workflow_id: str
+    title: str = ""
+    subtitle: str = ""
+    start_at: str = ""
+    status: str = "scheduled"
+    source: str = "schedule"
+    is_future: bool = False
+    run_id: str = ""
+    trigger_id: str = ""
+
+
+class WorkflowBoard(BaseModel):
+    stats: BoardStats = Field(default_factory=BoardStats)
+    agents: list[BoardAgent] = Field(default_factory=list)
+    events: list[CalendarEvent] = Field(default_factory=list)
+
+
 class AutoRunStopResult(BaseModel):
     ok: bool = True
     stopped: int = 0

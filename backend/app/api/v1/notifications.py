@@ -74,6 +74,7 @@ def read_unread_count(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
+    mark_online(auth.user_id, auth.session_id)
     return {"count": unread_count(db, user_id=auth.user_id)}
 
 
@@ -98,6 +99,8 @@ def read_pending(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[NotificationOut]:
+    # Desktop polls every ~15s; keep Redis presence alive even if WS briefly drops.
+    mark_online(auth.user_id, auth.session_id)
     return list_pending(db, user_id=auth.user_id)
 
 

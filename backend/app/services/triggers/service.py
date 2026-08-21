@@ -30,6 +30,16 @@ def is_workflow_paused(local_run: object) -> bool:
     return bool(data.get("paused"))
 
 
+def is_workflow_deleted(local_run: object) -> bool:
+    data = local_run if isinstance(local_run, dict) else {}
+    return bool(data.get("deleted"))
+
+
+def is_workflow_inactive(local_run: object) -> bool:
+    """Paused or soft-deleted: no new scheduled runs."""
+    return is_workflow_paused(local_run) or is_workflow_deleted(local_run)
+
+
 def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -198,7 +208,7 @@ def due_commands(db: Session, *, user_id: str | None = None) -> list[AgentTrigge
     stmt = stmt.order_by(AgentTrigger.created_at.asc()).limit(50)
     due: list[AgentTrigger] = []
     for trigger, workflow in db.execute(stmt).all():
-        if is_workflow_paused(workflow.local_run):
+        if is_workflow_inactive(workflow.local_run):
             continue
         due.append(trigger)
     return due
@@ -284,18 +294,29 @@ def mark_fired(db: Session, *, user_id: str, trigger_id: str, evidence: str = ""
     return _to_out(row)
 
 
-def mark_skipped(db: Session, *, user_id: str, trigger_id: str, evidence: str) -> TriggerOut:
+def mark_skipped(
+    db: Session,
+    *,
+    user_id: str,
+    trigger_id: str,
+    evidence: str,
+    retry_in_seconds: int | None = None,
+) -> TriggerOut:
     """Пропуск слота: интервал сдвигается, one-shot остаётся и ждёт следующего окна."""
     row = get_trigger(db, user_id=user_id, trigger_id=trigger_id)
     now = datetime.now(timezone.utc)
     row.last_checked_at = now
     row.last_evidence = (evidence or "").strip()
-    interval = int(row.interval_seconds or 0)
-    if interval > 0:
-        row.fire_at = now + timedelta(seconds=interval)
-        row.cooldown_until = now + FIRE_COOLDOWN
+    if retry_in_seconds is not None and retry_in_seconds > 0:
+        row.fire_at = now + timedelta(seconds=int(retry_in_seconds))
+        row.cooldown_until = now + timedelta(seconds=min(30, int(retry_in_seconds)))
     else:
-        row.cooldown_until = now + timedelta(minutes=30)
+        interval = int(row.interval_seconds or 0)
+        if interval > 0:
+            row.fire_at = now + timedelta(seconds=interval)
+            row.cooldown_until = now + FIRE_COOLDOWN
+        else:
+            row.cooldown_until = now + timedelta(minutes=30)
     db.commit()
     db.refresh(row)
     return _to_out(row)

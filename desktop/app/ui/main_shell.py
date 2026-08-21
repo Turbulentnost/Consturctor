@@ -37,6 +37,8 @@ from app.api_client import (
     RegulationCreationSession,
     UserProfile,
     ScheduleDraft,
+    ScheduleTriggerSpec,
+    WorkflowBoard,
     WorkflowListItem,
     WorkflowRecord,
     _parse_schedule_draft,
@@ -45,6 +47,7 @@ from app.ui.pages.agent_passport_page import AgentPassportPage
 from app.ui.pages.agent_kpi_preview_page import AgentKpiPreviewPage
 from app.ui.pages.agent_schedule_page import AgentSchedulePage
 from app.ui.pages.agent_implementation_page import AgentImplementationPage
+from app.ui.pages.agent_group_runs_page import AgentGroupRunsPage
 from app.ui.pages.agent_history_page import AgentHistoryPage
 from app.ui.pages.agent_run_page import AgentRunPage
 from app.ui.pages.create_agent_page import CreateAgentPage
@@ -166,6 +169,7 @@ class MainShell(QWidget):
     _revision_ready = Signal(object)
     _draft_ready = Signal(object)
     _drafts_ready = Signal(object)
+    _board_reload = Signal()
     _agents_table_ready = Signal(object)
     _implementation_agents_ready = Signal(object)
     _passport_ready = Signal(object)
@@ -212,6 +216,7 @@ class MainShell(QWidget):
         self._page_loading = LoadingPage()
         self._page_notifications = NotificationsPage()
         self._page_history = AgentHistoryPage(self._api)
+        self._page_group_runs = AgentGroupRunsPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_implementation_agents)
@@ -232,6 +237,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_kpi_preview)
         self._pages.addWidget(self._page_notifications)
         self._pages.addWidget(self._page_history)
+        self._pages.addWidget(self._page_group_runs)
         self._page_index = {
             "create": 0,
             "agents": 1,
@@ -253,14 +259,13 @@ class MainShell(QWidget):
             "kpi_preview": 17,
             "notifications": 18,
             "agent_history": 19,
+            "agent_group_runs": 20,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
         self._page_workflows.launch_requested.connect(self._on_launch_workflow_agent)
         self._page_workflows.schedule_requested.connect(self._on_schedule_requested)
-        self._page_schedule.back_requested.connect(
-            lambda: self._pages.setCurrentIndex(self._page_index["workflows"])
-        )
+        self._page_schedule.back_requested.connect(self._on_schedule_back)
         self._page_schedule.save_requested.connect(self._on_schedule_save)
         self._page_kpi_preview.back_requested.connect(self._on_kpi_back)
         self._page_kpi_preview.confirm_requested.connect(self._on_kpi_confirm)
@@ -274,11 +279,23 @@ class MainShell(QWidget):
         self._page_agents.delete_suggestion_requested.connect(self._on_delete_agent_suggestion)
         self._page_agents.delete_agent_requested.connect(self._on_delete_published_agent)
         self._page_agents.stop_auto_run_requested.connect(self._on_stop_published_agent)
+        self._page_agents.resume_auto_run_requested.connect(self._on_resume_published_agent)
         self._page_agents.run_agent_requested.connect(self._on_run_published_agent)
         self._page_agents.history_requested.connect(self._on_agent_history_requested)
+        self._page_agents.open_agent_requested.connect(self._on_agent_history_requested)
+        self._page_agents.open_run_requested.connect(self._on_calendar_run_requested)
+        self._page_agents.group_runs_requested.connect(self._on_group_runs_requested)
+        self._page_agents.create_agent_requested.connect(self._on_create_agent_from_board)
+        self._page_agents.schedule_requested.connect(self._on_board_schedule_requested)
+        self._page_agents.schedule_run_requested.connect(self._on_board_schedule_run)
+        self._page_agents.board_range_changed.connect(self._load_agent_drafts)
         self._page_history.back_requested.connect(
             lambda: self._pages.setCurrentIndex(self._page_index["agents"])
         )
+        self._page_group_runs.back_requested.connect(
+            lambda: self._pages.setCurrentIndex(self._page_index["agents"])
+        )
+        self._page_group_runs.open_requested.connect(self._on_calendar_run_requested)
         self._page_history.failed.connect(self._readiness_failed.emit)
         self._page_passport.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["agents"]))
         self._page_passport.draft_requested.connect(self._on_passport_draft_requested)
@@ -312,6 +329,7 @@ class MainShell(QWidget):
         self._revision_ready.connect(self._show_revision_result)
         self._draft_ready.connect(self._show_draft_result)
         self._drafts_ready.connect(self._show_drafts_result)
+        self._board_reload.connect(self._load_agent_drafts)
         self._agents_table_ready.connect(self._show_agents_table_result)
         self._implementation_agents_ready.connect(self._show_implementation_agents)
         self._passport_ready.connect(self._show_passport_result)
@@ -339,6 +357,7 @@ class MainShell(QWidget):
         self._current_passport_draft_id = ""
         self._current_passport_agent_id = ""
         self._current_passport_suggestion = None
+        self._schedule_from_agents = False
         self._auto_finalize_running = False
         self._supplement_in_progress = False
 
@@ -1171,18 +1190,27 @@ class MainShell(QWidget):
         self._pages.setCurrentIndex(self._page_index["workflows"])
 
     def _load_agent_drafts(self) -> None:
+        window_from, window_to = self._page_agents.calendar_window()
+
         def run() -> None:
             try:
+                board = self._api.get_workflow_board(window_from=window_from, window_to=window_to)
                 drafts = self._api.list_agent_drafts()
-                workflows = self._api.list_workflows()
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._drafts_ready.emit((drafts, workflows))
+            self._drafts_ready.emit((board, drafts))
 
         Thread(target=run, daemon=True).start()
 
     def _show_drafts_result(self, result: object) -> None:
+        if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[0], WorkflowBoard):
+            board = result[0]
+            drafts = [item for item in result[1] if isinstance(item, AgentDraft)] if isinstance(result[1], list) else []
+            self._page_agents.set_board(board)
+            self._page_agents.set_drafts(drafts)
+            self.refresh_notification_badge()
+            return
         if isinstance(result, tuple) and len(result) >= 2:
             drafts = [item for item in result[0] if isinstance(item, AgentDraft)] if isinstance(result[0], list) else []
             workflows = (
@@ -1193,6 +1221,7 @@ class MainShell(QWidget):
             self._page_agents.set_agents(workflows)
             self._page_agents.set_drafts(drafts)
             self.refresh_notification_badge()
+            self._load_agent_drafts()
             return
         if isinstance(result, list):
             self._page_agents.set_drafts([item for item in result if isinstance(item, AgentDraft)])
@@ -1370,6 +1399,54 @@ class MainShell(QWidget):
 
         Thread(target=run, daemon=True).start()
 
+    def _on_board_schedule_requested(self, workflow_id: str) -> None:
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return
+        self._schedule_from_agents = True
+
+        def run() -> None:
+            try:
+                record = self._api.get_workflow(wid)
+                try:
+                    draft = self._api.propose_schedule_draft(record.id)
+                except ApiError:
+                    goal = record.plan.goal if record.plan else ""
+                    draft = ScheduleDraft(name=record.title or "ИИ-агент", goal=goal or "")
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._schedule_draft_ready.emit((record, draft))
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_board_schedule_run(self, workflow_id: str, at_iso: str) -> None:
+        wid = (workflow_id or "").strip()
+        if not wid or not (at_iso or "").strip():
+            return
+
+        def run() -> None:
+            try:
+                self._api.create_timed_trigger(wid, at=at_iso, message="Плановый запуск")
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._board_reload.emit()
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_create_agent_from_board(self) -> None:
+        self.sidebar.set_active_key("create")
+        self._pages.setCurrentIndex(self._page_index["create"])
+
+    def _on_schedule_back(self) -> None:
+        if self._schedule_from_agents:
+            self._schedule_from_agents = False
+            self.sidebar.set_active_key("agents", animate=False)
+            self._pages.setCurrentIndex(self._page_index["agents"])
+            return
+        self._pages.setCurrentIndex(self._page_index["workflows"])
+
     def _show_schedule_page(self, payload: object) -> None:
         record, draft = payload if isinstance(payload, tuple) else (None, None)
         if not isinstance(record, WorkflowRecord):
@@ -1382,6 +1459,7 @@ class MainShell(QWidget):
             return
         self._page_schedule.set_busy(True)
         wid = record.id
+        from_agents = self._schedule_from_agents and str(getattr(record, "phase", "") or "") == "done"
 
         def run() -> None:
             try:
@@ -1403,6 +1481,20 @@ class MainShell(QWidget):
                     ],
                 }
                 updated = self._api.update_workflow_local_run(wid, local)
+                if from_agents:
+                    for item in self._api.list_triggers():
+                        if str(item.get("workflow_id") or "") != wid:
+                            continue
+                        if not item.get("enabled"):
+                            continue
+                        trigger_id = str(item.get("id") or "")
+                        if trigger_id:
+                            self._api.cancel_trigger(trigger_id)
+                    for spec in draft.triggers:
+                        if isinstance(spec, ScheduleTriggerSpec):
+                            self._api.create_trigger(wid, spec, message=spec.message or draft.goal)
+                    self._schedule_save_ready.emit(updated)
+                    return
             except ApiError as exc:
                 self._schedule_failed.emit(exc.message)
                 return
@@ -1450,11 +1542,13 @@ class MainShell(QWidget):
     def _show_schedule_saved(self, record: object) -> None:
         self._page_schedule.set_busy(False)
         self._page_kpi_preview.set_busy(False)
+        self._schedule_from_agents = False
         if isinstance(record, WorkflowRecord):
             self._page_workflows.saved.emit(record.id)
             self._on_workflow_record_saved(record)
         self.sidebar.set_active_key("agents", animate=False)
         self._pages.setCurrentIndex(self._page_index["agents"])
+        self._load_agent_drafts()
 
     def _show_schedule_error(self, message: str) -> None:
         self._page_schedule.set_busy(False)
@@ -1481,12 +1575,10 @@ class MainShell(QWidget):
                     local["source_draft_id"] = draft_id
                     local["source_agent_id"] = agent_id
                     self._api.update_workflow_local_run(workflow_id, local)
-                drafts = self._api.list_agent_drafts()
-                workflows = self._api.list_workflows()
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._drafts_ready.emit((drafts, workflows))
+            self._board_reload.emit()
 
         Thread(target=run, daemon=True).start()
 
@@ -1526,12 +1618,10 @@ class MainShell(QWidget):
         def run() -> None:
             try:
                 self._api.delete_agent_draft(draft_id)
-                drafts = self._api.list_agent_drafts()
-                workflows = self._api.list_workflows()
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._drafts_ready.emit((drafts, workflows))
+            self._board_reload.emit()
 
         Thread(target=run, daemon=True).start()
 
@@ -1547,20 +1637,18 @@ class MainShell(QWidget):
         def run() -> None:
             try:
                 self._api.delete_agent_draft_suggestion(draft_id, agent_id)
-                drafts = self._api.list_agent_drafts()
-                workflows = self._api.list_workflows()
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._drafts_ready.emit((drafts, workflows))
+            self._board_reload.emit()
 
         Thread(target=run, daemon=True).start()
 
     def _on_stop_published_agent(self, workflow_id: str) -> None:
         answer = QMessageBox.question(
             self,
-            "Остановить автозапуск",
-            "Остановить этого агента? Автозапуск и пересчёт KPI будут приостановлены, строка станет серой.",
+            "Приостановить агента",
+            "Приостановить этого агента? Плановые запуски будут пропускаться, пока вы его не возобновите.",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
@@ -1568,12 +1656,21 @@ class MainShell(QWidget):
         def run() -> None:
             try:
                 self._api.stop_workflow_auto_run(workflow_id)
-                drafts = self._api.list_agent_drafts()
-                workflows = self._api.list_workflows()
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._drafts_ready.emit((drafts, workflows))
+            self._board_reload.emit()
+
+        Thread(target=run, daemon=True).start()
+
+    def _on_resume_published_agent(self, workflow_id: str) -> None:
+        def run() -> None:
+            try:
+                self._api.resume_workflow_auto_run(workflow_id)
+            except ApiError as exc:
+                self._readiness_failed.emit(exc.message)
+                return
+            self._board_reload.emit()
 
         Thread(target=run, daemon=True).start()
 
@@ -1589,12 +1686,10 @@ class MainShell(QWidget):
         def run() -> None:
             try:
                 self._api.delete_workflow(workflow_id)
-                drafts = self._api.list_agent_drafts()
-                workflows = self._api.list_workflows()
             except ApiError as exc:
                 self._readiness_failed.emit(exc.message)
                 return
-            self._drafts_ready.emit((drafts, workflows))
+            self._board_reload.emit()
 
         Thread(target=run, daemon=True).start()
 
@@ -1684,6 +1779,15 @@ class MainShell(QWidget):
             self._agent_history_ready.emit((title, workflow_id, runs))
 
         Thread(target=run, daemon=True).start()
+
+    def _on_calendar_run_requested(self, workflow_id: str, run_id: str) -> None:
+        self.navigate_to_agent_history(workflow_id, run_id)
+
+    def _on_group_runs_requested(self, events: object) -> None:
+        items = events if isinstance(events, list) else []
+        self._page_group_runs.show_group(items)
+        self.sidebar.set_active_key("agents", animate=False)
+        self._pages.setCurrentIndex(self._page_index["agent_group_runs"])
 
     def _show_agent_history(self, payload: object) -> None:
         title, workflow_id, runs = ("ИИ-агент", "", [])

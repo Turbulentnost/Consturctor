@@ -22,6 +22,7 @@ from app.schemas.workflow import (
     AutoRunStopResult,
     ExecuteRequest,
     LocalRunUpdate,
+    WorkflowBoard,
     WorkflowHealth,
     WorkflowListItem,
     WorkflowSchema,
@@ -51,10 +52,12 @@ from app.services.workflows import (
     list_workflows,
     plan_workflow,
     publish_workflow,
+    resume_auto_run,
     stop_auto_run,
     update_local_run,
     workflow_health,
 )
+from app.services.workflows.board import get_workflow_board
 from app.services.workflows.schedule_draft import propose_schedule_draft
 
 logger = logging.getLogger(__name__)
@@ -276,6 +279,23 @@ async def read_workflows(
     return list_workflows(db, user_id=auth.user_id)
 
 
+@router.get("/board", response_model=WorkflowBoard)
+async def read_workflow_board(
+    window_from: str = "",
+    window_to: str = "",
+    workflow_id: str = "",
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowBoard:
+    return get_workflow_board(
+        db,
+        user_id=auth.user_id,
+        window_from=window_from,
+        window_to=window_to,
+        workflow_id=workflow_id,
+    )
+
+
 @router.post("/{workflow_id}/agent-runs/stream")
 async def run_workflow_agent_stream(
     workflow_id: str,
@@ -414,6 +434,19 @@ async def stop_workflow_auto_run(
 ) -> AutoRunStopResult:
     try:
         return stop_auto_run(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/resume-auto-run", response_model=AutoRunStopResult)
+async def resume_workflow_auto_run(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AutoRunStopResult:
+    try:
+        return resume_auto_run(db, user_id=auth.user_id, workflow_id=workflow_id)
     except WorkflowError as exc:
         _raise(exc)
         raise

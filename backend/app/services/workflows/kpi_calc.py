@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.models.workflow import Workflow
 from app.services import agent_kpi
-from app.services.triggers.service import is_workflow_paused
+from app.services.triggers.service import is_workflow_inactive
 from app.services.workflows import prompts
 from app.services.workflows.plan_models import WorkflowPlan
 
@@ -23,7 +23,7 @@ def list_due_workflows(db: Session, *, now: datetime | None = None) -> list[tupl
     due: list[tuple[Workflow, list[str]]] = []
     for row in rows:
         local = row.local_run if isinstance(row.local_run, dict) else {}
-        if is_workflow_paused(local):
+        if is_workflow_inactive(local):
             continue
         kpi = local.get("kpi") if isinstance(local.get("kpi"), dict) else None
         if not kpi or not (kpi.get("tiles") or []):

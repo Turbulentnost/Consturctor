@@ -4,6 +4,7 @@ import logging
 import shutil
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -15,7 +16,6 @@ from app.clients.cursor import CursorAgentError
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-from app.models.agent_run import AgentRun
 from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.schemas.workflow import (
@@ -32,6 +32,7 @@ from app.services.notifications.service import delete_notifications_for_workflow
 from app.services.triggers.service import (
     cancel_triggers_for_workflow,
     delete_triggers_for_workflow,
+    is_workflow_deleted,
     is_workflow_paused,
 )
 from app.services.workflows import prompts
@@ -109,11 +110,12 @@ def list_workflows(db: Session, *, user_id: str) -> list[WorkflowListItem]:
             paused=is_workflow_paused(row.local_run),
         )
         for row in rows
+        if not is_workflow_deleted(row.local_run)
     ]
 
 
 def get_workflow(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSchema:
-    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True)
     return _to_schema(row)
 
 
@@ -185,25 +187,58 @@ def create_workflow(
 
 
 def delete_workflow(db: Session, *, user_id: str, workflow_id: str) -> None:
-    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True)
+    # Soft-delete: keep AgentRun history (FK CASCADE would wipe it on hard delete).
     delete_triggers_for_workflow(db, user_id=user_id, workflow_id=workflow_id)
     delete_notifications_for_workflow(db, workflow_id=workflow_id)
-    db.query(AgentRun).filter(AgentRun.workflow_id == workflow_id).delete(synchronize_session=False)
-    db.delete(row)
+    local = dict(row.local_run or {})
+    local["deleted"] = True
+    local["paused"] = True
+    row.local_run = local
     db.commit()
-    shutil.rmtree(_workflow_dir(workflow_id), ignore_errors=True)
 
 
 def stop_auto_run(db: Session, *, user_id: str, workflow_id: str) -> AutoRunStopResult:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
-    stopped = cancel_triggers_for_workflow(
-        db, user_id=user_id, workflow_id=workflow_id, commit=False
-    )
     local = dict(row.local_run or {})
     local["paused"] = True
     row.local_run = local
+    stopped = cancel_triggers_for_workflow(
+        db, user_id=user_id, workflow_id=workflow_id, commit=False
+    )
     db.commit()
-    return AutoRunStopResult(ok=True, stopped=stopped)
+    return AutoRunStopResult(ok=True, stopped=int(stopped or 0))
+
+
+def resume_auto_run(db: Session, *, user_id: str, workflow_id: str) -> AutoRunStopResult:
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    if is_workflow_deleted(row.local_run):
+        raise WorkflowError("Удалённый агент нельзя возобновить", status_code=400)
+    local = dict(row.local_run or {})
+    local["paused"] = False
+    row.local_run = local
+    now = datetime.now(timezone.utc)
+    restored = 0
+    rows = (
+        db.query(AgentTrigger)
+        .filter(
+            AgentTrigger.owner_user_id == user_id,
+            AgentTrigger.workflow_id == workflow_id,
+        )
+        .all()
+    )
+    for trigger in rows:
+        if trigger.enabled:
+            continue
+        interval = int(trigger.interval_seconds or 0)
+        fire_at = trigger.fire_at
+        if fire_at is not None and fire_at.tzinfo is None:
+            fire_at = fire_at.replace(tzinfo=timezone.utc)
+        if interval > 0 or (fire_at is not None and fire_at > now):
+            trigger.enabled = True
+            restored += 1
+    db.commit()
+    return AutoRunStopResult(ok=True, stopped=restored)
 
 
 def update_local_run(
@@ -2294,10 +2329,18 @@ def _extract_git(git: dict[str, Any] | None) -> tuple[str, str]:
     return "", ""
 
 
-def _get_owned(db: Session, *, user_id: str, workflow_id: str) -> Workflow:
+def _get_owned(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    allow_deleted: bool = False,
+) -> Workflow:
     row = db.query(Workflow).filter(Workflow.id == workflow_id, Workflow.user_id == user_id).first()
     if row is None:
         raise WorkflowError("Workflow не найден", status_code=404)
+    if is_workflow_deleted(row.local_run) and not allow_deleted:
+        raise WorkflowError("Агент удалён", status_code=404)
     return row
 
 

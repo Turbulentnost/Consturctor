@@ -13,10 +13,17 @@ from app.services.agent_runtime import AgentRuntimeError, run_agent_task
 from app.services.agent_runs import answer_from_result, finish_agent_run, start_agent_run
 from app.services.notifications.service import NotificationError, create_notification
 from app.schemas.notification import NotificationCreate
-from app.services.sessions import SKIP_RUN_BODY, SKIP_RUN_TITLE, is_user_online
+from app.services.sessions import (
+    RECONNECT_EVIDENCE,
+    RECONNECT_RETRY_SEC,
+    SKIP_RUN_BODY,
+    SKIP_RUN_TITLE,
+    current_session_id,
+    is_user_online,
+)
 from app.services.tool_bridge import tool_bridge
 from app.services.triggers.check import check_trigger_condition
-from app.services.triggers.service import is_workflow_paused, mark_fired, mark_skipped
+from app.services.triggers.service import is_workflow_inactive, mark_fired, mark_skipped
 from app.services.workflows.cursor_tools import clear_tool_context, set_tool_context
 from app.services.workflows.service import WorkflowError
 
@@ -28,9 +35,25 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
     if row is None or not row.enabled:
         return {"ok": False, "reason": "disabled"}
     workflow = db.get(Workflow, row.workflow_id)
-    if workflow is None or is_workflow_paused(workflow.local_run):
+    if workflow is None or is_workflow_inactive(workflow.local_run):
         return {"ok": False, "reason": "paused"}
     if not is_user_online(row.owner_user_id):
+        # Active login session means desktop is likely reconnecting after API restart.
+        # Retry soon without the scary "app not launched" toast.
+        if current_session_id(row.owner_user_id):
+            mark_skipped(
+                db,
+                user_id=row.owner_user_id,
+                trigger_id=trigger_id,
+                evidence=RECONNECT_EVIDENCE,
+                retry_in_seconds=RECONNECT_RETRY_SEC,
+            )
+            logger.info(
+                "Scheduled trigger %s deferred: desktop reconnecting user=%s",
+                trigger_id,
+                row.owner_user_id,
+            )
+            return {"ok": False, "reason": "reconnecting"}
         title = workflow.title or "агент"
         _notify_skipped_run(
             db,
