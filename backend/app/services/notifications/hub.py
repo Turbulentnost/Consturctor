@@ -15,14 +15,17 @@ logger = logging.getLogger(__name__)
 class NotificationHub:
     def __init__(self) -> None:
         self._sockets: dict[str, set[WebSocket]] = {}
+        self._ws_session: dict[int, str] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
 
-    def add(self, user_id: str, ws: WebSocket) -> None:
+    def add(self, user_id: str, ws: WebSocket, *, session_id: str = "") -> None:
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             self._loop = getattr(self, "_loop", None)
         self._sockets.setdefault(user_id, set()).add(ws)
+        if session_id:
+            self._ws_session[id(ws)] = session_id
 
     def schedule_push(self, user_id: str, payload: dict[str, Any]) -> bool:
         """Отправить с того же loop, где висит WebSocket. True — получатель онлайн, пуш поставлен в очередь."""
@@ -52,11 +55,57 @@ class NotificationHub:
         if not group:
             return
         group.discard(ws)
+        self._ws_session.pop(id(ws), None)
         if not group:
             self._sockets.pop(user_id, None)
 
     def is_online(self, user_id: str) -> bool:
         return bool(self._sockets.get(user_id))
+
+    async def kick_user(self, user_id: str, *, reason: str = "session_replaced") -> None:
+        group = list(self._sockets.get(user_id) or ())
+        if not group:
+            return
+        text = json.dumps(
+            {
+                "type": "session_replaced",
+                "message": "Выполнен вход на другом устройстве. Этот сеанс завершён.",
+            },
+            ensure_ascii=False,
+        )
+        for ws in group:
+            try:
+                await ws.send_text(text)
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to notify kicked session user=%s", user_id)
+            try:
+                await ws.close(code=4001)
+            except Exception:  # noqa: BLE001
+                pass
+            self.remove(user_id, ws)
+        _ = reason
+
+    async def replace(self, user_id: str, ws: WebSocket, *, session_id: str = "") -> None:
+        previous = [item for item in (self._sockets.get(user_id) or set()) if item is not ws]
+        if previous:
+            text = json.dumps(
+                {
+                    "type": "session_replaced",
+                    "message": "Выполнен вход на другом устройстве. Этот сеанс завершён.",
+                },
+                ensure_ascii=False,
+            )
+            for other in previous:
+                try:
+                    await other.send_text(text)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    await other.close(code=4001)
+                except Exception:  # noqa: BLE001
+                    pass
+                self.remove(user_id, other)
+        self.add(user_id, ws, session_id=session_id)
 
     async def push(self, user_id: str, payload: dict[str, Any]) -> bool:
         group = list(self._sockets.get(user_id) or ())

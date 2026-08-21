@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from queue import Queue
@@ -14,17 +13,13 @@ from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.db.session import SessionLocal, get_db
 from app.schemas.trigger import TriggerCreate, TriggerFiredAck, TriggerList, TriggerOut
-from app.services.notifications.hub import hub
 from app.services.tool_bridge import tool_bridge
 from app.services.triggers.check import check_trigger_condition
 from app.services.triggers.service import (
     TriggerError,
     cancel_trigger,
-    command_payload,
     create_trigger,
-    due_commands,
     list_triggers,
-    mark_dispatched,
     mark_fired,
 )
 from app.services.workflows.cursor_tools import clear_tool_context, set_tool_context
@@ -149,24 +144,3 @@ def _check_stream(*, user_id: str, trigger_id: str):
             break
         yield _sse(item)
 
-
-async def dispatch_due_triggers(*, user_id: str | None = None) -> None:
-    db = SessionLocal()
-    try:
-        for row in due_commands(db, user_id=user_id):
-            if not hub.is_online(row.owner_user_id):
-                continue
-            sent = await hub.push(row.owner_user_id, command_payload(row))
-            if sent:
-                mark_dispatched(db, row.id)
-    finally:
-        db.close()
-
-
-async def trigger_scheduler() -> None:
-    while True:
-        await asyncio.sleep(20)
-        try:
-            await dispatch_due_triggers()
-        except Exception:  # noqa: BLE001
-            logger.exception("Trigger scheduler tick failed")

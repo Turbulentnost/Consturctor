@@ -5,7 +5,7 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.trigger import AgentTrigger
@@ -204,6 +204,57 @@ def due_commands(db: Session, *, user_id: str | None = None) -> list[AgentTrigge
     return due
 
 
+def claim_due_trigger(db: Session, trigger_id: str, *, now: datetime | None = None) -> bool:
+    """Atomically take a due trigger. Only one worker/tick wins."""
+    now = now or datetime.now(timezone.utc)
+    stale_before = now - CHECK_INTERVAL
+    result = db.execute(
+        update(AgentTrigger)
+        .where(
+            AgentTrigger.id == trigger_id,
+            AgentTrigger.enabled.is_(True),
+            or_(AgentTrigger.last_checked_at.is_(None), AgentTrigger.last_checked_at <= stale_before),
+        )
+        .values(last_checked_at=now)
+        .returning(AgentTrigger.id)
+    )
+    claimed = result.scalar_one_or_none()
+    if claimed is None:
+        db.rollback()
+        return False
+    db.commit()
+    return True
+
+
+def claim_due_agent_jobs(db: Session, *, user_id: str | None = None) -> list[AgentTrigger]:
+    claimed: list[AgentTrigger] = []
+    for row in due_commands(db, user_id=user_id):
+        if claim_due_trigger(db, row.id):
+            claimed.append(row)
+    return claimed
+
+
+def agent_run_task_id(
+    trigger_id: str,
+    *,
+    now: datetime | None = None,
+    interval_seconds: int = 0,
+    fire_at: datetime | None = None,
+) -> str:
+    now = now or datetime.now(timezone.utc)
+    window = int(CHECK_INTERVAL.total_seconds()) or 45
+    slot = int(now.timestamp() // window)
+    _ = interval_seconds, fire_at
+    return f"agent-run:{trigger_id}:{slot}"
+
+
+def kpi_calc_task_id(workflow_id: str, tile_ids: list[str], *, now: datetime | None = None) -> str:
+    now = now or datetime.now(timezone.utc)
+    tiles = ",".join(sorted(str(item) for item in tile_ids))
+    slot = int(now.timestamp() // 60)
+    return f"kpi-calc:{workflow_id}:{slot}:{tiles}"
+
+
 def mark_dispatched(db: Session, trigger_id: str) -> None:
     row = db.get(AgentTrigger, trigger_id)
     if row is None:
@@ -228,6 +279,23 @@ def mark_fired(db: Session, *, user_id: str, trigger_id: str, evidence: str = ""
         row.enabled = False
     else:
         row.cooldown_until = now + FIRE_COOLDOWN
+    db.commit()
+    db.refresh(row)
+    return _to_out(row)
+
+
+def mark_skipped(db: Session, *, user_id: str, trigger_id: str, evidence: str) -> TriggerOut:
+    """Пропуск слота: интервал сдвигается, one-shot остаётся и ждёт следующего окна."""
+    row = get_trigger(db, user_id=user_id, trigger_id=trigger_id)
+    now = datetime.now(timezone.utc)
+    row.last_checked_at = now
+    row.last_evidence = (evidence or "").strip()
+    interval = int(row.interval_seconds or 0)
+    if interval > 0:
+        row.fire_at = now + timedelta(seconds=interval)
+        row.cooldown_until = now + FIRE_COOLDOWN
+    else:
+        row.cooldown_until = now + timedelta(minutes=30)
     db.commit()
     db.refresh(row)
     return _to_out(row)

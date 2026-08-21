@@ -1,0 +1,38 @@
+services:
+  constructor-redis:
+    image: redis:7-alpine
+    ports:
+      - "6382:6379"
+    restart: unless-stopped
+
+  constructor-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      REDIS_URL: redis://constructor-redis:6379/0
+      DATABASE_URL: postgresql+psycopg://constructor:constructor@host.docker.internal:5435/constructor
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - constructor-redis
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=2
+    restart: unless-stopped
+
+  constructor-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      REDIS_URL: redis://constructor-redis:6379/0
+      DATABASE_URL: postgresql+psycopg://constructor:constructor@host.docker.internal:5435/constructor
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - constructor-redis
+    command: celery -A app.celery_app beat --loglevel=info
+    restart: unless-stopped

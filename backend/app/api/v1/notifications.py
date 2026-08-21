@@ -30,6 +30,7 @@ from app.services.notifications.service import (
     payload_dict,
     unread_count,
 )
+from app.services.sessions import is_current_session, mark_offline, mark_online
 
 logger = logging.getLogger(__name__)
 
@@ -135,25 +136,32 @@ async def notifications_ws(websocket: WebSocket, token: str = "") -> None:
     except ValueError:
         await websocket.close(code=1008)
         return
+    if not is_current_session(auth.user_id, auth.session_id):
+        await websocket.close(code=4001)
+        return
     await websocket.accept()
-    hub.add(auth.user_id, websocket)
+    await hub.replace(auth.user_id, websocket, session_id=auth.session_id)
+    mark_online(auth.user_id, auth.session_id)
     db = SessionLocal()
     try:
         for item in list_pending(db, user_id=auth.user_id):
             sent = await hub.push(auth.user_id, payload_dict(item))
             if sent:
                 mark_delivered(db, item.id)
-        from app.api.v1.triggers import dispatch_due_triggers
-
-        await dispatch_due_triggers(user_id=auth.user_id)
         while True:
             await websocket.receive_text()
+            if not is_current_session(auth.user_id, auth.session_id):
+                await websocket.close(code=4001)
+                break
+            mark_online(auth.user_id, auth.session_id)
     except WebSocketDisconnect:
         pass
     except Exception:  # noqa: BLE001
         logger.exception("Notification websocket failed user=%s", auth.user_id)
     finally:
         hub.remove(auth.user_id, websocket)
+        if not hub.is_online(auth.user_id):
+            mark_offline(auth.user_id, auth.session_id)
         db.close()
 
 

@@ -105,6 +105,8 @@ python main.py
 
 Нужен уже запущенный backend на порту **7812**.
 
+Автозапуск агентов и KPI: `docker compose up -d constructor-redis constructor-worker constructor-beat` (Redis на `:6382`). Без worker расписание не срабатывает.
+
 ### Утилиты 1С (опционально)
 
 См. [`backend/scripts/README.md`](backend/scripts/README.md) — экспорт пользователей с отделами и проверка пароля.

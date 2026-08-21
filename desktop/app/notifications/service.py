@@ -11,6 +11,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
+from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 
 from app.config import backend_url
@@ -28,6 +29,7 @@ class NotificationService(QObject):
     toast_requested = Signal(str, str, str, str)
     command_received = Signal(dict)
     inbox_changed = Signal()
+    session_kicked = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -42,6 +44,10 @@ class NotificationService(QObject):
         self._poll = QTimer(self)
         self._poll.setInterval(15000)
         self._poll.timeout.connect(self._poll_pending)
+        self._ping = QTimer(self)
+        self._ping.setInterval(20000)
+        self._ping.timeout.connect(self._send_ping)
+        self._kicked = False
         self._ws.connected.connect(self._on_connected)
         self._ws.disconnected.connect(self._on_disconnected)
         self._ws.textMessageReceived.connect(self._on_message)
@@ -50,14 +56,18 @@ class NotificationService(QObject):
     def start(self, *, token: str, base_url: str = "") -> None:
         self._token = token
         self._base_url = (base_url or backend_url()).rstrip("/")
+        self._kicked = False
         self._connect()
         self._poll_pending()
         if not self._poll.isActive():
             self._poll.start()
+        if not self._ping.isActive():
+            self._ping.start()
 
     def stop(self) -> None:
         self._reconnect.stop()
         self._poll.stop()
+        self._ping.stop()
         self._token = ""
         self._ws.close()
 
@@ -70,15 +80,25 @@ class NotificationService(QObject):
         url = f"{scheme}://{host}/api/v1/notifications/ws?token={quote(self._token)}"
         self._ws.open(QUrl(url))
 
+    def _send_ping(self) -> None:
+        if self._token and self._ws.state() == QAbstractSocket.SocketState.ConnectedState:
+            self._ws.sendTextMessage("ping")
+
     def _on_connected(self) -> None:
         logger.info("Notification websocket connected")
         self._poll_pending()
 
     def _on_disconnected(self) -> None:
+        raw = self._ws.closeCode()
+        code = int(getattr(raw, "value", raw) or 0)
+        if self._kicked or code == 4001:
+            return
         self._schedule_reconnect()
 
     def _schedule_reconnect(self) -> None:
-        if self._token and not self._reconnect.isActive():
+        if self._kicked or not self._token:
+            return
+        if not self._reconnect.isActive():
             self._reconnect.start()
 
     def _on_message(self, text: str) -> None:
@@ -89,6 +109,9 @@ class NotificationService(QObject):
         if not isinstance(payload, dict):
             return
         kind = str(payload.get("type") or "")
+        if kind == "session_replaced":
+            self._kick(str(payload.get("message") or "Сеанс завершён на другом устройстве."))
+            return
         if kind in {"evaluate_trigger", "run_agent"}:
             self.command_received.emit(payload)
             return
@@ -105,6 +128,9 @@ class NotificationService(QObject):
                 headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"},
                 timeout=10.0,
             )
+            if response.status_code == 401:
+                self._kick("Сеанс завершён на другом устройстве.")
+                return
             if response.status_code >= 400:
                 return
             items = response.json()
@@ -120,6 +146,13 @@ class NotificationService(QObject):
             nid = str(item.get("id") or "")
             if shown and nid:
                 self._ack(nid)
+
+    def _kick(self, message: str) -> None:
+        if self._kicked:
+            return
+        self._kicked = True
+        self.stop()
+        self.session_kicked.emit(message or "Сеанс завершён на другом устройстве.")
 
     def _ack(self, notification_id: str) -> None:
         try:

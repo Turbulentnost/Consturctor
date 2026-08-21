@@ -17,6 +17,7 @@ from app.config import settings
 from app.core.jwt import create_access_token
 from app.schemas.auth import LoginResponse, UserOut
 from app.services import app_users
+from app.services.sessions import new_session_id, replace_session
 from tools.onec.password import verify_password
 
 logger = logging.getLogger(__name__)
@@ -79,11 +80,14 @@ def _login_via_bypass(fio: str, password: str) -> LoginResponse:
         raise AuthError("Неверный логин или пароль", status_code=401)
     user_id, canon_fio, department, position = _bypass_session_identity(fio)
     position = _apply_position_override(canon_fio, position)
+    session_id = new_session_id()
+    replace_session(user_id, session_id)
     token = create_access_token(
         user_id=user_id,
         fio=canon_fio,
         department=department,
         position=position,
+        session_id=session_id,
     )
     user_out = _to_user_out(
         user_id=user_id,
@@ -153,11 +157,14 @@ async def login(fio: str, password: str) -> LoginResponse:
             logger.warning("Could not load department/position for user id=%s", erp_user.id)
     position = _apply_position_override(erp_user.fio, position)
 
+    session_id = new_session_id()
+    replace_session(erp_user.id, session_id)
     token = create_access_token(
         user_id=erp_user.id,
         fio=erp_user.fio,
         department=department or "",
         position=position or "",
+        session_id=session_id,
     )
     user_out = await asyncio.to_thread(
         _to_user_out,

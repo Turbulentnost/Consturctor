@@ -51,13 +51,22 @@ Backend остаётся единственной точкой для модел
 ## Запуск
 
 ```powershell
-cd c:\Users\testii\Downloads\projects_Mangasaryan\turbobot\backend
+cd backend
 python -m pip install -e .
 copy .env.example .env
 python -m app.main
 ```
 
 API: `http://127.0.0.1:7812`
+
+Расписание агентов и KPI считает **Celery worker**, не каждый десктоп. Redis + worker + beat:
+
+```powershell
+docker compose up -d constructor-redis constructor-worker constructor-beat
+```
+
+Postgres остаётся `constructor-pg` на `:5435`. Redis с хоста: `REDIS_URL=redis://127.0.0.1:6382/0`.
+На Windows worker можно поднять без Docker: `celery -A app.celery_app worker` и `celery -A app.celery_app beat` (нужен Redis).
 
 | Метод | Путь | Назначение |
 |-------|------|------------|

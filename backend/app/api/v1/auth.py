@@ -43,6 +43,9 @@ async def login(body: LoginRequest) -> LoginResponse:
     try:
         _trace(f"Auth API /login request fio={body.fio}")
         result = await auth_service.login(body.fio, body.password)
+        from app.services.notifications.hub import hub
+
+        await hub.kick_user(result.user.id)
         _trace(f"Auth API /login ok fio={body.fio} user_id={result.user.id}")
         return result
     except auth_service.AuthError as exc:

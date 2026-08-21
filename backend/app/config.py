@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+psycopg://constructor:constructor@192.168.1.157:5435/constructor"
     )
+    redis_url: str = "redis://127.0.0.1:6382/0"
     avatar_storage_dir: Path = BACKEND_ROOT / "storage" / "avatars"
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
     workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"

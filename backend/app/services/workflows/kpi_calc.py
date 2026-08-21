@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -16,7 +15,6 @@ from app.services.workflows.plan_models import WorkflowPlan
 
 logger = logging.getLogger(__name__)
 
-SCHEDULER_INTERVAL_SEC = 30
 
 
 def list_due_workflows(db: Session, *, now: datetime | None = None) -> list[tuple[Workflow, list[str]]]:
@@ -105,11 +103,3 @@ def run_due_kpi_calculations() -> int:
     finally:
         db.close()
 
-
-async def kpi_scheduler() -> None:
-    while True:
-        await asyncio.sleep(SCHEDULER_INTERVAL_SEC)
-        try:
-            await asyncio.to_thread(run_due_kpi_calculations)
-        except Exception:  # noqa: BLE001
-            logger.exception("KPI scheduler tick failed")

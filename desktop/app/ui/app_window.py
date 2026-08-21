@@ -5,7 +5,7 @@ from threading import Thread
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QIcon
-from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QStackedWidget, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QStackedWidget, QSystemTrayIcon
 
 from app.agents.headless_runner import HeadlessRunner
 from app.api_client import ApiClient, ApiError, LoginResult
@@ -72,6 +72,7 @@ class AppWindow(QMainWindow):
         self._notify.toast_requested.connect(self._on_tray_toast)
         self._notify.inbox_changed.connect(self.main_shell.refresh_notification_badge)
         self._notify.command_received.connect(self._runner.handle_command)
+        self._notify.session_kicked.connect(self._on_session_kicked)
         self._runner.toast_requested.connect(self._on_tray_toast)
         install_confirm_host(self)
         set_away_notify_callback(self._on_away_confirmation)
@@ -252,6 +253,11 @@ class AppWindow(QMainWindow):
                 self.main_shell.show_live_agent(pending)
             else:
                 self.main_shell.navigate_to_agent_history(pending, pending_run)
+
+    def _on_session_kicked(self, message: str) -> None:
+        text = (message or "").strip() or "Выполнен вход на другом устройстве. Этот сеанс завершён."
+        QMessageBox.information(self, "Сеанс завершён", text)
+        self._on_logout()
 
     def _on_logout(self) -> None:
         current_fio = self._user.fio if getattr(self, "_user", None) is not None else "-"

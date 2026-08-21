@@ -25,10 +25,8 @@ class HeadlessRunner(QObject):
 
     def handle_command(self, payload: dict) -> None:
         kind = str(payload.get("type") or "")
-        if kind == "evaluate_trigger":
-            self._start_check(payload)
-        elif kind == "run_agent":
-            self._start_run(payload)
+        if kind in {"evaluate_trigger", "run_agent"}:
+            logger.info("Skip %s: scheduled runs are owned by the server worker", kind)
 
     def _start_check(self, payload: dict) -> None:
         with self._lock:

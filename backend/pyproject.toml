@@ -20,6 +20,8 @@ dependencies = [
     "pdfplumber>=0.11.5",
     "pymupdf>=1.24.14",
     "imapclient>=3.0.1",
+    "celery[redis]>=5.4.0",
+    "redis>=5.2.0",
     "pywin32>=308; platform_system == 'Windows'",
 ]
 
