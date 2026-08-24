@@ -302,6 +302,9 @@ class CursorSdkBridge:
         path.mkdir(parents=True, exist_ok=True)
         return str(path)
 
+    def workspace_cwd(self, workflow_id: str = "") -> str:
+        return self._workspace_cwd(workflow_id)
+
     @staticmethod
     def _workspaces_root() -> Path:
         local = os.environ.get("LOCALAPPDATA") or str(Path.home())
@@ -409,6 +412,12 @@ class CursorSdkBridge:
                 ):
                     box["result"] = self.skipped_tool_result(tool)
                     return
+                try:
+                    from app.tools.result_files import publish_result_files
+
+                    publish_result_files(result, tool=tool, workflow_id=workflow_id)
+                except Exception:
+                    pass
                 result = self._externalize_large_result(
                     tool=tool,
                     request_id=request_id,

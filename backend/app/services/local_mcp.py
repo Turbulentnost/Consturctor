@@ -390,11 +390,10 @@ def _raw_tools() -> list[dict[str, Any]]:
         {
             "name": "turboproject",
             "description": (
-                "Быстрый индекс проектов TurboProject с 1С. Не читает карточки MPP. "
-                "Возвращает file_id, имя, has_1c и доступные даты/поля 1С из списка. "
-                "Для задач, просрочек, ресурсов и полной карточки вызови turboproject.get(file_id). "
-                "Фильтры: query (только название / имя MPP / номер 1С, не фраза), "
-                "manager (если есть в индексе), limit. Учётка на сервере."
+                "Compatibility-инструмент TurboProject. Для поиска используй "
+                "turboproject.search_projects, для просрочек - turboproject.get_overdue_projects, "
+                "для задач - turboproject.get_project_tasks, для карточки - turboproject.get_project. "
+                "Учётка на сервере."
             ),
             "execution": "server",
             "input_schema": {
@@ -459,8 +458,8 @@ def _raw_tools() -> list[dict[str, Any]]:
         {
             "name": "turboproject.get",
             "description": (
-                "Полная карточка одного проекта TurboProject по file_id из turboproject.list: "
-                "даты MSP/1С, статистика задач, просрочки, ресурсы и data_1c."
+                "Compatibility-карточка одного проекта TurboProject по file_id из turboproject.list. "
+                "Для новых сценариев используй turboproject.get_project(project_id, fields)."
             ),
             "execution": "server",
             "input_schema": {
@@ -479,7 +478,135 @@ def _raw_tools() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "name": "turboproject.projects",
+            "description": (
+                "Compatibility-чтение нескольких карточек TurboProject. Для новых сценариев "
+                "используй turboproject.search_projects, get_project_metrics или агрегаторы."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": _prop("string", "Название, имя MPP или номер 1С"),
+                    "manager": _prop("string", "ФИО руководителя проекта из 1С"),
+                    "limit": _prop("integer", "Максимум карточек, только для совместимости"),
+                },
+            },
+        },
+        *_turboproject_advanced_tools(),
         *_desktop_ac_tools(),
+    ]
+
+
+def _turboproject_filters() -> dict[str, dict[str, Any]]:
+    return {
+        "query": _prop("string", "Название, имя MPP или номер 1С"),
+        "status": _prop("string", "Статус проекта из 1С"),
+        "owner": _prop("string", "Руководитель/куратор проекта"),
+        "department": _prop("string", "Подразделение проекта"),
+        "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
+        "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
+        "limit": _prop("integer", "Размер страницы результата"),
+        "cursor": _prop("string", "Cursor из предыдущего ответа"),
+    }
+
+
+def _turboproject_schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
+    return {"type": "object", "required": required or [], "properties": properties}
+
+
+def _turboproject_advanced_tools() -> list[dict[str, Any]]:
+    filters = _turboproject_filters()
+    items: list[tuple[str, str, dict[str, Any], list[str] | None]] = [
+        (
+            "turboproject.search_projects",
+            "Индексный поиск проектов. Не читает карточки и всегда возвращает limit/cursor.",
+            {
+                **filters,
+                "sort_by": _prop("string", "finish_date или project_name"),
+            },
+            None,
+        ),
+        (
+            "turboproject.get_project",
+            "Подробности по одному проекту. Используй только когда есть project_id и ограничивай fields.",
+            {
+                "project_id": _prop("string", "ProjectFile.id из поиска"),
+                "fields": _prop("array", "Блоки: identity, dates, data_1c, task_stats, overdue, resources, budget, decisions"),
+            },
+            ["project_id"],
+        ),
+        (
+            "turboproject.get_project_tasks",
+            "Задачи одного проекта с фильтрами overdue/status/assignee и cursor-пагинацией.",
+            {
+                "project_id": _prop("string", "ProjectFile.id проекта"),
+                "status": _prop("string", "completed/open/incomplete или текст"),
+                "assignee": _prop("string", "Исполнитель задачи"),
+                "overdue_only": _prop("boolean", "Только просроченные задачи"),
+                "limit": _prop("integer", "Размер страницы"),
+                "cursor": _prop("string", "Cursor из предыдущего ответа"),
+            },
+            ["project_id"],
+        ),
+        (
+            "turboproject.get_project_metrics",
+            "Компактные метрики по ограниченному списку project_ids, не для полного портфеля.",
+            {
+                "project_ids": _prop("array", "До 20 ProjectFile.id"),
+                "metrics": _prop("array", "task_stats, overdue, resources, dates"),
+            },
+            ["project_ids"],
+        ),
+        (
+            "turboproject.get_overdue_projects",
+            "Агрегатор для вопроса 'какие проекты просрочены': считает delay_days и отдаёт компактный список.",
+            {
+                **filters,
+                "min_delay_days": _prop("integer", "Минимальная просрочка в днях"),
+                "scan_limit": _prop("integer", "Сколько проектов просканировать"),
+            },
+            None,
+        ),
+        (
+            "turboproject.get_projects_with_blocked_tasks",
+            "Агрегатор проектов с проблемными задачами; при отсутствии явного флага вернёт partial_result.",
+            {
+                **filters,
+                "blocked_days": _prop("integer", "Сколько дней просрочки считать блокировкой"),
+                "scan_limit": _prop("integer", "Сколько проектов сканировать"),
+            },
+            None,
+        ),
+        (
+            "turboproject.get_workload_summary",
+            "Сводка загрузки сотрудников по задачам и просрочкам.",
+            {
+                **filters,
+                "employee": _prop("string", "Фильтр по сотруднику"),
+                "scan_limit": _prop("integer", "Сколько проектов сканировать"),
+            },
+            None,
+        ),
+        (
+            "turboproject.get_project_portfolio_summary",
+            "Портфельная сводка по статусу, подразделению или руководителю.",
+            {
+                **filters,
+                "group_by": _prop("string", "status, department или owner"),
+            },
+            None,
+        ),
+    ]
+    return [
+        {
+            "name": name,
+            "description": description,
+            "execution": "server",
+            "input_schema": _turboproject_schema(properties, required),
+        }
+        for name, description, properties, required in items
     ]
 
 

@@ -55,6 +55,29 @@ class AttachmentMetaSchema(BaseModel):
     text_preview: str = ""
 
 
+class WorkflowFileSchema(BaseModel):
+    id: str
+    workflow_id: str = ""
+    run_id: str = ""
+    source: str = "user"
+    scope: str = "knowledge"
+    origin: str = ""
+    filename: str
+    mime_type: str = ""
+    kind: str = "text"
+    size: int = 0
+    sha256: str = ""
+    summary: str = ""
+    text_preview: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class WorkflowFilesResponse(BaseModel):
+    user_files: list[WorkflowFileSchema] = Field(default_factory=list)
+    agent_files: list[WorkflowFileSchema] = Field(default_factory=list)
+
+
 class WorkflowSchema(BaseModel):
     id: str
     title: str

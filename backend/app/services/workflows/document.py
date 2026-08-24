@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import mimetypes
 from pathlib import Path
 
@@ -25,8 +26,9 @@ TEXT_SUFFIXES = {
     ".rtf",
 }
 DOC_SUFFIXES = {".pdf", ".docx"}
+SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-SUPPORTED_SUFFIXES = TEXT_SUFFIXES | DOC_SUFFIXES | IMAGE_SUFFIXES
+SUPPORTED_SUFFIXES = TEXT_SUFFIXES | DOC_SUFFIXES | SPREADSHEET_SUFFIXES | IMAGE_SUFFIXES
 MAX_IMAGES = 5
 MAX_IMAGE_BYTES = 15 * 1024 * 1024
 
@@ -57,6 +59,9 @@ def load_attachment_bytes(name: str, raw: bytes) -> dict:
         kind = "text"
     elif suffix == ".docx":
         text = _read_docx_bytes(raw)
+        kind = "text"
+    elif suffix in SPREADSHEET_SUFFIXES:
+        text = _read_xlsx_bytes(raw)
         kind = "text"
     else:
         text = _read_text_bytes(raw)
@@ -163,6 +168,8 @@ def _guess_text_mime(suffix: str) -> str:
         ".markdown": "text/markdown",
         ".yaml": "text/yaml",
         ".yml": "text/yaml",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
     }.get(suffix, "text/plain")
 
 
@@ -190,8 +197,6 @@ def _read_pdf_bytes(raw: bytes) -> str:
 
 
 def _read_docx_bytes(raw: bytes) -> str:
-    import io
-
     try:
         import docx
     except ImportError as exc:
@@ -201,4 +206,26 @@ def _read_docx_bytes(raw: bytes) -> str:
         parts = [para.text for para in document.paragraphs]
     except Exception as exc:  # noqa: BLE001
         raise DocumentError(f"Не удалось разобрать DOCX: {exc}") from exc
+    return "\n".join(parts)
+
+
+def _read_xlsx_bytes(raw: bytes) -> str:
+    try:
+        import openpyxl
+    except ImportError as exc:
+        raise DocumentError("Для XLSX нужен openpyxl") from exc
+    try:
+        workbook = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        parts: list[str] = []
+        for sheet in workbook.worksheets:
+            parts.append(f"===== SHEET: {sheet.title} =====")
+            for row in sheet.iter_rows(values_only=True):
+                values = [str(cell).strip() if cell is not None else "" for cell in row]
+                while values and not values[-1]:
+                    values.pop()
+                if values:
+                    parts.append("\t".join(values))
+        workbook.close()
+    except Exception as exc:  # noqa: BLE001
+        raise DocumentError(f"Не удалось разобрать XLSX: {exc}") from exc
     return "\n".join(parts)

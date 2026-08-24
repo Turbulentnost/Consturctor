@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, LargeBinary, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -33,6 +33,40 @@ class Workflow(Base):
     last_result: Mapped[str] = mapped_column(Text, nullable=False, default="")
     branch: Mapped[str] = mapped_column(String(256), nullable=False, default="")
     pr_url: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class WorkflowFile(Base):
+    __tablename__ = "workflow_files"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_id: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="user", index=True)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False, default="knowledge", index=True)
+    origin: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    filename: Mapped[str] = mapped_column(String(512), nullable=False, default="file")
+    mime_type: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="text")
+    size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    extracted_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    file_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
