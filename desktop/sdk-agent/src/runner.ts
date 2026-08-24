@@ -163,6 +163,9 @@ function buildCustomTools(specs: ToolSpec[], design: boolean): Record<string, un
   for (const spec of specs) {
     const name = normalizeToolName(spec.name);
     if (!name || tools[name]) continue;
+    if (design && !isAskQuestion(name)) {
+      continue;
+    }
     if (isAskQuestion(name)) {
       tools.askQuestion = {
         description: spec.description || "Ask the desktop user a question and wait for the answer.",
@@ -317,12 +320,6 @@ async function runAgent(command: RunCommand): Promise<void> {
           status: event.status,
           arguments: args,
         });
-        if (event.name === "askQuestion") {
-          const { question, options } = questionPayload(args as Record<string, unknown>);
-          if (question) {
-            emit({ type: "question", question, options, arguments: args });
-          }
-        }
       } else if (event.type === "system") {
         const listed = Array.isArray(event.tools) ? event.tools.filter(Boolean) : [];
         emit({

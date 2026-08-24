@@ -365,6 +365,20 @@ def test_explicit_schedule_in_materials_skips_when_question() -> None:
     assert validation.ok
 
 
+def test_event_trigger_in_materials_skips_when_question() -> None:
+    from app.services.workflows.schedule_draft import WHEN_TO_RUN_QUESTION
+
+    validation = validate_draft(
+        attach_tool_candidates(_draft()),
+        materials=(
+            "В паспорте указан событийный триггер: событие вместо расписания. "
+            "Агент запускается при смене статуса этапа или нарушении SLA."
+        ),
+    )
+
+    assert all(issue.message != WHEN_TO_RUN_QUESTION for issue in validation.clarifications)
+
+
 def test_missing_business_param_is_clarify() -> None:
     draft = _draft()
     draft["required_clarifications"] = [

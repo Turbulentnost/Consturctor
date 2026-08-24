@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.api_client import WorkflowRecord
 from app.sdk_agent.tool_adapter import sdk_tool_specs
 
@@ -15,16 +17,89 @@ def format_tool_catalog(limit: int = 80) -> str:
     return "\n".join(lines) if lines else "- (catalog empty)"
 
 
+def inferred_design_answers(workflow: WorkflowRecord) -> list[tuple[str, str]]:
+    blob = "\n".join(
+        part
+        for part in (
+            workflow.notes or "",
+            workflow.document_text or "",
+            workflow.title or "",
+        )
+        if str(part or "").strip()
+    )
+    low = blob.casefold().replace("ё", "е")
+    answers: list[tuple[str, str]] = []
+    if re.search(r"событийн.{0,30}триггер|триггер.{0,30}событи|событие вместо расписания", low):
+        answers.append((
+            "Когда запускать агента?",
+            "событийный триггер из материалов",
+        ))
+    elif any(hint in low for hint in ("по кнопк", "вручную", "по запрос", "из чата", "только вручн")):
+        answers.append(("Когда запускать агента?", "ручной запуск из материалов"))
+    elif re.search(r"раз в день|ежедневн|каждый день|каждый час|раз в час|ежечасн", low):
+        answers.append(("Когда запускать агента?", "периодический запуск указан в материалах"))
+    recipient = _first_labeled_value(blob, ("получатель", "адресат", "кому отправлять"))
+    if recipient:
+        answers.append(("Кому отправлять результат?", recipient))
+    success = _first_labeled_value(blob, ("критерий успеха", "критерии успеха", "успешно если"))
+    if success:
+        answers.append(("По каким критериям считать результат успешным?", success))
+    return answers
+
+
+def _first_labeled_value(text: str, labels: tuple[str, ...]) -> str:
+    for line in (text or "").splitlines():
+        stripped = line.strip(" -\t")
+        if not stripped:
+            continue
+        folded = stripped.casefold().replace("ё", "е")
+        for label in labels:
+            if not folded.startswith(label):
+                continue
+            value = re.split(r"[:\-–]", stripped, maxsplit=1)
+            if len(value) == 2 and value[1].strip():
+                return value[1].strip()
+    return ""
+
+
+def _inferred_design_facts(workflow: WorkflowRecord) -> list[str]:
+    answers = inferred_design_answers(workflow)
+    facts: list[str] = []
+    when_answer = next((answer for question, answer in answers if "Когда" in question), "")
+    if "событийный" in when_answer:
+        facts.append(
+            "when_to_run: событийный триггер из материалов; не спрашивай расписание или частоту запуска."
+        )
+    elif "ручной" in when_answer:
+        facts.append("when_to_run: ручной запуск из материалов; не спрашивай расписание.")
+    elif when_answer:
+        facts.append("when_to_run: периодический запуск указан в материалах; не спрашивай расписание.")
+    for question, answer in answers:
+        if "Кому" in question:
+            facts.append(f"recipient: {answer}; не спрашивай получателя.")
+        elif "критериям" in question:
+            facts.append(f"success_criteria: {answer}; не спрашивай критерий успеха.")
+    if facts:
+        facts.append("Не добавляй эти параметры в required_clarifications.")
+    return facts
+
+
 def build_design_sdk_prompt(workflow: WorkflowRecord, design_prompt: str) -> str:
     prompt = (design_prompt or "").strip()
     catalog = format_tool_catalog()
+    inferred = _inferred_design_facts(workflow)
     header = [
         "Ты локальный Cursor SDK агент Constructor.",
         "Инструменты Constructor уже подключены как customTools (внутренний MCP custom-user-tools).",
         "Это не проектные MCP-серверы Cursor и не mcp.json репозитория.",
         "Не ищи MCP в проекте и не пиши, что MCP не найден: список инструментов ниже.",
-        "На этапе проектирования бизнес-инструменты не вызывай: только знай, какие есть.",
-        "Если не хватает расписания, периода, получателя или критерия успеха,",
+        "На этапе проектирования вызывай только askQuestion.",
+        "Не вызывай workspace.powershell_run, shell и другие бизнес-инструменты.",
+        "Список ниже — что будет доступно на пробном прогоне, не вызывай их сейчас.",
+        "Спрашивай только о параметрах, которые реально нельзя вывести из материалов.",
+        "Если в контексте есть событийный триггер, ручной запуск, период, получатель",
+        "или критерий успеха, считай это ответом и не задавай вопрос.",
+        "Если действительно не хватает расписания, периода, получателя или критерия успеха,",
         "вызови инструмент askQuestion из списка Constructor tools.",
         "askQuestion уже есть в этом списке: не ищи его в MCP и не описывай JSON-схему.",
         "В одном вызове askQuestion ровно один параметр и один вопрос.",
@@ -32,12 +107,17 @@ def build_design_sdk_prompt(workflow: WorkflowRecord, design_prompt: str) -> str
         "Не переформулируй вопрос, на который ответ уже получен.",
         "После ответа запиши значение в JSON (recipient, when_to_run, answers).",
         "В required_clarifications оставляй только то, на что ответа ещё нет.",
+        "Если вопросов нет или они уже закрыты материалами, сразу верни финальный JSON.",
+        "Не заканчивай проектирование текстом вроде 'уточнения не нужны' без JSON.",
         "Показывай ход проектирования коротко, по делу, шаг за шагом.",
         "Финальный ответ после вопросов должен содержать пригодный JSON-черновик по схеме ниже.",
         "",
         "Доступные инструменты Constructor:",
         catalog,
     ]
+    if inferred:
+        header.extend(["", "Уже выведено из материалов:"])
+        header.extend(f"- {item}" for item in inferred)
     if prompt:
         return "\n".join([*header, "", prompt])
     return build_sdk_prompt(

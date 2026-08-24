@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from app.config import DESKTOP_ROOT
-from app.sdk_agent.tool_adapter import invoke_sdk_tool, is_ask_question, sdk_tool_specs
+from app.sdk_agent.tool_adapter import (
+    invoke_sdk_tool,
+    is_ask_question,
+    sdk_design_tool_specs,
+    sdk_tool_specs,
+)
 from app.tools import ToolHostError
 
 DEFAULT_SDK_MODEL = "grok-4.6"
@@ -79,7 +84,13 @@ class CursorSdkBridge:
                     "model": model or os.getenv("CURSOR_SDK_MODEL", DEFAULT_SDK_MODEL),
                     "cwd": cwd or self._workspace_cwd(),
                     "mode": "design" if mode == "design" else "run",
-                    "tools": sdk_tool_specs() if tools is None else tools,
+                    "tools": (
+                        sdk_design_tool_specs()
+                        if tools is None and mode == "design"
+                        else sdk_tool_specs()
+                        if tools is None
+                        else tools
+                    ),
                     "workflowId": workflow_id,
                 },
             )

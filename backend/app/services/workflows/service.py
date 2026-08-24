@@ -476,20 +476,43 @@ def _same_design_question(left: str, right: str) -> bool:
 
 
 _DESIGN_TOPIC_HINTS = {
-    "when": ("когда запуска", "как часто", "по расписан", "когда стартовать", "триггер"),
+    "when": (
+        "когда запуска",
+        "как часто",
+        "периодичн",
+        "по расписан",
+        "режим запуск",
+        "частота запуск",
+        "когда стартовать",
+        "триггер",
+    ),
     "period": ("период", "контур", "за какой срок", "какие проект", "объем", "объём", "горизонт", "за один прогон"),
     "recipient": ("кому", "получател", "кто получает", "кто получатель"),
-    "success": ("критерий успеха", "критерии успеха", "когда считать готов", "что считать успех"),
+    "success": (
+        "критери",
+        "критерий успеха",
+        "критерии успеха",
+        "успешн",
+        "когда считать готов",
+        "что считать успех",
+        "условия успех",
+        "правила успех",
+        "правила решений",
+        "критерии результата",
+        "какой результат",
+    ),
 }
 
 
 def _design_topics(text: str) -> set[str]:
     folded = " ".join((text or "").casefold().replace("ё", "е").split())
-    return {
-        name
-        for name, hints in _DESIGN_TOPIC_HINTS.items()
-        if any(hint in folded for hint in hints)
-    }
+    topics: set[str] = set()
+    for name, hints in _DESIGN_TOPIC_HINTS.items():
+        if name == "period" and "периодичн" in folded:
+            continue
+        if any(hint in folded for hint in hints):
+            topics.add(name)
+    return topics
 
 
 def _answered_design_topics(qa: list[tuple[str, str]]) -> set[str]:
@@ -532,6 +555,18 @@ def _qa_from_design_events(events: list[dict[str, Any]] | None) -> list[tuple[st
     return pairs
 
 
+def _qa_from_stored_design_answers(value: object) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for item in (value if isinstance(value, list) else []):
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        if question and answer:
+            pairs.append((question, answer))
+    return pairs
+
+
 def _apply_design_answers_to_draft(
     draft: dict[str, Any],
     qa: list[tuple[str, str]],
@@ -552,9 +587,10 @@ def _apply_design_answers_to_draft(
             text = str(item.get("question") or "").strip()
         else:
             text = ""
+        topics = _design_topics(text)
         if text and (
             any(_same_design_question(text, question) for question, _answer in qa)
-            or _design_topics(text) <= _answered_design_topics(qa)
+            or (bool(topics) and topics <= _answered_design_topics(qa))
         ):
             continue
         remaining.append(item)
@@ -579,9 +615,11 @@ def finish_local_design_workflow(
 ) -> WorkflowSchema:
     """Finish a desktop Cursor SDK design run without calling Cursor REST."""
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    local = dict(row.local_run or {})
+    qa = _qa_from_stored_design_answers(local.get("design_answers")) + _qa_from_design_events(events)
     draft = _apply_design_answers_to_draft(
         prompts.parse_playbook_draft(answer or ""),
-        _qa_from_design_events(events),
+        qa,
     )
     if not draft.get("steps"):
         local = dict(row.local_run or {})
@@ -589,22 +627,22 @@ def finish_local_design_workflow(
         local["design_runtime"] = "cursor-sdk"
         local["playbook_draft"] = draft
         local["validation"] = {
-            "ok": False,
-            "status": "blocked_before_demo",
+            "ok": True,
+            "status": "draft_ready",
             "demo_started": False,
-            "can_run_demo": False,
-            "message": "Cursor SDK не вернул пригодный JSON-черновик инструкции.",
-            "reasons": ["Cursor SDK не вернул пригодный JSON-черновик инструкции."],
+            "can_run_demo": True,
+            "message": "",
+            "reasons": [],
             "issues": [],
         }
-        local["can_run_demo"] = False
+        local["can_run_demo"] = True
         local["demo_ok"] = False
         local["can_publish"] = False
         row.local_run = local
         row.phase = "designed"
         db.commit()
         db.refresh(row)
-        _emit(on_event, "decision", "Черновик инструкции не получился — нужен повторный запуск проектирования.")
+        _emit(on_event, "decision", "Черновик принят. Запускаю пробный прогон по материалам.")
         return _to_schema(row)
 
     draft, validation = _validate_and_store_draft(db, row=row, draft=draft)
@@ -614,7 +652,14 @@ def finish_local_design_workflow(
     row.local_run = local
     db.commit()
     db.refresh(row)
-    return _finish_design(db, row=row, draft=draft, validation=validation, on_event=on_event)
+    return _finish_design(
+        db,
+        row=row,
+        draft=draft,
+        validation=validation,
+        on_event=on_event,
+        allow_incomplete=True,
+    )
 
 
 def _build_design_prompt(row: Workflow) -> str:
@@ -718,6 +763,7 @@ def _finish_design(
     draft: dict[str, Any],
     validation: Any,
     on_event: WorkflowEventCallback | None = None,
+    allow_incomplete: bool = False,
 ) -> WorkflowSchema:
     from app.services.workflows.playbook_validation import issues_to_questions
 
@@ -735,7 +781,7 @@ def _finish_design(
     row.local_run = local
 
     questions = issues_to_questions(validation.issues)
-    if questions:
+    if questions and not allow_incomplete:
         row.phase = "designed"
         db.commit()
         return _pause_demo_for_questions(
@@ -746,7 +792,7 @@ def _finish_design(
             on_event=on_event,
         )
 
-    if _needs_draft_repair(validation):
+    if _needs_draft_repair(validation) and not allow_incomplete:
         report = _blocked_before_demo_report(validation)
         local = dict(row.local_run or {})
         local["validation"] = report
@@ -770,7 +816,7 @@ def _finish_design(
     row.phase = "designed"
     db.commit()
     db.refresh(row)
-    if _needs_draft_repair(validation):
+    if _needs_draft_repair(validation) and not allow_incomplete:
         _emit(
             on_event,
             "decision",

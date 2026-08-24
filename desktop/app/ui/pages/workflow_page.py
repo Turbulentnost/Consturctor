@@ -200,8 +200,9 @@ def _extract_json_object(text: str) -> dict | None:
     blob = fence.group(1).strip() if fence else ""
     if not blob:
         start = cleaned.find("{")
-        if start >= 0:
-            blob = cleaned[start:]
+        end = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            blob = cleaned[start : end + 1]
     if not blob:
         return None
     try:
@@ -283,13 +284,17 @@ def _local_design_prompt_for_record(record: WorkflowRecord) -> str:
         "Бизнес-задачу сейчас не выполняй: только проектирование инструкции.\n"
         "Верни JSON-объект с полями goal, inputs, required_clarifications, result, "
         "recipient, confirmation_points, steps.\n"
-        "Если в материалах нет расписания, периода, получателя или критерия успеха, "
+        "Спрашивай только о параметрах, которые реально нельзя вывести из материалов. "
+        "Если в контексте есть событийный триггер, ручной запуск, период, получатель "
+        "или критерий успеха, считай это ответом и не задавай вопрос. "
+        "Если действительно не хватает расписания, периода, получателя или критерия успеха, "
         "вызови инструмент askQuestion из Constructor tools и дождись ответа. "
         "В одном вызове ровно один параметр: расписание, период, получатель или критерий успеха. "
         "Не склеивай несколько вопросов и не переформулируй уже отвеченные. "
         "Не ищи askQuestion в MCP. "
         "Уже полученные ответы запиши в recipient/when_to_run/answers "
-        "и не клади их снова в required_clarifications.\n"
+        "и не клади их снова в required_clarifications. "
+        "Если вопросов нет, сразу верни JSON, а не новый текстовый план.\n"
         "Каждый step должен иметь id, title, action, done_when, on_empty, on_error.\n"
         f"Название агента: {title}\n\n"
         "Материалы:\n"
@@ -309,6 +314,9 @@ def _draft_from_sdk_answer(answer: str) -> dict:
                 "id": str(raw.get("id") or f"s{index}").strip(),
                 "title": str(raw.get("title") or action or f"Шаг {index}").strip(),
                 "action": action,
+                "system": str(raw.get("system") or "").strip(),
+                "entity": str(raw.get("entity") or "").strip(),
+                "operation": str(raw.get("operation") or "").strip(),
                 "done_when": str(raw.get("done_when") or raw.get("doneWhen") or "").strip(),
                 "on_empty": str(raw.get("on_empty") or raw.get("onEmpty") or "").strip(),
                 "on_error": str(raw.get("on_error") or raw.get("onError") or "").strip(),
@@ -328,6 +336,39 @@ def _draft_from_sdk_answer(answer: str) -> dict:
         ],
         "steps": steps,
     }
+
+
+def _sdk_design_transcript(answer: str, events: list[dict] | None) -> str:
+    parts: list[str] = []
+    for raw in events or []:
+        if not isinstance(raw, dict):
+            continue
+        event_type = str(raw.get("type") or "")
+        if event_type not in {"assistant", "final", "thinking"}:
+            continue
+        text = str(raw.get("text") or raw.get("message") or raw.get("answer") or "").strip()
+        if text:
+            parts.append(text)
+    if (answer or "").strip():
+        parts.append(str(answer).strip())
+    return "\n\n".join(parts).strip()
+
+
+def _sdk_design_repair_prompt(base_prompt: str, transcript: str) -> str:
+    return (
+        "Предыдущий проход проектирования уже собрал материалы и решил, что дополнительных вопросов нет.\n"
+        "Не начинай проектирование заново, не вызывай askQuestion и не пиши объяснения.\n"
+        "Верни ТОЛЬКО один валидный JSON-объект с полями:\n"
+        "goal, inputs, required_clarifications, when_to_run, result, recipient, "
+        "confirmation_points, steps.\n"
+        "Если вопрос уже закрыт материалами или ответами, не добавляй его в required_clarifications.\n"
+        "Каждый step должен иметь id, title, action, done_when, on_empty, on_error.\n\n"
+        "===== ИСХОДНОЕ ЗАДАНИЕ =====\n"
+        f"{base_prompt[:12000]}\n"
+        "===== ХОД ПРОЕКТИРОВАНИЯ =====\n"
+        f"{transcript[:8000]}\n"
+        "===== JSON ====="
+    )
 
 
 def _format_plan_steps(plan: WorkflowPlan | None) -> str:
@@ -390,7 +431,10 @@ _QUESTION_TOPIC_HINTS = {
     "when": (
         "когда запуска",
         "как часто",
+        "периодичн",
         "по расписан",
+        "режим запуск",
+        "частота запуск",
         "когда стартовать",
         "триггер",
         "когда запускать",
@@ -413,10 +457,17 @@ _QUESTION_TOPIC_HINTS = {
         "кто получатель",
     ),
     "success": (
+        "критери",
         "критерий успеха",
         "критерии успеха",
+        "успешн",
         "когда считать готов",
         "что считать успех",
+        "условия успех",
+        "правила успех",
+        "правила решений",
+        "критерии результата",
+        "какой результат",
         "признак успеха",
     ),
 }
@@ -432,11 +483,13 @@ def question_topics(text: str) -> frozenset[str]:
     folded = _folded_question(text)
     if not folded:
         return frozenset()
-    return frozenset(
-        name
-        for name, hints in _QUESTION_TOPIC_HINTS.items()
-        if any(hint in folded for hint in hints)
-    )
+    topics: set[str] = set()
+    for name, hints in _QUESTION_TOPIC_HINTS.items():
+        if name == "period" and "периодичн" in folded:
+            continue
+        if any(hint in folded for hint in hints):
+            topics.add(name)
+    return frozenset(topics)
 
 
 def split_design_questions(
@@ -522,6 +575,44 @@ def qa_from_sdk_events(events: list[dict] | None) -> list[tuple[str, str]]:
     return pairs
 
 
+def merge_design_answers(existing: object, qa: list[tuple[str, str]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for item in (existing if isinstance(existing, list) else []):
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        if question and answer:
+            rows.append({"question": question, "answer": answer})
+    for question, answer in qa:
+        question = (question or "").strip()
+        answer = (answer or "").strip()
+        if not question or not answer:
+            continue
+        replaced = False
+        for row in rows:
+            if _same_feed_question(row["question"], question) or (question_topics(row["question"]) & question_topics(question)):
+                row["question"] = question
+                row["answer"] = answer
+                replaced = True
+                break
+        if not replaced:
+            rows.append({"question": question, "answer": answer})
+    return rows
+
+
+def qa_from_design_answers(value: object) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for item in (value if isinstance(value, list) else []):
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        if question and answer:
+            pairs.append((question, answer))
+    return pairs
+
+
 def apply_sdk_answers_to_draft(draft: dict, qa: list[tuple[str, str]]) -> dict:
     updated = dict(draft or {})
     if not qa:
@@ -545,6 +636,44 @@ def apply_sdk_answers_to_draft(draft: dict, qa: list[tuple[str, str]]) -> dict:
         if "recipient" in topics:
             updated["recipient"] = str(updated.get("recipient") or answer).strip()
     return updated
+
+
+def design_ready_for_demo(record: WorkflowRecord | None) -> bool:
+    if record is None:
+        return False
+    local = record.local_run or {}
+    runtime = str(local.get("design_runtime") or local.get("runtime") or "").strip()
+    if runtime == "cursor-sdk" and record.phase in {"designed", "designing", "clarify"}:
+        return True
+    validation = local.get("validation") if isinstance(local.get("validation"), dict) else {}
+    if validation.get("status") == "blocked_before_demo":
+        return False
+    if validation.get("can_run_demo") is False:
+        return False
+    return record.phase == "designed"
+
+
+def record_ready_for_sdk_demo(record: WorkflowRecord) -> WorkflowRecord:
+    local = dict(record.local_run or {})
+    local["runtime"] = "cursor-sdk"
+    local["design_runtime"] = "cursor-sdk"
+    validation = dict(local.get("validation") or {}) if isinstance(local.get("validation"), dict) else {}
+    validation.update(
+        {
+            "ok": True,
+            "status": "draft_ready",
+            "demo_started": False,
+            "can_run_demo": True,
+            "reasons": [],
+        }
+    )
+    local["validation"] = validation
+    local["can_run_demo"] = True
+    plan = record.plan
+    if plan is not None:
+        plan = replace(plan, open_questions=[])
+    phase = "designed" if record.phase in {"document", "new", "designing", "clarify", ""} else record.phase
+    return replace(record, phase=phase, local_run=local, plan=plan)
 
 
 def _keep_newer_phase(current: WorkflowRecord, saved: WorkflowRecord) -> WorkflowRecord:
@@ -1905,16 +2034,17 @@ class WorkflowPage(QWidget):
     def _demo_already_ran(self, record: WorkflowRecord | None = None) -> bool:
         return _demo_already_ran_state(self._validation_state(record))
 
+    def _sdk_design_runtime(self, record: WorkflowRecord | None = None) -> bool:
+        current = record or self._record
+        local = (current.local_run if current else None) or {}
+        runtime = str(local.get("design_runtime") or local.get("runtime") or "").strip()
+        return runtime == "cursor-sdk"
+
     def _can_run_demo(self, record: WorkflowRecord | None = None) -> bool:
         current = record or self._record
-        if current is None or self._draft_blocked_before_demo(current):
+        if current is None or self._demo_already_ran(current):
             return False
-        if self._demo_already_ran(current):
-            return False
-        validation = self._validation_state(current)
-        if validation.get("can_run_demo") is False:
-            return False
-        return current.phase == "designed"
+        return design_ready_for_demo(current)
 
     def _draft_blocker_text(self, record: WorkflowRecord) -> str:
         validation = self._validation_state(record)
@@ -2383,7 +2513,11 @@ class WorkflowPage(QWidget):
                 self._expanded_keys.add(target.event_key)
             self._rebuild_feed()
         elif key == "run_plan":
-            if self._record is not None and self._draft_blocked_before_demo():
+            if (
+                self._record is not None
+                and self._draft_blocked_before_demo()
+                and not self._sdk_design_runtime()
+            ):
                 self._on_plan()
             else:
                 self._on_execute()
@@ -2784,12 +2918,11 @@ class WorkflowPage(QWidget):
                 self._tick_activity()
                 return
             status = str(payload.get("status") or "running").strip() or "running"
-            detail = ""
             if status in {"blocked_in_design", "skipped"}:
-                detail = "На этапе проектирования инструмент не вызывается."
-            else:
-                args = payload.get("arguments")
-                detail = _compact_payload(args, limit=600) if args else "Выполняется..."
+                self._tick_activity()
+                return
+            args = payload.get("arguments")
+            detail = _compact_payload(args, limit=600) if args else "Выполняется..."
             self._upsert_live_tool(name, status=status, detail=detail)
             self._tick_activity()
             return
@@ -2807,16 +2940,8 @@ class WorkflowPage(QWidget):
                 result = payload.get("result")
                 error = str(payload.get("error") or "").strip()
                 if status in {"skipped", "blocked_in_design"} or payload.get("skipped"):
-                    detail = (
-                        str((result or {}).get("text") or "").strip()
-                        if isinstance(result, dict)
-                        else ""
-                    )
-                    self._upsert_live_tool(
-                        name.strip() or "инструмент",
-                        status="skipped",
-                        detail=detail or "На этапе проектирования инструмент не вызывается.",
-                    )
+                    self._tick_activity()
+                    return
                 else:
                     detail = error or _compact_payload(result)
                     self._upsert_live_tool(
@@ -3016,44 +3141,35 @@ class WorkflowPage(QWidget):
         if isinstance(result, WorkflowRecord):
             persisted = self._persist_passport_runtime(result)
             self._record = _keep_newer_phase(result, persisted)
+            if label.startswith("Планирование"):
+                self._record = record_ready_for_sdk_demo(self._record)
+            current = self._record
             set_host_workflow_id(self, self._record.id)
             self._pending_paths = []
-            self._workflow_title = result.title
-            self._notes = result.notes or self._notes
+            self._workflow_title = current.title
+            self._notes = current.notes or self._notes
             self._render_chips()
-            if label.startswith("Планирование") or label.startswith("Пробный"):
-                unanswered = result.plan.unanswered() if result.plan else []
-                unanswered = [
-                    item
-                    for item in unanswered
-                    if not _answered_text_for(self._sdk_answered, item.question)
-                ]
-                if unanswered:
-                    self._push_event("Агент", unanswered[0].question)
-                    self._push_question_if_new(unanswered[0].question)
-                elif self._draft_blocked_before_demo(result):
-                    self._show_demo_result(result)
-                elif result.phase == "designed" and self._can_run_demo(result):
-                    self._show_design_result(result)
-                else:
-                    self._show_demo_result(result)
+            if label.startswith("Планирование"):
+                self._show_design_result(current)
+            elif label.startswith("Пробный"):
+                self._show_demo_result(current)
             elif label.startswith("Уточнение"):
-                unanswered = result.plan.unanswered() if result.plan else []
+                unanswered = current.plan.unanswered() if current.plan else []
                 if unanswered:
                     self._push_event("Агент", "Принял ответ, следующий вопрос.")
                     self._push_question_if_new(unanswered[0].question)
                 else:
-                    self._show_demo_result(result)
+                    self._show_demo_result(current)
             elif label.startswith("Реализация"):
-                self._show_demo_result(result)
+                self._show_demo_result(current)
             elif label.startswith("Публикация"):
                 self._push_event(
                     "Сохранено",
                     "Агент опубликован в «Мои агенты».",
                 )
-            self.saved.emit(result.id)
-            if result.phase == "done":
-                self.saved_record.emit(result)
+            self.saved.emit(current.id)
+            if current.phase == "done":
+                self.saved_record.emit(current)
             self._render_all()
         elif isinstance(result, tuple) and len(result) == 2:
             dest_dir, files = result
@@ -3127,12 +3243,12 @@ class WorkflowPage(QWidget):
             )
 
     def _show_design_result(self, result: WorkflowRecord) -> None:
+        if self._can_run_demo(result) or self._sdk_design_runtime(result):
+            self._on_execute()
+            return
         if self._draft_blocked_before_demo(result):
             self._execute_started = False
             self._show_demo_result(result)
-            return
-        if result.phase == "designed" and self._can_run_demo(result):
-            self._on_execute()
             return
         self._show_demo_result(result)
 
@@ -3534,15 +3650,38 @@ class WorkflowPage(QWidget):
             return record
         return replace(record, plan=replace(record.plan, open_questions=questions))
 
+    def _store_design_answers(
+        self,
+        workflow_id: str,
+        record: WorkflowRecord,
+        qa: list[tuple[str, str]],
+    ) -> WorkflowRecord:
+        if not qa:
+            return record
+        local = dict(record.local_run or {})
+        local["runtime"] = str(local.get("runtime") or "cursor-sdk")
+        local["design_runtime"] = "cursor-sdk"
+        local["design_answers"] = merge_design_answers(local.get("design_answers"), qa)
+        try:
+            saved = self._api.update_workflow_local_run(workflow_id, local)
+        except ApiError:
+            return replace(record, local_run=local)
+        return _keep_newer_phase(record, saved)
+
     def _design_with_sdk(self, workflow_id: str) -> WorkflowRecord:
         events: list[dict] = []
         try:
             from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
-            from app.sdk_agent.prompt import build_design_sdk_prompt
+            from app.sdk_agent.prompt import build_design_sdk_prompt, inferred_design_answers
 
             bridge = CursorSdkBridge()
             bridge.check_ready()
             record = self._api.get_workflow(workflow_id)
+            self._sdk_answered = merge_design_answers(
+                (record.local_run or {}).get("design_answers"),
+                inferred_design_answers(record),
+            )
+            self._sdk_answered = qa_from_design_answers(self._sdk_answered)
             try:
                 design_prompt = self._api.local_design_prompt(workflow_id)
             except ApiError as exc:
@@ -3574,16 +3713,21 @@ class WorkflowPage(QWidget):
                 elif event_type in {"status", "decision", "progress", "error", "thinking"}:
                     self._stream_event.emit(event_type, text)
 
+            sdk_prompt = build_design_sdk_prompt(record, design_prompt)
             result = bridge.run(
-                prompt=build_design_sdk_prompt(record, design_prompt),
+                prompt=sdk_prompt,
                 workflow_id=workflow_id,
                 mode="design",
                 on_event=on_sdk_event,
                 on_question=self._wait_sdk_answer,
             )
             answer = str(result.get("answer") or "").strip()
-            qa = list(self._sdk_answered) or qa_from_sdk_events(events)
-            draft = apply_sdk_answers_to_draft(_draft_from_sdk_answer(answer), qa)
+            stored_qa = qa_from_design_answers((record.local_run or {}).get("design_answers"))
+            fresh_qa = list(self._sdk_answered) or qa_from_sdk_events(events)
+            qa = stored_qa + fresh_qa
+            record = self._store_design_answers(workflow_id, record, qa)
+            transcript = _sdk_design_transcript(answer, events)
+            draft = apply_sdk_answers_to_draft(_draft_from_sdk_answer(transcript), qa)
             patched = json.dumps(draft, ensure_ascii=False) if draft.get("steps") else answer
             try:
                 finished = self._api.finish_local_design_workflow(
@@ -3591,27 +3735,18 @@ class WorkflowPage(QWidget):
                     answer=patched,
                     events=events,
                 )
-                return self._close_answered_plan_questions(finished, qa)
+                return record_ready_for_sdk_demo(
+                    self._close_answered_plan_questions(finished, qa)
+                )
             except ApiError as exc:
                 if exc.status_code not in {404, 405}:
                     raise
                 local = dict(record.local_run or {})
-                local["runtime"] = "cursor-sdk"
-                local["design_runtime"] = "cursor-sdk"
                 local["playbook_draft"] = draft
-                local["validation"] = {
-                    "ok": bool(draft.get("steps")),
-                    "status": "draft_ready" if draft.get("steps") else "blocked_before_demo",
-                    "demo_started": False,
-                    "can_run_demo": bool(draft.get("steps")),
-                    "issues": [],
-                    "reasons": [] if draft.get("steps") else ["Cursor SDK не вернул JSON-черновик."],
-                }
-                local["can_run_demo"] = bool(draft.get("steps"))
                 local["demo_ok"] = False
                 local["can_publish"] = False
                 saved = self._api.update_workflow_local_run(workflow_id, local)
-                return replace(saved, phase="designed", local_run=local)
+                return record_ready_for_sdk_demo(replace(saved, local_run=local))
         except CursorSdkUnavailable:
             return self._api.stream_plan_workflow(
                 workflow_id,
@@ -3691,7 +3826,11 @@ class WorkflowPage(QWidget):
             pass
 
     def _on_run_clicked(self) -> None:
-        if self._record is not None and self._draft_blocked_before_demo():
+        if (
+            self._record is not None
+            and self._draft_blocked_before_demo()
+            and not self._sdk_design_runtime()
+        ):
             self._push_event("Черновик", "Отправляю черновик на повторное проектирование…")
             self._run_btn.setEnabled(False)
             self._run_btn.setText("Исправляю…")

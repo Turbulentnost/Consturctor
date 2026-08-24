@@ -39,6 +39,10 @@ def is_ask_question(name: str) -> bool:
     return folded in {"askquestion", "ask_question"}
 
 
+def sdk_design_tool_specs() -> list[dict[str, Any]]:
+    return [dict(ASK_QUESTION_SPEC)]
+
+
 def sdk_tool_specs() -> list[dict[str, Any]]:
     specs: list[dict[str, Any]] = [dict(ASK_QUESTION_SPEC)]
     for item in list_desktop_tools():

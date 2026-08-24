@@ -79,6 +79,8 @@ def explicit_when_to_run(*parts: str) -> bool:
         hint = _passport_trigger_line(blob)
         if hint and _parse_trigger_hint(hint) is not None:
             return True
+    if re.search(r"событийн.{0,30}триггер|триггер.{0,30}событи|событие вместо расписания", low):
+        return True
     if _is_explicit_event_condition(blob) and (
         len(low) < 160 or _event_is_scheduled(low)
     ):

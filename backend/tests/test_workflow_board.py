@@ -174,6 +174,55 @@ def test_finish_local_design_workflow_stores_sdk_draft() -> None:
     assert result.local_run["playbook_draft"]["steps"]
 
 
+def test_finish_local_design_allows_demo_without_vocabulary_fields() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    row = db.get(Workflow, workflow_id)
+    assert row is not None
+    row.phase = "new"
+    row.notes = "Событийный триггер: событие вместо расписания. Получатель: руководитель проекта."
+    db.commit()
+
+    result = finish_local_design_workflow(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        answer=(
+            '{"goal":"Проверять сроки проектов",'
+            '"recipient":"руководитель проекта",'
+            '"when_to_run":"событийный триггер из материалов",'
+            '"required_clarifications":[],'
+            '"steps":[{"id":"s1","title":"Проверить проекты","action":"list",'
+            '"done_when":"есть список","on_empty":"сообщить","on_error":"сообщить"}]}'
+        ),
+    )
+
+    assert result.phase == "designed"
+    assert result.local_run["validation"]["can_run_demo"] is True
+    assert result.local_run["validation"]["status"] == "draft_ready"
+
+
+def test_finish_local_design_allows_demo_without_json_steps() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    row = db.get(Workflow, workflow_id)
+    assert row is not None
+    row.phase = "new"
+    row.notes = "Событийный триггер: событие вместо расписания."
+    db.commit()
+
+    result = finish_local_design_workflow(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        answer="Уточнения не нужны. Триггер, получатель и результат уже есть в паспорте.",
+    )
+
+    assert result.phase == "designed"
+    assert result.local_run["can_run_demo"] is True
+    assert result.local_run["validation"]["status"] == "draft_ready"
+
+
 def test_finish_local_design_uses_askquestion_answers() -> None:
     db = _session()
     user_id, workflow_id = _seed(db)
@@ -233,6 +282,45 @@ def test_finish_local_design_uses_askquestion_answers() -> None:
     assert "только вручную из чата" in str(draft.get("answers") or "")
     open_qs = result.plan.open_questions if result.plan else []
     assert all("Когда запускать агент?" not in (item.question or "") for item in open_qs)
+
+
+def test_finish_local_design_uses_stored_design_answers() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    row = db.get(Workflow, workflow_id)
+    assert row is not None
+    row.phase = "new"
+    row.notes = "Нужно проверять сроки проектов"
+    row.local_run = {
+        "design_answers": [
+            {"question": "Когда запускать агент?", "answer": "только вручную из чата"},
+            {"question": "Кто получает отчёт?", "answer": "руководитель проекта"},
+        ]
+    }
+    db.commit()
+
+    result = finish_local_design_workflow(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        answer=(
+            '{"goal":"Проверять сроки проектов",'
+            '"recipient":"",'
+            '"required_clarifications":['
+            '{"question":"Как часто стартовать этого агента?","options":["ежедневно","вручную"]},'
+            '{"question":"Кто получает итоговый отчёт?","options":["руководитель","куратор"]}'
+            "],"
+            '"steps":[{"id":"s1","title":"Собрать проекты","system":"turboproject",'
+            '"entity":"project","operation":"list","done_when":"Есть список проектов",'
+            '"on_empty":"Сообщить, что проектов нет","on_error":"Показать ошибку"}],'
+            '"result":"Список рисков"}'
+        ),
+    )
+
+    draft = result.local_run["playbook_draft"]
+    assert draft["required_clarifications"] == []
+    assert draft["recipient"] == "руководитель проекта"
+    assert "только вручную из чата" in str(draft.get("answers") or "")
 
 
 def test_board_expands_interval_across_week() -> None:
