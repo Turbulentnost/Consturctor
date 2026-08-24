@@ -10,6 +10,11 @@ def test_classify_board_updated() -> None:
     assert classify_ws_payload({"type": "notification"}) == "notification"
     assert classify_ws_payload({"title": "Ping"}) == "notification"
     assert classify_ws_payload({"type": "pong"}) == "ignore"
+    assert classify_ws_payload({"type": "chat_message"}) == "chat"
+    assert classify_ws_payload({"type": "chat_receipt"}) == "chat"
+    assert classify_ws_payload({"type": "presence"}) == "chat"
+    assert classify_ws_payload({"type": "ticket_updated"}) == "chat"
+    assert classify_ws_payload({"type": "thread_opened"}) == "chat"
 
 
 def test_parse_live_board_payload() -> None:

@@ -19,6 +19,11 @@ from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
 _AVATAR_SIZE = 42
 _BELL_SIZE = 36
 _HEADER_WIDTH = 348
+_STATUS_COLORS = {
+    "online": QColor("#2ECC71"),
+    "busy": QColor("#E67E22"),
+    "away": QColor("#95A5A6"),
+}
 _DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
 _HEADER_POSITION_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("комарков", "помощник председателя совета директоров"),
@@ -62,6 +67,7 @@ class RoundAvatarButton(QToolButton):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pixmap = QPixmap()
+        self._activity = "online"
         self.setFixedSize(_AVATAR_SIZE, _AVATAR_SIZE)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -88,6 +94,10 @@ class RoundAvatarButton(QToolButton):
         self._pixmap = pixmap
         self.update()
 
+    def set_activity(self, status: str) -> None:
+        self._activity = status or "online"
+        self.update()
+
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -112,6 +122,10 @@ class RoundAvatarButton(QToolButton):
 
         p.setPen(QColor(6, 72, 61, 60))
         p.drawEllipse(rect)
+        dot = QRectF(rect.right() - 11, rect.bottom() - 11, 10, 10)
+        p.setBrush(_STATUS_COLORS.get(self._activity, _STATUS_COLORS["online"]))
+        p.setPen(QPen(QColor("#FAFCFB"), 2))
+        p.drawEllipse(dot)
         p.end()
 
 
@@ -251,9 +265,10 @@ class UserMenuHeader(QWidget):
     def set_logout_visible(self, visible: bool) -> None:
         self._logout_action.setVisible(visible)
 
-    def set_user(self, *, fio: str, position: str = "") -> None:
+    def set_user(self, *, fio: str, position: str = "", activity_status: str = "online") -> None:
         self._fio.setText(fio or "—")
         self._position.setText(_header_position(fio, position))
+        self.avatar.set_activity(activity_status)
 
     def set_avatar_pixmap(self, pixmap: QPixmap | None) -> None:
         if pixmap is None or pixmap.isNull():

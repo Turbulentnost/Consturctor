@@ -31,6 +31,8 @@ class UserProfile:
     avatar_url: str | None = None
     can_change_department: bool = True
     department_change_available_at: datetime | None = None
+    activity_status: str = "online"
+    is_support: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -2560,6 +2562,8 @@ class ApiClient:
             avatar_url=str(avatar) if avatar else None,
             can_change_department=bool(data.get("can_change_department", True)),
             department_change_available_at=available_at,
+            activity_status=str(data.get("activity_status") or "online"),
+            is_support=bool(data.get("is_support")),
         )
 
     def invoke_server_tool(

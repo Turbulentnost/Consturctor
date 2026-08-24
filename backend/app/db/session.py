@@ -24,6 +24,7 @@ def init_db() -> None:
     from app.models import trigger as _trigger  # noqa: F401
     from app.models import user as _user  # noqa: F401
     from app.models import workflow as _workflow  # noqa: F401
+    from app.modules.chat import models as _chat  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
@@ -59,6 +60,10 @@ def _ensure_columns() -> None:
             )
         if "department" not in existing:
             alters.append("ADD COLUMN department VARCHAR(512) NOT NULL DEFAULT ''")
+        if "activity_status" not in existing:
+            alters.append("ADD COLUMN activity_status VARCHAR(16) NOT NULL DEFAULT 'online'")
+        if "is_support" not in existing:
+            alters.append("ADD COLUMN is_support BOOLEAN NOT NULL DEFAULT FALSE")
         if existing and "fio" not in existing:
             alters.append("ADD COLUMN fio VARCHAR(512) NOT NULL DEFAULT ''")
         if existing:

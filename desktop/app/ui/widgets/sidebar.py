@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWi
 from app.ui.theme import (
     COLOR_ACTIVE_BG,
     COLOR_ACTIVE_FG,
+    ICON_CHAT,
     MINT,
     MINT_SOFT,
     NAV_ITEM_HEIGHT,
@@ -33,6 +34,7 @@ from app.ui.theme import (
     TEXT_MUTED,
     app_font,
     circular_pixmap,
+    nerd_font,
 )
 
 SIDEBAR_GREEN = SIDEBAR_MIDDLE
@@ -86,7 +88,9 @@ def _load_nav_icon(filename: str) -> QPixmap:
 
 def _load_icon_pair(kind: str) -> tuple[QPixmap, QPixmap]:
     """Return (inactive/белый*, active/серый*)."""
-    stem = _ICON_STEMS[kind]
+    stem = _ICON_STEMS.get(kind)
+    if not stem:
+        return QPixmap(), QPixmap()
     white_name = f"белый{stem}.png"
     grey_name = f"серый{stem}.png"
     # Active / pressed → серый*
@@ -188,7 +192,7 @@ class NavigationItem(QWidget):
 
         p.fillPath(path, fill)
         icon_x = rect.center().x() if self._collapsed else rect.left() + 18
-        self._draw_icon(p, icon_x, rect.center().y())
+        self._draw_icon(p, icon_x, rect.center().y(), text)
         if not self._collapsed:
             # Integer text box keeps glyphs on the pixel grid (less blur than QRectF).
             p.setPen(text)
@@ -201,11 +205,18 @@ class NavigationItem(QWidget):
             )
         p.end()
 
-    def _draw_icon(self, p: QPainter, cx: float, cy: float) -> None:
+    def _draw_icon(self, p: QPainter, cx: float, cy: float, color: QColor) -> None:
         # Pressed or selected → серый*; otherwise → белый*
         use_active = self._active or self._pressed
         icon = self._icon_active if use_active else self._icon_inactive
         if icon.isNull():
+            p.setPen(color)
+            p.setFont(nerd_font(16))
+            p.drawText(
+                QRectF(cx - 12, cy - 12, 24, 24),
+                int(Qt.AlignmentFlag.AlignCenter),
+                ICON_CHAT,
+            )
             return
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         x = int(cx - icon.width() / 2)
@@ -224,6 +235,7 @@ class GlassSidebar(QWidget):
             NavItem("agents", "Мои агенты", "home"),
             NavItem("kpi", "KPI", "kpi"),
             NavItem("dashboard", "Мой дашборд", "dashboard"),
+            NavItem("chat", "Чат", "chat"),
         ]
         self._active_key = "create"
         self._collapsed = False

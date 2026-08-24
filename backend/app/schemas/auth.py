@@ -16,6 +16,8 @@ class UserOut(BaseModel):
     avatar_url: str | None = None
     can_change_department: bool = True
     department_change_available_at: datetime | None = None
+    activity_status: str = "online"
+    is_support: bool = False
 
 
 class LoginResponse(BaseModel):

@@ -52,6 +52,18 @@ async def login(body: LoginRequest) -> LoginResponse:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
+@router.patch("/me/activity", response_model=dict)
+async def update_my_activity(
+    body: dict,
+    auth: AuthContext = Depends(get_current_user),
+) -> dict:
+    from app.modules.chat.bus.producer import enqueue_command
+
+    status = str((body or {}).get("status") or "")
+    client_id = enqueue_command({"type": "set_activity", "user_id": auth.user_id, "status": status})
+    return {"accepted": True, "client_id": client_id}
+
+
 @router.get("/me", response_model=UserOut)
 async def me(auth: AuthContext = Depends(get_current_user)) -> UserOut:
     try:

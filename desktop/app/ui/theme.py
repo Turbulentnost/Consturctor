@@ -42,7 +42,13 @@ CONTENT_PADDING_X = 36
 CONTENT_PADDING_TOP = 30
 
 FONT_FAMILY = "Manrope"
+NERD_FAMILY = "Symbols Nerd Font"
 _FALLBACK_FAMILY = "Segoe UI"
+ICON_TIMER = "\uf252"
+ICON_CHECK = "\uf00c"
+ICON_CHECKS = "\uf14a"
+ICON_FAIL = "\uf06a"
+ICON_CHAT = "\uf086"
 
 try:
     from app.config import bundle_path
@@ -52,9 +58,23 @@ except Exception:  # pragma: no cover
     _ASSETS = Path(__file__).resolve().parents[2] / "assets" / "fonts"
 
 
+def _load_nerd_font() -> None:
+    global NERD_FAMILY
+    nerd = _ASSETS / "SymbolsNerdFont-Regular.ttf"
+    if not nerd.exists():
+        return
+    nerd_id = QFontDatabase.addApplicationFont(str(nerd))
+    if nerd_id < 0:
+        return
+    families = QFontDatabase.applicationFontFamilies(nerd_id)
+    if families:
+        NERD_FAMILY = families[0]
+
+
 def load_fonts() -> str:
     """Load bundled Manrope static faces; return family name to use."""
     global FONT_FAMILY
+    _load_nerd_font()
     preferred: list[str] = []
     # Prefer complete static TTFs — variable/broken faces look soft on Windows.
     for name in (
@@ -98,6 +118,12 @@ def app_font(size: int = 14, weight: QFont.Weight = QFont.Weight.Normal) -> QFon
     font.setStyleStrategy(
         QFont.StyleStrategy.PreferQuality | QFont.StyleStrategy.PreferAntialias
     )
+    return font
+
+
+def nerd_font(size: int = 13) -> QFont:
+    font = QFont(NERD_FAMILY)
+    font.setPixelSize(size)
     return font
 
 

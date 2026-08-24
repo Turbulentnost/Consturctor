@@ -84,7 +84,19 @@ async def lifespan(_app: FastAPI):
         init_db()
         logger.info("App Postgres schema ready")
         from app.api.v1.notifications import board_live_subscriber, notification_scheduler
+        from app.modules.chat.realtime import dispatch_event
 
+        def _chat_outbound_loop() -> None:
+            try:
+                from app.modules.chat.bus.outbound import consume_outbound
+
+                consume_outbound(dispatch_event)
+            except Exception:
+                logger.warning("chat outbound consumer not started", exc_info=True)
+
+        import threading
+
+        threading.Thread(target=_chat_outbound_loop, name="chat-outbound", daemon=True).start()
         scheduler_tasks = [
             asyncio.create_task(notification_scheduler()),
             asyncio.create_task(board_live_subscriber()),

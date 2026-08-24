@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import Boolean, DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -18,6 +18,8 @@ class AppUser(Base):
     department: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     position: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     avatar_path: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)
+    activity_status: Mapped[str] = mapped_column(String(16), nullable=False, default="online")
+    is_support: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     department_changed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )

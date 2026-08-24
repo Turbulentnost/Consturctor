@@ -74,6 +74,7 @@ class AppWindow(QMainWindow):
         self._notify.command_received.connect(self._runner.handle_command)
         self._notify.board_updated.connect(self.main_shell.apply_live_board)
         self._notify.tool_requested.connect(self._on_tool_request)
+        self._notify.chat_event.connect(self.main_shell.apply_chat_event)
         self._notify.session_kicked.connect(self._on_session_kicked)
         self._runner.toast_requested.connect(self._on_tray_toast)
         install_confirm_host(self)

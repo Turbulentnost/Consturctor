@@ -34,6 +34,8 @@ def classify_ws_payload(payload: dict) -> str:
         return "board"
     if kind == "tool_request":
         return "tool"
+    if kind in {"chat_message", "chat_receipt", "presence", "ticket_updated", "thread_opened"}:
+        return "chat"
     if kind and kind != "notification":
         return "ignore"
     return "notification"
@@ -47,6 +49,7 @@ class NotificationService(QObject):
     session_kicked = Signal(str)
     board_updated = Signal(dict)
     tool_requested = Signal(dict)
+    chat_event = Signal(dict)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -141,6 +144,9 @@ class NotificationService(QObject):
             return
         if kind == "tool":
             self.tool_requested.emit(payload)
+            return
+        if kind == "chat":
+            self.chat_event.emit(payload)
             return
         if kind != "notification":
             return
