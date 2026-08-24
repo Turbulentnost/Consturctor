@@ -7,6 +7,7 @@ from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
@@ -113,20 +114,21 @@ class MessageBubble(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(8, 2, 8, 2)
         card_only = bool(message.agent) and not message.text and not message.attachments
-        card = QWidget()
+        card = QFrame()
+        card.setObjectName("msgCloud")
         card.setMaximumWidth(520)
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         if card_only:
-            card.setStyleSheet("QWidget { background: transparent; border-radius: 14px; }")
+            card.setStyleSheet("QFrame#msgCloud { background: transparent; border: none; }")
         elif mine:
             card.setStyleSheet(
-                "QWidget { background: #08745F; border-radius: 14px; }"
+                "QFrame#msgCloud { background: #08745F; border: none; border-radius: 14px; }"
             )
         else:
             card.setStyleSheet(
-                "QWidget { background: #FFFFFF; border: 1px solid rgba(8, 116, 95, 0.22);"
+                "QFrame#msgCloud { background: #FFFFFF; border: 1px solid rgba(8, 116, 95, 0.22);"
                 " border-radius: 14px; }"
             )
-        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         inner = QVBoxLayout(card)
         inner.setContentsMargins(0 if card_only else 12, 8, 0 if card_only else 12, 8)
         inner.setSpacing(6)
