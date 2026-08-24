@@ -15,6 +15,9 @@ from app.db.session import SessionLocal, get_db
 from app.schemas.trigger import ScheduleDraftOut
 from app.schemas.workflow import (
     AgentKpiSchema,
+    AgentRunCreate,
+    AgentRunEventsUpdate,
+    AgentRunFinish,
     AgentRunOut,
     AgentToolResultSubmit,
     ArtifactItem,
@@ -22,6 +25,7 @@ from app.schemas.workflow import (
     AutoRunStopResult,
     ExecuteRequest,
     LocalRunUpdate,
+    LocalDemoFinish,
     WorkflowBoard,
     WorkflowHealth,
     WorkflowListItem,
@@ -32,12 +36,14 @@ from app.services.agent_runs import (
     finish_agent_run,
     get_agent_run,
     list_agent_runs,
+    save_run_events,
     start_agent_run,
 )
 from app.services.agent_runtime import AgentRuntimeError, available_tools, run_agent_task
 from app.services.tool_bridge import ToolBridgeError, tool_bridge
 from app.services.workflows import (
     WorkflowError,
+    build_local_design_prompt,
     build_artifacts_zip,
     clarify_workflow,
     confirm_agent_kpi,
@@ -45,6 +51,8 @@ from app.services.workflows import (
     delete_workflow,
     demo_workflow,
     execute_workflow,
+    finish_local_design_workflow,
+    finish_local_demo_workflow,
     generate_agent_kpi,
     get_agent_kpi,
     get_workflow,
@@ -385,6 +393,70 @@ def read_agent_runs(
         raise
 
 
+@router.post("/{workflow_id}/runs/local", response_model=AgentRunOut)
+def create_local_agent_run(
+    workflow_id: str,
+    body: AgentRunCreate,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentRunOut:
+    try:
+        row = start_agent_run(
+            db,
+            user_id=auth.user_id,
+            workflow_id=workflow_id,
+            message=body.message,
+            source=body.source,
+            trigger_id=body.trigger_id,
+            evidence=body.evidence,
+        )
+        return get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=row.id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.patch("/{workflow_id}/runs/{run_id}/events", response_model=AgentRunOut)
+def update_local_agent_run_events(
+    workflow_id: str,
+    run_id: str,
+    body: AgentRunEventsUpdate,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentRunOut:
+    try:
+        get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+        save_run_events(db, run_id=run_id, events=body.events)
+        return get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/runs/{run_id}/finish", response_model=AgentRunOut)
+def finish_local_agent_run(
+    workflow_id: str,
+    run_id: str,
+    body: AgentRunFinish,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentRunOut:
+    try:
+        get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+        finish_agent_run(
+            db,
+            run_id=run_id,
+            status=body.status,
+            answer=body.answer,
+            events=body.events,
+            message=body.message,
+        )
+        return get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
 @router.get("/{workflow_id}/runs/{run_id}", response_model=AgentRunOut)
 def read_agent_run(
     workflow_id: str,
@@ -460,6 +532,60 @@ async def demo_workflow_endpoint(
 ) -> WorkflowSchema:
     try:
         return demo_workflow(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/demo/local-finish", response_model=WorkflowSchema)
+async def finish_local_demo_workflow_endpoint(
+    workflow_id: str,
+    body: LocalDemoFinish,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowSchema:
+    try:
+        return finish_local_demo_workflow(
+            db,
+            user_id=auth.user_id,
+            workflow_id=workflow_id,
+            answer=body.answer,
+            events=body.events,
+        )
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/design/local-context")
+async def local_design_context_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    try:
+        prompt = build_local_design_prompt(db, user_id=auth.user_id, workflow_id=workflow_id)
+        return {"prompt": prompt}
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/design/local-finish", response_model=WorkflowSchema)
+async def finish_local_design_workflow_endpoint(
+    workflow_id: str,
+    body: LocalDemoFinish,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowSchema:
+    try:
+        return finish_local_design_workflow(
+            db,
+            user_id=auth.user_id,
+            workflow_id=workflow_id,
+            answer=body.answer,
+            events=body.events,
+        )
     except WorkflowError as exc:
         _raise(exc)
         raise

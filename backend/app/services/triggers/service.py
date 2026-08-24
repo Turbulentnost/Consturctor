@@ -36,9 +36,20 @@ def is_workflow_deleted(local_run: object) -> bool:
     return bool(data.get("deleted"))
 
 
+def workflow_is_deleted(workflow: object) -> bool:
+    """Prefer phase=deleted: JSON local_run.deleted can fail to persist on PostgreSQL."""
+    if str(getattr(workflow, "phase", "") or "") == "deleted":
+        return True
+    return is_workflow_deleted(getattr(workflow, "local_run", None))
+
+
 def is_workflow_inactive(local_run: object) -> bool:
     """Paused or soft-deleted: no new scheduled runs."""
     return is_workflow_paused(local_run) or is_workflow_deleted(local_run)
+
+
+def workflow_is_inactive(workflow: object) -> bool:
+    return workflow_is_deleted(workflow) or is_workflow_paused(getattr(workflow, "local_run", None))
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -247,7 +258,7 @@ def due_commands(db: Session, *, user_id: str | None = None) -> list[AgentTrigge
     stmt = stmt.order_by(AgentTrigger.created_at.asc()).limit(50)
     due: list[AgentTrigger] = []
     for trigger, workflow in db.execute(stmt).all():
-        if is_workflow_inactive(workflow.local_run):
+        if workflow_is_inactive(workflow):
             continue
         if workflow_has_started_run(db, workflow.id):
             continue

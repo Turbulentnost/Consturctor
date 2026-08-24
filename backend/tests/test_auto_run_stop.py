@@ -140,6 +140,7 @@ def test_delete_workflow_stops_schedule_but_keeps_run_history() -> None:
     row = db.get(Workflow, workflow_id)
     assert row is not None
     assert bool((row.local_run or {}).get("deleted")) is True
+    assert row.phase == "deleted"
     assert db.get(AgentTrigger, "tr-1") is None
     assert db.get(Notification, "n-1") is None
     assert db.get(AgentRun, "run-1") is not None
@@ -154,10 +155,48 @@ def test_delete_workflow_stops_schedule_but_keeps_run_history() -> None:
         window_to=(now + timedelta(days=1)).isoformat(),
     )
     assert board.agents == []
-    past = [item for item in board.events if not item.is_future]
-    assert len(past) == 1
-    assert past[0].run_id == "run-1"
-    assert [item for item in board.events if item.is_future] == []
+    assert board.events == []
+    assert board.stats.active_agents == 0
+    assert board.stats.runs_today == 0
+
+
+def test_delete_flag_survives_stale_local_run_write() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    delete_workflow(db, user_id=user_id, workflow_id=workflow_id)
+    row = db.get(Workflow, workflow_id)
+    assert row is not None
+    stale = dict(row.local_run or {})
+    stale.pop("deleted", None)
+    stale["work_result"] = {"text": "старый прогон"}
+    db.refresh(row)
+    current = dict(row.local_run or {})
+    if not current.get("deleted"):
+        raise AssertionError("deleted flag was lost after refresh")
+    current["work_result"] = stale.get("work_result")
+    row.local_run = current
+    db.commit()
+    db.refresh(row)
+    assert bool((row.local_run or {}).get("deleted")) is True
+    assert row.phase == "deleted"
+    board = get_workflow_board(db, user_id=user_id)
+    assert board.agents == []
+    assert board.stats.runs_today == 0
+
+
+def test_phase_deleted_hides_agent_even_without_json_flag() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    row = db.get(Workflow, workflow_id)
+    assert row is not None
+    row.phase = "deleted"
+    row.local_run = {"paused": True}
+    db.commit()
+    board = get_workflow_board(db, user_id=user_id)
+    assert board.agents == []
+    assert board.events == []
+    assert board.stats.runs_today == 0
+    assert due_commands(db, user_id=user_id) == []
 
 
 def test_inbox_hides_link_to_missing_workflow() -> None:

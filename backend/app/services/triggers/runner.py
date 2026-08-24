@@ -12,6 +12,7 @@ from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.services.agent_runtime import AgentRuntimeError, run_agent_task
 from app.services.agent_runs import answer_from_result, finish_agent_run, save_run_events, start_agent_run
+from app.services.desktop_commands import push_desktop_command
 from app.services.notifications.service import NotificationError, create_notification
 from app.schemas.notification import NotificationCreate
 from app.services.sessions import (
@@ -23,9 +24,10 @@ from app.services.tool_bridge import tool_bridge
 from app.services.triggers.check import check_trigger_condition
 from app.services.triggers.service import (
     _as_utc,
-    is_workflow_inactive,
+    workflow_is_inactive,
     mark_fired,
     mark_skipped,
+    command_payload,
     workflow_has_started_run,
 )
 from app.services.workflows.cursor_tools import clear_tool_context, set_tool_context
@@ -39,7 +41,7 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
     if row is None or not row.enabled:
         return {"ok": False, "reason": "disabled"}
     workflow = db.get(Workflow, row.workflow_id)
-    if workflow is None or is_workflow_inactive(workflow.local_run):
+    if workflow is None or workflow_is_inactive(workflow):
         return {"ok": False, "reason": "paused"}
     due = _as_utc(row.fire_at)
     now = datetime.now(timezone.utc)
@@ -69,6 +71,15 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
         return {"ok": False, "reason": "offline"}
     if presence == "unknown":
         logger.warning("Scheduled trigger %s: desktop presence unknown, attempting run", trigger_id)
+
+    command = command_payload(row)
+    command["workflow_id"] = row.workflow_id
+    command["message"] = (row.message or "").strip()
+    command["trigger_id"] = row.id
+    command["evidence"] = row.last_evidence or ""
+    if push_desktop_command(row.owner_user_id, command):
+        logger.info("Scheduled trigger %s dispatched to desktop user=%s", trigger_id, row.owner_user_id)
+        return {"ok": True, "trigger_id": trigger_id, "dispatched": "desktop"}
 
     evidence = ""
     run_id = tool_bridge.new_run_id()

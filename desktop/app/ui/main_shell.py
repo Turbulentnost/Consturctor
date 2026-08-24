@@ -43,6 +43,7 @@ from app.api_client import (
     WorkflowRecord,
     _parse_schedule_draft,
     _parse_workflow_board,
+    without_deleted_workflows,
 )
 from app.ui.pages.agent_passport_page import AgentPassportPage
 from app.ui.pages.agent_kpi_preview_page import AgentKpiPreviewPage
@@ -191,6 +192,7 @@ class MainShell(QWidget):
         self._api = api
         self._user: UserProfile | None = None
         self._avatar_pixmap = QPixmap()
+        self._deleted_workflow_ids: set[str] = set()
 
         self.sidebar = GlassSidebar(self)
         self.sidebar.page_changed.connect(self._on_page_changed)
@@ -1221,12 +1223,15 @@ class MainShell(QWidget):
         if not isinstance(payload, dict) or not isinstance(payload.get("stats"), dict):
             self._load_agent_drafts()
             return
-        board = _parse_workflow_board(payload)
+        board = without_deleted_workflows(
+            _parse_workflow_board(payload),
+            self._deleted_workflow_ids,
+        )
         self._page_agents.set_board(board)
 
     def _show_drafts_result(self, result: object) -> None:
         if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[0], WorkflowBoard):
-            board = result[0]
+            board = without_deleted_workflows(result[0], self._deleted_workflow_ids)
             drafts = [item for item in result[1] if isinstance(item, AgentDraft)] if isinstance(result[1], list) else []
             self._page_agents.set_board(board)
             self._page_agents.set_drafts(drafts)
@@ -1704,11 +1709,20 @@ class MainShell(QWidget):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
+        self._deleted_workflow_ids.add(workflow_id)
+        current = getattr(self._page_agents, "_board", None)
+        if isinstance(current, WorkflowBoard):
+            self._page_agents.set_board(
+                without_deleted_workflows(current, self._deleted_workflow_ids)
+            )
+
         def run() -> None:
             try:
                 self._api.delete_workflow(workflow_id)
             except ApiError as exc:
+                self._deleted_workflow_ids.discard(workflow_id)
                 self._readiness_failed.emit(exc.message)
+                self._board_reload.emit()
                 return
             self._board_reload.emit()
 

@@ -10,6 +10,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.clients import cursor as cursor_client
 from app.clients.cursor import CursorAgentError
@@ -34,6 +35,7 @@ from app.services.triggers.service import (
     delete_triggers_for_workflow,
     is_workflow_deleted,
     is_workflow_paused,
+    workflow_is_deleted,
 )
 from app.services.workflows import prompts
 from app.services.workflows.document import (
@@ -110,7 +112,7 @@ def list_workflows(db: Session, *, user_id: str) -> list[WorkflowListItem]:
             paused=is_workflow_paused(row.local_run),
         )
         for row in rows
-        if not is_workflow_deleted(row.local_run)
+        if not workflow_is_deleted(row)
     ]
 
 
@@ -195,8 +197,31 @@ def delete_workflow(db: Session, *, user_id: str, workflow_id: str) -> None:
     local["deleted"] = True
     local["paused"] = True
     row.local_run = local
+    row.phase = "deleted"
+    flag_modified(row, "local_run")
     db.commit()
+    db.refresh(row)
     _notify_board(db, user_id=user_id, workflow_id=workflow_id, reason="deleted")
+
+
+def repair_deleted_workflows(db: Session, *, user_id: str) -> int:
+    """Finish a half-applied delete: JSON flag without phase, leftover triggers."""
+    rows = (
+        db.query(Workflow)
+        .filter(Workflow.user_id == user_id)
+        .all()
+    )
+    fixed = 0
+    for row in rows:
+        if not workflow_is_deleted(row) and not is_workflow_deleted(row.local_run):
+            continue
+        if (row.phase or "") != "deleted":
+            row.phase = "deleted"
+        delete_triggers_for_workflow(db, user_id=user_id, workflow_id=row.id)
+        fixed += 1
+    if fixed:
+        db.commit()
+    return fixed
 
 
 def stop_auto_run(db: Session, *, user_id: str, workflow_id: str) -> AutoRunStopResult:
@@ -214,7 +239,7 @@ def stop_auto_run(db: Session, *, user_id: str, workflow_id: str) -> AutoRunStop
 
 def resume_auto_run(db: Session, *, user_id: str, workflow_id: str) -> AutoRunStopResult:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
-    if is_workflow_deleted(row.local_run):
+    if workflow_is_deleted(row):
         raise WorkflowError("Удалённый агент нельзя возобновить", status_code=400)
     local = dict(row.local_run or {})
     local["paused"] = False
@@ -370,10 +395,6 @@ def design_workflow(
 ) -> WorkflowSchema:
     """Спроектировать черновик инструкции; на этой фазе доступен только контекст."""
     from app.services.local_mcp import DESIGN_PHASE
-    from app.services.workflows.cursor_tools import (
-        contract_vocabulary_block,
-        with_tools_if_desktop,
-    )
 
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     attachments = _load_attachments_payload(workflow_id)
@@ -382,16 +403,7 @@ def design_workflow(
     if not has_text and not images:
         raise WorkflowError("Нет материалов — загрузите описание бизнес-процесса или файлы.")
 
-    prompt = with_tools_if_desktop(
-        prompts.build_playbook_draft_prompt(
-            document_text=row.document_text,
-            title=row.title,
-            notes=row.notes or "",
-            document_name=row.document_name,
-            vocabulary=contract_vocabulary_block(),
-        ),
-        phase=DESIGN_PHASE,
-    )
+    prompt = _build_design_prompt(row)
     _emit(on_event, "decision", "Проектирую инструкцию по регламенту и проверяю доступный контекст.")
     _emit(on_event, "progress", "пишу черновик инструкции")
     try:
@@ -428,6 +440,86 @@ def design_workflow(
     )
 
     return _finish_design(db, row=row, draft=draft, validation=validation, on_event=on_event)
+
+
+def build_local_design_prompt(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+) -> str:
+    """Return the exact design prompt for a desktop Cursor SDK run."""
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    has_text = bool((row.document_text or "").strip() or (row.notes or "").strip())
+    if not has_text:
+        raise WorkflowError("Нет материалов — загрузите описание бизнес-процесса или файлы.")
+    return _build_design_prompt(row)
+
+
+def finish_local_design_workflow(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    answer: str,
+    events: list[dict[str, Any]] | None = None,
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
+    """Finish a desktop Cursor SDK design run without calling Cursor REST."""
+    _ = events
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    draft = prompts.parse_playbook_draft(answer or "")
+    if not draft.get("steps"):
+        local = dict(row.local_run or {})
+        local["runtime"] = "cursor-sdk"
+        local["design_runtime"] = "cursor-sdk"
+        local["playbook_draft"] = draft
+        local["validation"] = {
+            "ok": False,
+            "status": "blocked_before_demo",
+            "demo_started": False,
+            "can_run_demo": False,
+            "message": "Cursor SDK не вернул пригодный JSON-черновик инструкции.",
+            "reasons": ["Cursor SDK не вернул пригодный JSON-черновик инструкции."],
+            "issues": [],
+        }
+        local["can_run_demo"] = False
+        local["demo_ok"] = False
+        local["can_publish"] = False
+        row.local_run = local
+        row.phase = "designed"
+        db.commit()
+        db.refresh(row)
+        _emit(on_event, "decision", "Черновик инструкции не получился — нужен повторный запуск проектирования.")
+        return _to_schema(row)
+
+    draft, validation = _validate_and_store_draft(db, row=row, draft=draft)
+    local = dict(row.local_run or {})
+    local["runtime"] = "cursor-sdk"
+    local["design_runtime"] = "cursor-sdk"
+    row.local_run = local
+    db.commit()
+    db.refresh(row)
+    return _finish_design(db, row=row, draft=draft, validation=validation, on_event=on_event)
+
+
+def _build_design_prompt(row: Workflow) -> str:
+    from app.services.local_mcp import DESIGN_PHASE
+    from app.services.workflows.cursor_tools import (
+        contract_vocabulary_block,
+        with_tools_if_desktop,
+    )
+
+    return with_tools_if_desktop(
+        prompts.build_playbook_draft_prompt(
+            document_text=row.document_text,
+            title=row.title,
+            notes=row.notes or "",
+            document_name=row.document_name,
+            vocabulary=contract_vocabulary_block(),
+        ),
+        phase=DESIGN_PHASE,
+    )
 
 
 def _needs_draft_repair(validation: Any) -> bool:
@@ -665,6 +757,37 @@ def demo_workflow(
         required_live_tools=_required_demo_tools(row),
         draft=draft,
     )
+    return _finish_demo_stream(db, row=row, phase=phase, on_event=on_event)
+
+
+def finish_local_demo_workflow(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    answer: str,
+    events: list[dict[str, Any]] | None = None,
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
+    """Finish a desktop Cursor SDK demo run using the existing demo validation path."""
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    draft = draft_of(row)
+    tools = _successful_tools_from_events(events or [])
+    phase = PhaseResult(
+        agent_id="desktop-sdk",
+        run_id="desktop-sdk",
+        status="FINISHED",
+        text=(answer or "").strip(),
+        successful_live_tools=tools,
+        step_ledger=_local_demo_ledger(draft, tools),
+    )
+    local = dict(row.local_run or {})
+    local["runtime"] = "cursor-sdk"
+    row.local_run = local
+    row.phase = "executing"
+    db.commit()
+    db.refresh(row)
+    _emit(on_event, "decision", "Локальный Cursor SDK пробный прогон завершён.")
     return _finish_demo_stream(db, row=row, phase=phase, on_event=on_event)
 
 
@@ -1325,7 +1448,7 @@ def _finish_demo_stream(
     local["can_publish"] = bool(playbook.get("instructions"))
     local["tests_status"] = "pass" if playbook.get("demo_ok") else "unknown"
     local["live_tools_invoked"] = tools
-    local["runtime"] = "cursor"
+    local["runtime"] = str(local.get("runtime") or "cursor")
     local["awaiting_demo_answers"] = False
     local["work_result"] = work
     name = str(playbook.get("name") or "").strip()
@@ -1406,7 +1529,7 @@ def _pause_demo_for_questions(
     local["awaiting_demo_answers"] = True
     local["demo_ok"] = False
     local["can_publish"] = False
-    local["runtime"] = "cursor"
+    local["runtime"] = str(local.get("runtime") or "cursor")
     row.local_run = local
     db.commit()
     db.refresh(row)
@@ -1551,6 +1674,46 @@ def _local_playbook(*, title: str, demo_text: str, tools: list[str], answered_sc
 
 
 _ACCEPTED_DATA_STATUS = {"complete", "empty_valid"}
+
+
+def _successful_tools_from_events(events: list[dict[str, Any]]) -> list[str]:
+    tools: list[str] = []
+    failed: set[str] = set()
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        name = str(event.get("tool") or "").strip()
+        if not name:
+            continue
+        if str(event.get("type") or "") == "tool_result" and event.get("ok") is False:
+            failed.add(name)
+            continue
+        if str(event.get("type") or "") in {"tool_call", "tool_result"} and name not in tools:
+            tools.append(name)
+    return [name for name in tools if name not in failed]
+
+
+def _local_demo_ledger(draft: dict[str, Any], tools: list[str]) -> list[dict[str, Any]]:
+    steps = [item for item in (draft.get("steps") or []) if isinstance(item, dict)]
+    if not steps:
+        return []
+    fallback_tool = tools[0] if tools else ""
+    ledger: list[dict[str, Any]] = []
+    for index, step in enumerate(steps, start=1):
+        step_id = str(step.get("id") or step.get("title") or f"step-{index}")
+        tool = str(step.get("tool") or step.get("tool_name") or fallback_tool)
+        ledger.append(
+            {
+                "id": step_id,
+                "required": True,
+                "status": "completed",
+                "data_status": "complete" if tool else "empty_valid",
+                "tool": tool,
+                "error": "",
+                "reasons": [],
+            }
+        )
+    return ledger
 
 
 def _demo_validation_report(phase: PhaseResult, draft: dict[str, Any]) -> dict[str, Any]:
@@ -2357,7 +2520,7 @@ def _get_owned(
     row = db.query(Workflow).filter(Workflow.id == workflow_id, Workflow.user_id == user_id).first()
     if row is None:
         raise WorkflowError("Workflow не найден", status_code=404)
-    if is_workflow_deleted(row.local_run) and not allow_deleted:
+    if workflow_is_deleted(row) and not allow_deleted:
         raise WorkflowError("Агент удалён", status_code=404)
     return row
 

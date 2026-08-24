@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.api_client import ApiClient, ApiError, WorkflowRecord
+from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
+from app.sdk_agent.prompt import build_sdk_prompt
 from app.tools.hitl import (
     attach_pending_for,
     has_pending_for,
@@ -280,7 +282,40 @@ class AgentRunPage(QWidget):
         workflow_id = self._workflow.id
 
         def run() -> None:
+            events: list[dict] = []
+            run_id = ""
+
+            def handle_sdk_event(payload: dict) -> None:
+                if isinstance(payload, dict) and payload.get("type") not in {"ready", "done"}:
+                    events.append(payload)
+                self._event_ready.emit(payload)
+
             try:
+                bridge = CursorSdkBridge()
+                bridge.check_ready()
+                record = self._api.start_local_agent_run(workflow_id, message=message)
+                run_id = record.id
+                self._event_ready.emit({"type": "run", "run_id": run_id})
+                sdk_result = bridge.run(
+                    prompt=build_sdk_prompt(self._workflow, message),
+                    workflow_id=workflow_id,
+                    on_event=handle_sdk_event,
+                )
+                answer = str(sdk_result.get("answer") or "").strip()
+                result = {
+                    "answer": answer,
+                    "run_id": run_id,
+                    "work_result": {"text": answer},
+                }
+                self._api.finish_local_agent_run(
+                    workflow_id,
+                    run_id,
+                    status="ok",
+                    answer=answer,
+                    events=events,
+                    message=message,
+                )
+            except CursorSdkUnavailable:
                 result = self._api.stream_workflow_agent_run(
                     workflow_id,
                     message,
@@ -288,6 +323,21 @@ class AgentRunPage(QWidget):
                 )
             except ApiError as exc:
                 self.failed.emit(exc.message)
+                return
+            except Exception as exc:  # noqa: BLE001
+                if run_id:
+                    try:
+                        self._api.finish_local_agent_run(
+                            workflow_id,
+                            run_id,
+                            status="error",
+                            answer=str(exc),
+                            events=events,
+                            message=message,
+                        )
+                    except ApiError:
+                        pass
+                self.failed.emit(str(exc))
                 return
             self._done.emit(result)
 

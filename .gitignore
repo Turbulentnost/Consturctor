@@ -20,6 +20,7 @@ dist/
 **/dist/
 
 # Tooling / caches
+node_modules/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

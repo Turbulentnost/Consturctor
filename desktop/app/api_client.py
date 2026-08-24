@@ -811,6 +811,43 @@ def _parse_workflow_board(data: dict) -> WorkflowBoard:
     return WorkflowBoard(stats=stats, agents=agents, events=events)
 
 
+def without_deleted_workflows(board: WorkflowBoard, deleted_ids: set[str]) -> WorkflowBoard:
+    """Hide a locally deleted agent even if a stale live snapshot still contains it."""
+    hidden = {item for item in deleted_ids if item}
+    if not hidden:
+        return board
+    agents = [
+        item
+        for item in board.agents
+        if item.kind != "workflow" or item.id not in hidden
+    ]
+    events = [
+        item
+        for item in board.events
+        if item.workflow_id not in hidden or not item.is_future
+    ]
+    next_run = ""
+    for item in agents:
+        if item.kind != "workflow" or item.paused or not item.next_run_at:
+            continue
+        if not next_run or item.next_run_at < next_run:
+            next_run = item.next_run_at
+    if not next_run:
+        for item in events:
+            if item.status != "scheduled" or not item.start_at:
+                continue
+            if not next_run or item.start_at < next_run:
+                next_run = item.start_at
+    stats = BoardStats(
+        active_agents=sum(1 for item in agents if item.kind == "workflow" and item.status == "active"),
+        runs_today=board.stats.runs_today,
+        errors_today=board.stats.errors_today,
+        needs_attention=sum(1 for item in agents if item.status == "needs_attention"),
+        next_run_at=next_run,
+    )
+    return WorkflowBoard(stats=stats, agents=agents, events=events)
+
+
 @dataclass(frozen=True, slots=True)
 class WorkflowHealth:
     ok: bool
@@ -1639,6 +1676,33 @@ class ApiClient:
             on_event=on_event,
         )
 
+    def local_design_prompt(self, workflow_id: str) -> str:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/design/local-context",
+            timeout=60.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Backend не вернул промпт проектирования")
+        return str(data.get("prompt") or "")
+
+    def finish_local_design_workflow(
+        self,
+        workflow_id: str,
+        *,
+        answer: str,
+        events: list[dict] | None = None,
+    ) -> WorkflowRecord:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/design/local-finish",
+            json={"answer": answer, "events": events or []},
+            timeout=120.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Backend не вернул итоговый workflow")
+        return self._parse_workflow(data)
+
     def stream_demo_workflow(
         self,
         workflow_id: str,
@@ -1649,6 +1713,23 @@ class ApiClient:
             f"/api/v1/workflows/{workflow_id}/demo/stream",
             on_event=on_event,
         )
+
+    def finish_local_demo_workflow(
+        self,
+        workflow_id: str,
+        *,
+        answer: str,
+        events: list[dict] | None = None,
+    ) -> WorkflowRecord:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/demo/local-finish",
+            json={"answer": answer, "events": events or []},
+            timeout=120.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Backend не вернул итоговый workflow")
+        return self._parse_workflow(data)
 
     def clarify_workflow(
         self,
@@ -2063,6 +2144,68 @@ class ApiClient:
             for item in items
             if isinstance(item, dict)
         ]
+
+    def start_local_agent_run(
+        self,
+        workflow_id: str,
+        *,
+        message: str,
+        source: str = "chat",
+        trigger_id: str = "",
+        evidence: str = "",
+    ) -> AgentRunHistoryItem:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/runs/local",
+            json={
+                "message": message,
+                "source": source or "chat",
+                "trigger_id": trigger_id or "",
+                "evidence": evidence or "",
+            },
+            timeout=30.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Не удалось создать запуск агента")
+        return _parse_agent_run(data, workflow_id)
+
+    def update_local_agent_run_events(
+        self,
+        workflow_id: str,
+        run_id: str,
+        events: list[dict],
+    ) -> None:
+        self._request(
+            "PATCH",
+            f"/api/v1/workflows/{workflow_id}/runs/{run_id}/events",
+            json={"events": events},
+            timeout=30.0,
+        )
+
+    def finish_local_agent_run(
+        self,
+        workflow_id: str,
+        run_id: str,
+        *,
+        status: str,
+        answer: str = "",
+        events: list[dict] | None = None,
+        message: str = "",
+    ) -> AgentRunHistoryItem:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/runs/{run_id}/finish",
+            json={
+                "status": status,
+                "answer": answer,
+                "events": events or [],
+                "message": message,
+            },
+            timeout=30.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Не удалось завершить запуск агента")
+        return _parse_agent_run(data, workflow_id)
 
     def get_agent_run(self, workflow_id: str, run_id: str) -> AgentRunHistoryItem:
         data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs/{run_id}", timeout=60.0)

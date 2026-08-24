@@ -1,0 +1,17 @@
+{
+  "name": "constructor-desktop-sdk-agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/runner.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.28",
+    "tsx": "^4.23.12"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
+  }
+}

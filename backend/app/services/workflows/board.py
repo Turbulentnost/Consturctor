@@ -14,7 +14,7 @@ from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.schemas.workflow import BoardAgent, BoardStats, CalendarEvent, WorkflowBoard
 from app.services.agent_runs import fail_stale_started_runs
-from app.services.triggers.service import is_workflow_deleted, is_workflow_paused
+from app.services.triggers.service import is_workflow_paused, workflow_is_deleted
 
 
 def _stamp_iso(value: datetime | None) -> str:
@@ -229,6 +229,9 @@ def get_workflow_board(
 ) -> WorkflowBoard:
     now = datetime.now(timezone.utc)
     fail_stale_started_runs(db, user_id=user_id)
+    from app.services.workflows.service import repair_deleted_workflows
+
+    repair_deleted_workflows(db, user_id=user_id)
     start = _parse_dt(window_from) or (now - timedelta(days=7))
     end = _parse_dt(window_to) or (now + _EVENT_HORIZON)
     if end < start:
@@ -244,17 +247,11 @@ def get_workflow_board(
     published = [
         row
         for row in workflows
-        if (row.phase or "") == "done" and not is_workflow_deleted(row.local_run)
-    ]
-    archived = [
-        row
-        for row in workflows
-        if (row.phase or "") == "done" and is_workflow_deleted(row.local_run)
+        if (row.phase or "") == "done" and not workflow_is_deleted(row)
     ]
     published_ids = [row.id for row in published]
-    history_ids = published_ids + [row.id for row in archived]
+    history_ids = published_ids
     wf_by_id = {row.id: row for row in published}
-    wf_by_id.update({row.id: row for row in archived})
 
     triggers = list(
         db.execute(
@@ -485,18 +482,6 @@ def get_workflow_board(
                 continue
             events.append(_event_from_run(workflow=row, run=run, start_at=stamp))
 
-    # Past runs of soft-deleted agents stay on the calendar history.
-    for row in archived:
-        if wanted and wanted != row.id:
-            continue
-        for run in runs:
-            if run.workflow_id != row.id:
-                continue
-            stamp = _as_utc(run.started_at)
-            if stamp is None or stamp < start or stamp > end:
-                continue
-            events.append(_event_from_run(workflow=row, run=run, start_at=stamp))
-
     drafts = (
         db.query(AgentDraft)
         .filter(AgentDraft.user_id == user_id)
@@ -538,6 +523,13 @@ def get_workflow_board(
             errors_today += 1
 
     upcoming = [stamp for stamp in next_candidates if stamp is not None]
+    if not upcoming:
+        for item in events:
+            if str(item.status or "") != "scheduled":
+                continue
+            stamp = _parse_dt(item.start_at)
+            if stamp is not None:
+                upcoming.append(stamp)
     upcoming.sort()
     stats = BoardStats(
         active_agents=sum(1 for item in agents if item.kind == "workflow" and item.status == "active"),

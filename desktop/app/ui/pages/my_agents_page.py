@@ -437,13 +437,11 @@ class MyAgentsPage(QWidget):
         elif self._status_filter == "draft":
             items = [item for item in items if item.kind == "draft"]
         if self._search:
-            items = [
-                item
-                for item in items
-                if self._search in (item.title or "").casefold()
-                or self._search in (item.description or "").casefold()
-            ]
+            items = [item for item in items if self._matches_search(item)]
         return items
+
+    def _matches_search(self, agent: BoardAgent) -> bool:
+        return draft_or_agent_matches(agent, self._search, self._suggestions_for(agent))
 
     def _render_list(self) -> None:
         while self._list.count():
@@ -462,8 +460,154 @@ class MyAgentsPage(QWidget):
             self._list.addStretch(1)
             return
         for agent in agents:
-            self._list.addWidget(self._agent_card(agent))
+            self._list.addWidget(self._draft_card(agent) if agent.kind == "draft" else self._agent_card(agent))
         self._list.addStretch(1)
+
+    def _draft_for(self, agent: BoardAgent) -> AgentDraft | None:
+        draft_id = (agent.draft_id or agent.id or "").strip()
+        for draft in self._drafts:
+            if draft.draft_id == draft_id:
+                return draft
+        return None
+
+    def _suggestions_for(self, agent: BoardAgent) -> list[AgentSuggestion]:
+        draft = self._draft_for(agent)
+        if draft is None:
+            return []
+        return [item for item in (draft.agent_suggestions or []) if item.title or item.description]
+
+    def _created_titles(self) -> set[str]:
+        titles = {
+            _normalize_title(item.title)
+            for item in self._board.agents
+            if item.kind == "workflow" and item.title.strip()
+        }
+        titles.update(_normalize_title(item.title) for item in self._agents if item.title.strip())
+        return titles
+
+    def _draft_card(self, agent: BoardAgent) -> QWidget:
+        card = QFrame()
+        card.setObjectName("AgentMiniCard")
+        card.setStyleSheet(
+            """
+            QFrame#AgentMiniCard {
+                background: #FFFFFF;
+                border: 1px solid rgba(16,24,23,0.10);
+                border-radius: 14px;
+            }
+            """
+        )
+        card.setFixedWidth(_AGENT_CARD_WIDTH)
+        card.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+
+        icon = QLabel((agent.title or "Ч")[:1].upper())
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setFixedSize(36, 36)
+        icon.setStyleSheet(
+            "background: #EAF7F3; color: #08745F; border-radius: 10px; font-weight: 700;"
+        )
+        icon.setFont(app_font(16, QFont.Weight.DemiBold))
+
+        title = _FitTitleLabel(agent.title or "Черновик агента")
+        status = QLabel("●  Черновик")
+        status.setFont(app_font(11, QFont.Weight.DemiBold))
+        status.setStyleSheet("color: #C47F17; background: transparent; border: none;")
+
+        menu_btn = QPushButton("⋮")
+        menu_btn.setFixedSize(28, 32)
+        menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        menu_btn.setStyleSheet("QPushButton { background: transparent; color: #6B7773; border: none; }")
+        menu_btn.clicked.connect(lambda _=False, host=menu_btn, item=agent: self._open_menu(host, item))
+
+        header_text = QVBoxLayout()
+        header_text.setSpacing(1)
+        header_text.addWidget(title)
+        header_text.addWidget(status)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        header.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+        header.addLayout(header_text, 1)
+        header.addWidget(menu_btn, 0, Qt.AlignmentFlag.AlignTop)
+
+        body = QVBoxLayout()
+        body.setSpacing(8)
+        body.addLayout(header)
+        suggestions = self._suggestions_for(agent)
+        if suggestions:
+            label = QLabel("ИИ-агенты в черновике")
+            label.setFont(app_font(11, QFont.Weight.DemiBold))
+            label.setStyleSheet("color: #6B7773; background: transparent; border: none;")
+            body.addWidget(label)
+            created = self._created_titles()
+            for item in suggestions:
+                body.addWidget(self._draft_suggestion_row(agent, item, created))
+        else:
+            empty = QLabel("ИИ-агенты ещё не выделены. Продолжите формирование черновика.")
+            empty.setWordWrap(True)
+            empty.setFont(app_font(11))
+            empty.setStyleSheet("color: #6B7773; background: transparent; border: none;")
+            form = QPushButton("Сформировать")
+            form.setCursor(Qt.CursorShape.PointingHandCursor)
+            form.setFixedHeight(32)
+            form.setFont(app_font(12, QFont.Weight.DemiBold))
+            form.setStyleSheet(_PRIMARY)
+            form.clicked.connect(
+                lambda _=False, draft_id=agent.draft_id or agent.id: self.continue_requested.emit(draft_id)
+            )
+            body.addWidget(empty)
+            body.addWidget(form)
+
+        root = QVBoxLayout(card)
+        root.setContentsMargins(10, 8, 8, 10)
+        root.setSpacing(0)
+        root.addLayout(body)
+        return card
+
+    def _draft_suggestion_row(
+        self,
+        agent: BoardAgent,
+        suggestion: AgentSuggestion,
+        created_titles: set[str],
+    ) -> QWidget:
+        created = _normalize_title(suggestion.title) in created_titles
+        row_card = QFrame()
+        row_card.setObjectName("DraftAgentRow")
+        row_card.setStyleSheet(
+            """
+            QFrame#DraftAgentRow {
+                background: #F7FBFA;
+                border: 1px solid rgba(16,24,23,0.06);
+                border-radius: 10px;
+            }
+            """
+        )
+        name = QLabel(suggestion.title or "ИИ-агент")
+        name.setFont(app_font(12, QFont.Weight.DemiBold))
+        name.setStyleSheet("color: #101817; background: transparent; border: none;")
+        name.setWordWrap(True)
+        desc = QLabel(suggestion.description or "Функция из регламента")
+        desc.setFont(app_font(11))
+        desc.setStyleSheet("color: #6B7773; background: transparent; border: none;")
+        desc.setWordWrap(True)
+        form = QPushButton("Сформирован" if created else "Сформировать")
+        form.setCursor(Qt.CursorShape.PointingHandCursor)
+        form.setFixedHeight(30)
+        form.setFont(app_font(12, QFont.Weight.DemiBold))
+        form.setStyleSheet(_PRIMARY)
+        form.setEnabled(not created)
+        form.clicked.connect(
+            lambda _=False, draft_id=agent.draft_id or agent.id, agent_id=suggestion.agent_id: (
+                self.create_suggestion_requested.emit(draft_id, agent_id)
+            )
+        )
+        col = QVBoxLayout(row_card)
+        col.setContentsMargins(8, 8, 8, 8)
+        col.setSpacing(4)
+        col.addWidget(name)
+        col.addWidget(desc)
+        col.addWidget(form)
+        return row_card
 
     def _agent_card(self, agent: BoardAgent) -> QWidget:
         selected = agent.id == self._selected_id and agent.kind == "workflow"
@@ -568,6 +712,24 @@ class MyAgentsPage(QWidget):
         menu.addSeparator()
         menu.addAction("Удалить", lambda: self.delete_agent_requested.emit(agent.id))
         menu.exec(host.mapToGlobal(host.rect().bottomLeft()))
+
+
+def draft_or_agent_matches(agent: BoardAgent, needle: str, suggestions: list[AgentSuggestion]) -> bool:
+    text = (needle or "").strip().casefold()
+    if not text:
+        return True
+    if text in (agent.title or "").casefold() or text in (agent.description or "").casefold():
+        return True
+    if agent.kind != "draft":
+        return False
+    return any(
+        text in (item.title or "").casefold() or text in (item.description or "").casefold()
+        for item in suggestions
+    )
+
+
+def _normalize_title(value: str) -> str:
+    return " ".join((value or "").casefold().split())
 
 
 def _collect_agent_suggestions(drafts: list[AgentDraft]) -> tuple[list[AgentSuggestion], dict[str, str]]:

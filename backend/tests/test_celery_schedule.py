@@ -198,6 +198,7 @@ def test_execute_scheduled_runs_when_online(monkeypatch) -> None:
     db = _session()
     _seed(db)
     monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "online")
+    monkeypatch.setattr("app.services.triggers.runner.push_desktop_command", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         "app.services.triggers.runner.check_trigger_condition",
         lambda *args, **kwargs: {"matched": True, "changed": "ok"},
@@ -219,10 +220,32 @@ def test_execute_scheduled_runs_when_online(monkeypatch) -> None:
     assert result["ok"] is True
 
 
+def test_execute_scheduled_dispatches_to_desktop_when_online(monkeypatch) -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    sent: list[tuple[str, dict]] = []
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "online")
+    monkeypatch.setattr(
+        "app.services.triggers.runner.push_desktop_command",
+        lambda uid, payload: sent.append((uid, dict(payload))) or True,
+    )
+    monkeypatch.setattr(
+        "app.services.triggers.runner.run_agent_task",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should run on desktop")),
+    )
+    result = execute_scheduled_agent_run(db, trigger_id="tr-1")
+    assert result["ok"] is True
+    assert result["dispatched"] == "desktop"
+    assert sent[0][0] == user_id
+    assert sent[0][1]["workflow_id"] == workflow_id
+    assert sent[0][1]["type"] == "run_agent"
+
+
 def test_execute_scheduled_runs_when_presence_unknown(monkeypatch) -> None:
     db = _session()
     _seed(db)
     monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "unknown")
+    monkeypatch.setattr("app.services.triggers.runner.push_desktop_command", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         "app.services.triggers.runner.check_trigger_condition",
         lambda *args, **kwargs: {"matched": True, "changed": "ok"},

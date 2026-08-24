@@ -1,6 +1,7 @@
 from app.services.workflows.service import (
     WorkflowError,
     build_artifacts_zip,
+    build_local_design_prompt,
     clarify_workflow,
     confirm_agent_kpi,
     create_workflow,
@@ -8,6 +9,7 @@ from app.services.workflows.service import (
     demo_workflow,
     download_artifacts,
     execute_workflow,
+    finish_local_design_workflow,
     playbook_of,
     generate_agent_kpi,
     get_agent_kpi,
@@ -25,6 +27,7 @@ from app.services.workflows.service import (
 __all__ = [
     "WorkflowError",
     "build_artifacts_zip",
+    "build_local_design_prompt",
     "clarify_workflow",
     "confirm_agent_kpi",
     "create_workflow",
@@ -32,6 +35,7 @@ __all__ = [
     "demo_workflow",
     "download_artifacts",
     "execute_workflow",
+    "finish_local_design_workflow",
     "playbook_of",
     "generate_agent_kpi",
     "get_agent_kpi",

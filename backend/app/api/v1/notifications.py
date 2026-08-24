@@ -203,6 +203,7 @@ async def notification_scheduler() -> None:
 
 async def board_live_subscriber() -> None:
     from app.services.sessions import _redis
+    from app.services.desktop_commands import DESKTOP_COMMAND_CHANNEL
     from app.services.workflows.board_live import BOARD_CHANNEL, relay_board_message
     from app.services.workflows.tool_live import TOOL_CHANNEL
 
@@ -214,7 +215,7 @@ async def board_live_subscriber() -> None:
         pubsub = None
         try:
             pubsub = client.pubsub()
-            pubsub.subscribe(BOARD_CHANNEL, TOOL_CHANNEL)
+            pubsub.subscribe(BOARD_CHANNEL, TOOL_CHANNEL, DESKTOP_COMMAND_CHANNEL)
             logger.info("Board live subscriber connected")
             while True:
                 message = await asyncio.to_thread(pubsub.get_message, True, 0.4)

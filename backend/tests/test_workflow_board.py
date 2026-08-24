@@ -9,7 +9,12 @@ from app.models.trigger import AgentTrigger
 from app.models.user import AppUser
 from app.models.workflow import Workflow
 from app.services.workflows.board import get_workflow_board
-from app.services.workflows.service import resume_auto_run, stop_auto_run
+from app.services.workflows.service import (
+    finish_local_demo_workflow,
+    finish_local_design_workflow,
+    resume_auto_run,
+    stop_auto_run,
+)
 
 
 def _session() -> Session:
@@ -82,6 +87,69 @@ def test_board_stats_and_past_event() -> None:
     assert len(past) == 1
     assert past[0].status == "ok"
     assert past[0].source == "schedule"
+
+
+def test_finish_local_demo_workflow_marks_playbook_verified() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    row = db.get(Workflow, workflow_id)
+    assert row is not None
+    row.phase = "designed"
+    row.local_run = {
+        "playbook_draft": {
+            "name": "Контроль сроков",
+            "steps": [{"id": "s1", "title": "Проверить проекты", "tool": "turboproject.projects"}],
+            "result": "Список рисков",
+        }
+    }
+    db.commit()
+
+    result = finish_local_demo_workflow(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        answer="WORK_RESULT: рисков нет\nTESTS: PASS\nplaybook: проверять проекты",
+        events=[
+            {
+                "type": "tool_result",
+                "tool": "turboproject.projects",
+                "ok": True,
+                "result": {"items": []},
+            }
+        ],
+    )
+
+    assert result.phase == "tested"
+    assert result.local_run["runtime"] == "cursor-sdk"
+    assert result.local_run["demo_ok"] is True
+
+
+def test_finish_local_design_workflow_stores_sdk_draft() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    row = db.get(Workflow, workflow_id)
+    assert row is not None
+    row.phase = "new"
+    row.notes = "Нужно проверять сроки проектов"
+    db.commit()
+
+    result = finish_local_design_workflow(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        answer=(
+            '{"goal":"Проверять сроки проектов",'
+            '"steps":[{"id":"s1","title":"Собрать проекты","system":"turboproject",'
+            '"entity":"project","operation":"list","done_when":"Есть список проектов",'
+            '"on_empty":"Сообщить, что проектов нет","on_error":"Показать ошибку"}],'
+            '"result":"Список рисков"}'
+        ),
+    )
+
+    assert result.phase in {"designed", "clarify"}
+    assert result.local_run["runtime"] == "cursor-sdk"
+    assert result.local_run["design_runtime"] == "cursor-sdk"
+    assert result.local_run["playbook_draft"]["steps"]
 
 
 def test_board_expands_interval_across_week() -> None:

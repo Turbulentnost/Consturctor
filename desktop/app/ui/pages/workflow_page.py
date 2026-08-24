@@ -2749,20 +2749,14 @@ class WorkflowPage(QWidget):
             def create_and_demo() -> WorkflowRecord:
                 created = self._api.create_workflow(notes=notes, file_paths=self._pending_paths)
                 created = self._persist_passport_runtime(created)
-                demoed = self._api.stream_plan_workflow(
-                    created.id,
-                    lambda event_type, text: self._stream_event.emit(event_type, text),
-                )
+                demoed = self._design_with_sdk(created.id)
                 return self._persist_passport_runtime(demoed)
 
             self._run_async("Планирование черновика", create_and_demo)
             return
         self._run_async(
             "Планирование черновика",
-            lambda: self._api.stream_plan_workflow(
-                self._record.id,  # type: ignore[union-attr]
-                lambda event_type, text: self._stream_event.emit(event_type, text),
-            ),
+            lambda: self._design_with_sdk(self._record.id),  # type: ignore[union-attr]
         )
 
     def attach_hitl_card(self, card: QWidget) -> None:
@@ -3013,6 +3007,106 @@ class WorkflowPage(QWidget):
         except Exception:  # noqa: BLE001
             return self._api.execute_workflow(workflow_id, reexecute=reexecute)
 
+    def _design_with_sdk(self, workflow_id: str) -> WorkflowRecord:
+        events: list[dict] = []
+        try:
+            from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
+            from app.sdk_agent.prompt import build_design_sdk_prompt
+
+            bridge = CursorSdkBridge()
+            bridge.check_ready()
+            record = self._api.get_workflow(workflow_id)
+            design_prompt = self._api.local_design_prompt(workflow_id)
+
+            def on_sdk_event(payload: dict) -> None:
+                if not isinstance(payload, dict):
+                    return
+                event_type = str(payload.get("type") or "")
+                if event_type not in {"ready", "done"}:
+                    events.append(payload)
+                text = str(payload.get("text") or payload.get("message") or "")
+                if event_type == "assistant":
+                    self._stream_event.emit("assistant", text)
+                elif event_type == "tool_call":
+                    self._stream_event.emit(
+                        "decision",
+                        f"Проектировщик проверяет: {payload.get('tool') or ''}",
+                    )
+                elif event_type == "tool_result":
+                    self._stream_event.emit(
+                        "tool_result",
+                        f"{payload.get('tool') or ''}\nГотово",
+                    )
+                elif event_type in {"status", "decision", "progress", "error", "thinking"}:
+                    self._stream_event.emit(event_type, text)
+
+            result = bridge.run(
+                prompt=build_design_sdk_prompt(record, design_prompt),
+                workflow_id=workflow_id,
+                tools=[],
+                on_event=on_sdk_event,
+            )
+            answer = str(result.get("answer") or "").strip()
+            return self._api.finish_local_design_workflow(
+                workflow_id,
+                answer=answer,
+                events=events,
+            )
+        except CursorSdkUnavailable:
+            return self._api.stream_plan_workflow(
+                workflow_id,
+                lambda event_type, text: self._stream_event.emit(event_type, text),
+            )
+
+    def _demo_with_sdk(self, workflow_id: str) -> WorkflowRecord:
+        events: list[dict] = []
+        try:
+            from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
+            from app.sdk_agent.prompt import build_demo_sdk_prompt
+
+            bridge = CursorSdkBridge()
+            bridge.check_ready()
+            record = self._api.get_workflow(workflow_id)
+
+            def on_sdk_event(payload: dict) -> None:
+                if not isinstance(payload, dict):
+                    return
+                event_type = str(payload.get("type") or "")
+                if event_type not in {"ready", "done"}:
+                    events.append(payload)
+                text = str(payload.get("text") or payload.get("message") or "")
+                if event_type == "assistant":
+                    self._stream_event.emit("assistant", text)
+                elif event_type == "tool_call":
+                    self._stream_event.emit(
+                        "decision",
+                        f"Выполняю на этом компьютере: {payload.get('tool') or ''}",
+                    )
+                elif event_type == "tool_result":
+                    self._stream_event.emit(
+                        "tool_result",
+                        f"{payload.get('tool') or ''}\nГотово",
+                    )
+                elif event_type in {"status", "decision", "progress", "error", "thinking"}:
+                    self._stream_event.emit(event_type, text)
+
+            result = bridge.run(
+                prompt=build_demo_sdk_prompt(record),
+                workflow_id=workflow_id,
+                on_event=on_sdk_event,
+            )
+            answer = str(result.get("answer") or "").strip()
+            return self._api.finish_local_demo_workflow(
+                workflow_id,
+                answer=answer,
+                events=events,
+            )
+        except CursorSdkUnavailable:
+            return self._api.stream_demo_workflow(
+                workflow_id,
+                lambda event_type, text: self._stream_event.emit(event_type, text),
+            )
+
     def _store_retry_hint(self, text: str) -> None:
         hint = (text or "").strip()
         if not hint or self._record is None:
@@ -3052,10 +3146,7 @@ class WorkflowPage(QWidget):
         workflow_id = self._record.id
         self._run_async(
             "Пробный прогон",
-            lambda: self._api.stream_demo_workflow(
-                workflow_id,
-                lambda event_type, text: self._stream_event.emit(event_type, text),
-            ),
+            lambda: self._demo_with_sdk(workflow_id),
         )
 
     def _show_test_run_result(self, *, files: list[str], dest_dir: str) -> None:

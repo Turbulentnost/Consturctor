@@ -12,7 +12,7 @@ from app.models.user import AppUser
 from app.models.workflow import Workflow
 from app.schemas.notification import DirectoryUser, NotificationCreate, NotificationOut
 from app.services.notifications.hub import hub
-from app.services.triggers.service import is_workflow_deleted
+from app.services.triggers.service import workflow_is_deleted
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +172,7 @@ def list_inbox(db: Session, *, user_id: str, limit: int = 80) -> list[Notificati
     alive_ids = {
         str(item.id)
         for item in alive_rows
-        if not is_workflow_deleted(item.local_run)
+        if not workflow_is_deleted(item)
     }
     items: list[NotificationOut] = []
     for row in rows:

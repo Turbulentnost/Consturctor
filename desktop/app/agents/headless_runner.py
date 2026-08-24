@@ -25,8 +25,11 @@ class HeadlessRunner(QObject):
 
     def handle_command(self, payload: dict) -> None:
         kind = str(payload.get("type") or "")
-        if kind in {"evaluate_trigger", "run_agent"}:
-            logger.info("Skip %s: scheduled runs are owned by the server worker", kind)
+        if kind == "evaluate_trigger":
+            self._start_check(payload)
+            return
+        if kind == "run_agent":
+            self._start_run(payload)
 
     def _start_check(self, payload: dict) -> None:
         with self._lock:
@@ -80,29 +83,86 @@ class HeadlessRunner(QObject):
         workflow_id = str(payload.get("workflow_id") or "").strip()
         trigger_id = str(payload.get("trigger_id") or payload.get("id") or "")
         message = str(payload.get("message") or "").strip()
+        events: list[dict] = []
+        run_id = ""
         try:
             if not workflow_id:
                 return
+            record = self._api.get_workflow(workflow_id)
             if not message:
-                title = ""
-                try:
-                    record = self._api.get_workflow(workflow_id)
-                    title = str(getattr(record, "title", "") or "")
-                except ApiError:
-                    title = ""
+                title = str(getattr(record, "title", "") or "")
                 message = (
                     f"Выполни рабочую задачу агента «{title or 'агент'}» по правилам из его плана "
                     "и покажи понятный результат."
                 )
             self._toast("Агент запущен по триггеру", message[:180], workflow_id)
-            self._api.stream_workflow_agent_run(
+            from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
+            from app.sdk_agent.prompt import build_sdk_prompt
+
+            bridge = CursorSdkBridge()
+            try:
+                bridge.check_ready()
+            except CursorSdkUnavailable:
+                self._api.stream_workflow_agent_run(
+                    workflow_id,
+                    message,
+                    lambda _payload: None,
+                    source="trigger",
+                    trigger_id=trigger_id,
+                    evidence=str(payload.get("evidence") or ""),
+                )
+                if trigger_id and not payload.get("acked"):
+                    self._api.ack_trigger_fired(trigger_id, evidence=str(payload.get("evidence") or "запущен"))
+                self._toast("Агент завершил работу", "Нажмите, чтобы открыть ход", workflow_id)
+                return
+            history = self._api.start_local_agent_run(
                 workflow_id,
-                message,
-                lambda _payload: None,
+                message=message,
                 source="trigger",
                 trigger_id=trigger_id,
                 evidence=str(payload.get("evidence") or ""),
             )
+            run_id = history.id
+
+            def collect(event: dict) -> None:
+                if isinstance(event, dict) and event.get("type") not in {"ready", "done"}:
+                    events.append(event)
+
+            try:
+                result = bridge.run(
+                    prompt=build_sdk_prompt(record, message),
+                    workflow_id=workflow_id,
+                    on_event=collect,
+                )
+                answer = str(result.get("answer") or "")
+                self._api.finish_local_agent_run(
+                    workflow_id,
+                    run_id,
+                    status="ok",
+                    answer=answer,
+                    events=events,
+                    message=message,
+                )
+            except CursorSdkUnavailable:
+                self._api.finish_local_agent_run(
+                    workflow_id,
+                    run_id,
+                    status="error",
+                    answer="Cursor SDK стал недоступен во время запуска.",
+                    events=events,
+                    message=message,
+                )
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._api.finish_local_agent_run(
+                    workflow_id,
+                    run_id,
+                    status="error",
+                    answer=str(exc),
+                    events=events,
+                    message=message,
+                )
+                raise
             if trigger_id and not payload.get("acked"):
                 self._api.ack_trigger_fired(trigger_id, evidence=str(payload.get("evidence") or "запущен"))
             self._toast("Агент завершил работу", "Нажмите, чтобы открыть ход", workflow_id)

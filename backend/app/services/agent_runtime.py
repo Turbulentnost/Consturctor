@@ -4,6 +4,7 @@ import re
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.workflow import Workflow
 from app.services.local_mcp import list_tools
@@ -296,9 +297,12 @@ def _run_with_playbook(
             "notifications": work.get("notifications") or [],
         }
     )
+    db.refresh(workflow)
     local = dict(workflow.local_run or {})
-    local["work_result"] = work
-    workflow.local_run = local
+    if not local.get("deleted"):
+        local["work_result"] = work
+        workflow.local_run = local
+        flag_modified(workflow, "local_run")
     workflow.last_result = answer
     db.commit()
     return {

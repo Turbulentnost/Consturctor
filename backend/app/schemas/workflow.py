@@ -193,6 +193,29 @@ class AgentToolResultSubmit(BaseModel):
     error: str = ""
 
 
+class AgentRunCreate(BaseModel):
+    message: str = ""
+    source: str = "chat"
+    trigger_id: str = ""
+    evidence: str = ""
+
+
+class AgentRunEventsUpdate(BaseModel):
+    events: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AgentRunFinish(BaseModel):
+    status: str = "ok"
+    answer: str = ""
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    message: str = ""
+
+
+class LocalDemoFinish(BaseModel):
+    answer: str = ""
+    events: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class AgentRunOut(BaseModel):
     id: str
     workflow_id: str
