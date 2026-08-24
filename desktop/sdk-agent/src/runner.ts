@@ -67,6 +67,27 @@ function stringFrom(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+const ASK_QUESTION_SCHEMA: Record<string, JsonValue> = {
+  type: "object",
+  properties: {
+    question: {
+      type: "string",
+      description: "One question about one parameter. Do not combine several questions.",
+    },
+    options: {
+      type: "array",
+      items: { type: "string" },
+      description: "Optional answer choices",
+    },
+  },
+  required: ["question"],
+};
+
+function isAskQuestion(name: string): boolean {
+  const folded = normalizeToolName(name).toLowerCase();
+  return folded === "askquestion" || folded === "ask_question";
+}
+
 function questionPayload(args: Record<string, unknown>): { question: string; options: string[] } {
   const question =
     stringFrom(args.question) ||
@@ -94,11 +115,62 @@ function questionPayload(args: Record<string, unknown>): { question: string; opt
   return { question, options };
 }
 
+async function executeAskQuestion(args: Record<string, JsonValue>): Promise<JsonValue> {
+  const { question, options } = questionPayload(args as Record<string, unknown>);
+  const requestId = randomUUID();
+  emit({
+    type: "tool_call",
+    requestId,
+    tool: "askQuestion",
+    arguments: args || {},
+  });
+  if (question) {
+    emit({ type: "question", requestId, question, options, arguments: args });
+  }
+  emit({
+    type: "tool_request",
+    requestId,
+    tool: "askQuestion",
+    arguments: args || {},
+  });
+  const payload = await waitForToolResult(requestId);
+  const result = payload.result && typeof payload.result === "object" ? payload.result : {};
+  const answer =
+    stringFrom((result as Record<string, unknown>).answer) ||
+    stringFrom((result as Record<string, unknown>).text) ||
+    stringFrom(payload.error);
+  const ok = payload.ok !== false && Boolean(answer);
+  emit({
+    type: "tool_result",
+    requestId,
+    tool: "askQuestion",
+    ok,
+    result: { answer, text: answer },
+  });
+  if (!ok) {
+    return {
+      content: [{ type: "text", text: answer || "User did not answer" }],
+      isError: true,
+    };
+  }
+  return {
+    content: [{ type: "text", text: `User answer: ${answer}` }],
+  };
+}
+
 function buildCustomTools(specs: ToolSpec[], design: boolean): Record<string, unknown> {
   const tools: Record<string, unknown> = {};
   for (const spec of specs) {
     const name = normalizeToolName(spec.name);
     if (!name || tools[name]) continue;
+    if (isAskQuestion(name)) {
+      tools.askQuestion = {
+        description: spec.description || "Ask the desktop user a question and wait for the answer.",
+        inputSchema: spec.inputSchema || ASK_QUESTION_SCHEMA,
+        execute: executeAskQuestion,
+      };
+      continue;
+    }
     tools[name] = {
       description: spec.description || name,
       inputSchema: spec.inputSchema || { type: "object", properties: {} },
@@ -153,6 +225,13 @@ function buildCustomTools(specs: ToolSpec[], design: boolean): Record<string, un
         emit({ type: "tool_result", requestId, tool: name, ok: true, result });
         return result as JsonValue;
       },
+    };
+  }
+  if (!tools.askQuestion) {
+    tools.askQuestion = {
+      description: "Ask the desktop user a question and wait for the answer.",
+      inputSchema: ASK_QUESTION_SCHEMA,
+      execute: executeAskQuestion,
     };
   }
   return tools;
@@ -215,9 +294,8 @@ async function runAgent(command: RunCommand): Promise<void> {
         // Do not load repo .cursor/mcp.json. Constructor tools come from customTools.
         settingSources: [],
       },
-      // mcp is required for customTools. askQuestion lets the planner ask the user.
-      // An mcp-only allowlist with empty customTools made the model say "no MCP found".
-      tools: customNames.length > 0 ? ["mcp", "askQuestion"] : ["askQuestion"],
+      // mcp is required for customTools. askQuestion is a Constructor customTool.
+      tools: ["mcp"],
     });
     const run = await agent.send(command.prompt);
     emit({ type: "status", text: "Агент работает на этом компьютере..." });

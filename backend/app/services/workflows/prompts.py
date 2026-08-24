@@ -541,6 +541,8 @@ def parse_playbook_draft(text: str) -> dict[str, Any]:
             )
             if item
         ],
+        "answers": str(data.get("answers") or "").strip(),
+        "when_to_run": str(data.get("when_to_run") or "").strip(),
         "result": str(data.get("result") or "").strip(),
         "recipient": str(data.get("recipient") or "").strip(),
         "confirmation_points": [

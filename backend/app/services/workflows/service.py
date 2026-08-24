@@ -289,6 +289,14 @@ def update_local_run(
 ) -> WorkflowSchema:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     row.local_run = dict(local_run or {})
+    draft = row.local_run.get("playbook_draft") if isinstance(row.local_run, dict) else {}
+    has_steps = isinstance(draft, dict) and bool(draft.get("steps"))
+    if (row.phase or "") in {"document", "new", ""} and has_steps:
+        row.phase = "designed"
+    elif (row.phase or "") in {"document", "new", ""} and str(
+        (row.local_run or {}).get("design_runtime") or ""
+    ).strip():
+        row.phase = "designing"
     db.commit()
     db.refresh(row)
     return _to_schema(row)
@@ -456,6 +464,110 @@ def build_local_design_prompt(
     return _build_design_prompt(row)
 
 
+def _same_design_question(left: str, right: str) -> bool:
+    na = " ".join((left or "").casefold().replace("ё", "е").split())
+    nb = " ".join((right or "").casefold().replace("ё", "е").split())
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    return len(shorter) >= 24 and shorter in longer
+
+
+_DESIGN_TOPIC_HINTS = {
+    "when": ("когда запуска", "как часто", "по расписан", "когда стартовать", "триггер"),
+    "period": ("период", "контур", "за какой срок", "какие проект", "объем", "объём", "горизонт", "за один прогон"),
+    "recipient": ("кому", "получател", "кто получает", "кто получатель"),
+    "success": ("критерий успеха", "критерии успеха", "когда считать готов", "что считать успех"),
+}
+
+
+def _design_topics(text: str) -> set[str]:
+    folded = " ".join((text or "").casefold().replace("ё", "е").split())
+    return {
+        name
+        for name, hints in _DESIGN_TOPIC_HINTS.items()
+        if any(hint in folded for hint in hints)
+    }
+
+
+def _answered_design_topics(qa: list[tuple[str, str]]) -> set[str]:
+    covered: set[str] = set()
+    for question, answer in qa:
+        if answer:
+            covered |= _design_topics(question)
+    return covered
+
+
+def _qa_from_design_events(events: list[dict[str, Any]] | None) -> list[tuple[str, str]]:
+    pending: dict[str, str] = {}
+    last_question = ""
+    pairs: list[tuple[str, str]] = []
+    for raw in events or []:
+        if not isinstance(raw, dict):
+            continue
+        event_type = str(raw.get("type") or "")
+        if event_type == "question":
+            question = str(raw.get("question") or raw.get("prompt") or "").strip()
+            request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
+            if question:
+                last_question = question
+                if request_id:
+                    pending[request_id] = question
+            continue
+        if event_type != "tool_result":
+            continue
+        tool = str(raw.get("tool") or raw.get("name") or "").strip().casefold()
+        if tool not in {"askquestion", "ask_question"}:
+            continue
+        result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
+        answer = str((result or {}).get("answer") or (result or {}).get("text") or "").strip()
+        if not answer:
+            continue
+        request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
+        question = pending.pop(request_id, "") or last_question
+        if question:
+            pairs.append((question, answer))
+    return pairs
+
+
+def _apply_design_answers_to_draft(
+    draft: dict[str, Any],
+    qa: list[tuple[str, str]],
+) -> dict[str, Any]:
+    if not qa:
+        return draft
+    updated = dict(draft or {})
+    lines = [str(updated.get("answers") or "").strip()]
+    for question, answer in qa:
+        if question and answer:
+            lines.append(f"{question}: {answer}")
+    updated["answers"] = "\n".join(item for item in lines if item)
+    remaining: list[Any] = []
+    for item in updated.get("required_clarifications") or []:
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, dict):
+            text = str(item.get("question") or "").strip()
+        else:
+            text = ""
+        if text and (
+            any(_same_design_question(text, question) for question, _answer in qa)
+            or _design_topics(text) <= _answered_design_topics(qa)
+        ):
+            continue
+        remaining.append(item)
+    updated["required_clarifications"] = remaining
+    for question, answer in qa:
+        folded = " ".join((question or "").casefold().replace("ё", "е").split())
+        if any(hint in folded for hint in ("когда запуска", "как часто", "по расписан", "когда стартовать")):
+            updated["when_to_run"] = str(updated.get("when_to_run") or answer).strip()
+        if any(hint in folded for hint in ("кому", "получател", "кто получает")):
+            updated["recipient"] = str(updated.get("recipient") or answer).strip()
+    return updated
+
+
 def finish_local_design_workflow(
     db: Session,
     *,
@@ -466,9 +578,11 @@ def finish_local_design_workflow(
     on_event: WorkflowEventCallback | None = None,
 ) -> WorkflowSchema:
     """Finish a desktop Cursor SDK design run without calling Cursor REST."""
-    _ = events
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
-    draft = prompts.parse_playbook_draft(answer or "")
+    draft = _apply_design_answers_to_draft(
+        prompts.parse_playbook_draft(answer or ""),
+        _qa_from_design_events(events),
+    )
     if not draft.get("steps"):
         local = dict(row.local_run or {})
         local["runtime"] = "cursor-sdk"

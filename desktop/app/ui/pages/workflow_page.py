@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import re
 import time
 from dataclasses import dataclass, replace
@@ -47,6 +48,7 @@ from app.api_client import (
     WorkflowPlan,
     WorkflowRecord,
 )
+from app.sdk_agent.tool_adapter import is_ask_question
 from app.tools.hitl import attach_pending_for, register_inline_host, set_host_workflow_id
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 from app.ui.widgets.cursor_feed import CursorFeedItem, resolve_feed_kind
@@ -282,8 +284,12 @@ def _local_design_prompt_for_record(record: WorkflowRecord) -> str:
         "Верни JSON-объект с полями goal, inputs, required_clarifications, result, "
         "recipient, confirmation_points, steps.\n"
         "Если в материалах нет расписания, периода, получателя или критерия успеха, "
-        "задай вопросы через SDK askQuestion и заполни required_clarifications "
-        "вопросами с 2-4 вариантами. Не выдумывай эти параметры.\n"
+        "вызови инструмент askQuestion из Constructor tools и дождись ответа. "
+        "В одном вызове ровно один параметр: расписание, период, получатель или критерий успеха. "
+        "Не склеивай несколько вопросов и не переформулируй уже отвеченные. "
+        "Не ищи askQuestion в MCP. "
+        "Уже полученные ответы запиши в recipient/when_to_run/answers "
+        "и не клади их снова в required_clarifications.\n"
         "Каждый step должен иметь id, title, action, done_when, on_empty, on_error.\n"
         f"Название агента: {title}\n\n"
         "Материалы:\n"
@@ -313,6 +319,8 @@ def _draft_from_sdk_answer(answer: str) -> dict:
         "goal": str(data.get("goal") or "").strip(),
         "inputs": [str(x).strip() for x in (data.get("inputs") or []) if str(x).strip()],
         "required_clarifications": data.get("required_clarifications") or [],
+        "answers": str(data.get("answers") or "").strip(),
+        "when_to_run": str(data.get("when_to_run") or "").strip(),
         "result": str(data.get("result") or "").strip(),
         "recipient": str(data.get("recipient") or "").strip(),
         "confirmation_points": [
@@ -376,6 +384,201 @@ def _same_feed_question(left: str, right: str) -> bool:
         return True
     shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
     return len(shorter) >= 24 and shorter in longer
+
+
+_QUESTION_TOPIC_HINTS = {
+    "when": (
+        "когда запуска",
+        "как часто",
+        "по расписан",
+        "когда стартовать",
+        "триггер",
+        "когда запускать",
+    ),
+    "period": (
+        "период",
+        "контур",
+        "за какой срок",
+        "какие проект",
+        "объем",
+        "объём",
+        "горизонт",
+        "за один прогон",
+        "какой период",
+    ),
+    "recipient": (
+        "кому",
+        "получател",
+        "кто получает",
+        "кто получатель",
+    ),
+    "success": (
+        "критерий успеха",
+        "критерии успеха",
+        "когда считать готов",
+        "что считать успех",
+        "признак успеха",
+    ),
+}
+_NUM_QUESTION_RE = re.compile(r"^\s*\d+[\).]\s+(.*)$")
+_OPTION_LINE_RE = re.compile(r"^(?:[-•*]|\(?[A-Da-dа-гА-Г]\)?[\).:])\s+(.*)$")
+
+
+def _folded_question(text: str) -> str:
+    return " ".join((text or "").casefold().replace("ё", "е").split())
+
+
+def question_topics(text: str) -> frozenset[str]:
+    folded = _folded_question(text)
+    if not folded:
+        return frozenset()
+    return frozenset(
+        name
+        for name, hints in _QUESTION_TOPIC_HINTS.items()
+        if any(hint in folded for hint in hints)
+    )
+
+
+def split_design_questions(
+    text: str,
+    options: list[str] | None = None,
+) -> list[tuple[str, list[str]]]:
+    fallback = (text or "").strip()
+    shared = [str(item).strip() for item in (options or []) if str(item).strip()][:6]
+    if not fallback:
+        return []
+    blocks: list[tuple[str, list[str]]] = []
+    current = ""
+    current_opts: list[str] = []
+    for raw in fallback.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        numbered = _NUM_QUESTION_RE.match(line)
+        if numbered:
+            if current:
+                blocks.append((current, current_opts))
+            current = numbered.group(1).strip()
+            current_opts = []
+            continue
+        option = _OPTION_LINE_RE.match(line)
+        if option and current:
+            current_opts.append(option.group(1).strip())
+            continue
+        if current:
+            current = f"{current} {line}".strip()
+    if current:
+        blocks.append((current, current_opts))
+    if len(blocks) >= 2:
+        return [
+            (question, (opts or shared)[:6])
+            for question, opts in blocks
+            if question
+        ]
+    pieces = [item.strip() for item in re.split(r"\?\s+", fallback) if item.strip()]
+    questions = [item if item.endswith("?") else f"{item}?" for item in pieces if len(item) >= 8]
+    if len(questions) >= 2 and len(question_topics(fallback)) >= 2:
+        return [(item, shared) for item in questions]
+    return [(fallback, shared)]
+
+
+def _clarification_question(item: object) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    if isinstance(item, dict):
+        return str(item.get("question") or item.get("prompt") or "").strip()
+    return ""
+
+
+def qa_from_sdk_events(events: list[dict] | None) -> list[tuple[str, str]]:
+    pending: dict[str, str] = {}
+    last_question = ""
+    pairs: list[tuple[str, str]] = []
+    for raw in events or []:
+        if not isinstance(raw, dict):
+            continue
+        event_type = str(raw.get("type") or "")
+        if event_type == "question":
+            question = str(raw.get("question") or raw.get("prompt") or "").strip()
+            request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
+            if question:
+                last_question = question
+                if request_id:
+                    pending[request_id] = question
+            continue
+        if event_type != "tool_result":
+            continue
+        tool = str(raw.get("tool") or raw.get("name") or "")
+        if not is_ask_question(tool):
+            continue
+        result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
+        answer = str((result or {}).get("answer") or (result or {}).get("text") or "").strip()
+        if not answer:
+            continue
+        request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
+        question = pending.pop(request_id, "") or last_question
+        if question:
+            pairs.append((question, answer))
+    return pairs
+
+
+def apply_sdk_answers_to_draft(draft: dict, qa: list[tuple[str, str]]) -> dict:
+    updated = dict(draft or {})
+    if not qa:
+        return updated
+    lines = [str(updated.get("answers") or "").strip()]
+    for question, answer in qa:
+        if question and answer:
+            lines.append(f"{question}: {answer}")
+    updated["answers"] = "\n".join(item for item in lines if item)
+    remaining: list[object] = []
+    for item in updated.get("required_clarifications") or []:
+        text = _clarification_question(item)
+        if text and _answered_text_for(qa, text):
+            continue
+        remaining.append(item)
+    updated["required_clarifications"] = remaining
+    for question, answer in qa:
+        topics = question_topics(question)
+        if "when" in topics:
+            updated["when_to_run"] = str(updated.get("when_to_run") or answer).strip()
+        if "recipient" in topics:
+            updated["recipient"] = str(updated.get("recipient") or answer).strip()
+    return updated
+
+
+def _keep_newer_phase(current: WorkflowRecord, saved: WorkflowRecord) -> WorkflowRecord:
+    if _PHASE_RANK.get(current.phase, 0) > _PHASE_RANK.get(saved.phase, 0):
+        return replace(
+            saved,
+            phase=current.phase,
+            plan=current.plan or saved.plan,
+            local_run=current.local_run or saved.local_run,
+        )
+    return saved
+
+
+def _answered_text_for(qa: list[tuple[str, str]], question: str) -> str:
+    for asked, answer in qa:
+        if answer and _same_feed_question(asked, question):
+            return answer
+    topics = question_topics(question)
+    if not topics:
+        return ""
+    covered: set[str] = set()
+    parts: list[str] = []
+    for asked, answer in qa:
+        if not answer:
+            continue
+        overlap = topics & question_topics(asked)
+        if not overlap:
+            continue
+        covered |= overlap
+        if answer not in parts:
+            parts.append(answer)
+    if topics <= covered:
+        return "; ".join(parts)
+    return ""
 
 
 def _take_words(text: str, count: int) -> str:
@@ -1346,6 +1549,7 @@ class WorkflowPage(QWidget):
     _async_ok = Signal(object, str)
     _async_fail = Signal(str)
     _stream_event = Signal(str, str)
+    _record_ready = Signal(object)
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1384,8 +1588,14 @@ class WorkflowPage(QWidget):
         self._live_tools: list[dict] = []
         self._live_tool_widgets: dict[str, CursorFeedItem] = {}
         self._hitl_cards: list[QWidget] = []
-        self._activity_banner: QLabel | None = None
         self._busy_frames = ("◐", "◓", "◑", "◒")
+        self._live_sdk_question: WorkflowOpenQuestion | None = None
+        self._live_sdk_request_id = ""
+        self._sdk_answer_queue: queue.Queue[dict] = queue.Queue()
+        self._sdk_answered: list[tuple[str, str]] = []
+        self._sdk_question_parts: list[tuple[str, list[str]]] = []
+        self._sdk_part_index = 0
+        self._sdk_part_answers: list[str] = []
         self._question_fields: dict[str, QLineEdit] = {}
         self._current_question_id = ""
         self._selected_quick_answer = ""
@@ -1393,6 +1603,7 @@ class WorkflowPage(QWidget):
         self._async_ok.connect(self._on_async_ok)
         self._async_fail.connect(self._on_async_fail)
         self._stream_event.connect(self._on_stream_event)
+        self._record_ready.connect(self._attach_created_record)
         self._thinking_timer = QTimer(self)
         self._thinking_timer.setInterval(_PACER_MS)
         self._thinking_timer.timeout.connect(self._tick_thinking_pacer)
@@ -1633,6 +1844,30 @@ class WorkflowPage(QWidget):
         if auto_plan:
             self._on_plan()
 
+    def _workflow_phase(self) -> str:
+        phase = self._record.phase if self._record else "document"
+        if self._record is None and self._busy and self._planning_stream:
+            return "designing"
+        if self._record is not None and self._busy and self._planning_stream and phase in {"document", "new", ""}:
+            return "designing"
+        return phase or "document"
+
+    def _attach_created_record(self, record: object) -> None:
+        if not isinstance(record, WorkflowRecord):
+            return
+        incoming = record
+        if incoming.phase in {"document", "new", ""}:
+            incoming = replace(incoming, phase="designing")
+        if self._record is not None and self._record.id != incoming.id:
+            return
+        if self._record is not None and self._record.id == incoming.id:
+            incoming = _keep_newer_phase(incoming, self._record)
+        self._record = incoming
+        set_host_workflow_id(self, incoming.id)
+        self._workflow_title = incoming.title or self._workflow_title
+        self._notes = incoming.notes or self._notes
+        self._stepper.set_phase(self._workflow_phase(), busy=self._busy)
+
     def _persist_passport_runtime(self, record: WorkflowRecord) -> WorkflowRecord:
         if not self._passport_runtime:
             return record
@@ -1644,9 +1879,10 @@ class WorkflowPage(QWidget):
         local["autonomy_level"] = level
         local["autonomy_policy"] = policy
         try:
-            return self._api.update_workflow_local_run(record.id, local)
+            saved = self._api.update_workflow_local_run(record.id, local)
         except ApiError:
             return record
+        return _keep_newer_phase(record, saved)
 
     # --- render ----------------------------------------------------------------
 
@@ -1724,7 +1960,7 @@ class WorkflowPage(QWidget):
         )
 
     def _render_all(self) -> None:
-        phase = self._record.phase if self._record else "document"
+        phase = self._workflow_phase()
         if self._busy and self._execute_started and phase == "designed":
             phase = "executing"
         self._stepper.set_phase(phase, busy=self._busy)
@@ -1750,7 +1986,9 @@ class WorkflowPage(QWidget):
         self._composer_wrap.setVisible(not draft_ready and not can_next)
         self._next_btn.setVisible(can_next)
         self._next_btn.setEnabled(can_next)
-        if self._post_build_question and not self._busy:
+        if self._live_sdk_question is not None:
+            self._current_question_id = self._live_sdk_question.id
+        elif self._post_build_question and not self._busy:
             self._current_question_id = self._post_build_question.id
         elif self._record and self._record.plan and not self._busy:
             self._sync_question_state(self._record.plan)
@@ -1759,7 +1997,8 @@ class WorkflowPage(QWidget):
             self._selected_quick_answer = ""
             self._question_fields = {}
         if self._busy:
-            self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
+            if self._live_sdk_question is None:
+                self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
             self._tick_activity()
         elif self._last_stream_error and not can_next:
             self._agent_status.setText("● Предыдущий запуск завершился ошибкой — можно запустить снова")
@@ -1828,16 +2067,20 @@ class WorkflowPage(QWidget):
         self._question_fields = {}
         self._answer_group = None
 
+        sdk_question = self._live_sdk_question is not None
         plan_question = bool(
             self._record
             and self._record.plan
             and self._record.plan.unanswered()
             and not self._busy
+            and not sdk_question
         )
-        post_question = bool(self._post_build_question) and not self._busy
-        show_question = plan_question or post_question
+        post_question = bool(self._post_build_question) and not self._busy and not sdk_question
+        show_question = plan_question or post_question or sdk_question
         current_q_text = ""
-        if plan_question and self._record and self._record.plan:
+        if sdk_question and self._live_sdk_question is not None:
+            current_q_text = (self._live_sdk_question.question or "").strip()
+        elif plan_question and self._record and self._record.plan:
             current_q_text = (self._record.plan.unanswered()[0].question or "").strip()
         elif post_question and self._post_build_question is not None:
             current_q_text = (self._post_build_question.question or "").strip()
@@ -1906,18 +2149,10 @@ class WorkflowPage(QWidget):
             widget.expand_toggled.connect(self._on_expand_toggled)
             self._live_tool_widgets[key] = widget
             self._feed_layout.addWidget(widget)
-        self._activity_banner = None
-        if self._busy:
-            frame = self._busy_frames[self._busy_n % len(self._busy_frames)]
-            phrase = (self._last_stream_phrase or self._busy_base or "Агент работает").strip()
-            if len(phrase) > 100:
-                phrase = phrase[:97] + "…"
-            banner = _WrappingLabel(f"{frame} Система работает — {phrase}")
-            banner.setFont(app_font(12, QFont.Weight.Medium))
-            banner.setStyleSheet("color: #08745F; background: #EAF7F3; border-radius: 10px; padding: 8px 10px;")
-            self._activity_banner = banner
-            self._feed_layout.addWidget(banner)
-        if plan_question and self._record and self._record.plan:
+        if sdk_question and self._live_sdk_question is not None:
+            card = self._make_clarification_message(self._live_sdk_question)
+            self._feed_layout.addWidget(card)
+        elif plan_question and self._record and self._record.plan:
             card = self._make_clarification_message(self._record.plan.unanswered()[0])
             self._feed_layout.addWidget(card)
         elif post_question and self._post_build_question is not None:
@@ -2101,7 +2336,7 @@ class WorkflowPage(QWidget):
         text = (question_text or "").strip()
         if not text or self._question_already_in_feed(text):
             return
-        self._push_event("Уточнение", text)
+        self._push_event("Уточнение", text, kind="question")
 
     def _ensure_question_in_feed(self, question_text: str) -> None:
         """Keep the asked question visible in history (do not lose it after answer)."""
@@ -2191,6 +2426,8 @@ class WorkflowPage(QWidget):
             return
         self._input.clear()
 
+        if self._busy and self._live_sdk_question is None:
+            return
         if self._record is None:
             if text:
                 self._notes = (self._notes + "\n" + text).strip() if self._notes else text
@@ -2217,8 +2454,24 @@ class WorkflowPage(QWidget):
                 action="Запустить сборку",
                 action_key="run_plan",
             )
-        else:
-            self._on_plan()
+            return
+        draft = (self._record.local_run or {}).get("playbook_draft") if self._record else None
+        already_designed = bool(
+            self._record
+            and (
+                self._record.phase in {"designing", "designed", "clarify", "ready", "tested", "executing"}
+                or (isinstance(draft, dict) and draft.get("steps"))
+            )
+        )
+        if already_designed:
+            self._push_event(
+                "Агент",
+                "Материалы уже собраны. Продолжаю с черновика, а не с начала.",
+            )
+            if self._can_run_demo(self._record):
+                self._on_execute()
+            return
+        self._on_plan()
 
     def _append_user_files_to_event(self) -> None:
         if self._pending_paths:
@@ -2241,7 +2494,7 @@ class WorkflowPage(QWidget):
             plan = self._record.plan if self._record else None
             unanswered = bool(plan and plan.unanswered())
             self._update_run_button(plan=plan, unanswered=unanswered)
-            phase = self._record.phase if self._record else "document"
+            phase = self._workflow_phase()
             if self._execute_started and phase == "designed":
                 phase = "executing"
             self._stepper.set_phase(phase, busy=True)
@@ -2258,7 +2511,10 @@ class WorkflowPage(QWidget):
             name = str(running.get("name") or "инструмент")
             self._agent_status.setText(f"{frame} Вызываю {name}…")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
-            self._refresh_activity_banner(f"Вызываю {name}…")
+            return
+        if self._live_sdk_question is not None:
+            self._agent_status.setText("● Агент ждёт ваш ответ")
+            self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
             return
         phrase = (self._last_stream_phrase or self._busy_base or "Агент работает").strip()
         if len(phrase) > 80:
@@ -2268,16 +2524,6 @@ class WorkflowPage(QWidget):
         else:
             self._agent_status.setText(f"{frame} {self._busy_base}{'.' * min(self._busy_n, 3)}")
         self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
-        self._refresh_activity_banner(phrase)
-
-    def _refresh_activity_banner(self, phrase: str) -> None:
-        if self._activity_banner is None or not self._busy:
-            return
-        frame = self._busy_frames[(self._busy_n - 1) % len(self._busy_frames)]
-        text = (phrase or self._busy_base or "Агент работает").strip()
-        if len(text) > 100:
-            text = text[:97] + "…"
-        self._activity_banner.setText(f"{frame} Система работает — {text}")
 
     def _tool_body_is_error(self, body: str) -> bool:
         low = (body or "").casefold()
@@ -2382,13 +2628,6 @@ class WorkflowPage(QWidget):
         )
         widget.expand_toggled.connect(self._on_expand_toggled)
         self._live_tool_widgets[key] = widget
-        banner = self._activity_banner
-        if banner is not None:
-            index = self._feed_layout.indexOf(banner)
-            if index >= 0:
-                self._feed_layout.insertWidget(index, widget)
-                self._scroll_feed_to_bottom()
-                return
         self._feed_layout.addWidget(widget)
         self._scroll_feed_to_bottom()
 
@@ -2503,6 +2742,7 @@ class WorkflowPage(QWidget):
 
     def _run_async(self, label: str, fn) -> None:
         self._reset_thinking_pacer()
+        self._reset_sdk_question()
         self._live_tools = []
         self._live_tool_widgets = {}
         self._set_busy(True, label)
@@ -2534,16 +2774,15 @@ class WorkflowPage(QWidget):
             ).strip()
             options = [str(item).strip() for item in (payload.get("options") or []) if str(item).strip()]
             if question:
-                body = question
-                if options:
-                    body += "\n\n" + "\n".join(f"• {item}" for item in options[:6])
-                self._push_event("Уточнение", body, kind="question")
-                self._tick_activity()
+                self._show_sdk_question(question, options, payload)
             return
         if event_type == "tool_call":
             self._flush_thinking()
             payload = _event_json(incoming)
             name = str(payload.get("tool") or payload.get("name") or "инструмент").strip()
+            if is_ask_question(name):
+                self._tick_activity()
+                return
             status = str(payload.get("status") or "running").strip() or "running"
             detail = ""
             if status in {"blocked_in_design", "skipped"}:
@@ -2557,6 +2796,9 @@ class WorkflowPage(QWidget):
         if event_type == "tool_result":
             self._flush_thinking()
             payload = _event_json(incoming)
+            if payload and is_ask_question(str(payload.get("tool") or payload.get("name") or "")):
+                self._tick_activity()
+                return
             if payload:
                 name = str(payload.get("tool") or payload.get("name") or "инструмент")
                 status = str(payload.get("status") or "").strip()
@@ -2772,7 +3014,8 @@ class WorkflowPage(QWidget):
     def _apply_async_result(self, result: object, label: str) -> None:
         self._set_busy(False)
         if isinstance(result, WorkflowRecord):
-            self._record = self._persist_passport_runtime(result)
+            persisted = self._persist_passport_runtime(result)
+            self._record = _keep_newer_phase(result, persisted)
             set_host_workflow_id(self, self._record.id)
             self._pending_paths = []
             self._workflow_title = result.title
@@ -2780,6 +3023,11 @@ class WorkflowPage(QWidget):
             self._render_chips()
             if label.startswith("Планирование") or label.startswith("Пробный"):
                 unanswered = result.plan.unanswered() if result.plan else []
+                unanswered = [
+                    item
+                    for item in unanswered
+                    if not _answered_text_for(self._sdk_answered, item.question)
+                ]
                 if unanswered:
                     self._push_event("Агент", unanswered[0].question)
                     self._push_question_if_new(unanswered[0].question)
@@ -2889,6 +3137,8 @@ class WorkflowPage(QWidget):
         self._show_demo_result(result)
 
     def _on_plan(self) -> None:
+        if self._busy:
+            return
         self._execute_started = False
         self._planning_stream = True
         notes = (self._notes or "").strip()
@@ -2903,6 +3153,7 @@ class WorkflowPage(QWidget):
             def create_and_demo() -> WorkflowRecord:
                 created = self._api.create_workflow(notes=notes, file_paths=self._pending_paths)
                 created = self._persist_passport_runtime(created)
+                self._record_ready.emit(replace(created, phase="designing"))
                 demoed = self._design_with_sdk(created.id)
                 return self._persist_passport_runtime(demoed)
 
@@ -3046,6 +3297,73 @@ class WorkflowPage(QWidget):
         col.addWidget(card)
         return wrap
 
+    def _show_sdk_question(self, question: str, options: list[str], payload: dict) -> None:
+        request_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
+        self._live_sdk_request_id = request_id
+        parts = [
+            (item, opts)
+            for item, opts in split_design_questions(question, options)
+            if not _answered_text_for(self._sdk_answered, item)
+        ]
+        if not parts:
+            previous = _answered_text_for(self._sdk_answered, question)
+            if previous:
+                self._sdk_answer_queue.put({"ok": True, "answer": previous})
+            return
+        self._sdk_question_parts = parts
+        self._sdk_part_index = 0
+        self._sdk_part_answers = []
+        self._present_sdk_question_part()
+
+    def _present_sdk_question_part(self) -> None:
+        if not self._sdk_question_parts:
+            return
+        index = min(self._sdk_part_index, len(self._sdk_question_parts) - 1)
+        question, options = self._sdk_question_parts[index]
+        total = len(self._sdk_question_parts)
+        why = "Агент ждёт ваш ответ, чтобы продолжить."
+        if total > 1:
+            why = f"Вопрос {index + 1} из {total}. Один параметр за раз."
+        qid = f"sdk-q-{self._live_sdk_request_id or 'live'}-{index}"
+        self._live_sdk_question = WorkflowOpenQuestion(
+            id=qid,
+            question=question,
+            why=why,
+            options=options[:6] or None,
+        )
+        self._current_question_id = qid
+        self._selected_quick_answer = ""
+        self._agent_status.setText("● Агент ждёт ваш ответ")
+        self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
+        self._rebuild_feed()
+
+    def _wait_sdk_answer(self, _payload: dict) -> dict:
+        try:
+            reply = self._sdk_answer_queue.get(timeout=15 * 60)
+        except queue.Empty:
+            return {"ok": False, "answer": "", "error": "User did not answer in time"}
+        return reply if isinstance(reply, dict) else {"ok": True, "answer": str(reply)}
+
+    def _reset_sdk_question(self) -> None:
+        had_live = self._live_sdk_question is not None
+        self._live_sdk_question = None
+        self._live_sdk_request_id = ""
+        self._sdk_answered = []
+        self._sdk_question_parts = []
+        self._sdk_part_index = 0
+        self._sdk_part_answers = []
+        if had_live:
+            try:
+                self._sdk_answer_queue.put_nowait({"ok": False, "answer": "", "error": "Question cancelled"})
+            except queue.Full:
+                pass
+            return
+        while True:
+            try:
+                self._sdk_answer_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def _clear_questions(self) -> None:
         self._question_fields = {}
         self._answer_group = None
@@ -3073,6 +3391,41 @@ class WorkflowPage(QWidget):
         return self._input.text().strip()
 
     def _submit_question_answer(self) -> None:
+        if self._live_sdk_question is not None:
+            text = self._current_answer_text()
+            if not text:
+                QMessageBox.information(self, "Ответ", "Выберите вариант или заполните свой ответ.")
+                return
+            asked = self._live_sdk_question.question
+            self._ensure_question_in_feed(asked)
+            self._push_event("Вы", text, role="user")
+            self._sdk_answered.append((asked, text))
+            self._sdk_part_answers.append(text)
+            if self._sdk_part_index + 1 < len(self._sdk_question_parts):
+                self._sdk_part_index += 1
+                self._clear_questions()
+                self._present_sdk_question_part()
+                return
+            combined = "\n".join(
+                f"{question}: {answer}"
+                for (question, _opts), answer in zip(
+                    self._sdk_question_parts,
+                    self._sdk_part_answers,
+                    strict=False,
+                )
+                if question and answer
+            )
+            self._sdk_answer_queue.put({"ok": True, "answer": combined or text})
+            self._live_sdk_question = None
+            self._live_sdk_request_id = ""
+            self._sdk_question_parts = []
+            self._sdk_part_index = 0
+            self._sdk_part_answers = []
+            self._clear_questions()
+            self._rebuild_feed()
+            self._agent_status.setText("● Продолжаю после ответа")
+            self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
+            return
         if not self._current_question_id or self._record is None:
             return
         text = self._current_answer_text()
@@ -3161,6 +3514,26 @@ class WorkflowPage(QWidget):
         except Exception:  # noqa: BLE001
             return self._api.execute_workflow(workflow_id, reexecute=reexecute)
 
+    def _close_answered_plan_questions(
+        self,
+        record: WorkflowRecord,
+        qa: list[tuple[str, str]],
+    ) -> WorkflowRecord:
+        if record.plan is None or not qa:
+            return record
+        changed = False
+        questions = []
+        for item in record.plan.open_questions or []:
+            answer = _answered_text_for(qa, item.question)
+            if answer and not (item.answer or "").strip():
+                questions.append(replace(item, answer=answer))
+                changed = True
+            else:
+                questions.append(item)
+        if not changed:
+            return record
+        return replace(record, plan=replace(record.plan, open_questions=questions))
+
     def _design_with_sdk(self, workflow_id: str) -> WorkflowRecord:
         events: list[dict] = []
         try:
@@ -3206,18 +3579,22 @@ class WorkflowPage(QWidget):
                 workflow_id=workflow_id,
                 mode="design",
                 on_event=on_sdk_event,
+                on_question=self._wait_sdk_answer,
             )
             answer = str(result.get("answer") or "").strip()
+            qa = list(self._sdk_answered) or qa_from_sdk_events(events)
+            draft = apply_sdk_answers_to_draft(_draft_from_sdk_answer(answer), qa)
+            patched = json.dumps(draft, ensure_ascii=False) if draft.get("steps") else answer
             try:
-                return self._api.finish_local_design_workflow(
+                finished = self._api.finish_local_design_workflow(
                     workflow_id,
-                    answer=answer,
+                    answer=patched,
                     events=events,
                 )
+                return self._close_answered_plan_questions(finished, qa)
             except ApiError as exc:
                 if exc.status_code not in {404, 405}:
                     raise
-                draft = _draft_from_sdk_answer(answer)
                 local = dict(record.local_run or {})
                 local["runtime"] = "cursor-sdk"
                 local["design_runtime"] = "cursor-sdk"
@@ -3279,6 +3656,7 @@ class WorkflowPage(QWidget):
                 prompt=build_demo_sdk_prompt(record),
                 workflow_id=workflow_id,
                 on_event=on_sdk_event,
+                on_question=self._wait_sdk_answer,
             )
             answer = str(result.get("answer") or "").strip()
             try:
@@ -3323,6 +3701,8 @@ class WorkflowPage(QWidget):
 
     def _on_execute(self, reexecute: bool = False) -> None:
         del reexecute
+        if self._busy:
+            return
         if self._record is None:
             self._on_plan()
             return
@@ -3540,7 +3920,7 @@ class WorkflowPage(QWidget):
         self._last_exec_report = ""
         self._live_tools = []
         self._live_tool_widgets = {}
-        self._activity_banner = None
+        self._reset_sdk_question()
         self._hitl_cards = []
         from app.tools.result_files import clear_remembered_result_files
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import DESKTOP_ROOT
-from app.sdk_agent.tool_adapter import invoke_sdk_tool, sdk_tool_specs
+from app.sdk_agent.tool_adapter import invoke_sdk_tool, is_ask_question, sdk_tool_specs
 from app.tools import ToolHostError
 
 DEFAULT_SDK_MODEL = "grok-4.6"
@@ -45,6 +45,7 @@ class CursorSdkBridge:
         mode: str = "run",
         tools: list[dict[str, Any]] | None = None,
         on_event: SdkEventCallback | None = None,
+        on_question: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self._ensure_ready()
         run_id = str(uuid.uuid4())
@@ -91,7 +92,12 @@ class CursorSdkBridge:
                 if event_type == "ready":
                     continue
                 if event_type == "tool_request":
-                    self._handle_tool_request(process, payload, workflow_id=workflow_id)
+                    self._handle_tool_request(
+                        process,
+                        payload,
+                        workflow_id=workflow_id,
+                        on_question=on_question,
+                    )
                     continue
                 if event_type == "done":
                     final = payload
@@ -176,11 +182,35 @@ class CursorSdkBridge:
         payload: dict[str, Any],
         *,
         workflow_id: str,
+        on_question: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         request_id = str(payload.get("requestId") or "")
         tool = str(payload.get("tool") or "")
         args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
         args = dict(args)
+        if is_ask_question(tool):
+            reply = {"ok": False, "answer": "", "error": "No UI waiter for askQuestion"}
+            if on_question is not None:
+                try:
+                    incoming = on_question(payload)
+                    if isinstance(incoming, dict):
+                        reply = incoming
+                except Exception as exc:  # noqa: BLE001
+                    reply = {"ok": False, "answer": "", "error": str(exc)}
+            answer = str(reply.get("answer") or reply.get("text") or "").strip()
+            error = str(reply.get("error") or "").strip()
+            ok = bool(reply.get("ok", True)) and bool(answer)
+            self._send(
+                process,
+                {
+                    "type": "tool_result",
+                    "requestId": request_id,
+                    "ok": ok,
+                    "result": {"answer": answer, "text": answer},
+                    "error": error or None,
+                },
+            )
+            return
         if workflow_id:
             args.setdefault("workflow_id", workflow_id)
             args.setdefault("agent_id", workflow_id)
