@@ -25,6 +25,7 @@ type RunCommand = {
   cwd?: string;
   mode?: "design" | "run";
   tools?: ToolSpec[];
+  resumeAgentId?: string;
 };
 
 type ToolResultCommand = {
@@ -158,14 +159,11 @@ async function executeAskQuestion(args: Record<string, JsonValue>): Promise<Json
   };
 }
 
-function buildCustomTools(specs: ToolSpec[], design: boolean): Record<string, unknown> {
+function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
   const tools: Record<string, unknown> = {};
   for (const spec of specs) {
     const name = normalizeToolName(spec.name);
     if (!name || tools[name]) continue;
-    if (design && !isAskQuestion(name)) {
-      continue;
-    }
     if (isAskQuestion(name)) {
       tools.askQuestion = {
         description: spec.description || "Ask the desktop user a question and wait for the answer.",
@@ -178,29 +176,6 @@ function buildCustomTools(specs: ToolSpec[], design: boolean): Record<string, un
       description: spec.description || name,
       inputSchema: spec.inputSchema || { type: "object", properties: {} },
       async execute(args: Record<string, JsonValue>) {
-        if (design) {
-          const message =
-            `Design mode: ${name} is registered as a Constructor customTool, not project MCP. ` +
-            "Do not execute it now. If a business parameter is missing, ask the user.";
-          emit({
-            type: "tool_call",
-            tool: name,
-            status: "blocked_in_design",
-            arguments: args || {},
-            mode: "design",
-          });
-          emit({
-            type: "tool_result",
-            tool: name,
-            ok: true,
-            status: "skipped",
-            skipped: true,
-            result: { text: message },
-          });
-          return {
-            content: [{ type: "text", text: message }],
-          };
-        }
         const requestId = randomUUID();
         emit({
           type: "tool_call",
@@ -240,6 +215,20 @@ function buildCustomTools(specs: ToolSpec[], design: boolean): Record<string, un
   return tools;
 }
 
+function playbookDraftReady(text: string): boolean {
+  const raw = (text || "").trim();
+  if (!raw) return false;
+  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const blob = fence?.[1]?.trim() || raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
+  if (!blob || blob[0] !== "{") return false;
+  try {
+    const data = JSON.parse(blob) as { steps?: unknown };
+    return Array.isArray(data.steps) && data.steps.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function waitForToolResult(requestId: string, timeoutMs = 15 * 60 * 1000): Promise<ToolResultCommand> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -256,6 +245,32 @@ function receiveToolResult(command: ToolResultCommand): void {
   clearTimeout(pending.timer);
   pendingTools.delete(command.requestId);
   pending.resolve(command);
+}
+
+function readAgentId(agent: unknown, fallback: string): string {
+  const record = agent && typeof agent === "object" ? (agent as Record<string, unknown>) : {};
+  const value = record.agentId || record.agent_id || record.id;
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+async function settleRun(run: { supports: (op: "cancel") => boolean; status: string; cancel: () => Promise<void>; wait: () => Promise<unknown> }): Promise<void> {
+  try {
+    if (run.supports("cancel") && String(run.status || "").toLowerCase() === "running") {
+      await run.cancel();
+    }
+  } catch {
+    // Already terminal or cancel is unsupported.
+  }
+  try {
+    await run.wait();
+  } catch {
+    // The follow-up send can still resume from the persisted agent.
+  }
+}
+
+function isActiveRunError(error: unknown): boolean {
+  const message = safeError(error).toLowerCase();
+  return message.includes("already has active run") || message.includes("agentbusy");
 }
 
 async function runAgent(command: RunCommand): Promise<void> {
@@ -278,7 +293,7 @@ async function runAgent(command: RunCommand): Promise<void> {
   emit({ type: "run", id });
   emit({ type: "status", text: "Запускаю локальный Cursor SDK агент..." });
   const design = command.mode === "design";
-  const customTools = buildCustomTools(command.tools || [], design);
+  const customTools = buildCustomTools(command.tools || []);
   const customNames = Object.keys(customTools);
   emit({
     type: "status",
@@ -288,7 +303,7 @@ async function runAgent(command: RunCommand): Promise<void> {
   });
   let agent: Awaited<ReturnType<typeof Agent.create>> | undefined;
   try {
-    agent = await Agent.create({
+    const agentOptions = {
       apiKey,
       model: { id: model },
       local: {
@@ -297,10 +312,33 @@ async function runAgent(command: RunCommand): Promise<void> {
         // Do not load repo .cursor/mcp.json. Constructor tools come from customTools.
         settingSources: [],
       },
-      // mcp is required for customTools. askQuestion is a Constructor customTool.
-      tools: ["mcp"],
-    });
-    const run = await agent.send(command.prompt);
+    };
+    agent = command.resumeAgentId
+      ? await Agent.resume(command.resumeAgentId, agentOptions as never)
+      : await Agent.create(agentOptions as never);
+    const agentId = readAgentId(agent, command.resumeAgentId || "");
+    emit({ type: "agent", id, agentId, resumed: Boolean(command.resumeAgentId) });
+    const sendOptions = {
+      local: {
+        force: true,
+        customTools: customTools as never,
+      },
+    };
+    let run;
+    try {
+      run = await agent.send(command.prompt, sendOptions);
+    } catch (error) {
+      if (!command.resumeAgentId || !isActiveRunError(error)) {
+        throw error;
+      }
+      emit({ type: "status", text: "Закрываю предыдущий запуск того же агента..." });
+      run = await agent.send(command.prompt, {
+        local: {
+          force: true,
+          customTools: customTools as never,
+        },
+      });
+    }
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
     for await (const event of run.stream()) {
       if (event.type === "assistant") {
@@ -308,17 +346,31 @@ async function runAgent(command: RunCommand): Promise<void> {
           if (block.type === "text" && block.text) {
             answer += block.text;
             emit({ type: "assistant", text: block.text });
+            if (design && playbookDraftReady(answer)) {
+              emit({ type: "final", id, status: "ok", answer });
+              emit({ type: "done", id, status: "ok", answer });
+              await settleRun(run);
+              await agent.close();
+              return;
+            }
           }
         }
       } else if (event.type === "thinking" && event.text) {
         emit({ type: "thinking", text: event.text });
       } else if (event.type === "tool_call") {
-        const args = event.args && typeof event.args === "object" ? event.args : {};
+        const args = event.args && typeof event.args === "object" && !Array.isArray(event.args)
+          ? event.args as Record<string, unknown>
+          : {};
+        const provider = String(args.providerIdentifier || "");
+        if (String(event.name || "") === "mcp" && provider === "custom-user-tools") {
+          continue;
+        }
         emit({
           type: "tool_call",
           tool: event.name,
           status: event.status,
           arguments: args,
+          result: event.result,
         });
       } else if (event.type === "system") {
         const listed = Array.isArray(event.tools) ? event.tools.filter(Boolean) : [];

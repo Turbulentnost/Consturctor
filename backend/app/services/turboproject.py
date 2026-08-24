@@ -51,6 +51,9 @@ _PHRASE_QUERY_HINTS = (
 )
 
 _TOKEN_TTL_SEC = 1500.0
+_DEFAULT_PROJECT_LIMIT = 5
+_MAX_OVERDUE_ITEMS = 8
+_MAX_RESOURCES = 20
 _token = ""
 _token_at = 0.0
 
@@ -178,6 +181,7 @@ def build_project_payload(summary_item: dict[str, Any], details: dict[str, Any])
     tasks = details.get("tasks") or []
     overdue_tasks = build_overdue_tasks(tasks)
     overdue_milestones = build_overdue_milestones(tasks)
+    resources = build_project_resources(details)
     non_summary_tasks = [task for task in tasks if not task.get("is_summary")]
     completed_tasks = [task for task in non_summary_tasks if _is_complete(task.get("percent_complete"))]
     return {
@@ -200,9 +204,9 @@ def build_project_payload(summary_item: dict[str, Any], details: dict[str, Any])
             "overdue_tasks_count": len(overdue_tasks),
             "overdue_milestones_count": len(overdue_milestones),
         },
-        "overdue_tasks": overdue_tasks,
-        "overdue_milestones": overdue_milestones,
-        "resources": build_project_resources(details),
+        "overdue_tasks": overdue_tasks[:_MAX_OVERDUE_ITEMS],
+        "overdue_milestones": overdue_milestones[:_MAX_OVERDUE_ITEMS],
+        "resources": resources[:_MAX_RESOURCES],
         "data_1c": details.get("data_1c"),
     }
 
@@ -316,10 +320,10 @@ def list_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
             "source": "turboproject",
         }
     raw_limit = payload.get("limit")
-    # Без limit агент на планировании тянет все ~200 карточек по одной — UI «зависает».
-    limit = int(raw_limit) if raw_limit not in (None, "") else 20
+    # Без limit агент тянет десятки карточек по одной и потом жует весь портфель.
+    limit = int(raw_limit) if raw_limit not in (None, "") else _DEFAULT_PROJECT_LIMIT
     if limit <= 0:
-        limit = 20
+        limit = _DEFAULT_PROJECT_LIMIT
     limit = min(limit, 200)
 
     token = _login()

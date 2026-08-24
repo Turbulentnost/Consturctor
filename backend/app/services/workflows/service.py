@@ -461,7 +461,7 @@ def build_local_design_prompt(
     has_text = bool((row.document_text or "").strip() or (row.notes or "").strip())
     if not has_text:
         raise WorkflowError("Нет материалов — загрузите описание бизнес-процесса или файлы.")
-    return _build_design_prompt(row)
+    return _build_design_prompt(row, interactive=True)
 
 
 def _same_design_question(left: str, right: str) -> bool:
@@ -662,7 +662,7 @@ def finish_local_design_workflow(
     )
 
 
-def _build_design_prompt(row: Workflow) -> str:
+def _build_design_prompt(row: Workflow, *, interactive: bool = False) -> str:
     from app.services.local_mcp import DESIGN_PHASE
     from app.services.workflows.cursor_tools import (
         contract_vocabulary_block,
@@ -676,6 +676,7 @@ def _build_design_prompt(row: Workflow) -> str:
             notes=row.notes or "",
             document_name=row.document_name,
             vocabulary=contract_vocabulary_block(),
+            interactive=interactive,
         ),
         phase=DESIGN_PHASE,
     )

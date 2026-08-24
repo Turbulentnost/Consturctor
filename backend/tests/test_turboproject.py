@@ -103,6 +103,32 @@ def test_build_project_payload() -> None:
     assert payload["data_1c"]["rukovoditel"] == "Иванов И.И."
 
 
+def test_build_project_payload_clips_long_overdue_lists() -> None:
+    yesterday = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    tasks = [
+        {
+            "id": index,
+            "uid": index,
+            "name": f"просрочка {index}",
+            "is_summary": False,
+            "is_milestone": index % 2 == 0,
+            "finish_date": yesterday,
+            "percent_complete": 0,
+            "assignments": [{"resource_name": f"Исполнитель {index}"}],
+        }
+        for index in range(1, 25)
+    ]
+    payload = build_project_payload(
+        {"id": 1, "original_name": "план.mpp"},
+        {"project": {"name": "Большой"}, "tasks": tasks, "resources": [f"Р{n}" for n in range(40)]},
+    )
+    assert payload["task_stats"]["overdue_tasks_count"] == 24
+    assert payload["task_stats"]["overdue_milestones_count"] == 12
+    assert len(payload["overdue_tasks"]) == 8
+    assert len(payload["overdue_milestones"]) == 8
+    assert len(payload["resources"]) == 20
+
+
 def test_invoke_stub_when_not_configured(monkeypatch) -> None:
     monkeypatch.setattr("app.services.turboproject.turboproject_configured", lambda: False)
     result = invoke_turboproject("turboproject", {"limit": 1})

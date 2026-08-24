@@ -13,9 +13,12 @@ from app.tools.ac.tooling import (
 from app.tools.runtime_api import request
 
 TOOL_NAME = "turboproject"
+_SAMPLE_LIMIT = 5
+_MAX_OVERDUE_ITEMS = 8
+_MAX_RESOURCES = 20
 
 TOOL_DESCRIPTION = (
-    "Проекты TurboProject, у которых есть синхронизация с 1С (`has_1c = true`). "
+    "Проекты TurboProject с 1С. Большие ответы сохраняются в workspace для анализа tools Cursor SDK. "
     "Сервер ходит в API `/api/projects/files` и карточку файла. "
     "Учётка уже в backend/.env — не спрашивай логин и не вызывай API сам.\n\n"
     "Итог:\n"
@@ -128,11 +131,54 @@ class TurboProjectTool(BaseTool):
                 error_message=str(exc),
             )
         result = data.get("result") if isinstance(data, dict) else {}
+        if isinstance(result, dict):
+            result = _sample_for_agent(result, arguments)
         return ToolCallResult(
             ok=True,
             tool_name=self.definition.name,
             output_data=result if isinstance(result, dict) else {"result": result},
         )
+
+
+def _sample_for_agent(result: dict, arguments: dict) -> dict:
+    payload = dict(result)
+    projects = payload.get("projects")
+    if not isinstance(projects, list):
+        return payload
+    focused = any(arguments.get(key) for key in ("query", "manager", "file_id"))
+    raw_limit = arguments.get("limit")
+    cap = _SAMPLE_LIMIT
+    if raw_limit not in (None, ""):
+        try:
+            cap = max(1, min(int(raw_limit), _SAMPLE_LIMIT if not focused else 20))
+        except (TypeError, ValueError):
+            cap = _SAMPLE_LIMIT
+    elif not focused:
+        cap = _SAMPLE_LIMIT
+    else:
+        cap = min(len(projects), 20)
+    sampled = []
+    for item in projects[:cap]:
+        if not isinstance(item, dict):
+            continue
+        card = dict(item)
+        overdue = card.get("overdue_tasks")
+        milestones = card.get("overdue_milestones")
+        resources = card.get("resources")
+        if isinstance(overdue, list) and len(overdue) > _MAX_OVERDUE_ITEMS:
+            card["overdue_tasks"] = overdue[:_MAX_OVERDUE_ITEMS]
+        if isinstance(milestones, list) and len(milestones) > _MAX_OVERDUE_ITEMS:
+            card["overdue_milestones"] = milestones[:_MAX_OVERDUE_ITEMS]
+        if isinstance(resources, list) and len(resources) > _MAX_RESOURCES:
+            card["resources"] = resources[:_MAX_RESOURCES]
+        sampled.append(card)
+    payload["projects"] = sampled
+    if len(projects) > len(sampled):
+        payload["sample"] = True
+        summary = str(payload.get("summary") or "").strip()
+        note = f"выборка {len(sampled)} из {len(projects)}, не весь портфель"
+        payload["summary"] = f"{summary}; {note}" if summary else note
+    return payload
 
 
 def register_turboproject_tools(registry: ToolRegistry, *, skip_existing: bool = False) -> None:

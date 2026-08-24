@@ -847,9 +847,22 @@ def test_draft_prompt_asks_for_json_only_without_transport_lecture() -> None:
     assert "constructor_tool" not in prompt
     assert "вернуть JSON черновика" in prompt
     assert "не решай" in prompt.casefold()
-    assert "когда запускать" in prompt.casefold()
+    assert "додумывать логику" in prompt
     assert "service_note" in prompt
     assert "6.4" in prompt
+
+
+def test_draft_prompt_interactive_asks_gaps_before_json() -> None:
+    prompt = prompts.build_playbook_draft_prompt(
+        document_text="регламент",
+        title="Агент",
+        interactive=True,
+    )
+
+    assert "askQuestion" in prompt
+    assert "после закрытых пробелов" in prompt
+    assert "период, объём, получатель" not in prompt
+    assert "единственная задача" not in prompt
 
 
 def test_draft_prompt_carries_contract_vocabulary() -> None:

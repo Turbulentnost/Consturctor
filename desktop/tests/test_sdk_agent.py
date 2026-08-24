@@ -11,16 +11,21 @@ from app.sdk_agent.prompt import (
     inferred_design_answers,
 )
 from app.sdk_agent.tool_adapter import is_ask_question, sdk_design_tool_specs, sdk_tool_specs
+from app.tools.ac.turboproject_tools import _sample_for_agent
 from app.ui.pages.workflow_page import (
     _answered_text_for,
     _draft_from_sdk_answer,
     _event_json,
     _extract_json_object,
+    _is_constructor_mcp_wrap,
     _keep_newer_phase,
+    _live_tool_name,
+    _normalize_live_tool_status,
     _sdk_design_repair_prompt,
     _sdk_design_transcript,
     apply_sdk_answers_to_draft,
     design_ready_for_demo,
+    design_stream_should_finish,
     record_ready_for_sdk_demo,
     merge_design_answers,
     qa_from_design_answers,
@@ -66,6 +71,8 @@ def test_demo_sdk_prompt_requires_playbook_and_tests() -> None:
     assert "пробный прогон" in prompt
     assert "TESTS: PASS" in prompt
     assert "playbook" in prompt
+    assert "Продолжи работу этого агента" in prompt
+    assert "limit 3-5" not in prompt
 
 
 def test_design_sdk_prompt_wraps_backend_design_prompt() -> None:
@@ -76,20 +83,23 @@ def test_design_sdk_prompt_wraps_backend_design_prompt() -> None:
     assert "required_clarifications" in prompt
     assert "askQuestion" in prompt
     assert "не ищи его в MCP" in prompt
-    assert "реально нельзя вывести" in prompt
+    assert "додумывая бизнес-правило" in prompt
     assert "QUESTION:" not in prompt
     assert "web_search" in prompt
     assert "Верни ТОЛЬКО один JSON-объект" in prompt
     assert "не пиши, что MCP не найден" in prompt
+    assert "расписания, периода, получателя или критерия успеха" not in prompt
 
 
-def test_design_sdk_prompt_requires_json_after_no_questions() -> None:
+def test_design_sdk_prompt_asks_logic_gaps_before_json() -> None:
     record = WorkflowRecord(id="wf-1", title="Контроль сроков", phase="new")
     prompt = build_design_sdk_prompt(record, "Верни JSON")
-    assert "сразу верни финальный JSON" in prompt
+    assert "после закрытых пробелов" in prompt
     assert "без JSON" in prompt
     assert "workspace.powershell_run" in prompt
-    assert "не вызывай их сейчас" in prompt
+    assert "Live-данные бери через Constructor tools" in prompt
+    assert "второй круг" in prompt
+    assert "сразу верни финальный JSON" not in prompt
 
 
 def test_design_sdk_prompt_infers_event_trigger() -> None:
@@ -128,6 +138,37 @@ def test_design_sdk_prompt_infers_labeled_business_params() -> None:
     prompt = build_design_sdk_prompt(record, "Верни JSON")
     assert "recipient: руководитель проекта" in prompt
     assert "success_criteria: отчёт содержит риски" in prompt
+
+
+def test_design_sdk_prompt_does_not_infer_schedule_from_process_wording() -> None:
+    record = WorkflowRecord(
+        id="wf-1",
+        title="Контроль сроков",
+        phase="new",
+        notes="Ежедневный контроль сроков проектов. Руководитель вручную сверяет вехи.",
+    )
+    assert inferred_design_answers(record) == []
+    prompt = build_design_sdk_prompt(record, "Верни JSON")
+    assert "не спрашивай расписание" not in prompt
+
+
+def test_design_stream_finishes_only_on_json_or_done() -> None:
+    talking = [
+        {
+            "type": "assistant",
+            "text": "В паспорте достаточно данных. Вопросов не задаю, сразу отдаю итоговый план.",
+        }
+    ]
+    assert design_stream_should_finish(talking) is False
+    assert design_stream_should_finish([{"type": "done", "status": "ok"}]) is True
+    assert design_stream_should_finish(
+        [
+            {
+                "type": "assistant",
+                "text": '{"goal":"Проверять сроки","steps":[{"id":"s1","title":"Проверить"}]}',
+            }
+        ]
+    ) is True
 
 
 def test_sdk_design_transcript_extracts_json_from_events() -> None:
@@ -277,7 +318,14 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
         1,
     )[0]
     assert 'type: "question"' not in tool_call_block
-    assert "if (design && !isAskQuestion(name))" in text
+    assert "SDK_TOOLS" not in text
+    assert "tools: [" not in text
+    assert "Agent.resume" in text
+    assert "force: true" in text
+    assert "settleRun" in text
+    assert "playbookDraftReady" in text
+    assert "result: event.result" in text
+    assert 'provider === "custom-user-tools"' in text
 
 
 def test_question_feed_kind_is_separate_block() -> None:
@@ -285,11 +333,11 @@ def test_question_feed_kind_is_separate_block() -> None:
     assert resolve_feed_kind(kind="question") == "question"
 
 
-def test_sdk_design_tool_specs_only_ask_question() -> None:
+def test_sdk_design_tool_specs_include_constructor_tools() -> None:
     tools = sdk_design_tool_specs()
     names = {str(item.get("name") or "") for item in tools}
-    assert names == {"askQuestion"}
-    assert "workspace.powershell_run" not in names
+    assert "askQuestion" in names
+    assert "workspace.powershell_run" in names
 
 
 def test_sdk_tool_specs_include_desktop_schema() -> None:
@@ -299,6 +347,8 @@ def test_sdk_tool_specs_include_desktop_schema() -> None:
     assert "web_search" in names
     ask = next(item for item in tools if item.get("name") == "askQuestion")
     assert "question" in (ask.get("inputSchema") or {}).get("properties", {})
+    assert "расписание, период" not in str(ask.get("description") or "")
+    assert "пробел" in str(ask.get("description") or "")
     web = next(item for item in tools if item.get("name") == "web_search")
     assert isinstance(web.get("inputSchema"), dict)
 
@@ -389,3 +439,68 @@ def test_node_version_parser() -> None:
 
 def test_default_sdk_model_is_grok_46() -> None:
     assert DEFAULT_SDK_MODEL == "grok-4.6"
+
+
+def test_turboproject_empty_call_is_sampled_for_agent() -> None:
+    raw = {
+        "summary": "TurboProject: 20 проект(ов) с 1С из 251",
+        "total_projects": 251,
+        "projects": [
+            {
+                "project_name": f"P{index}",
+                "overdue_tasks": [{"id": n} for n in range(30)],
+                "overdue_milestones": [{"id": n} for n in range(12)],
+                "resources": [f"R{n}" for n in range(40)],
+            }
+            for index in range(20)
+        ],
+    }
+    sampled = _sample_for_agent(raw, {})
+    assert sampled["sample"] is True
+    assert len(sampled["projects"]) == 5
+    assert len(sampled["projects"][0]["overdue_tasks"]) == 8
+    assert "не весь портфель" in sampled["summary"]
+
+
+def test_bridge_externalizes_large_tool_result(tmp_path: Path) -> None:
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+    result = {
+        "summary": "big payload",
+        "total_projects": 251,
+        "projects": [{"name": f"P{index}", "blob": "x" * 2000} for index in range(40)],
+    }
+    compact = bridge._externalize_large_result(
+        tool="turboproject",
+        request_id="req-1",
+        result=result,
+        cwd=str(tmp_path),
+    )
+    assert compact["externalized"] is True
+    assert compact["summary"]["projects_count"] == 40
+    assert compact["summary"]["total_projects"] == 251
+    path = tmp_path / compact["result_file"]
+    assert path.is_file()
+    assert "big payload" in path.read_text(encoding="utf-8")
+
+
+def test_cursor_completed_tool_status_is_ok() -> None:
+    assert _normalize_live_tool_status("completed") == "ok"
+    assert _normalize_live_tool_status("running") == "running"
+    assert _normalize_live_tool_status("error") == "error"
+    assert _normalize_live_tool_status("", ok=True) == "ok"
+    assert _normalize_live_tool_status("", ok=False) == "error"
+
+
+def test_mcp_tool_name_unwraps_constructor_tool() -> None:
+    wrap = {
+        "tool": "mcp",
+        "arguments": {
+            "providerIdentifier": "custom-user-tools",
+            "toolName": "workspace.powershell_run",
+            "args": {"command": "Get-ChildItem"},
+        },
+    }
+    assert _live_tool_name(wrap) == "workspace.powershell_run"
+    assert _is_constructor_mcp_wrap(wrap) is True
+    assert _is_constructor_mcp_wrap({"tool": "read"}) is False
+    assert _live_tool_name({"tool": "read"}) == "read"

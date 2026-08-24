@@ -284,17 +284,15 @@ def _local_design_prompt_for_record(record: WorkflowRecord) -> str:
         "Бизнес-задачу сейчас не выполняй: только проектирование инструкции.\n"
         "Верни JSON-объект с полями goal, inputs, required_clarifications, result, "
         "recipient, confirmation_points, steps.\n"
-        "Спрашивай только о параметрах, которые реально нельзя вывести из материалов. "
-        "Если в контексте есть событийный триггер, ручной запуск, период, получатель "
-        "или критерий успеха, считай это ответом и не задавай вопрос. "
-        "Если действительно не хватает расписания, периода, получателя или критерия успеха, "
-        "вызови инструмент askQuestion из Constructor tools и дождись ответа. "
-        "В одном вызове ровно один параметр: расписание, период, получатель или критерий успеха. "
-        "Не склеивай несколько вопросов и не переформулируй уже отвеченные. "
+        "Перед JSON закрой через askQuestion пробелы, без которых будущий агент "
+        "будет додумывать логику. Не ограничивайся заранее заданным списком тем. "
+        "Не спрашивай то, что материалы уже прямо говорят, и не подставляй дефолт. "
+        "В одном вызове один пробел. Не склеивай несколько вопросов "
+        "и не переформулируй уже отвеченные. "
         "Не ищи askQuestion в MCP. "
-        "Уже полученные ответы запиши в recipient/when_to_run/answers "
+        "Уже полученные ответы запиши в answers и подходящие поля черновика "
         "и не клади их снова в required_clarifications. "
-        "Если вопросов нет, сразу верни JSON, а не новый текстовый план.\n"
+        "JSON пиши после закрытых пробелов, не вместо вопросов.\n"
         "Каждый step должен иметь id, title, action, done_when, on_empty, on_error.\n"
         f"Название агента: {title}\n\n"
         "Материалы:\n"
@@ -336,6 +334,15 @@ def _draft_from_sdk_answer(answer: str) -> dict:
         ],
         "steps": steps,
     }
+
+
+def design_stream_should_finish(events: list[dict] | None) -> bool:
+    """Design is done only when a parseable JSON draft exists, or the SDK emitted done."""
+    rows = [raw for raw in (events or []) if isinstance(raw, dict)]
+    if any(str(raw.get("type") or "") == "done" for raw in rows):
+        return True
+    draft = _draft_from_sdk_answer(_sdk_design_transcript("", rows))
+    return bool(draft.get("steps"))
 
 
 def _sdk_design_transcript(answer: str, events: list[dict] | None) -> str:
@@ -738,6 +745,41 @@ def _looks_like_tool_json(text: str) -> bool:
     if not blob.startswith("{"):
         return False
     return '"name"' in blob and '"arguments"' in blob
+
+
+def _normalize_live_tool_status(status: str, *, ok: bool | None = None) -> str:
+    folded = (status or "").strip().casefold()
+    if folded in {"running", "in_progress", "started"}:
+        return "running"
+    if folded in {"ok", "completed", "success", "finished", "done"}:
+        return "ok"
+    if folded in {"error", "failed", "cancelled", "canceled"}:
+        return "error"
+    if ok is False:
+        return "error"
+    if ok is True:
+        return "ok"
+    return "running" if not folded else "error"
+
+
+def _live_tool_name(payload: dict) -> str:
+    name = str(payload.get("tool") or payload.get("name") or "инструмент").strip()
+    args = payload.get("arguments") if payload.get("arguments") is not None else payload.get("args")
+    if name.casefold() == "mcp" and isinstance(args, dict):
+        inner = str(args.get("toolName") or args.get("tool") or "").strip()
+        if inner:
+            return inner
+    return name or "инструмент"
+
+
+def _is_constructor_mcp_wrap(payload: dict) -> bool:
+    name = str(payload.get("tool") or payload.get("name") or "").strip().casefold()
+    if name != "mcp":
+        return False
+    args = payload.get("arguments") if payload.get("arguments") is not None else payload.get("args")
+    if not isinstance(args, dict):
+        return False
+    return str(args.get("providerIdentifier") or "").strip() == "custom-user-tools"
 
 
 def _strip_tool_call_text(text: str) -> str:
@@ -2228,6 +2270,7 @@ class WorkflowPage(QWidget):
         hide_run_plan = self._should_hide_run_plan_action()
         self._feed_layout.addStretch(1)
         self._assistant_live = None
+        self._thinking_live = None
         self._live_tool_widgets = {}
         for idx, event in enumerate(self._events):
             if skip_clarify_idx is not None and idx == skip_clarify_idx:
@@ -2239,9 +2282,12 @@ class WorkflowPage(QWidget):
             self._feed_layout.addWidget(widget)
             if event.title == "Агент" and event.kind == "agent":
                 self._assistant_live = widget
+            if event.kind == "tool" and event.event_key:
+                self._live_tool_widgets[event.event_key] = widget
+            if event.kind == "thinking" and event.event_key == "live-thinking":
+                self._thinking_live = widget
         thinking = (self._thinking_shown or "").strip()
-        self._thinking_live = None
-        if thinking:
+        if thinking and self._thinking_live is None:
             self._expanded_keys.add("live-thinking")
             live = CursorFeedItem(
                 kind="thinking",
@@ -2254,31 +2300,16 @@ class WorkflowPage(QWidget):
             live.expand_toggled.connect(self._on_expand_toggled)
             self._thinking_live = live
             self._feed_layout.addWidget(live)
-        for tool in self._live_tools:
-            name = str(tool.get("name") or "инструмент")
-            status = str(tool.get("status") or "running")
-            detail = str(tool.get("detail") or "")
-            if status == "running":
-                title = f"Инструмент: {name}"
-                body = detail or "Выполняется…"
-            elif status == "ok":
-                title = f"Инструмент: {name}"
-                body = detail or "Готово"
-            else:
-                title = f"Инструмент: {name}"
-                body = detail or "Ошибка"
-            key = str(tool.get("key") or f"live-tool-{name}")
-            widget = CursorFeedItem(
-                kind="tool",
-                text=body,
-                title=title,
-                detail=body,
-                event_key=key,
-                expanded=key not in self._collapsed_keys,
-            )
-            widget.expand_toggled.connect(self._on_expand_toggled)
-            self._live_tool_widgets[key] = widget
-            self._feed_layout.addWidget(widget)
+            if not any(ev.event_key == "live-thinking" for ev in self._events):
+                self._events.append(
+                    FeedEvent(
+                        title="Thinking",
+                        body=thinking,
+                        time=self._now(),
+                        kind="thinking",
+                        event_key="live-thinking",
+                    )
+                )
         if sdk_question and self._live_sdk_question is not None:
             card = self._make_clarification_message(self._live_sdk_question)
             self._feed_layout.addWidget(card)
@@ -2405,12 +2436,19 @@ class WorkflowPage(QWidget):
         self._thinking_shown = ""
         self._thinking_live = None
         self._thinking_timer.stop()
+        live = next((event for event in self._events if event.event_key == "live-thinking"), None)
+        if live is not None:
+            key = self._next_event_key()
+            if "live-thinking" in self._expanded_keys:
+                self._expanded_keys.discard("live-thinking")
+                self._expanded_keys.add(key)
+            live.event_key = key
+            if text:
+                live.body = text
+            return
         if not text:
             return
         key = self._next_event_key()
-        if "live-thinking" in self._expanded_keys:
-            self._expanded_keys.discard("live-thinking")
-            self._expanded_keys.add(key)
         self._events.append(
             FeedEvent(
                 title="Thinking",
@@ -2690,6 +2728,7 @@ class WorkflowPage(QWidget):
         if target is not None:
             target["status"] = status
             target["detail"] = self._merge_tool_detail(str(target.get("detail") or ""), incoming, status)
+            self._sync_tool_event(target)
             self._refresh_live_tool_widget(target)
             return
         if status == "running":
@@ -2697,6 +2736,7 @@ class WorkflowPage(QWidget):
                 if item.get("status") == "running":
                     item["status"] = "ok"
                     item["detail"] = item.get("detail") or "Готово"
+                    self._sync_tool_event(item)
                     self._refresh_live_tool_widget(item)
             key = self._next_event_key()
             tool = {
@@ -2707,6 +2747,7 @@ class WorkflowPage(QWidget):
             }
             self._live_tools.append(tool)
             self._last_stream_phrase = f"вызываю {tool_name}"
+            self._sync_tool_event(tool)
             self._append_live_tool_widget(tool)
             return
         key = self._next_event_key()
@@ -2717,7 +2758,29 @@ class WorkflowPage(QWidget):
             "key": key,
         }
         self._live_tools.append(tool)
+        self._sync_tool_event(tool)
         self._append_live_tool_widget(tool)
+
+    def _sync_tool_event(self, tool: dict) -> None:
+        key = str(tool.get("key") or "")
+        if not key:
+            return
+        title, body = self._tool_card_body(tool)
+        for event in self._events:
+            if event.event_key == key:
+                event.title = title
+                event.body = body
+                event.kind = "tool"
+                return
+        self._events.append(
+            FeedEvent(
+                title=title,
+                body=body,
+                time=self._now(),
+                kind="tool",
+                event_key=key,
+            )
+        )
 
     def _tool_card_body(self, tool: dict) -> tuple[str, str]:
         name = str(tool.get("name") or "инструмент")
@@ -2911,44 +2974,55 @@ class WorkflowPage(QWidget):
                 self._show_sdk_question(question, options, payload)
             return
         if event_type == "tool_call":
-            self._flush_thinking()
             payload = _event_json(incoming)
-            name = str(payload.get("tool") or payload.get("name") or "инструмент").strip()
+            if _is_constructor_mcp_wrap(payload):
+                self._tick_activity()
+                return
+            name = _live_tool_name(payload)
             if is_ask_question(name):
                 self._tick_activity()
                 return
-            status = str(payload.get("status") or "running").strip() or "running"
-            if status in {"blocked_in_design", "skipped"}:
+            raw_status = str(payload.get("status") or "running").strip() or "running"
+            if raw_status in {"blocked_in_design", "skipped"}:
                 self._tick_activity()
                 return
-            args = payload.get("arguments")
-            detail = _compact_payload(args, limit=600) if args else "Выполняется..."
+            status = _normalize_live_tool_status(raw_status)
+            args = payload.get("arguments") if payload.get("arguments") is not None else payload.get("args")
+            if isinstance(args, dict) and str(payload.get("tool") or payload.get("name") or "").casefold() == "mcp":
+                inner_args = args.get("args")
+                if isinstance(inner_args, dict):
+                    args = inner_args
+            result = payload.get("result")
+            if status == "ok" and result not in (None, ""):
+                detail = _compact_payload(result, limit=600)
+            else:
+                detail = _compact_payload(args, limit=600) if args else ("Выполняется..." if status == "running" else "")
             self._upsert_live_tool(name, status=status, detail=detail)
             self._tick_activity()
             return
         if event_type == "tool_result":
-            self._flush_thinking()
             payload = _event_json(incoming)
-            if payload and is_ask_question(str(payload.get("tool") or payload.get("name") or "")):
+            if payload and _is_constructor_mcp_wrap(payload):
+                self._tick_activity()
+                return
+            if payload and is_ask_question(_live_tool_name(payload)):
                 self._tick_activity()
                 return
             if payload:
-                name = str(payload.get("tool") or payload.get("name") or "инструмент")
-                status = str(payload.get("status") or "").strip()
-                if not status:
-                    status = "ok" if payload.get("ok", True) else "error"
-                result = payload.get("result")
-                error = str(payload.get("error") or "").strip()
-                if status in {"skipped", "blocked_in_design"} or payload.get("skipped"):
+                name = _live_tool_name(payload)
+                raw_status = str(payload.get("status") or "").strip()
+                if raw_status in {"skipped", "blocked_in_design"} or payload.get("skipped"):
                     self._tick_activity()
                     return
-                else:
-                    detail = error or _compact_payload(result)
-                    self._upsert_live_tool(
-                        name.strip() or "инструмент",
-                        status="error" if status == "error" else "ok",
-                        detail=(detail or "Готово").strip(),
-                    )
+                status = _normalize_live_tool_status(raw_status, ok=bool(payload.get("ok", True)))
+                result = payload.get("result")
+                error = str(payload.get("error") or "").strip()
+                detail = error or _compact_payload(result)
+                self._upsert_live_tool(
+                    name.strip() or "инструмент",
+                    status=status,
+                    detail=(detail or ("Готово" if status == "ok" else "Ошибка")).strip(),
+                )
                 self._tick_activity()
                 return
             raw = incoming.strip()
@@ -3087,12 +3161,25 @@ class WorkflowPage(QWidget):
 
     def _paint_live_thinking(self) -> None:
         shown = self._thinking_shown
+        live_event = next((event for event in self._events if event.event_key == "live-thinking"), None)
+        if live_event is not None:
+            live_event.body = shown
         if self._thinking_live is not None:
             self._thinking_live.set_body_text(shown)
             self._scroll_feed_to_bottom()
             return
         if not shown.strip():
             return
+        if live_event is None:
+            self._events.append(
+                FeedEvent(
+                    title="Thinking",
+                    body=shown,
+                    time=self._now(),
+                    kind="thinking",
+                    event_key="live-thinking",
+                )
+            )
         self._expanded_keys.add("live-thinking")
         live = CursorFeedItem(
             kind="thinking",
@@ -3668,6 +3755,25 @@ class WorkflowPage(QWidget):
             return replace(record, local_run=local)
         return _keep_newer_phase(record, saved)
 
+    def _store_sdk_agent_id(
+        self,
+        workflow_id: str,
+        record: WorkflowRecord,
+        agent_id: str,
+    ) -> WorkflowRecord:
+        agent_id = (agent_id or "").strip()
+        if not agent_id:
+            return record
+        local = dict(record.local_run or {})
+        local["runtime"] = str(local.get("runtime") or "cursor-sdk")
+        local["design_runtime"] = "cursor-sdk"
+        local["sdk_agent_id"] = agent_id
+        try:
+            saved = self._api.update_workflow_local_run(workflow_id, local)
+        except ApiError:
+            return replace(record, local_run=local)
+        return _keep_newer_phase(record, saved)
+
     def _design_with_sdk(self, workflow_id: str) -> WorkflowRecord:
         events: list[dict] = []
         try:
@@ -3721,7 +3827,16 @@ class WorkflowPage(QWidget):
                 on_event=on_sdk_event,
                 on_question=self._wait_sdk_answer,
             )
+            self._stream_event.emit(
+                "decision",
+                "Проектирование завершено. Продолжаю тем же Cursor SDK агентом для пробного прогона.",
+            )
             answer = str(result.get("answer") or "").strip()
+            record = self._store_sdk_agent_id(
+                workflow_id,
+                record,
+                str(result.get("agent_id") or ""),
+            )
             stored_qa = qa_from_design_answers((record.local_run or {}).get("design_answers"))
             fresh_qa = list(self._sdk_answered) or qa_from_sdk_events(events)
             qa = stored_qa + fresh_qa
@@ -3762,6 +3877,7 @@ class WorkflowPage(QWidget):
             bridge = CursorSdkBridge()
             bridge.check_ready()
             record = self._api.get_workflow(workflow_id)
+            resume_agent_id = str((record.local_run or {}).get("sdk_agent_id") or "").strip()
 
             def on_sdk_event(payload: dict) -> None:
                 if not isinstance(payload, dict):
@@ -3790,10 +3906,16 @@ class WorkflowPage(QWidget):
             result = bridge.run(
                 prompt=build_demo_sdk_prompt(record),
                 workflow_id=workflow_id,
+                resume_agent_id=resume_agent_id,
                 on_event=on_sdk_event,
                 on_question=self._wait_sdk_answer,
             )
             answer = str(result.get("answer") or "").strip()
+            record = self._store_sdk_agent_id(
+                workflow_id,
+                record,
+                str(result.get("agent_id") or resume_agent_id),
+            )
             try:
                 return self._api.finish_local_demo_workflow(
                     workflow_id,

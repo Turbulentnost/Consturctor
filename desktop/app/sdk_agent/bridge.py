@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -15,12 +16,13 @@ from app.config import DESKTOP_ROOT
 from app.sdk_agent.tool_adapter import (
     invoke_sdk_tool,
     is_ask_question,
-    sdk_design_tool_specs,
     sdk_tool_specs,
 )
 from app.tools import ToolHostError
 
 DEFAULT_SDK_MODEL = "grok-4.6"
+LARGE_TOOL_RESULT_BYTES = 60_000
+TOOL_RESULT_PREVIEW_CHARS = 4_000
 
 
 class CursorSdkError(RuntimeError):
@@ -49,8 +51,10 @@ class CursorSdkBridge:
         cwd: str = "",
         mode: str = "run",
         tools: list[dict[str, Any]] | None = None,
+        resume_agent_id: str = "",
         on_event: SdkEventCallback | None = None,
         on_question: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         self._ensure_ready()
         run_id = str(uuid.uuid4())
@@ -67,6 +71,8 @@ class CursorSdkBridge:
             env=self._env(),
         )
         stderr_lines: list[str] = []
+        run_cwd = cwd or self._workspace_cwd(workflow_id)
+        agent_id = resume_agent_id.strip()
         stderr_thread = threading.Thread(
             target=self._drain_stderr,
             args=(process, stderr_lines),
@@ -82,19 +88,15 @@ class CursorSdkBridge:
                     "id": run_id,
                     "prompt": prompt,
                     "model": model or os.getenv("CURSOR_SDK_MODEL", DEFAULT_SDK_MODEL),
-                    "cwd": cwd or self._workspace_cwd(),
+                    "cwd": run_cwd,
                     "mode": "design" if mode == "design" else "run",
-                    "tools": (
-                        sdk_design_tool_specs()
-                        if tools is None and mode == "design"
-                        else sdk_tool_specs()
-                        if tools is None
-                        else tools
-                    ),
+                    "tools": sdk_tool_specs() if tools is None else tools,
+                    "resumeAgentId": agent_id or None,
                     "workflowId": workflow_id,
                 },
             )
             assert process.stdout is not None
+            answer_parts: list[str] = []
             for line in process.stdout:
                 payload = self._parse_line(line)
                 if not payload:
@@ -107,9 +109,16 @@ class CursorSdkBridge:
                         process,
                         payload,
                         workflow_id=workflow_id,
+                        cwd=run_cwd,
                         on_question=on_question,
                     )
                     continue
+                if event_type == "agent":
+                    agent_id = str(payload.get("agentId") or agent_id).strip()
+                if event_type in {"assistant", "final"}:
+                    text = str(payload.get("text") or payload.get("answer") or "").strip()
+                    if text:
+                        answer_parts.append(text)
                 if event_type == "done":
                     final = payload
                     if on_event is not None:
@@ -117,18 +126,44 @@ class CursorSdkBridge:
                     break
                 if on_event is not None:
                     on_event(payload)
+                if should_stop is not None and should_stop():
+                    try:
+                        self._send(process, {"type": "cancel", "id": run_id})
+                    except CursorSdkError:
+                        pass
+                    process.kill()
+                    collected = "\n\n".join(answer_parts).strip()
+                    return {
+                        "answer": collected,
+                        "status": "ok",
+                        "run_id": run_id,
+                        "agent_id": agent_id,
+                    }
             try:
                 process.wait(timeout=8)
             except subprocess.TimeoutExpired:
                 process.kill()
             if final is None:
+                collected = "\n\n".join(answer_parts).strip()
+                if collected:
+                    return {
+                        "answer": collected,
+                        "status": "ok",
+                        "run_id": run_id,
+                        "agent_id": agent_id,
+                    }
                 err = "\n".join(stderr_lines[-20:]).strip()
                 raise CursorSdkError(err or "Cursor SDK runner завершился без результата")
             status = str(final.get("status") or "")
-            answer = str(final.get("answer") or "")
+            answer = str(final.get("answer") or "") or "\n\n".join(answer_parts).strip()
             if status == "error":
                 raise CursorSdkError(answer or "Cursor SDK run failed")
-            return {"answer": answer, "status": status or "ok", "run_id": run_id}
+            return {
+                "answer": answer,
+                "status": status or "ok",
+                "run_id": run_id,
+                "agent_id": agent_id,
+            }
         finally:
             if process.poll() is None:
                 process.kill()
@@ -163,10 +198,17 @@ class CursorSdkBridge:
     def check_ready(self) -> None:
         self._ensure_ready()
 
-    def _workspace_cwd(self) -> str:
-        path = self._sdk_root / "workspace"
+    def _workspace_cwd(self, workflow_id: str = "") -> str:
+        root = self._workspaces_root()
+        safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", (workflow_id or "default").strip()) or "default"
+        path = root / safe_id
         path.mkdir(parents=True, exist_ok=True)
         return str(path)
+
+    @staticmethod
+    def _workspaces_root() -> Path:
+        local = os.environ.get("LOCALAPPDATA") or str(Path.home())
+        return Path(local) / "Constructor" / "agent_workspaces"
 
     def _command(self) -> list[str]:
         tsx = self._sdk_root / "node_modules" / ".bin" / (
@@ -193,6 +235,7 @@ class CursorSdkBridge:
         payload: dict[str, Any],
         *,
         workflow_id: str,
+        cwd: str,
         on_question: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         request_id = str(payload.get("requestId") or "")
@@ -228,6 +271,12 @@ class CursorSdkBridge:
             args.setdefault("runtime_context", {"workflow_id": workflow_id, "agent_id": workflow_id})
         try:
             result = invoke_sdk_tool(tool, args)
+            result = self._externalize_large_result(
+                tool=tool,
+                request_id=request_id,
+                result=result,
+                cwd=cwd,
+            )
             self._send(
                 process,
                 {
@@ -257,6 +306,60 @@ class CursorSdkBridge:
                     "error": f"Ошибка инструмента {tool}: {exc}",
                 },
             )
+
+    def _externalize_large_result(
+        self,
+        *,
+        tool: str,
+        request_id: str,
+        result: dict[str, Any],
+        cwd: str,
+    ) -> dict[str, Any]:
+        if not isinstance(result, dict):
+            return result
+        try:
+            raw = json.dumps(result, ensure_ascii=False, default=str)
+        except TypeError:
+            return result
+        raw_bytes = len(raw.encode("utf-8", errors="replace"))
+        if raw_bytes <= LARGE_TOOL_RESULT_BYTES:
+            return result
+        base = Path(cwd).resolve()
+        out_dir = base / "tool_results"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe_tool = re.sub(r"[^A-Za-z0-9_.-]", "_", tool or "tool") or "tool"
+        safe_request = re.sub(r"[^A-Za-z0-9_.-]", "_", request_id or "")[:12] or uuid.uuid4().hex[:12]
+        filename = f"{safe_tool}_{safe_request}.json"
+        target = (out_dir / filename).resolve()
+        if base != target and base not in target.parents:
+            return result
+        target.write_text(raw, encoding="utf-8")
+        rel_path = target.relative_to(base).as_posix()
+        return {
+            "summary": self._result_summary(result),
+            "tool": tool,
+            "result_file": rel_path,
+            "result_bytes": raw_bytes,
+            "preview": raw[:TOOL_RESULT_PREVIEW_CHARS],
+            "externalized": True,
+        }
+
+    @staticmethod
+    def _result_summary(result: dict[str, Any]) -> dict[str, Any]:
+        summary: dict[str, Any] = {}
+        text = result.get("summary")
+        if isinstance(text, str) and text.strip():
+            summary["summary"] = text.strip()
+        for key, value in result.items():
+            if isinstance(value, (int, float, bool)) or value is None:
+                summary[key] = value
+            elif isinstance(value, str):
+                summary[key] = value[:500]
+            elif isinstance(value, list):
+                summary[f"{key}_count"] = len(value)
+            elif isinstance(value, dict):
+                summary[f"{key}_keys"] = list(value.keys())[:20]
+        return summary
 
     @staticmethod
     def _parse_line(line: str) -> dict[str, Any]:
