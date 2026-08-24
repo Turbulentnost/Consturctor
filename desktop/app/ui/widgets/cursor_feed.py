@@ -87,6 +87,8 @@ def resolve_feed_kind(*, role: str = "", title: str = "", kind: str = "") -> str
         return "thinking"
     if folded in {"инструмент", "tool"} or folded.startswith("инструмент:"):
         return "tool"
+    if folded in {"уточнение", "вопрос", "вопросы"}:
+        return "question"
     if folded in {"предупреждение", "система"}:
         return "system"
     return "agent"
@@ -350,7 +352,7 @@ class CursorFeedItem(QFrame):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 2, 0, 8)
         root.setSpacing(4)
-        if self._kind in {"thinking", "plan", "tool", "result"}:
+        if self._kind in {"thinking", "plan", "tool", "result", "question"}:
             self._build_collapsible(root)
         elif self._is_long_plain():
             self._build_long_plain(root)
@@ -382,6 +384,8 @@ class CursorFeedItem(QFrame):
             return "Результат"
         if self._kind == "tool":
             return "Инструмент"
+        if self._kind == "question":
+            return "Вопросы"
         return "Подробнее"
 
     def _build_collapsible(self, root: QVBoxLayout) -> None:

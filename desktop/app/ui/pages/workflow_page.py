@@ -209,6 +209,29 @@ def _extract_json_object(text: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _event_json(text: str) -> dict:
+    raw = (text or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _compact_payload(value: object, *, limit: int = 1200) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, indent=2)
+        except TypeError:
+            text = str(value)
+    text = (text or "").strip()
+    return text[:limit].rstrip() if len(text) > limit else text
+
+
 def _format_plan_dict(data: dict) -> str:
     lines: list[str] = []
     title = str(data.get("title") or "").strip()
@@ -235,6 +258,68 @@ def _format_plan_dict(data: dict) -> str:
             if done:
                 lines.append(f"  Готово когда: {done}")
     return "\n".join(lines).strip()
+
+
+def _local_design_prompt_for_record(record: WorkflowRecord) -> str:
+    title = (record.title or "ИИ-агент").strip()
+    materials = "\n\n".join(
+        item
+        for item in (
+            record.notes.strip(),
+            record.document_text[:8000].strip(),
+            "\n".join(
+                str(getattr(item, "text_preview", "") or "").strip()
+                for item in (record.attachments or [])
+                if str(getattr(item, "text_preview", "") or "").strip()
+            ),
+        )
+        if item
+    )
+    return (
+        "Ты проектировщик ИИ-агента Constructor.\n"
+        "Сформируй план, как агент будет достигать цели, и верни финальный JSON-черновик.\n"
+        "Бизнес-задачу сейчас не выполняй: только проектирование инструкции.\n"
+        "Верни JSON-объект с полями goal, inputs, required_clarifications, result, "
+        "recipient, confirmation_points, steps.\n"
+        "Если в материалах нет расписания, периода, получателя или критерия успеха, "
+        "задай вопросы через SDK askQuestion и заполни required_clarifications "
+        "вопросами с 2-4 вариантами. Не выдумывай эти параметры.\n"
+        "Каждый step должен иметь id, title, action, done_when, on_empty, on_error.\n"
+        f"Название агента: {title}\n\n"
+        "Материалы:\n"
+        f"{materials or title}"
+    )
+
+
+def _draft_from_sdk_answer(answer: str) -> dict:
+    data = _extract_json_object(answer) or {}
+    steps: list[dict] = []
+    for index, raw in enumerate(data.get("steps") or [], start=1):
+        if not isinstance(raw, dict):
+            continue
+        action = str(raw.get("action") or raw.get("operation") or raw.get("title") or "").strip()
+        steps.append(
+            {
+                "id": str(raw.get("id") or f"s{index}").strip(),
+                "title": str(raw.get("title") or action or f"Шаг {index}").strip(),
+                "action": action,
+                "done_when": str(raw.get("done_when") or raw.get("doneWhen") or "").strip(),
+                "on_empty": str(raw.get("on_empty") or raw.get("onEmpty") or "").strip(),
+                "on_error": str(raw.get("on_error") or raw.get("onError") or "").strip(),
+            }
+        )
+    return {
+        "status": "draft",
+        "goal": str(data.get("goal") or "").strip(),
+        "inputs": [str(x).strip() for x in (data.get("inputs") or []) if str(x).strip()],
+        "required_clarifications": data.get("required_clarifications") or [],
+        "result": str(data.get("result") or "").strip(),
+        "recipient": str(data.get("recipient") or "").strip(),
+        "confirmation_points": [
+            str(x).strip() for x in (data.get("confirmation_points") or []) if str(x).strip()
+        ],
+        "steps": steps,
+    }
 
 
 def _format_plan_steps(plan: WorkflowPlan | None) -> str:
@@ -1970,6 +2055,7 @@ class WorkflowPage(QWidget):
                 event_key=key,
             )
         )
+        self._rebuild_feed()
 
     def _push_event(
         self,
@@ -2337,6 +2423,9 @@ class WorkflowPage(QWidget):
             elif status == "error":
                 body = detail or "Ошибка"
                 title = f"Инструмент: {name} — не выполнено"
+            elif status in {"skipped", "blocked_in_design"}:
+                body = detail or "На этапе проектирования инструмент не вызывается"
+                title = f"Инструмент: {name} — пропущен"
             else:
                 body = detail or "Вызов завершён"
                 title = f"Инструмент: {name}"
@@ -2434,7 +2523,67 @@ class WorkflowPage(QWidget):
         if event_type in {"heartbeat", "ping"}:
             self._tick_activity()
             return
+        if event_type == "question":
+            self._flush_thinking()
+            payload = _event_json(incoming)
+            question = str(
+                payload.get("question")
+                or payload.get("prompt")
+                or payload.get("title")
+                or incoming
+            ).strip()
+            options = [str(item).strip() for item in (payload.get("options") or []) if str(item).strip()]
+            if question:
+                body = question
+                if options:
+                    body += "\n\n" + "\n".join(f"• {item}" for item in options[:6])
+                self._push_event("Уточнение", body, kind="question")
+                self._tick_activity()
+            return
+        if event_type == "tool_call":
+            self._flush_thinking()
+            payload = _event_json(incoming)
+            name = str(payload.get("tool") or payload.get("name") or "инструмент").strip()
+            status = str(payload.get("status") or "running").strip() or "running"
+            detail = ""
+            if status in {"blocked_in_design", "skipped"}:
+                detail = "На этапе проектирования инструмент не вызывается."
+            else:
+                args = payload.get("arguments")
+                detail = _compact_payload(args, limit=600) if args else "Выполняется..."
+            self._upsert_live_tool(name, status=status, detail=detail)
+            self._tick_activity()
+            return
         if event_type == "tool_result":
+            self._flush_thinking()
+            payload = _event_json(incoming)
+            if payload:
+                name = str(payload.get("tool") or payload.get("name") or "инструмент")
+                status = str(payload.get("status") or "").strip()
+                if not status:
+                    status = "ok" if payload.get("ok", True) else "error"
+                result = payload.get("result")
+                error = str(payload.get("error") or "").strip()
+                if status in {"skipped", "blocked_in_design"} or payload.get("skipped"):
+                    detail = (
+                        str((result or {}).get("text") or "").strip()
+                        if isinstance(result, dict)
+                        else ""
+                    )
+                    self._upsert_live_tool(
+                        name.strip() or "инструмент",
+                        status="skipped",
+                        detail=detail or "На этапе проектирования инструмент не вызывается.",
+                    )
+                else:
+                    detail = error or _compact_payload(result)
+                    self._upsert_live_tool(
+                        name.strip() or "инструмент",
+                        status="error" if status == "error" else "ok",
+                        detail=(detail or "Готово").strip(),
+                    )
+                self._tick_activity()
+                return
             raw = incoming.strip()
             name, sep, body = raw.partition("\n")
             if not sep:
@@ -2455,6 +2604,7 @@ class WorkflowPage(QWidget):
             if last_line:
                 self._last_stream_phrase = last_line
         if event_type == "error" and incoming.strip():
+            self._flush_thinking()
             self._last_stream_error = incoming.strip()
             self._push_event("Ошибка", incoming.strip(), kind="error")
             self._agent_status.setText("● Ошибка — смотрите карточку в ленте")
@@ -2467,21 +2617,15 @@ class WorkflowPage(QWidget):
             self._planning_stream = False
             self._execute_started = True
         if event_type in {"decision", "system", "status", "message"} and incoming.strip():
+            self._flush_thinking()
             if self._parse_tool_activity(incoming):
                 self._tick_activity()
-                return
-            if self._planning_stream:
-                self._append_thinking(incoming.strip() + "\n")
                 return
             self._push_event("Система", incoming.strip(), kind="system")
             return
         if event_type == "assistant" and incoming:
+            self._flush_thinking()
             shown = incoming.replace("\ufffd", "")
-            if shown.strip() and self._planning_stream:
-                cleaned = _strip_tool_call_text(shown)
-                if cleaned:
-                    self._append_thinking(cleaned)
-                return
             if shown.strip():
                 last = self._events[-1] if self._events else None
                 if last is not None and last.title == "Агент" and last.kind == "agent":
@@ -2504,6 +2648,16 @@ class WorkflowPage(QWidget):
             return
         if event_type == "thinking" and incoming:
             self._append_thinking(incoming)
+            return
+        if event_type == "final" and incoming:
+            self._flush_thinking()
+            payload = _event_json(incoming)
+            answer = str(payload.get("answer") or incoming).strip()
+            if answer:
+                data = _extract_json_object(answer)
+                text = _format_plan_dict(data) if data else _strip_tool_call_text(answer)
+                if text.strip():
+                    self._push_event("Результат", text[:4000], kind="agent")
 
     def _append_thinking(self, incoming: str) -> None:
         if not incoming:
@@ -3016,7 +3170,12 @@ class WorkflowPage(QWidget):
             bridge = CursorSdkBridge()
             bridge.check_ready()
             record = self._api.get_workflow(workflow_id)
-            design_prompt = self._api.local_design_prompt(workflow_id)
+            try:
+                design_prompt = self._api.local_design_prompt(workflow_id)
+            except ApiError as exc:
+                if exc.status_code not in {404, 405}:
+                    raise
+                design_prompt = _local_design_prompt_for_record(record)
 
             def on_sdk_event(payload: dict) -> None:
                 if not isinstance(payload, dict):
@@ -3027,6 +3186,8 @@ class WorkflowPage(QWidget):
                 text = str(payload.get("text") or payload.get("message") or "")
                 if event_type == "assistant":
                     self._stream_event.emit("assistant", text)
+                elif event_type in {"question", "tool_call", "tool_result", "final"}:
+                    self._stream_event.emit(event_type, json.dumps(payload, ensure_ascii=False))
                 elif event_type == "tool_call":
                     self._stream_event.emit(
                         "decision",
@@ -3043,15 +3204,37 @@ class WorkflowPage(QWidget):
             result = bridge.run(
                 prompt=build_design_sdk_prompt(record, design_prompt),
                 workflow_id=workflow_id,
-                tools=[],
+                mode="design",
                 on_event=on_sdk_event,
             )
             answer = str(result.get("answer") or "").strip()
-            return self._api.finish_local_design_workflow(
-                workflow_id,
-                answer=answer,
-                events=events,
-            )
+            try:
+                return self._api.finish_local_design_workflow(
+                    workflow_id,
+                    answer=answer,
+                    events=events,
+                )
+            except ApiError as exc:
+                if exc.status_code not in {404, 405}:
+                    raise
+                draft = _draft_from_sdk_answer(answer)
+                local = dict(record.local_run or {})
+                local["runtime"] = "cursor-sdk"
+                local["design_runtime"] = "cursor-sdk"
+                local["playbook_draft"] = draft
+                local["validation"] = {
+                    "ok": bool(draft.get("steps")),
+                    "status": "draft_ready" if draft.get("steps") else "blocked_before_demo",
+                    "demo_started": False,
+                    "can_run_demo": bool(draft.get("steps")),
+                    "issues": [],
+                    "reasons": [] if draft.get("steps") else ["Cursor SDK не вернул JSON-черновик."],
+                }
+                local["can_run_demo"] = bool(draft.get("steps"))
+                local["demo_ok"] = False
+                local["can_publish"] = False
+                saved = self._api.update_workflow_local_run(workflow_id, local)
+                return replace(saved, phase="designed", local_run=local)
         except CursorSdkUnavailable:
             return self._api.stream_plan_workflow(
                 workflow_id,
@@ -3077,6 +3260,8 @@ class WorkflowPage(QWidget):
                 text = str(payload.get("text") or payload.get("message") or "")
                 if event_type == "assistant":
                     self._stream_event.emit("assistant", text)
+                elif event_type in {"question", "tool_call", "tool_result", "final"}:
+                    self._stream_event.emit(event_type, json.dumps(payload, ensure_ascii=False))
                 elif event_type == "tool_call":
                     self._stream_event.emit(
                         "decision",
@@ -3096,11 +3281,19 @@ class WorkflowPage(QWidget):
                 on_event=on_sdk_event,
             )
             answer = str(result.get("answer") or "").strip()
-            return self._api.finish_local_demo_workflow(
-                workflow_id,
-                answer=answer,
-                events=events,
-            )
+            try:
+                return self._api.finish_local_demo_workflow(
+                    workflow_id,
+                    answer=answer,
+                    events=events,
+                )
+            except ApiError as exc:
+                if exc.status_code not in {404, 405}:
+                    raise
+                return self._api.stream_demo_workflow(
+                    workflow_id,
+                    lambda event_type, text: self._stream_event.emit(event_type, text),
+                )
         except CursorSdkUnavailable:
             return self._api.stream_demo_workflow(
                 workflow_id,

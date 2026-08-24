@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from app.config import DESKTOP_ROOT, REPO_ROOT
+from app.config import DESKTOP_ROOT
 from app.sdk_agent.tool_adapter import invoke_sdk_tool, sdk_tool_specs
 from app.tools import ToolHostError
 
@@ -42,6 +42,7 @@ class CursorSdkBridge:
         workflow_id: str,
         model: str = "",
         cwd: str = "",
+        mode: str = "run",
         tools: list[dict[str, Any]] | None = None,
         on_event: SdkEventCallback | None = None,
     ) -> dict[str, Any]:
@@ -75,7 +76,8 @@ class CursorSdkBridge:
                     "id": run_id,
                     "prompt": prompt,
                     "model": model or os.getenv("CURSOR_SDK_MODEL", DEFAULT_SDK_MODEL),
-                    "cwd": cwd or str(REPO_ROOT),
+                    "cwd": cwd or self._workspace_cwd(),
+                    "mode": "design" if mode == "design" else "run",
                     "tools": sdk_tool_specs() if tools is None else tools,
                     "workflowId": workflow_id,
                 },
@@ -143,6 +145,11 @@ class CursorSdkBridge:
 
     def check_ready(self) -> None:
         self._ensure_ready()
+
+    def _workspace_cwd(self) -> str:
+        path = self._sdk_root / "workspace"
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
 
     def _command(self) -> list[str]:
         tsx = self._sdk_root / "node_modules" / ".bin" / (

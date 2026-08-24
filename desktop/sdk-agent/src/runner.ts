@@ -23,6 +23,7 @@ type RunCommand = {
   prompt: string;
   model?: string;
   cwd?: string;
+  mode?: "design" | "run";
   tools?: ToolSpec[];
 };
 
@@ -62,7 +63,38 @@ function normalizeToolName(name: string): string {
   return (name || "").trim();
 }
 
-function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
+function stringFrom(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function questionPayload(args: Record<string, unknown>): { question: string; options: string[] } {
+  const question =
+    stringFrom(args.question) ||
+    stringFrom(args.prompt) ||
+    stringFrom(args.title) ||
+    stringFrom(args.message);
+  const rawOptions = Array.isArray(args.options)
+    ? args.options
+    : Array.isArray(args.choices)
+      ? args.choices
+      : Array.isArray(args.answers)
+        ? args.answers
+        : [];
+  const options = rawOptions
+    .map((item) => {
+      if (typeof item === "string") return item.trim();
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        return stringFrom(record.label) || stringFrom(record.text) || stringFrom(record.value);
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .slice(0, 6);
+  return { question, options };
+}
+
+function buildCustomTools(specs: ToolSpec[], design: boolean): Record<string, unknown> {
   const tools: Record<string, unknown> = {};
   for (const spec of specs) {
     const name = normalizeToolName(spec.name);
@@ -71,6 +103,29 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
       description: spec.description || name,
       inputSchema: spec.inputSchema || { type: "object", properties: {} },
       async execute(args: Record<string, JsonValue>) {
+        if (design) {
+          const message =
+            `Design mode: ${name} is registered as a Constructor customTool, not project MCP. ` +
+            "Do not execute it now. If a business parameter is missing, ask the user.";
+          emit({
+            type: "tool_call",
+            tool: name,
+            status: "blocked_in_design",
+            arguments: args || {},
+            mode: "design",
+          });
+          emit({
+            type: "tool_result",
+            tool: name,
+            ok: true,
+            status: "skipped",
+            skipped: true,
+            result: { text: message },
+          });
+          return {
+            content: [{ type: "text", text: message }],
+          };
+        }
         const requestId = randomUUID();
         emit({
           type: "tool_call",
@@ -140,7 +195,15 @@ async function runAgent(command: RunCommand): Promise<void> {
   let answer = "";
   emit({ type: "run", id });
   emit({ type: "status", text: "Запускаю локальный Cursor SDK агент..." });
-  const customTools = buildCustomTools(command.tools || []);
+  const design = command.mode === "design";
+  const customTools = buildCustomTools(command.tools || [], design);
+  const customNames = Object.keys(customTools);
+  emit({
+    type: "status",
+    text: customNames.length
+      ? `Constructor customTools: ${customNames.slice(0, 24).join(", ")}${customNames.length > 24 ? ` (+${customNames.length - 24})` : ""}`
+      : "Constructor customTools are empty. Do not look for project MCP servers.",
+  });
   let agent: Awaited<ReturnType<typeof Agent.create>> | undefined;
   try {
     agent = await Agent.create({
@@ -149,8 +212,12 @@ async function runAgent(command: RunCommand): Promise<void> {
       local: {
         cwd,
         customTools: customTools as never,
+        // Do not load repo .cursor/mcp.json. Constructor tools come from customTools.
+        settingSources: [],
       },
-      tools: ["mcp"],
+      // mcp is required for customTools. askQuestion lets the planner ask the user.
+      // An mcp-only allowlist with empty customTools made the model say "no MCP found".
+      tools: customNames.length > 0 ? ["mcp", "askQuestion"] : ["askQuestion"],
     });
     const run = await agent.send(command.prompt);
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
@@ -162,12 +229,40 @@ async function runAgent(command: RunCommand): Promise<void> {
             emit({ type: "assistant", text: block.text });
           }
         }
+      } else if (event.type === "thinking" && event.text) {
+        emit({ type: "thinking", text: event.text });
+      } else if (event.type === "tool_call") {
+        const args = event.args && typeof event.args === "object" ? event.args : {};
+        emit({
+          type: "tool_call",
+          tool: event.name,
+          status: event.status,
+          arguments: args,
+        });
+        if (event.name === "askQuestion") {
+          const { question, options } = questionPayload(args as Record<string, unknown>);
+          if (question) {
+            emit({ type: "question", question, options, arguments: args });
+          }
+        }
       } else if (event.type === "system") {
-        emit({ type: "status", text: "Агент обновил состояние запуска." });
+        const listed = Array.isArray(event.tools) ? event.tools.filter(Boolean) : [];
+        emit({
+          type: "status",
+          text: listed.length
+            ? `Cursor SDK tools: ${listed.join(", ")}`
+            : "Агент обновил состояние запуска.",
+        });
       }
     }
     const result = await run.wait();
     const status = String(result.status || "").toLowerCase();
+    emit({
+      type: "final",
+      id,
+      status: status === "finished" || status === "success" ? "ok" : status || "ok",
+      answer: answer || String(result.result || ""),
+    });
     emit({
       type: "done",
       id,
