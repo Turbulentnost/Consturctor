@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.clients import cursor as cursor_client
@@ -39,12 +39,17 @@ from app.services.triggers.service import (
 )
 from app.services.workflows import prompts
 from app.services.workflows.document import (
-    DocumentError,
     collect_prompt_images,
     compose_document,
-    load_attachment_bytes,
 )
 from app.services.workflows.plan_models import WorkflowPlan
+from app.services.workflow_files import (
+    WorkflowFileError,
+    add_user_files_to_workflow,
+    attachment_meta_for_workflow,
+    prepare_workflow_files,
+    save_prepared_files,
+)
 
 
 class WorkflowError(Exception):
@@ -132,26 +137,23 @@ def create_workflow(
     storage_dir = _workflow_dir(workflow_id)
     storage_dir.mkdir(parents=True, exist_ok=True)
 
+    try:
+        prepared = prepare_workflow_files(files)
+    except WorkflowFileError as exc:
+        shutil.rmtree(storage_dir, ignore_errors=True)
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
     attachments: list[dict] = []
     meta: list[dict] = []
-    for original_name, raw in files:
-        try:
-            loaded = load_attachment_bytes(original_name, raw)
-        except DocumentError as exc:
-            shutil.rmtree(storage_dir, ignore_errors=True)
-            raise WorkflowError(str(exc)) from exc
-        safe = _safe_filename(original_name)
-        stored = storage_dir / safe
-        stored.write_bytes(raw)
-        loaded["stored_name"] = safe
-        loaded["path"] = str(stored)
+    for item in prepared:
+        loaded = dict(item.loaded)
+        loaded["stored_name"] = item.file_id
         attachments.append(loaded)
         meta.append(
             {
                 "name": loaded["name"],
                 "kind": loaded["kind"],
                 "mime_type": loaded.get("mime_type") or "",
-                "stored_name": safe,
+                "stored_name": item.file_id,
                 "text_preview": (loaded.get("text") or "")[:500],
             }
         )
@@ -183,6 +185,14 @@ def create_workflow(
         local_run={},
     )
     db.add(row)
+    save_prepared_files(
+        db,
+        workflow_id=workflow_id,
+        prepared=prepared,
+        source="user",
+        scope="knowledge",
+        origin="initial_upload",
+    )
     db.commit()
     db.refresh(row)
     return _to_schema(row)
@@ -2703,51 +2713,30 @@ def _append_attachments(
         return []
 
     workflow_id = row.id
-    storage_dir = _workflow_dir(workflow_id)
-    storage_dir.mkdir(parents=True, exist_ok=True)
     existing = _load_attachments_payload(workflow_id)
-    meta = list(row.attachments_meta or [])
-    added_names: list[str] = []
     by_question: dict[str, list[str]] = {}
 
-    for idx, (original_name, raw) in enumerate(files):
-        try:
-            loaded = load_attachment_bytes(original_name, raw)
-        except DocumentError as exc:
-            raise WorkflowError(str(exc)) from exc
-        safe = _safe_filename(original_name)
-        # Avoid overwrite collisions
-        candidate = storage_dir / safe
-        if candidate.exists():
-            stem = Path(safe).stem
-            suffix = Path(safe).suffix
-            safe = f"{stem}_{uuid4().hex[:6]}{suffix}"
-            candidate = storage_dir / safe
-        candidate.write_bytes(raw)
-        loaded["stored_name"] = safe
-        loaded["path"] = str(candidate)
-        existing.append(loaded)
-        meta.append(
-            {
-                "name": loaded["name"],
-                "kind": loaded["kind"],
-                "mime_type": loaded.get("mime_type") or "",
-                "stored_name": safe,
-                "text_preview": (loaded.get("text") or "")[:500],
-            }
+    try:
+        added_names, prepared = add_user_files_to_workflow(
+            db,
+            row=row,
+            files=files,
+            origin="clarify_upload",
         )
-        added_names.append(loaded["name"])
+    except WorkflowFileError as exc:
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
+
+    for idx, item in enumerate(prepared):
+        loaded = dict(item.loaded)
+        loaded["stored_name"] = item.file_id
+        existing.append(loaded)
         qid = ""
         if idx < len(file_question_ids):
             qid = str(file_question_ids[idx] or "").strip()
         if qid:
-            by_question.setdefault(qid, []).append(loaded["name"])
+            by_question.setdefault(qid, []).append(str(loaded.get("name") or item.original_name))
 
     _save_attachments_payload(workflow_id, existing)
-    document_name, document_text = compose_document(existing, notes=row.notes or "")
-    row.attachments_meta = meta
-    row.document_name = document_name or row.document_name
-    row.document_text = document_text
 
     for qid, names in by_question.items():
         note = "Приложенные файлы: " + ", ".join(names)
@@ -2813,11 +2802,15 @@ def _to_schema(row: Workflow) -> WorkflowSchema:
     plan = None
     if row.plan_json:
         plan = WorkflowPlanSchema.model_validate(row.plan_json)
-    attachments = [
-        AttachmentMetaSchema.model_validate(x)
-        for x in (row.attachments_meta or [])
-        if isinstance(x, dict)
-    ]
+    session = object_session(row)
+    if session is not None:
+        attachments = attachment_meta_for_workflow(session, row)
+    else:
+        attachments = [
+            AttachmentMetaSchema.model_validate(x)
+            for x in (row.attachments_meta or [])
+            if isinstance(x, dict)
+        ]
     return WorkflowSchema(
         id=row.id,
         title=row.title,

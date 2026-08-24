@@ -222,6 +222,7 @@ class GlassSidebar(QWidget):
         self._items = [
             NavItem("create", "Создать", "plus"),
             NavItem("agents", "Мои агенты", "home"),
+            NavItem("files", "Файлы", "dashboard"),
             NavItem("kpi", "KPI", "kpi"),
             NavItem("dashboard", "Мой дашборд", "dashboard"),
         ]

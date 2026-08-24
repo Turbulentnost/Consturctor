@@ -412,6 +412,31 @@ class WorkflowAttachment:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowFileItem:
+    id: str
+    workflow_id: str = ""
+    run_id: str = ""
+    source: str = "user"
+    scope: str = "knowledge"
+    origin: str = ""
+    filename: str = ""
+    mime_type: str = ""
+    kind: str = "text"
+    size: int = 0
+    sha256: str = ""
+    summary: str = ""
+    text_preview: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowFiles:
+    user_files: list[WorkflowFileItem] = field(default_factory=list)
+    agent_files: list[WorkflowFileItem] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
 class WorkflowRecord:
     id: str
     title: str
@@ -846,6 +871,40 @@ def without_deleted_workflows(board: WorkflowBoard, deleted_ids: set[str]) -> Wo
         next_run_at=next_run,
     )
     return WorkflowBoard(stats=stats, agents=agents, events=events)
+
+
+def _parse_workflow_file_item(raw: object) -> WorkflowFileItem:
+    data = raw if isinstance(raw, dict) else {}
+    try:
+        size = int(data.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    return WorkflowFileItem(
+        id=str(data.get("id") or ""),
+        workflow_id=str(data.get("workflow_id") or ""),
+        run_id=str(data.get("run_id") or ""),
+        source=str(data.get("source") or "user"),
+        scope=str(data.get("scope") or "knowledge"),
+        origin=str(data.get("origin") or ""),
+        filename=str(data.get("filename") or data.get("name") or ""),
+        mime_type=str(data.get("mime_type") or ""),
+        kind=str(data.get("kind") or "text"),
+        size=size,
+        sha256=str(data.get("sha256") or ""),
+        summary=str(data.get("summary") or ""),
+        text_preview=str(data.get("text_preview") or ""),
+        created_at=str(data.get("created_at") or ""),
+        updated_at=str(data.get("updated_at") or ""),
+    )
+
+
+def _parse_workflow_files(data: dict) -> WorkflowFiles:
+    user_raw = data.get("user_files") if isinstance(data.get("user_files"), list) else []
+    agent_raw = data.get("agent_files") if isinstance(data.get("agent_files"), list) else []
+    return WorkflowFiles(
+        user_files=[_parse_workflow_file_item(item) for item in user_raw],
+        agent_files=[_parse_workflow_file_item(item) for item in agent_raw],
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2433,6 +2492,98 @@ class ApiClient:
         except zipfile.BadZipFile as exc:
             raise ApiError("Backend вернул некорректный zip артефактов") from exc
         return ArtifactsDownloadResult(dest_dir=str(dest), files=extracted)
+
+    def list_workflow_files(self, workflow_id: str, *, run_id: str = "") -> WorkflowFiles:
+        params = {"run_id": run_id} if run_id else None
+        data = self._request(
+            "GET",
+            f"/api/v1/workflows/{workflow_id}/files",
+            params=params,
+            timeout=60.0,
+        )
+        return _parse_workflow_files(data if isinstance(data, dict) else {})
+
+    def upload_workflow_files(
+        self,
+        workflow_id: str,
+        file_paths: list[str | Path],
+    ) -> WorkflowFiles:
+        return self._upload_workflow_files(
+            f"/api/v1/workflows/{workflow_id}/files",
+            file_paths,
+        )
+
+    def register_workflow_run_files(
+        self,
+        workflow_id: str,
+        run_id: str,
+        file_paths: list[str | Path],
+    ) -> WorkflowFiles:
+        rid = (run_id or "").strip() or "local"
+        return self._upload_workflow_files(
+            f"/api/v1/workflows/{workflow_id}/runs/{rid}/files",
+            file_paths,
+        )
+
+    def _upload_workflow_files(self, path: str, file_paths: list[str | Path]) -> WorkflowFiles:
+        url = f"{self.base_url}{path}"
+        files: list = []
+        handles = []
+        try:
+            for raw_path in file_paths:
+                local = Path(raw_path)
+                if not local.is_file():
+                    continue
+                fh = local.open("rb")
+                handles.append(fh)
+                files.append(("files", (local.name, fh, "application/octet-stream")))
+            with httpx.Client(timeout=max(self._timeout, 180.0)) as client:
+                response = client.post(url, headers=self._headers(), files=files)
+        except httpx.ConnectError as exc:
+            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+        except httpx.TimeoutException as exc:
+            raise ApiError("Превышено время загрузки файлов") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+        finally:
+            for handle in handles:
+                handle.close()
+        if response.status_code >= 400:
+            raise ApiError(_extract_detail(response), status_code=response.status_code)
+        return _parse_workflow_files(response.json())
+
+    def workflow_file_text(self, workflow_id: str, file_id: str) -> dict[str, str]:
+        data = self._request(
+            "GET",
+            f"/api/v1/workflows/{workflow_id}/files/{file_id}/text",
+            timeout=60.0,
+        )
+        if not isinstance(data, dict):
+            return {"text": "", "summary": ""}
+        return {"text": str(data.get("text") or ""), "summary": str(data.get("summary") or "")}
+
+    def download_workflow_file_to(
+        self,
+        workflow_id: str,
+        file_id: str,
+        destination: str | Path,
+    ) -> str:
+        dest = Path(destination)
+        url = f"{self.base_url}/api/v1/workflows/{workflow_id}/files/{file_id}/download"
+        try:
+            with httpx.Client(timeout=300.0) as client:
+                response = client.get(url, headers=self._headers())
+        except httpx.ConnectError as exc:
+            raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
+        except httpx.TimeoutException as exc:
+            raise ApiError("Превышено время скачивания файла") from exc
+        except httpx.HTTPError as exc:
+            raise ApiError(f"Ошибка сети: {exc}") from exc
+        if response.status_code >= 400:
+            raise ApiError(_extract_detail(response), status_code=response.status_code)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(response.content)
+        return str(dest)
 
     def update_workflow_local_run(self, workflow_id: str, local_run: dict) -> WorkflowRecord:
         data = self._request(

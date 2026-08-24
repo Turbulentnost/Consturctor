@@ -3,7 +3,7 @@ from app.models.agent_run import AgentRun
 from app.models.notification import Notification
 from app.models.regulation import RegulationDocument, RoleMatchRun
 from app.models.trigger import AgentTrigger
-from app.models.workflow import Workflow
+from app.models.workflow import Workflow, WorkflowFile
 
 __all__ = [
     "AppUser",
@@ -13,4 +13,5 @@ __all__ = [
     "RoleMatchRun",
     "AgentTrigger",
     "Workflow",
+    "WorkflowFile",
 ]

@@ -29,12 +29,14 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QRadioButton,
     QScrollArea,
     QSizePolicy,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -44,6 +46,8 @@ from app.api_client import (
     ApiClient,
     ApiError,
     PassportSession,
+    WorkflowFileItem,
+    WorkflowFiles,
     WorkflowOpenQuestion,
     WorkflowPlan,
     WorkflowRecord,
@@ -109,6 +113,29 @@ QFrame#filechip {
     border: 1px solid rgba(16,24,23,0.08);
     border-radius: 12px;
 }
+"""
+_FILE_CARD_QSS = """
+QFrame#workflowfilecard {
+    background: #FFFFFF;
+    border: 1px solid rgba(16,24,23,0.08);
+    border-radius: 12px;
+}
+"""
+_ICON_BTN_QSS = """
+QPushButton {
+    background: #F1F5F3; color: #06483D; border: none;
+    border-radius: 8px; padding: 2px 6px;
+}
+QPushButton:hover { background: #E4EDE9; }
+"""
+_SEARCH_FIELD_QSS = """
+QLineEdit {
+    background: #FFFFFF; color: #101817;
+    border: 1px solid rgba(16,24,23,0.10);
+    border-radius: 12px;
+    padding: 7px 10px;
+}
+QLineEdit:focus { border: 1px solid #08745F; }
 """
 _SECONDARY = """
 QPushButton {
@@ -409,6 +436,61 @@ def _format_plan_steps(plan: WorkflowPlan | None) -> str:
             lines.append("")
             lines.append(raw[:2000])
     return "\n".join(lines).strip() or "—"
+
+
+def _format_file_size(size: int) -> str:
+    value = max(0, int(size or 0))
+    if value >= 1024 * 1024:
+        return f"{value / (1024 * 1024):.1f} МБ"
+    if value >= 1024:
+        return f"{value / 1024:.1f} КБ"
+    return f"{value} байт"
+
+
+def _file_ext(name: str) -> str:
+    suffix = Path(name or "").suffix.strip(".").upper()
+    return suffix or "FILE"
+
+
+def _short_date(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return "дата неизвестна"
+    return raw[:10]
+
+
+def _file_status(item: WorkflowFileItem) -> str:
+    if item.source == "agent":
+        return "создан агентом"
+    return "в базе агента"
+
+
+def _filter_qss(active: bool) -> str:
+    if active:
+        return (
+            "QPushButton { background: #08745F; color: #FFFFFF; border: none; "
+            "border-radius: 10px; padding: 6px 8px; }"
+        )
+    return (
+        "QPushButton { background: #F1F5F3; color: #06483D; border: none; "
+        "border-radius: 10px; padding: 6px 8px; } "
+        "QPushButton:hover { background: #E4EDE9; }"
+    )
+
+
+def _friendly_error_text(message: str) -> str:
+    low = (message or "").casefold()
+    if "not found" in low or "404" in low or "не найден" in low:
+        return (
+            "Не удалось найти данные для этого шага. Возможно, агент был обновлён "
+            "или сервер ещё не применил последние изменения. Запустите шаг снова."
+        )
+    if "connect" in low or "подключ" in low or "timeout" in low or "превышено время" in low:
+        return (
+            "Сервер временно недоступен или отвечает слишком долго. "
+            "Проверьте подключение и запустите шаг снова."
+        )
+    return "Не удалось завершить шаг. Запустите снова или приложите недостающие материалы."
 
 
 _REPLACEMENT = "\ufffd"
@@ -1734,6 +1816,254 @@ class StageStepper(QWidget):
         self._bar.setValue(pct)
 
 
+class WorkflowFilesPanel(QWidget):
+    upload_requested = Signal()
+    refresh_requested = Signal()
+    download_requested = Signal(object)
+    open_all_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._files = WorkflowFiles()
+        self._pending_names: list[str] = []
+        self._filter = "all"
+        self.setFixedWidth(272)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(12)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        title = QLabel("Файлы агента")
+        title.setFont(app_font(15, QFont.Weight.DemiBold))
+        title.setStyleSheet("color: #06483D; background: transparent;")
+        refresh = QPushButton("↻")
+        refresh.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh.setFixedSize(28, 28)
+        refresh.setToolTip("Обновить")
+        refresh.setFont(app_font(12, QFont.Weight.DemiBold))
+        refresh.setStyleSheet(_ICON_BTN_QSS)
+        refresh.clicked.connect(self.refresh_requested.emit)
+        header.addWidget(title, 1)
+        header.addWidget(refresh, 0)
+
+        add = QPushButton("+ Добавить файл")
+        add.setCursor(Qt.CursorShape.PointingHandCursor)
+        add.setFixedHeight(36)
+        add.setFont(app_font(12, QFont.Weight.DemiBold))
+        add.setStyleSheet(_PRIMARY)
+        add.clicked.connect(self.upload_requested.emit)
+
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Поиск по файлам")
+        self._search.setFixedHeight(34)
+        self._search.setFont(app_font(12))
+        self._search.setStyleSheet(_SEARCH_FIELD_QSS)
+        self._search.textChanged.connect(lambda _text: self._rebuild())
+
+        filters = QHBoxLayout()
+        filters.setContentsMargins(0, 0, 0, 0)
+        filters.setSpacing(6)
+        self._filter_all = QPushButton("Все файлы")
+        self._filter_run = QPushButton("Этот запуск")
+        for button, key in ((self._filter_all, "all"), (self._filter_run, "run")):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFixedHeight(30)
+            button.setFont(app_font(11, QFont.Weight.Medium))
+            button.clicked.connect(lambda _=False, value=key: self._set_filter(value))
+            filters.addWidget(button, 1)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self._content = QWidget()
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setSpacing(10)
+        self._content.setStyleSheet("background: transparent;")
+        self._scroll.setWidget(self._content)
+
+        open_all = QPushButton("Открыть всю базу файлов")
+        open_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_all.setFixedHeight(36)
+        open_all.setFont(app_font(12, QFont.Weight.DemiBold))
+        open_all.setStyleSheet(_SECONDARY)
+        open_all.clicked.connect(self.open_all_requested.emit)
+
+        root.addLayout(header)
+        root.addWidget(add)
+        root.addWidget(self._search)
+        root.addLayout(filters)
+        root.addWidget(self._scroll, 1)
+        root.addWidget(open_all)
+        self.setStyleSheet(
+            """
+            WorkflowFilesPanel {
+                background: transparent;
+                border: none;
+            }
+            """
+        )
+        self.set_files(WorkflowFiles(), pending_names=[])
+
+    def set_files(self, files: WorkflowFiles, *, pending_names: list[str]) -> None:
+        self._files = files
+        self._pending_names = list(pending_names)
+        self._rebuild()
+
+    def _set_filter(self, value: str) -> None:
+        self._filter = value if value in {"all", "run"} else "all"
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        while self._content_layout.count():
+            item = self._content_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._filter_all.setStyleSheet(_filter_qss(self._filter == "all"))
+        self._filter_run.setStyleSheet(_filter_qss(self._filter == "run"))
+        user_files = list(self._files.user_files or [])
+        agent_files = list(self._files.agent_files or [])
+        if self._filter == "run":
+            user_files = []
+        query = self._search.text().strip().casefold()
+        if query:
+            user_files = [item for item in user_files if query in item.filename.casefold()]
+            agent_files = [item for item in agent_files if query in item.filename.casefold()]
+        total = len(user_files) + len(agent_files) + (0 if self._filter == "run" else len(self._pending_names))
+        if total == 0:
+            self._content_layout.addWidget(self._empty_state())
+            self._content_layout.addStretch(1)
+            return
+        self._add_section(
+            "Загружено пользователем",
+            user_files,
+            pending_names=[] if self._filter == "run" else self._pending_names,
+        )
+        self._add_section("Создано агентом", agent_files, pending_names=[])
+        self._content_layout.addStretch(1)
+
+    def _add_section(
+        self,
+        title: str,
+        files: list[WorkflowFileItem],
+        *,
+        pending_names: list[str],
+    ) -> None:
+        if not files and not pending_names:
+            return
+        header = QLabel(title)
+        header.setFont(app_font(12, QFont.Weight.DemiBold))
+        header.setStyleSheet("color: #06483D; background: transparent;")
+        self._content_layout.addWidget(header)
+        for name in pending_names:
+            self._content_layout.addWidget(self._pending_card(name))
+        for item in files:
+            self._content_layout.addWidget(self._file_card(item))
+
+    def _empty_state(self) -> QWidget:
+        box = QFrame()
+        box.setStyleSheet("background: transparent; border: none;")
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(10, 28, 10, 10)
+        lay.setSpacing(8)
+        icon = QLabel("□")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setFixedSize(42, 42)
+        icon.setFont(app_font(22, QFont.Weight.DemiBold))
+        icon.setStyleSheet(
+            "color: #08745F; background: #EEF7F3; border-radius: 12px;"
+        )
+        title = QLabel("Файлов пока нет")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setFont(app_font(14, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        text = QLabel(
+            "Прикрепите регламент или другие материалы. "
+            "Созданные агентом документы также появятся здесь"
+        )
+        text.setWordWrap(True)
+        text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        text.setFont(app_font(11))
+        text.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        button = QPushButton("Добавить первый файл")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedHeight(34)
+        button.setFont(app_font(12, QFont.Weight.DemiBold))
+        button.setStyleSheet(_PRIMARY)
+        button.clicked.connect(self.upload_requested.emit)
+        lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(title)
+        lay.addWidget(text)
+        lay.addWidget(button)
+        return box
+
+    def _pending_card(self, name: str) -> QWidget:
+        card = QFrame()
+        card.setObjectName("workflowfilecard")
+        card.setStyleSheet(_FILE_CARD_QSS)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(4)
+        title = QLabel(name)
+        title.setWordWrap(True)
+        title.setFont(app_font(12, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        meta = QLabel("TXT · ожидает загрузки · новая версия")
+        meta.setFont(app_font(11))
+        meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        lay.addWidget(title)
+        lay.addWidget(meta)
+        return card
+
+    def _file_card(self, item: WorkflowFileItem) -> QWidget:
+        card = QFrame()
+        card.setObjectName("workflowfilecard")
+        card.setStyleSheet(_FILE_CARD_QSS)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(6)
+        name = QLabel(item.filename or "file")
+        name.setWordWrap(True)
+        name.setFont(app_font(12, QFont.Weight.DemiBold))
+        name.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        meta_line = QLabel(
+            f"{_file_ext(item.filename)} · {_format_file_size(item.size)} · "
+            f"{_short_date(item.created_at)} · {_file_status(item)} · v1"
+        )
+        meta_line.setFont(app_font(10))
+        meta_line.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        summary = QLabel(item.summary or item.text_preview or "Документ доступен агенту")
+        summary.setWordWrap(True)
+        summary.setFont(app_font(11))
+        summary.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        menu = QPushButton("...")
+        menu.setCursor(Qt.CursorShape.PointingHandCursor)
+        menu.setFixedSize(28, 24)
+        menu.setStyleSheet(_ICON_BTN_QSS)
+        menu.clicked.connect(lambda _=False, button=menu, it=item: self._open_file_menu(button, it))
+        top.addWidget(name, 1)
+        top.addWidget(menu, 0)
+        lay.addLayout(top)
+        lay.addWidget(meta_line)
+        lay.addWidget(summary)
+        return card
+
+    def _open_file_menu(self, button: QPushButton, item: WorkflowFileItem) -> None:
+        menu = QMenu(button)
+        download = menu.addAction("Скачать")
+        action = menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+        if action == download:
+            self.download_requested.emit(item)
+
+
 class WorkflowPage(QWidget):
     saved = Signal(str)
     saved_record = Signal(object)
@@ -1781,6 +2111,7 @@ class WorkflowPage(QWidget):
         self._live_tools: list[dict] = []
         self._live_tool_widgets: dict[str, CursorFeedItem] = {}
         self._sdk_bridge = None
+        self._workflow_files = WorkflowFiles()
         self._hitl_cards: list[QWidget] = []
         self._busy_frames = ("◐", "◓", "◑", "◒")
         self._live_sdk_question: WorkflowOpenQuestion | None = None
@@ -1950,11 +2281,34 @@ class WorkflowPage(QWidget):
         feed_lay.addWidget(self._results)
 
         self._stepper = StageStepper()
+        self._files_panel = WorkflowFilesPanel()
+        self._files_panel.upload_requested.connect(self._on_files_upload_requested)
+        self._files_panel.refresh_requested.connect(self._refresh_workflow_files)
+        self._files_panel.download_requested.connect(self._on_file_download_requested)
+        self._files_panel.open_all_requested.connect(self._on_open_all_files_requested)
+        self._right_tabs = QTabWidget()
+        self._right_tabs.setFixedWidth(272)
+        self._right_tabs.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self._right_tabs.addTab(self._stepper, "Этапы")
+        self._right_tabs.addTab(self._files_panel, "Файлы")
+        self._right_tabs.setStyleSheet(
+            """
+            QTabWidget::pane { border: none; background: transparent; }
+            QTabBar::tab {
+                background: transparent; color: #6B7773; padding: 8px 12px;
+                border: none; border-bottom: 2px solid transparent;
+            }
+            QTabBar::tab:selected {
+                color: #06483D; border-bottom: 2px solid #08745F;
+                font-weight: 600;
+            }
+            """
+        )
 
         body = QHBoxLayout()
         body.setSpacing(16)
         body.addWidget(feed_card, 1)
-        body.addWidget(self._stepper, 0)
+        body.addWidget(self._right_tabs, 0)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -2021,6 +2375,7 @@ class WorkflowPage(QWidget):
             if not ev.event_key:
                 ev.event_key = self._next_event_key()
         self._render_chips()
+        self._refresh_workflow_files()
         self._render_all()
 
     def start_from_passport(self, session: PassportSession, *, auto_plan: bool = True) -> None:
@@ -2387,6 +2742,105 @@ class WorkflowPage(QWidget):
             self._chips_layout.addWidget(chip)
         self._chips_layout.addStretch(1)
         self._chips_wrap.setVisible(bool(names or result_names))
+        self._render_files_panel()
+
+    def _render_files_panel(self) -> None:
+        panel = getattr(self, "_files_panel", None)
+        if panel is None:
+            return
+        pending = [Path(p).name for p in self._pending_paths if Path(p).name]
+        panel.set_files(self._workflow_files, pending_names=pending)
+        tabs = getattr(self, "_right_tabs", None)
+        if tabs is not None:
+            total = len(self._workflow_files.user_files) + len(self._workflow_files.agent_files) + len(pending)
+            tabs.setTabText(1, f"Файлы {total}")
+
+    def _refresh_workflow_files(self) -> None:
+        if self._record is None:
+            self._workflow_files = WorkflowFiles()
+            self._render_files_panel()
+            return
+        try:
+            run_id = str((self._record.local_run or {}).get("current_run_id") or "")
+            self._workflow_files = self._api.list_workflow_files(self._record.id, run_id=run_id)
+        except ApiError as exc:
+            self._push_event("Файлы", f"Не удалось обновить список файлов: {exc.message}", kind="system")
+        self._render_files_panel()
+
+    def _on_files_upload_requested(self) -> None:
+        patterns = " ".join(f"*{s}" for s in sorted(SUPPORTED_SUFFIXES))
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Приложить файлы к базе агента",
+            str(Path.home()),
+            f"Поддерживаемые файлы ({patterns});;Все файлы (*.*)",
+        )
+        valid = [p for p in paths if p and Path(p).is_file()]
+        if not valid:
+            return
+        if self._record is None or self._live_sdk_question is not None:
+            for path in valid:
+                if path not in self._pending_paths:
+                    self._pending_paths.append(path)
+            self._render_chips()
+            return
+        try:
+            self._workflow_files = self._api.upload_workflow_files(self._record.id, valid)
+            self._record = self._api.get_workflow(self._record.id)
+            self._push_event("Файлы", "Файлы добавлены в базу агента", kind="system")
+        except ApiError as exc:
+            QMessageBox.warning(self, "Файлы", exc.message)
+        self._render_chips()
+        self._render_all()
+
+    def _on_file_download_requested(self, raw: object) -> None:
+        if self._record is None or not isinstance(raw, WorkflowFileItem) or not raw.id:
+            return
+        default = Path.home() / "Desktop" / (raw.filename or "file")
+        dest, _ = QFileDialog.getSaveFileName(
+            self,
+            "Скачать файл",
+            str(default),
+            "Все файлы (*.*)",
+        )
+        if not dest:
+            return
+        try:
+            self._api.download_workflow_file_to(self._record.id, raw.id, dest)
+            self._push_event("Файлы", f"Файл сохранён: {Path(dest).name}", kind="system")
+        except ApiError as exc:
+            QMessageBox.warning(self, "Файлы", exc.message)
+
+    def _on_open_all_files_requested(self) -> None:
+        self._push_event(
+            "Файлы",
+            "Общая база файлов доступна через пункт «Файлы» в левом меню.",
+            kind="system",
+        )
+
+    def _register_current_run_files(
+        self,
+        workflow_id: str,
+        run_id: str = "",
+        *,
+        render: bool = True,
+    ) -> None:
+        wid = (workflow_id or "").strip()
+        rid = (run_id or "").strip() or "local"
+        if not wid:
+            return
+        from app.tools.result_files import remembered_result_files
+
+        paths = [path for path in remembered_result_files(wid) if path.is_file()]
+        if not paths:
+            return
+        try:
+            files = self._api.register_workflow_run_files(wid, rid, paths)
+            if render:
+                self._workflow_files = files
+                self._render_files_panel()
+        except ApiError:
+            return
 
     def _next_event_key(self) -> str:
         self._event_seq += 1
@@ -3152,7 +3606,13 @@ class WorkflowPage(QWidget):
         if event_type == "error" and incoming.strip():
             self._flush_thinking()
             self._last_stream_error = incoming.strip()
-            self._push_event("Ошибка", incoming.strip(), kind="error")
+            self._push_event(
+                "Не удалось выполнить шаг",
+                _friendly_error_text(incoming),
+                kind="error",
+                action="Запустить снова",
+                action_key="run_demo" if self._execute_started else "run_plan",
+            )
             self._agent_status.setText("● Ошибка — смотрите карточку в ленте")
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
             return
@@ -3310,7 +3770,13 @@ class WorkflowPage(QWidget):
             self._last_stream_error = fail
             self._commit_live_tools_to_feed()
             self._set_busy(False)
-            self._push_event("Ошибка", fail, kind="error")
+            self._push_event(
+                "Не удалось выполнить шаг",
+                _friendly_error_text(fail),
+                kind="error",
+                action="Запустить снова",
+                action_key="run_demo" if self._execute_started else "run_plan",
+            )
             self._agent_status.setText("● Ошибка — предыдущий запуск не завершён")
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
             return
@@ -3341,6 +3807,7 @@ class WorkflowPage(QWidget):
             self._workflow_title = current.title
             self._notes = current.notes or self._notes
             self._render_chips()
+            self._refresh_workflow_files()
             if label.startswith("Планирование"):
                 self._show_design_result(current)
             elif label.startswith("Пробный"):
@@ -3415,6 +3882,9 @@ class WorkflowPage(QWidget):
         if extras:
             report = (report + "\n\n" + "\n".join(extras)).strip()
         publish_answer_files(workflow_id=wid, work=work, text=report)
+        run_id = str((result.local_run or {}).get("current_run_id") or "")
+        self._register_current_run_files(wid, run_id)
+        self._refresh_workflow_files()
         if report:
             self._push_event("Результат", report[:4000])
         self._tests_ok = bool(playbook.get("demo_ok") or result.phase in {"tested", "ready"})
@@ -3701,14 +4171,37 @@ class WorkflowPage(QWidget):
     def _submit_question_answer(self) -> None:
         if self._live_sdk_question is not None:
             text = self._current_answer_text()
-            if not text:
-                QMessageBox.information(self, "Ответ", "Выберите вариант или заполните свой ответ.")
+            if not text and not self._pending_paths:
+                QMessageBox.information(self, "Ответ", "Выберите вариант, заполните ответ или приложите файл.")
                 return
+            file_note = ""
+            if self._pending_paths and self._record is not None:
+                paths = list(self._pending_paths)
+                try:
+                    self._workflow_files = self._api.upload_workflow_files(self._record.id, paths)
+                    bridge = self._sdk_bridge
+                    if bridge is not None:
+                        from app.sdk_agent.files import seed_workflow_files
+
+                        seed_workflow_files(
+                            self._api,
+                            self._record.id,
+                            bridge.workspace_cwd(self._record.id),
+                        )
+                    names = ", ".join(Path(p).name for p in paths)
+                    file_note = f"Приложенные файлы: {names}"
+                    self._pending_paths = []
+                    self._render_chips()
+                except ApiError as exc:
+                    QMessageBox.warning(self, "Файлы", exc.message)
+                    return
             asked = self._live_sdk_question.question
             self._ensure_question_in_feed(asked)
-            self._push_event("Вы", text, role="user")
-            self._sdk_answered.append((asked, text))
-            self._sdk_part_answers.append(text)
+            shown_answer = text or file_note or "Файл приложен"
+            self._push_event("Вы", shown_answer, role="user")
+            answer_for_sdk = f"{text}\n{file_note}".strip() if file_note else text
+            self._sdk_answered.append((asked, answer_for_sdk))
+            self._sdk_part_answers.append(answer_for_sdk)
             if self._sdk_part_index + 1 < len(self._sdk_question_parts):
                 self._sdk_part_index += 1
                 self._clear_questions()
@@ -3883,6 +4376,7 @@ class WorkflowPage(QWidget):
         events: list[dict] = []
         try:
             from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
+            from app.sdk_agent.files import seed_workflow_files
             from app.sdk_agent.prompt import build_design_sdk_prompt, inferred_design_answers
 
             bridge = CursorSdkBridge()
@@ -3924,12 +4418,15 @@ class WorkflowPage(QWidget):
                 elif event_type in {"status", "decision", "progress", "error", "thinking"}:
                     self._stream_event.emit(event_type, text)
 
-            sdk_prompt = build_design_sdk_prompt(record, design_prompt)
+            run_cwd = bridge.workspace_cwd(workflow_id)
+            file_context = seed_workflow_files(self._api, workflow_id, run_cwd)
+            sdk_prompt = build_design_sdk_prompt(record, design_prompt) + file_context
             self._sdk_bridge = bridge
             try:
                 result = bridge.run(
                     prompt=sdk_prompt,
                     workflow_id=workflow_id,
+                    cwd=run_cwd,
                     mode="design",
                     on_event=on_sdk_event,
                     on_question=self._wait_sdk_answer,
@@ -3982,6 +4479,7 @@ class WorkflowPage(QWidget):
         events: list[dict] = []
         try:
             from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
+            from app.sdk_agent.files import seed_workflow_files
             from app.sdk_agent.prompt import build_demo_sdk_prompt
 
             bridge = CursorSdkBridge()
@@ -4013,11 +4511,14 @@ class WorkflowPage(QWidget):
                 elif event_type in {"status", "decision", "progress", "error", "thinking"}:
                     self._stream_event.emit(event_type, text)
 
+            run_cwd = bridge.workspace_cwd(workflow_id)
+            file_context = seed_workflow_files(self._api, workflow_id, run_cwd)
             self._sdk_bridge = bridge
             try:
                 result = bridge.run(
-                    prompt=build_demo_sdk_prompt(record),
+                    prompt=build_demo_sdk_prompt(record) + file_context,
                     workflow_id=workflow_id,
+                    cwd=run_cwd,
                     resume_agent_id=resume_agent_id,
                     on_event=on_sdk_event,
                     on_question=self._wait_sdk_answer,
@@ -4026,11 +4527,20 @@ class WorkflowPage(QWidget):
                 if self._sdk_bridge is bridge:
                     self._sdk_bridge = None
             answer = str(result.get("answer") or "").strip()
+            sdk_run_id = str(result.get("run_id") or "").strip()
             record = self._store_sdk_agent_id(
                 workflow_id,
                 record,
                 str(result.get("agent_id") or resume_agent_id),
             )
+            if sdk_run_id:
+                local = dict(record.local_run or {})
+                local["current_run_id"] = sdk_run_id
+                try:
+                    record = self._api.update_workflow_local_run(workflow_id, local)
+                except ApiError:
+                    record = replace(record, local_run=local)
+                self._register_current_run_files(workflow_id, sdk_run_id, render=False)
             try:
                 return self._api.finish_local_demo_workflow(
                     workflow_id,
@@ -4297,6 +4807,7 @@ class WorkflowPage(QWidget):
         self._live_tools = []
         self._live_tool_widgets = {}
         self._sdk_bridge = None
+        self._workflow_files = WorkflowFiles()
         self._reset_sdk_question()
         self._hitl_cards = []
         from app.tools.result_files import clear_remembered_result_files

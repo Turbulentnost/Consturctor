@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.api_client import WorkflowOpenQuestion, WorkflowPlan, WorkflowPlanStep, WorkflowRecord
+from app.api_client import (
+    WorkflowFileItem,
+    WorkflowFiles,
+    WorkflowOpenQuestion,
+    WorkflowPlan,
+    WorkflowPlanStep,
+    WorkflowRecord,
+)
 from app.sdk_agent.bridge import DEFAULT_SDK_MODEL, CursorSdkBridge, CursorSdkUnavailable
+from app.sdk_agent.files import seed_workflow_files
 from app.sdk_agent.prompt import (
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
@@ -562,6 +570,42 @@ def test_bridge_skip_before_invoke_starts(tmp_path: Path) -> None:
     result = CursorSdkBridge.skipped_tool_result("outlook.read_calendar")
     assert result["skipped"] is True
     assert result["tool"] == "outlook.read_calendar"
+
+
+def test_seed_workflow_files_materializes_manifest(tmp_path: Path) -> None:
+    class _Api:
+        def list_workflow_files(self, workflow_id: str) -> WorkflowFiles:
+            assert workflow_id == "wf-1"
+            return WorkflowFiles(
+                user_files=[
+                    WorkflowFileItem(
+                        id="file-1",
+                        filename="reglament.txt",
+                        size=9,
+                        sha256="abc",
+                        summary="Регламент",
+                    )
+                ]
+            )
+
+        def download_workflow_file_to(self, workflow_id: str, file_id: str, destination: Path) -> str:
+            assert workflow_id == "wf-1"
+            assert file_id == "file-1"
+            destination.write_bytes(b"original")
+            return str(destination)
+
+        def workflow_file_text(self, workflow_id: str, file_id: str) -> dict[str, str]:
+            assert workflow_id == "wf-1"
+            assert file_id == "file-1"
+            return {"text": "Полный текст регламента", "summary": "Регламент"}
+
+    hint = seed_workflow_files(_Api(), "wf-1", str(tmp_path))  # type: ignore[arg-type]
+    manifest = tmp_path / "materials" / "manifest.json"
+    assert manifest.is_file()
+    assert (tmp_path / "materials" / "001_reglament.txt").read_bytes() == b"original"
+    assert (tmp_path / "materials" / "001_reglament.txt.txt").read_text(encoding="utf-8")
+    assert "materials/manifest.json" in hint
+    assert "askQuestion" in hint
 
 
 def test_mcp_tool_name_unwraps_constructor_tool() -> None:
