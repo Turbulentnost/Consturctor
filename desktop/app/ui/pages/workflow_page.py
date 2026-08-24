@@ -753,6 +753,8 @@ def _normalize_live_tool_status(status: str, *, ok: bool | None = None) -> str:
         return "running"
     if folded in {"ok", "completed", "success", "finished", "done"}:
         return "ok"
+    if folded in {"skipped"}:
+        return "skipped"
     if folded in {"error", "failed", "cancelled", "canceled"}:
         return "error"
     if ok is False:
@@ -760,6 +762,26 @@ def _normalize_live_tool_status(status: str, *, ok: bool | None = None) -> str:
     if ok is True:
         return "ok"
     return "running" if not folded else "error"
+
+
+def _payload_tool_skipped(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("status") or "").strip().casefold() == "skipped":
+        return True
+    if payload.get("skipped"):
+        return True
+    result = payload.get("result")
+    return isinstance(result, dict) and bool(result.get("skipped"))
+
+
+def _skip_tool_detail(payload: dict | None = None) -> str:
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if isinstance(result, dict):
+        summary = str(result.get("summary") or "").strip()
+        if summary:
+            return summary
+    return "Пропущено. Агент продолжает без результата этого инструмента."
 
 
 def _live_tool_name(payload: dict) -> str:
@@ -1758,6 +1780,7 @@ class WorkflowPage(QWidget):
         self._last_exec_report = ""
         self._live_tools: list[dict] = []
         self._live_tool_widgets: dict[str, CursorFeedItem] = {}
+        self._sdk_bridge = None
         self._hitl_cards: list[QWidget] = []
         self._busy_frames = ("◐", "◓", "◑", "◒")
         self._live_sdk_question: WorkflowOpenQuestion | None = None
@@ -2401,6 +2424,7 @@ class WorkflowPage(QWidget):
                 expanded = True
         else:
             expanded = key in self._expanded_keys
+        skip_id = self._skip_id_for_event(key) if kind == "tool" else ""
         widget = CursorFeedItem(
             kind=kind,
             text=event.body,
@@ -2410,10 +2434,25 @@ class WorkflowPage(QWidget):
             action_key="" if hide_action else event.action_key,
             event_key=key,
             expanded=expanded,
+            skippable=bool(skip_id),
+            skip_request_id=skip_id,
         )
         widget.action_clicked.connect(self._on_feed_action)
         widget.expand_toggled.connect(self._on_expand_toggled)
+        widget.skip_clicked.connect(self._on_skip_tool)
         return widget
+
+    def _skip_id_for_event(self, event_key: str) -> str:
+        key = (event_key or "").strip()
+        if not key:
+            return ""
+        for tool in self._live_tools:
+            if str(tool.get("key") or "") != key:
+                continue
+            if str(tool.get("status") or "") != "running":
+                return ""
+            return str(tool.get("request_id") or "").strip()
+        return ""
 
     def _reset_thinking_pacer(self) -> None:
         self._thinking_timer.stop()
@@ -2704,30 +2743,48 @@ class WorkflowPage(QWidget):
             for marker in ("ошибка", "не выполнено", "отклонён", "не записан")
         )
 
-    def _upsert_live_tool(self, name: str, *, status: str, detail: str = "") -> None:
+    def _upsert_live_tool(
+        self,
+        name: str,
+        *,
+        status: str,
+        detail: str = "",
+        request_id: str = "",
+    ) -> None:
         tool_name = (name or "").strip() or "инструмент"
         if self._planning_stream and not self._is_catalog_tool_name(tool_name):
             line = f"{tool_name}: {detail}".strip() if detail else tool_name
             self._append_thinking(line + "\n")
             return
         incoming = (detail or "").strip()
-        running = next(
-            (
-                item
-                for item in self._live_tools
-                if item.get("name") == tool_name and item.get("status") == "running"
-            ),
-            None,
-        )
-        target = running
+        rid = (request_id or "").strip()
+        target = None
+        if rid:
+            target = next(
+                (item for item in self._live_tools if str(item.get("request_id") or "") == rid),
+                None,
+            )
+        if target is None:
+            target = next(
+                (
+                    item
+                    for item in self._live_tools
+                    if item.get("name") == tool_name and item.get("status") == "running"
+                ),
+                None,
+            )
         if target is None and status != "running":
             target = next(
                 (item for item in reversed(self._live_tools) if item.get("name") == tool_name),
                 None,
             )
         if target is not None:
+            if str(target.get("status") or "") == "skipped" and status != "skipped":
+                return
             target["status"] = status
             target["detail"] = self._merge_tool_detail(str(target.get("detail") or ""), incoming, status)
+            if rid:
+                target["request_id"] = rid
             self._sync_tool_event(target)
             self._refresh_live_tool_widget(target)
             return
@@ -2744,6 +2801,7 @@ class WorkflowPage(QWidget):
                 "status": "running",
                 "detail": incoming or "Выполняется…",
                 "key": key,
+                "request_id": rid,
             }
             self._live_tools.append(tool)
             self._last_stream_phrase = f"вызываю {tool_name}"
@@ -2756,6 +2814,7 @@ class WorkflowPage(QWidget):
             "status": status,
             "detail": incoming or ("Готово" if status == "ok" else "Ошибка"),
             "key": key,
+            "request_id": rid,
         }
         self._live_tools.append(tool)
         self._sync_tool_event(tool)
@@ -2791,6 +2850,8 @@ class WorkflowPage(QWidget):
             return title, detail or "Выполняется…"
         if status == "ok":
             return title, detail or "Готово"
+        if status == "skipped":
+            return f"Инструмент: {name} — пропущен", detail or _skip_tool_detail()
         return f"Инструмент: {name} — не выполнено", detail or "Ошибка"
 
     def _refresh_live_tool_widget(self, tool: dict) -> None:
@@ -2802,7 +2863,9 @@ class WorkflowPage(QWidget):
         title, body = self._tool_card_body(tool)
         widget.set_tool_detail(body)
         widget.set_header_title(title)
-        if str(tool.get("status") or "") == "error":
+        status = str(tool.get("status") or "")
+        widget.set_skip_visible(status == "running", str(tool.get("request_id") or ""))
+        if status == "error":
             widget.set_expanded(True)
             self._collapsed_keys.discard(key)
             self._expanded_keys.add(key)
@@ -2811,10 +2874,12 @@ class WorkflowPage(QWidget):
         key = str(tool.get("key") or self._next_event_key())
         tool["key"] = key
         title, body = self._tool_card_body(tool)
-        error = str(tool.get("status") or "") == "error"
+        status = str(tool.get("status") or "")
+        error = status == "error"
         if error:
             self._collapsed_keys.discard(key)
             self._expanded_keys.add(key)
+        skip_id = str(tool.get("request_id") or "").strip() if status == "running" else ""
         widget = CursorFeedItem(
             kind="tool",
             text=body,
@@ -2822,11 +2887,34 @@ class WorkflowPage(QWidget):
             detail=body,
             event_key=key,
             expanded=error or key not in self._collapsed_keys,
+            skippable=bool(skip_id),
+            skip_request_id=skip_id,
         )
         widget.expand_toggled.connect(self._on_expand_toggled)
+        widget.skip_clicked.connect(self._on_skip_tool)
         self._live_tool_widgets[key] = widget
         self._feed_layout.addWidget(widget)
         self._scroll_feed_to_bottom()
+
+    def _on_skip_tool(self, request_id: str) -> None:
+        rid = (request_id or "").strip()
+        if not rid:
+            return
+        tool = next(
+            (item for item in self._live_tools if str(item.get("request_id") or "") == rid),
+            None,
+        )
+        if tool is None or str(tool.get("status") or "") != "running":
+            return
+        bridge = self._sdk_bridge
+        if bridge is None:
+            return
+        bridge.skip_tool(rid)
+        tool["status"] = "skipped"
+        tool["detail"] = _skip_tool_detail()
+        self._sync_tool_event(tool)
+        self._refresh_live_tool_widget(tool)
+        self._tick_activity()
 
     def _merge_tool_detail(self, previous: str, incoming: str, status: str) -> str:
         placeholders = {
@@ -2846,6 +2934,8 @@ class WorkflowPage(QWidget):
             return previous or "Ошибка"
         if status == "ok":
             return previous or "Готово"
+        if status == "skipped":
+            return previous or _skip_tool_detail()
         return previous or "Выполняется…"
 
     def _commit_live_tools_to_feed(self) -> None:
@@ -2859,8 +2949,11 @@ class WorkflowPage(QWidget):
             elif status == "error":
                 body = detail or "Ошибка"
                 title = f"Инструмент: {name} — не выполнено"
-            elif status in {"skipped", "blocked_in_design"}:
+            elif status == "blocked_in_design":
                 body = detail or "На этапе проектирования инструмент не вызывается"
+                title = f"Инструмент: {name} — пропущен"
+            elif status == "skipped":
+                body = detail or _skip_tool_detail()
                 title = f"Инструмент: {name} — пропущен"
             else:
                 body = detail or "Вызов завершён"
@@ -2997,7 +3090,8 @@ class WorkflowPage(QWidget):
                 detail = _compact_payload(result, limit=600)
             else:
                 detail = _compact_payload(args, limit=600) if args else ("Выполняется..." if status == "running" else "")
-            self._upsert_live_tool(name, status=status, detail=detail)
+            request_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
+            self._upsert_live_tool(name, status=status, detail=detail, request_id=request_id)
             self._tick_activity()
             return
         if event_type == "tool_result":
@@ -3011,7 +3105,17 @@ class WorkflowPage(QWidget):
             if payload:
                 name = _live_tool_name(payload)
                 raw_status = str(payload.get("status") or "").strip()
-                if raw_status in {"skipped", "blocked_in_design"} or payload.get("skipped"):
+                if raw_status == "blocked_in_design":
+                    self._tick_activity()
+                    return
+                request_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
+                if _payload_tool_skipped(payload):
+                    self._upsert_live_tool(
+                        name.strip() or "инструмент",
+                        status="skipped",
+                        detail=_skip_tool_detail(payload),
+                        request_id=request_id,
+                    )
                     self._tick_activity()
                     return
                 status = _normalize_live_tool_status(raw_status, ok=bool(payload.get("ok", True)))
@@ -3022,6 +3126,7 @@ class WorkflowPage(QWidget):
                     name.strip() or "инструмент",
                     status=status,
                     detail=(detail or ("Готово" if status == "ok" else "Ошибка")).strip(),
+                    request_id=request_id,
                 )
                 self._tick_activity()
                 return
@@ -3820,13 +3925,18 @@ class WorkflowPage(QWidget):
                     self._stream_event.emit(event_type, text)
 
             sdk_prompt = build_design_sdk_prompt(record, design_prompt)
-            result = bridge.run(
-                prompt=sdk_prompt,
-                workflow_id=workflow_id,
-                mode="design",
-                on_event=on_sdk_event,
-                on_question=self._wait_sdk_answer,
-            )
+            self._sdk_bridge = bridge
+            try:
+                result = bridge.run(
+                    prompt=sdk_prompt,
+                    workflow_id=workflow_id,
+                    mode="design",
+                    on_event=on_sdk_event,
+                    on_question=self._wait_sdk_answer,
+                )
+            finally:
+                if self._sdk_bridge is bridge:
+                    self._sdk_bridge = None
             self._stream_event.emit(
                 "decision",
                 "Проектирование завершено. Продолжаю тем же Cursor SDK агентом для пробного прогона.",
@@ -3903,13 +4013,18 @@ class WorkflowPage(QWidget):
                 elif event_type in {"status", "decision", "progress", "error", "thinking"}:
                     self._stream_event.emit(event_type, text)
 
-            result = bridge.run(
-                prompt=build_demo_sdk_prompt(record),
-                workflow_id=workflow_id,
-                resume_agent_id=resume_agent_id,
-                on_event=on_sdk_event,
-                on_question=self._wait_sdk_answer,
-            )
+            self._sdk_bridge = bridge
+            try:
+                result = bridge.run(
+                    prompt=build_demo_sdk_prompt(record),
+                    workflow_id=workflow_id,
+                    resume_agent_id=resume_agent_id,
+                    on_event=on_sdk_event,
+                    on_question=self._wait_sdk_answer,
+                )
+            finally:
+                if self._sdk_bridge is bridge:
+                    self._sdk_bridge = None
             answer = str(result.get("answer") or "").strip()
             record = self._store_sdk_agent_id(
                 workflow_id,
@@ -4181,6 +4296,7 @@ class WorkflowPage(QWidget):
         self._last_exec_report = ""
         self._live_tools = []
         self._live_tool_widgets = {}
+        self._sdk_bridge = None
         self._reset_sdk_question()
         self._hitl_cards = []
         from app.tools.result_files import clear_remembered_result_files

@@ -13,6 +13,8 @@ from app.schemas.workflow import WebSearchRequest, WebSearchResponse, WebSearchR
 from app.services.imap_tools import ImapToolError, imap_configured, invoke_imap
 from app.services.onec_tools import ONEC_TOOLS, OnecToolError, invoke_onec, odata_configured
 from app.services.turboproject import (
+    GET_TOOL_NAME as TURBOPROJECT_GET_TOOL,
+    LIST_TOOL_NAME as TURBOPROJECT_LIST_TOOL,
     TOOL_NAME as TURBOPROJECT_TOOL,
     TurboProjectError,
     invoke_turboproject,
@@ -34,7 +36,14 @@ _IMAP_TOOLS = frozenset(
     }
 )
 
-_TURBOPROJECT_TOOLS = frozenset({TURBOPROJECT_TOOL, "turboproject.projects"})
+_TURBOPROJECT_TOOLS = frozenset(
+    {
+        TURBOPROJECT_TOOL,
+        TURBOPROJECT_LIST_TOOL,
+        TURBOPROJECT_GET_TOOL,
+        "turboproject.projects",
+    }
+)
 _SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS | _TURBOPROJECT_TOOLS
 
 

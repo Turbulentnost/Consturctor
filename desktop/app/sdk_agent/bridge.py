@@ -41,6 +41,49 @@ class CursorSdkBridge:
         self._node = node
         self._sdk_root = DESKTOP_ROOT / "sdk-agent"
         self._runner = runner or self._sdk_root / "src" / "runner.ts"
+        self._skip_lock = threading.Lock()
+        self._skip_ids: set[str] = set()
+        self._active_request_ids: set[str] = set()
+
+    def skip_tool(self, request_id: str = "") -> bool:
+        rid = (request_id or "").strip()
+        with self._skip_lock:
+            if not rid:
+                if len(self._active_request_ids) != 1:
+                    return False
+                rid = next(iter(self._active_request_ids))
+            self._skip_ids.add(rid)
+            return True
+
+    def _is_skipped(self, request_id: str) -> bool:
+        with self._skip_lock:
+            return request_id in self._skip_ids
+
+    def _mark_active(self, request_id: str) -> None:
+        rid = (request_id or "").strip()
+        if not rid:
+            return
+        with self._skip_lock:
+            self._active_request_ids.add(rid)
+
+    def _clear_active(self, request_id: str) -> None:
+        rid = (request_id or "").strip()
+        if not rid:
+            return
+        with self._skip_lock:
+            self._active_request_ids.discard(rid)
+            self._skip_ids.discard(rid)
+
+    @staticmethod
+    def skipped_tool_result(tool: str) -> dict[str, Any]:
+        name = (tool or "").strip() or "tool"
+        return {
+            "skipped": True,
+            "tool": name,
+            "summary": (
+                "User skipped this tool. Continue the task without waiting for its result."
+            ),
+        }
 
     def run(
         self,
@@ -111,6 +154,7 @@ class CursorSdkBridge:
                         workflow_id=workflow_id,
                         cwd=run_cwd,
                         on_question=on_question,
+                        should_stop=should_stop,
                     )
                     continue
                 if event_type == "agent":
@@ -237,6 +281,7 @@ class CursorSdkBridge:
         workflow_id: str,
         cwd: str,
         on_question: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> None:
         request_id = str(payload.get("requestId") or "")
         tool = str(payload.get("tool") or "")
@@ -269,43 +314,100 @@ class CursorSdkBridge:
             args.setdefault("workflow_id", workflow_id)
             args.setdefault("agent_id", workflow_id)
             args.setdefault("runtime_context", {"workflow_id": workflow_id, "agent_id": workflow_id})
-        try:
-            result = invoke_sdk_tool(tool, args)
-            result = self._externalize_large_result(
-                tool=tool,
-                request_id=request_id,
-                result=result,
-                cwd=cwd,
-            )
-            self._send(
-                process,
+        self._mark_active(request_id)
+        send_lock = threading.Lock()
+        sent = False
+
+        def send_result(message: dict[str, Any]) -> bool:
+            nonlocal sent
+            with send_lock:
+                if sent:
+                    return False
+                sent = True
+                self._send(process, message)
+                return True
+
+        if self._is_skipped(request_id) or (should_stop is not None and should_stop()):
+            send_result(
                 {
                     "type": "tool_result",
                     "requestId": request_id,
                     "ok": True,
-                    "result": result,
-                },
+                    "result": self.skipped_tool_result(tool),
+                }
             )
-        except ToolHostError as exc:
-            self._send(
-                process,
+            self._clear_active(request_id)
+            return
+
+        done = threading.Event()
+        box: dict[str, Any] = {"result": None, "error": None}
+
+        def work() -> None:
+            try:
+                result = invoke_sdk_tool(tool, args)
+                result = self._externalize_large_result(
+                    tool=tool,
+                    request_id=request_id,
+                    result=result,
+                    cwd=cwd,
+                )
+                box["result"] = result
+            except Exception as exc:  # noqa: BLE001
+                box["error"] = exc
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        while not done.wait(timeout=0.12):
+            if self._is_skipped(request_id) or (should_stop is not None and should_stop()):
+                send_result(
+                    {
+                        "type": "tool_result",
+                        "requestId": request_id,
+                        "ok": True,
+                        "result": self.skipped_tool_result(tool),
+                    }
+                )
+                self._clear_active(request_id)
+                return
+
+        if self._is_skipped(request_id) or (should_stop is not None and should_stop()):
+            send_result(
+                {
+                    "type": "tool_result",
+                    "requestId": request_id,
+                    "ok": True,
+                    "result": self.skipped_tool_result(tool),
+                }
+            )
+            self._clear_active(request_id)
+            return
+
+        error = box.get("error")
+        if error is not None:
+            if isinstance(error, ToolHostError):
+                message = str(error)
+            else:
+                message = f"Ошибка инструмента {tool}: {error}"
+            send_result(
                 {
                     "type": "tool_result",
                     "requestId": request_id,
                     "ok": False,
-                    "error": str(exc),
-                },
+                    "error": message,
+                }
             )
-        except Exception as exc:  # noqa: BLE001
-            self._send(
-                process,
+        else:
+            send_result(
                 {
                     "type": "tool_result",
                     "requestId": request_id,
-                    "ok": False,
-                    "error": f"Ошибка инструмента {tool}: {exc}",
-                },
+                    "ok": True,
+                    "result": box.get("result") or {},
+                }
             )
+        self._clear_active(request_id)
 
     def _externalize_large_result(
         self,

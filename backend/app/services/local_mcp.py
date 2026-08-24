@@ -390,12 +390,11 @@ def _raw_tools() -> list[dict[str, Any]]:
         {
             "name": "turboproject",
             "description": (
-                "Проекты TurboProject с 1С. "
-                "Карточка: имя, даты MSP/1С, статистика задач, примеры просрочек, "
-                "ресурсы (ФИО), руководитель/куратор/заказчик и блок data_1c. "
+                "Быстрый индекс проектов TurboProject с 1С. Не читает карточки MPP. "
+                "Возвращает file_id, имя, has_1c и доступные даты/поля 1С из списка. "
+                "Для задач, просрочек, ресурсов и полной карточки вызови turboproject.get(file_id). "
                 "Фильтры: query (только название / имя MPP / номер 1С, не фраза), "
-                "manager (одно ФИО руководителя 1С), file_id, overdue_only, limit. "
-                "Учётка на сервере. Исполняется на сервере."
+                "manager (если есть в индексе), limit. Учётка на сервере."
             ),
             "execution": "server",
             "input_schema": {
@@ -414,16 +413,68 @@ def _raw_tools() -> list[dict[str, Any]]:
                     },
                     "file_id": {
                         "type": "string",
-                        "description": "ID файла проекта (ProjectFile.id)",
+                        "description": "Если задан, вернётся полная карточка как turboproject.get",
                     },
                     "overdue_only": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Только проекты с просроченными задачами или вехами",
+                        "description": "Для индекса не применяется: сначала выбери file_id, затем turboproject.get",
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Максимум проектов в ответе",
+                        "description": "Максимум строк индекса в ответе",
+                    },
+                },
+            },
+        },
+        {
+            "name": "turboproject.list",
+            "description": (
+                "Быстрый список проектов TurboProject с 1С из /api/projects/files. "
+                "Не читает карточки и не считает просрочки. Используй первым, выбери нужные file_id, "
+                "затем вызывай turboproject.get для 3-10 карточек."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Название проекта, имя MPP или номер 1С — не фраза "
+                            "и не список участников"
+                        ),
+                    },
+                    "manager": {
+                        "type": "string",
+                        "description": "ФИО руководителя проекта из 1С, если поле есть в индексе",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Максимум строк индекса в ответе",
+                    },
+                },
+            },
+        },
+        {
+            "name": "turboproject.get",
+            "description": (
+                "Полная карточка одного проекта TurboProject по file_id из turboproject.list: "
+                "даты MSP/1С, статистика задач, просрочки, ресурсы и data_1c."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "required": ["file_id"],
+                "properties": {
+                    "file_id": {
+                        "type": "string",
+                        "description": "ID файла проекта из turboproject.list",
+                    },
+                    "overdue_only": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Вернуть проект только если в карточке есть просроченные задачи или вехи",
                     },
                 },
             },

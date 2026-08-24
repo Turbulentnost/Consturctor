@@ -13,45 +13,36 @@ from app.tools.ac.tooling import (
 from app.tools.runtime_api import request
 
 TOOL_NAME = "turboproject"
+LIST_TOOL_NAME = "turboproject.list"
+GET_TOOL_NAME = "turboproject.get"
 _SAMPLE_LIMIT = 5
 _MAX_OVERDUE_ITEMS = 8
 _MAX_RESOURCES = 20
 
 TOOL_DESCRIPTION = (
-    "Проекты TurboProject с 1С. Большие ответы сохраняются в workspace для анализа tools Cursor SDK. "
-    "Сервер ходит в API `/api/projects/files` и карточку файла. "
+    "Быстрый индекс проектов TurboProject с 1С. Не читает карточки MPP. "
+    "Для задач, просрочек, ресурсов и полной карточки используй turboproject.get(file_id). "
     "Учётка уже в backend/.env — не спрашивай логин и не вызывай API сам.\n\n"
     "Итог:\n"
     "• total_projects — сколько файлов вернул список;\n"
     "• projects_with_1c_count — сколько из них с 1С;\n"
     "• generated_at — время сборки JSON;\n"
-    "• projects — список проектов с 1С.\n\n"
-    "Поля проекта:\n"
+    "• projects — строки индекса проектов с 1С.\n\n"
+    "Поля индекса:\n"
     "• file_id — ProjectFile.id;\n"
     "• original_name — имя загруженного MPP;\n"
     "• uploaded_at — дата загрузки MPP;\n"
     "• project_name — project.name или имя файла;\n"
-    "• dates.start_date / finish_date / actual_finish_date — план и факт из MSP;\n"
-    "• dates.baseline_start / baseline_finish — базовый план MSP;\n"
-    "• dates.plan_finish_1c — плановое окончание из 1С;\n"
-    "• task_stats.total_tasks — все задачи, включая суммарные и вехи;\n"
-    "• task_stats.non_summary_tasks — без суммарных;\n"
-    "• task_stats.completed_tasks — несуммарные со 100% выполнения;\n"
-    "• task_stats.overdue_tasks_count — не суммарные, не завершены, finish_date < сегодня;\n"
-    "• task_stats.overdue_milestones_count — вехи, не завершены, finish_date < сегодня;\n"
-    "• overdue_tasks[] — id, uid, name, start_date, finish_date, percent_complete, "
-    "executors (assignments.resource_name);\n"
-    "• overdue_milestones[] — id, uid, name, start_date, finish_date, percent_complete;\n"
-    "• resources — уникальные ФИО ресурсов проекта;\n"
-    "• data_1c — блок 1С: one_c_ref_key, nomer_proekta, status_proekta, tip_proekta, "
-    "byudzhet_plan, byudzhet_fakt, data_nachala, data_okonchaniya, "
-    "planovaya_data_nachala, planovaya_data_okonchaniya, rukovodstvo_proektom, "
-    "osnovanie_zapuska, kolichestvo_perenosov, vkhodit_v_portfel, yavlyaetsya_portfelem, "
-    "rukovoditel, kurator, zakazchik, investor, zam_rp, istochnik_finansirovaniya, "
-    "podrazdelenie, organizatsiya, tseli_proekta, chek_list, resheniya, "
-    "perenosy_proekta, synced_at.\n\n"
+    "• dates — только даты, доступные в списке;\n"
+    "• data_1c — короткие поля 1С, если они есть в списке.\n\n"
     "Аргументы: query (только название / имя MPP / номер 1С, не фраза), "
-    "manager (одно ФИО руководителя 1С), file_id, overdue_only, limit."
+    "manager, file_id (тогда вернётся карточка), limit."
+)
+
+GET_TOOL_DESCRIPTION = (
+    "Полная карточка одного проекта TurboProject по file_id из turboproject.list. "
+    "Возвращает даты MSP/1С, статистику задач, просрочки, ресурсы и data_1c. "
+    "Не вызывай без file_id и не используй для полного портфеля."
 )
 
 
@@ -85,14 +76,9 @@ class TurboProjectTool(BaseTool):
                             "type": "string",
                             "description": "ID файла проекта (ProjectFile.id)",
                         },
-                        "overdue_only": {
-                            "type": "boolean",
-                            "default": False,
-                            "description": "Только проекты с просроченными задачами или вехами",
-                        },
                         "limit": {
                             "type": "integer",
-                            "description": "Максимум проектов в ответе",
+                            "description": "Максимум строк индекса в ответе",
                         },
                     },
                 },
@@ -113,13 +99,92 @@ class TurboProjectTool(BaseTool):
     def execute(self, input_data: dict) -> ToolCallResult:
         arguments = {
             key: input_data[key]
-            for key in ("query", "manager", "file_id", "overdue_only", "limit")
+            for key in ("query", "manager", "file_id", "limit")
+            if key in input_data and input_data[key] not in (None, "")
+        }
+        endpoint_tool = GET_TOOL_NAME if arguments.get("file_id") else LIST_TOOL_NAME
+        try:
+            data = request(
+                "POST",
+                f"/api/v1/tools/{endpoint_tool}/invoke",
+                json={"arguments": arguments},
+                timeout=180.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="TURBOPROJECT_FAILED",
+                error_message=str(exc),
+            )
+        result = data.get("result") if isinstance(data, dict) else {}
+        if isinstance(result, dict):
+            result = _sample_for_agent(result, arguments)
+        return ToolCallResult(
+            ok=True,
+            tool_name=self.definition.name,
+            output_data=result if isinstance(result, dict) else {"result": result},
+        )
+
+
+class TurboProjectListTool(TurboProjectTool):
+    def __init__(self) -> None:
+        super().__init__()
+        self.definition.name = LIST_TOOL_NAME
+        self.definition.title = "Список проектов TurboProject"
+
+
+class TurboProjectGetTool(BaseTool):
+    def __init__(self) -> None:
+        super().__init__(
+            ToolDefinition(
+                name=GET_TOOL_NAME,
+                title="Карточка проекта TurboProject",
+                description=GET_TOOL_DESCRIPTION,
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.EXTERNAL_API,
+                requires_human_approval=False,
+                timeout_seconds=180,
+                max_retries=1,
+                input_schema={
+                    "type": "object",
+                    "required": ["file_id"],
+                    "properties": {
+                        "file_id": {
+                            "type": "string",
+                            "description": "ID файла проекта из turboproject.list",
+                        },
+                        "overdue_only": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Вернуть проект только если в карточке есть просроченные задачи или вехи",
+                        },
+                    },
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "total_projects": {"type": "integer"},
+                        "projects_with_1c_count": {"type": "integer"},
+                        "generated_at": {"type": "string"},
+                        "projects": {"type": "array"},
+                        "summary": {"type": "string"},
+                        "source": {"type": "string"},
+                    },
+                },
+            )
+        )
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        arguments = {
+            key: input_data[key]
+            for key in ("file_id", "overdue_only")
             if key in input_data and input_data[key] not in (None, "")
         }
         try:
             data = request(
                 "POST",
-                f"/api/v1/tools/{TOOL_NAME}/invoke",
+                f"/api/v1/tools/{GET_TOOL_NAME}/invoke",
                 json={"arguments": arguments},
                 timeout=180.0,
             )
@@ -182,7 +247,7 @@ def _sample_for_agent(result: dict, arguments: dict) -> dict:
 
 
 def register_turboproject_tools(registry: ToolRegistry, *, skip_existing: bool = False) -> None:
-    tool = TurboProjectTool()
-    if skip_existing and registry.has_tool(tool.definition.name):
-        return
-    registry.register(tool)
+    for tool in (TurboProjectTool(), TurboProjectListTool(), TurboProjectGetTool()):
+        if skip_existing and registry.has_tool(tool.definition.name):
+            continue
+        registry.register(tool)

@@ -70,6 +70,20 @@ QLabel#cursortoggle:hover {
 }
 """
 
+_SKIP_BTN = """
+QPushButton#cursorskip {
+    background: transparent;
+    color: #6B7773;
+    border: none;
+    border-radius: 6px;
+    padding: 2px 8px;
+}
+QPushButton#cursorskip:hover {
+    background: rgba(16, 24, 23, 0.08);
+    color: #06483D;
+}
+"""
+
 
 def resolve_feed_kind(*, role: str = "", title: str = "", kind: str = "") -> str:
     if kind:
@@ -202,6 +216,7 @@ class _WrapLabel(QLabel):
 
 class _CollapseHeader(QFrame):
     clicked = Signal()
+    skip_clicked = Signal()
 
     def __init__(
         self,
@@ -210,6 +225,7 @@ class _CollapseHeader(QFrame):
         parent: QWidget | None = None,
         *,
         variant: str = "",
+        show_skip: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("cursorcollapse")
@@ -233,12 +249,34 @@ class _CollapseHeader(QFrame):
         self._title.setWordWrap(True)
         row.addWidget(self._chevron, 0, Qt.AlignmentFlag.AlignTop)
         row.addWidget(self._title, 1)
+        self._skip: QPushButton | None = None
+        if variant == "tool":
+            self._skip = QPushButton("Skip")
+            self._skip.setObjectName("cursorskip")
+            self._skip.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._skip.setFont(app_font(12, QFont.Weight.Medium))
+            self._skip.setStyleSheet(_SKIP_BTN)
+            self._skip.setFixedHeight(24)
+            self._skip.setVisible(bool(show_skip))
+            self._skip.clicked.connect(self.skip_clicked.emit)
+            row.addWidget(self._skip, 0, Qt.AlignmentFlag.AlignVCenter)
 
     def set_title(self, title: str) -> None:
         self._title.setText(title)
 
+    def set_skip_visible(self, visible: bool) -> None:
+        if self._skip is not None:
+            self._skip.setVisible(bool(visible))
+
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
+            child = self.childAt(event.position().toPoint())
+            if (
+                self._skip is not None
+                and child is not None
+                and (child is self._skip or self._skip.isAncestorOf(child))
+            ):
+                return
             self.clicked.emit()
         super().mousePressEvent(event)
 
@@ -267,6 +305,7 @@ class CursorFeedItem(QFrame):
 
     action_clicked = Signal(str)
     expand_toggled = Signal(str, bool)
+    skip_clicked = Signal(str)
 
     def __init__(
         self,
@@ -281,6 +320,8 @@ class CursorFeedItem(QFrame):
         expanded: bool = False,
         arguments: Any = None,
         result: Any = None,
+        skippable: bool = False,
+        skip_request_id: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -292,6 +333,8 @@ class CursorFeedItem(QFrame):
         self._action_key = action_key
         self._event_key = event_key
         self._expanded = expanded
+        self._skippable = bool(skippable)
+        self._skip_request_id = (skip_request_id or "").strip()
         if kind == "tool" and not self._detail:
             self._detail = format_tool_detail(arguments, result)
         if not self._detail:
@@ -333,6 +376,18 @@ class CursorFeedItem(QFrame):
         self._title = title or self._title
         if self._header is not None:
             self._header.set_title(self._title)
+
+    def set_skip_visible(self, visible: bool, request_id: str = "") -> None:
+        if request_id:
+            self._skip_request_id = request_id.strip()
+        self._skippable = bool(visible) and bool(self._skip_request_id)
+        if self._header is not None:
+            self._header.set_skip_visible(self._skippable)
+
+    def _emit_skip(self) -> None:
+        rid = (self._skip_request_id or "").strip()
+        if rid:
+            self.skip_clicked.emit(rid)
 
     def set_expanded(self, expanded: bool) -> None:
         if bool(self._expanded) == bool(expanded):
@@ -393,8 +448,11 @@ class CursorFeedItem(QFrame):
             self._header_title(),
             self._expanded,
             variant="tool" if self._kind == "tool" else "",
+            show_skip=self._kind == "tool" and self._skippable,
         )
         self._header.clicked.connect(self._toggle_expand)
+        if self._kind == "tool":
+            self._header.skip_clicked.connect(self._emit_skip)
         root.addWidget(self._header)
         if self._kind == "plan":
             preview = _preview_text(self._text or self._detail, limit=180)

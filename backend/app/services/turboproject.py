@@ -11,6 +11,8 @@ import httpx
 from app.config import settings
 
 TOOL_NAME = "turboproject"
+LIST_TOOL_NAME = "turboproject.list"
+GET_TOOL_NAME = "turboproject.get"
 
 TOOL_DESCRIPTION = (
     "Проекты TurboProject, у которых есть синхронизация с 1С "
@@ -211,6 +213,42 @@ def build_project_payload(summary_item: dict[str, Any], details: dict[str, Any])
     }
 
 
+def build_project_index_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Cheap project index row from /api/projects/files without reading an MPP card."""
+    raw_file_id = item.get("id") or item.get("file_id") or item.get("fileId")
+    project = item.get("project") if isinstance(item.get("project"), dict) else {}
+    data_1c = item.get("data_1c") if isinstance(item.get("data_1c"), dict) else {}
+    return {
+        "file_id": raw_file_id,
+        "original_name": item.get("original_name") or item.get("name"),
+        "uploaded_at": iso_or_none(item.get("uploaded_at")),
+        "has_1c": bool(item.get("has_1c") or data_1c),
+        "project_name": project.get("name") or item.get("project_name") or item.get("original_name") or item.get("name"),
+        "dates": {
+            "start_date": iso_or_none(project.get("start_date") or item.get("start_date")),
+            "finish_date": iso_or_none(project.get("finish_date") or item.get("finish_date")),
+            "actual_finish_date": iso_or_none(project.get("actual_finish_date") or item.get("actual_finish_date")),
+            "baseline_start": iso_or_none(project.get("baseline_start") or item.get("baseline_start")),
+            "baseline_finish": iso_or_none(project.get("baseline_finish") or item.get("baseline_finish")),
+            "plan_finish_1c": iso_or_none(project.get("plan_finish_1c") or item.get("plan_finish_1c")),
+        },
+        "data_1c": {
+            key: data_1c.get(key)
+            for key in (
+                "nomer_proekta",
+                "status_proekta",
+                "rukovoditel",
+                "kurator",
+                "zakazchik",
+                "data_nachala",
+                "data_okonchaniya",
+                "planovaya_data_okonchaniya",
+            )
+            if data_1c.get(key) not in (None, "")
+        },
+    }
+
+
 def _base_url() -> str:
     return settings.turboproject_api_base.strip().rstrip("/")
 
@@ -300,14 +338,13 @@ def _matches_manager(item: dict[str, Any], manager: str) -> bool:
     return manager.casefold() in str(data.get("rukovoditel") or "").casefold()
 
 
-def list_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
+def list_project_index(args: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = args if isinstance(args, dict) else {}
     raw_query = str(payload.get("query") or payload.get("project_name") or "").strip()
     query = raw_query if is_project_name_query(raw_query) else ""
     manager = str(payload.get("manager") or payload.get("rukovoditel") or "").strip()
-    file_id = payload.get("file_id") or payload.get("fileId")
     overdue_only = bool(payload.get("overdue_only") or payload.get("overdueOnly"))
-    if raw_query and not query and not manager and not file_id and not overdue_only:
+    if raw_query and not query and not manager and not overdue_only:
         return {
             "summary": (
                 "query не применён: нужна строка-название проекта, имя MPP или номер 1С, "
@@ -320,44 +357,109 @@ def list_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
             "source": "turboproject",
         }
     raw_limit = payload.get("limit")
-    # Без limit агент тянет десятки карточек по одной и потом жует весь портфель.
+    limit = int(raw_limit) if raw_limit not in (None, "") else 50
+    if limit <= 0:
+        limit = 50
+    limit = min(limit, 500)
+
+    token = _login()
+    summary = _api_get("/api/projects/files", token)
+    items = summary.get("items") or []
+    with_1c = [item for item in items if item.get("has_1c")]
+    projects = [build_project_index_item(item) for item in with_1c]
+    if query:
+        projects = [item for item in projects if _matches_query(item, query)]
+    if manager:
+        projects = [item for item in projects if _matches_manager(item, manager)]
+    if overdue_only:
+        return {
+            "summary": (
+                "overdue_only требует карточки проекта. Сначала выбери file_id из индекса, "
+                "затем вызови turboproject.get для нужных проектов."
+            ),
+            "total_projects": len(items),
+            "projects_with_1c_count": len(with_1c),
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "projects": [],
+            "source": "turboproject",
+            "mode": "index",
+            "needs": "turboproject.get",
+        }
+    total_matched = len(projects)
+    projects = projects[:limit]
+    return {
+        "summary": f"TurboProject index: {len(projects)} из {total_matched} проект(ов) с 1С; карточки читай через turboproject.get(file_id)",
+        "total_projects": len(items),
+        "projects_with_1c_count": len(with_1c),
+        "matched_projects_count": total_matched,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "projects": projects,
+        "source": "turboproject",
+        "mode": "index",
+    }
+
+
+def get_project_card(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    file_id = payload.get("file_id") or payload.get("fileId")
+    if file_id in (None, ""):
+        raise TurboProjectError("turboproject.get требует file_id из turboproject.list")
+    raw_query = str(payload.get("query") or payload.get("project_name") or "").strip()
+    query = raw_query if is_project_name_query(raw_query) else ""
+    manager = str(payload.get("manager") or payload.get("rukovoditel") or "").strip()
+    overdue_only = bool(payload.get("overdue_only") or payload.get("overdueOnly"))
+    token = _login()
+    details = _api_get(f"/api/projects/files/{file_id}", token)
+    summary = {
+        "id": file_id,
+        "original_name": (details.get("file") or {}).get("original_name")
+        or (details.get("project") or {}).get("name"),
+        "uploaded_at": (details.get("file") or {}).get("uploaded_at"),
+        "has_1c": bool(details.get("data_1c")),
+    }
+    projects = [build_project_payload(summary, details)]
+    if query and not _matches_query(projects[0], query):
+        projects = []
+    if manager and not _matches_manager(projects[0] if projects else {}, manager):
+        projects = []
+    if overdue_only:
+        projects = [
+            item
+            for item in projects
+            if item["task_stats"]["overdue_tasks_count"]
+            or item["task_stats"]["overdue_milestones_count"]
+        ]
+    return {
+        "summary": f"TurboProject card: {len(projects)} проект(ов)",
+        "total_projects": 1,
+        "projects_with_1c_count": 1 if summary.get("has_1c") else 0,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "projects": projects,
+        "source": "turboproject",
+        "mode": "card",
+    }
+
+
+def list_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    if payload.get("file_id") not in (None, "") or payload.get("fileId") not in (None, ""):
+        return get_project_card(payload)
+    return list_project_index(payload)
+
+
+def list_project_cards(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    raw_query = str(payload.get("query") or payload.get("project_name") or "").strip()
+    query = raw_query if is_project_name_query(raw_query) else ""
+    manager = str(payload.get("manager") or payload.get("rukovoditel") or "").strip()
+    overdue_only = bool(payload.get("overdue_only") or payload.get("overdueOnly"))
+    raw_limit = payload.get("limit")
     limit = int(raw_limit) if raw_limit not in (None, "") else _DEFAULT_PROJECT_LIMIT
     if limit <= 0:
         limit = _DEFAULT_PROJECT_LIMIT
-    limit = min(limit, 200)
+    limit = min(limit, 20)
 
     token = _login()
-    if file_id:
-        details = _api_get(f"/api/projects/files/{file_id}", token)
-        summary = {
-            "id": file_id,
-            "original_name": (details.get("file") or {}).get("original_name")
-            or (details.get("project") or {}).get("name"),
-            "uploaded_at": (details.get("file") or {}).get("uploaded_at"),
-            "has_1c": bool(details.get("data_1c")),
-        }
-        items = [summary]
-        projects = [build_project_payload(summary, details)]
-        if query and not _matches_query(projects[0], query):
-            projects = []
-        if manager and not _matches_manager(projects[0] if projects else {}, manager):
-            projects = []
-        if overdue_only:
-            projects = [
-                item
-                for item in projects
-                if item["task_stats"]["overdue_tasks_count"]
-                or item["task_stats"]["overdue_milestones_count"]
-            ]
-        return {
-            "summary": f"TurboProject: {len(projects)} проект(ов)",
-            "total_projects": 1,
-            "projects_with_1c_count": 1 if summary.get("has_1c") else 0,
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "projects": projects,
-            "source": "turboproject",
-        }
-
     summary = _api_get("/api/projects/files", token)
     items = summary.get("items") or []
     with_1c = [item for item in items if item.get("has_1c")]
@@ -403,12 +505,16 @@ def stub_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def invoke_turboproject(tool: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-    if tool not in {TOOL_NAME, "turboproject.projects"}:
+    if tool not in {TOOL_NAME, "turboproject.projects", LIST_TOOL_NAME, GET_TOOL_NAME}:
         raise TurboProjectError(f"Неизвестный инструмент TurboProject: {tool}")
     args = arguments if isinstance(arguments, dict) else {}
     if not turboproject_configured():
         return stub_projects(args)
     try:
+        if tool == GET_TOOL_NAME:
+            return get_project_card(args)
+        if tool == "turboproject.projects":
+            return list_project_cards(args)
         return list_projects(args)
     except TurboProjectError:
         raise

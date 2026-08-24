@@ -200,7 +200,8 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
           };
         }
         const result = payload.result || {};
-        emit({ type: "tool_result", requestId, tool: name, ok: true, result });
+        const skipped = Boolean((result as { skipped?: unknown }).skipped);
+        emit({ type: "tool_result", requestId, tool: name, ok: true, skipped, result });
         return result as JsonValue;
       },
     };

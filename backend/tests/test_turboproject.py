@@ -6,13 +6,17 @@ from datetime import datetime, timedelta
 
 from app.services.local_mcp import list_tools
 from app.services.turboproject import (
+    GET_TOOL_NAME,
+    LIST_TOOL_NAME,
     TOOL_NAME,
     build_overdue_milestones,
     build_overdue_tasks,
+    get_project_card,
     build_project_payload,
     invoke_turboproject,
     is_phrase_query,
     is_project_name_query,
+    list_project_index,
     list_projects,
     unique_resource_names,
 )
@@ -28,10 +32,12 @@ from app.services.workflows.tool_result_validation import evaluate_tool_result
 def test_tool_registered() -> None:
     names = {item["name"] for item in list_tools()}
     assert TOOL_NAME in names
+    assert LIST_TOOL_NAME in names
+    assert GET_TOOL_NAME in names
     for item in list_tools():
         if item["name"] == TOOL_NAME:
             assert item.get("execution") == "server"
-            assert "data_1c" in item.get("description", "")
+            assert "file_id" in item.get("description", "")
 
 
 def test_unique_resource_names_dedupes() -> None:
@@ -160,6 +166,75 @@ def test_list_projects_ignores_phrase_query() -> None:
     )
     assert result["projects"] == []
     assert "не фраза" in result["summary"]
+
+
+def test_project_index_does_not_read_cards(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_api_get(path: str, _token: str) -> dict:
+        calls.append(path)
+        assert path == "/api/projects/files"
+        return {
+            "items": [
+                {
+                    "id": 10,
+                    "original_name": "А.mpp",
+                    "uploaded_at": "2026-01-01T00:00:00",
+                    "has_1c": True,
+                },
+                {"id": 11, "original_name": "Б.mpp", "has_1c": False},
+            ]
+        }
+
+    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+
+    result = list_project_index({"limit": 50})
+
+    assert calls == ["/api/projects/files"]
+    assert result["mode"] == "index"
+    assert result["projects"] == [
+        {
+            "file_id": 10,
+            "original_name": "А.mpp",
+            "uploaded_at": "2026-01-01T00:00:00",
+            "has_1c": True,
+            "project_name": "А.mpp",
+            "dates": {
+                "start_date": None,
+                "finish_date": None,
+                "actual_finish_date": None,
+                "baseline_start": None,
+                "baseline_finish": None,
+                "plan_finish_1c": None,
+            },
+            "data_1c": {},
+        }
+    ]
+
+
+def test_project_get_reads_single_card(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_api_get(path: str, _token: str) -> dict:
+        calls.append(path)
+        assert path == "/api/projects/files/10"
+        return {
+            "file": {"original_name": "А.mpp", "uploaded_at": "2026-01-01T00:00:00"},
+            "project": {"name": "Проект А"},
+            "tasks": [],
+            "data_1c": {"nomer_proekta": "ПР-10"},
+        }
+
+    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+
+    result = get_project_card({"file_id": 10})
+
+    assert calls == ["/api/projects/files/10"]
+    assert result["mode"] == "card"
+    assert result["projects"][0]["project_name"] == "Проект А"
+    assert result["projects"][0]["data_1c"]["nomer_proekta"] == "ПР-10"
 
 
 def test_tool_envelope_splits_received_and_inputs() -> None:

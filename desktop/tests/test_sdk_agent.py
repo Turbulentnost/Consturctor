@@ -21,8 +21,10 @@ from app.ui.pages.workflow_page import (
     _keep_newer_phase,
     _live_tool_name,
     _normalize_live_tool_status,
+    _payload_tool_skipped,
     _sdk_design_repair_prompt,
     _sdk_design_transcript,
+    _skip_tool_detail,
     apply_sdk_answers_to_draft,
     design_ready_for_demo,
     design_stream_should_finish,
@@ -326,6 +328,8 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert "playbookDraftReady" in text
     assert "result: event.result" in text
     assert 'provider === "custom-user-tools"' in text
+    assert "skipped" in text
+    assert "isError: true" in text
 
 
 def test_question_feed_kind_is_separate_block() -> None:
@@ -487,8 +491,77 @@ def test_cursor_completed_tool_status_is_ok() -> None:
     assert _normalize_live_tool_status("completed") == "ok"
     assert _normalize_live_tool_status("running") == "running"
     assert _normalize_live_tool_status("error") == "error"
+    assert _normalize_live_tool_status("skipped") == "skipped"
     assert _normalize_live_tool_status("", ok=True) == "ok"
     assert _normalize_live_tool_status("", ok=False) == "error"
+
+
+def test_payload_tool_skipped_from_result() -> None:
+    assert _payload_tool_skipped({"result": {"skipped": True}}) is True
+    assert _payload_tool_skipped({"skipped": True, "ok": True}) is True
+    assert _payload_tool_skipped({"status": "skipped"}) is True
+    assert _payload_tool_skipped({"ok": True, "result": {"summary": "ok"}}) is False
+    assert "продолжает" in _skip_tool_detail()
+
+
+def test_bridge_skip_tool_unblocks_invoke(monkeypatch, tmp_path: Path) -> None:
+    import json
+    import threading
+    import time
+
+    started = threading.Event()
+
+    def fake_invoke(tool: str, args: dict) -> dict:
+        started.set()
+        time.sleep(4)
+        return {"late": True}
+
+    monkeypatch.setattr("app.sdk_agent.bridge.invoke_sdk_tool", fake_invoke)
+    sent: list[dict] = []
+
+    class _Stdin:
+        def write(self, raw: str) -> None:
+            sent.append(json.loads(raw))
+
+        def flush(self) -> None:
+            return None
+
+    class _Proc:
+        stdin = _Stdin()
+
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+
+    def work() -> None:
+        bridge._handle_tool_request(
+            _Proc(),  # type: ignore[arg-type]
+            {
+                "requestId": "req-skip",
+                "tool": "outlook.read_calendar",
+                "arguments": {"date_from": "2026-08-01"},
+            },
+            workflow_id="wf-1",
+            cwd=str(tmp_path),
+        )
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    assert started.wait(2)
+    assert bridge.skip_tool("req-skip") is True
+    thread.join(timeout=2)
+    assert thread.is_alive() is False
+    assert sent
+    assert sent[0]["ok"] is True
+    assert sent[0]["result"]["skipped"] is True
+    assert sent[0]["requestId"] == "req-skip"
+
+
+def test_bridge_skip_before_invoke_starts(tmp_path: Path) -> None:
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+    assert bridge.skip_tool("pending-1") is True
+    assert bridge._is_skipped("pending-1") is True
+    result = CursorSdkBridge.skipped_tool_result("outlook.read_calendar")
+    assert result["skipped"] is True
+    assert result["tool"] == "outlook.read_calendar"
 
 
 def test_mcp_tool_name_unwraps_constructor_tool() -> None:
