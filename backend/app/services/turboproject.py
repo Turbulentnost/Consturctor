@@ -13,6 +13,31 @@ from app.config import settings
 TOOL_NAME = "turboproject"
 LIST_TOOL_NAME = "turboproject.list"
 GET_TOOL_NAME = "turboproject.get"
+SEARCH_PROJECTS_TOOL_NAME = "turboproject.search_projects"
+GET_PROJECT_TOOL_NAME = "turboproject.get_project"
+GET_PROJECT_TASKS_TOOL_NAME = "turboproject.get_project_tasks"
+GET_PROJECT_METRICS_TOOL_NAME = "turboproject.get_project_metrics"
+GET_OVERDUE_PROJECTS_TOOL_NAME = "turboproject.get_overdue_projects"
+GET_BLOCKED_TASKS_TOOL_NAME = "turboproject.get_projects_with_blocked_tasks"
+GET_WORKLOAD_SUMMARY_TOOL_NAME = "turboproject.get_workload_summary"
+GET_PORTFOLIO_SUMMARY_TOOL_NAME = "turboproject.get_project_portfolio_summary"
+
+TURBOPROJECT_TOOLS = frozenset(
+    {
+        TOOL_NAME,
+        "turboproject.projects",
+        LIST_TOOL_NAME,
+        GET_TOOL_NAME,
+        SEARCH_PROJECTS_TOOL_NAME,
+        GET_PROJECT_TOOL_NAME,
+        GET_PROJECT_TASKS_TOOL_NAME,
+        GET_PROJECT_METRICS_TOOL_NAME,
+        GET_OVERDUE_PROJECTS_TOOL_NAME,
+        GET_BLOCKED_TASKS_TOOL_NAME,
+        GET_WORKLOAD_SUMMARY_TOOL_NAME,
+        GET_PORTFOLIO_SUMMARY_TOOL_NAME,
+    }
+)
 
 TOOL_DESCRIPTION = (
     "Проекты TurboProject, у которых есть синхронизация с 1С "
@@ -54,6 +79,10 @@ _PHRASE_QUERY_HINTS = (
 
 _TOKEN_TTL_SEC = 1500.0
 _DEFAULT_PROJECT_LIMIT = 5
+_DEFAULT_SEARCH_LIMIT = 25
+_MAX_SEARCH_LIMIT = 50
+_MAX_ANALYTICS_SCAN = 200
+_MAX_PROJECT_IDS = 20
 _MAX_OVERDUE_ITEMS = 8
 _MAX_RESOURCES = 20
 _token = ""
@@ -238,6 +267,7 @@ def build_project_index_item(item: dict[str, Any]) -> dict[str, Any]:
                 "nomer_proekta",
                 "status_proekta",
                 "rukovoditel",
+                "podrazdelenie",
                 "kurator",
                 "zakazchik",
                 "data_nachala",
@@ -336,6 +366,228 @@ def _matches_manager(item: dict[str, Any], manager: str) -> bool:
         return True
     data = item.get("data_1c") if isinstance(item.get("data_1c"), dict) else {}
     return manager.casefold() in str(data.get("rukovoditel") or "").casefold()
+
+
+def _string_filter(payload: dict[str, Any], *names: str) -> str:
+    for name in names:
+        value = str(payload.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _int_filter(payload: dict[str, Any], name: str, default: int, maximum: int) -> int:
+    raw = payload.get(name)
+    try:
+        value = int(raw) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        value = default
+    if value <= 0:
+        value = default
+    return min(value, maximum)
+
+
+def _cursor_offset(payload: dict[str, Any]) -> int:
+    raw = payload.get("cursor") or payload.get("offset")
+    try:
+        value = int(raw) if raw not in (None, "") else 0
+    except (TypeError, ValueError):
+        return 0
+    return max(0, value)
+
+
+def _page(items: list[dict[str, Any]], *, limit: int, cursor: int) -> tuple[list[dict[str, Any]], str]:
+    end = cursor + limit
+    next_cursor = str(end) if end < len(items) else ""
+    return items[cursor:end], next_cursor
+
+
+def _data_1c(item: dict[str, Any]) -> dict[str, Any]:
+    return item.get("data_1c") if isinstance(item.get("data_1c"), dict) else {}
+
+
+def _matches_text(value: Any, needle: str) -> bool:
+    if not needle:
+        return True
+    return needle.casefold() in str(value or "").casefold()
+
+
+def _matches_status(item: dict[str, Any], status: str) -> bool:
+    if not status:
+        return True
+    data = _data_1c(item)
+    return _matches_text(data.get("status_proekta") or item.get("status"), status)
+
+
+def _matches_owner(item: dict[str, Any], owner: str) -> bool:
+    if not owner:
+        return True
+    data = _data_1c(item)
+    return any(
+        _matches_text(data.get(key), owner)
+        for key in ("rukovoditel", "rukovodstvo_proektom", "kurator", "zam_rp")
+    )
+
+
+def _matches_department(item: dict[str, Any], department: str) -> bool:
+    if not department:
+        return True
+    data = _data_1c(item)
+    return _matches_text(data.get("podrazdelenie") or data.get("organizatsiya"), department)
+
+
+def _project_date(item: dict[str, Any]) -> datetime | None:
+    dates = item.get("dates") if isinstance(item.get("dates"), dict) else {}
+    data = _data_1c(item)
+    for value in (
+        dates.get("finish_date"),
+        dates.get("plan_finish_1c"),
+        data.get("planovaya_data_okonchaniya"),
+        data.get("data_okonchaniya"),
+        item.get("uploaded_at"),
+    ):
+        parsed = parse_iso_date(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _matches_date_range(item: dict[str, Any], date_from: str, date_to: str) -> bool:
+    value = _project_date(item)
+    if value is None:
+        return True
+    start = parse_iso_date(date_from) if date_from else None
+    end = parse_iso_date(date_to) if date_to else None
+    if start and value < start:
+        return False
+    if end and value > end:
+        return False
+    return True
+
+
+def _filtered_index_projects(args: dict[str, Any], *, token: str | None = None) -> tuple[list[dict[str, Any]], int, int]:
+    raw_query = _string_filter(args, "query", "project_name")
+    query = raw_query if is_project_name_query(raw_query) else ""
+    status = _string_filter(args, "status", "status_proekta")
+    owner = _string_filter(args, "owner_id", "owner", "manager", "rukovoditel")
+    department = _string_filter(args, "department_id", "department", "podrazdelenie")
+    date_from = _string_filter(args, "date_from", "from")
+    date_to = _string_filter(args, "date_to", "to")
+    active_token = token or _login()
+    summary = _api_get("/api/projects/files", active_token)
+    items = summary.get("items") or []
+    with_1c = [item for item in items if item.get("has_1c")]
+    projects = [build_project_index_item(item) for item in with_1c]
+    if query:
+        projects = [item for item in projects if _matches_query(item, query)]
+    projects = [
+        item
+        for item in projects
+        if _matches_status(item, status)
+        and _matches_owner(item, owner)
+        and _matches_department(item, department)
+        and _matches_date_range(item, date_from, date_to)
+    ]
+    sort_by = _string_filter(args, "sort_by", "sort").casefold()
+    if sort_by in {"finish_date", "date"}:
+        projects.sort(key=lambda item: (_project_date(item) or datetime.max, item.get("project_name") or ""))
+    elif sort_by == "project_name":
+        projects.sort(key=lambda item: str(item.get("project_name") or "").casefold())
+    return projects, len(items), len(with_1c)
+
+
+def _delay_days(date_value: Any) -> int:
+    parsed = parse_iso_date(date_value)
+    if parsed is None:
+        return 0
+    return max(0, (datetime.now().date() - parsed.date()).days)
+
+
+def _select_project_fields(project: dict[str, Any], fields: list[str]) -> dict[str, Any]:
+    allowed = set(fields or [])
+    if not allowed:
+        allowed = {"identity", "dates", "data_1c", "task_stats", "overdue", "resources"}
+    result: dict[str, Any] = {}
+    if "identity" in allowed:
+        result.update(
+            {
+                "file_id": project.get("file_id"),
+                "project_name": project.get("project_name"),
+                "original_name": project.get("original_name"),
+                "uploaded_at": project.get("uploaded_at"),
+            }
+        )
+    if "dates" in allowed:
+        result["dates"] = project.get("dates") or {}
+    if "data_1c" in allowed:
+        result["data_1c"] = project.get("data_1c") or {}
+    if "task_stats" in allowed:
+        result["task_stats"] = project.get("task_stats") or {}
+    if "overdue" in allowed:
+        result["overdue_tasks"] = project.get("overdue_tasks") or []
+        result["overdue_milestones"] = project.get("overdue_milestones") or []
+    if "resources" in allowed:
+        result["resources"] = project.get("resources") or []
+    if "budget" in allowed:
+        data = _data_1c(project)
+        result["budget"] = {
+            "byudzhet_plan": data.get("byudzhet_plan"),
+            "byudzhet_fakt": data.get("byudzhet_fakt"),
+            "istochnik_finansirovaniya": data.get("istochnik_finansirovaniya"),
+        }
+    if "decisions" in allowed:
+        data = _data_1c(project)
+        result["decisions"] = {
+            "resheniya": data.get("resheniya"),
+            "chek_list": data.get("chek_list"),
+            "perenosy_proekta": data.get("perenosy_proekta"),
+        }
+    return result
+
+
+def _field_list(args: dict[str, Any], *, default: list[str] | None = None) -> list[str]:
+    raw = args.get("fields") or default or []
+    if isinstance(raw, str):
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return list(default or [])
+
+
+def _task_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for task in details.get("tasks") or []:
+        assignments = task.get("assignments") or []
+        executors = [item.get("resource_name") for item in assignments if item.get("resource_name")]
+        percent = float(task.get("percent_complete") or 0.0)
+        finish_date = iso_or_none(task.get("finish_date"))
+        rows.append(
+            {
+                "id": task.get("id"),
+                "uid": task.get("uid"),
+                "name": task.get("name"),
+                "start_date": iso_or_none(task.get("start_date")),
+                "finish_date": finish_date,
+                "percent_complete": percent,
+                "is_summary": bool(task.get("is_summary")),
+                "is_milestone": bool(task.get("is_milestone")),
+                "executors": executors,
+                "delay_days": _delay_days(finish_date),
+            }
+        )
+    return rows
+
+
+def _matches_task_status(task: dict[str, Any], status: str) -> bool:
+    if not status:
+        return True
+    folded = status.casefold()
+    complete = float(task.get("percent_complete") or 0.0) >= 1.0
+    if folded in {"done", "completed", "complete", "готово", "завершено"}:
+        return complete
+    if folded in {"open", "active", "incomplete", "not_done", "в работе", "активно"}:
+        return not complete
+    return _matches_text(task.get("name"), status)
 
 
 def list_project_index(args: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -440,6 +692,329 @@ def get_project_card(args: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
+def search_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    limit = _int_filter(payload, "limit", _DEFAULT_SEARCH_LIMIT, _MAX_SEARCH_LIMIT)
+    cursor = _cursor_offset(payload)
+    projects, total_projects, with_1c_count = _filtered_index_projects(payload)
+    page, next_cursor = _page(projects, limit=limit, cursor=cursor)
+    return {
+        "summary": f"TurboProject search: {len(page)} из {len(projects)} найденных проектов",
+        "total_projects": total_projects,
+        "projects_with_1c_count": with_1c_count,
+        "matched_projects_count": len(projects),
+        "limit": limit,
+        "cursor": str(cursor),
+        "next_cursor": next_cursor,
+        "projects": page,
+        "source": "turboproject",
+        "mode": "search",
+    }
+
+
+def get_project(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    project_id = payload.get("project_id") or payload.get("file_id") or payload.get("fileId")
+    if project_id in (None, ""):
+        raise TurboProjectError("turboproject.get_project требует project_id или file_id")
+    fields = _field_list(
+        payload,
+        default=["identity", "dates", "data_1c", "task_stats", "overdue", "resources"],
+    )
+    card = get_project_card({"file_id": project_id})
+    projects = card.get("projects") if isinstance(card.get("projects"), list) else []
+    selected = [_select_project_fields(project, fields) for project in projects if isinstance(project, dict)]
+    return {
+        "summary": f"TurboProject project: {len(selected)} проект(ов), fields={','.join(fields) or 'default'}",
+        "project_id": str(project_id),
+        "fields": fields,
+        "projects": selected,
+        "source": "turboproject",
+        "mode": "project",
+    }
+
+
+def get_project_tasks(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    project_id = payload.get("project_id") or payload.get("file_id") or payload.get("fileId")
+    if project_id in (None, ""):
+        raise TurboProjectError("turboproject.get_project_tasks требует project_id или file_id")
+    status = _string_filter(payload, "status")
+    assignee = _string_filter(payload, "assignee_id", "assignee", "employee_id")
+    overdue_only = bool(payload.get("overdue_only") or payload.get("overdueOnly"))
+    limit = _int_filter(payload, "limit", 50, 100)
+    cursor = _cursor_offset(payload)
+    token = _login()
+    details = _api_get(f"/api/projects/files/{project_id}", token)
+    tasks = _task_rows(details)
+    filtered = []
+    for task in tasks:
+        if task.get("is_summary"):
+            continue
+        if not _matches_task_status(task, status):
+            continue
+        if assignee and not any(_matches_text(executor, assignee) for executor in task.get("executors") or []):
+            continue
+        if overdue_only and int(task.get("delay_days") or 0) <= 0:
+            continue
+        filtered.append(task)
+    filtered.sort(key=lambda item: (-(int(item.get("delay_days") or 0)), item.get("finish_date") or ""))
+    page, next_cursor = _page(filtered, limit=limit, cursor=cursor)
+    return {
+        "summary": f"TurboProject tasks: {len(page)} из {len(filtered)} задач проекта {project_id}",
+        "project_id": str(project_id),
+        "matched_tasks_count": len(filtered),
+        "limit": limit,
+        "cursor": str(cursor),
+        "next_cursor": next_cursor,
+        "tasks": page,
+        "source": "turboproject",
+        "mode": "tasks",
+    }
+
+
+def get_project_metrics(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    raw_ids = payload.get("project_ids") or payload.get("file_ids") or []
+    if isinstance(raw_ids, str):
+        project_ids = [part.strip() for part in raw_ids.split(",") if part.strip()]
+    elif isinstance(raw_ids, list):
+        project_ids = [str(item).strip() for item in raw_ids if str(item).strip()]
+    else:
+        project_ids = []
+    project_ids = project_ids[:_MAX_PROJECT_IDS]
+    if not project_ids:
+        raise TurboProjectError("turboproject.get_project_metrics требует project_ids")
+    metrics = _field_list(
+        payload,
+        default=["task_stats", "overdue", "resources", "dates"],
+    )
+    rows: list[dict[str, Any]] = []
+    for project_id in project_ids:
+        card = get_project_card({"file_id": project_id})
+        projects = card.get("projects") if isinstance(card.get("projects"), list) else []
+        if not projects:
+            continue
+        project = projects[0]
+        item = {
+            "project_id": project_id,
+            "project_name": project.get("project_name"),
+        }
+        if "task_stats" in metrics:
+            item["task_stats"] = project.get("task_stats") or {}
+        if "overdue" in metrics:
+            stats = project.get("task_stats") or {}
+            item["overdue_tasks_count"] = stats.get("overdue_tasks_count", 0)
+            item["overdue_milestones_count"] = stats.get("overdue_milestones_count", 0)
+        if "resources" in metrics:
+            item["resources_count"] = len(project.get("resources") or [])
+        if "dates" in metrics:
+            item["dates"] = project.get("dates") or {}
+        rows.append(item)
+    return {
+        "summary": f"TurboProject metrics: {len(rows)} проект(ов)",
+        "metrics": metrics,
+        "projects": rows,
+        "source": "turboproject",
+        "mode": "metrics",
+    }
+
+
+def get_overdue_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    limit = _int_filter(payload, "limit", 10, 50)
+    scan_limit = _int_filter(payload, "scan_limit", _MAX_ANALYTICS_SCAN, _MAX_ANALYTICS_SCAN)
+    min_delay_days = _int_filter(payload, "min_delay_days", 1, 3650)
+    token = _login()
+    projects, total_projects, with_1c_count = _filtered_index_projects(payload, token=token)
+    rows: list[dict[str, Any]] = []
+    for index_item in projects[:scan_limit]:
+        project_id = index_item.get("file_id")
+        if not project_id:
+            continue
+        details = _api_get(f"/api/projects/files/{project_id}", token)
+        project = build_project_payload(details.get("file") or index_item, details)
+        stats = project.get("task_stats") or {}
+        dates = project.get("dates") or {}
+        delay_days = max(
+            int(stats.get("max_delay_days") or 0),
+            _delay_days(dates.get("finish_date") or dates.get("plan_finish_1c")),
+        )
+        overdue_count = int(stats.get("overdue_tasks_count") or 0) + int(
+            stats.get("overdue_milestones_count") or 0
+        )
+        if delay_days < min_delay_days and overdue_count <= 0:
+            continue
+        rows.append(
+            {
+                "project_id": project_id,
+                "project_name": project.get("project_name"),
+                "status": _data_1c(project).get("status_proekta"),
+                "owner": _data_1c(project).get("rukovoditel"),
+                "department": _data_1c(project).get("podrazdelenie"),
+                "finish_date": dates.get("finish_date") or dates.get("plan_finish_1c"),
+                "delay_days": delay_days,
+                "overdue_tasks_count": int(stats.get("overdue_tasks_count") or 0),
+                "overdue_milestones_count": int(stats.get("overdue_milestones_count") or 0),
+            }
+        )
+    rows.sort(key=lambda item: (-(int(item.get("delay_days") or 0)), str(item.get("project_name") or "")))
+    page = rows[:limit]
+    return {
+        "summary": f"TurboProject overdue: {len(page)} из {len(rows)} просроченных проектов",
+        "total_projects": total_projects,
+        "projects_with_1c_count": with_1c_count,
+        "scanned_projects_count": min(len(projects), scan_limit),
+        "matched_projects_count": len(rows),
+        "limit": limit,
+        "next_cursor": "",
+        "projects": page,
+        "source": "turboproject",
+        "mode": "overdue_projects",
+    }
+
+
+def get_projects_with_blocked_tasks(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    limit = _int_filter(payload, "limit", 10, 50)
+    scan_limit = _int_filter(payload, "scan_limit", 100, _MAX_ANALYTICS_SCAN)
+    blocked_days = _int_filter(payload, "blocked_days", 14, 3650)
+    token = _login()
+    projects, _, _ = _filtered_index_projects(payload, token=token)
+    rows: list[dict[str, Any]] = []
+    for index_item in projects[:scan_limit]:
+        project_id = index_item.get("file_id")
+        if not project_id:
+            continue
+        details = _api_get(f"/api/projects/files/{project_id}", token)
+        tasks = [
+            task
+            for task in _task_rows(details)
+            if not task.get("is_summary")
+            and float(task.get("percent_complete") or 0.0) < 1.0
+            and int(task.get("delay_days") or 0) >= blocked_days
+        ]
+        if tasks:
+            rows.append(
+                {
+                    "project_id": project_id,
+                    "project_name": index_item.get("project_name"),
+                    "blocked_tasks_count": len(tasks),
+                    "max_delay_days": max(int(task.get("delay_days") or 0) for task in tasks),
+                    "tasks": tasks[:5],
+                }
+            )
+    rows.sort(key=lambda item: (-(int(item.get("max_delay_days") or 0)), str(item.get("project_name") or "")))
+    return {
+        "summary": f"TurboProject blocked tasks: {min(len(rows), limit)} из {len(rows)} проектов",
+        "partial_result": "TurboProject card does not expose a dedicated blocked flag; used overdue incomplete task heuristic.",
+        "scanned_projects_count": min(len(projects), scan_limit),
+        "matched_projects_count": len(rows),
+        "limit": limit,
+        "next_cursor": "",
+        "projects": rows[:limit],
+        "source": "turboproject",
+        "mode": "blocked_tasks",
+    }
+
+
+def get_workload_summary(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    scan_limit = _int_filter(payload, "scan_limit", 50, _MAX_ANALYTICS_SCAN)
+    employee = _string_filter(payload, "employee_id", "employee", "resource")
+    token = _login()
+    projects, _, _ = _filtered_index_projects(payload, token=token)
+    employees: dict[str, dict[str, Any]] = {}
+    for index_item in projects[:scan_limit]:
+        project_id = index_item.get("file_id")
+        if not project_id:
+            continue
+        details = _api_get(f"/api/projects/files/{project_id}", token)
+        for task in details.get("tasks") or []:
+            if task.get("is_summary"):
+                continue
+            for assignment in task.get("assignments") or []:
+                name = str(assignment.get("resource_name") or "").strip()
+                if not name or (employee and not _matches_text(name, employee)):
+                    continue
+                item = employees.setdefault(
+                    name,
+                    {
+                        "employee": name,
+                        "tasks_count": 0,
+                        "overdue_tasks_count": 0,
+                        "projects_count": 0,
+                        "project_ids": set(),
+                    },
+                )
+                item["tasks_count"] += 1
+                if _delay_days(task.get("finish_date")) > 0 and float(task.get("percent_complete") or 0.0) < 1.0:
+                    item["overdue_tasks_count"] += 1
+                item["project_ids"].add(project_id)
+    rows = []
+    for item in employees.values():
+        project_ids = sorted(item.pop("project_ids"))
+        item["project_ids"] = project_ids[:10]
+        item["projects_count"] = len(project_ids)
+        rows.append(item)
+    rows.sort(key=lambda item: (-(int(item.get("overdue_tasks_count") or 0)), -(int(item.get("tasks_count") or 0))))
+    return {
+        "summary": f"TurboProject workload: {len(rows)} сотрудник(ов)",
+        "scanned_projects_count": min(len(projects), scan_limit),
+        "employees": rows,
+        "source": "turboproject",
+        "mode": "workload_summary",
+    }
+
+
+def get_project_portfolio_summary(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    group_by = _string_filter(payload, "group_by", "group").casefold() or "status"
+    if group_by not in {"status", "department", "owner"}:
+        return {
+            "error": "unsupported_filter",
+            "message": "group_by должен быть одним из: status, department, owner",
+            "source": "turboproject",
+            "mode": "portfolio_summary",
+        }
+    projects, total_projects, with_1c_count = _filtered_index_projects(payload)
+    groups: dict[str, dict[str, Any]] = {}
+    for project in projects:
+        data = _data_1c(project)
+        if group_by == "status":
+            key = str(data.get("status_proekta") or "Без статуса")
+        elif group_by == "department":
+            key = str(data.get("podrazdelenie") or "Без подразделения")
+        else:
+            key = str(data.get("rukovoditel") or "Без руководителя")
+        item = groups.setdefault(
+            key,
+            {
+                group_by: key,
+                "projects_count": 0,
+                "project_ids": [],
+                "with_finish_date_count": 0,
+            },
+        )
+        item["projects_count"] += 1
+        item["project_ids"].append(project.get("file_id"))
+        if _project_date(project) is not None:
+            item["with_finish_date_count"] += 1
+    rows = sorted(groups.values(), key=lambda item: (-(int(item.get("projects_count") or 0)), str(item.get(group_by) or "")))
+    for row in rows:
+        row["project_ids"] = row["project_ids"][:10]
+    return {
+        "summary": f"TurboProject portfolio: {len(rows)} групп по {group_by}",
+        "total_projects": total_projects,
+        "projects_with_1c_count": with_1c_count,
+        "matched_projects_count": len(projects),
+        "group_by": group_by,
+        "groups": rows,
+        "source": "turboproject",
+        "mode": "portfolio_summary",
+    }
+
+
 def list_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = args if isinstance(args, dict) else {}
     if payload.get("file_id") not in (None, "") or payload.get("fileId") not in (None, ""):
@@ -505,12 +1080,28 @@ def stub_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def invoke_turboproject(tool: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-    if tool not in {TOOL_NAME, "turboproject.projects", LIST_TOOL_NAME, GET_TOOL_NAME}:
+    if tool not in TURBOPROJECT_TOOLS:
         raise TurboProjectError(f"Неизвестный инструмент TurboProject: {tool}")
     args = arguments if isinstance(arguments, dict) else {}
     if not turboproject_configured():
         return stub_projects(args)
     try:
+        if tool == SEARCH_PROJECTS_TOOL_NAME:
+            return search_projects(args)
+        if tool == GET_PROJECT_TOOL_NAME:
+            return get_project(args)
+        if tool == GET_PROJECT_TASKS_TOOL_NAME:
+            return get_project_tasks(args)
+        if tool == GET_PROJECT_METRICS_TOOL_NAME:
+            return get_project_metrics(args)
+        if tool == GET_OVERDUE_PROJECTS_TOOL_NAME:
+            return get_overdue_projects(args)
+        if tool == GET_BLOCKED_TASKS_TOOL_NAME:
+            return get_projects_with_blocked_tasks(args)
+        if tool == GET_WORKLOAD_SUMMARY_TOOL_NAME:
+            return get_workload_summary(args)
+        if tool == GET_PORTFOLIO_SUMMARY_TOOL_NAME:
+            return get_project_portfolio_summary(args)
         if tool == GET_TOOL_NAME:
             return get_project_card(args)
         if tool == "turboproject.projects":

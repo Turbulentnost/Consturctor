@@ -7,11 +7,23 @@ from datetime import datetime, timedelta
 from app.services.local_mcp import list_tools
 from app.services.turboproject import (
     GET_TOOL_NAME,
+    GET_BLOCKED_TASKS_TOOL_NAME,
+    GET_OVERDUE_PROJECTS_TOOL_NAME,
+    GET_PORTFOLIO_SUMMARY_TOOL_NAME,
+    GET_PROJECT_METRICS_TOOL_NAME,
+    GET_PROJECT_TASKS_TOOL_NAME,
+    GET_PROJECT_TOOL_NAME,
     LIST_TOOL_NAME,
+    SEARCH_PROJECTS_TOOL_NAME,
     TOOL_NAME,
+    TURBOPROJECT_TOOLS,
     build_overdue_milestones,
     build_overdue_tasks,
+    get_overdue_projects,
+    get_project,
     get_project_card,
+    get_project_portfolio_summary,
+    get_project_tasks,
     build_project_payload,
     invoke_turboproject,
     is_phrase_query,
@@ -31,13 +43,11 @@ from app.services.workflows.tool_result_validation import evaluate_tool_result
 
 def test_tool_registered() -> None:
     names = {item["name"] for item in list_tools()}
-    assert TOOL_NAME in names
-    assert LIST_TOOL_NAME in names
-    assert GET_TOOL_NAME in names
+    assert TURBOPROJECT_TOOLS <= names
     for item in list_tools():
         if item["name"] == TOOL_NAME:
             assert item.get("execution") == "server"
-            assert "file_id" in item.get("description", "")
+            assert "turboproject.search_projects" in item.get("description", "")
 
 
 def test_unique_resource_names_dedupes() -> None:
@@ -235,6 +245,240 @@ def test_project_get_reads_single_card(monkeypatch) -> None:
     assert result["mode"] == "card"
     assert result["projects"][0]["project_name"] == "Проект А"
     assert result["projects"][0]["data_1c"]["nomer_proekta"] == "ПР-10"
+
+
+def test_search_projects_does_not_read_cards(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_api_get(path: str, _token: str) -> dict:
+        calls.append(path)
+        assert path == "/api/projects/files"
+        return {
+            "items": [
+                {
+                    "id": 10,
+                    "original_name": "А.mpp",
+                    "uploaded_at": "2026-01-01T00:00:00",
+                    "has_1c": True,
+                    "data_1c": {
+                        "status_proekta": "Активный",
+                        "rukovoditel": "Иванов",
+                        "podrazdelenie": "ИТ",
+                    },
+                },
+                {
+                    "id": 11,
+                    "original_name": "Б.mpp",
+                    "has_1c": True,
+                    "data_1c": {"status_proekta": "Закрыт", "rukovoditel": "Петров"},
+                },
+            ]
+        }
+
+    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+
+    result = invoke_turboproject(SEARCH_PROJECTS_TOOL_NAME, {"status": "Активный", "limit": 1})
+
+    assert calls == ["/api/projects/files"]
+    assert result["mode"] == "search"
+    assert result["matched_projects_count"] == 1
+    assert [item["file_id"] for item in result["projects"]] == [10]
+    assert "next_cursor" in result
+
+
+def test_get_project_reads_one_card_and_selects_fields(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_api_get(path: str, _token: str) -> dict:
+        calls.append(path)
+        assert path == "/api/projects/files/10"
+        return {
+            "file": {"id": 10, "original_name": "А.mpp", "uploaded_at": "2026-01-01T00:00:00"},
+            "project": {"name": "Проект А", "finish_date": "2026-02-01"},
+            "tasks": [],
+            "resources": ["Иванов"],
+            "data_1c": {"rukovoditel": "Иванов", "nomer_proekta": "ПР-10"},
+        }
+
+    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+
+    result = get_project({"project_id": 10, "fields": ["identity", "data_1c"]})
+
+    assert calls == ["/api/projects/files/10"]
+    assert result["mode"] == "project"
+    project = result["projects"][0]
+    assert project["project_name"] == "Проект А"
+    assert project["data_1c"]["nomer_proekta"] == "ПР-10"
+    assert "resources" not in project
+    assert "dates" not in project
+
+
+def test_get_project_tasks_filters_overdue_status_assignee_and_paginates(monkeypatch) -> None:
+    yesterday = (datetime.now() - timedelta(days=3)).date().isoformat()
+    tomorrow = (datetime.now() + timedelta(days=3)).date().isoformat()
+
+    def fake_api_get(path: str, _token: str) -> dict:
+        assert path == "/api/projects/files/10"
+        return {
+            "tasks": [
+                {
+                    "id": 1,
+                    "name": "Сводная",
+                    "is_summary": True,
+                    "finish_date": yesterday,
+                    "percent_complete": 0,
+                },
+                {
+                    "id": 2,
+                    "name": "Просрочена",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0.5,
+                    "assignments": [{"resource_name": "Иванов"}],
+                },
+                {
+                    "id": 3,
+                    "name": "Не просрочена",
+                    "is_summary": False,
+                    "finish_date": tomorrow,
+                    "percent_complete": 0,
+                    "assignments": [{"resource_name": "Иванов"}],
+                },
+                {
+                    "id": 4,
+                    "name": "Другой исполнитель",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0,
+                    "assignments": [{"resource_name": "Петров"}],
+                },
+            ]
+        }
+
+    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+
+    result = get_project_tasks(
+        {
+            "project_id": 10,
+            "status": "open",
+            "assignee": "Иванов",
+            "overdue_only": True,
+            "limit": 1,
+        }
+    )
+
+    assert result["mode"] == "tasks"
+    assert result["matched_tasks_count"] == 1
+    assert [item["id"] for item in result["tasks"]] == [2]
+    assert result["next_cursor"] == ""
+
+
+def test_get_overdue_projects_sorts_by_delay_days(monkeypatch) -> None:
+    old_date = (datetime.now() - timedelta(days=20)).date().isoformat()
+    recent_date = (datetime.now() - timedelta(days=5)).date().isoformat()
+
+    def fake_api_get(path: str, _token: str) -> dict:
+        if path == "/api/projects/files":
+            return {
+                "items": [
+                    {"id": 10, "original_name": "Старый.mpp", "has_1c": True},
+                    {"id": 11, "original_name": "Новый.mpp", "has_1c": True},
+                ]
+            }
+        if path == "/api/projects/files/10":
+            return {
+                "file": {"id": 10, "original_name": "Старый.mpp"},
+                "project": {"name": "Старый", "finish_date": old_date},
+                "tasks": [{"id": 1, "name": "T", "finish_date": old_date, "percent_complete": 0}],
+            }
+        if path == "/api/projects/files/11":
+            return {
+                "file": {"id": 11, "original_name": "Новый.mpp"},
+                "project": {"name": "Новый", "finish_date": recent_date},
+                "tasks": [{"id": 2, "name": "T", "finish_date": recent_date, "percent_complete": 0}],
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+
+    result = get_overdue_projects({"limit": 2})
+
+    assert result["mode"] == "overdue_projects"
+    assert [item["project_id"] for item in result["projects"]] == [10, 11]
+    assert result["projects"][0]["delay_days"] >= result["projects"][1]["delay_days"]
+
+
+def test_get_project_portfolio_summary_groups_by_status_department_owner(monkeypatch) -> None:
+    def fake_api_get(path: str, _token: str) -> dict:
+        assert path == "/api/projects/files"
+        return {
+            "items": [
+                {
+                    "id": 10,
+                    "original_name": "А.mpp",
+                    "has_1c": True,
+                    "data_1c": {
+                        "status_proekta": "Активный",
+                        "podrazdelenie": "ИТ",
+                        "rukovoditel": "Иванов",
+                    },
+                },
+                {
+                    "id": 11,
+                    "original_name": "Б.mpp",
+                    "has_1c": True,
+                    "data_1c": {
+                        "status_proekta": "Активный",
+                        "podrazdelenie": "ИТ",
+                        "rukovoditel": "Петров",
+                    },
+                },
+                {
+                    "id": 12,
+                    "original_name": "В.mpp",
+                    "has_1c": True,
+                    "data_1c": {
+                        "status_proekta": "Закрыт",
+                        "podrazdelenie": "Финансы",
+                        "rukovoditel": "Иванов",
+                    },
+                },
+            ]
+        }
+
+    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+
+    by_status = get_project_portfolio_summary({"group_by": "status"})
+    by_department = get_project_portfolio_summary({"group_by": "department"})
+    by_owner = get_project_portfolio_summary({"group_by": "owner"})
+
+    assert by_status["groups"][0]["status"] == "Активный"
+    assert by_status["groups"][0]["projects_count"] == 2
+    assert by_department["groups"][0]["department"] == "ИТ"
+    assert by_owner["groups"][0]["owner"] == "Иванов"
+    assert by_owner["groups"][0]["projects_count"] == 2
+
+
+def test_api_catalog_contains_new_turboproject_names() -> None:
+    expected = {
+        TOOL_NAME,
+        LIST_TOOL_NAME,
+        GET_TOOL_NAME,
+        SEARCH_PROJECTS_TOOL_NAME,
+        GET_PROJECT_TOOL_NAME,
+        GET_PROJECT_TASKS_TOOL_NAME,
+        GET_PROJECT_METRICS_TOOL_NAME,
+        GET_OVERDUE_PROJECTS_TOOL_NAME,
+        GET_BLOCKED_TASKS_TOOL_NAME,
+        GET_PORTFOLIO_SUMMARY_TOOL_NAME,
+    }
+    names = {item["name"] for item in list_tools()}
+    assert expected <= names
 
 
 def test_tool_envelope_splits_received_and_inputs() -> None:

@@ -15,13 +15,22 @@ from app.tools.runtime_api import request
 TOOL_NAME = "turboproject"
 LIST_TOOL_NAME = "turboproject.list"
 GET_TOOL_NAME = "turboproject.get"
+SEARCH_PROJECTS_TOOL_NAME = "turboproject.search_projects"
+GET_PROJECT_TOOL_NAME = "turboproject.get_project"
+GET_PROJECT_TASKS_TOOL_NAME = "turboproject.get_project_tasks"
+GET_PROJECT_METRICS_TOOL_NAME = "turboproject.get_project_metrics"
+GET_OVERDUE_PROJECTS_TOOL_NAME = "turboproject.get_overdue_projects"
+GET_BLOCKED_TASKS_TOOL_NAME = "turboproject.get_projects_with_blocked_tasks"
+GET_WORKLOAD_SUMMARY_TOOL_NAME = "turboproject.get_workload_summary"
+GET_PORTFOLIO_SUMMARY_TOOL_NAME = "turboproject.get_project_portfolio_summary"
 _SAMPLE_LIMIT = 5
 _MAX_OVERDUE_ITEMS = 8
 _MAX_RESOURCES = 20
 
 TOOL_DESCRIPTION = (
-    "Быстрый индекс проектов TurboProject с 1С. Не читает карточки MPP. "
-    "Для задач, просрочек, ресурсов и полной карточки используй turboproject.get(file_id). "
+    "Compatibility-инструмент TurboProject. Для поиска используй turboproject.search_projects, "
+    "для просрочек - turboproject.get_overdue_projects, для задач проекта - "
+    "turboproject.get_project_tasks, для карточки - turboproject.get_project. "
     "Учётка уже в backend/.env — не спрашивай логин и не вызывай API сам.\n\n"
     "Итог:\n"
     "• total_projects — сколько файлов вернул список;\n"
@@ -40,9 +49,162 @@ TOOL_DESCRIPTION = (
 )
 
 GET_TOOL_DESCRIPTION = (
-    "Полная карточка одного проекта TurboProject по file_id из turboproject.list. "
+    "Compatibility-карточка одного проекта TurboProject по file_id из turboproject.list. "
+    "Для новых сценариев используй turboproject.get_project(project_id, fields). "
     "Возвращает даты MSP/1С, статистику задач, просрочки, ресурсы и data_1c. "
     "Не вызывай без file_id и не используй для полного портфеля."
+)
+
+_FILTER_PROPERTIES = {
+    "query": {"type": "string", "description": "Название, имя MPP или номер 1С"},
+    "status": {"type": "string", "description": "Статус проекта из 1С"},
+    "owner": {"type": "string", "description": "Руководитель/куратор проекта"},
+    "department": {"type": "string", "description": "Подразделение проекта"},
+    "date_from": {"type": "string", "description": "Начало периода ISO date"},
+    "date_to": {"type": "string", "description": "Конец периода ISO date"},
+    "limit": {"type": "integer", "description": "Размер страницы результата"},
+    "cursor": {"type": "string", "description": "Cursor из предыдущего ответа"},
+}
+
+
+def _tool_schema(properties: dict, *, required: list[str] | None = None) -> dict:
+    return {
+        "type": "object",
+        "required": required or [],
+        "properties": properties,
+    }
+
+
+_NEW_TOOL_SPECS = (
+    (
+        SEARCH_PROJECTS_TOOL_NAME,
+        "Поиск проектов TurboProject",
+        "Индексный поиск проектов. Используй для выбора project_id/file_id. Не читает карточки и всегда возвращает limit/cursor.",
+        _tool_schema(
+            {
+                **_FILTER_PROPERTIES,
+                "sort_by": {
+                    "type": "string",
+                    "enum": ["finish_date", "project_name"],
+                    "description": "Сортировка индексных строк",
+                },
+            }
+        ),
+    ),
+    (
+        GET_PROJECT_TOOL_NAME,
+        "Карточка проекта TurboProject",
+        "Подробности по одному проекту. Используй только когда уже есть project_id. Поля ограничивай через fields.",
+        _tool_schema(
+            {
+                "project_id": {"type": "string", "description": "ProjectFile.id из поиска"},
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "identity",
+                            "dates",
+                            "data_1c",
+                            "task_stats",
+                            "overdue",
+                            "resources",
+                            "budget",
+                            "decisions",
+                        ],
+                    },
+                    "description": "Блоки карточки, которые нужны для ответа",
+                },
+            },
+            required=["project_id"],
+        ),
+    ),
+    (
+        GET_PROJECT_TASKS_TOOL_NAME,
+        "Задачи проекта TurboProject",
+        "Задачи одного проекта с фильтрами. Для вопросов о задачах проекта используй этот инструмент, а не полную карточку.",
+        _tool_schema(
+            {
+                "project_id": {"type": "string", "description": "ProjectFile.id проекта"},
+                "status": {"type": "string", "description": "completed/open/incomplete или текстовый статус"},
+                "assignee": {"type": "string", "description": "Исполнитель задачи"},
+                "overdue_only": {"type": "boolean", "description": "Только просроченные задачи"},
+                "limit": {"type": "integer", "description": "Размер страницы"},
+                "cursor": {"type": "string", "description": "Cursor из предыдущего ответа"},
+            },
+            required=["project_id"],
+        ),
+    ),
+    (
+        GET_PROJECT_METRICS_TOOL_NAME,
+        "Метрики проектов TurboProject",
+        "Компактные метрики по ограниченному списку проектов. Не используй для полного портфеля.",
+        _tool_schema(
+            {
+                "project_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "До 20 ProjectFile.id",
+                },
+                "metrics": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["task_stats", "overdue", "resources", "dates"]},
+                },
+            },
+            required=["project_ids"],
+        ),
+    ),
+    (
+        GET_OVERDUE_PROJECTS_TOOL_NAME,
+        "Просроченные проекты TurboProject",
+        "Для вопроса 'какие проекты просрочены' используй этот агрегатор. Он сам считает delay_days и отдаёт компактный список.",
+        _tool_schema(
+            {
+                **_FILTER_PROPERTIES,
+                "min_delay_days": {"type": "integer", "description": "Минимальная просрочка в днях"},
+                "scan_limit": {"type": "integer", "description": "Сколько релевантных проектов можно просканировать"},
+            }
+        ),
+    ),
+    (
+        GET_BLOCKED_TASKS_TOOL_NAME,
+        "Проекты с заблокированными задачами",
+        "Ищи проекты с проблемными задачами этим агрегатором. Если явного флага блокировки нет, backend вернёт partial_result.",
+        _tool_schema(
+            {
+                **_FILTER_PROPERTIES,
+                "blocked_days": {"type": "integer", "description": "Сколько дней просрочки считать блокировкой"},
+                "scan_limit": {"type": "integer", "description": "Сколько проектов сканировать"},
+            }
+        ),
+    ),
+    (
+        GET_WORKLOAD_SUMMARY_TOOL_NAME,
+        "Сводка загрузки TurboProject",
+        "Группирует задачи и просрочки по сотрудникам. Используй для вопросов о загрузке ресурсов.",
+        _tool_schema(
+            {
+                **_FILTER_PROPERTIES,
+                "employee": {"type": "string", "description": "Фильтр по сотруднику"},
+                "scan_limit": {"type": "integer", "description": "Сколько проектов сканировать"},
+            }
+        ),
+    ),
+    (
+        GET_PORTFOLIO_SUMMARY_TOOL_NAME,
+        "Портфельная сводка TurboProject",
+        "Для 'сводки портфеля' используй этот агрегатор. Он группирует проекты по статусу, подразделению или руководителю.",
+        _tool_schema(
+            {
+                **_FILTER_PROPERTIES,
+                "group_by": {
+                    "type": "string",
+                    "enum": ["status", "department", "owner"],
+                    "description": "Измерение группировки",
+                },
+            }
+        ),
+    ),
 )
 
 
@@ -205,6 +367,60 @@ class TurboProjectGetTool(BaseTool):
         )
 
 
+class TurboProjectServerTool(BaseTool):
+    def __init__(self, *, name: str, title: str, description: str, input_schema: dict) -> None:
+        super().__init__(
+            ToolDefinition(
+                name=name,
+                title=title,
+                description=description,
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.EXTERNAL_API,
+                requires_human_approval=False,
+                timeout_seconds=180,
+                max_retries=1,
+                input_schema=input_schema,
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "source": {"type": "string"},
+                        "mode": {"type": "string"},
+                    },
+                },
+            )
+        )
+
+    def execute(self, input_data: dict) -> ToolCallResult:
+        arguments = {
+            key: value
+            for key, value in (input_data or {}).items()
+            if value not in (None, "", [], {})
+        }
+        try:
+            data = request(
+                "POST",
+                f"/api/v1/tools/{self.definition.name}/invoke",
+                json={"arguments": arguments},
+                timeout=180.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type="TURBOPROJECT_FAILED",
+                error_message=str(exc),
+            )
+        result = data.get("result") if isinstance(data, dict) else {}
+        if isinstance(result, dict):
+            result = _sample_for_agent(result, arguments)
+        return ToolCallResult(
+            ok=True,
+            tool_name=self.definition.name,
+            output_data=result if isinstance(result, dict) else {"result": result},
+        )
+
+
 def _sample_for_agent(result: dict, arguments: dict) -> dict:
     payload = dict(result)
     projects = payload.get("projects")
@@ -247,7 +463,17 @@ def _sample_for_agent(result: dict, arguments: dict) -> dict:
 
 
 def register_turboproject_tools(registry: ToolRegistry, *, skip_existing: bool = False) -> None:
-    for tool in (TurboProjectTool(), TurboProjectListTool(), TurboProjectGetTool()):
+    tools = [TurboProjectTool(), TurboProjectListTool(), TurboProjectGetTool()]
+    tools.extend(
+        TurboProjectServerTool(
+            name=name,
+            title=title,
+            description=description,
+            input_schema=input_schema,
+        )
+        for name, title, description, input_schema in _NEW_TOOL_SPECS
+    )
+    for tool in tools:
         if skip_existing and registry.has_tool(tool.definition.name):
             continue
         registry.register(tool)
