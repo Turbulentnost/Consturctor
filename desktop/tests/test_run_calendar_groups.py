@@ -73,6 +73,28 @@ def test_same_agent_errors_keep_red_badge() -> None:
     assert color == "#D64545"
 
 
+def test_missed_group_is_not_history() -> None:
+    events = [
+        CalendarEvent(
+            id="1",
+            workflow_id="wf",
+            title="A",
+            start_at="2026-08-19T10:00:00+03:00",
+            status="missed",
+        ),
+        CalendarEvent(
+            id="2",
+            workflow_id="wf",
+            title="A",
+            start_at="2026-08-19T10:20:00+03:00",
+            status="missed",
+        ),
+    ]
+    _title, subtitle, color = group_summary(events)
+    assert subtitle == "Не запущены"
+    assert color == "#B0893A"
+
+
 def test_runs_word() -> None:
     assert _runs_word(1) == "запуск"
     assert _runs_word(2) == "запуска"

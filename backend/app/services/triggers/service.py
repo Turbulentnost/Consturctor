@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
+from app.models.agent_run import AgentRun
 from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.schemas.trigger import TriggerCreate, TriggerOut
@@ -46,6 +47,27 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def next_aligned_fire_at(
+    fire_at: datetime | None,
+    interval_seconds: int,
+    *,
+    now: datetime | None = None,
+) -> datetime:
+    """Keep the original clock grid so a skipped 11:00 slot still exists as missed."""
+    now = now or datetime.now(timezone.utc)
+    interval = int(interval_seconds or 0)
+    origin = _as_utc(fire_at)
+    if interval <= 0:
+        return now
+    if origin is None:
+        return now + timedelta(seconds=interval)
+    if origin > now:
+        return origin
+    elapsed = (now - origin).total_seconds()
+    steps = int(elapsed // interval) + 1
+    return origin + timedelta(seconds=steps * interval)
 
 
 def _to_out(row: AgentTrigger) -> TriggerOut:
@@ -192,6 +214,21 @@ def get_trigger(db: Session, *, user_id: str, trigger_id: str) -> AgentTrigger:
     return row
 
 
+def workflow_has_started_run(db: Session, workflow_id: str) -> bool:
+    """Same published agent cannot start another scheduled run while one is in flight."""
+    wid = (workflow_id or "").strip()
+    if not wid:
+        return False
+    return (
+        db.execute(
+            select(AgentRun.id)
+            .where(AgentRun.workflow_id == wid, AgentRun.status == "started")
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
 def due_commands(db: Session, *, user_id: str | None = None) -> list[AgentTrigger]:
     now = datetime.now(timezone.utc)
     stale_before = now - CHECK_INTERVAL
@@ -211,6 +248,8 @@ def due_commands(db: Session, *, user_id: str | None = None) -> list[AgentTrigge
     due: list[AgentTrigger] = []
     for trigger, workflow in db.execute(stmt).all():
         if is_workflow_inactive(workflow.local_run):
+            continue
+        if workflow_has_started_run(db, workflow.id):
             continue
         due.append(trigger)
     return due
@@ -285,7 +324,7 @@ def mark_fired(db: Session, *, user_id: str, trigger_id: str, evidence: str = ""
     if interval > 0:
         row.once = False
         row.enabled = True
-        row.fire_at = now + timedelta(seconds=interval)
+        row.fire_at = next_aligned_fire_at(row.fire_at, interval, now=now)
         row.cooldown_until = now + FIRE_COOLDOWN
     elif row.once:
         row.enabled = False
@@ -303,8 +342,9 @@ def mark_skipped(
     trigger_id: str,
     evidence: str,
     retry_in_seconds: int | None = None,
+    advance: bool = True,
 ) -> TriggerOut:
-    """Пропуск слота: интервал сдвигается, one-shot остаётся и ждёт следующего окна."""
+    """Defer or skip a slot. advance=False keeps fire_at so the plan stays on the calendar."""
     row = get_trigger(db, user_id=user_id, trigger_id=trigger_id)
     now = datetime.now(timezone.utc)
     row.last_checked_at = now
@@ -312,10 +352,10 @@ def mark_skipped(
     if retry_in_seconds is not None and retry_in_seconds > 0:
         row.fire_at = now + timedelta(seconds=int(retry_in_seconds))
         row.cooldown_until = now + timedelta(seconds=min(30, int(retry_in_seconds)))
-    else:
+    elif advance:
         interval = int(row.interval_seconds or 0)
         if interval > 0:
-            row.fire_at = now + timedelta(seconds=interval)
+            row.fire_at = next_aligned_fire_at(row.fire_at, interval, now=now)
             row.cooldown_until = now + FIRE_COOLDOWN
         else:
             row.cooldown_until = now + timedelta(minutes=30)

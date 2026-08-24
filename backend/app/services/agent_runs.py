@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+STALE_STARTED = timedelta(minutes=25)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,39 @@ def start_agent_run(
     return row
 
 
+def save_run_events(db: Session, *, run_id: str, events: list[dict[str, Any]]) -> None:
+    row = db.get(AgentRun, run_id)
+    if row is None or (row.status or "") != "started":
+        return
+    row.events_json = slim_run_events(events)
+    db.commit()
+
+
+def fail_stale_started_runs(db: Session, *, user_id: str) -> int:
+    cutoff = datetime.now(timezone.utc) - STALE_STARTED
+    rows = (
+        db.execute(
+            select(AgentRun).where(
+                AgentRun.user_id == user_id,
+                AgentRun.status == "started",
+                AgentRun.started_at < cutoff,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        finish_agent_run(
+            db,
+            run_id=row.id,
+            status="error",
+            answer="Запуск не завершился за отведённое время.",
+            events=row.events_json if isinstance(row.events_json, list) else [],
+            message=row.message or "",
+        )
+    return len(rows)
+
+
 def finish_agent_run(
     db: Session,
     *,
@@ -87,6 +122,7 @@ def finish_agent_run(
 
 
 def list_agent_runs(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRunOut]:
+    fail_stale_started_runs(db, user_id=user_id)
     _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True)
     rows = (
         db.execute(
@@ -102,6 +138,7 @@ def list_agent_runs(db: Session, *, user_id: str, workflow_id: str) -> list[Agen
 
 
 def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -> AgentRunOut:
+    fail_stale_started_runs(db, user_id=user_id)
     _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True)
     row = db.get(AgentRun, run_id)
     if row is None or row.workflow_id != workflow_id or row.user_id != user_id:

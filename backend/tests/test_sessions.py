@@ -4,6 +4,7 @@ from app.services.sessions import (
     is_user_online,
     mark_offline,
     mark_online,
+    presence_status,
     replace_session,
 )
 
@@ -25,6 +26,7 @@ def test_is_current_session_allows_legacy_empty_sid_when_store_empty() -> None:
 
 def test_is_user_online_false_without_presence() -> None:
     assert is_user_online("nobody-online") is False
+    assert presence_status("nobody-online") in {"offline", "unknown"}
 
 
 def test_replace_session_invalidates_previous(monkeypatch) -> None:

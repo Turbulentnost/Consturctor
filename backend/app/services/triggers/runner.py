@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -10,20 +11,23 @@ from sqlalchemy.orm import Session
 from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.services.agent_runtime import AgentRuntimeError, run_agent_task
-from app.services.agent_runs import answer_from_result, finish_agent_run, start_agent_run
+from app.services.agent_runs import answer_from_result, finish_agent_run, save_run_events, start_agent_run
 from app.services.notifications.service import NotificationError, create_notification
 from app.schemas.notification import NotificationCreate
 from app.services.sessions import (
-    RECONNECT_EVIDENCE,
-    RECONNECT_RETRY_SEC,
     SKIP_RUN_BODY,
     SKIP_RUN_TITLE,
-    current_session_id,
-    is_user_online,
+    presence_status,
 )
 from app.services.tool_bridge import tool_bridge
 from app.services.triggers.check import check_trigger_condition
-from app.services.triggers.service import is_workflow_inactive, mark_fired, mark_skipped
+from app.services.triggers.service import (
+    _as_utc,
+    is_workflow_inactive,
+    mark_fired,
+    mark_skipped,
+    workflow_has_started_run,
+)
 from app.services.workflows.cursor_tools import clear_tool_context, set_tool_context
 from app.services.workflows.service import WorkflowError
 
@@ -37,33 +41,34 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
     workflow = db.get(Workflow, row.workflow_id)
     if workflow is None or is_workflow_inactive(workflow.local_run):
         return {"ok": False, "reason": "paused"}
-    if not is_user_online(row.owner_user_id):
-        # Active login session means desktop is likely reconnecting after API restart.
-        # Retry soon without the scary "app not launched" toast.
-        if current_session_id(row.owner_user_id):
-            mark_skipped(
+    due = _as_utc(row.fire_at)
+    now = datetime.now(timezone.utc)
+    if due is not None and due > now + timedelta(seconds=5):
+        return {"ok": False, "reason": "not_due"}
+    if workflow_has_started_run(db, row.workflow_id):
+        logger.info("Scheduled trigger %s skipped: agent already running", trigger_id)
+        return {"ok": False, "reason": "already_running"}
+    presence = presence_status(row.owner_user_id)
+    if presence == "offline":
+        already = SKIP_RUN_BODY.casefold() in (row.last_evidence or "").casefold()
+        if not already:
+            title = workflow.title or "агент"
+            _notify_skipped_run(
                 db,
                 user_id=row.owner_user_id,
-                trigger_id=trigger_id,
-                evidence=RECONNECT_EVIDENCE,
-                retry_in_seconds=RECONNECT_RETRY_SEC,
+                workflow_id=row.workflow_id,
+                agent_title=title,
             )
-            logger.info(
-                "Scheduled trigger %s deferred: desktop reconnecting user=%s",
-                trigger_id,
-                row.owner_user_id,
-            )
-            return {"ok": False, "reason": "reconnecting"}
-        title = workflow.title or "агент"
-        _notify_skipped_run(
+        mark_skipped(
             db,
             user_id=row.owner_user_id,
-            workflow_id=row.workflow_id,
-            agent_title=title,
+            trigger_id=trigger_id,
+            evidence=SKIP_RUN_BODY,
         )
-        mark_skipped(db, user_id=row.owner_user_id, trigger_id=trigger_id, evidence=SKIP_RUN_BODY)
         logger.info("Scheduled trigger %s skipped: desktop offline user=%s", trigger_id, row.owner_user_id)
         return {"ok": False, "reason": "offline"}
+    if presence == "unknown":
+        logger.warning("Scheduled trigger %s: desktop presence unknown, attempting run", trigger_id)
 
     evidence = ""
     run_id = tool_bridge.new_run_id()
@@ -75,8 +80,21 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
     events: list[dict] = []
 
     def emit(payload: dict) -> None:
-        if isinstance(payload, dict):
-            events.append(payload)
+        if not isinstance(payload, dict):
+            return
+        events.append(payload)
+        if payload.get("type") == "tool_request":
+            try:
+                from app.services.workflows.tool_live import push_tool_request
+
+                push_tool_request(row.owner_user_id, payload)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to push tool_request for scheduled run")
+        if history_id:
+            try:
+                save_run_events(db, run_id=history_id, events=events)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to persist scheduled run events")
 
     try:
         if (row.condition_text or "").strip():

@@ -293,11 +293,13 @@ class AgentHistoryPage(QWidget):
             + (f"\nКонец: {finished}" if finished else "")
         )
         self._detail_status.setText(status.capitalize() if status != "готово" else "Готово")
-        self._detail_status.setStyleSheet(
-            "color: #9B1C1C; background: transparent;"
-            if payload.status == "error"
-            else "color: #08745F; background: transparent;"
-        )
+        if payload.status == "error":
+            color = "#9B1C1C"
+        elif payload.status in {"started", "running"}:
+            color = "#2F6FED"
+        else:
+            color = "#08745F"
+        self._detail_status.setStyleSheet(f"color: {color}; background: transparent;")
         self._render_feed(_events_for_run(payload))
         self._stack.setCurrentIndex(1)
 
@@ -392,6 +394,13 @@ def _events_for_run(item: AgentRunHistoryItem) -> list[dict]:
         return events
     if item.message.strip():
         events.append({"type": "user_message", "text": item.message.strip()})
+    if item.status in {"started", "running"}:
+        events.append(
+            {
+                "type": "system",
+                "text": "Запуск ещё выполняется. Этот экран показывает историю, а не живой ход.",
+            }
+        )
     if item.status == "error":
         events.append({"type": "error", "message": item.answer.strip() or "Прогон завершился с ошибкой."})
     elif item.answer.strip():
@@ -415,6 +424,8 @@ def _status_label(status: str) -> str:
         return "готово"
     if status == "error":
         return "ошибка"
+    if status in {"started", "running"}:
+        return "выполняется"
     return status or "в работе"
 
 

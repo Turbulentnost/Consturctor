@@ -30,7 +30,7 @@ from app.services.notifications.service import (
     payload_dict,
     unread_count,
 )
-from app.services.sessions import is_current_session, mark_offline, mark_online
+from app.services.sessions import is_current_session, mark_online
 
 logger = logging.getLogger(__name__)
 
@@ -163,8 +163,8 @@ async def notifications_ws(websocket: WebSocket, token: str = "") -> None:
         logger.exception("Notification websocket failed user=%s", auth.user_id)
     finally:
         hub.remove(auth.user_id, websocket)
-        if not hub.is_online(auth.user_id):
-            mark_offline(auth.user_id, auth.session_id)
+        # Do not mark_offline on a WS blip: the desktop still polls /pending every 15s.
+        # Clearing presence here made Celery skip a live app and drop the calendar slot.
         db.close()
 
 
@@ -204,6 +204,7 @@ async def notification_scheduler() -> None:
 async def board_live_subscriber() -> None:
     from app.services.sessions import _redis
     from app.services.workflows.board_live import BOARD_CHANNEL, relay_board_message
+    from app.services.workflows.tool_live import TOOL_CHANNEL
 
     while True:
         client = _redis()
@@ -213,7 +214,7 @@ async def board_live_subscriber() -> None:
         pubsub = None
         try:
             pubsub = client.pubsub()
-            pubsub.subscribe(BOARD_CHANNEL)
+            pubsub.subscribe(BOARD_CHANNEL, TOOL_CHANNEL)
             logger.info("Board live subscriber connected")
             while True:
                 message = await asyncio.to_thread(pubsub.get_message, True, 0.4)

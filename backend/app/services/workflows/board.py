@@ -13,6 +13,7 @@ from app.models.regulation import AgentDraft
 from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.schemas.workflow import BoardAgent, BoardStats, CalendarEvent, WorkflowBoard
+from app.services.agent_runs import fail_stale_started_runs
 from app.services.triggers.service import is_workflow_deleted, is_workflow_paused
 
 
@@ -20,7 +21,7 @@ def _stamp_iso(value: datetime | None) -> str:
     stamp = _as_utc(value)
     return stamp.isoformat() if stamp else ""
 
-_MAX_FUTURE_PER_TRIGGER = 200
+_MAX_SLOTS_PER_TRIGGER = 800
 _EVENT_HORIZON = timedelta(days=40)
 
 
@@ -91,32 +92,35 @@ def _trigger_kind(row: AgentTrigger) -> str:
     return "datetime"
 
 
-def _expand_future_times(
+def _expand_slot_times(
     *,
     fire_at: datetime | None,
     interval_seconds: int,
     window_start: datetime,
     window_end: datetime,
-    now: datetime,
 ) -> list[datetime]:
-    start = _as_utc(fire_at)
-    if start is None:
+    origin = _as_utc(fire_at)
+    if origin is None:
         return []
     interval = max(0, int(interval_seconds or 0))
-    first_allowed = max(window_start, now)
-    times: list[datetime] = []
     if interval <= 0:
-        if first_allowed <= start <= window_end:
-            times.append(start)
-        return times
-    cursor = start
-    if cursor < first_allowed:
-        steps = math.ceil((first_allowed - cursor).total_seconds() / interval)
+        if window_start <= origin <= window_end:
+            return [origin]
+        return []
+    cursor = origin
+    guard = 0
+    step = timedelta(seconds=interval)
+    while cursor - step >= window_start and guard < _MAX_SLOTS_PER_TRIGGER:
+        cursor = cursor - step
+        guard += 1
+    if cursor < window_start:
+        steps = math.ceil((window_start - cursor).total_seconds() / interval)
         cursor = cursor + timedelta(seconds=steps * interval)
-    while cursor <= window_end and len(times) < _MAX_FUTURE_PER_TRIGGER:
+    times: list[datetime] = []
+    while cursor <= window_end and len(times) < _MAX_SLOTS_PER_TRIGGER:
         if cursor >= window_start:
             times.append(cursor)
-        cursor = cursor + timedelta(seconds=interval)
+        cursor = cursor + step
     return times
 
 
@@ -224,6 +228,7 @@ def get_workflow_board(
     workflow_id: str = "",
 ) -> WorkflowBoard:
     now = datetime.now(timezone.utc)
+    fail_stale_started_runs(db, user_id=user_id)
     start = _parse_dt(window_from) or (now - timedelta(days=7))
     end = _parse_dt(window_to) or (now + _EVENT_HORIZON)
     if end < start:
@@ -354,7 +359,111 @@ def get_workflow_board(
                 and (not run.trigger_id or run.trigger_id == item.id)
             ]
             clusters = _cluster_runs(scheduled_runs, interval_seconds=interval)
-            for slot_start, group in clusters:
+            matched_clusters: set[int] = set()
+            if not paused:
+                earliest = start
+                created = _as_utc(item.created_at)
+                if created is not None and created > earliest:
+                    earliest = created
+                times = _expand_slot_times(
+                    fire_at=item.fire_at,
+                    interval_seconds=interval,
+                    window_start=earliest,
+                    window_end=end,
+                )
+                grace = timedelta(seconds=min(120, interval if interval > 0 else 120))
+                for stamp in times:
+                    hit = next(
+                        (
+                            index
+                            for index, cluster in enumerate(clusters)
+                            if index not in matched_clusters
+                            and _slot_occupied(stamp, [cluster], interval)
+                        ),
+                        None,
+                    )
+                    if hit is not None:
+                        _slot_start, group = clusters[hit]
+                        matched_clusters.add(hit)
+                        pick = _pick_slot_run(group)
+                        for run in group:
+                            used_run_ids.add(run.id)
+                        events.append(
+                            _event_from_run(
+                                workflow=row,
+                                run=pick,
+                                start_at=stamp,
+                                event_id=f"slot:{item.id}:{int(stamp.timestamp())}",
+                                trigger_id=item.id,
+                            )
+                        )
+                        continue
+                    current_fire = _as_utc(item.fire_at)
+                    pending = bool(
+                        current_fire is not None
+                        and _slot_occupied(stamp, [(current_fire, [])], interval)
+                    )
+                    if pending:
+                        events.append(
+                            CalendarEvent(
+                                id=f"trig:{item.id}:{int(stamp.timestamp())}",
+                                workflow_id=row.id,
+                                title=row.title or "ИИ-агент",
+                                subtitle=_one_line(item.message or "Запланировано", 70),
+                                start_at=_stamp_iso(stamp),
+                                status="scheduled",
+                                source="schedule",
+                                is_future=True,
+                                trigger_id=item.id,
+                            )
+                        )
+                        continue
+                    if current_fire is not None and stamp < current_fire:
+                        events.append(
+                            CalendarEvent(
+                                id=f"trig:{item.id}:{int(stamp.timestamp())}",
+                                workflow_id=row.id,
+                                title=row.title or "ИИ-агент",
+                                subtitle=_one_line(item.message or "Не запущен", 70),
+                                start_at=_stamp_iso(stamp),
+                                status="missed",
+                                source="schedule",
+                                is_future=False,
+                                trigger_id=item.id,
+                            )
+                        )
+                        continue
+                    if stamp + grace >= now:
+                        events.append(
+                            CalendarEvent(
+                                id=f"trig:{item.id}:{int(stamp.timestamp())}",
+                                workflow_id=row.id,
+                                title=row.title or "ИИ-агент",
+                                subtitle=_one_line(item.message or "Запланировано", 70),
+                                start_at=_stamp_iso(stamp),
+                                status="scheduled",
+                                source="schedule",
+                                is_future=True,
+                                trigger_id=item.id,
+                            )
+                        )
+                        continue
+                    events.append(
+                        CalendarEvent(
+                            id=f"trig:{item.id}:{int(stamp.timestamp())}",
+                            workflow_id=row.id,
+                            title=row.title or "ИИ-агент",
+                            subtitle=_one_line(item.message or "Не запущен", 70),
+                            start_at=_stamp_iso(stamp),
+                            status="missed",
+                            source="schedule",
+                            is_future=False,
+                            trigger_id=item.id,
+                        )
+                    )
+            for index, (slot_start, group) in enumerate(clusters):
+                if index in matched_clusters:
+                    continue
                 pick = _pick_slot_run(group)
                 for run in group:
                     used_run_ids.add(run.id)
@@ -364,31 +473,6 @@ def get_workflow_board(
                         run=pick,
                         start_at=slot_start,
                         event_id=f"slot:{item.id}:{int(slot_start.timestamp())}",
-                        trigger_id=item.id,
-                    )
-                )
-            if paused:
-                continue
-            times = _expand_future_times(
-                fire_at=item.fire_at,
-                interval_seconds=interval,
-                window_start=start,
-                window_end=end,
-                now=now,
-            )
-            for stamp in times:
-                if _slot_occupied(stamp, clusters, interval):
-                    continue
-                events.append(
-                    CalendarEvent(
-                        id=f"trig:{item.id}:{int(stamp.timestamp())}",
-                        workflow_id=row.id,
-                        title=row.title or "ИИ-агент",
-                        subtitle=_one_line(item.message or "Запланировано", 70),
-                        start_at=_stamp_iso(stamp),
-                        status="scheduled",
-                        source="schedule",
-                        is_future=True,
                         trigger_id=item.id,
                     )
                 )
@@ -453,7 +537,7 @@ def get_workflow_board(
         if (run.status or "") == "error":
             errors_today += 1
 
-    upcoming = [stamp for stamp in next_candidates if stamp >= now]
+    upcoming = [stamp for stamp in next_candidates if stamp is not None]
     upcoming.sort()
     stats = BoardStats(
         active_agents=sum(1 for item in agents if item.kind == "workflow" and item.status == "active"),

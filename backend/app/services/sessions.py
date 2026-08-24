@@ -139,13 +139,20 @@ def mark_offline(user_id: str, session_id: str = "") -> None:
         _reset_client()
 
 
-def is_user_online(user_id: str) -> bool:
+def presence_status(user_id: str) -> str:
+    """online / offline / unknown. unknown means Redis is down, do not skip the slot."""
     client = _redis()
     if client is None:
-        return False
+        return "unknown"
     try:
-        return bool(client.get(_ONLINE_KEY.format(user_id=user_id)))
+        if client.get(_ONLINE_KEY.format(user_id=user_id)):
+            return "online"
+        return "offline"
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Redis is_user_online failed user=%s: %s", user_id, exc)
+        logger.warning("Redis presence_status failed user=%s: %s", user_id, exc)
         _reset_client()
-        return False
+        return "unknown"
+
+
+def is_user_online(user_id: str) -> bool:
+    return presence_status(user_id) == "online"

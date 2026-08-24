@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from app.api_client import AgentDraft, AgentSuggestion, BoardAgent, WorkflowBoard, WorkflowListItem
 from app.ui.theme import app_font
-from app.ui.widgets.run_calendar import RunCalendar, parse_iso
+from app.ui.widgets.run_calendar import RunCalendar, _ru_plural, _runs_word, parse_iso
 
 # Floating shell user menu (bell + avatar + FIO) overlays the top-right content.
 _USER_MENU_RESERVE = 360
@@ -42,6 +43,14 @@ QPushButton:checked { background: #EAF7F3; color: #08745F; border-color: #08745F
 """
 _AGENTS_PANE_WIDTH = 396
 _AGENT_CARD_WIDTH = 348
+_TEMP = Path(__file__).resolve().parents[1] / "temp"
+_TILE_QSS = """
+QFrame#StatTile {
+    background: #FFFFFF;
+    border: 1px solid rgba(16,24,23,0.08);
+    border-radius: 16px;
+}
+"""
 _STATUS = {
     "active": ("Активен", "#08745F"),
     "paused": ("Приостановлен", "#8A9692"),
@@ -69,6 +78,56 @@ def _funnel_icon(active: bool) -> QIcon:
     painter.drawPath(path)
     painter.end()
     return QIcon(pix)
+
+
+def _load_tile_icon(name: str, size: int = 24) -> QPixmap:
+    path = _TEMP / name
+    if not path.exists():
+        return QPixmap()
+    src = QImage(str(path))
+    if src.isNull():
+        return QPixmap()
+    img = src.convertToFormat(QImage.Format.Format_ARGB32)
+    for y in range(img.height()):
+        for x in range(img.width()):
+            color = QColor.fromRgba(img.pixel(x, y))
+            if color.red() < 48 and color.green() < 48 and color.blue() < 48:
+                color.setAlpha(0)
+                img.setPixelColor(x, y, color)
+    return QPixmap.fromImage(img).scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+class _StatTile(QFrame):
+    def __init__(self, icon_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("StatTile")
+        self.setStyleSheet(_TILE_QSS)
+        self.setMinimumHeight(56)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        icon = QLabel()
+        icon.setFixedSize(24, 24)
+        icon.setStyleSheet("background: transparent; border: none;")
+        pix = _load_tile_icon(icon_name, 24)
+        if not pix.isNull():
+            icon.setPixmap(pix)
+        self._text = QLabel("—")
+        self._text.setFont(app_font(14, QFont.Weight.DemiBold))
+        self._text.setStyleSheet("color: #08745F; background: transparent; border: none;")
+        self._text.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self._text.setWordWrap(False)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(16, 12, 16, 12)
+        row.setSpacing(10)
+        row.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self._text, 1)
+
+    def set_text(self, value: str) -> None:
+        self._text.setText(value)
 
 
 class _FitTitleLabel(QLabel):
@@ -160,14 +219,23 @@ class MyAgentsPage(QWidget):
         heading.addLayout(text_col, 1)
         heading.addWidget(create, 0, Qt.AlignmentFlag.AlignTop)
 
-        self._stats = QLabel("Нет данных по запускам")
-        self._stats.setFont(app_font(13))
-        self._stats.setStyleSheet("color: #06483D; background: transparent;")
-        self._stats.setWordWrap(True)
+        self._tile_agents = _StatTile("agents.png")
+        self._tile_active = _StatTile("puls.png")
+        self._tile_runs = _StatTile("start.png")
+        self._tile_next = _StatTile("time.png")
+        stats_row = QHBoxLayout()
+        stats_row.setContentsMargins(0, 0, 0, 0)
+        stats_row.setSpacing(12)
+        for tile in (self._tile_agents, self._tile_active, self._tile_runs, self._tile_next):
+            stats_row.addWidget(tile, 1)
+        self._stats_host = QWidget()
+        self._stats_host.setStyleSheet("background: transparent;")
+        self._stats_host.setLayout(stats_row)
         self._stats_tick = QTimer(self)
         self._stats_tick.setInterval(30000)
         self._stats_tick.timeout.connect(self._render_stats)
         self._stats_tick.start()
+        self._render_stats()
 
         self._count = QLabel("Агенты")
         self._count.setFont(app_font(16, QFont.Weight.DemiBold))
@@ -283,7 +351,7 @@ class MyAgentsPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         layout.addLayout(heading)
-        layout.addWidget(self._stats)
+        layout.addWidget(self._stats_host)
         layout.addLayout(body, 1)
 
     def calendar_window(self) -> tuple[str, str]:
@@ -352,16 +420,11 @@ class MyAgentsPage(QWidget):
 
     def _render_stats(self) -> None:
         stats = self._board.stats
-        parts = [
-            f"{stats.active_agents} активных агентов",
-            f"{stats.runs_today} запуска сегодня",
-        ]
-        if stats.needs_attention:
-            parts.append(f"{stats.needs_attention} требует внимания")
-        elif stats.errors_today:
-            parts.append(f"{stats.errors_today} запуска с ошибкой")
-        parts.append(_next_run_phrase(stats.next_run_at))
-        self._stats.setText(" · ".join(parts))
+        total = sum(1 for item in self._board.agents if item.kind == "workflow")
+        self._tile_agents.set_text(f"{total} {_agents_word(total)}")
+        self._tile_active.set_text(f"{stats.active_agents} {_active_word(stats.active_agents)}")
+        self._tile_runs.set_text(f"{stats.runs_today} {_runs_word(stats.runs_today)} сегодня")
+        self._tile_next.set_text(_next_run_tile(stats.next_run_at))
 
     def _visible_agents(self) -> list[BoardAgent]:
         items = list(self._board.agents)
@@ -529,16 +592,27 @@ def _run_line(prefix: str, value: str) -> str:
     return f"{prefix}: {_human_when(stamp)}"
 
 
-def _next_run_phrase(value: str) -> str:
+def _agents_word(n: int) -> str:
+    return _ru_plural(n, "агент", "агента", "агентов")
+
+
+def _active_word(n: int) -> str:
+    return _ru_plural(n, "активен", "активны", "активны")
+
+
+def _next_run_tile(value: str) -> str:
     stamp = parse_iso(value)
     if stamp is None:
-        return "ближайший запуск не запланирован"
+        return "Ближайший – нет"
+    local = stamp.astimezone()
     now = datetime.now().astimezone()
-    delta = stamp - now
-    minutes = int(delta.total_seconds() // 60)
-    if 0 <= minutes < 120:
-        return f"ближайший запуск через {max(1, minutes)} мин"
-    return f"ближайший запуск {_human_when(stamp)}"
+    if local <= now:
+        return "Ближайший – сейчас"
+    if local.date() == now.date():
+        return f"Ближайший – {local.strftime('%H:%M')}"
+    if local.date() == now.date() + timedelta(days=1):
+        return f"Ближайший – завтра, {local.strftime('%H:%M')}"
+    return f"Ближайший – {local.strftime('%d.%m, %H:%M')}"
 
 
 def _human_when(stamp: datetime) -> str:

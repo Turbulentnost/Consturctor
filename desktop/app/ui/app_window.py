@@ -73,6 +73,7 @@ class AppWindow(QMainWindow):
         self._notify.inbox_changed.connect(self.main_shell.refresh_notification_badge)
         self._notify.command_received.connect(self._runner.handle_command)
         self._notify.board_updated.connect(self.main_shell.apply_live_board)
+        self._notify.tool_requested.connect(self._on_tool_request)
         self._notify.session_kicked.connect(self._on_session_kicked)
         self._runner.toast_requested.connect(self._on_tray_toast)
         install_confirm_host(self)
@@ -194,6 +195,16 @@ class AppWindow(QMainWindow):
             QSystemTrayIcon.ActivationReason.DoubleClick,
         ):
             self.reveal()
+
+    def _on_tool_request(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        self.reveal()
+        Thread(
+            target=self.api._handle_sse_tool_request,
+            kwargs={"payload": payload},
+            daemon=True,
+        ).start()
 
     def _on_tray_toast(self, title: str, body: str, workflow_id: str, run_id: str = "") -> None:
         self._last_toast_workflow_id = (workflow_id or "").strip()

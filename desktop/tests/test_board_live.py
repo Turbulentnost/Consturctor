@@ -4,6 +4,7 @@ from app.notifications.service import classify_ws_payload
 
 def test_classify_board_updated() -> None:
     assert classify_ws_payload({"type": "board_updated"}) == "board"
+    assert classify_ws_payload({"type": "tool_request"}) == "tool"
     assert classify_ws_payload({"type": "run_agent"}) == "command"
     assert classify_ws_payload({"type": "session_replaced"}) == "kick"
     assert classify_ws_payload({"type": "notification"}) == "notification"

@@ -189,6 +189,107 @@ def test_board_merges_overlapping_runs_into_one_slot() -> None:
     assert all(item.status == "scheduled" for item in future)
 
 
+def test_board_shows_missed_scheduled_slots() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    now = datetime.now(timezone.utc)
+    trigger.interval_seconds = 20 * 60
+    trigger.fire_at = now + timedelta(minutes=5)
+    trigger.created_at = now - timedelta(hours=2)
+    db.commit()
+    board = get_workflow_board(
+        db,
+        user_id=user_id,
+        window_from=(now - timedelta(hours=2)).isoformat(),
+        window_to=(now + timedelta(hours=1)).isoformat(),
+    )
+    items = [item for item in board.events if item.workflow_id == workflow_id]
+    missed = [item for item in items if item.status == "missed"]
+    future = [item for item in items if item.is_future]
+    assert missed
+    assert all(not item.is_future for item in missed)
+    assert all(item.run_id == "" for item in missed)
+    assert all(item.source == "schedule" for item in missed)
+    assert future
+    assert all(item.status == "scheduled" for item in future)
+
+
+def test_overdue_slot_stays_scheduled_and_is_next_run() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    now = datetime.now(timezone.utc)
+    due = now - timedelta(minutes=4)
+    trigger.interval_seconds = 20 * 60
+    trigger.fire_at = due
+    trigger.created_at = now - timedelta(hours=2)
+    db.commit()
+    board = get_workflow_board(
+        db,
+        user_id=user_id,
+        window_from=(now - timedelta(hours=2)).isoformat(),
+        window_to=(now + timedelta(hours=1)).isoformat(),
+    )
+    due_iso = due.isoformat()
+    pending = [
+        item
+        for item in board.events
+        if item.status == "scheduled"
+        and abs(
+            (
+                datetime.fromisoformat(item.start_at.replace("Z", "+00:00")) - due
+            ).total_seconds()
+        )
+        < 2
+    ]
+    assert len(pending) == 1
+    assert pending[0].is_future is True
+    assert board.stats.next_run_at
+    next_stamp = datetime.fromisoformat(board.stats.next_run_at.replace("Z", "+00:00"))
+    assert abs((next_stamp - due).total_seconds()) < 2
+    agent = next(item for item in board.agents if item.id == workflow_id)
+    assert agent.next_run_at
+    older = [item for item in board.events if item.status == "missed"]
+    assert older
+
+
+def test_skipped_slot_stays_on_board_as_missed() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    now = datetime.now(timezone.utc)
+    due = now - timedelta(minutes=1)
+    trigger.interval_seconds = 20 * 60
+    trigger.fire_at = due + timedelta(minutes=20)
+    trigger.created_at = now - timedelta(hours=2)
+    db.commit()
+    board = get_workflow_board(
+        db,
+        user_id=user_id,
+        window_from=(now - timedelta(hours=2)).isoformat(),
+        window_to=(now + timedelta(hours=1)).isoformat(),
+    )
+    skipped = [
+        item
+        for item in board.events
+        if item.workflow_id == workflow_id
+        and abs(
+            (
+                datetime.fromisoformat(item.start_at.replace("Z", "+00:00")) - due
+            ).total_seconds()
+        )
+        < 2
+    ]
+    assert len(skipped) == 1
+    assert skipped[0].status == "missed"
+    assert skipped[0].is_future is False
+    assert skipped[0].run_id == ""
+
+
 def test_event_trigger_has_no_future_slots() -> None:
     db = _session()
     user_id, workflow_id = _seed(db)
@@ -234,3 +335,26 @@ def test_paused_skips_active_stats_and_future_slots() -> None:
     trigger = db.get(AgentTrigger, "tr-1")
     assert trigger is not None
     assert trigger.enabled is True
+
+
+def test_stale_started_run_becomes_error_on_board() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    now = datetime.now(timezone.utc)
+    db.add(
+        AgentRun(
+            id="run-stuck",
+            workflow_id=workflow_id,
+            user_id=user_id,
+            message="проверить",
+            status="started",
+            source="trigger",
+            trigger_id="tr-1",
+            trigger_kind="interval",
+            started_at=now - timedelta(hours=1),
+        )
+    )
+    db.commit()
+    board = get_workflow_board(db, user_id=user_id)
+    stuck = next(item for item in board.events if item.run_id == "run-stuck")
+    assert stuck.status == "error"

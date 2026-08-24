@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import QApplication
 
 from app.api_client import AgentRunHistoryItem
-from app.ui.pages.agent_history_page import _events_for_run
+from app.ui.pages.agent_history_page import _events_for_run, _status_label
 from app.ui.pages.agent_run_page import _event_card, _friendly_event, _work_result_event
 
 
@@ -72,3 +72,17 @@ def test_events_for_run_keeps_full_feed() -> None:
         "tool_result",
         "work_result",
     ]
+
+
+def test_events_for_started_run_explains_in_progress() -> None:
+    item = AgentRunHistoryItem(
+        id="r2",
+        workflow_id="wf-1",
+        message="проверить сроки",
+        status="started",
+    )
+    kinds = [event["type"] for event in _events_for_run(item)]
+    assert kinds[0] == "user_message"
+    assert kinds[-1] == "system"
+    assert _status_label("started") == "выполняется"
+    assert _status_label("ok") == "готово"

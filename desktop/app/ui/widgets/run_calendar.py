@@ -70,6 +70,7 @@ _STATUS_STYLE = {
     "scheduled": ("#E8F6F1", "#08745F", "Запланирован"),
     "running": ("#E8F1FB", "#2F6FED", "Выполняется"),
     "ok": ("#F7FBF9", "#5B8F7E", "Выполнен"),
+    "missed": ("#F7F3EA", "#B0893A", "Не запущен"),
     "error": ("#FDECEC", "#D64545", "Ошибка"),
     "paused": ("#F2F4F3", "#8A9692", "Приостановлен"),
 }
@@ -272,12 +273,14 @@ def group_summary(events: list[CalendarEvent]) -> tuple[str, str, str]:
         return title, f"{errors} {_errors_word(errors)}", "#D64545"
     if running:
         return title, f"Выполняются {running} из {n}", "#2F6FED"
+    if all(item.status == "missed" for item in events):
+        return title, "Не запущены", "#B0893A"
+    if all(item.status == "scheduled" for item in events):
+        return title, "Запланировано", "#08745F"
     if same_agent:
         return title, "История", "#6B7773"
     if all(item.status == "ok" for item in events):
         return title, "Выполнено", "#5B8F7E"
-    if all(item.status == "scheduled" for item in events):
-        return title, "Запланировано", "#08745F"
     return title, _STATUS_STYLE.get(events[0].status, _STATUS_STYLE["scheduled"])[2], "#6B7773"
 
 
@@ -829,7 +832,7 @@ class RunCalendar(QFrame):
 
         legend = QHBoxLayout()
         legend.setSpacing(12)
-        for key in ("ok", "scheduled", "error", "paused"):
+        for key in ("ok", "scheduled", "missed", "error", "paused"):
             _bg, border, label = _STATUS_STYLE[key]
             dot = QLabel("●  " + label)
             dot.setFont(app_font(11))

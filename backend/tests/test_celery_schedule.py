@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
+from app.models.agent_run import AgentRun
 from app.models.notification import Notification
 from app.models.trigger import AgentTrigger
 from app.models.user import AppUser
@@ -17,6 +18,7 @@ from app.services.triggers.service import (
     claim_due_trigger,
     due_commands,
     kpi_calc_task_id,
+    next_aligned_fire_at,
 )
 
 
@@ -85,6 +87,12 @@ def test_agent_run_task_id_stable_inside_window() -> None:
     assert first.startswith("agent-run:tr-1:")
 
 
+def test_next_aligned_fire_at_keeps_clock_grid() -> None:
+    origin = datetime(2026, 8, 21, 8, 0, tzinfo=timezone.utc)
+    nxt = next_aligned_fire_at(origin, 20 * 60, now=origin + timedelta(seconds=8))
+    assert nxt == origin + timedelta(minutes=20)
+
+
 def test_kpi_calc_task_id_includes_tiles() -> None:
     now = datetime(2026, 8, 21, 8, 0, tzinfo=timezone.utc)
     left = kpi_calc_task_id("wf-1", ["b", "a"], now=now)
@@ -105,14 +113,43 @@ def test_execute_scheduled_skips_paused() -> None:
     assert result["reason"] == "paused"
 
 
+def test_due_commands_skip_while_agent_already_running() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    assert [row.id for row in due_commands(db, user_id=user_id)] == ["tr-1"]
+    db.add(
+        AgentRun(
+            id="run-live",
+            workflow_id=workflow_id,
+            user_id=user_id,
+            message="уже идёт",
+            status="started",
+            source="trigger",
+            trigger_id="tr-1",
+            started_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+    assert due_commands(db, user_id=user_id) == []
+    result = execute_scheduled_agent_run(db, trigger_id="tr-1")
+    assert result["ok"] is False
+    assert result["reason"] == "already_running"
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    assert trigger.enabled is True
+
+
 def test_execute_scheduled_skips_offline_and_notifies(monkeypatch) -> None:
     from app.services.notifications.service import list_inbox
 
     db = _session()
     user_id, workflow_id = _seed(db)
-    monkeypatch.setattr("app.services.triggers.runner.is_user_online", lambda _user_id: False)
-    monkeypatch.setattr("app.services.triggers.runner.current_session_id", lambda _user_id: "")
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "offline")
     monkeypatch.setattr("app.services.triggers.runner.run_agent_task", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")))
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    due_at = trigger.fire_at
+    interval = int(trigger.interval_seconds or 0)
     result = execute_scheduled_agent_run(db, trigger_id="tr-1")
     assert result["ok"] is False
     assert result["reason"] == "offline"
@@ -123,31 +160,69 @@ def test_execute_scheduled_skips_offline_and_notifies(monkeypatch) -> None:
     trigger = db.get(AgentTrigger, "tr-1")
     assert trigger is not None
     assert trigger.enabled is True
+    expected = next_aligned_fire_at(due_at, interval)
     assert trigger.fire_at is not None
+    got = trigger.fire_at if trigger.fire_at.tzinfo else trigger.fire_at.replace(tzinfo=timezone.utc)
+    assert abs((got - expected).total_seconds()) < 2
     assert trigger.last_evidence and "не запускал приложение" in trigger.last_evidence
+    second = execute_scheduled_agent_run(db, trigger_id="tr-1")
+    assert second["reason"] == "not_due"
+    assert len(list_inbox(db, user_id=user_id)) == 1
 
 
-def test_execute_scheduled_defers_when_session_alive_without_toast(monkeypatch) -> None:
+def test_execute_scheduled_skips_offline_even_if_session_lingers(monkeypatch) -> None:
     from app.services.notifications.service import list_inbox
 
     db = _session()
-    user_id, _workflow_id = _seed(db)
-    monkeypatch.setattr("app.services.triggers.runner.is_user_online", lambda _user_id: False)
-    monkeypatch.setattr("app.services.triggers.runner.current_session_id", lambda _user_id: "sid-alive")
+    user_id, workflow_id = _seed(db)
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "offline")
     monkeypatch.setattr("app.services.triggers.runner.run_agent_task", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")))
-    result = execute_scheduled_agent_run(db, trigger_id="tr-1")
-    assert result["ok"] is False
-    assert result["reason"] == "reconnecting"
-    assert list_inbox(db, user_id=user_id) == []
     trigger = db.get(AgentTrigger, "tr-1")
     assert trigger is not None
-    assert trigger.last_evidence and "ожидание подключения" in trigger.last_evidence
+    due_at = trigger.fire_at
+    interval = int(trigger.interval_seconds or 0)
+    result = execute_scheduled_agent_run(db, trigger_id="tr-1")
+    assert result["ok"] is False
+    assert result["reason"] == "offline"
+    items = list_inbox(db, user_id=user_id)
+    assert items
+    assert items[0].workflow_id == workflow_id
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    expected = next_aligned_fire_at(due_at, interval)
+    got = trigger.fire_at if trigger.fire_at.tzinfo else trigger.fire_at.replace(tzinfo=timezone.utc)
+    assert abs((got - expected).total_seconds()) < 2
 
 
 def test_execute_scheduled_runs_when_online(monkeypatch) -> None:
     db = _session()
     _seed(db)
-    monkeypatch.setattr("app.services.triggers.runner.is_user_online", lambda _user_id: True)
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "online")
+    monkeypatch.setattr(
+        "app.services.triggers.runner.check_trigger_condition",
+        lambda *args, **kwargs: {"matched": True, "changed": "ok"},
+    )
+    monkeypatch.setattr(
+        "app.services.triggers.runner.start_agent_run",
+        lambda *args, **kwargs: SimpleNamespace(id="run-1"),
+    )
+    monkeypatch.setattr(
+        "app.services.triggers.runner.run_agent_task",
+        lambda *args, **kwargs: {"answer": "готово"},
+    )
+    monkeypatch.setattr("app.services.triggers.runner.finish_agent_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "app.services.triggers.runner.mark_fired",
+        lambda *args, **kwargs: SimpleNamespace(id="tr-1"),
+    )
+    result = execute_scheduled_agent_run(db, trigger_id="tr-1")
+    assert result["ok"] is True
+
+
+def test_execute_scheduled_runs_when_presence_unknown(monkeypatch) -> None:
+    db = _session()
+    _seed(db)
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "unknown")
     monkeypatch.setattr(
         "app.services.triggers.runner.check_trigger_condition",
         lambda *args, **kwargs: {"matched": True, "changed": "ok"},
