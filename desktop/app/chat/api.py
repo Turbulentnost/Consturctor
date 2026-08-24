@@ -49,19 +49,42 @@ class ChatApi:
         return [_message(item) for item in data.get("items") or []]
 
     def directory(self, search: str = "") -> list[DirectoryUser]:
-        data = self._api._request("GET", "/api/v1/chat/directory", params={"search": search} if search else None)
-        return [
-            DirectoryUser(
-                id=str(item.get("id") or ""),
-                fio=str(item.get("fio") or ""),
-                position=str(item.get("position") or ""),
-                department=str(item.get("department") or ""),
-                activity_status=str(item.get("activity_status") or "online"),
-                online=bool(item.get("online")),
-                is_support=bool(item.get("is_support")),
-            )
-            for item in data.get("items") or []
-        ]
+        params = {"search": search} if search.strip() else None
+        merged: dict[str, DirectoryUser] = {}
+        last_error: ApiError | None = None
+        for path in (
+            "/api/v1/auth/directory",
+            "/api/v1/chat/directory",
+            "/api/v1/notifications/users",
+            "/api/v1/auth/users",
+        ):
+            try:
+                data = self._api._request("GET", path, params=params)
+            except ApiError as exc:
+                last_error = exc
+                continue
+            for user in _directory_users(data):
+                key = user.id or user.fio.casefold()
+                prev = merged.get(key) or merged.get(user.fio.casefold())
+                if prev is None:
+                    merged[key] = user
+                    continue
+                if not prev.id and user.id:
+                    merged[key] = user
+        from app.chat.shared_bus import roster_list
+        from app.chat.test_user import TEST_USER_ID, test_directory_user
+
+        for user in roster_list():
+            key = user.id or user.fio.casefold()
+            merged.setdefault(key, user)
+        anna = test_directory_user()
+        merged.setdefault(anna.id, anna)
+        merged.setdefault(TEST_USER_ID, anna)
+        if merged:
+            return sorted(merged.values(), key=lambda item: item.fio.casefold())
+        if last_error is not None:
+            raise last_error
+        return [anna]
 
     def support_shelf(self, name: str) -> list[dict]:
         data = self._api._request("GET", f"/api/v1/chat/support/{name}")
@@ -127,3 +150,33 @@ def _message(item: dict) -> ChatMessage:
         attachments=files,
         agent=item.get("agent") if isinstance(item.get("agent"), dict) else None,
     )
+
+
+def _directory_users(data: object) -> list[DirectoryUser]:
+    raw = data.get("items") if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        return []
+    users: list[DirectoryUser] = []
+    for item in raw:
+        if isinstance(item, str):
+            fio = item.strip()
+            if fio:
+                users.append(DirectoryUser(id="", fio=fio))
+            continue
+        if not isinstance(item, dict):
+            continue
+        fio = str(item.get("fio") or item.get("name") or "").strip()
+        if not fio:
+            continue
+        users.append(
+            DirectoryUser(
+                id=str(item.get("id") or "").strip(),
+                fio=fio,
+                position=str(item.get("position") or ""),
+                department=str(item.get("department") or ""),
+                activity_status=str(item.get("activity_status") or "online"),
+                online=bool(item.get("online")),
+                is_support=bool(item.get("is_support")),
+            )
+        )
+    return users

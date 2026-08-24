@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from app.config import constructor_instance
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
-APP_KEY = "NewConstructor"
+
+def app_key() -> str:
+    inst = constructor_instance()
+    return f"NewConstructor.{inst}" if inst else "NewConstructor"
+
+
+APP_KEY = app_key()
 
 
 class SingleInstance(QObject):

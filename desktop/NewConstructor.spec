@@ -177,6 +177,7 @@ gui_exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=icon_path,
+    manifest=str(root / "packaging" / "windows.manifest"),
 )
 
 com_exe = EXE(

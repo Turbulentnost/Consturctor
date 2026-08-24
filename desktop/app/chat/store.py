@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from app.chat.crypto import decrypt_text, encrypt_text
-from app.chat.models import ChatAttachment, ChatMessage
+from app.chat.models import ChatAttachment, ChatMessage, ChatThread
 
 
 def history_path(user_id: str) -> Path:
@@ -15,7 +15,7 @@ def history_path(user_id: str) -> Path:
     return root / f"{safe}.json"
 
 
-def load_history(user_id: str) -> dict[str, list[ChatMessage]]:
+def _read_payload(user_id: str) -> dict:
     path = history_path(user_id)
     if not path.is_file():
         return {}
@@ -24,7 +24,11 @@ def load_history(user_id: str) -> dict[str, list[ChatMessage]]:
         payload = json.loads(decrypt_text(raw) if raw.startswith("enc:v1:") else raw)
     except Exception:
         return {}
-    threads = payload.get("threads") if isinstance(payload, dict) else None
+    return payload if isinstance(payload, dict) else {}
+
+
+def load_history(user_id: str) -> dict[str, list[ChatMessage]]:
+    threads = _read_payload(user_id).get("threads")
     if not isinstance(threads, dict):
         return {}
     result: dict[str, list[ChatMessage]] = {}
@@ -35,13 +39,63 @@ def load_history(user_id: str) -> dict[str, list[ChatMessage]]:
     return result
 
 
-def save_history(user_id: str, local: dict[str, list[ChatMessage]]) -> None:
-    payload = {
-        "threads": {
-            thread_id: [_dump(message) for message in rows]
-            for thread_id, rows in local.items()
-        }
+def load_dialogs(user_id: str) -> list[ChatThread]:
+    rows = _read_payload(user_id).get("dialogs")
+    if not isinstance(rows, list):
+        return []
+    dialogs: list[ChatThread] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        thread_id = str(item.get("id") or "")
+        if not thread_id:
+            continue
+        dialogs.append(
+            ChatThread(
+                id=thread_id,
+                kind=str(item.get("kind") or "dm"),
+                title=str(item.get("title") or "Диалог"),
+                position=str(item.get("position") or ""),
+                preview=str(item.get("preview") or ""),
+                last_message_at=str(item.get("last_message_at") or ""),
+                unread=int(item.get("unread") or 0),
+                last_read_id=str(item.get("last_read_id") or ""),
+                pinned=bool(item.get("pinned")),
+                peer_id=str(item.get("peer_id") or ""),
+                department=str(item.get("department") or ""),
+            )
+        )
+    return dialogs
+
+
+def save_history(
+    user_id: str,
+    local: dict[str, list[ChatMessage]],
+    dialogs: list[ChatThread] | None = None,
+) -> None:
+    payload = _read_payload(user_id)
+    payload["threads"] = {
+        thread_id: [_dump(message) for message in rows]
+        for thread_id, rows in local.items()
     }
+    if dialogs is not None:
+        payload["dialogs"] = [
+            {
+                "id": item.id,
+                "kind": item.kind,
+                "title": item.title,
+                "position": item.position,
+                "preview": item.preview,
+                "last_message_at": item.last_message_at,
+                "unread": item.unread,
+                "last_read_id": item.last_read_id,
+                "pinned": item.pinned,
+                "peer_id": item.peer_id,
+                "department": item.department,
+            }
+            for item in dialogs
+            if item.id and item.id != "support"
+        ]
     text = json.dumps(payload, ensure_ascii=False)
     history_path(user_id).write_text(encrypt_text(text), encoding="utf-8")
 
@@ -88,7 +142,7 @@ def _message(item: dict) -> ChatMessage:
         text=str(item.get("text") or ""),
         client_id=str(item.get("client_id") or ""),
         created_at=str(item.get("created_at") or ""),
-        receipt=str(item.get("receipt") or "delivered"),
+        receipt=("delivered" if str(item.get("receipt") or "") == "sending" else str(item.get("receipt") or "delivered")),
         attachments=files,
         agent=item.get("agent") if isinstance(item.get("agent"), dict) else None,
     )

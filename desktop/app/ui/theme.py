@@ -5,8 +5,32 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPainterPath, QPixmap
 
-WINDOW_WIDTH = 1280
-WINDOW_HEIGHT = 800
+WINDOW_WIDTH = 1680
+WINDOW_HEIGHT = 980
+WINDOW_MIN_WIDTH = 1280
+WINDOW_MIN_HEIGHT = 800
+
+
+def fit_window_size(screen) -> tuple[int, int]:
+    """Pick a large default that still fits the available desktop."""
+    if screen is None:
+        return WINDOW_WIDTH, WINDOW_HEIGHT
+    area = screen.availableGeometry()
+    max_w = max(960, area.width() - 32)
+    max_h = max(640, area.height() - 32)
+    width = min(max(WINDOW_MIN_WIDTH, int(area.width() * 0.92)), max_w)
+    height = min(max(WINDOW_MIN_HEIGHT, int(area.height() * 0.90)), max_h)
+    return width, height
+
+
+def fit_window_minimum(screen) -> tuple[int, int]:
+    if screen is None:
+        return WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT
+    area = screen.availableGeometry()
+    return (
+        min(WINDOW_MIN_WIDTH, max(960, area.width() - 32)),
+        min(WINDOW_MIN_HEIGHT, max(640, area.height() - 32)),
+    )
 
 # Emerald glass palette (target)
 SIDEBAR_TOP = QColor("#08745F")
@@ -113,17 +137,17 @@ def app_font(size: int = 14, weight: QFont.Weight = QFont.Weight.Normal) -> QFon
         QFont.insertSubstitutions("Manrope", [_FALLBACK_FAMILY, "Arial"])
     font.setPixelSize(size)
     font.setWeight(weight)
-    # Full hinting keeps glyphs sharp under Windows ClearType / fractional DPI.
-    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
-    font.setStyleStrategy(
-        QFont.StyleStrategy.PreferQuality | QFont.StyleStrategy.PreferAntialias
-    )
+    # DirectWrite-style hinting, same idea as Cursor/Chromium on Windows.
+    font.setHintingPreference(QFont.HintingPreference.PreferDefaultHinting)
+    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     return font
 
 
 def nerd_font(size: int = 13) -> QFont:
     font = QFont(NERD_FAMILY)
     font.setPixelSize(size)
+    font.setHintingPreference(QFont.HintingPreference.PreferDefaultHinting)
+    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     return font
 
 

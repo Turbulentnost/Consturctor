@@ -906,10 +906,23 @@ class ApiClient:
         )
 
     def search_users(self, search: str = "") -> list[str]:
-        params = {"search": search} if search.strip() else None
-        data = self._request("GET", "/api/v1/auth/users", params=params)
-        items = data.get("items") or []
-        return [str(x) for x in items]
+        from app.chat.test_user import TEST_USER_FIO, matches_test_user_query
+
+        items: list[str] = []
+        error: ApiError | None = None
+        try:
+            params = {"search": search} if search.strip() else None
+            data = self._request("GET", "/api/v1/auth/users", params=params)
+            items = [str(item) for item in (data.get("items") or [])]
+        except ApiError as exc:
+            error = exc
+        if matches_test_user_query(search) and TEST_USER_FIO not in items:
+            items.insert(0, TEST_USER_FIO)
+        if items:
+            return items
+        if error is not None:
+            raise error
+        return items
 
     def login(self, fio: str, password: str) -> LoginResult:
         data = self._request(

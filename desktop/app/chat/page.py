@@ -7,6 +7,7 @@ from uuid import uuid4
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QKeyEvent
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStackedLayout,
     QVBoxLayout,
     QWidget,
 )
@@ -29,12 +31,18 @@ from app.api_client import ApiClient, ApiError, BoardAgent, UserProfile
 from app.chat.agent_share import agent_share_payload
 from app.chat.api import ChatApi, guess_mime
 from app.chat.icons import agent_icon, agent_icon_size, paperclip_icon, paperclip_icon_size
-from app.chat.models import ChatAttachment, ChatMessage, ChatThread
+from app.chat.models import ChatAttachment, ChatMessage, ChatThread, DirectoryUser
 from app.chat.crypto import decrypt_text, encrypt_text
-from app.chat.store import load_history, save_history
+from app.chat.shared_bus import append_shared, load_shared, roster_list, roster_upsert
+from app.chat.store import load_dialogs, load_history, save_history
 from app.chat.support_agent import echo_command
+from app.chat.test_user import TEST_USER_ID, test_directory_user
+from app.chat.widgets.agent_offer_dialog import AgentOfferDialog
 from app.chat.widgets.agent_picker import AgentPickerDialog
+from app.chat.widgets.profile_dialog import ChatProfileDialog
+from app.chat.widgets.user_picker import UserPickerDialog
 from app.chat.widgets.file_chip import FileChip, FlowLayout
+from app.chat.wallpaper import CHAT_BG_GRID, ChatWallpaper
 from app.chat.widgets.message_bubble import MessageBubble
 from app.chat.widgets.thread_card import ThreadCard
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
@@ -113,6 +121,47 @@ class ChatComposer(QPlainTextEdit):
         super().keyPressEvent(event)
 
 
+def _stamp(value: str) -> float:
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _later_stamp(*values: str) -> str:
+    best = ""
+    best_ts = float("-inf")
+    for value in values:
+        ts = _stamp(value)
+        if ts > best_ts:
+            best_ts = ts
+            best = value
+    return best
+
+
+def sort_threads(threads: list[ChatThread]) -> list[ChatThread]:
+    pinned = [item for item in threads if item.pinned]
+    rest = [item for item in threads if not item.pinned]
+    pinned.sort(key=lambda item: _stamp(item.last_message_at), reverse=True)
+    rest.sort(key=lambda item: _stamp(item.last_message_at), reverse=True)
+    return pinned + rest
+
+
+def preview_of(message: ChatMessage | None) -> str:
+    if message is None:
+        return ""
+    text = (message.text or "").strip()
+    if text:
+        return text
+    if message.agent:
+        return f"Агент: {message.agent.get('title') or 'ИИ-агент'}"
+    if message.attachments:
+        return message.attachments[0].filename
+    return ""
+
+
 def _support_thread(preview: str = "", last_message_at: str = "") -> ChatThread:
     return ChatThread(
         id=_VIRTUAL_SUPPORT,
@@ -121,13 +170,15 @@ def _support_thread(preview: str = "", last_message_at: str = "") -> ChatThread:
         position="Агент поддержки",
         preview=preview or "Нет сообщений",
         last_message_at=last_message_at,
-        pinned=True,
+        pinned=False,
         activity_status="online",
         online=True,
     )
 
 
 class ChatPage(QWidget):
+    open_agent_requested = Signal(str, str)
+
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._client = api
@@ -139,8 +190,16 @@ class ChatPage(QWidget):
         self._bubbles: dict[str, MessageBubble] = {}
         self._pending_files: list[str] = []
         self._local: dict[str, list[ChatMessage]] = {}
+        self._local_threads: dict[str, ChatThread] = {}
         self._api_chat = True
         self._stick_bottom = True
+        self._shared_stamp = ""
+        self._fresh_ids: set[str] = set()
+        self._opening = False
+        self._poll = QTimer(self)
+        self._poll.setInterval(800)
+        self._poll.timeout.connect(self._poll_shared)
+        self._poll.start()
 
         title = QLabel("Чат")
         title.setFont(app_font(28, QFont.Weight.DemiBold))
@@ -172,6 +231,8 @@ class ChatPage(QWidget):
 
         self._list = QListWidget()
         self._list.setSpacing(2)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self._list.setStyleSheet(
             """
             QListWidget {
@@ -212,29 +273,74 @@ class ChatPage(QWidget):
         left.addWidget(self._shelf)
         left.addWidget(self._support_box)
 
+        self._avatar = QLabel("?")
+        self._avatar.setFixedSize(40, 40)
+        self._avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._avatar.setFont(app_font(14, QFont.Weight.DemiBold))
+        self._avatar.setStyleSheet(
+            "background: #08745F; color: #FFFFFF; border-radius: 20px;"
+        )
+        self._avatar.setCursor(Qt.CursorShape.PointingHandCursor)
         self._peer = QLabel("Выберите диалог")
         self._peer.setFont(app_font(16, QFont.Weight.DemiBold))
-        self._meta = QLabel("")
+        self._peer.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._meta = QLabel("Нажмите, чтобы открыть профиль")
         self._meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        self._meta.setCursor(Qt.CursorShape.PointingHandCursor)
+        identity = QWidget()
+        identity.setCursor(Qt.CursorShape.PointingHandCursor)
+        identity_col = QVBoxLayout(identity)
+        identity_col.setContentsMargins(0, 0, 0, 0)
+        identity_col.setSpacing(0)
+        identity_col.addWidget(self._peer)
+        identity_col.addWidget(self._meta)
+        self._avatar.mousePressEvent = lambda event: self._open_profile()  # type: ignore[method-assign]
+        identity.mousePressEvent = lambda event: self._open_profile()  # type: ignore[method-assign]
+        self._pin_btn = QPushButton("Закрепить")
+        self._pin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pin_btn.setFixedHeight(32)
+        self._pin_btn.setMinimumWidth(112)
+        self._pin_btn.setCheckable(True)
+        self._pin_btn.hide()
+        self._pin_btn.clicked.connect(self._toggle_current_pin)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(10)
+        header.addWidget(self._avatar, 0)
+        header.addWidget(identity, 1)
+        header.addWidget(self._pin_btn, 0, Qt.AlignmentFlag.AlignTop)
 
         self._feed = QVBoxLayout()
         self._feed.setContentsMargins(8, 8, 8, 8)
         self._feed.addStretch(1)
         inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        inner.setAutoFillBackground(False)
         inner.setLayout(self._feed)
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setWidget(inner)
-        self._scroll.setStyleSheet("QScrollArea { border: none; }" + scroll_bar_qss())
+        self._scroll.setStyleSheet(
+            "QScrollArea { border: none; background: transparent; }"
+            "QScrollArea > QWidget { background: transparent; }"
+            + scroll_bar_qss()
+        )
+        self._scroll.viewport().setAutoFillBackground(False)
+        self._scroll.viewport().setStyleSheet("background: transparent;")
         bar = self._scroll.verticalScrollBar()
         bar.valueChanged.connect(self._sync_scroll_state)
         bar.rangeChanged.connect(self._on_scroll_range)
 
         self._feed_wrap = QWidget()
-        wrap = QVBoxLayout(self._feed_wrap)
-        wrap.setContentsMargins(0, 0, 0, 0)
-        wrap.addWidget(self._scroll)
+        self._feed_wrap.setStyleSheet("background: transparent;")
+        self._wallpaper = ChatWallpaper(self._feed_wrap, CHAT_BG_GRID)
+        stack = QStackedLayout(self._feed_wrap)
+        stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.addWidget(self._wallpaper)
+        stack.addWidget(self._scroll)
+        stack.setCurrentWidget(self._scroll)
         self._down_btn = QPushButton("↓", self._feed_wrap)
         self._down_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._down_btn.setFixedSize(40, 40)
@@ -300,15 +406,14 @@ class ChatPage(QWidget):
         compose_col.addLayout(composer)
 
         right = QVBoxLayout()
-        right.addWidget(self._peer)
-        right.addWidget(self._meta)
+        right.addLayout(header)
         right.addWidget(self._feed_wrap, 1)
         right.addLayout(compose_col)
 
         body = QHBoxLayout()
-        body.setSpacing(14)
+        body.setSpacing(10)
         left_wrap = QWidget()
-        left_wrap.setFixedWidth(320)
+        left_wrap.setFixedWidth(268)
         left_wrap.setLayout(left)
         right_wrap = QWidget()
         right_wrap.setLayout(right)
@@ -329,10 +434,14 @@ class ChatPage(QWidget):
         self._shelf.setVisible(support)
         if user is not None and user.id != previous:
             self._local = load_history(user.id)
+            self._local_threads = {item.id: item for item in load_dialogs(user.id)}
+            roster_upsert(user.id, user.fio, user.position)
+            self._sync_roster_threads()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._place_down_btn()
+        self._fit_thread_items()
 
     def refresh(self) -> None:
         self._reload_threads()
@@ -372,31 +481,151 @@ class ChatPage(QWidget):
             if kind == "ticket_updated" and self._user and self._user.is_support:
                 self._reload_support()
 
+    def _activity_fingerprint(self) -> tuple:
+        return tuple(
+            (item.id, item.last_message_at, item.preview, item.unread, item.pinned)
+            for item in self._local_threads.values()
+        )
+
+    def _apply_activity(self, thread: ChatThread, rows: list[ChatMessage], *, viewing: bool) -> None:
+        if not rows:
+            return
+        last = rows[-1]
+        thread.preview = preview_of(last) or thread.preview
+        thread.last_message_at = last.created_at
+        if thread.id != _VIRTUAL_SUPPORT:
+            self._local[thread.id] = rows
+        if viewing:
+            thread.unread = 0
+            thread.last_read_id = last.id
+            return
+        if not thread.last_read_id:
+            if thread.id in self._fresh_ids:
+                thread.unread = sum(1 for item in rows if not item.mine)
+            else:
+                thread.last_read_id = last.id
+                thread.unread = 0
+            return
+        unread = 0
+        seen = False
+        for item in rows:
+            if item.id == thread.last_read_id:
+                seen = True
+                continue
+            if seen and not item.mine:
+                unread += 1
+        thread.unread = unread
+
+    def _sync_roster_threads(self) -> None:
+        if self._user is None:
+            return
+        peers = roster_list(self._user.id)
+        if self._user.id != TEST_USER_ID:
+            anna = test_directory_user()
+            if all(item.id != anna.id for item in peers):
+                peers.append(anna)
+        known = {item.id for item in peers}
+        for thread in list(self._local_threads.values()):
+            if thread.id and thread.id != _VIRTUAL_SUPPORT and thread.id not in known:
+                peers.append(
+                    DirectoryUser(
+                        id=thread.id,
+                        fio=thread.title,
+                        position=thread.position,
+                        department=thread.department,
+                    )
+                )
+        for peer in peers:
+            thread = self._local_threads.get(peer.id)
+            if thread is None:
+                thread = ChatThread(
+                    id=peer.id,
+                    kind="dm",
+                    title=peer.fio,
+                    position=peer.position or "Сотрудник 1С",
+                    department=peer.department,
+                    preview="Нет сообщений",
+                    peer_id=peer.id,
+                    online=peer.online,
+                )
+                self._local_threads[peer.id] = thread
+                self._fresh_ids.add(peer.id)
+            if peer.fio:
+                thread.title = peer.fio
+            if peer.position:
+                thread.position = peer.position
+            if peer.department:
+                thread.department = peer.department
+            thread.online = peer.online
+            shared = load_shared(self._user.id, peer.id)
+            if shared:
+                self._apply_activity(thread, shared, viewing=peer.id == self._current)
+        support_rows = self._local.get(_VIRTUAL_SUPPORT) or []
+        if support_rows:
+            support = self._local_threads.get(_VIRTUAL_SUPPORT)
+            if support is None:
+                support = _support_thread()
+                self._local_threads[_VIRTUAL_SUPPORT] = support
+            self._apply_activity(support, support_rows, viewing=self._current == _VIRTUAL_SUPPORT)
+
+    def _poll_shared(self) -> None:
+        if self._user is None:
+            return
+        before = self._activity_fingerprint()
+        self._sync_roster_threads()
+        after = self._activity_fingerprint()
+        if self._current and self._current != _VIRTUAL_SUPPORT:
+            rows = load_shared(self._user.id, self._current)
+            stamp = rows[-1].id if rows else ""
+            if stamp != self._shared_stamp:
+                self._shared_stamp = stamp
+                self._local[self._current] = rows
+                thread = self._local_threads.get(self._current)
+                if thread is not None:
+                    self._apply_activity(thread, rows, viewing=True)
+                self._render_rows(rows, pin_bottom=self._stick_bottom)
+        if before != after:
+            self._persist()
+            self._reload_threads()
+
     def _reload_threads(self) -> None:
         needle = self._search.text().strip().casefold()
         remote: list[ChatThread] = []
-        self._api_chat = True
-        try:
-            remote = [
-                item
-                for item in self._api.threads(self._search.text().strip())
-                if item.id != _VIRTUAL_SUPPORT
-            ]
-        except ApiError:
-            self._api_chat = False
-            remote = []
+        if self._api_chat:
+            try:
+                remote = [
+                    item
+                    for item in self._api.threads(self._search.text().strip())
+                    if item.id != _VIRTUAL_SUPPORT
+                ]
+            except ApiError:
+                self._api_chat = False
+                remote = []
         local_rows = self._local.get(_VIRTUAL_SUPPORT) or []
         last = local_rows[-1] if local_rows else None
-        preview = ""
-        if last:
-            preview = last.text.strip()
-            if not preview and last.agent:
-                preview = f"Агент: {last.agent.get('title') or 'ИИ-агент'}"
-            if not preview and last.attachments:
-                preview = last.attachments[0].filename
-        support = _support_thread(preview, last.created_at if last else "")
+        stored_support = self._local_threads.get(_VIRTUAL_SUPPORT)
+        support = stored_support or _support_thread(preview_of(last), last.created_at if last else "")
+        if last is not None:
+            self._apply_activity(support, local_rows, viewing=self._current == _VIRTUAL_SUPPORT)
         hay = " ".join([support.title, support.position, support.preview]).casefold()
-        self._threads = ([support] if not needle or needle in hay else []) + remote
+        remote_ids = {item.id for item in remote}
+        local_dms: list[ChatThread] = []
+        for thread in self._local_threads.values():
+            if thread.id in remote_ids or thread.id == _VIRTUAL_SUPPORT:
+                continue
+            rows = self._local.get(thread.id) or []
+            if self._user is not None:
+                shared = load_shared(self._user.id, thread.id)
+                if shared:
+                    rows = shared
+            if rows:
+                self._apply_activity(thread, rows, viewing=thread.id == self._current)
+            blob = " ".join([thread.title, thread.position, thread.preview]).casefold()
+            if needle and needle not in blob:
+                continue
+            local_dms.append(thread)
+        visible = ([support] if not needle or needle in hay else []) + local_dms + remote
+        self._threads = sort_threads(visible)
         current = self._current or _VIRTUAL_SUPPORT
         self._list.blockSignals(True)
         self._list.clear()
@@ -405,7 +634,9 @@ class ChatPage(QWidget):
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, thread.id)
             card = ThreadCard(thread, selected=thread.id == current)
-            item.setSizeHint(QSize(300, 86))
+            card.clicked.connect(self._open_thread)
+            card.pin_toggled.connect(self._toggle_pin)
+            item.setSizeHint(QSize(self._list_item_width(), 74))
             self._list.addItem(item)
             self._list.setItemWidget(item, card)
             if thread.id == current:
@@ -415,6 +646,16 @@ class ChatPage(QWidget):
         elif self._list.count() and current == _VIRTUAL_SUPPORT:
             self._list.setCurrentRow(0)
         self._list.blockSignals(False)
+        self._fit_thread_items()
+
+    def _list_item_width(self) -> int:
+        return max(180, self._list.viewport().width() - 4)
+
+    def _fit_thread_items(self) -> None:
+        width = self._list_item_width()
+        for index in range(self._list.count()):
+            item = self._list.item(index)
+            item.setSizeHint(QSize(width, 74))
 
     def _reload_support(self) -> None:
         if self._user is None or not self._user.is_support:
@@ -434,7 +675,19 @@ class ChatPage(QWidget):
         if row < 0 or row >= self._list.count():
             return
         thread_id = str(self._list.item(row).data(Qt.ItemDataRole.UserRole) or "")
-        self._open_thread(thread_id)
+        if thread_id and thread_id != self._current:
+            self._open_thread(thread_id)
+
+    def _paint_selection(self) -> None:
+        for index in range(self._list.count()):
+            item = self._list.item(index)
+            card = self._list.itemWidget(item)
+            thread_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            if isinstance(card, ThreadCard):
+                card.set_selected(thread_id == self._current)
+                if thread_id == self._current:
+                    card.set_unread(0)
+        self._select_thread(self._current)
 
     def _open_support_item(self, item: QListWidgetItem) -> None:
         data = item.data(Qt.ItemDataRole.UserRole) or {}
@@ -457,13 +710,37 @@ class ChatPage(QWidget):
                 break
 
     def _open_thread(self, thread_id: str) -> None:
+        if self._opening or not thread_id:
+            return
+        self._opening = True
+        try:
+            self._show_thread(thread_id)
+        finally:
+            self._opening = False
+
+    def _show_thread(self, thread_id: str) -> None:
         self._current = thread_id
+        self._paint_selection()
         thread = next((item for item in self._threads if item.id == thread_id), None)
         if thread_id == _VIRTUAL_SUPPORT and thread is None:
             thread = _support_thread()
         self._peer.setText(thread.title if thread else "Диалог")
+        self._set_avatar(thread.title if thread else "")
+        self._sync_pin_button(thread)
+        if thread is not None:
+            rows = self._local.get(thread_id) or []
+            if self._user is not None and thread_id != _VIRTUAL_SUPPORT:
+                shared = load_shared(self._user.id, thread_id)
+                if shared:
+                    rows = shared
+                    self._local[thread_id] = shared
+            if rows:
+                self._apply_activity(thread, rows, viewing=True)
+            else:
+                thread.unread = 0
+            self._persist()
         if thread_id == _VIRTUAL_SUPPORT:
-            self._meta.setText("Агент поддержки · в сети")
+            self._meta.setText("Агент поддержки · в сети · профиль")
         else:
             labels = []
             if thread:
@@ -471,21 +748,19 @@ class ChatPage(QWidget):
                 if thread.online:
                     labels.append("в сети")
                 labels.append({"busy": "занят", "away": "не активен"}.get(thread.activity_status, ""))
+            labels.append("профиль")
             self._meta.setText(" · ".join(part for part in labels if part))
+        self._stick_bottom = True
         if thread_id == _VIRTUAL_SUPPORT:
-            self._stick_bottom = True
             self._ensure_support_welcome()
             self._render_local_or_remote(thread_id)
             return
-        if thread_id:
-            self._stick_bottom = True
-            self._load_messages(thread_id, pin_bottom=True)
+        self._load_messages(thread_id, pin_bottom=True)
+        if self._api_chat:
             try:
                 self._api.command({"type": "mark_read", "thread_id": thread_id})
             except ApiError:
-                pass
-        else:
-            self._clear_feed()
+                self._api_chat = False
 
     def _clear_feed(self) -> None:
         while self._feed.count() > 1:
@@ -553,6 +828,7 @@ class ChatPage(QWidget):
             if pending is not None and pending.receipt == "failed":
                 message.receipt = "failed"
             bubble = MessageBubble(message)
+            bubble.agent_opened.connect(self._open_agent_card)
             if message.client_id:
                 self._bubbles[message.client_id] = bubble
             self._feed.insertWidget(self._feed.count() - 1, bubble)
@@ -574,16 +850,113 @@ class ChatPage(QWidget):
         self._render_rows(list(self._local.get(thread_id) or []), pin_bottom=True)
 
     def _load_messages(self, thread_id: str, *, pin_bottom: bool = True) -> None:
+        if self._user is not None and thread_id and thread_id != _VIRTUAL_SUPPORT:
+            shared = load_shared(self._user.id, thread_id)
+            if shared:
+                self._local[thread_id] = shared
+                self._shared_stamp = shared[-1].id
+                self._render_rows(shared, pin_bottom=pin_bottom)
+                return
         try:
             rows = self._api.messages(thread_id)
         except ApiError:
             rows = list(self._local.get(thread_id) or [])
         self._render_rows(rows, pin_bottom=pin_bottom)
 
+    def _set_avatar(self, name: str) -> None:
+        parts = [part for part in (name or "").split() if part]
+        initials = "?"
+        if len(parts) == 1:
+            initials = parts[0][:1].upper()
+        elif parts:
+            initials = (parts[0][:1] + parts[1][:1]).upper()
+        self._avatar.setText(initials)
+
+    def _open_profile(self) -> None:
+        thread = next((item for item in self._threads if item.id == self._current), None)
+        if thread is None and self._current == _VIRTUAL_SUPPORT:
+            thread = _support_thread()
+        if thread is None:
+            return
+        ChatProfileDialog(thread, self).exec()
+
+    def _open_agent_card(self, agent: object, mine: bool) -> None:
+        payload = agent if isinstance(agent, dict) else {}
+        dialog = AgentOfferDialog(payload, mine=mine, parent=self)
+        dialog.exec()
+        if mine or dialog.decision != AgentOfferDialog.ACCEPTED:
+            return
+        workflow_id = str(payload.get("workflow_id") or "").strip()
+        title = str(payload.get("title") or "ИИ-агент")
+        if workflow_id:
+            try:
+                record = self._client.get_workflow(workflow_id)
+                self.open_agent_requested.emit(record.id, record.title or title)
+                return
+            except ApiError:
+                pass
+        notes = "\n".join(
+            part
+            for part in (
+                f"Агент из чата: {title}",
+                str(payload.get("description") or ""),
+                f"Цель: {payload.get('goal') or ''}",
+                f"Триггер: {payload.get('trigger_summary') or payload.get('trigger_kind') or ''}",
+            )
+            if part
+        )
+        try:
+            created = self._client.create_workflow(notes=notes, file_paths=[])
+        except ApiError as exc:
+            QMessageBox.warning(self, "Агент", exc.message or "Не удалось добавить агента.")
+            return
+        QMessageBox.information(self, "Агент", f"«{created.title or title}» добавлен в ваши агенты.")
+        self.open_agent_requested.emit(created.id, created.title or title)
+
+    def _sync_pin_button(self, thread: ChatThread | None) -> None:
+        if thread is None:
+            self._pin_btn.hide()
+            return
+        self._pin_btn.show()
+        self._pin_btn.blockSignals(True)
+        self._pin_btn.setChecked(thread.pinned)
+        self._pin_btn.setText("Открепить" if thread.pinned else "Закрепить")
+        self._pin_btn.setStyleSheet(
+            "QPushButton { background: #08745F; color: #FFFFFF; border: none;"
+            " border-radius: 10px; padding: 0 12px; }"
+            "QPushButton:hover { background: #0A8670; }"
+            if thread.pinned
+            else
+            "QPushButton { background: #FFFFFF; color: #08745F;"
+            " border: 1px solid #08745F; border-radius: 10px; padding: 0 12px; }"
+            "QPushButton:hover { background: #EAF7F3; }"
+        )
+        self._pin_btn.blockSignals(False)
+        self._pin_btn.setToolTip("Чат закреплён — нажмите, чтобы открепить" if thread.pinned else "Закрепить чат сверху списка")
+
+    def _toggle_current_pin(self) -> None:
+        if self._current:
+            self._toggle_pin(self._current)
+
+    def _toggle_pin(self, thread_id: str) -> None:
+        if not thread_id:
+            return
+        thread = self._local_threads.get(thread_id)
+        if thread is None:
+            thread = next((item for item in self._threads if item.id == thread_id), None)
+            if thread is None:
+                return
+            self._local_threads[thread_id] = thread
+        thread.pinned = not thread.pinned
+        self._persist()
+        self._reload_threads()
+        if thread_id == self._current:
+            self._sync_pin_button(thread)
+
     def _persist(self) -> None:
         if self._user is None:
             return
-        save_history(self._user.id, self._local)
+        save_history(self._user.id, self._local, list(self._local_threads.values()))
 
     def _store_local(self, message: ChatMessage) -> None:
         self._local.setdefault(message.thread_id or _VIRTUAL_SUPPORT, []).append(message)
@@ -593,21 +966,57 @@ class ChatPage(QWidget):
         try:
             users = self._api.directory()
         except ApiError as exc:
-            self._peer.setText(str(exc))
+            QMessageBox.warning(
+                self,
+                "Новый чат",
+                exc.message or "Не удалось загрузить реестр сотрудников 1С.",
+            )
             return
-        peers = [user for user in users if self._user is None or user.id != self._user.id]
-        labels = [f"{user.fio} · {user.position}" for user in peers]
-        if not labels:
+        me = self._user.id if self._user is not None else ""
+        me_fio = (self._user.fio if self._user is not None else "").casefold()
+        peers = [
+            user
+            for user in users
+            if (not me or user.id != me) and (not me_fio or user.fio.casefold() != me_fio)
+        ]
+        if not peers:
+            QMessageBox.information(self, "Новый чат", "В реестре 1С нет других сотрудников.")
             return
-        choice, ok = QInputDialog.getItem(self, "Новый чат", "Сотрудник", labels, 0, False)
-        if not ok:
+        dialog = UserPickerDialog(peers, self)
+        if dialog.exec() != dialog.DialogCode.Accepted or dialog.chosen is None:
             return
-        peer = peers[labels.index(choice)]
-        try:
-            self._api.command({"type": "open_dm", "peer_id": peer.id})
-        except ApiError:
-            return
-        QTimer.singleShot(400, self.refresh)
+        self._start_dm(dialog.chosen)
+
+    def _start_dm(self, peer: DirectoryUser) -> None:
+        thread_id = peer.id or f"dm:{peer.fio}"
+        existing = self._local_threads.get(thread_id)
+        thread = existing or ChatThread(
+            id=thread_id,
+            kind="dm",
+            title=peer.fio,
+            position=peer.position or peer.department or "Сотрудник 1С",
+            preview="Нет сообщений",
+            peer_id=peer.id,
+        )
+        if peer.fio:
+            thread.title = peer.fio
+        if peer.position or peer.department:
+            thread.position = peer.position or peer.department
+        if peer.department:
+            thread.department = peer.department
+        thread.peer_id = peer.id or thread.peer_id
+        self._local_threads[thread_id] = thread
+        self._local.setdefault(thread_id, [])
+        self._persist()
+        if peer.id:
+            try:
+                self._api.command({"type": "open_dm", "peer_id": peer.id})
+            except ApiError:
+                self._api_chat = False
+        self._current = thread_id
+        self._reload_threads()
+        self._select_thread(thread_id)
+        self._open_thread(thread_id)
 
     def _list_shareable_agents(self) -> list[BoardAgent]:
         try:
@@ -718,7 +1127,7 @@ class ChatPage(QWidget):
             text=text,
             client_id=client_id,
             created_at=created_at,
-            receipt="sending",
+            receipt="sending" if support else "delivered",
             attachments=[
                 ChatAttachment(
                     id=str(item["file_id"]),
@@ -732,9 +1141,27 @@ class ChatPage(QWidget):
         )
         self._pending[client_id] = optimistic
         bubble = MessageBubble(optimistic)
+        bubble.agent_opened.connect(self._open_agent_card)
         self._bubbles[client_id] = bubble
         self._feed.insertWidget(self._feed.count() - 1, bubble)
         self._scroll_to_bottom(force=True)
+        target = self._local_threads.get(thread_id)
+        if target is None:
+            target = next((item for item in self._threads if item.id == thread_id), None)
+            if target is not None:
+                self._local_threads[thread_id] = target
+        if target is not None:
+            target.preview = preview_of(optimistic) or target.preview
+            target.last_message_at = created_at
+            target.unread = 0
+            target.last_read_id = client_id
+        if not support and self._user is not None:
+            optimistic.receipt = "delivered"
+            append_shared(self._user.id, thread_id, optimistic)
+            self._set_receipt(client_id, "delivered")
+            self._pending.pop(client_id, None)
+            self._store_local(optimistic)
+            self._shared_stamp = optimistic.id
         queued = False
         for path, meta in zip(files, attachments_meta):
             try:
@@ -757,10 +1184,11 @@ class ChatPage(QWidget):
             QTimer.singleShot(_SEND_TIMEOUT_MS, lambda: self._fail_if_pending(client_id))
         except ApiError:
             self._api_chat = False
-            if support:
+            if support or (self._user is not None and not support):
                 self._set_receipt(client_id, "delivered")
                 self._pending.pop(client_id, None)
-                self._store_local(optimistic)
+                if support:
+                    self._store_local(optimistic)
             else:
                 self._set_receipt(client_id, "failed")
         if support:

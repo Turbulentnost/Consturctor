@@ -42,6 +42,33 @@ def _set_app_user_model_id() -> None:
         pass
 
 
+def _prepare_display() -> None:
+    """Match Cursor: per-monitor DPI so Windows does not stretch a 96-DPI bitmap."""
+    import os
+
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+    os.environ.setdefault("QT_SCALE_FACTOR_ROUNDING_POLICY", "PassThrough")
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        # Same as Cursor.exe: SetProcessDpiAwarenessContext + dpiAware true/pm
+        # -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        user32 = ctypes.windll.user32
+        if hasattr(user32, "SetProcessDpiAwarenessContext"):
+            user32.SetProcessDpiAwarenessContext.restype = ctypes.c_int
+            user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+                return
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 def _open_workflow_id(argv: list[str]) -> str:
     for index, item in enumerate(argv[1:], start=1):
         if item.startswith("--open-workflow="):
@@ -65,6 +92,7 @@ def _wants_background(argv: list[str]) -> bool:
 
 
 def _run_gui() -> int:
+    _prepare_display()
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QFont, QIcon
     from PySide6.QtWidgets import QApplication
@@ -90,7 +118,7 @@ def _run_gui() -> int:
         return 0
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.RoundPreferFloor
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
@@ -116,6 +144,7 @@ def _run_gui() -> int:
 
 def main() -> int:
     _configure_console_encoding()
+    _prepare_display()
     mode = entry_mode()
     if mode == "com-worker":
         return run_com_worker()

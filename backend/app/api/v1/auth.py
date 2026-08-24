@@ -8,6 +8,7 @@ from app.schemas.auth import (
     LoginRequest,
     LoginResponse,
     UpdateDepartmentRequest,
+    UserDirectoryResponse,
     UserFioListResponse,
     UserOut,
 )
@@ -27,6 +28,18 @@ async def list_users(search: str | None = None) -> UserFioListResponse:
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return UserFioListResponse(items=items)
+
+
+@router.get("/directory", response_model=UserDirectoryResponse)
+async def user_directory(
+    search: str | None = None,
+    _: AuthContext = Depends(get_current_user),
+) -> UserDirectoryResponse:
+    try:
+        items = await auth_service.list_user_directory(search)
+    except auth_service.AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return UserDirectoryResponse(items=items)
 
 
 @router.get("/departments", response_model=DepartmentListResponse)

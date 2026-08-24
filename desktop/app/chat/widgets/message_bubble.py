@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import QByteArray, QRectF, Qt
+from PySide6.QtCore import QByteArray, QRectF, Qt, Signal
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -104,6 +104,8 @@ class ReceiptMark(QLabel):
 
 
 class MessageBubble(QWidget):
+    agent_opened = Signal(object, bool)
+
     def __init__(self, message: ChatMessage, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.message = message
@@ -115,11 +117,16 @@ class MessageBubble(QWidget):
         card.setMaximumWidth(520)
         if card_only:
             card.setStyleSheet("QWidget { background: transparent; border-radius: 14px; }")
+        elif mine:
+            card.setStyleSheet(
+                "QWidget { background: #08745F; border-radius: 14px; }"
+            )
         else:
             card.setStyleSheet(
-                "QWidget { background: %s; border-radius: 14px; }"
-                % ("#08745F" if mine else "#F3F7F5")
+                "QWidget { background: #FFFFFF; border: 1px solid rgba(8, 116, 95, 0.22);"
+                " border-radius: 14px; }"
             )
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         inner = QVBoxLayout(card)
         inner.setContentsMargins(0 if card_only else 12, 8, 0 if card_only else 12, 8)
         inner.setSpacing(6)
@@ -133,7 +140,9 @@ class MessageBubble(QWidget):
         if message.text:
             inner.addWidget(body)
         if message.agent:
-            inner.addWidget(AgentShareCard(message.agent))
+            card_agent = AgentShareCard(message.agent)
+            card_agent.clicked.connect(lambda payload: self.agent_opened.emit(payload, mine))
+            inner.addWidget(card_agent)
         for item in message.attachments:
             attach = QLabel(f"📎 {item.filename}")
             attach.setStyleSheet(

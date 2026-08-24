@@ -13,8 +13,10 @@ class ChatThread:
     preview: str = ""
     last_message_at: str = ""
     unread: int = 0
+    last_read_id: str = ""
     pinned: bool = False
     peer_id: str = ""
+    department: str = ""
     activity_status: str = ""
     online: bool = False
     ticket_status: str = ""

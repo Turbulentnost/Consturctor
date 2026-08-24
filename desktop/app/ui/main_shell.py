@@ -222,6 +222,7 @@ class MainShell(QWidget):
         self._page_history = AgentHistoryPage(self._api)
         self._page_group_runs = AgentGroupRunsPage()
         self._page_chat = ChatPage(self._api)
+        self._page_chat.open_agent_requested.connect(self._on_agent_history_requested)
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_implementation_agents)

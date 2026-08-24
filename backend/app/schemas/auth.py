@@ -30,6 +30,17 @@ class UserFioListResponse(BaseModel):
     items: list[str]
 
 
+class UserDirectoryItem(BaseModel):
+    id: str
+    fio: str
+    position: str = ""
+    department: str = ""
+
+
+class UserDirectoryResponse(BaseModel):
+    items: list[UserDirectoryItem] = Field(default_factory=list)
+
+
 class DepartmentListResponse(BaseModel):
     items: list[str]
 

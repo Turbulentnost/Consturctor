@@ -232,8 +232,13 @@ class LoginPage(QWidget):
 
         self.login_btn.setEnabled(False)
         self.fio_edit.hide_suggestions()
+        from app.chat.test_user import is_test_user_fio, test_login_result
+
         try:
-            result: LoginResult = self._api.login(fio, password)
+            if is_test_user_fio(fio):
+                result = test_login_result()
+            else:
+                result: LoginResult = self._api.login(fio, password)
         except ApiError as exc:
             self.error_label.setText(exc.message)
             if exc.status_code == 503:

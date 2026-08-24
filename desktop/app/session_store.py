@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from app.config import constructor_instance
 from PySide6.QtCore import QSettings
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,8 @@ def _trace(message: str) -> None:
 
 
 def _settings() -> QSettings:
-    return QSettings("turbobot", "desktop")
+    inst = constructor_instance() or "desktop"
+    return QSettings("turbobot", inst)
 
 
 @dataclass(frozen=True, slots=True)

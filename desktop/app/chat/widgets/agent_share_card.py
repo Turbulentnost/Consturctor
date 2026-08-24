@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout
 
@@ -8,15 +8,24 @@ from app.ui.theme import app_font
 
 
 class AgentShareCard(QFrame):
+    clicked = Signal(object)
+
     def __init__(self, agent: dict, parent=None) -> None:
         super().__init__(parent)
+        self.agent = agent
         self.setObjectName("agentShareCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Открыть карточку агента")
         self.setStyleSheet(
             """
             QFrame#agentShareCard {
                 background: #FFFFFF;
                 border: 1px solid rgba(8, 116, 95, 0.18);
                 border-radius: 12px;
+            }
+            QFrame#agentShareCard:hover {
+                background: #F3FAF7;
+                border: 1px solid #08745F;
             }
             """
         )
@@ -36,7 +45,7 @@ class AgentShareCard(QFrame):
             "background: #EAF7F3; color: #08745F; border-radius: 10px; font-weight: 700;"
         )
 
-        kind = QLabel("Агент")
+        kind = QLabel("Агент · нажмите, чтобы открыть")
         kind.setFont(app_font(10, QFont.Weight.DemiBold))
         kind.setStyleSheet("color: #08745F; background: transparent; border: none;")
 
@@ -68,3 +77,8 @@ class AgentShareCard(QFrame):
         row.setSpacing(10)
         row.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
         row.addLayout(text, 1)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.agent)
+        super().mousePressEvent(event)

@@ -4,6 +4,18 @@ from app.api_client import BoardAgent
 from app.chat.agent_share import agent_share_payload
 from app.chat.models import ChatMessage
 from app.chat.store import load_history, save_history
+from app.chat.api import _directory_users
+from app.chat.shared_bus import append_shared, load_shared
+from app.chat.models import ChatThread
+from app.chat.page import sort_threads
+from app.chat.store import load_dialogs, save_history
+from app.chat.test_user import (
+    TEST_USER_FIO,
+    TEST_USER_ID,
+    is_test_credentials,
+    is_test_user_fio,
+    matches_test_user_query,
+)
 from app.chat.support_agent import echo_command
 
 
@@ -98,3 +110,83 @@ def test_history_keeps_agent_card(tmp_path, monkeypatch) -> None:
     save_history("8854", {"support": rows})
     loaded = load_history("8854")
     assert loaded["support"][0].agent["title"] == "Агент"
+
+
+def test_directory_users_from_fio_list_and_objects() -> None:
+    rows = _directory_users(
+        {
+            "items": [
+                "Иванов Иван",
+                {"id": "ABC", "fio": "Петров Пётр", "position": "Юрист", "department": "Право"},
+            ]
+        }
+    )
+    assert rows[0].fio == "Иванов Иван"
+    assert rows[1].id == "ABC"
+    assert rows[1].position == "Юрист"
+
+
+def test_anna_credentials() -> None:
+    assert is_test_user_fio("Анна Де Армас")
+    assert is_test_credentials("Анна Де Армас", "anna")
+    assert is_test_credentials("Анна Де Армас", "any")
+    assert not is_test_credentials("Анна Де Армас", "")
+    assert matches_test_user_query("анн")
+    assert matches_test_user_query("арма")
+    assert not matches_test_user_query("иван")
+
+
+def test_threads_sort_by_pin_then_last_message() -> None:
+    older = ChatThread(id="a", kind="dm", title="A", last_message_at="2026-08-24T10:00:00+00:00")
+    newer = ChatThread(id="b", kind="dm", title="B", last_message_at="2026-08-24T12:00:00+00:00")
+    pinned = ChatThread(
+        id="c",
+        kind="dm",
+        title="C",
+        last_message_at="2026-08-24T09:00:00+00:00",
+        pinned=True,
+    )
+    support = ChatThread(id="support", kind="support", title="Поддержка")
+    rows = sort_threads([older, newer, pinned, support])
+    assert [item.id for item in rows] == ["c", "b", "a", "support"]
+
+
+def test_dialog_keeps_pin(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    save_history(
+        "u1",
+        {},
+        [ChatThread(id="peer", kind="dm", title="Анна", pinned=True, last_message_at="2026-08-24T12:00:00+00:00")],
+    )
+    loaded = load_dialogs("u1")
+    assert loaded[0].pinned is True
+
+
+def test_dialog_keeps_unread(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    save_history(
+        "u1",
+        {},
+        [ChatThread(id="peer", kind="dm", title="Анна", unread=2, last_read_id="m1")],
+    )
+    loaded = load_dialogs("u1")
+    assert loaded[0].unread == 2
+    assert loaded[0].last_read_id == "m1"
+
+
+def test_shared_bus_roundtrip(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    message = ChatMessage(
+        id="m1",
+        thread_id=TEST_USER_ID,
+        sender_id="u1",
+        mine=True,
+        text="привет, Анна",
+        client_id="c1",
+        created_at="2026-08-24T10:00:00+00:00",
+    )
+    append_shared("u1", TEST_USER_ID, message)
+    incoming = load_shared(TEST_USER_ID, "u1")
+    assert incoming[0].text == "привет, Анна"
+    assert incoming[0].mine is False
+    assert TEST_USER_FIO

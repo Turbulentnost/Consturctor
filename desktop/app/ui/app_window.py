@@ -9,7 +9,8 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QSt
 
 from app.agents.headless_runner import HeadlessRunner
 from app.api_client import ApiClient, ApiError, LoginResult
-from app.config import auth_skip_login_page, erp_login, erp_password
+from app.chat.test_user import test_login_result
+from app.config import auth_skip_login_page, auth_test_user, erp_login, erp_password
 from app.notifications.service import NotificationService, show_windows_toast
 from app.session_store import clear_session, load_session, save_session
 from app.tools.hitl import (
@@ -20,7 +21,7 @@ from app.tools.hitl import (
 from app.tools.runtime_api import configure as configure_runtime_api
 from app.ui.login_page import LoginPage
 from app.ui.main_shell import MainShell
-from app.ui.theme import WINDOW_HEIGHT, WINDOW_WIDTH
+from app.ui.theme import fit_window_minimum, fit_window_size
 
 
 class AppWindow(QMainWindow):
@@ -38,12 +39,15 @@ class AppWindow(QMainWindow):
         self._pending_run_id = (open_run_id or "").strip()
         self._pending_open_live = False
         self._last_toast_run_id = ""
-        self.setWindowTitle("turbobot")
+        self.setWindowTitle("turbobot — Анна Де Армас" if auth_test_user() else "turbobot")
         logo = Path(__file__).resolve().parent / "temp" / "logo.png"
         if logo.exists():
             self.setWindowIcon(QIcon(str(logo)))
-        self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
-        self.setMinimumSize(1024, 700)
+        screen = QApplication.primaryScreen()
+        width, height = fit_window_size(screen)
+        min_w, min_h = fit_window_minimum(screen)
+        self.resize(width, height)
+        self.setMinimumSize(min_w, min_h)
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.WindowCloseButtonHint
@@ -233,6 +237,10 @@ class AppWindow(QMainWindow):
         return True
 
     def _try_auto_login(self) -> bool:
+        if auth_test_user():
+            result = test_login_result()
+            self._enter_main(result.user)
+            return True
         fio = erp_login()
         password = erp_password()
         if not fio or not password:

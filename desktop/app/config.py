@@ -38,8 +38,16 @@ def _env_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def constructor_instance() -> str:
+    return os.getenv("CONSTRUCTOR_INSTANCE", "").strip()
+
+
+def auth_test_user() -> bool:
+    return _env_flag("CONSTRUCTOR_TEST_USER")
+
+
 def auth_skip_login_page() -> bool:
-    return _env_flag("AUTH_SKIP_LOGIN_PAGE")
+    return _env_flag("AUTH_SKIP_LOGIN_PAGE") or auth_test_user()
 
 
 def erp_login() -> str:

@@ -67,3 +67,18 @@ def agent_icon(size: int = 22) -> QIcon:
 
 def agent_icon_size(size: int = 22) -> QSize:
     return QSize(size, size)
+
+
+_SVG_PIN = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <path d="M15.2 4.6 19.4 8.8c.5.5.3 1.3-.4 1.6l-3.2 1.2-3.4 3.4-1.3-1.3 3.4-3.4 1.2-3.2c.3-.7 1.1-.9 1.5-.5Z"
+        fill="#08745F"/>
+  <path d="M10.4 13.6 6 20" stroke="#08745F" stroke-width="1.9" stroke-linecap="round"/>
+</svg>"""
+
+
+def pin_icon(size: int = 16) -> QIcon:
+    return QIcon(svg_pixmap(_SVG_PIN, size, size))
+
+
+def pin_icon_size(size: int = 16) -> QSize:
+    return QSize(size, size)
