@@ -350,6 +350,7 @@ def read_calendar(input_data: dict) -> dict:
         1,
         MAX_SCAN_ITEMS,
     )
+    include_body = _truthy(input_data.get("include_body"))
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
@@ -376,25 +377,14 @@ def read_calendar(input_data: dict) -> dict:
             default_days=days_forward,
             forward=True,
         )
-        restricted_items = _restrict_calendar_items(items, start_at, end_at)
-
-        _log_progress("step=iterate_items start")
-        events, checked_count = _collect_calendar_events(
-            restricted_items,
+        events, checked_count = _collect_calendar_range(
+            items,
             start_at,
             end_at,
-            max_results,
-            max_scan_items,
+            max_results=max_results,
+            max_scan_items=max_scan_items,
+            include_body=include_body,
         )
-        if not events:
-            _log_progress("step=iterate_items fallback_raw_items start")
-            events, checked_count = _collect_calendar_events(
-                items,
-                start_at,
-                end_at,
-                max_results,
-                max(MAX_SCAN_ITEMS, max_scan_items),
-            )
 
         _log_progress("step=done ok")
         return {
@@ -805,27 +795,127 @@ def _parse_natural_date(value: str) -> datetime | None:
     return None
 
 
+def _iter_outlook_items(items: Any):
+    """Обойти Outlook Items через GetFirst/GetNext, не трогая Count.
+
+    win32com ``for item in items`` для коллекций с IncludeRecurrences часто
+    вызывает Count, а Count на годе повторяющихся встреч может висеть минутами.
+    """
+    getter = getattr(items, "GetFirst", None)
+    nxt = getattr(items, "GetNext", None)
+    if callable(getter) and callable(nxt):
+        item = getter()
+        while item is not None:
+            yield item
+            item = nxt()
+        return
+    for item in items:
+        yield item
+
+
+def _month_windows(start_at: datetime, end_at: datetime) -> list[tuple[datetime, datetime]]:
+    """Разрезать длинный период на месячные окна для Restrict."""
+    windows: list[tuple[datetime, datetime]] = []
+    cursor = start_at
+    while cursor < end_at:
+        if cursor.month == 12:
+            nxt = cursor.replace(
+                year=cursor.year + 1,
+                month=1,
+                day=1,
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+        else:
+            nxt = cursor.replace(
+                month=cursor.month + 1,
+                day=1,
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+        windows.append((cursor, min(nxt, end_at)))
+        cursor = nxt
+    return windows
+
+
+def _collect_calendar_range(
+    items: Any,
+    start_at: datetime,
+    end_at: datetime,
+    *,
+    max_results: int,
+    max_scan_items: int,
+    include_body: bool,
+) -> tuple[list[dict], int]:
+    """Прочитать календарь окнами по месяцу, без годового Restrict и без Count."""
+    events: list[dict] = []
+    checked_count = 0
+    for win_start, win_end in _month_windows(start_at, end_at):
+        remaining_results = max_results - len(events)
+        remaining_scan = max_scan_items - checked_count
+        if remaining_results <= 0 or remaining_scan <= 0:
+            break
+        _log_progress(
+            f"step=restrict_window start={win_start.date()} end={win_end.date()}"
+        )
+        window_items, restricted = _restrict_calendar_items(items, win_start, win_end)
+        if not restricted:
+            _log_progress("step=restrict_window fallback_getfirst")
+            chunk, scanned = _collect_calendar_events(
+                items,
+                start_at,
+                end_at,
+                remaining_results,
+                remaining_scan,
+                include_body=include_body,
+            )
+            return chunk, scanned
+        chunk, scanned = _collect_calendar_events(
+            window_items,
+            start_at,
+            end_at,
+            remaining_results,
+            remaining_scan,
+            include_body=include_body,
+        )
+        checked_count += scanned
+        events.extend(chunk)
+        _log_progress(
+            f"step=restrict_window ok scanned={scanned} events={len(events)}"
+        )
+    return events, checked_count
+
+
 def _collect_calendar_events(
     items: Any,
     start_at: datetime,
     end_at: datetime,
     max_results: int,
     max_scan_items: int,
+    include_body: bool = False,
 ) -> tuple[list[dict], int]:
     """Собрать события календаря из COM collection в указанном диапазоне."""
     events = []
     checked_count = 0
-    for event in items:
+    for event in _iter_outlook_items(items):
         checked_count += 1
         if checked_count > max_scan_items:
             break
+        if checked_count == 1 or checked_count % 50 == 0:
+            _log_progress(f"step=iterate_items progress={checked_count}")
 
         event_start = getattr(event, "Start", None)
         event_end = getattr(event, "End", None)
         if not _is_within_range(event_start, start_at, end_at):
             continue
 
-        body = _safe_str(getattr(event, "Body", ""))
+        body = ""
+        if include_body:
+            body = _safe_str(getattr(event, "Body", ""))[:CALENDAR_BODY_PREVIEW_LIMIT]
         events.append(
             {
                 "entry_id": _safe_str(getattr(event, "EntryID", "")),
@@ -836,7 +926,7 @@ def _collect_calendar_events(
                 "organizer": _read_guarded_property(event, PR_SENT_REPRESENTING_NAME_W),
                 "required_attendees": _read_guarded_property(event, PR_DISPLAY_TO_W),
                 "optional_attendees": _read_guarded_property(event, PR_DISPLAY_CC_W),
-                "body_preview": body[:CALENDAR_BODY_PREVIEW_LIMIT],
+                "body_preview": body,
             }
         )
         if len(events) >= max_results:
@@ -945,8 +1035,10 @@ def _datetime_sort_key(value: Any) -> str:
         return ""
 
 
-def _restrict_calendar_items(items: Any, start_at: datetime, end_at: datetime) -> Any:
-    """Безопасно ограничить календарные элементы через Restrict или fallback."""
+def _restrict_calendar_items(
+    items: Any, start_at: datetime, end_at: datetime
+) -> tuple[Any, bool]:
+    """Ограничить календарь через Restrict. False = Restrict не сработал."""
     restriction = (
         "[Start] >= '"
         + start_at.strftime("%m/%d/%Y %I:%M %p")
@@ -955,6 +1047,14 @@ def _restrict_calendar_items(items: Any, start_at: datetime, end_at: datetime) -
         + "'"
     )
     try:
-        return items.Restrict(restriction)
+        return items.Restrict(restriction), True
     except Exception:
-        return items
+        return items, False
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "on"}
+    return bool(value)

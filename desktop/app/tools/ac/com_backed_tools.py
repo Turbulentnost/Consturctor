@@ -89,12 +89,44 @@ class OutlookReadCalendarComTool(ComBackedTool):
             ToolDefinition(
                 name="outlook.read_calendar",
                 title="Чтение календаря Outlook",
-                description="Читает все запланированные встречи Outlook за период (по умолчанию год).",
+                description=(
+                    "Встречи Outlook за период. Без дат - год вперёд. "
+                    "Передавай date_from/date_to, если нужен короткий интервал. "
+                    "Тело встреч не читается. В ответе events и free_slots."
+                ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
                 timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
-                input_schema={"type": "object"},
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "date": {
+                            "type": "string",
+                            "description": "Один день YYYY-MM-DD",
+                        },
+                        "date_from": {
+                            "type": "string",
+                            "description": "Начало периода YYYY-MM-DD",
+                        },
+                        "date_to": {
+                            "type": "string",
+                            "description": "Конец периода YYYY-MM-DD",
+                        },
+                        "days_forward": {
+                            "type": "integer",
+                            "description": "Дней вперёд, если дат нет. По умолчанию 365",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Максимум событий, до 500",
+                        },
+                        "include_body": {
+                            "type": "boolean",
+                            "description": "Включить body_preview. По умолчанию false",
+                        },
+                    },
+                },
                 output_schema={"type": "object"},
             ),
             worker,

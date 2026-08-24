@@ -22,7 +22,13 @@ from app.tools import ToolHostError
 
 DEFAULT_SDK_MODEL = "grok-4.6"
 LARGE_TOOL_RESULT_BYTES = 60_000
-TOOL_RESULT_PREVIEW_CHARS = 4_000
+EXTERNALIZED_SAMPLE_ITEMS = 8
+EXTERNALIZED_NEXT_STEP = (
+    "Full JSON is in result_file relative to cwd. "
+    "Continue from summary and sample. "
+    "Do not call the same Constructor tool again. "
+    "Use Cursor Read on result_file only if you need one specific record."
+)
 
 
 class CursorSdkError(RuntimeError):
@@ -42,29 +48,73 @@ class CursorSdkBridge:
         self._sdk_root = DESKTOP_ROOT / "sdk-agent"
         self._runner = runner or self._sdk_root / "src" / "runner.ts"
         self._skip_lock = threading.Lock()
+        self._stdin_lock = threading.Lock()
         self._skip_ids: set[str] = set()
         self._active_request_ids: set[str] = set()
+        self._active_tool_names: dict[str, str] = {}
+        self._process: subprocess.Popen[str] | None = None
 
     def skip_tool(self, request_id: str = "") -> bool:
         rid = (request_id or "").strip()
         with self._skip_lock:
+            targets = set(self._active_request_ids)
+            if rid:
+                targets.add(rid)
+            if not targets:
+                return bool(rid)
+            self._skip_ids.update(targets)
+            names = dict(self._active_tool_names)
+        self._stop_skipped_tool()
+        self._flush_skipped_results(targets, names)
+        return True
+
+    def _flush_skipped_results(
+        self,
+        request_ids: set[str],
+        names: dict[str, str] | None = None,
+    ) -> None:
+        process = self._process
+        if process is None or process.stdin is None or process.poll() is not None:
+            return
+        tool_names = names or {}
+        for request_id in request_ids:
+            rid = (request_id or "").strip()
             if not rid:
-                if len(self._active_request_ids) != 1:
-                    return False
-                rid = next(iter(self._active_request_ids))
-            self._skip_ids.add(rid)
-            return True
+                continue
+            try:
+                self._send(
+                    process,
+                    {
+                        "type": "tool_result",
+                        "requestId": rid,
+                        "ok": True,
+                        "result": self.skipped_tool_result(tool_names.get(rid, "tool")),
+                    },
+                )
+            except CursorSdkError:
+                return
+
+    @staticmethod
+    def _stop_skipped_tool() -> None:
+        try:
+            from app.tools.ac.workers.subprocess_com_worker import SubprocessComWorker
+
+            SubprocessComWorker.cancel_all()
+        except Exception:
+            return
 
     def _is_skipped(self, request_id: str) -> bool:
         with self._skip_lock:
             return request_id in self._skip_ids
 
-    def _mark_active(self, request_id: str) -> None:
+    def _mark_active(self, request_id: str, tool: str = "") -> None:
         rid = (request_id or "").strip()
         if not rid:
             return
         with self._skip_lock:
             self._active_request_ids.add(rid)
+            if tool.strip():
+                self._active_tool_names[rid] = tool.strip()
 
     def _clear_active(self, request_id: str) -> None:
         rid = (request_id or "").strip()
@@ -73,6 +123,7 @@ class CursorSdkBridge:
         with self._skip_lock:
             self._active_request_ids.discard(rid)
             self._skip_ids.discard(rid)
+            self._active_tool_names.pop(rid, None)
 
     @staticmethod
     def skipped_tool_result(tool: str) -> dict[str, Any]:
@@ -122,6 +173,7 @@ class CursorSdkBridge:
             daemon=True,
         )
         stderr_thread.start()
+        self._process = process
         try:
             final: dict[str, Any] | None = None
             self._send(
@@ -209,6 +261,7 @@ class CursorSdkBridge:
                 "agent_id": agent_id,
             }
         finally:
+            self._process = None
             if process.poll() is None:
                 process.kill()
 
@@ -270,8 +323,9 @@ class CursorSdkBridge:
     def _send(self, process: subprocess.Popen[str], payload: dict[str, Any]) -> None:
         if process.stdin is None:
             raise CursorSdkError("Cursor SDK runner stdin закрыт")
-        process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        process.stdin.flush()
+        with self._stdin_lock:
+            process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            process.stdin.flush()
 
     def _handle_tool_request(
         self,
@@ -314,7 +368,7 @@ class CursorSdkBridge:
             args.setdefault("workflow_id", workflow_id)
             args.setdefault("agent_id", workflow_id)
             args.setdefault("runtime_context", {"workflow_id": workflow_id, "agent_id": workflow_id})
-        self._mark_active(request_id)
+        self._mark_active(request_id, tool)
         send_lock = threading.Lock()
         sent = False
 
@@ -344,7 +398,17 @@ class CursorSdkBridge:
 
         def work() -> None:
             try:
+                if self._is_skipped(request_id) or (
+                    should_stop is not None and should_stop()
+                ):
+                    box["result"] = self.skipped_tool_result(tool)
+                    return
                 result = invoke_sdk_tool(tool, args)
+                if self._is_skipped(request_id) or (
+                    should_stop is not None and should_stop()
+                ):
+                    box["result"] = self.skipped_tool_result(tool)
+                    return
                 result = self._externalize_large_result(
                     tool=tool,
                     request_id=request_id,
@@ -439,11 +503,12 @@ class CursorSdkBridge:
         rel_path = target.relative_to(base).as_posix()
         return {
             "summary": self._result_summary(result),
+            "sample": self._result_sample(result),
             "tool": tool,
             "result_file": rel_path,
             "result_bytes": raw_bytes,
-            "preview": raw[:TOOL_RESULT_PREVIEW_CHARS],
             "externalized": True,
+            "next_step": EXTERNALIZED_NEXT_STEP,
         }
 
     @staticmethod
@@ -462,6 +527,39 @@ class CursorSdkBridge:
             elif isinstance(value, dict):
                 summary[f"{key}_keys"] = list(value.keys())[:20]
         return summary
+
+    @staticmethod
+    def _result_sample(result: dict[str, Any]) -> dict[str, Any]:
+        sample: dict[str, Any] = {}
+        for key, value in result.items():
+            if isinstance(value, list):
+                sample[key] = [
+                    CursorSdkBridge._shrink_sample_item(item)
+                    for item in value[:EXTERNALIZED_SAMPLE_ITEMS]
+                ]
+            elif isinstance(value, dict):
+                sample[key] = {
+                    inner_key: CursorSdkBridge._shrink_sample_item(inner)
+                    for inner_key, inner in list(value.items())[:12]
+                }
+            elif isinstance(value, str):
+                sample[key] = value[:500]
+            else:
+                sample[key] = value
+        return sample
+
+    @staticmethod
+    def _shrink_sample_item(value: Any) -> Any:
+        if isinstance(value, str):
+            return value[:240]
+        if isinstance(value, dict):
+            return {
+                key: CursorSdkBridge._shrink_sample_item(inner)
+                for key, inner in list(value.items())[:12]
+            }
+        if isinstance(value, list):
+            return [CursorSdkBridge._shrink_sample_item(item) for item in value[:4]]
+        return value
 
     @staticmethod
     def _parse_line(line: str) -> dict[str, Any]:

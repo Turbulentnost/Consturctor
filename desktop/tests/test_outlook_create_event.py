@@ -101,6 +101,28 @@ def test_verify_save_requires_readable_item() -> None:
     raise AssertionError("missing calendar item after Save must fail")
 
 
+def test_com_worker_cancel_kills_process() -> None:
+    from app.tools.ac.workers.subprocess_com_worker import SubprocessComWorker
+
+    worker = SubprocessComWorker()
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def kill(self) -> None:
+            self.killed = True
+
+    proc = _Proc()
+    worker._process = proc  # type: ignore[assignment]
+    assert worker.cancel() is True
+    assert proc.killed is True
+    assert worker._cancelled is True
+
+
 def test_calendar_default_range_is_a_year() -> None:
     from app.tools.ac.workers.outlook_com_actions import (
         DEFAULT_CALENDAR_MAX_RESULTS,
@@ -111,6 +133,86 @@ def test_calendar_default_range_is_a_year() -> None:
     assert DEFAULT_DAYS_FORWARD >= 365
     assert DEFAULT_CALENDAR_MAX_RESULTS > 50
     assert MAX_CALENDAR_RESULTS > 50
+
+
+class _CountHangItems:
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
+        self._index = -1
+        self.count_calls = 0
+
+    @property
+    def Count(self) -> int:
+        self.count_calls += 1
+        raise AssertionError("Count must not be used for recurring calendar items")
+
+    def GetFirst(self):
+        self._index = 0
+        return self._rows[0] if self._rows else None
+
+    def GetNext(self):
+        self._index += 1
+        if 0 <= self._index < len(self._rows):
+            return self._rows[self._index]
+        return None
+
+    def __iter__(self):
+        raise AssertionError("for-in must not walk Outlook Items")
+
+
+class _Event:
+    def __init__(self, start: datetime, subject: str = "Meeting") -> None:
+        self.Start = start
+        self.End = start.replace(hour=start.hour + 1) if start.hour < 23 else start
+        self.EntryID = "id-1"
+        self.Subject = subject
+        self.Location = "Room"
+        self.Body = "X" * 400
+
+    def __getattr__(self, name: str):
+        if name == "PropertyAccessor":
+            raise RuntimeError("no accessor in unit test")
+        raise AttributeError(name)
+
+
+def test_calendar_iterates_without_count() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _collect_calendar_events
+
+    start = datetime(2026, 8, 20, 10, 0, 0)
+    items = _CountHangItems([_Event(start)])
+    events, scanned = _collect_calendar_events(
+        items, datetime(2026, 8, 20), datetime(2026, 8, 21), 10, 20
+    )
+    assert scanned == 1
+    assert events[0]["subject"] == "Meeting"
+    assert events[0]["body_preview"] == ""
+    assert items.count_calls == 0
+
+
+def test_calendar_body_is_opt_in() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _collect_calendar_events
+
+    start = datetime(2026, 8, 20, 10, 0, 0)
+    items = _CountHangItems([_Event(start)])
+    events, _scanned = _collect_calendar_events(
+        items,
+        datetime(2026, 8, 20),
+        datetime(2026, 8, 21),
+        10,
+        20,
+        include_body=True,
+    )
+    assert events[0]["body_preview"]
+
+
+def test_month_windows_split_year() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _month_windows
+
+    windows = _month_windows(datetime(2026, 8, 1), datetime(2026, 10, 1))
+    assert len(windows) == 2
+    assert windows[0][0] == datetime(2026, 8, 1)
+    assert windows[0][1] == datetime(2026, 9, 1)
+    assert windows[1][1] == datetime(2026, 10, 1)
 
 
 def test_free_slots_skip_busy_work_hours() -> None:

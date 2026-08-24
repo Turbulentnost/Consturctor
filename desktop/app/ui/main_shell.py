@@ -193,6 +193,7 @@ class MainShell(QWidget):
         self._user: UserProfile | None = None
         self._avatar_pixmap = QPixmap()
         self._deleted_workflow_ids: set[str] = set()
+        self._pending_start_demo = False
 
         self.sidebar = GlassSidebar(self)
         self.sidebar.page_changed.connect(self._on_page_changed)
@@ -1194,7 +1195,9 @@ class MainShell(QWidget):
 
         if not isinstance(record, WorkflowRecordType):
             return
-        self._page_workflows.load_record(record)
+        start_demo = self._pending_start_demo
+        self._pending_start_demo = False
+        self._page_workflows.load_record(record, auto_demo=start_demo)
         self._pages.setCurrentIndex(self._page_index["workflows"])
 
     def _load_agent_drafts(self) -> None:
@@ -1748,21 +1751,30 @@ class MainShell(QWidget):
             return
         self.navigate_to_agent_run(wid)
 
-    def navigate_to_agent_run(self, workflow_id: str, run_id: str = "") -> None:
+    def navigate_to_agent_run(
+        self,
+        workflow_id: str,
+        run_id: str = "",
+        *,
+        start_demo: bool = False,
+    ) -> None:
         if (run_id or "").strip():
             self.navigate_to_agent_history(workflow_id, run_id)
             return
         wid = (workflow_id or "").strip()
         if not wid:
             return
+        self._pending_start_demo = bool(start_demo)
 
         def run() -> None:
             try:
                 record = self._api.get_workflow(wid)
             except ApiError as exc:
+                self._pending_start_demo = False
                 self._readiness_failed.emit(exc.message)
                 return
             if str(getattr(record, "phase", "") or "") == "done":
+                self._pending_start_demo = False
                 self._published_agent_ready.emit(record)
             else:
                 self._workflow_page_ready.emit(record)

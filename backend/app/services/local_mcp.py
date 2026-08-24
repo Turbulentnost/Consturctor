@@ -494,12 +494,13 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "query": _prop("string", "Подстрока в теме или отправителе, не список людей"),
             "max_results": _prop("integer", "Максимум писем"),
         }),
-        ("outlook.read_calendar", "Все запланированные встречи Outlook за период. Без дат — ближайший год с сегодня, не неделя. В ответе events и free_slots.", {
+        ("outlook.read_calendar", "Встречи Outlook за период. Без дат - год вперёд. Тело встреч не читается. В ответе events и free_slots.", {
             "date": _prop("string", "Один день YYYY-MM-DD"),
             "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
             "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
             "days_forward": _prop("integer", "Сколько дней вперёд от сегодня, если дат нет. По умолчанию 365"),
             "max_results": _prop("integer", "Максимум событий, до 500"),
+            "include_body": _prop("boolean", "Включить body_preview. По умолчанию false"),
         }),
         ("outlook.create_event", "Создать встречи в свободных слотах календаря Outlook. Тема и текст помечаются как ИИ-агент. Нужно подтверждение человека.", {
             "subject": _prop("string", "Тема встречи без префикса ИИ-агент — его добавит инструмент"),

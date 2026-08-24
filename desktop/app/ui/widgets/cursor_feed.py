@@ -380,14 +380,12 @@ class CursorFeedItem(QFrame):
     def set_skip_visible(self, visible: bool, request_id: str = "") -> None:
         if request_id:
             self._skip_request_id = request_id.strip()
-        self._skippable = bool(visible) and bool(self._skip_request_id)
+        self._skippable = bool(visible)
         if self._header is not None:
             self._header.set_skip_visible(self._skippable)
 
     def _emit_skip(self) -> None:
-        rid = (self._skip_request_id or "").strip()
-        if rid:
-            self.skip_clicked.emit(rid)
+        self.skip_clicked.emit((self._skip_request_id or "").strip())
 
     def set_expanded(self, expanded: bool) -> None:
         if bool(self._expanded) == bool(expanded):

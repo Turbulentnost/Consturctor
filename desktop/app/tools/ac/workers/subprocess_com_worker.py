@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -16,39 +18,53 @@ from app.tools.ac.workers.models import WorkerResult, WorkerTask
 class SubprocessComWorker(BaseWorker):
     """Запускает COM-задачи в subprocess и защищает основной процесс timeout-ом."""
 
+    _live: list[SubprocessComWorker] = []
+
     def __init__(self, module_name: str | None = None) -> None:
         """Создать subprocess worker для указанного entrypoint-модуля."""
         self._module_name = (
             module_name or "app.tools.ac.workers.com_worker_process"
         )
+        self._proc_lock = threading.Lock()
+        self._process: subprocess.Popen[str] | None = None
+        self._cancelled = False
+        SubprocessComWorker._live.append(self)
+
+    def cancel(self) -> bool:
+        """Остановить текущий COM subprocess после Skip."""
+        self._cancelled = True
+        with self._proc_lock:
+            proc = self._process
+        if proc is None or proc.poll() is not None:
+            return False
+        try:
+            proc.kill()
+        except OSError:
+            return False
+        return True
+
+    @classmethod
+    def cancel_all(cls) -> None:
+        """Остановить все живые COM subprocess после Skip."""
+        for worker in list(cls._live):
+            worker.cancel()
 
     def execute(self, task: WorkerTask) -> WorkerResult:
         """Выполнить WorkerTask в дочернем процессе и вернуть WorkerResult."""
+        self._cancelled = False
         command = _build_worker_command(self._module_name)
         try:
-            completed = subprocess.run(
+            proc = subprocess.Popen(
                 command,
-                input=task.model_dump_json(),
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=task.timeout_seconds,
-                check=False,
                 cwd=_desktop_root(),
                 env=_worker_env(),
                 **_hidden_run_kwargs(),
-            )
-        except subprocess.TimeoutExpired as exc:
-            stderr = _safe_process_text(exc.stderr)
-            details = f"COM worker не ответил за {task.timeout_seconds} секунд"
-            if stderr:
-                details += f". Последний stderr: {stderr.strip()}"
-            return WorkerResult(
-                task_id=task.task_id,
-                ok=False,
-                error_type="WORKER_TIMEOUT",
-                error_message=details,
             )
         except Exception as exc:
             return WorkerResult(
@@ -58,16 +74,66 @@ class SubprocessComWorker(BaseWorker):
                 error_message=str(exc),
             )
 
-        parsed_result = _parse_worker_result(task.task_id, completed.stdout)
-        if parsed_result is not None:
-            return parsed_result
-
-        if completed.returncode != 0:
+        with self._proc_lock:
+            self._process = proc
+        if self._cancelled:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            return self._cancelled_result(task.task_id)
+        stdout = ""
+        stderr = ""
+        try:
+            stdout, stderr = proc.communicate(
+                input=task.model_dump_json(),
+                timeout=task.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                leftover_out, leftover_err = proc.communicate(timeout=5)
+            except Exception:
+                leftover_out, leftover_err = "", ""
+            details = f"COM worker не ответил за {task.timeout_seconds} секунд"
+            extra = _safe_process_text(leftover_err)
+            if extra:
+                details += f". Последний stderr: {extra.strip()}"
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=False,
+                error_type="WORKER_TIMEOUT",
+                error_message=details,
+            )
+        except Exception as exc:
+            try:
+                proc.kill()
+            except OSError:
+                pass
             return WorkerResult(
                 task_id=task.task_id,
                 ok=False,
                 error_type="WORKER_PROCESS_ERROR",
-                error_message=_build_process_error_message(completed.stderr),
+                error_message=str(exc),
+            )
+        finally:
+            with self._proc_lock:
+                if self._process is proc:
+                    self._process = None
+
+        if self._cancelled:
+            return self._cancelled_result(task.task_id)
+
+        parsed_result = _parse_worker_result(task.task_id, stdout)
+        if parsed_result is not None:
+            return parsed_result
+
+        if proc.returncode != 0:
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=False,
+                error_type="WORKER_PROCESS_ERROR",
+                error_message=_build_process_error_message(stderr),
             )
 
         return WorkerResult(
@@ -75,6 +141,15 @@ class SubprocessComWorker(BaseWorker):
             ok=False,
             error_type="INVALID_WORKER_RESPONSE",
             error_message="COM worker вернул невалидный JSON в stdout",
+        )
+
+    @staticmethod
+    def _cancelled_result(task_id: str) -> WorkerResult:
+        return WorkerResult(
+            task_id=task_id,
+            ok=False,
+            error_type="WORKER_CANCELLED",
+            error_message="COM worker stopped because the user skipped the tool",
         )
 
 

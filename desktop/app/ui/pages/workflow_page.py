@@ -764,6 +764,33 @@ def _normalize_live_tool_status(status: str, *, ok: bool | None = None) -> str:
     return "running" if not folded else "error"
 
 
+def tools_to_skip(live_tools: list[dict], request_id: str = "") -> list[dict]:
+    """Карточки, которые должен закрыть Skip, даже если request_id уже устарел."""
+    rid = (request_id or "").strip()
+    running = [
+        item
+        for item in live_tools
+        if isinstance(item, dict) and str(item.get("status") or "") == "running"
+    ]
+    if rid:
+        matched = [
+            item
+            for item in running
+            if str(item.get("request_id") or "").strip() == rid
+        ]
+        if matched:
+            return matched
+    if running:
+        return running
+    if not rid:
+        return []
+    return [
+        item
+        for item in live_tools
+        if isinstance(item, dict) and str(item.get("request_id") or "").strip() == rid
+    ]
+
+
 def _payload_tool_skipped(payload: dict) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -1970,7 +1997,7 @@ class WorkflowPage(QWidget):
 
     # --- public API ------------------------------------------------------------
 
-    def load_record(self, record: WorkflowRecord) -> None:
+    def load_record(self, record: WorkflowRecord, *, auto_demo: bool = False) -> None:
         self._record = record
         set_host_workflow_id(self, record.id)
         self._pending_paths = []
@@ -2022,6 +2049,8 @@ class WorkflowPage(QWidget):
                 ev.event_key = self._next_event_key()
         self._render_chips()
         self._render_all()
+        if auto_demo and self._can_run_demo(record):
+            QTimer.singleShot(250, self._on_execute)
 
     def start_from_passport(self, session: PassportSession, *, auto_plan: bool = True) -> None:
         self._on_new()
@@ -2434,7 +2463,7 @@ class WorkflowPage(QWidget):
             action_key="" if hide_action else event.action_key,
             event_key=key,
             expanded=expanded,
-            skippable=bool(skip_id),
+            skippable=bool(skip_id) or self._tool_event_is_running(key),
             skip_request_id=skip_id,
         )
         widget.action_clicked.connect(self._on_feed_action)
@@ -2453,6 +2482,15 @@ class WorkflowPage(QWidget):
                 return ""
             return str(tool.get("request_id") or "").strip()
         return ""
+
+    def _tool_event_is_running(self, event_key: str) -> bool:
+        key = (event_key or "").strip()
+        if not key:
+            return False
+        return any(
+            str(tool.get("key") or "") == key and str(tool.get("status") or "") == "running"
+            for tool in self._live_tools
+        )
 
     def _reset_thinking_pacer(self) -> None:
         self._thinking_timer.stop()
@@ -2781,6 +2819,13 @@ class WorkflowPage(QWidget):
         if target is not None:
             if str(target.get("status") or "") == "skipped" and status != "skipped":
                 return
+            previous = str(target.get("status") or "")
+            if (
+                status == "running"
+                and previous in {"ok", "error", "skipped"}
+                and not rid
+            ):
+                return
             target["status"] = status
             target["detail"] = self._merge_tool_detail(str(target.get("detail") or ""), incoming, status)
             if rid:
@@ -2887,7 +2932,7 @@ class WorkflowPage(QWidget):
             detail=body,
             event_key=key,
             expanded=error or key not in self._collapsed_keys,
-            skippable=bool(skip_id),
+            skippable=status == "running",
             skip_request_id=skip_id,
         )
         widget.expand_toggled.connect(self._on_expand_toggled)
@@ -2898,22 +2943,28 @@ class WorkflowPage(QWidget):
 
     def _on_skip_tool(self, request_id: str) -> None:
         rid = (request_id or "").strip()
-        if not rid:
-            return
-        tool = next(
-            (item for item in self._live_tools if str(item.get("request_id") or "") == rid),
-            None,
-        )
-        if tool is None or str(tool.get("status") or "") != "running":
-            return
+        targets = tools_to_skip(self._live_tools, rid)
+        skip_ids = [
+            str(item.get("request_id") or "").strip()
+            for item in targets
+            if str(item.get("request_id") or "").strip()
+        ]
+        if rid and rid not in skip_ids:
+            skip_ids.append(rid)
         bridge = self._sdk_bridge
-        if bridge is None:
+        if bridge is not None:
+            if skip_ids:
+                for sid in skip_ids:
+                    bridge.skip_tool(sid)
+            else:
+                bridge.skip_tool("")
+        if not targets:
             return
-        bridge.skip_tool(rid)
-        tool["status"] = "skipped"
-        tool["detail"] = _skip_tool_detail()
-        self._sync_tool_event(tool)
-        self._refresh_live_tool_widget(tool)
+        for tool in targets:
+            tool["status"] = "skipped"
+            tool["detail"] = _skip_tool_detail()
+            self._sync_tool_event(tool)
+            self._refresh_live_tool_widget(tool)
         self._tick_activity()
 
     def _merge_tool_detail(self, previous: str, incoming: str, status: str) -> str:
@@ -3075,7 +3126,9 @@ class WorkflowPage(QWidget):
             if is_ask_question(name):
                 self._tick_activity()
                 return
-            raw_status = str(payload.get("status") or "running").strip() or "running"
+            raw_status = str(payload.get("status") or "").strip()
+            if not raw_status:
+                raw_status = "ok" if payload.get("result") not in (None, "") else "running"
             if raw_status in {"blocked_in_design", "skipped"}:
                 self._tick_activity()
                 return

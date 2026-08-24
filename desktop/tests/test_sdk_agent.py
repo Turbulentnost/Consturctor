@@ -33,6 +33,7 @@ from app.ui.pages.workflow_page import (
     qa_from_design_answers,
     qa_from_sdk_events,
     split_design_questions,
+    tools_to_skip,
 )
 from app.ui.widgets.cursor_feed import resolve_feed_kind
 
@@ -100,6 +101,7 @@ def test_design_sdk_prompt_asks_logic_gaps_before_json() -> None:
     assert "без JSON" in prompt
     assert "workspace.powershell_run" in prompt
     assert "Live-данные бери через Constructor tools" in prompt
+    assert "externalized=true" in prompt
     assert "второй круг" in prompt
     assert "сразу верни финальный JSON" not in prompt
 
@@ -482,6 +484,9 @@ def test_bridge_externalizes_large_tool_result(tmp_path: Path) -> None:
     assert compact["externalized"] is True
     assert compact["summary"]["projects_count"] == 40
     assert compact["summary"]["total_projects"] == 251
+    assert compact["next_step"]
+    assert len(compact["sample"]["projects"]) == 8
+    assert "preview" not in compact
     path = tmp_path / compact["result_file"]
     assert path.is_file()
     assert "big payload" in path.read_text(encoding="utf-8")
@@ -553,6 +558,30 @@ def test_bridge_skip_tool_unblocks_invoke(monkeypatch, tmp_path: Path) -> None:
     assert sent[0]["ok"] is True
     assert sent[0]["result"]["skipped"] is True
     assert sent[0]["requestId"] == "req-skip"
+
+
+def test_tools_to_skip_uses_running_card_when_request_id_is_stale() -> None:
+    live = [
+        {"name": "turboproject.get", "status": "ok", "request_id": "old"},
+        {"name": "turboproject.get", "status": "running", "request_id": "new"},
+    ]
+    targets = tools_to_skip(live, "old")
+    assert len(targets) == 1
+    assert targets[0]["request_id"] == "new"
+
+
+def test_tools_to_skip_without_request_id() -> None:
+    live = [{"name": "turboproject.get", "status": "running", "request_id": ""}]
+    targets = tools_to_skip(live, "")
+    assert targets == live
+
+
+def test_bridge_skip_marks_all_active_when_id_unknown(tmp_path: Path) -> None:
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+    bridge._mark_active("req-live", "turboproject.get")
+    assert bridge.skip_tool("stale") is True
+    assert bridge._is_skipped("req-live") is True
+    assert bridge._is_skipped("stale") is True
 
 
 def test_bridge_skip_before_invoke_starts(tmp_path: Path) -> None:

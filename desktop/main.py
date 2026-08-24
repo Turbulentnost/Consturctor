@@ -64,6 +64,10 @@ def _wants_background(argv: list[str]) -> bool:
     return "--background" in argv or "--hidden" in argv
 
 
+def _wants_start_demo(argv: list[str]) -> bool:
+    return "--start-demo" in argv
+
+
 def _run_gui() -> int:
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QFont, QIcon
@@ -77,8 +81,11 @@ def _run_gui() -> int:
     _set_app_user_model_id()
     workflow_id = _open_workflow_id(sys.argv)
     run_id = _open_run_id(sys.argv)
+    start_demo = _wants_start_demo(sys.argv)
     background = _wants_background(sys.argv)
-    if workflow_id and run_id:
+    if workflow_id and start_demo:
+        command = f"start-demo:{workflow_id}"
+    elif workflow_id and run_id:
         command = f"open-workflow:{workflow_id}|{run_id}"
     elif workflow_id:
         command = f"open-workflow:{workflow_id}"
@@ -104,7 +111,11 @@ def _run_gui() -> int:
     app.setFont(app_font(14, QFont.Weight.Normal))
     app.setStyleSheet(qss_global(family))
 
-    window = AppWindow(open_workflow_id=workflow_id, open_run_id=run_id)
+    window = AppWindow(
+        open_workflow_id=workflow_id,
+        open_run_id=run_id,
+        start_demo=start_demo,
+    )
     instance = SingleInstance(app)
     if not instance.is_listening:
         return 0
