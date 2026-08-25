@@ -52,6 +52,7 @@ _ICON_STEMS = {
     "home": "главная",
     "kpi": "кпи",
     "dashboard": "дашборд",
+    "files": "files",
 }
 
 
@@ -87,6 +88,12 @@ def _load_nav_icon(filename: str) -> QPixmap:
 def _load_icon_pair(kind: str) -> tuple[QPixmap, QPixmap]:
     """Return (inactive/белый*, active/серый*)."""
     stem = _ICON_STEMS[kind]
+    if kind == "files":
+        # Single source files.png is grey; tint white for the inactive state.
+        src = _load_nav_icon("files.png")
+        if src.isNull():
+            return QPixmap(), QPixmap()
+        return _tint_pixmap(src, QColor("#FFFFFF")), src
     white_name = f"белый{stem}.png"
     grey_name = f"серый{stem}.png"
     # Active / pressed → серый*
@@ -222,7 +229,7 @@ class GlassSidebar(QWidget):
         self._items = [
             NavItem("create", "Создать", "plus"),
             NavItem("agents", "Мои агенты", "home"),
-            NavItem("files", "Файлы", "dashboard"),
+            NavItem("files", "Файлы", "files"),
             NavItem("kpi", "KPI", "kpi"),
             NavItem("dashboard", "Мой дашборд", "dashboard"),
         ]
