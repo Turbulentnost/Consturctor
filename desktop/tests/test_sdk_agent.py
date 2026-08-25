@@ -91,10 +91,12 @@ def test_demo_sdk_prompt_requires_playbook_and_tests() -> None:
     assert "get_user_portfolio" not in prompt
     assert "limit 3-5" not in prompt
     followup = build_demo_sdk_prompt(record, resume=True)
-    assert followup.startswith("Run a trial pass")
+    assert followup.startswith("Сделай пробный прогон")
+    assert "на русском" in followup
     assert "AGENTS.md" not in followup
     assert "get_user_portfolio" in AGENTS_MD
     assert "result_file" in AGENTS_MD
+    assert "на русском" in AGENTS_MD
 
 
 def test_design_sdk_prompt_is_short_and_points_to_materials() -> None:
@@ -103,27 +105,30 @@ def test_design_sdk_prompt_is_short_and_points_to_materials() -> None:
     assert "AGENTS.md" in prompt
     assert "materials/agent.md" in prompt
     assert "askQuestion" in prompt
-    assert "JSON draft" in prompt
+    assert "JSON-черновик" in prompt
+    assert "на русском" in prompt
     assert "QUESTION:" not in prompt
     assert "web_search" not in prompt
     assert "workspace.powershell_run" not in prompt
     assert "Верни ТОЛЬКО один JSON-объект" not in prompt
     assert "customTools" not in prompt
     assert "required_clarifications" in AGENTS_MD
-    assert "do not look for it in MCP" in AGENTS_MD
-    assert "Do not write that MCP was not found" in AGENTS_MD
+    assert "Триггер не заменяет остальные вопросы" in AGENTS_MD
+    assert "Задавай столько вопросов, сколько реальных пробелов" in AGENTS_MD
+    assert "не ищи его в MCP" in AGENTS_MD
+    assert "Не пиши, что MCP не найден" in AGENTS_MD
     assert "расписания, периода, получателя или критерия успеха" not in prompt
 
 
 def test_design_sdk_prompt_asks_logic_gaps_before_json() -> None:
     record = WorkflowRecord(id="wf-1", title="Контроль сроков", phase="new")
     prompt = build_design_sdk_prompt(record, "Верни JSON")
-    assert "After gaps are closed" in prompt
+    assert "Когда пробелы закрыты" in prompt
     assert "askQuestion" in prompt
     assert "сразу верни финальный JSON" not in prompt
-    assert "after gaps are closed" in AGENTS_MD
-    assert "without JSON" in AGENTS_MD
-    assert "second thinking loop" in AGENTS_MD
+    assert "после закрытых пробелов" in AGENTS_MD
+    assert "без JSON" in AGENTS_MD
+    assert "второй круг размышлений" in AGENTS_MD
 
 
 def test_design_sdk_prompt_infers_event_trigger() -> None:
@@ -230,6 +235,7 @@ def test_run_sdk_prompt_does_not_dump_tool_catalog() -> None:
     record = WorkflowRecord(id="wf-1", title="Контроль сроков", phase="done")
     prompt = build_sdk_prompt(record, "проверь сейчас")
     assert "AGENTS.md" in prompt
+    assert "на русском" in prompt
     assert "customTools" not in prompt
     assert "web_search" not in prompt
     assert "- turboproject." not in prompt
@@ -416,9 +422,22 @@ def test_record_ready_for_sdk_demo_clears_server_clarify_gate() -> None:
     ready = record_ready_for_sdk_demo(record)
     assert ready.phase == "designed"
     assert ready.plan is not None
-    assert ready.plan.unanswered() == []
-    assert ready.local_run["can_run_demo"] is True
+    unanswered = ready.plan.unanswered()
+    assert unanswered
+    assert "Когда запускать" in unanswered[0].question
+    assert ready.local_run["can_run_demo"] is False
     assert design_ready_for_demo(ready) is True
+
+    known = WorkflowRecord(
+        id="wf-1",
+        title="Агент",
+        phase="clarify",
+        notes="Когда запускать: ежедневно утром",
+        local_run={"playbook_draft": {"when_to_run": "ежедневно утром"}},
+    )
+    ready_known = record_ready_for_sdk_demo(known)
+    assert ready_known.local_run["can_run_demo"] is True
+    assert (ready_known.plan.unanswered() if ready_known.plan else []) == []
 
 
 def test_sdk_design_ready_for_demo_even_if_validation_blocked() -> None:
@@ -733,6 +752,7 @@ def test_seed_agent_brief_writes_plan_and_design_text(tmp_path: Path) -> None:
     path = seed_agent_brief(str(tmp_path), record, extra="Верни ТОЛЬКО один JSON-объект")
     text = (tmp_path / path).read_text(encoding="utf-8")
     assert path == "materials/agent.md"
+    assert "Язык: русский" in text
     assert "Проверять сроки проектов" in text
     assert "Прочитать проекты TurboProject" in text
     assert "Верни ТОЛЬКО один JSON-объект" in text

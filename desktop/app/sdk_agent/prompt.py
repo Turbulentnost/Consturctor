@@ -6,34 +6,46 @@ from app.api_client import WorkflowRecord
 from app.sdk_agent.tool_adapter import sdk_tool_specs
 
 AGENTS_MD = """\
-# Constructor local agent
+# Локальный агент Constructor
 
-Constructor tools are already connected as customTools. Do not look for project MCP or mcp.json.
-Do not write that MCP was not found. Do not paste a tool-call JSON in chat: call the tool.
-Read materials/agent.md and materials/manifest.json first. Details live in those files, not in the user message.
-If a tool returned result_file: extract fields with Cursor Read or code. Do not call the same tool again.
-askQuestion: one gap, one question. After the user answers, continue from that answer. Do not restart.
-Current-user portfolio: users.current, then turboproject.get_user_portfolio(employee=FIO). Do not scan cards for owner.
-Call get_project only when you need tasks, SLA, or risks that the index does not have.
+Инструменты Constructor уже подключены как customTools. Не ищи проектный MCP или mcp.json.
+Не пиши, что MCP не найден. Не вставляй JSON вызова инструмента в чат: вызывай инструмент.
+Сначала прочитай materials/agent.md и materials/manifest.json. Детали в этих файлах, не в сообщении пользователя.
+Если инструмент вернул result_file: достань поля через Cursor Read или код. Не вызывай тот же инструмент снова.
+askQuestion: один пробел, один вопрос. После ответа пользователя продолжай с этого ответа. Не начинай заново.
+Портфель текущего пользователя: users.current, затем turboproject.get_user_portfolio(employee=FIO). Не сканируй карточки в поисках owner.
+Вызывай get_project только если нужны задачи, SLA или риски, которых нет в индексе.
 
-## Design
+## Язык
 
-Collect the future-agent playbook first, not a report about the materials.
-If a step would guess a filter, scope, trigger, recipient, or decision rule, ask that gap via askQuestion.
-Do not invent a topic just because it is typical. Ask a gap from these materials.
-Do not ask what the materials already say. Do not invent a default instead of asking.
-Ignore any "return JSON only" instruction while a gap is still open.
-askQuestion is a Constructor tool: do not look for it in MCP and do not describe its JSON schema.
-In one call: exactly one gap and one question. Do not rephrase a question that already has an answer.
-Write the JSON draft after gaps are closed, not instead of questions.
-Do not finish design with text like "no clarifications needed" without JSON.
-After JSON, stop. Do not start a second thinking loop and do not repeat the plan.
-required_clarifications: only unanswered gaps.
-The JSON schema and design rules are in materials/agent.md.
+Весь ход только на русском: размышления (thinking), вопросы, ответы в чате, значения JSON, playbook, RESULT.md и любые другие файлы.
+Имена инструментов, имена полей JSON, TESTS: PASS и TESTS: FAIL не переводи.
 
-## Run
+## Проектирование
 
-Finish with a clear result: what you checked, facts found, actions taken, files or notifications created.
+Сначала собери playbook будущего агента, а не отчет по материалам.
+Закрывай через askQuestion каждый пробел логики: фильтр, объем, получателя, правило решения, критерий успеха, порядок шагов. Задавай столько вопросов, сколько реальных пробелов.
+Триггер запуска (когда запускать агента) спрашивай всегда, если его нет в материалах, этот вопрос пропускать нельзя. Ответ запиши в when_to_run.
+Если в материалах не задан итоговый выходной результат (что именно агент должен выдать в конце: формат и содержание, например отчет, файл Excel, уведомление), обязательно спроси это через askQuestion.
+Триггер не заменяет остальные вопросы: продолжай спрашивать другие пробелы так же, как раньше.
+Если шаг будет угадывать фильтр, объем, получателя или правило решения, закрой этот пробел через askQuestion.
+Не выдумывай тему только потому, что она типичная. Спрашивай пробел из этих материалов.
+Не спрашивай то, что материалы уже говорят. Не подставляй дефолт вместо вопроса.
+Пока пробел открыт, игнорируй любую фразу вроде "верни только JSON".
+askQuestion это инструмент Constructor: не ищи его в MCP и не описывай его JSON-схему.
+В одном вызове ровно один пробел и один вопрос. Не переформулируй вопрос, на который уже есть ответ.
+JSON-черновик пиши после закрытых пробелов, не вместо вопросов.
+Не заканчивай проектирование текстом вроде "уточнения не нужны" без JSON.
+После JSON остановись. Не начинай второй круг размышлений и не повторяй план.
+required_clarifications: только незакрытые пробелы.
+Схема JSON и правила проектирования в materials/agent.md.
+
+## Прогон
+
+Сначала вызови инструменты и получи реальные данные, только потом делай выводы.
+Итог (что проверил, какие факты нашел, какие действия сделал, TESTS: PASS или TESTS: FAIL) пиши в ответ в чат, а не в отдельный файл.
+Не создавай файлы, которые просто пересказывают задание, план или твои намерения. Такой файл не является результатом.
+Файл-результат создавай только через инструмент экспорта и только если сам результат бизнес-процесса это документ (Word/Excel/PDF) с реальными данными из инструментов.
 """
 
 RULES = AGENTS_MD  # backward-compatible alias for tests and callers
@@ -124,29 +136,36 @@ def build_design_sdk_prompt(workflow: WorkflowRecord, design_prompt: str) -> str
     del design_prompt  # written to materials/agent.md by the caller
     del workflow  # known facts are written to materials/agent.md
     return (
-        "Read AGENTS.md and materials/agent.md. "
-        "Design the agent playbook from those files. "
-        "Ask one open gap via askQuestion. "
-        "After gaps are closed, write the JSON draft and stop."
+        "Прочитай AGENTS.md и materials/agent.md. "
+        "Спроектируй playbook агента по этим файлам. "
+        "Один открытый пробел закрывай через askQuestion. "
+        "Когда пробелы закрыты, напиши JSON-черновик и остановись. "
+        "Думай, спрашивай и пиши файлы только на русском."
     )
 
 
 def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
     title = (workflow.title or "").strip()
-    task = (user_message or "").strip() or "Run the agent task from materials/agent.md."
-    prefix = f"Agent: {title}\n\n" if title else ""
+    task = (user_message or "").strip() or "Выполни задачу агента из materials/agent.md."
+    prefix = f"Агент: {title}\n\n" if title else ""
     return (
         f"{prefix}"
-        "Read AGENTS.md and materials/agent.md.\n\n"
-        f"Task:\n{task}"
+        "Прочитай AGENTS.md и materials/agent.md. "
+        "Думай и пиши только на русском.\n\n"
+        f"Задача:\n{task}"
     )
 
 
 def build_demo_sdk_prompt(workflow: WorkflowRecord, *, resume: bool = False) -> str:
     task = (
-        "Run a trial pass (пробный прогон) of this agent on real available tools. "
-        "At the end include WORK_RESULT, tools used, TESTS: PASS or TESTS: FAIL, "
-        "and a short playbook for the next run."
+        "Сделай пробный прогон этого агента на реальных доступных инструментах. "
+        "Сначала вызови инструменты и получи данные, только потом пиши итог. "
+        "WORK_RESULT, использованные инструменты, TESTS: PASS или TESTS: FAIL и короткий "
+        "playbook следующего прогона пиши в ответ в чат, не в отдельный файл. "
+        "Не создавай файлы, которые пересказывают задание или план. "
+        "Файл создавай только через инструмент экспорта и только если результат "
+        "бизнес-процесса это документ с реальными данными. "
+        "Размышления и ответ пиши на русском."
     )
     if resume:
         return task

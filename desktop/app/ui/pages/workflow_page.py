@@ -56,6 +56,12 @@ from app.sdk_agent.tool_adapter import is_ask_question
 from app.tools.hitl import attach_pending_for, register_inline_host, set_host_workflow_id
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 from app.ui.widgets.cursor_feed import CursorFeedItem, compact_tool_result, resolve_feed_kind
+from app.ui.widgets.file_type_icon import (
+    ElidedFilenameLabel,
+    FileTypeIcon,
+    file_ext_label,
+    file_type_style,
+)
 
 SUPPORTED_SUFFIXES = {
     ".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".html", ".htm",
@@ -117,9 +123,20 @@ QFrame#filechip {
 _FILE_CARD_QSS = """
 QFrame#workflowfilecard {
     background: #FFFFFF;
-    border: 1px solid rgba(16,24,23,0.08);
-    border-radius: 12px;
+    border: 1px solid rgba(16,24,23,0.10);
+    border-radius: 14px;
 }
+QFrame#workflowfilecard[newVersion="true"] {
+    background: #F3FBF7;
+    border: 1px solid #08745F;
+}
+"""
+_FILE_MENU_QSS = """
+QPushButton {
+    background: transparent; color: #6E7D79; border: none;
+    border-radius: 8px; padding: 0;
+}
+QPushButton:hover { background: #EEF1F0; color: #06483D; }
 """
 _ICON_BTN_QSS = """
 QPushButton {
@@ -328,6 +345,13 @@ def _local_design_prompt_for_record(record: WorkflowRecord) -> str:
     )
     return (
         "Ты проектировщик ИИ-агента Constructor.\n"
+        "Думай, спрашивай и пиши черновик, playbook и любые файлы только на русском.\n"
+        "Закрывай через askQuestion каждый пробел логики: фильтр, объём, получателя, "
+        "правило решения, критерий успеха. Задавай столько вопросов, сколько реальных пробелов.\n"
+        "Триггер запуска (когда запускать агента) спрашивай всегда, если его нет в материалах — "
+        "этот вопрос пропускать нельзя. Он не заменяет остальные вопросы.\n"
+        "Если не задан итоговый выходной результат агента (что он должен выдать в конце: "
+        "формат и содержание), обязательно спроси это.\n"
         "Сформируй план, как агент будет достигать цели, и верни финальный JSON-черновик.\n"
         "Бизнес-задачу сейчас не выполняй: только проектирование инструкции.\n"
         "Верни JSON-объект с полями goal, inputs, required_clarifications, result, "
@@ -413,6 +437,7 @@ def _sdk_design_repair_prompt(base_prompt: str, transcript: str) -> str:
     return (
         "Предыдущий проход проектирования уже собрал материалы и решил, что дополнительных вопросов нет.\n"
         "Не начинай проектирование заново, не вызывай askQuestion и не пиши объяснения.\n"
+        "Текст и значения JSON только на русском.\n"
         "Верни ТОЛЬКО один валидный JSON-объект с полями:\n"
         "goal, inputs, required_clarifications, when_to_run, result, recipient, "
         "confirmation_points, steps.\n"
@@ -469,21 +494,22 @@ def _format_file_size(size: int) -> str:
 
 
 def _file_ext(name: str) -> str:
-    suffix = Path(name or "").suffix.strip(".").upper()
-    return suffix or "FILE"
+    return file_ext_label(name)
 
 
-def _short_date(value: str) -> str:
-    raw = (value or "").strip()
-    if not raw:
-        return "дата неизвестна"
-    return raw[:10]
-
-
-def _file_status(item: WorkflowFileItem) -> str:
-    if item.source == "agent":
+def _file_origin_text(item: WorkflowFileItem | None, *, pending: bool = False) -> str:
+    if pending:
+        return "ожидает загрузки"
+    if item is not None and item.source == "agent":
         return "создан агентом"
-    return "в базе агента"
+    return "загружен вами"
+
+
+def _file_meta_line(item: WorkflowFileItem | None, *, pending: bool = False) -> str:
+    if pending:
+        return _file_origin_text(item, pending=True)
+    size = _format_file_size(item.size if item is not None else 0)
+    return f"{size} • {_file_origin_text(item)}"
 
 
 def _filter_qss(active: bool) -> str:
@@ -748,6 +774,45 @@ def apply_sdk_answers_to_draft(draft: dict, qa: list[tuple[str, str]]) -> dict:
     return updated
 
 
+WHEN_TO_RUN_QUESTION_ID = "when-to-run"
+WHEN_TO_RUN_QUESTION = "Когда запускать этого агента?"
+WHEN_TO_RUN_OPTIONS = ["вручную из чата", "ежедневно утром", "по событию из материалов"]
+
+
+def when_to_run_question() -> WorkflowOpenQuestion:
+    return WorkflowOpenQuestion(
+        id=WHEN_TO_RUN_QUESTION_ID,
+        question=WHEN_TO_RUN_QUESTION,
+        why="Без триггера агента нельзя поставить на расписание.",
+        options=list(WHEN_TO_RUN_OPTIONS),
+    )
+
+
+def draft_when_to_run(record: WorkflowRecord | None) -> str:
+    if record is None:
+        return ""
+    local = record.local_run or {}
+    for key in ("playbook_draft", "playbook"):
+        blob = local.get(key)
+        if isinstance(blob, dict):
+            value = str(blob.get("when_to_run") or "").strip()
+            if value:
+                return value
+    for question, answer in qa_from_design_answers(local.get("design_answers")):
+        if answer and "when" in question_topics(question):
+            return answer
+    from app.sdk_agent.prompt import inferred_design_answers
+
+    for question, answer in inferred_design_answers(record):
+        if answer and "when" in question_topics(question):
+            return answer
+    return ""
+
+
+def when_to_run_known(record: WorkflowRecord | None) -> bool:
+    return bool(draft_when_to_run(record))
+
+
 def design_ready_for_demo(record: WorkflowRecord | None) -> bool:
     if record is None:
         return False
@@ -780,7 +845,21 @@ def record_ready_for_sdk_demo(record: WorkflowRecord) -> WorkflowRecord:
     local["validation"] = validation
     local["can_run_demo"] = True
     plan = record.plan
-    if plan is not None:
+    if not when_to_run_known(replace(record, local_run=local, plan=plan)):
+        validation["can_run_demo"] = False
+        local["can_run_demo"] = False
+        local["validation"] = validation
+        question = when_to_run_question()
+        if plan is None:
+            plan = WorkflowPlan(open_questions=[question])
+        else:
+            existing = [
+                item
+                for item in (plan.open_questions or [])
+                if item.id == WHEN_TO_RUN_QUESTION_ID or "when" in question_topics(item.question)
+            ]
+            plan = replace(plan, open_questions=existing or [question])
+    elif plan is not None:
         plan = replace(plan, open_questions=[])
     phase = "designed" if record.phase in {"document", "new", "designing", "clarify", ""} else record.phase
     return replace(record, phase=phase, local_run=local, plan=plan)
@@ -1931,8 +2010,9 @@ class WorkflowFilesPanel(QWidget):
         self._content = QWidget()
         self._content_layout = QVBoxLayout(self._content)
         self._content_layout.setContentsMargins(0, 0, 0, 0)
-        self._content_layout.setSpacing(10)
+        self._content_layout.setSpacing(8)
         self._content.setStyleSheet("background: transparent;")
+        self._content.setMinimumWidth(0)
         self._scroll.setWidget(self._content)
 
         open_all = QPushButton("Открыть всю базу файлов")
@@ -1957,6 +2037,11 @@ class WorkflowFilesPanel(QWidget):
             """
         )
         self.set_files(WorkflowFiles(), pending_names=[])
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        inner = max(160, self._scroll.viewport().width())
+        self._content.setFixedWidth(inner)
 
     def set_files(self, files: WorkflowFiles, *, pending_names: list[str]) -> None:
         self._files = files
@@ -2052,56 +2137,90 @@ class WorkflowFilesPanel(QWidget):
         return box
 
     def _pending_card(self, name: str) -> QWidget:
-        card = QFrame()
-        card.setObjectName("workflowfilecard")
-        card.setStyleSheet(_FILE_CARD_QSS)
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(10, 8, 10, 8)
-        lay.setSpacing(4)
-        title = QLabel(name)
-        title.setWordWrap(True)
-        title.setFont(app_font(12, QFont.Weight.DemiBold))
-        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        meta = QLabel("TXT · ожидает загрузки · новая версия")
-        meta.setFont(app_font(11))
-        meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        lay.addWidget(title)
-        lay.addWidget(meta)
-        return card
+        return self._file_row(name or "file", pending=True)
 
     def _file_card(self, item: WorkflowFileItem) -> QWidget:
+        is_new = bool(item.run_id)
+        return self._file_row(
+            item.filename or "file",
+            item=item,
+            is_new=is_new,
+        )
+
+    def _file_row(
+        self,
+        name: str,
+        *,
+        item: WorkflowFileItem | None = None,
+        pending: bool = False,
+        is_new: bool = False,
+    ) -> QWidget:
         card = QFrame()
         card.setObjectName("workflowfilecard")
+        card.setProperty("newVersion", True if (pending or is_new) else False)
         card.setStyleSheet(_FILE_CARD_QSS)
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(10, 8, 10, 8)
-        lay.setSpacing(6)
-        name = QLabel(item.filename or "file")
-        name.setWordWrap(True)
-        name.setFont(app_font(12, QFont.Weight.DemiBold))
-        name.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        meta_line = QLabel(
-            f"{_file_ext(item.filename)} · {_format_file_size(item.size)} · "
-            f"{_short_date(item.created_at)} · {_file_status(item)} · v1"
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        card.setMinimumWidth(0)
+        card.setMaximumWidth(256)
+        card.style().unpolish(card)
+        card.style().polish(card)
+        row = QHBoxLayout(card)
+        row.setContentsMargins(10, 8, 8, 8)
+        row.setSpacing(8)
+        row.addWidget(FileTypeIcon(name, card, size=32), 0, Qt.AlignmentFlag.AlignTop)
+
+        texts = QVBoxLayout()
+        texts.setContentsMargins(0, 0, 0, 0)
+        texts.setSpacing(2)
+        title = ElidedFilenameLabel(name, card)
+        title.setFont(app_font(12, QFont.Weight.Medium))
+        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        texts.addWidget(title)
+        if pending or is_new:
+            badge = QLabel("Новая версия")
+            badge.setFont(app_font(10, QFont.Weight.DemiBold))
+            badge.setStyleSheet(
+                "color: #08745F; background: #DDF3EB; border-radius: 8px; padding: 1px 6px;"
+            )
+            texts.addWidget(badge, 0, Qt.AlignmentFlag.AlignLeft)
+        meta = QLabel(_file_meta_line(item, pending=pending))
+        meta.setFont(app_font(10))
+        meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        texts.addWidget(meta)
+        row.addLayout(texts, 1)
+
+        style = file_type_style(name)
+        pill = QLabel(style.ext)
+        pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pill.setFont(app_font(9, QFont.Weight.DemiBold))
+        pill.setStyleSheet(
+            f"color: {style.color}; background: {style.soft}; "
+            "border: none; border-radius: 8px; padding: 3px 6px;"
         )
-        meta_line.setFont(app_font(10))
-        meta_line.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        summary = QLabel(item.summary or item.text_preview or "Документ доступен агенту")
-        summary.setWordWrap(True)
-        summary.setFont(app_font(11))
-        summary.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        top = QHBoxLayout()
-        top.setContentsMargins(0, 0, 0, 0)
-        menu = QPushButton("...")
+        row.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        download = QPushButton("\u2913")
+        download.setCursor(Qt.CursorShape.PointingHandCursor)
+        download.setFixedSize(22, 22)
+        download.setFont(app_font(13, QFont.Weight.DemiBold))
+        download.setStyleSheet(_FILE_MENU_QSS)
+        download.setToolTip("Скачать файл")
+        if item is not None:
+            download.clicked.connect(lambda _=False, it=item: self.download_requested.emit(it))
+        else:
+            download.setEnabled(False)
+        row.addWidget(download, 0, Qt.AlignmentFlag.AlignTop)
+
+        menu = QPushButton("⋮")
         menu.setCursor(Qt.CursorShape.PointingHandCursor)
-        menu.setFixedSize(28, 24)
-        menu.setStyleSheet(_ICON_BTN_QSS)
-        menu.clicked.connect(lambda _=False, button=menu, it=item: self._open_file_menu(button, it))
-        top.addWidget(name, 1)
-        top.addWidget(menu, 0)
-        lay.addLayout(top)
-        lay.addWidget(meta_line)
-        lay.addWidget(summary)
+        menu.setFixedSize(22, 22)
+        menu.setFont(app_font(13, QFont.Weight.DemiBold))
+        menu.setStyleSheet(_FILE_MENU_QSS)
+        if item is not None:
+            menu.clicked.connect(lambda _=False, button=menu, it=item: self._open_file_menu(button, it))
+        else:
+            menu.setEnabled(False)
+        row.addWidget(menu, 0, Qt.AlignmentFlag.AlignTop)
         return card
 
     def _open_file_menu(self, button: QPushButton, item: WorkflowFileItem) -> None:
@@ -2511,6 +2630,8 @@ class WorkflowPage(QWidget):
     def _can_run_demo(self, record: WorkflowRecord | None = None) -> bool:
         current = record or self._record
         if current is None or self._demo_already_ran(current) or demo_run_passed(current):
+            return False
+        if not when_to_run_known(current):
             return False
         return design_ready_for_demo(current)
 
@@ -4023,6 +4144,9 @@ class WorkflowPage(QWidget):
             self._tests_ok = True
             self._show_demo_result(result)
             return
+        if not when_to_run_known(result):
+            self._ask_when_to_run(result)
+            return
         if self._can_run_demo(result):
             self._on_execute()
             return
@@ -4031,6 +4155,51 @@ class WorkflowPage(QWidget):
             self._show_demo_result(result)
             return
         self._show_demo_result(result)
+
+    def _ask_when_to_run(self, result: WorkflowRecord) -> None:
+        ready = record_ready_for_sdk_demo(result)
+        self._record = ready
+        self._execute_started = False
+        plan = ready.plan or WorkflowPlan(open_questions=[when_to_run_question()])
+        unanswered = plan.unanswered()
+        question = unanswered[0] if unanswered else when_to_run_question()
+        self._push_question_if_new(question.question)
+        self._sync_question_state(plan)
+        self._agent_status.setText("● Нужно указать, когда запускать агента")
+        self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
+        self._render_all()
+
+    def _apply_when_to_run_answer(self, text: str) -> None:
+        if self._record is None:
+            return
+        answer = (text or "").strip()
+        if not answer:
+            return
+        self._mark_question_answered(WHEN_TO_RUN_QUESTION_ID, answer)
+        local = dict(self._record.local_run or {})
+        qa = merge_design_answers(local.get("design_answers"), [(WHEN_TO_RUN_QUESTION, answer)])
+        local["design_answers"] = qa
+        draft = local.get("playbook_draft") if isinstance(local.get("playbook_draft"), dict) else {}
+        local["playbook_draft"] = apply_sdk_answers_to_draft(draft, [(WHEN_TO_RUN_QUESTION, answer)])
+        validation = dict(local.get("validation") or {}) if isinstance(local.get("validation"), dict) else {}
+        validation.update({"ok": True, "status": "draft_ready", "can_run_demo": True, "reasons": []})
+        local["validation"] = validation
+        local["can_run_demo"] = True
+        plan = self._record.plan
+        if plan is not None:
+            plan = replace(plan, open_questions=[])
+        self._record = replace(self._record, local_run=local, plan=plan, phase="designed")
+        self._clear_questions()
+        try:
+            saved = self._api.update_workflow_local_run(self._record.id, local)
+            self._record = replace(saved, plan=plan, phase="designed", local_run=local)
+        except ApiError:
+            pass
+        self._push_event("Агент", "Принял, когда запускать агента. Запускаю пробный прогон.")
+        if self._can_run_demo():
+            self._on_execute()
+            return
+        self._render_all()
 
     def _on_plan(self) -> None:
         if self._busy:
@@ -4370,6 +4539,11 @@ class WorkflowPage(QWidget):
         self._mark_question_answered(qid, text)
         self._push_event("Вы", text or "Файл приложен", role="user")
         self._append_user_files_to_event()
+        if qid == WHEN_TO_RUN_QUESTION_ID or (
+            asked and "when" in question_topics(asked) and self._sdk_design_runtime()
+        ):
+            self._apply_when_to_run_answer(text)
+            return
 
         # After-build clarification → apply answer and re-run assembly.
         if qid.startswith("post-build-"):

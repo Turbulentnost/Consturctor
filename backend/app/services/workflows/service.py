@@ -1440,7 +1440,16 @@ def generate_agent_kpi(
     from app.services import agent_kpi
 
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
-    if not row.exec_agent_id:
+    local_preview = dict(row.local_run or {})
+    runtime = str(local_preview.get("runtime") or local_preview.get("design_runtime") or "")
+    playbook_preview = playbook_of(row)
+    local_ready = (
+        runtime == "cursor-sdk"
+        or bool(playbook_preview.get("demo_ok"))
+        or str(local_preview.get("tests_status") or "").casefold() == "pass"
+        or bool((row.last_result or "").strip())
+    )
+    if not row.exec_agent_id and not local_ready:
         raise WorkflowError("Сначала завершите реализацию агента")
     plan = WorkflowPlan.from_dict(row.plan_json or {})
     local = dict(row.local_run or {})

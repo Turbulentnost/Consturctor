@@ -22,53 +22,58 @@ def write_workspace_note(cwd: str, relative: str, text: str) -> str:
 
 def seed_agent_brief(cwd: str, workflow: WorkflowRecord, *, extra: str = "") -> str:
     """Write passport, plan, and optional design brief into materials/agent.md."""
-    parts: list[str] = [f"# {(workflow.title or 'agent').strip() or 'agent'}"]
+    title = (workflow.title or "агент").strip() or "агент"
+    parts: list[str] = [
+        f"# {title}",
+        "",
+        "Язык: русский. Размышления, вопросы, значения JSON и файлы пиши по-русски.",
+    ]
     notes = (workflow.notes or "").strip()
     if notes:
-        parts.extend(["", "## Notes", notes])
+        parts.extend(["", "## Заметки", notes])
     document = (workflow.document_text or "").strip()
     if document:
-        name = (workflow.document_name or "document").strip() or "document"
-        parts.extend(["", f"## Document ({name})", document])
+        name = (workflow.document_name or "документ").strip() or "документ"
+        parts.extend(["", f"## Документ ({name})", document])
     plan = workflow.plan
     if plan is not None:
-        parts.extend(["", "## Plan"])
+        parts.extend(["", "## План"])
         if plan.title:
-            parts.append(f"Title: {plan.title}")
+            parts.append(f"Название: {plan.title}")
         if plan.goal:
-            parts.append(f"Goal: {plan.goal}")
+            parts.append(f"Цель: {plan.goal}")
         if plan.constraints:
-            parts.append("Constraints:")
+            parts.append("Ограничения:")
             parts.extend(f"- {item}" for item in plan.constraints if str(item).strip())
         if plan.out_of_scope:
-            parts.append("Out of scope:")
+            parts.append("Вне объема:")
             parts.extend(f"- {item}" for item in plan.out_of_scope if str(item).strip())
         steps = plan.steps or []
         if steps:
-            parts.append("Steps:")
+            parts.append("Шаги:")
             for step in steps:
                 text = step.action or step.title
                 label = step.id or step.title
                 if text:
                     parts.append(f"- {label}: {text}")
                 if step.done_when:
-                    parts.append(f"  Done when: {step.done_when}")
+                    parts.append(f"  Готово когда: {step.done_when}")
         if plan.test_criteria:
-            parts.append("Test criteria:")
+            parts.append("Критерии проверки:")
             parts.extend(f"- {item}" for item in plan.test_criteria if str(item).strip())
         if plan.raw_text:
-            parts.extend(["", "Source passport:", plan.raw_text.strip()])
+            parts.extend(["", "Исходный паспорт:", plan.raw_text.strip()])
     last = (workflow.last_result or "").strip()
     if last:
-        parts.extend(["", "## Last successful run", last[:12000]])
+        parts.extend(["", "## Последний успешный прогон", last[:12000]])
     extra_text = (extra or "").strip()
     if extra_text:
-        parts.extend(["", "## Design brief", extra_text])
+        parts.extend(["", "## Бриф проектирования", extra_text])
     from app.sdk_agent.prompt import known_design_facts
 
     facts = known_design_facts(workflow)
     if facts:
-        parts.extend(["", "## Already known"])
+        parts.extend(["", "## Уже известно"])
         parts.extend(f"- {item}" for item in facts)
     body = "\n".join(parts).strip() + "\n"
     return write_workspace_note(cwd, AGENT_BRIEF_RELATIVE, body)
@@ -82,8 +87,8 @@ def seed_agents_md(cwd: str) -> str:
 
 def workspace_file_pointer() -> str:
     return (
-        "Read AGENTS.md, materials/agent.md, and materials/manifest.json. "
-        "Details live in those files, not in this message."
+        "Прочитай AGENTS.md, materials/agent.md и materials/manifest.json. "
+        "Детали в этих файлах, не в этом сообщении."
     )
 
 
@@ -123,12 +128,12 @@ def seed_workflow_files(api: ApiClient, workflow_id: str, cwd: str) -> str:
     )
     if not manifest:
         return (
-            "Read materials/manifest.json. The document base is empty. "
-            "If you need a file, ask via askQuestion."
+            "Прочитай materials/manifest.json. База документов пустая. "
+            "Если нужен файл, спроси через askQuestion."
         )
     return (
-        "Read materials/manifest.json, then the files you need. "
-        "If a document is missing, ask via askQuestion."
+        "Прочитай materials/manifest.json, затем нужные файлы. "
+        "Если документа нет, спроси через askQuestion."
     )
 
 

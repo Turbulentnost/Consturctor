@@ -248,7 +248,7 @@ class AgentKpiPreviewPage(QWidget):
 
     def _on_fail(self, message: str) -> None:
         self._set_busy(False)
-        self._thinking.append(message)
+        self._thinking.hide()
         self._banner.setText(message or "Не удалось собрать KPI")
         self._banner.setStyleSheet("color: #9B1C1C; background: #FFF4F4; border-radius: 10px; padding: 8px 10px;")
         self._banner.show()

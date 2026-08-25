@@ -73,12 +73,12 @@ const ASK_QUESTION_SCHEMA: Record<string, JsonValue> = {
   properties: {
     question: {
       type: "string",
-      description: "One question about one parameter. Do not combine several questions.",
+      description: "Один вопрос про один параметр. Не объединяй несколько вопросов.",
     },
     options: {
       type: "array",
       items: { type: "string" },
-      description: "Optional answer choices",
+      description: "Необязательные варианты ответа",
     },
   },
   required: ["question"],
@@ -150,12 +150,12 @@ async function executeAskQuestion(args: Record<string, JsonValue>): Promise<Json
   });
   if (!ok) {
     return {
-      content: [{ type: "text", text: answer || "User did not answer" }],
+      content: [{ type: "text", text: answer || "Пользователь не ответил" }],
       isError: true,
     };
   }
   return {
-    content: [{ type: "text", text: `User answer: ${answer}` }],
+    content: [{ type: "text", text: `Ответ пользователя: ${answer}` }],
   };
 }
 
@@ -166,7 +166,7 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
     if (!name || tools[name]) continue;
     if (isAskQuestion(name)) {
       tools.askQuestion = {
-        description: spec.description || "Ask the desktop user a question and wait for the answer.",
+        description: spec.description || "Задать вопрос пользователю на рабочем столе и дождаться ответа.",
         inputSchema: spec.inputSchema || ASK_QUESTION_SCHEMA,
         execute: executeAskQuestion,
       };
@@ -348,8 +348,8 @@ async function runAgent(command: RunCommand): Promise<void> {
   emit({
     type: "status",
     text: customNames.length
-      ? `Constructor customTools: ${customNames.slice(0, 24).join(", ")}${customNames.length > 24 ? ` (+${customNames.length - 24})` : ""}`
-      : "Constructor customTools are empty. Do not look for project MCP servers.",
+      ? `Инструменты Constructor: ${customNames.slice(0, 24).join(", ")}${customNames.length > 24 ? ` (+${customNames.length - 24})` : ""}`
+      : "Инструменты Constructor пустые. Не ищи проектные MCP-серверы.",
   });
   let agent: Awaited<ReturnType<typeof Agent.create>> | undefined;
   try {
