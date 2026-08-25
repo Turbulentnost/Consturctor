@@ -216,6 +216,14 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
   return tools;
 }
 
+function testsPassReady(text: string): boolean {
+  const upper = (text || "").toUpperCase();
+  if (upper.includes("TESTS: FAIL") || upper.includes("TESTS:FAIL")) {
+    return false;
+  }
+  return upper.includes("TESTS: PASS") || upper.includes("TESTS:PASS");
+}
+
 function playbookDraftReady(text: string): boolean {
   const raw = (text || "").trim();
   if (!raw) return false;
@@ -227,6 +235,26 @@ function playbookDraftReady(text: string): boolean {
     return Array.isArray(data.steps) && data.steps.length > 0;
   } catch {
     return false;
+  }
+}
+
+async function settleRun(run: {
+  supports: (op: "cancel") => boolean;
+  status: string;
+  cancel: () => Promise<void>;
+  wait: () => Promise<unknown>;
+}): Promise<void> {
+  try {
+    if (run.supports("cancel") && String(run.status || "").toLowerCase() === "running") {
+      await run.cancel();
+    }
+  } catch {
+    // Already terminal or cancel is unsupported.
+  }
+  try {
+    await run.wait();
+  } catch {
+    // The follow-up send can still resume from the persisted agent.
   }
 }
 
@@ -289,21 +317,6 @@ function readAgentId(agent: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-async function settleRun(run: { supports: (op: "cancel") => boolean; status: string; cancel: () => Promise<void>; wait: () => Promise<unknown> }): Promise<void> {
-  try {
-    if (run.supports("cancel") && String(run.status || "").toLowerCase() === "running") {
-      await run.cancel();
-    }
-  } catch {
-    // Already terminal or cancel is unsupported.
-  }
-  try {
-    await run.wait();
-  } catch {
-    // The follow-up send can still resume from the persisted agent.
-  }
-}
-
 function isActiveRunError(error: unknown): boolean {
   const message = safeError(error).toLowerCase();
   return message.includes("already has active run") || message.includes("agentbusy");
@@ -326,6 +339,7 @@ async function runAgent(command: RunCommand): Promise<void> {
   }
 
   let answer = "";
+  let thought = "";
   emit({ type: "run", id });
   emit({ type: "status", text: "Запускаю локальный Cursor SDK агент..." });
   const design = command.mode === "design";
@@ -376,23 +390,35 @@ async function runAgent(command: RunCommand): Promise<void> {
       });
     }
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
+    const finishIfReady = async (draft: string): Promise<boolean> => {
+      const designReady = design && playbookDraftReady(draft);
+      const demoReady = !design && testsPassReady(draft);
+      if (!designReady && !demoReady) return false;
+      emit({
+        type: "status",
+        text: designReady
+          ? "Черновик готов. Останавливаю этот ход и перехожу к пробному прогону."
+          : "Пробный прогон завершен (TESTS: PASS). Останавливаю этот ход.",
+      });
+      emit({ type: "final", id, status: "ok", answer: draft });
+      emit({ type: "done", id, status: "ok", answer: draft });
+      await settleRun(run);
+      await agent.close();
+      return true;
+    };
     for await (const event of run.stream()) {
       if (event.type === "assistant") {
         for (const block of event.message.content) {
           if (block.type === "text" && block.text) {
             answer += block.text;
             emit({ type: "assistant", text: block.text });
-            if (design && playbookDraftReady(answer)) {
-              emit({ type: "final", id, status: "ok", answer });
-              emit({ type: "done", id, status: "ok", answer });
-              await settleRun(run);
-              await agent.close();
-              return;
-            }
+            if (await finishIfReady(answer)) return;
           }
         }
       } else if (event.type === "thinking" && event.text) {
+        thought += event.text;
         emit({ type: "thinking", text: event.text });
+        if ((await finishIfReady(thought)) || (await finishIfReady(answer))) return;
       } else if (event.type === "tool_call") {
         const args = event.args && typeof event.args === "object" && !Array.isArray(event.args)
           ? event.args as Record<string, unknown>

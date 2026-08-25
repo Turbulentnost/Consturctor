@@ -23,6 +23,7 @@ from app.sdk_agent.prompt import (
 from app.sdk_agent.tool_adapter import is_ask_question, sdk_design_tool_specs, sdk_tool_specs
 from app.tools.ac.turboproject_tools import _sample_for_agent
 from app.ui.pages.workflow_page import (
+    demo_run_passed,
     _answered_text_for,
     _draft_from_sdk_answer,
     _event_json,
@@ -190,6 +191,14 @@ def test_design_stream_finishes_only_on_json_or_done() -> None:
             }
         ]
     ) is True
+    assert design_stream_should_finish(
+        [
+            {
+                "type": "thinking",
+                "text": '{"goal":"Проверять сроки","steps":[{"id":"s1","title":"Проверить"}]}',
+            }
+        ]
+    ) is True
 
 
 def test_sdk_design_transcript_extracts_json_from_events() -> None:
@@ -348,6 +357,10 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert "force: true" in text
     assert "settleRun" in text
     assert "playbookDraftReady" in text
+    assert "testsPassReady" in text
+    assert "thought +=" in text
+    assert "finishIfReady" in text
+    assert "TESTS: PASS" in text
     assert "result: event.result" in text
     assert 'provider === "custom-user-tools"' in text
     assert "skipped" in text
@@ -423,6 +436,21 @@ def test_sdk_design_ready_for_demo_even_if_validation_blocked() -> None:
         },
     )
     assert design_ready_for_demo(record) is True
+
+
+def test_sdk_demo_does_not_autorun_after_tests_pass() -> None:
+    record = WorkflowRecord(
+        id="wf-1",
+        title="A",
+        phase="designed",
+        last_result="The control circuit worked.\nTESTS: PASS",
+        local_run={
+            "design_runtime": "cursor-sdk",
+            "validation": {"demo_started": True, "can_run_demo": True},
+        },
+    )
+    assert design_ready_for_demo(record) is True
+    assert demo_run_passed(record) is True
 
 
 def test_extract_json_object_uses_last_brace() -> None:

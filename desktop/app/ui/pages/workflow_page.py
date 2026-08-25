@@ -55,7 +55,7 @@ from app.api_client import (
 from app.sdk_agent.tool_adapter import is_ask_question
 from app.tools.hitl import attach_pending_for, register_inline_host, set_host_workflow_id
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
-from app.ui.widgets.cursor_feed import CursorFeedItem, resolve_feed_kind
+from app.ui.widgets.cursor_feed import CursorFeedItem, compact_tool_result, resolve_feed_kind
 
 SUPPORTED_SUFFIXES = {
     ".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".html", ".htm",
@@ -205,6 +205,35 @@ def _demo_already_ran_state(validation: dict | None) -> bool:
     return str(state.get("status") or "") == "demo_failed"
 
 
+def _tests_pass_in_text(text: str) -> bool:
+    upper = (text or "").upper()
+    if "TESTS: FAIL" in upper or "TESTS:FAIL" in upper:
+        return False
+    return "TESTS: PASS" in upper or "TESTS:PASS" in upper
+
+
+def demo_run_passed(record: WorkflowRecord | None, extra_text: str = "") -> bool:
+    if record is None:
+        return _tests_pass_in_text(extra_text)
+    local = record.local_run or {}
+    playbook = local.get("playbook") if isinstance(local.get("playbook"), dict) else {}
+    if playbook.get("demo_ok") is True:
+        return True
+    if str(local.get("tests_status") or "").casefold() == "pass":
+        return True
+    work = local.get("work_result") if isinstance(local.get("work_result"), dict) else {}
+    blob = "\n".join(
+        part
+        for part in (
+            extra_text,
+            record.last_result or "",
+            str(work.get("text") or ""),
+        )
+        if str(part).strip()
+    )
+    return _tests_pass_in_text(blob)
+
+
 def _clear_layout(layout) -> None:
     while layout.count():
         item = layout.takeAt(0)
@@ -250,16 +279,8 @@ def _event_json(text: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _compact_payload(value: object, *, limit: int = 1200) -> str:
-    if isinstance(value, str):
-        text = value
-    else:
-        try:
-            text = json.dumps(value, ensure_ascii=False, indent=2)
-        except TypeError:
-            text = str(value)
-    text = (text or "").strip()
-    return text[:limit].rstrip() if len(text) > limit else text
+def _compact_payload(value: object, *, limit: int = 400) -> str:
+    return compact_tool_result(value, limit=limit) or ("Готово" if value not in (None, "", {}) else "")
 
 
 def _format_plan_dict(data: dict) -> str:
@@ -2125,6 +2146,7 @@ class WorkflowPage(QWidget):
         self._thinking_chunk = ""
         self._thinking_chunk_at = 0.0
         self._thinking_live: CursorFeedItem | None = None
+        self._awaiting_thought = False
         self._assistant_live: CursorFeedItem | None = None
         self._stream_finished = False
         self._pending_async: tuple[object, str] | None = None
@@ -2358,10 +2380,7 @@ class WorkflowPage(QWidget):
         self._workflow_title = record.title
         self._notes = record.notes
         local = dict(record.local_run or {})
-        self._tests_ok = str(local.get("tests_status") or "").casefold() == "pass" and (
-            record.phase == "tested"
-            or str(local.get("exec_run_status") or "").upper() == "FINISHED"
-        )
+        self._tests_ok = demo_run_passed(record)
         if local.get("autonomy_level") or local.get("autonomy_policy"):
             self._passport_runtime = {
                 "autonomy_level": int(local.get("autonomy_level") or 1),
@@ -2491,7 +2510,7 @@ class WorkflowPage(QWidget):
 
     def _can_run_demo(self, record: WorkflowRecord | None = None) -> bool:
         current = record or self._record
-        if current is None or self._demo_already_ran(current):
+        if current is None or self._demo_already_ran(current) or demo_run_passed(current):
             return False
         return design_ready_for_demo(current)
 
@@ -2512,6 +2531,9 @@ class WorkflowPage(QWidget):
         if self._busy:
             self._run_btn.setEnabled(False)
             self._run_btn.setText("Идёт прогон…" if self._execute_started else "Проектирую…")
+            return
+        if self._tests_ok or demo_run_passed(self._record):
+            self._run_btn.setVisible(False)
             return
         self._run_btn.setEnabled(True)
         if self._record and self._record.phase == "designed":
@@ -2551,7 +2573,7 @@ class WorkflowPage(QWidget):
             self._record
             and not self._busy
             and self._record.phase != "done"
-            and (self._tests_ok or self._playbook().get("demo_ok"))
+            and (self._tests_ok or demo_run_passed(self._record))
         )
         draft_ready = bool(
             self._record
@@ -2956,9 +2978,29 @@ class WorkflowPage(QWidget):
         self._thinking_chunk = ""
         self._thinking_chunk_at = 0.0
         self._thinking_live = None
+        self._awaiting_thought = False
         self._stream_finished = False
         self._pending_async = None
         self._pending_async_fail = ""
+
+    def _begin_thought_after_tool(self) -> None:
+        self._awaiting_thought = True
+        self._last_stream_phrase = "думает"
+        if not (self._thinking_received or "").strip():
+            self._thinking_received = "Думает…"
+            self._thinking_shown = "Думает…"
+            self._paint_live_thinking()
+        self._tick_activity()
+
+    def _collapse_completed_tool(self, tool: dict) -> None:
+        key = str(tool.get("key") or "")
+        if not key:
+            return
+        self._collapsed_keys.add(key)
+        self._expanded_keys.discard(key)
+        widget = self._live_tool_widgets.get(key)
+        if widget is not None:
+            widget.set_expanded(False)
 
     def _flush_thinking(self) -> None:
         text = _visible_thinking(self._thinking_shown or self._thinking_received)
@@ -2966,6 +3008,7 @@ class WorkflowPage(QWidget):
         self._thinking_received = ""
         self._thinking_shown = ""
         self._thinking_live = None
+        self._awaiting_thought = False
         self._thinking_timer.stop()
         live = next((event for event in self._events if event.event_key == "live-thinking"), None)
         if live is not None:
@@ -3091,7 +3134,7 @@ class WorkflowPage(QWidget):
             else:
                 self._on_execute()
         elif key == "run_demo":
-            self._on_execute()
+            self._on_execute(reexecute=True)
         elif key == "fetch":
             self._on_fetch_results()
         elif key == "save":
@@ -3146,8 +3189,12 @@ class WorkflowPage(QWidget):
             return
         self._push_event("Вы", text)
         if self._demo_already_ran():
+            if demo_run_passed(self._record) or self._tests_ok:
+                self._tests_ok = True
+                self._render_all()
+                return
             self._store_retry_hint(text)
-            self._on_execute()
+            self._on_execute(reexecute=True)
             return
         if self._record.plan and not self._record.plan.unanswered():
             self._push_event(
@@ -3219,6 +3266,10 @@ class WorkflowPage(QWidget):
             self._agent_status.setText("● Агент ждёт ваш ответ")
             self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
             return
+        if self._awaiting_thought or (self._thinking_received or "").strip():
+            self._agent_status.setText(f"{frame} Думает…")
+            self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
+            return
         phrase = (self._last_stream_phrase or self._busy_base or "Агент работает").strip()
         if len(phrase) > 80:
             phrase = phrase[:77] + "…"
@@ -3286,14 +3337,19 @@ class WorkflowPage(QWidget):
                 target["request_id"] = rid
             self._sync_tool_event(target)
             self._refresh_live_tool_widget(target)
+            if status in {"ok", "error", "skipped"}:
+                self._collapse_completed_tool(target)
+                self._begin_thought_after_tool()
             return
         if status == "running":
+            self._flush_thinking()
             for item in self._live_tools:
                 if item.get("status") == "running":
                     item["status"] = "ok"
                     item["detail"] = item.get("detail") or "Готово"
                     self._sync_tool_event(item)
                     self._refresh_live_tool_widget(item)
+                    self._collapse_completed_tool(item)
             key = self._next_event_key()
             tool = {
                 "name": tool_name,
@@ -3318,6 +3374,9 @@ class WorkflowPage(QWidget):
         self._live_tools.append(tool)
         self._sync_tool_event(tool)
         self._append_live_tool_widget(tool)
+        if status in {"ok", "error", "skipped"}:
+            self._collapse_completed_tool(tool)
+            self._begin_thought_after_tool()
 
     def _sync_tool_event(self, tool: dict) -> None:
         key = str(tool.get("key") or "")
@@ -3419,7 +3478,8 @@ class WorkflowPage(QWidget):
             tool["detail"] = _skip_tool_detail()
             self._sync_tool_event(tool)
             self._refresh_live_tool_widget(tool)
-        self._tick_activity()
+            self._collapse_completed_tool(tool)
+        self._begin_thought_after_tool()
 
     def _merge_tool_detail(self, previous: str, incoming: str, status: str) -> str:
         placeholders = {
@@ -3676,7 +3736,6 @@ class WorkflowPage(QWidget):
             self._planning_stream = False
             self._execute_started = True
         if event_type in {"decision", "system", "status", "message"} and incoming.strip():
-            self._flush_thinking()
             if self._parse_tool_activity(incoming):
                 self._tick_activity()
                 return
@@ -3707,6 +3766,8 @@ class WorkflowPage(QWidget):
             return
         if event_type == "thinking" and incoming:
             self._append_thinking(incoming)
+            self._awaiting_thought = True
+            self._tick_activity()
             return
         if event_type == "final" and incoming:
             self._flush_thinking()
@@ -3721,6 +3782,9 @@ class WorkflowPage(QWidget):
     def _append_thinking(self, incoming: str) -> None:
         if not incoming:
             return
+        if (self._thinking_received or "").strip() == "Думает…":
+            self._thinking_received = ""
+            self._thinking_shown = ""
         delta = _stream_delta(self._thinking_received, incoming)
         if not delta:
             return
@@ -3914,9 +3978,6 @@ class WorkflowPage(QWidget):
             self._agent_status.setText("● Пробный прогон не запускался — нужно исправить черновик")
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
             return
-        playbook = (result.local_run or {}).get("playbook") or {}
-        if not isinstance(playbook, dict):
-            playbook = {}
         work = (result.local_run or {}).get("work_result") or {}
         if not isinstance(work, dict):
             work = {}
@@ -3940,7 +4001,7 @@ class WorkflowPage(QWidget):
         self._refresh_workflow_files()
         if report:
             self._push_event("Результат", report[:4000])
-        self._tests_ok = bool(playbook.get("demo_ok") or result.phase in {"tested", "ready"})
+        self._tests_ok = demo_run_passed(result, report)
         if self._tests_ok:
             self._push_event(
                 "Сохранение",
@@ -3958,7 +4019,11 @@ class WorkflowPage(QWidget):
             )
 
     def _show_design_result(self, result: WorkflowRecord) -> None:
-        if self._can_run_demo(result) or self._sdk_design_runtime(result):
+        if demo_run_passed(result) or self._tests_ok:
+            self._tests_ok = True
+            self._show_demo_result(result)
+            return
+        if self._can_run_demo(result):
             self._on_execute()
             return
         if self._draft_blocked_before_demo(result):
@@ -4649,14 +4714,21 @@ class WorkflowPage(QWidget):
             self._run_btn.setText("Исправляю…")
             self._on_plan()
             return
-        self._on_execute()
+        retry = bool(self._record) and (
+            self._demo_already_ran() or demo_run_passed(self._record) or self._tests_ok
+        )
+        self._on_execute(reexecute=retry)
 
     def _on_execute(self, reexecute: bool = False) -> None:
-        del reexecute
         if self._busy:
             return
         if self._record is None:
             self._on_plan()
+            return
+        if not reexecute and (demo_run_passed(self._record) or self._tests_ok):
+            self._tests_ok = True
+            self._show_demo_result(self._record)
+            self._render_all()
             return
         self._tests_ok = False
         self._post_build_question = None
@@ -4833,7 +4905,7 @@ class WorkflowPage(QWidget):
     def _on_schedule_requested(self) -> None:
         if self._record is None:
             return
-        if not (self._tests_ok or self._playbook().get("demo_ok")):
+        if not (self._tests_ok or demo_run_passed(self._record)):
             QMessageBox.information(
                 self,
                 "Прогон",
