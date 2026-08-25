@@ -19,6 +19,7 @@ WORKFLOW_ID = "754829e8-3af5-4192-ab34-44d8ef368d89"
 from app.api_client import ApiClient, ApiError
 from app.config import backend_url, erp_login, erp_password
 from app.sdk_agent import CursorSdkBridge
+from app.sdk_agent.files import prepare_sdk_workspace
 from app.sdk_agent.prompt import build_design_sdk_prompt, inferred_design_answers
 from app.tools.runtime_api import configure as configure_runtime_api
 from app.ui.pages.workflow_page import (
@@ -60,9 +61,6 @@ def main() -> int:
         _p(f"[design_prompt] backend failed ({exc}); using local fallback")
         design_prompt = _local_design_prompt_for_record(record)
 
-    sdk_prompt = build_design_sdk_prompt(record, design_prompt)
-    _p(f"[prompt] len={len(sdk_prompt)}")
-
     events: list[dict] = []
 
     def on_event(payload: dict) -> None:
@@ -97,6 +95,15 @@ def main() -> int:
     bridge = CursorSdkBridge()
     bridge.check_ready()
     run_cwd = bridge.workspace_cwd(WORKFLOW_ID)
+    prepare_sdk_workspace(
+        api,
+        WORKFLOW_ID,
+        run_cwd,
+        workflow=record,
+        extra_brief=design_prompt,
+    )
+    sdk_prompt = build_design_sdk_prompt(record, design_prompt)
+    _p(f"[prompt] len={len(sdk_prompt)} cwd={run_cwd}")
     _p(f"[run] mode=design cwd={run_cwd}")
 
     result = bridge.run(

@@ -21,7 +21,8 @@ from app.sdk_agent.tool_adapter import (
 from app.tools import ToolHostError
 
 DEFAULT_SDK_MODEL = "grok-4.6"
-LARGE_TOOL_RESULT_BYTES = 8_000
+LARGE_TOOL_RESULT_BYTES = 1_200
+ALWAYS_ENVELOPE_LIST_MIN = 2
 EXTERNALIZED_SAMPLE_ITEMS = 8
 EXTERNALIZED_NEXT_STEP = (
     "Full JSON is in result_file relative to cwd. "
@@ -544,7 +545,9 @@ class CursorSdkBridge:
         except TypeError:
             return result
         raw_bytes = len(raw.encode("utf-8", errors="replace"))
-        if raw_bytes <= LARGE_TOOL_RESULT_BYTES:
+        if result.get("externalized") and isinstance(result.get("result_file"), str):
+            return result
+        if not self._should_externalize_result(result, raw_bytes):
             return result
         base = Path(cwd).resolve()
         out_dir = base / "tool_results"
@@ -566,6 +569,15 @@ class CursorSdkBridge:
             "externalized": True,
             "next_step": EXTERNALIZED_NEXT_STEP,
         }
+
+    @staticmethod
+    def _should_externalize_result(result: dict[str, Any], raw_bytes: int) -> bool:
+        if raw_bytes > LARGE_TOOL_RESULT_BYTES:
+            return True
+        for value in result.values():
+            if isinstance(value, list) and len(value) >= ALWAYS_ENVELOPE_LIST_MIN:
+                return True
+        return False
 
     @staticmethod
     def _result_summary(result: dict[str, Any]) -> dict[str, Any]:

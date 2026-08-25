@@ -4,7 +4,102 @@ import json
 import re
 from pathlib import Path
 
-from app.api_client import ApiClient, WorkflowFileItem
+from app.api_client import ApiClient, WorkflowFileItem, WorkflowRecord
+
+AGENT_BRIEF_RELATIVE = "materials/agent.md"
+AGENTS_MD_RELATIVE = "AGENTS.md"
+
+
+def write_workspace_note(cwd: str, relative: str, text: str) -> str:
+    root = Path(cwd)
+    target = (root / relative).resolve()
+    if root.resolve() not in target.parents and target != root.resolve():
+        raise ValueError(f"refusing to write outside workspace: {relative}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    return Path(relative).as_posix()
+
+
+def seed_agent_brief(cwd: str, workflow: WorkflowRecord, *, extra: str = "") -> str:
+    """Write passport, plan, and optional design brief into materials/agent.md."""
+    parts: list[str] = [f"# {(workflow.title or 'agent').strip() or 'agent'}"]
+    notes = (workflow.notes or "").strip()
+    if notes:
+        parts.extend(["", "## Notes", notes])
+    document = (workflow.document_text or "").strip()
+    if document:
+        name = (workflow.document_name or "document").strip() or "document"
+        parts.extend(["", f"## Document ({name})", document])
+    plan = workflow.plan
+    if plan is not None:
+        parts.extend(["", "## Plan"])
+        if plan.title:
+            parts.append(f"Title: {plan.title}")
+        if plan.goal:
+            parts.append(f"Goal: {plan.goal}")
+        if plan.constraints:
+            parts.append("Constraints:")
+            parts.extend(f"- {item}" for item in plan.constraints if str(item).strip())
+        if plan.out_of_scope:
+            parts.append("Out of scope:")
+            parts.extend(f"- {item}" for item in plan.out_of_scope if str(item).strip())
+        steps = plan.steps or []
+        if steps:
+            parts.append("Steps:")
+            for step in steps:
+                text = step.action or step.title
+                label = step.id or step.title
+                if text:
+                    parts.append(f"- {label}: {text}")
+                if step.done_when:
+                    parts.append(f"  Done when: {step.done_when}")
+        if plan.test_criteria:
+            parts.append("Test criteria:")
+            parts.extend(f"- {item}" for item in plan.test_criteria if str(item).strip())
+        if plan.raw_text:
+            parts.extend(["", "Source passport:", plan.raw_text.strip()])
+    last = (workflow.last_result or "").strip()
+    if last:
+        parts.extend(["", "## Last successful run", last[:12000]])
+    extra_text = (extra or "").strip()
+    if extra_text:
+        parts.extend(["", "## Design brief", extra_text])
+    from app.sdk_agent.prompt import known_design_facts
+
+    facts = known_design_facts(workflow)
+    if facts:
+        parts.extend(["", "## Already known"])
+        parts.extend(f"- {item}" for item in facts)
+    body = "\n".join(parts).strip() + "\n"
+    return write_workspace_note(cwd, AGENT_BRIEF_RELATIVE, body)
+
+
+def seed_agents_md(cwd: str) -> str:
+    from app.sdk_agent.prompt import AGENTS_MD
+
+    return write_workspace_note(cwd, AGENTS_MD_RELATIVE, AGENTS_MD)
+
+
+def workspace_file_pointer() -> str:
+    return (
+        "Read AGENTS.md, materials/agent.md, and materials/manifest.json. "
+        "Details live in those files, not in this message."
+    )
+
+
+def prepare_sdk_workspace(
+    api: ApiClient,
+    workflow_id: str,
+    cwd: str,
+    *,
+    workflow: WorkflowRecord | None = None,
+    extra_brief: str = "",
+) -> str:
+    seed_agents_md(cwd)
+    seed_workflow_files(api, workflow_id, cwd)
+    if workflow is not None:
+        seed_agent_brief(cwd, workflow, extra=extra_brief)
+    return workspace_file_pointer()
 
 
 def seed_workflow_files(api: ApiClient, workflow_id: str, cwd: str) -> str:
@@ -28,25 +123,12 @@ def seed_workflow_files(api: ApiClient, workflow_id: str, cwd: str) -> str:
     )
     if not manifest:
         return (
-            "\n\n===== БАЗА ДОКУМЕНТОВ АГЕНТА =====\n"
-            "В рабочей папке есть materials/manifest.json, но база документов пока пуста. "
-            "Если для задачи нужен файл, задай пользователю вопрос через askQuestion и попроси "
-            "прикрепить файл, затем продолжай после ответа.\n"
-            "===== END БАЗА ДОКУМЕНТОВ АГЕНТА ====="
+            "Read materials/manifest.json. The document base is empty. "
+            "If you need a file, ask via askQuestion."
         )
-    listed = "\n".join(
-        f"- {item['filename']}: {item['path']} ({item.get('summary') or 'без summary'})"
-        for item in manifest
-    )
     return (
-        "\n\n===== БАЗА ДОКУМЕНТОВ АГЕНТА =====\n"
-        "Полные файлы лежат в рабочей папке Cursor SDK. Сначала прочитай "
-        "materials/manifest.json, затем нужные файлы через read/grep. "
-        "Для PDF/DOCX/изображений есть извлечённый текст в поле extracted_text_path.\n"
-        f"{listed}\n"
-        "Если нужного документа нет, задай пользователю вопрос через askQuestion и попроси "
-        "прикрепить файл, затем продолжай после ответа.\n"
-        "===== END БАЗА ДОКУМЕНТОВ АГЕНТА ====="
+        "Read materials/manifest.json, then the files you need. "
+        "If a document is missing, ask via askQuestion."
     )
 
 

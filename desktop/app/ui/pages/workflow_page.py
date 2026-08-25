@@ -4429,7 +4429,7 @@ class WorkflowPage(QWidget):
         events: list[dict] = []
         try:
             from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
-            from app.sdk_agent.files import seed_workflow_files
+            from app.sdk_agent.files import prepare_sdk_workspace
             from app.sdk_agent.prompt import build_design_sdk_prompt, inferred_design_answers
 
             bridge = CursorSdkBridge()
@@ -4472,8 +4472,14 @@ class WorkflowPage(QWidget):
                     self._stream_event.emit(event_type, text)
 
             run_cwd = bridge.workspace_cwd(workflow_id)
-            file_context = seed_workflow_files(self._api, workflow_id, run_cwd)
-            sdk_prompt = build_design_sdk_prompt(record, design_prompt) + file_context
+            prepare_sdk_workspace(
+                self._api,
+                workflow_id,
+                run_cwd,
+                workflow=record,
+                extra_brief=design_prompt,
+            )
+            sdk_prompt = build_design_sdk_prompt(record, design_prompt)
             self._sdk_bridge = bridge
             try:
                 result = bridge.run(
@@ -4533,7 +4539,7 @@ class WorkflowPage(QWidget):
         events: list[dict] = []
         try:
             from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
-            from app.sdk_agent.files import seed_workflow_files
+            from app.sdk_agent.files import prepare_sdk_workspace
             from app.sdk_agent.prompt import build_demo_sdk_prompt
 
             bridge = CursorSdkBridge()
@@ -4566,11 +4572,16 @@ class WorkflowPage(QWidget):
                     self._stream_event.emit(event_type, text)
 
             run_cwd = bridge.workspace_cwd(workflow_id)
-            file_context = seed_workflow_files(self._api, workflow_id, run_cwd)
+            prepare_sdk_workspace(
+                self._api,
+                workflow_id,
+                run_cwd,
+                workflow=record,
+            )
             self._sdk_bridge = bridge
             try:
                 result = bridge.run(
-                    prompt=build_demo_sdk_prompt(record) + file_context,
+                    prompt=build_demo_sdk_prompt(record, resume=bool(resume_agent_id)),
                     workflow_id=workflow_id,
                     cwd=run_cwd,
                     resume_agent_id=resume_agent_id,

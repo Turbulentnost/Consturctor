@@ -239,15 +239,19 @@ function modelView(result: JsonValue): JsonValue {
     return result;
   }
   const rec = result as Record<string, JsonValue>;
+  const resultFile =
+    typeof rec.result_file === "string" && rec.result_file.trim() ? rec.result_file : null;
   const raw = JSON.stringify(rec);
   if (raw.length <= MODEL_RESULT_CHARS) {
+    if (!resultFile) {
+      return rec;
+    }
     if (typeof rec.next_step === "string" && rec.next_step.trim()) {
       return rec;
     }
     return { ...rec, next_step: MODEL_NEXT_STEP };
   }
   const projects = Array.isArray(rec.projects) ? rec.projects.slice(0, 2) : undefined;
-  const resultFile = typeof rec.result_file === "string" ? rec.result_file : null;
   return {
     summary: rec.summary || "Result truncated for the model",
     total_projects: rec.total_projects ?? null,

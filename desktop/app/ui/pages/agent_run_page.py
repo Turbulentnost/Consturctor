@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.api_client import ApiClient, ApiError, WorkflowRecord
 from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
+from app.sdk_agent.files import prepare_sdk_workspace
 from app.sdk_agent.prompt import build_sdk_prompt
 from app.tools.hitl import (
     attach_pending_for,
@@ -296,9 +297,17 @@ class AgentRunPage(QWidget):
                 record = self._api.start_local_agent_run(workflow_id, message=message)
                 run_id = record.id
                 self._event_ready.emit({"type": "run", "run_id": run_id})
+                run_cwd = bridge.workspace_cwd(workflow_id)
+                prepare_sdk_workspace(
+                    self._api,
+                    workflow_id,
+                    run_cwd,
+                    workflow=self._workflow,
+                )
                 sdk_result = bridge.run(
                     prompt=build_sdk_prompt(self._workflow, message),
                     workflow_id=workflow_id,
+                    cwd=run_cwd,
                     on_event=handle_sdk_event,
                     confirm_writes=True,
                 )
