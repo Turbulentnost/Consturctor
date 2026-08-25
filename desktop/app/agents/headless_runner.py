@@ -97,6 +97,7 @@ class HeadlessRunner(QObject):
                 )
             self._toast("Агент запущен по триггеру", message[:180], workflow_id)
             from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
+            from app.sdk_agent.files import prepare_sdk_workspace
             from app.sdk_agent.prompt import build_sdk_prompt
 
             bridge = CursorSdkBridge()
@@ -129,9 +130,17 @@ class HeadlessRunner(QObject):
                     events.append(event)
 
             try:
+                run_cwd = bridge.workspace_cwd(workflow_id)
+                prepare_sdk_workspace(
+                    self._api,
+                    workflow_id,
+                    run_cwd,
+                    workflow=record,
+                )
                 result = bridge.run(
                     prompt=build_sdk_prompt(record, message),
                     workflow_id=workflow_id,
+                    cwd=run_cwd,
                     on_event=collect,
                 )
                 answer = str(result.get("answer") or "")

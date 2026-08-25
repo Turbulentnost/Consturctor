@@ -11,16 +11,19 @@ from app.api_client import (
     WorkflowRecord,
 )
 from app.sdk_agent.bridge import DEFAULT_SDK_MODEL, CursorSdkBridge, CursorSdkUnavailable
-from app.sdk_agent.files import seed_workflow_files
+from app.sdk_agent.files import seed_agent_brief, seed_agents_md, seed_workflow_files
 from app.sdk_agent.prompt import (
+    AGENTS_MD,
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
+    build_followup_sdk_prompt,
     build_sdk_prompt,
     inferred_design_answers,
 )
 from app.sdk_agent.tool_adapter import is_ask_question, sdk_design_tool_specs, sdk_tool_specs
 from app.tools.ac.turboproject_tools import _sample_for_agent
 from app.ui.pages.workflow_page import (
+    demo_run_passed,
     _answered_text_for,
     _draft_from_sdk_answer,
     _event_json,
@@ -65,10 +68,12 @@ def test_sdk_prompt_contains_plan_and_tool_instruction() -> None:
         ),
     )
     prompt = build_sdk_prompt(record, "проверь сейчас")
-    assert "Вызывай настоящий tool" in prompt
-    assert "Проверять сроки проектов" in prompt
-    assert "Прочитать проекты TurboProject" in prompt
+    assert "AGENTS.md" in prompt
+    assert "materials/agent.md" in prompt
     assert "проверь сейчас" in prompt
+    assert "Проверять сроки проектов" not in prompt
+    assert "Прочитать проекты TurboProject" not in prompt
+    assert "call the tool" not in prompt
 
 
 def test_demo_sdk_prompt_requires_playbook_and_tests() -> None:
@@ -82,37 +87,48 @@ def test_demo_sdk_prompt_requires_playbook_and_tests() -> None:
     assert "пробный прогон" in prompt
     assert "TESTS: PASS" in prompt
     assert "playbook" in prompt
-    assert "Продолжи работу этого агента" in prompt
-    assert "до 3 карточек" in prompt
+    assert "AGENTS.md" in prompt
+    assert "get_user_portfolio" not in prompt
     assert "limit 3-5" not in prompt
+    followup = build_demo_sdk_prompt(record, resume=True)
+    assert followup.startswith("Сделай пробный прогон")
+    assert "на русском" in followup
+    assert "AGENTS.md" not in followup
+    assert "get_user_portfolio" in AGENTS_MD
+    assert "result_file" in AGENTS_MD
+    assert "на русском" in AGENTS_MD
 
 
-def test_design_sdk_prompt_wraps_backend_design_prompt() -> None:
+def test_design_sdk_prompt_is_short_and_points_to_materials() -> None:
     record = WorkflowRecord(id="wf-1", title="Контроль сроков", phase="new")
     prompt = build_design_sdk_prompt(record, "Верни ТОЛЬКО один JSON-объект")
-    assert "локальный Cursor SDK агент" in prompt
-    assert "customTools" in prompt
-    assert "required_clarifications" in prompt
+    assert "AGENTS.md" in prompt
+    assert "materials/agent.md" in prompt
     assert "askQuestion" in prompt
-    assert "не ищи его в MCP" in prompt
-    assert "додумывая бизнес-правило" in prompt
+    assert "JSON-черновик" in prompt
+    assert "на русском" in prompt
     assert "QUESTION:" not in prompt
-    assert "web_search" in prompt
-    assert "Верни ТОЛЬКО один JSON-объект" in prompt
-    assert "не пиши, что MCP не найден" in prompt
+    assert "web_search" not in prompt
+    assert "workspace.powershell_run" not in prompt
+    assert "Верни ТОЛЬКО один JSON-объект" not in prompt
+    assert "customTools" not in prompt
+    assert "required_clarifications" in AGENTS_MD
+    assert "Триггер не заменяет остальные вопросы" in AGENTS_MD
+    assert "Задавай столько вопросов, сколько реальных пробелов" in AGENTS_MD
+    assert "не ищи его в MCP" in AGENTS_MD
+    assert "Не пиши, что MCP не найден" in AGENTS_MD
     assert "расписания, периода, получателя или критерия успеха" not in prompt
 
 
 def test_design_sdk_prompt_asks_logic_gaps_before_json() -> None:
     record = WorkflowRecord(id="wf-1", title="Контроль сроков", phase="new")
     prompt = build_design_sdk_prompt(record, "Верни JSON")
-    assert "после закрытых пробелов" in prompt
-    assert "без JSON" in prompt
-    assert "workspace.powershell_run" in prompt
-    assert "Live-данные бери через Constructor tools" in prompt
-    assert "externalized=true" in prompt
-    assert "второй круг" in prompt
+    assert "Когда пробелы закрыты" in prompt
+    assert "askQuestion" in prompt
     assert "сразу верни финальный JSON" not in prompt
+    assert "после закрытых пробелов" in AGENTS_MD
+    assert "без JSON" in AGENTS_MD
+    assert "второй круг размышлений" in AGENTS_MD
 
 
 def test_design_sdk_prompt_infers_event_trigger() -> None:
@@ -123,9 +139,7 @@ def test_design_sdk_prompt_infers_event_trigger() -> None:
         notes="Событийный триггер: событие вместо расписания, запуск при нарушении SLA.",
     )
     prompt = build_design_sdk_prompt(record, "Верни JSON")
-    assert "Уже выведено из материалов" in prompt
-    assert "when_to_run: событийный триггер" in prompt
-    assert "не спрашивай расписание" in prompt
+    assert "when_to_run: событийный триггер" not in prompt
     assert inferred_design_answers(record) == [
         ("Когда запускать агента?", "событийный триггер из материалов")
     ]
@@ -149,8 +163,8 @@ def test_design_sdk_prompt_infers_labeled_business_params() -> None:
         "отчёт содержит риски или пишет, что рисков нет.",
     ) in answers
     prompt = build_design_sdk_prompt(record, "Верни JSON")
-    assert "recipient: руководитель проекта" in prompt
-    assert "success_criteria: отчёт содержит риски" in prompt
+    assert "recipient: руководитель проекта" not in prompt
+    assert "success_criteria: отчёт содержит риски" not in prompt
 
 
 def test_design_sdk_prompt_does_not_infer_schedule_from_process_wording() -> None:
@@ -182,6 +196,14 @@ def test_design_stream_finishes_only_on_json_or_done() -> None:
             }
         ]
     ) is True
+    assert design_stream_should_finish(
+        [
+            {
+                "type": "thinking",
+                "text": '{"goal":"Проверять сроки","steps":[{"id":"s1","title":"Проверить"}]}',
+            }
+        ]
+    ) is True
 
 
 def test_sdk_design_transcript_extracts_json_from_events() -> None:
@@ -209,11 +231,15 @@ def test_sdk_design_transcript_extracts_json_from_events() -> None:
     assert "ТОЛЬКО один валидный JSON" in repair
 
 
-def test_run_sdk_prompt_lists_constructor_tools() -> None:
+def test_run_sdk_prompt_does_not_dump_tool_catalog() -> None:
     record = WorkflowRecord(id="wf-1", title="Контроль сроков", phase="done")
     prompt = build_sdk_prompt(record, "проверь сейчас")
-    assert "custom-user-tools" in prompt
-    assert "web_search" in prompt
+    assert "AGENTS.md" in prompt
+    assert "на русском" in prompt
+    assert "customTools" not in prompt
+    assert "web_search" not in prompt
+    assert "- turboproject." not in prompt
+    assert build_followup_sdk_prompt("ответ: ежедневно") == "ответ: ежедневно"
 
 
 def test_sdk_event_json_parses_structured_payload() -> None:
@@ -337,6 +363,10 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert "force: true" in text
     assert "settleRun" in text
     assert "playbookDraftReady" in text
+    assert "testsPassReady" in text
+    assert "thought +=" in text
+    assert "finishIfReady" in text
+    assert "TESTS: PASS" in text
     assert "result: event.result" in text
     assert 'provider === "custom-user-tools"' in text
     assert "skipped" in text
@@ -392,9 +422,22 @@ def test_record_ready_for_sdk_demo_clears_server_clarify_gate() -> None:
     ready = record_ready_for_sdk_demo(record)
     assert ready.phase == "designed"
     assert ready.plan is not None
-    assert ready.plan.unanswered() == []
-    assert ready.local_run["can_run_demo"] is True
+    unanswered = ready.plan.unanswered()
+    assert unanswered
+    assert "Когда запускать" in unanswered[0].question
+    assert ready.local_run["can_run_demo"] is False
     assert design_ready_for_demo(ready) is True
+
+    known = WorkflowRecord(
+        id="wf-1",
+        title="Агент",
+        phase="clarify",
+        notes="Когда запускать: ежедневно утром",
+        local_run={"playbook_draft": {"when_to_run": "ежедневно утром"}},
+    )
+    ready_known = record_ready_for_sdk_demo(known)
+    assert ready_known.local_run["can_run_demo"] is True
+    assert (ready_known.plan.unanswered() if ready_known.plan else []) == []
 
 
 def test_sdk_design_ready_for_demo_even_if_validation_blocked() -> None:
@@ -412,6 +455,21 @@ def test_sdk_design_ready_for_demo_even_if_validation_blocked() -> None:
         },
     )
     assert design_ready_for_demo(record) is True
+
+
+def test_sdk_demo_does_not_autorun_after_tests_pass() -> None:
+    record = WorkflowRecord(
+        id="wf-1",
+        title="A",
+        phase="designed",
+        last_result="The control circuit worked.\nTESTS: PASS",
+        local_run={
+            "design_runtime": "cursor-sdk",
+            "validation": {"demo_started": True, "can_run_demo": True},
+        },
+    )
+    assert design_ready_for_demo(record) is True
+    assert demo_run_passed(record) is True
 
 
 def test_extract_json_object_uses_last_brace() -> None:
@@ -494,11 +552,59 @@ def test_bridge_externalizes_large_tool_result(tmp_path: Path) -> None:
     assert compact["summary"]["projects_count"] == 40
     assert compact["summary"]["total_projects"] == 251
     assert compact["next_step"]
-    assert len(compact["sample"]["projects"]) == 8
+    assert "sample" not in compact
     assert "preview" not in compact
     path = tmp_path / compact["result_file"]
     assert path.is_file()
     assert "big payload" in path.read_text(encoding="utf-8")
+
+
+def test_bridge_keeps_small_list_result_inline(tmp_path: Path) -> None:
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+    result = {
+        "projects": [{"id": "1", "name": "A"}, {"id": "2", "name": "B"}],
+        "total": 2,
+    }
+    compact = bridge._externalize_large_result(
+        tool="turboproject.get_user_portfolio",
+        request_id="req-2",
+        result=result,
+        cwd=str(tmp_path),
+    )
+    assert compact == result
+    assert "result_file" not in compact
+    assert "next_step" not in compact
+
+
+def test_bridge_externalizes_long_list_even_when_items_tiny(tmp_path: Path) -> None:
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+    result = {"entities": [{"name": f"E{index}"} for index in range(60)]}
+    compact = bridge._externalize_large_result(
+        tool="onec.odata_catalog",
+        request_id="req-4",
+        result=result,
+        cwd=str(tmp_path),
+    )
+    assert compact["externalized"] is True
+    assert compact["result_file"]
+    assert compact["next_step"]
+    assert compact["summary"]["entities_count"] == 60
+    assert "sample" not in compact
+    assert (tmp_path / compact["result_file"]).is_file()
+
+
+def test_bridge_keeps_tiny_scalar_result_inline(tmp_path: Path) -> None:
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+    result = {"ok": True, "employee": "Ivanov I.I."}
+    compact = bridge._externalize_large_result(
+        tool="users.current",
+        request_id="req-3",
+        result=result,
+        cwd=str(tmp_path),
+    )
+    assert compact == result
+    assert "result_file" not in compact
+    assert "next_step" not in compact
 
 
 def test_cursor_completed_tool_status_is_ok() -> None:
@@ -636,6 +742,39 @@ def test_seed_workflow_files_materializes_manifest(tmp_path: Path) -> None:
     assert (tmp_path / "materials" / "001_reglament.txt.txt").read_text(encoding="utf-8")
     assert "materials/manifest.json" in hint
     assert "askQuestion" in hint
+    assert "БАЗА ДОКУМЕНТОВ" not in hint
+
+
+def test_seed_agent_brief_writes_plan_and_design_text(tmp_path: Path) -> None:
+    record = WorkflowRecord(
+        id="wf-1",
+        title="Контроль сроков",
+        phase="designed",
+        notes="Получатель: руководитель",
+        document_text="Регламент контроля сроков",
+        plan=WorkflowPlan(
+            goal="Проверять сроки проектов",
+            steps=[
+                WorkflowPlanStep(
+                    id="s1",
+                    title="Собрать данные",
+                    action="Прочитать проекты TurboProject",
+                    done_when="Есть список проектов",
+                )
+            ],
+        ),
+    )
+    path = seed_agent_brief(str(tmp_path), record, extra="Верни ТОЛЬКО один JSON-объект")
+    text = (tmp_path / path).read_text(encoding="utf-8")
+    assert path == "materials/agent.md"
+    assert "Язык: русский" in text
+    assert "Проверять сроки проектов" in text
+    assert "Прочитать проекты TurboProject" in text
+    assert "Верни ТОЛЬКО один JSON-объект" in text
+    assert "recipient: руководитель" in text
+    agents = seed_agents_md(str(tmp_path))
+    assert agents == "AGENTS.md"
+    assert "customTools" in (tmp_path / agents).read_text(encoding="utf-8")
 
 
 def test_mcp_tool_name_unwraps_constructor_tool() -> None:

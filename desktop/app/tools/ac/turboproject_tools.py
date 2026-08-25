@@ -23,18 +23,18 @@ GET_OVERDUE_PROJECTS_TOOL_NAME = "turboproject.get_overdue_projects"
 GET_BLOCKED_TASKS_TOOL_NAME = "turboproject.get_projects_with_blocked_tasks"
 GET_WORKLOAD_SUMMARY_TOOL_NAME = "turboproject.get_workload_summary"
 GET_PORTFOLIO_SUMMARY_TOOL_NAME = "turboproject.get_project_portfolio_summary"
+GET_USER_PORTFOLIO_TOOL_NAME = "turboproject.get_user_portfolio"
 _SAMPLE_LIMIT = 5
 _MAX_OVERDUE_ITEMS = 8
 _MAX_RESOURCES = 20
 
 TOOL_DESCRIPTION = (
-    "Compatibility-инструмент TurboProject. Для поиска и отбора просрочек используй "
-    "turboproject.search_projects (индекс с finish_date/plan_finish_1c, sort_by=finish_date), "
-    "затем turboproject.get_project по 2-3 худшим file_id. "
-    "turboproject.get_overdue_projects / get_projects_with_blocked_tasks - только с project_ids "
-    "из индекса или фильтром manager, не по всему портфелю. Для задач проекта - "
-    "turboproject.get_project_tasks, для карточки - turboproject.get_project. "
-    "Учётка уже в backend/.env — не спрашивай логин и не вызывай API сам.\n\n"
+    "Compatibility-инструмент TurboProject. Проекты текущего пользователя - "
+    "turboproject.get_user_portfolio(employee = ФИО из users.current): индекс с "
+    "owner/participants, без карточек. Поиск по названию - search_projects. "
+    "Карточка - get_project, только если нужны задачи или просрочки. "
+    "Большой ответ может прийти файлом: разбирай result_file Read или кодом, "
+    "не вызывай тот же tool снова. Учётка уже в backend/.env.\n\n"
     "Итог:\n"
     "• total_projects — сколько файлов вернул список;\n"
     "• projects_with_1c_count — сколько из них с 1С;\n"
@@ -42,29 +42,24 @@ TOOL_DESCRIPTION = (
     "• projects — строки индекса проектов с 1С.\n\n"
     "Поля индекса:\n"
     "• file_id — ProjectFile.id;\n"
-    "• original_name — имя загруженного MPP;\n"
-    "• uploaded_at — дата загрузки MPP;\n"
-    "• project_name — project.name или имя файла;\n"
-    "• dates — только даты, доступные в списке;\n"
-    "• data_1c — короткие поля 1С, если они есть в списке.\n\n"
-    "Аргументы: query (только название / имя MPP / номер 1С, не фраза), "
-    "manager, file_id (тогда вернётся карточка), limit. "
-    "После индекса сними не больше 3 карточек с риском и пиши результат. "
-    "Не обходи весь портфель."
+    "• owner / curator / customer / participants — люди из 1С;\n"
+    "• project_name, dates, data_1c.\n\n"
+    "Аргументы: query, manager/employee, file_id, limit."
 )
 
 GET_TOOL_DESCRIPTION = (
     "Compatibility-карточка одного проекта TurboProject по file_id из turboproject.list. "
     "Для новых сценариев используй turboproject.get_project(project_id, fields). "
     "Возвращает даты MSP/1С, статистику задач, просрочки, ресурсы и data_1c. "
-    "Один file_id за вызов. За прогон максимум 3 вызова, затем пиши отчёт. "
-    "Не вызывай без file_id и не снимай весь портфель."
+    "Один file_id за вызов. Не вызывай без file_id. "
+    "Портфель пользователя сначала get_user_portfolio, не серией карточек."
 )
 
 _FILTER_PROPERTIES = {
     "query": {"type": "string", "description": "Название, имя MPP или номер 1С"},
     "status": {"type": "string", "description": "Статус проекта из 1С"},
-    "owner": {"type": "string", "description": "Руководитель/куратор проекта"},
+    "owner": {"type": "string", "description": "Руководитель/куратор/заказчик проекта"},
+    "employee": {"type": "string", "description": "ФИО сотрудника в owner/participants"},
     "department": {"type": "string", "description": "Подразделение проекта"},
     "date_from": {"type": "string", "description": "Начало периода ISO date"},
     "date_to": {"type": "string", "description": "Конец периода ISO date"},
@@ -85,7 +80,8 @@ _NEW_TOOL_SPECS = (
     (
         SEARCH_PROJECTS_TOOL_NAME,
         "Поиск проектов TurboProject",
-        "Индексный поиск проектов. Используй для выбора project_id/file_id. Не читает карточки и всегда возвращает limit/cursor.",
+        "Индексный поиск. В строке owner, curator, customer, participants. Не читает карточки. "
+        "Для проектов сотрудника используй get_user_portfolio.",
         _tool_schema(
             {
                 **_FILTER_PROPERTIES,
@@ -95,6 +91,19 @@ _NEW_TOOL_SPECS = (
                     "description": "Сортировка индексных строк",
                 },
             }
+        ),
+    ),
+    (
+        GET_USER_PORTFOLIO_TOOL_NAME,
+        "Портфель сотрудника TurboProject",
+        "Все проекты сотрудника одним вызовом (руководитель, куратор, заказчик или зам). "
+        "employee = users.current.user.fio. Без карточек. Большой ответ разбирай из result_file.",
+        _tool_schema(
+            {
+                **_FILTER_PROPERTIES,
+                "employee": {"type": "string", "description": "ФИО из users.current.user.fio"},
+            },
+            required=["employee"],
         ),
     ),
     (
@@ -432,7 +441,7 @@ class TurboProjectServerTool(BaseTool):
                 error_message=str(exc),
             )
         result = data.get("result") if isinstance(data, dict) else {}
-        if isinstance(result, dict):
+        if isinstance(result, dict) and self.definition.name != GET_USER_PORTFOLIO_TOOL_NAME:
             result = _sample_for_agent(result, arguments)
         return ToolCallResult(
             ok=True,
@@ -446,7 +455,10 @@ def _sample_for_agent(result: dict, arguments: dict) -> dict:
     projects = payload.get("projects")
     if not isinstance(projects, list):
         return payload
-    focused = any(arguments.get(key) for key in ("query", "manager", "file_id"))
+    focused = any(
+        arguments.get(key)
+        for key in ("query", "manager", "file_id", "employee", "owner", "project_ids")
+    )
     raw_limit = arguments.get("limit")
     cap = _SAMPLE_LIMIT
     if raw_limit not in (None, ""):

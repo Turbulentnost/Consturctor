@@ -13,6 +13,7 @@ from app.services.turboproject import (
     GET_PROJECT_METRICS_TOOL_NAME,
     GET_PROJECT_TASKS_TOOL_NAME,
     GET_PROJECT_TOOL_NAME,
+    GET_USER_PORTFOLIO_TOOL_NAME,
     LIST_TOOL_NAME,
     SEARCH_PROJECTS_TOOL_NAME,
     TOOL_NAME,
@@ -23,6 +24,8 @@ from app.services.turboproject import (
     get_project,
     get_project_card,
     get_project_portfolio_summary,
+    get_user_portfolio,
+    build_project_index_item,
     get_project_tasks,
     build_project_payload,
     invoke_turboproject,
@@ -47,7 +50,7 @@ def test_tool_registered() -> None:
     for item in list_tools():
         if item["name"] == TOOL_NAME:
             assert item.get("execution") == "server"
-            assert "turboproject.search_projects" in item.get("description", "")
+            assert "turboproject.get_user_portfolio" in item.get("description", "")
 
 
 def test_unique_resource_names_dedupes() -> None:
@@ -198,6 +201,8 @@ def test_project_index_does_not_read_cards(monkeypatch) -> None:
 
     monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._index_cache", None)
+    monkeypatch.setattr("app.services.turboproject._card_cache", {})
 
     result = list_project_index({"limit": 50})
 
@@ -210,6 +215,10 @@ def test_project_index_does_not_read_cards(monkeypatch) -> None:
             "uploaded_at": "2026-01-01T00:00:00",
             "has_1c": True,
             "project_name": "А.mpp",
+            "owner": "",
+            "curator": "",
+            "customer": "",
+            "participants": [],
             "dates": {
                 "start_date": None,
                 "finish_date": None,
@@ -277,6 +286,7 @@ def test_search_projects_does_not_read_cards(monkeypatch) -> None:
 
     monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._index_cache", None)
 
     result = invoke_turboproject(SEARCH_PROJECTS_TOOL_NAME, {"status": "Активный", "limit": 1})
 
@@ -285,6 +295,79 @@ def test_search_projects_does_not_read_cards(monkeypatch) -> None:
     assert result["matched_projects_count"] == 1
     assert [item["file_id"] for item in result["projects"]] == [10]
     assert "next_cursor" in result
+    assert result["projects"][0]["owner"] == "Иванов"
+    assert "Иванов" in result["projects"][0]["participants"]
+
+
+def test_index_item_maps_live_people_fields() -> None:
+    row = build_project_index_item(
+        {
+            "id": 244,
+            "original_name": "A.mpp",
+            "has_1c": True,
+            "rukovoditel_1c": "Гутин Константин Игоревич",
+            "kurator_1c": "Донцова Анна Егоровна",
+            "zakazchik_1c": "Донцова Анна Егоровна",
+            "status_1c": "ВРаботе",
+            "nomer_proekta": "НПО/1",
+            "project": {"name": "Проект А", "author": "Гутин Константин Игоревич"},
+        }
+    )
+    assert row["owner"] == "Гутин Константин Игоревич"
+    assert row["curator"] == "Донцова Анна Егоровна"
+    assert row["data_1c"]["rukovoditel"] == "Гутин Константин Игоревич"
+    assert "Донцова Анна Егоровна" in row["participants"]
+
+
+def test_get_user_portfolio_filters_index_without_cards(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_api_get(path: str, _token: str) -> dict:
+        calls.append(path)
+        assert path == "/api/projects/files"
+        return {
+            "items": [
+                {
+                    "id": 10,
+                    "has_1c": True,
+                    "original_name": "A.mpp",
+                    "rukovoditel_1c": "Мангасарян Давид Каренович",
+                    "project": {"name": "Мой"},
+                },
+                {
+                    "id": 11,
+                    "has_1c": True,
+                    "original_name": "B.mpp",
+                    "kurator_1c": "Мангасарян Давид Каренович",
+                    "rukovoditel_1c": "Другой",
+                    "project": {"name": "Кураторский"},
+                },
+                {
+                    "id": 12,
+                    "has_1c": True,
+                    "original_name": "C.mpp",
+                    "rukovoditel_1c": "Чужой",
+                    "project": {"name": "Чужой"},
+                },
+            ]
+        }
+
+    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._index_cache", None)
+
+    empty = get_user_portfolio({})
+    assert empty["needs"] == "users.current"
+    assert empty["projects"] == []
+
+    result = invoke_turboproject(
+        GET_USER_PORTFOLIO_TOOL_NAME,
+        {"employee": "Мангасарян Давид"},
+    )
+    assert calls == ["/api/projects/files"]
+    assert result["mode"] == "user_portfolio"
+    assert result["matched_projects_count"] == 2
+    assert [item["file_id"] for item in result["projects"]] == [10, 11]
 
 
 def test_get_project_reads_one_card_and_selects_fields(monkeypatch) -> None:
@@ -303,6 +386,7 @@ def test_get_project_reads_one_card_and_selects_fields(monkeypatch) -> None:
 
     monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._card_cache", {})
 
     result = get_project({"project_id": 10, "fields": ["identity", "data_1c"]})
 
@@ -359,6 +443,7 @@ def test_get_project_tasks_filters_overdue_status_assignee_and_paginates(monkeyp
 
     monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._card_cache", {})
 
     result = get_project_tasks(
         {
@@ -404,11 +489,13 @@ def test_get_overdue_projects_sorts_by_delay_days(monkeypatch) -> None:
 
     monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._index_cache", None)
+    monkeypatch.setattr("app.services.turboproject._card_cache", {})
 
-    result = get_overdue_projects({"limit": 2})
+    result = get_overdue_projects({"project_ids": [10, 11], "limit": 2})
 
     assert result["mode"] == "overdue_projects"
-    assert [item["project_id"] for item in result["projects"]] == [10, 11]
+    assert [item["project_id"] for item in result["projects"]] == ["10", "11"]
     assert result["projects"][0]["delay_days"] >= result["projects"][1]["delay_days"]
 
 
@@ -452,6 +539,7 @@ def test_get_project_portfolio_summary_groups_by_status_department_owner(monkeyp
 
     monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._index_cache", None)
 
     by_status = get_project_portfolio_summary({"group_by": "status"})
     by_department = get_project_portfolio_summary({"group_by": "department"})
@@ -476,6 +564,7 @@ def test_api_catalog_contains_new_turboproject_names() -> None:
         GET_OVERDUE_PROJECTS_TOOL_NAME,
         GET_BLOCKED_TASKS_TOOL_NAME,
         GET_PORTFOLIO_SUMMARY_TOOL_NAME,
+        GET_USER_PORTFOLIO_TOOL_NAME,
     }
     names = {item["name"] for item in list_tools()}
     assert expected <= names

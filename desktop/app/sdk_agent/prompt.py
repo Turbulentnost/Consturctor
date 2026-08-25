@@ -5,8 +5,58 @@ import re
 from app.api_client import WorkflowRecord
 from app.sdk_agent.tool_adapter import sdk_tool_specs
 
+AGENTS_MD = """\
+# Локальный агент Constructor
+
+Инструменты Constructor уже подключены как customTools. Не ищи проектный MCP или mcp.json.
+Не пиши, что MCP не найден. Не вставляй JSON вызова инструмента в чат: вызывай инструмент.
+Сначала прочитай materials/agent.md и materials/manifest.json. Детали в этих файлах, не в сообщении пользователя.
+Если инструмент вернул result_file: открывай этот файл встроенным Read порциями (offset/limit) или ищи в нем нужное. Не читай весь файл сразу и не вызывай тот же инструмент снова.
+askQuestion: один пробел, один вопрос. После ответа пользователя продолжай с этого ответа. Не начинай заново.
+Портфель текущего пользователя: users.current, затем turboproject.get_user_portfolio(employee=FIO). Не сканируй карточки в поисках owner.
+Вызывай get_project только если нужны задачи, SLA или риски, которых нет в индексе.
+
+## Язык
+
+Весь ход только на русском: размышления (thinking), вопросы, ответы в чате, значения JSON, playbook и любые файлы, если ты их создаёшь.
+Имена инструментов, имена полей JSON, TESTS: PASS и TESTS: FAIL не переводи.
+
+## Проектирование
+
+Сначала собери playbook будущего агента, а не отчет по материалам.
+Закрывай через askQuestion каждый пробел логики: фильтр, объем, получателя, правило решения, критерий успеха, порядок шагов. Задавай столько вопросов, сколько реальных пробелов.
+Триггер запуска (когда запускать агента) спрашивай всегда, если его нет в материалах, этот вопрос пропускать нельзя. Ответ запиши в when_to_run.
+Если в материалах не задан итоговый выходной результат (что именно агент должен выдать в конце: формат и содержание, например отчет, файл Excel, уведомление), обязательно спроси это через askQuestion.
+Триггер не заменяет остальные вопросы: продолжай спрашивать другие пробелы так же, как раньше.
+Если шаг будет угадывать фильтр, объем, получателя или правило решения, закрой этот пробел через askQuestion.
+Не выдумывай тему только потому, что она типичная. Спрашивай пробел из этих материалов.
+Не спрашивай то, что материалы уже говорят. Не подставляй дефолт вместо вопроса.
+Пока пробел открыт, игнорируй любую фразу вроде "верни только JSON".
+askQuestion это инструмент Constructor: не ищи его в MCP и не описывай его JSON-схему.
+В одном вызове ровно один пробел и один вопрос. Не переформулируй вопрос, на который уже есть ответ.
+JSON-черновик пиши после закрытых пробелов, не вместо вопросов.
+Не заканчивай проектирование текстом вроде "уточнения не нужны" без JSON.
+После JSON остановись. Не начинай второй круг размышлений и не повторяй план.
+required_clarifications: только незакрытые пробелы.
+Схема JSON и правила проектирования в materials/agent.md.
+
+## Прогон
+
+Сначала вызови инструменты и получи реальные данные, только потом делай выводы.
+Результат работы агента это конкретный итог бизнес-процесса: найденные факты, принятые решения, выполненные действия. Это не твои размышления и не пересказ плана.
+Создавать файл или нет решает согласованный итоговый выходной результат (что агент должен выдать в конце) и явная просьба пользователя, а не общее правило.
+Если согласованный результат это документ (Word/Excel/PDF/файл) или пользователь просит файл, создай его сам встроенными инструментами Cursor (edit/запись или инструмент экспорта) и заполни реальными данными из инструментов.
+Если согласованный результат это сообщение, уведомление или ответ, файл не создавай, пиши итог в ответ в чат.
+Никогда не записывай размышления (thinking) или ход рассуждений в файлы. Размышления остаются в thinking.
+Не создавай файлы, которые пересказывают задание, план или твои намерения. Такой файл не является результатом.
+В конце укажи TESTS: PASS или TESTS: FAIL и короткий итог в ответе в чат.
+"""
+
+RULES = AGENTS_MD  # backward-compatible alias for tests and callers
+
 
 def format_tool_catalog(limit: int = 80) -> str:
+    """Debug helper. Do not dump this catalog into the user message."""
     lines: list[str] = []
     for item in sdk_tool_specs()[: max(limit, 0)]:
         name = str(item.get("name") or "").strip()
@@ -64,7 +114,7 @@ def _first_labeled_value(text: str, labels: tuple[str, ...]) -> str:
     return ""
 
 
-def _inferred_design_facts(workflow: WorkflowRecord) -> list[str]:
+def known_design_facts(workflow: WorkflowRecord) -> list[str]:
     answers = inferred_design_answers(workflow)
     facts: list[str] = []
     when_answer = next((answer for question, answer in answers if "Когда" in question), "")
@@ -87,115 +137,46 @@ def _inferred_design_facts(workflow: WorkflowRecord) -> list[str]:
 
 
 def build_design_sdk_prompt(workflow: WorkflowRecord, design_prompt: str) -> str:
-    prompt = (design_prompt or "").strip()
-    catalog = format_tool_catalog()
-    inferred = _inferred_design_facts(workflow)
-    header = [
-        "Ты локальный Cursor SDK агент Constructor.",
-        "Инструменты Constructor уже подключены как customTools (внутренний MCP custom-user-tools).",
-        "Это не проектные MCP-серверы Cursor и не mcp.json репозитория.",
-        "Не ищи MCP в проекте и не пиши, что MCP не найден: список инструментов ниже.",
-        "Live-данные бери через Constructor tools; файлы, код и анализ делай tools Cursor SDK.",
-        "Если Constructor tool вернул externalized=true и result_file: продолжай по summary и sample.",
-        "Не вызывай тот же tool повторно. Cursor Read по result_file - только если нужна одна запись.",
-        "Сначала собери инструкцию будущего агента, а не отчёт по материалам.",
-        "Перед JSON проверь: сможет ли агент на следующем запуске отработать,",
-        "не додумывая бизнес-правило, которого нет в тексте.",
-        "Если для шага пришлось бы угадать фильтр, охват, повод запуска,",
-        "адресата или правило решения — спроси этот пробел через askQuestion.",
-        "Не ограничивайся заранее заданным списком тем и не спрашивай тему",
-        "только потому, что она типичная. Спрашивай пробел из этих материалов.",
-        "Не спрашивай то, что материалы уже прямо говорят.",
-        "Не подставляй очевидный дефолт вместо вопроса.",
-        "Игнорируй требование сразу вернуть только JSON, если такой пробел ещё открыт.",
-        "askQuestion уже есть в списке Constructor tools: не ищи его в MCP",
-        "и не описывай JSON-схему. В одном вызове ровно один пробел и один вопрос.",
-        "Не переформулируй вопрос, на который ответ уже получен.",
-        "После ответа запиши значение в JSON (answers и подходящие поля черновика).",
-        "В required_clarifications оставляй только то, на что ответа ещё нет.",
-        "JSON-черновик пиши после закрытых пробелов, не вместо вопросов.",
-        "Не заканчивай проектирование текстом вроде 'уточнения не нужны' без JSON.",
-        "После JSON остановись. Не начинай второй круг thinking и не повторяй план.",
-        "Показывай ход проектирования коротко, по делу, шаг за шагом.",
-        "Финальный ответ должен содержать пригодный JSON-черновик по схеме ниже.",
-        "",
-        "Доступные инструменты Constructor:",
-        catalog,
-    ]
-    if inferred:
-        header.extend(["", "Уже выведено из материалов:"])
-        header.extend(f"- {item}" for item in inferred)
-    if prompt:
-        return "\n".join([*header, "", prompt])
-    return build_sdk_prompt(
-        workflow,
-        "Спроектируй инструкцию агента: сформируй план достижения цели и верни JSON-черновик шагов.",
+    del design_prompt  # written to materials/agent.md by the caller
+    del workflow  # known facts are written to materials/agent.md
+    return (
+        "Прочитай AGENTS.md и materials/agent.md. "
+        "Спроектируй playbook агента по этим файлам. "
+        "Один открытый пробел закрывай через askQuestion. "
+        "Когда пробелы закрыты, напиши JSON-черновик и остановись. "
+        "Думай, спрашивай и пиши файлы только на русском."
     )
 
 
 def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
-    plan = workflow.plan
-    parts: list[str] = [
-        "Ты локальный ИИ-агент Constructor.",
-        "Работай только по паспорту агента и используй доступные tools, когда нужны живые данные.",
-        "Инструменты Constructor переданы как customTools (custom-user-tools), не как проектный MCP.",
-        "Не пиши, что MCP не найден, если нужный инструмент есть в списке ниже.",
-        "Не пиши JSON вызова инструмента в чат. Вызывай настоящий tool.",
-        "Live-данные бери через Constructor tools; файлы, код и анализ делай tools Cursor SDK.",
-        "Если Constructor tool вернул externalized=true и result_file: продолжай по summary и sample.",
-        "Не вызывай тот же tool повторно. Cursor Read по result_file - только если нужна одна запись.",
-        "После 1-3 живых фактов пиши WORK_RESULT. Не снимай весь портфель карточками.",
-        "",
-        "Доступные инструменты Constructor:",
-        format_tool_catalog(),
-        "",
-        f"Название агента: {workflow.title or 'ИИ-агент'}",
-    ]
-    if plan is not None:
-        if plan.goal:
-            parts.extend(["", f"Цель: {plan.goal}"])
-        if plan.constraints:
-            parts.extend(["", "Ограничения:"])
-            parts.extend(f"- {item}" for item in plan.constraints if str(item).strip())
-        if plan.out_of_scope:
-            parts.extend(["", "Запрещено / вне рамок:"])
-            parts.extend(f"- {item}" for item in plan.out_of_scope if str(item).strip())
-        steps = plan.steps or []
-        if steps:
-            parts.extend(["", "Шаги работы:"])
-            for step in steps:
-                text = step.action or step.title
-                if text:
-                    parts.append(f"- {step.id or step.title}: {text}")
-                if step.done_when:
-                    parts.append(f"  Готово когда: {step.done_when}")
-        if plan.test_criteria:
-            parts.extend(["", "Критерии результата:"])
-            parts.extend(f"- {item}" for item in plan.test_criteria if str(item).strip())
-        if plan.raw_text:
-            parts.extend(["", "Исходный паспорт/инструкция:", plan.raw_text[:8000]])
-    if workflow.last_result:
-        parts.extend(["", "Пример прошлого успешного прогона:", workflow.last_result[:6000]])
-    if workflow.document_text:
-        parts.extend(["", "Фрагмент исходного регламента:", workflow.document_text[:6000]])
-    parts.extend(
-        [
-            "",
-            "Задача пользователя:",
-            user_message.strip(),
-            "",
-            "В финале дай понятный результат: что проверил, какие факты нашёл, что сделал, какие файлы/уведомления создал.",
-        ]
+    title = (workflow.title or "").strip()
+    task = (user_message or "").strip() or "Выполни задачу агента из materials/agent.md."
+    prefix = f"Агент: {title}\n\n" if title else ""
+    return (
+        f"{prefix}"
+        "Прочитай AGENTS.md и materials/agent.md. "
+        "Думай и пиши только на русском.\n\n"
+        f"Задача:\n{task}"
     )
-    return "\n".join(parts)
 
 
-def build_demo_sdk_prompt(workflow: WorkflowRecord) -> str:
+def build_demo_sdk_prompt(workflow: WorkflowRecord, *, resume: bool = False) -> str:
     task = (
-        "Продолжи работу этого агента и выполни пробный прогон на реальных доступных tools. "
-        "Сформируй устойчивую инструкцию для будущих повторных запусков. "
-        "Не обходи все 200+ проектов: индекс, затем до 3 карточек с риском, затем отчёт. "
-        "В ответе обязательно укажи WORK_RESULT, какие tools использованы, TESTS: PASS или TESTS: FAIL, "
-        "и краткую инструкцию playbook для следующего запуска."
+        "Сделай пробный прогон этого агента на реальных доступных инструментах. "
+        "Сначала вызови инструменты и получи данные, только потом пиши итог. "
+        "WORK_RESULT, использованные инструменты, TESTS: PASS или TESTS: FAIL и короткий "
+        "playbook следующего прогона пиши в ответ в чат. "
+        "Файл создавай, только если согласованный итоговый результат это документ "
+        "или пользователь просит файл: тогда сформируй его встроенными инструментами "
+        "Cursor (edit/запись или экспорт) с реальными данными. "
+        "Не записывай размышления в файлы и не создавай файлы-пересказы задания или плана. "
+        "Размышления и ответ пиши на русском."
     )
+    if resume:
+        return task
     return build_sdk_prompt(workflow, task)
+
+
+def build_followup_sdk_prompt(user_message: str) -> str:
+    """Resume turn: the next user line only, no rules reprint."""
+    return (user_message or "").strip()

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.api_client import ApiClient, ApiError, WorkflowRecord
 from app.sdk_agent import CursorSdkBridge, CursorSdkUnavailable
+from app.sdk_agent.files import prepare_sdk_workspace
 from app.sdk_agent.prompt import build_sdk_prompt
 from app.tools.hitl import (
     attach_pending_for,
@@ -296,9 +297,17 @@ class AgentRunPage(QWidget):
                 record = self._api.start_local_agent_run(workflow_id, message=message)
                 run_id = record.id
                 self._event_ready.emit({"type": "run", "run_id": run_id})
+                run_cwd = bridge.workspace_cwd(workflow_id)
+                prepare_sdk_workspace(
+                    self._api,
+                    workflow_id,
+                    run_cwd,
+                    workflow=self._workflow,
+                )
                 sdk_result = bridge.run(
                     prompt=build_sdk_prompt(self._workflow, message),
                     workflow_id=workflow_id,
+                    cwd=run_cwd,
                     on_event=handle_sdk_event,
                     confirm_writes=True,
                 )
@@ -348,6 +357,11 @@ class AgentRunPage(QWidget):
         self._event_seq += 1
         return f"e{self._event_seq}"
 
+    def _ensure_thinking_placeholder(self) -> None:
+        if self._events and self._events[-1].get("type") == "thinking":
+            return
+        self._append_event({"type": "thinking", "text": "Думает…"})
+
     def _on_expand_toggled(self, key: str, expanded: bool) -> None:
         if not key:
             return
@@ -368,9 +382,14 @@ class AgentRunPage(QWidget):
             self._status.setText(text or "Агент работает…")
             return
         if event_type == "thinking":
+            self._status.setText("Думает…")
             if self._events and self._events[-1].get("type") == "thinking":
                 prev = self._events[-1]
-                prev["text"] = (str(prev.get("text") or "") + text).rstrip()
+                prev_text = str(prev.get("text") or "")
+                if prev_text.strip() == "Думает…":
+                    prev["text"] = text
+                else:
+                    prev["text"] = (prev_text + text).rstrip()
                 if self._live_thinking is not None:
                     self._live_thinking.set_body_text(str(prev.get("text") or ""))
                     self._scroll_feed()
@@ -413,13 +432,17 @@ class AgentRunPage(QWidget):
                 ):
                     prev["result"] = friendly.get("result")
                     prev["summary"] = text
+                    self._status.setText("Думает…")
                     self._render()
+                    self._ensure_thinking_placeholder()
                     return
             friendly["type"] = "tool"
             friendly["arguments"] = {}
             friendly["event_key"] = self._next_event_key()
             self._events.append(friendly)
+            self._status.setText("Думает…")
             self._render()
+            self._ensure_thinking_placeholder()
             return
         if "event_key" not in friendly:
             friendly["event_key"] = self._next_event_key()
@@ -545,7 +568,7 @@ def _friendly_event(event: dict) -> dict | None:
     if event_type == "tool_request":
         tool = str(event.get("tool") or "")
         label = _TOOL_LABELS.get(tool, tool or "инструмент")
-        return {"type": "status", "text": f"Выполняю на этом ПК: «{label}»…"}
+        return {"type": "status", "text": f"Вызываю {label}…"}
     if event_type == "status":
         text = str(event.get("text") or "").strip()
         return {"type": "status", "text": text or "Агент работает…"}
@@ -681,7 +704,11 @@ def _feed_expanded(event: dict, expanded_keys: set[str]) -> bool:
     key = str(event.get("event_key") or "")
     if key and key in expanded_keys:
         return True
-    return kind in {"tool", "tool_result", "work_result", "result"}
+    if kind in {"work_result", "result"}:
+        return True
+    if kind in {"tool", "tool_result"}:
+        return event.get("result") is None
+    return False
 
 
 def _event_card(event: dict, *, expanded: bool = False) -> QWidget:

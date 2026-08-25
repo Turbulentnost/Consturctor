@@ -130,26 +130,73 @@ def format_collection_result(result: Any) -> str | None:
             continue
         count = result.get("count", len(value))
         lines = [f"Готово · {count} {label}"]
-        for row in value[:15]:
+        for row in value[:5]:
             title = _row_title(row)
             if title:
                 lines.append(f"• {title}")
-        extra = len(value) - 15
+        extra = len(value) - 5
         if extra > 0:
-            lines.append(f"… ещё {extra}")
+            lines.append(f"ещё {extra}")
         return "\n".join(lines)
     return None
+
+
+def compact_tool_result(result: Any, *, limit: int = 400) -> str:
+    """Short card text for the chat feed. Never dump a full tool JSON."""
+    if result in (None, "", {}):
+        return ""
+    if isinstance(result, str):
+        text = result.strip()
+        return text if len(text) <= limit else text[:limit].rstrip() + "..."
+    if not isinstance(result, dict):
+        text = str(result).strip()
+        return text if len(text) <= limit else text[:limit].rstrip() + "..."
+    if result.get("skipped"):
+        return str(result.get("summary") or "Пропущено")
+    lines: list[str] = []
+    summary = result.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        lines.append(summary.strip()[:300])
+    elif isinstance(summary, dict):
+        inner = summary.get("summary")
+        if isinstance(inner, str) and inner.strip():
+            lines.append(inner.strip()[:300])
+        for key, value in summary.items():
+            name = str(key)
+            if name.endswith("_count"):
+                lines.append(f"{name[:-6]}: {value}")
+    path = result.get("result_file")
+    if isinstance(path, str) and path.strip():
+        lines.append(f"file: {path.strip()}")
+    if not lines:
+        friendly = format_collection_result(result)
+        if friendly:
+            lines.append(friendly)
+    if not lines:
+        for key, value in result.items():
+            if isinstance(value, list):
+                lines.append(f"{key}: {len(value)}")
+            elif key in {"ok", "employee", "fio", "id", "name", "title", "count", "total"}:
+                lines.append(f"{key}: {value}")
+    if lines:
+        text = "\n".join(lines).strip()
+        return text if len(text) <= limit else text[:limit].rstrip() + "..."
+    try:
+        raw = json.dumps(result, ensure_ascii=False)
+    except TypeError:
+        raw = str(result)
+    if len(raw) <= 180:
+        return _pretty(result)
+    return "Данные получены."
 
 
 def format_tool_detail(arguments: Any = None, result: Any = None) -> str:
     """Только выход инструмента. Вход (arguments) в ленту не кладём."""
     _ = arguments
-    friendly = format_collection_result(result)
-    if friendly:
-        return friendly
-    if result not in (None, {}, ""):
-        return _pretty(result)
-    return "Ожидание результата…"
+    if result in (None, {}, ""):
+        return "Ожидание результата…"
+    text = compact_tool_result(result)
+    return text or "Готово"
 
 
 def _row_title(row: Any) -> str:

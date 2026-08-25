@@ -390,11 +390,11 @@ def _raw_tools() -> list[dict[str, Any]]:
         {
             "name": "turboproject",
             "description": (
-                "Compatibility-инструмент TurboProject. Для поиска и отбора просрочек используй "
-                "turboproject.search_projects (индекс с finish_date, sort_by=finish_date), затем "
-                "turboproject.get_project по 2-3 file_id. turboproject.get_overdue_projects / "
-                "get_projects_with_blocked_tasks - только с project_ids из индекса или manager, "
-                "не по всему портфелю. Для задач - turboproject.get_project_tasks. Учётка на сервере."
+                "Compatibility-инструмент TurboProject. Проекты текущего пользователя - "
+                "turboproject.get_user_portfolio(employee = ФИО из users.current): индекс с "
+                "owner/participants, без карточек. Поиск по названию - search_projects. "
+                "Карточка - get_project, только если нужны задачи. Большой ответ может прийти "
+                "файлом: разбирай result_file. Учётка на сервере."
             ),
             "execution": "server",
             "input_schema": {
@@ -522,12 +522,25 @@ def _turboproject_advanced_tools() -> list[dict[str, Any]]:
     items: list[tuple[str, str, dict[str, Any], list[str] | None]] = [
         (
             "turboproject.search_projects",
-            "Индексный поиск проектов. Не читает карточки и всегда возвращает limit/cursor.",
+            "Индексный поиск. В каждой строке owner, curator, customer, participants. "
+            "Не читает карточки. Для проектов сотрудника лучше get_user_portfolio.",
             {
                 **filters,
+                "employee": _prop("string", "ФИО: руководитель, куратор, заказчик или зам"),
                 "sort_by": _prop("string", "finish_date или project_name"),
             },
             None,
+        ),
+        (
+            "turboproject.get_user_portfolio",
+            "Портфель сотрудника одним вызовом: все проекты, где employee руководитель, "
+            "куратор, заказчик или зам. employee = users.current.user.fio. Без карточек. "
+            "Если ответ большой - разбирай result_file Read/кодом, не зови tool снова.",
+            {
+                **filters,
+                "employee": _prop("string", "ФИО из users.current.user.fio"),
+            },
+            ["employee"],
         ),
         (
             "turboproject.get_project",
@@ -952,6 +965,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         "project",
         ("search", "list"),
         [],
+        ["projects"],
+        "cursor",
+    ),
+    "turboproject.get_user_portfolio": (
+        "turboproject",
+        "project",
+        ("search", "list"),
+        ["employee"],
         ["projects"],
         "cursor",
     ),

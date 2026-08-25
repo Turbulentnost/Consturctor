@@ -73,12 +73,12 @@ const ASK_QUESTION_SCHEMA: Record<string, JsonValue> = {
   properties: {
     question: {
       type: "string",
-      description: "One question about one parameter. Do not combine several questions.",
+      description: "Один вопрос про один параметр. Не объединяй несколько вопросов.",
     },
     options: {
       type: "array",
       items: { type: "string" },
-      description: "Optional answer choices",
+      description: "Необязательные варианты ответа",
     },
   },
   required: ["question"],
@@ -150,12 +150,12 @@ async function executeAskQuestion(args: Record<string, JsonValue>): Promise<Json
   });
   if (!ok) {
     return {
-      content: [{ type: "text", text: answer || "User did not answer" }],
+      content: [{ type: "text", text: answer || "Пользователь не ответил" }],
       isError: true,
     };
   }
   return {
-    content: [{ type: "text", text: `User answer: ${answer}` }],
+    content: [{ type: "text", text: `Ответ пользователя: ${answer}` }],
   };
 }
 
@@ -166,7 +166,7 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
     if (!name || tools[name]) continue;
     if (isAskQuestion(name)) {
       tools.askQuestion = {
-        description: spec.description || "Ask the desktop user a question and wait for the answer.",
+        description: spec.description || "Задать вопрос пользователю на рабочем столе и дождаться ответа.",
         inputSchema: spec.inputSchema || ASK_QUESTION_SCHEMA,
         execute: executeAskQuestion,
       };
@@ -216,6 +216,14 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
   return tools;
 }
 
+function testsPassReady(text: string): boolean {
+  const upper = (text || "").toUpperCase();
+  if (upper.includes("TESTS: FAIL") || upper.includes("TESTS:FAIL")) {
+    return false;
+  }
+  return upper.includes("TESTS: PASS") || upper.includes("TESTS:PASS");
+}
+
 function playbookDraftReady(text: string): boolean {
   const raw = (text || "").trim();
   if (!raw) return false;
@@ -230,31 +238,73 @@ function playbookDraftReady(text: string): boolean {
   }
 }
 
+async function settleRun(run: {
+  supports: (op: "cancel") => boolean;
+  status: string;
+  cancel: () => Promise<void>;
+  wait: () => Promise<unknown>;
+}): Promise<void> {
+  try {
+    if (run.supports("cancel") && String(run.status || "").toLowerCase() === "running") {
+      await run.cancel();
+    }
+  } catch {
+    // Already terminal or cancel is unsupported.
+  }
+  try {
+    await run.wait();
+  } catch {
+    // The follow-up send can still resume from the persisted agent.
+  }
+}
+
 const MODEL_RESULT_CHARS = 8000;
 const MODEL_NEXT_STEP =
-  "If you have enough facts, write the final answer now. Do not fetch the whole portfolio.";
+  "Full JSON is in result_file. Open it with the built-in Read tool in pages (offset/limit) or search inside it; do not load the whole file at once. Do not recall the same Constructor tool for this data.";
+
+function compactSummary(rec: Record<string, JsonValue>): Record<string, JsonValue> {
+  const summary: Record<string, JsonValue> = {};
+  const text = rec.summary;
+  if (typeof text === "string" && text.trim()) {
+    summary.summary = text.trim();
+  }
+  for (const [key, value] of Object.entries(rec)) {
+    if (value === null || typeof value === "number" || typeof value === "boolean") {
+      summary[key] = value;
+    } else if (typeof value === "string") {
+      summary[key] = value.slice(0, 500);
+    } else if (Array.isArray(value)) {
+      summary[`${key}_count`] = value.length;
+    } else if (value && typeof value === "object") {
+      summary[`${key}_keys`] = Object.keys(value).slice(0, 20);
+    }
+  }
+  return summary;
+}
 
 function modelView(result: JsonValue): JsonValue {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return result;
   }
   const rec = result as Record<string, JsonValue>;
-  const raw = JSON.stringify(rec);
-  if (raw.length <= MODEL_RESULT_CHARS) {
+  const resultFile =
+    typeof rec.result_file === "string" && rec.result_file.trim() ? rec.result_file : null;
+  // The Python bridge already returns a minimal pointer for large results.
+  if (resultFile) {
     if (typeof rec.next_step === "string" && rec.next_step.trim()) {
       return rec;
     }
     return { ...rec, next_step: MODEL_NEXT_STEP };
   }
-  const projects = Array.isArray(rec.projects) ? rec.projects.slice(0, 2) : undefined;
+  const raw = JSON.stringify(rec);
+  if (raw.length <= MODEL_RESULT_CHARS) {
+    return rec;
+  }
+  // Oversized but no result_file was written: fall back to a compact summary.
   return {
-    summary: rec.summary || "Result truncated for the model",
-    total_projects: rec.total_projects ?? null,
-    projects_with_1c_count: rec.projects_with_1c_count ?? null,
-    sample: projects,
-    externalized: rec.externalized ?? true,
-    result_file: rec.result_file ?? null,
-    next_step: MODEL_NEXT_STEP,
+    ...compactSummary(rec),
+    next_step:
+      "Result was too large and no result_file was written. Use this summary; do not invent a file.",
   };
 }
 
@@ -282,21 +332,6 @@ function readAgentId(agent: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-async function settleRun(run: { supports: (op: "cancel") => boolean; status: string; cancel: () => Promise<void>; wait: () => Promise<unknown> }): Promise<void> {
-  try {
-    if (run.supports("cancel") && String(run.status || "").toLowerCase() === "running") {
-      await run.cancel();
-    }
-  } catch {
-    // Already terminal or cancel is unsupported.
-  }
-  try {
-    await run.wait();
-  } catch {
-    // The follow-up send can still resume from the persisted agent.
-  }
-}
-
 function isActiveRunError(error: unknown): boolean {
   const message = safeError(error).toLowerCase();
   return message.includes("already has active run") || message.includes("agentbusy");
@@ -319,6 +354,7 @@ async function runAgent(command: RunCommand): Promise<void> {
   }
 
   let answer = "";
+  let thought = "";
   emit({ type: "run", id });
   emit({ type: "status", text: "Запускаю локальный Cursor SDK агент..." });
   const design = command.mode === "design";
@@ -327,8 +363,8 @@ async function runAgent(command: RunCommand): Promise<void> {
   emit({
     type: "status",
     text: customNames.length
-      ? `Constructor customTools: ${customNames.slice(0, 24).join(", ")}${customNames.length > 24 ? ` (+${customNames.length - 24})` : ""}`
-      : "Constructor customTools are empty. Do not look for project MCP servers.",
+      ? `Инструменты Constructor: ${customNames.slice(0, 24).join(", ")}${customNames.length > 24 ? ` (+${customNames.length - 24})` : ""}`
+      : "Инструменты Constructor пустые. Не ищи проектные MCP-серверы.",
   });
   let agent: Awaited<ReturnType<typeof Agent.create>> | undefined;
   try {
@@ -369,23 +405,35 @@ async function runAgent(command: RunCommand): Promise<void> {
       });
     }
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
+    const finishIfReady = async (draft: string): Promise<boolean> => {
+      const designReady = design && playbookDraftReady(draft);
+      const demoReady = !design && testsPassReady(draft);
+      if (!designReady && !demoReady) return false;
+      emit({
+        type: "status",
+        text: designReady
+          ? "Черновик готов. Останавливаю этот ход и перехожу к пробному прогону."
+          : "Пробный прогон завершен (TESTS: PASS). Останавливаю этот ход.",
+      });
+      emit({ type: "final", id, status: "ok", answer: draft });
+      emit({ type: "done", id, status: "ok", answer: draft });
+      await settleRun(run);
+      await agent.close();
+      return true;
+    };
     for await (const event of run.stream()) {
       if (event.type === "assistant") {
         for (const block of event.message.content) {
           if (block.type === "text" && block.text) {
             answer += block.text;
             emit({ type: "assistant", text: block.text });
-            if (design && playbookDraftReady(answer)) {
-              emit({ type: "final", id, status: "ok", answer });
-              emit({ type: "done", id, status: "ok", answer });
-              await settleRun(run);
-              await agent.close();
-              return;
-            }
+            if (await finishIfReady(answer)) return;
           }
         }
       } else if (event.type === "thinking" && event.text) {
+        thought += event.text;
         emit({ type: "thinking", text: event.text });
+        if ((await finishIfReady(thought)) || (await finishIfReady(answer))) return;
       } else if (event.type === "tool_call") {
         const args = event.args && typeof event.args === "object" && !Array.isArray(event.args)
           ? event.args as Record<string, unknown>
