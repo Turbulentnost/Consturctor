@@ -390,10 +390,11 @@ def _raw_tools() -> list[dict[str, Any]]:
         {
             "name": "turboproject",
             "description": (
-                "Compatibility-инструмент TurboProject. Для поиска используй "
-                "turboproject.search_projects, для просрочек - turboproject.get_overdue_projects, "
-                "для задач - turboproject.get_project_tasks, для карточки - turboproject.get_project. "
-                "Учётка на сервере."
+                "Compatibility-инструмент TurboProject. Для поиска и отбора просрочек используй "
+                "turboproject.search_projects (индекс с finish_date, sort_by=finish_date), затем "
+                "turboproject.get_project по 2-3 file_id. turboproject.get_overdue_projects / "
+                "get_projects_with_blocked_tasks - только с project_ids из индекса или manager, "
+                "не по всему портфелю. Для задач - turboproject.get_project_tasks. Учётка на сервере."
             ),
             "execution": "server",
             "input_schema": {
@@ -561,21 +562,27 @@ def _turboproject_advanced_tools() -> list[dict[str, Any]]:
         ),
         (
             "turboproject.get_overdue_projects",
-            "Агрегатор для вопроса 'какие проекты просрочены': считает delay_days и отдаёт компактный список.",
+            "Считает delay_days по УЖЕ выбранным проектам. Передай project_ids (до 20 file_id из "
+            "turboproject.search_projects) или фильтр manager. Без них портфель не сканируется - "
+            "инструмент попросит сначала сузить выборку через search_projects.",
             {
                 **filters,
+                "project_ids": _prop("array", "До 20 file_id из turboproject.search_projects (основной путь)"),
                 "min_delay_days": _prop("integer", "Минимальная просрочка в днях"),
-                "scan_limit": _prop("integer", "Сколько проектов просканировать"),
+                "scan_limit": _prop("integer", "Скан по фильтру, если нет project_ids"),
             },
             None,
         ),
         (
             "turboproject.get_projects_with_blocked_tasks",
-            "Агрегатор проектов с проблемными задачами; при отсутствии явного флага вернёт partial_result.",
+            "Проблемные задачи по УЖЕ выбранным проектам. Передай project_ids (file_id из "
+            "turboproject.search_projects) или фильтр manager. Без них портфель не сканируется. "
+            "При отсутствии явного флага блокировки вернёт partial_result.",
             {
                 **filters,
+                "project_ids": _prop("array", "До 20 file_id из turboproject.search_projects (основной путь)"),
                 "blocked_days": _prop("integer", "Сколько дней просрочки считать блокировкой"),
-                "scan_limit": _prop("integer", "Сколько проектов сканировать"),
+                "scan_limit": _prop("integer", "Скан по фильтру, если нет project_ids"),
             },
             None,
         ),
@@ -935,6 +942,58 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         [],
         ["projects"],
         "count",
+    ),
+    # Index -> cards contract. search_projects is the cheap default for
+    # search/list; carding is get_project(_metrics). The aggregators are
+    # id-scoped: required_filters=["project_ids"] keeps routing from picking
+    # them for a plain project search, so no hidden full-portfolio scan.
+    "turboproject.search_projects": (
+        "turboproject",
+        "project",
+        ("search", "list"),
+        [],
+        ["projects"],
+        "cursor",
+    ),
+    "turboproject.get_project": (
+        "turboproject",
+        "project",
+        "read",
+        ["project_id"],
+        ["projects"],
+        "none",
+    ),
+    "turboproject.get_project_tasks": (
+        "turboproject",
+        "task",
+        ("list", "search"),
+        ["project_id"],
+        ["tasks"],
+        "cursor",
+    ),
+    "turboproject.get_project_metrics": (
+        "turboproject",
+        "project",
+        "read",
+        ["project_ids"],
+        ["projects"],
+        "none",
+    ),
+    "turboproject.get_overdue_projects": (
+        "turboproject",
+        "project",
+        "search",
+        ["project_ids"],
+        ["projects"],
+        "none",
+    ),
+    "turboproject.get_projects_with_blocked_tasks": (
+        "turboproject",
+        "project",
+        "search",
+        ["project_ids"],
+        ["projects"],
+        "none",
     ),
     "outlook.search_mail": ("outlook", "mail_message", "search", [], ["messages"], "count"),
     "outlook.read_calendar": ("outlook", "calendar_event", "list", [], ["events"], "count"),

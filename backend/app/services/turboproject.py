@@ -87,6 +87,27 @@ _MAX_ANALYTICS_SCAN = 200
 # Default equals the max: the wall-clock budget below is the real guard, and a
 # warm card cache lets a re-run cover the rest of the portfolio cheaply.
 _DEFAULT_ANALYTICS_SCAN = _MAX_ANALYTICS_SCAN
+# Aggregators are id-scoped by contract: they read only the cards the caller
+# selected in search_projects (project_ids) or a narrow filter. Without either
+# they refuse instead of scanning the whole portfolio, so no hidden 30s scan.
+_DEFAULT_AGG_SCAN = 25
+_AGG_NARROW_KEYS = (
+    "query",
+    "project_name",
+    "manager",
+    "rukovoditel",
+    "owner",
+    "owner_id",
+    "status",
+    "status_proekta",
+    "department",
+    "department_id",
+    "podrazdelenie",
+    "date_from",
+    "from",
+    "date_to",
+    "to",
+)
 _ANALYTICS_CONCURRENCY = 12
 _ANALYTICS_TIME_BUDGET_SEC = 30.0
 _MAX_PROJECT_IDS = 20
@@ -629,6 +650,45 @@ def _filtered_index_projects(args: dict[str, Any], *, token: str | None = None) 
     return projects, len(items), len(with_1c)
 
 
+def _explicit_project_ids(payload: dict[str, Any]) -> list[str]:
+    """ID проектов, которые агент уже выбрал в индексе (project_ids/file_ids/file_id)."""
+    raw = payload.get("project_ids") or payload.get("file_ids") or payload.get("file_id")
+    if isinstance(raw, str):
+        ids = [part.strip() for part in raw.split(",") if part.strip()]
+    elif isinstance(raw, (list, tuple)):
+        ids = [str(item).strip() for item in raw if str(item).strip()]
+    elif raw not in (None, ""):
+        ids = [str(raw).strip()]
+    else:
+        ids = []
+    return ids[:_MAX_PROJECT_IDS]
+
+
+def _has_narrowing(payload: dict[str, Any]) -> bool:
+    """Есть ли у агрегатора узкий фильтр (manager/query/status/...)."""
+    for key in _AGG_NARROW_KEYS:
+        if str(payload.get(key) or "").strip():
+            return True
+    return False
+
+
+def _aggregator_refusal(mode: str) -> dict[str, Any]:
+    """Дешёвый отказ агрегатора без сканирования портфеля."""
+    return {
+        "summary": (
+            "Портфель целиком не сканируется. Сначала turboproject.search_projects "
+            "(manager / query / sort_by=finish_date), возьми до 3 file_id и передай их "
+            "как project_ids сюда, либо задай фильтр manager/query."
+        ),
+        "matched_projects_count": 0,
+        "scanned_projects_count": 0,
+        "projects": [],
+        "source": "turboproject",
+        "mode": mode,
+        "needs": "turboproject.search_projects",
+    }
+
+
 def _delay_days(date_value: Any) -> int:
     parsed = parse_iso_date(date_value)
     if parsed is None:
@@ -956,10 +1016,19 @@ def get_project_metrics(args: dict[str, Any] | None = None) -> dict[str, Any]:
 def get_overdue_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = args if isinstance(args, dict) else {}
     limit = _int_filter(payload, "limit", 10, 50)
-    scan_limit = _int_filter(payload, "scan_limit", _DEFAULT_ANALYTICS_SCAN, _MAX_ANALYTICS_SCAN)
     min_delay_days = _int_filter(payload, "min_delay_days", 1, 3650)
+    ids = _explicit_project_ids(payload)
+    if not ids and not _has_narrowing(payload):
+        return _aggregator_refusal("overdue_projects")
     token = _login()
-    projects, total_projects, with_1c_count = _filtered_index_projects(payload, token=token)
+    if ids:
+        projects = [{"file_id": pid} for pid in ids]
+        total_projects = len(ids)
+        with_1c_count = len(ids)
+        scan_limit = len(ids)
+    else:
+        projects, total_projects, with_1c_count = _filtered_index_projects(payload, token=token)
+        scan_limit = _int_filter(payload, "scan_limit", _DEFAULT_AGG_SCAN, _MAX_ANALYTICS_SCAN)
     rows: list[dict[str, Any]] = []
 
     def consume(index_item: dict[str, Any], details: dict[str, Any]) -> None:
@@ -1013,10 +1082,17 @@ def get_overdue_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
 def get_projects_with_blocked_tasks(args: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = args if isinstance(args, dict) else {}
     limit = _int_filter(payload, "limit", 10, 50)
-    scan_limit = _int_filter(payload, "scan_limit", _DEFAULT_ANALYTICS_SCAN, _MAX_ANALYTICS_SCAN)
     blocked_days = _int_filter(payload, "blocked_days", 14, 3650)
+    ids = _explicit_project_ids(payload)
+    if not ids and not _has_narrowing(payload):
+        return _aggregator_refusal("blocked_tasks")
     token = _login()
-    projects, _, _ = _filtered_index_projects(payload, token=token)
+    if ids:
+        projects = [{"file_id": pid} for pid in ids]
+        scan_limit = len(ids)
+    else:
+        projects, _, _ = _filtered_index_projects(payload, token=token)
+        scan_limit = _int_filter(payload, "scan_limit", _DEFAULT_AGG_SCAN, _MAX_ANALYTICS_SCAN)
     rows: list[dict[str, Any]] = []
 
     def consume(index_item: dict[str, Any], details: dict[str, Any]) -> None:

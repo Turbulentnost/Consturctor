@@ -28,8 +28,11 @@ _MAX_OVERDUE_ITEMS = 8
 _MAX_RESOURCES = 20
 
 TOOL_DESCRIPTION = (
-    "Compatibility-инструмент TurboProject. Для поиска используй turboproject.search_projects, "
-    "для просрочек - turboproject.get_overdue_projects, для задач проекта - "
+    "Compatibility-инструмент TurboProject. Для поиска и отбора просрочек используй "
+    "turboproject.search_projects (индекс с finish_date/plan_finish_1c, sort_by=finish_date), "
+    "затем turboproject.get_project по 2-3 худшим file_id. "
+    "turboproject.get_overdue_projects / get_projects_with_blocked_tasks - только с project_ids "
+    "из индекса или фильтром manager, не по всему портфелю. Для задач проекта - "
     "turboproject.get_project_tasks, для карточки - turboproject.get_project. "
     "Учётка уже в backend/.env — не спрашивай логин и не вызывай API сам.\n\n"
     "Итог:\n"
@@ -160,24 +163,38 @@ _NEW_TOOL_SPECS = (
     (
         GET_OVERDUE_PROJECTS_TOOL_NAME,
         "Просроченные проекты TurboProject",
-        "Для вопроса 'какие проекты просрочены' используй этот агрегатор. Он сам считает delay_days и отдаёт компактный список.",
+        "Считает delay_days по УЖЕ выбранным проектам. Передай project_ids (до 20 file_id из "
+        "turboproject.search_projects) или фильтр manager. Без project_ids/фильтра инструмент "
+        "не сканирует весь портфель и попросит сначала сузить выборку.",
         _tool_schema(
             {
                 **_FILTER_PROPERTIES,
+                "project_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "До 20 file_id из turboproject.search_projects (основной путь)",
+                },
                 "min_delay_days": {"type": "integer", "description": "Минимальная просрочка в днях"},
-                "scan_limit": {"type": "integer", "description": "Сколько релевантных проектов можно просканировать"},
+                "scan_limit": {"type": "integer", "description": "Скан по фильтру, если нет project_ids"},
             }
         ),
     ),
     (
         GET_BLOCKED_TASKS_TOOL_NAME,
         "Проекты с заблокированными задачами",
-        "Ищи проекты с проблемными задачами этим агрегатором. Если явного флага блокировки нет, backend вернёт partial_result.",
+        "Ищет проблемные задачи по УЖЕ выбранным проектам. Передай project_ids (file_id из "
+        "turboproject.search_projects) или фильтр manager. Без них портфель не сканируется. "
+        "Если явного флага блокировки нет, backend вернёт partial_result.",
         _tool_schema(
             {
                 **_FILTER_PROPERTIES,
+                "project_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "До 20 file_id из turboproject.search_projects (основной путь)",
+                },
                 "blocked_days": {"type": "integer", "description": "Сколько дней просрочки считать блокировкой"},
-                "scan_limit": {"type": "integer", "description": "Сколько проектов сканировать"},
+                "scan_limit": {"type": "integer", "description": "Скан по фильтру, если нет project_ids"},
             }
         ),
     ),
