@@ -27,18 +27,25 @@ _WINDOW_EDGE_PAD = 12
 class FioSuggestEdit(QLineEdit):
     """FIO field with click-to-open suggestions; never auto-fills while typing."""
 
+    fio_chosen = Signal(str)
     _suggestions_ready = Signal(str, object)
 
     def __init__(
         self,
         fetch_suggestions: Callable[[str], list[str]],
         parent=None,
+        *,
+        popup_min_width: int = 320,
+        open_on_focus: bool = True,
     ) -> None:
         super().__init__(parent)
         self._fetch = fetch_suggestions
         self._suppress_fetch = False
         self._cache: dict[str, list[str]] = {}
         self._request_token = ""
+        self._popup_min_width = popup_min_width
+        self._popup_anchor = None
+        self._open_on_focus = open_on_focus
 
         self.setPlaceholderText("Начните вводить ФИО…")
         self.setFont(app_font(13))
@@ -115,6 +122,12 @@ class FioSuggestEdit(QLineEdit):
         self.textEdited.connect(self._on_text_edited)
         self._suggestions_ready.connect(self._apply_async_suggestions)
 
+    def set_popup_anchor(self, widget) -> None:
+        self._popup_anchor = widget
+
+    def open_suggestions(self) -> None:
+        self._open_suggestions()
+
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         try:
             popup_visible = self._popup.isVisible()
@@ -132,7 +145,8 @@ class FioSuggestEdit(QLineEdit):
 
     def focusInEvent(self, event) -> None:  # noqa: N802
         super().focusInEvent(event)
-        self._open_suggestions()
+        if self._open_on_focus:
+            self._open_suggestions()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         super().mousePressEvent(event)
@@ -301,7 +315,8 @@ class FioSuggestEdit(QLineEdit):
         return _POPUP_MARGINS + visible_rows * _ROW_HEIGHT
 
     def _position_popup(self) -> None:
-        width = max(self.width(), 320)
+        anchor = self._popup_anchor if self._popup_anchor is not None else self
+        width = max(anchor.width(), self._popup_min_width)
         height = self._desired_height()
         if height <= 0:
             return
@@ -313,8 +328,8 @@ class FioSuggestEdit(QLineEdit):
             self._popup.setParent(top)
             self._popup.setWindowFlags(Qt.WindowType.Widget)
 
-        below = self.mapTo(top, QPoint(0, self.height() + 6))
-        above = self.mapTo(top, QPoint(0, 0))
+        below = anchor.mapTo(top, QPoint(0, anchor.height() + 6))
+        above = anchor.mapTo(top, QPoint(0, 0))
         space_below = top.height() - below.y() - _WINDOW_EDGE_PAD
         space_above = above.y() - _WINDOW_EDGE_PAD
 
@@ -349,9 +364,14 @@ class FioSuggestEdit(QLineEdit):
     def _apply_item(self, item: QListWidgetItem | None) -> None:
         if item is None:
             return
+        if not (item.flags() & Qt.ItemFlag.ItemIsSelectable):
+            return
+        chosen = item.text().strip()
         self._suppress_fetch = True
-        self.setText(item.text())
+        self.setText(chosen)
         self._suppress_fetch = False
         self._hide_popup()
         self.setCursorPosition(len(self.text()))
         self.setFocus(Qt.FocusReason.MouseFocusReason)
+        if chosen:
+            self.fio_chosen.emit(chosen)

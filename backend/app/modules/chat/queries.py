@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from app.models.user import AppUser
 from app.modules.chat.crypto import decrypt_text
 from app.modules.chat.domain.messages import receipt_for
+from app.modules.chat.domain.threads import find_dm
+from app.services.app_users import avatar_url_for
 from app.modules.chat.models import (
     ChatAttachment,
     ChatMessage,
@@ -98,6 +100,7 @@ def list_threads(db: Session, user_id: str, search: str = "") -> list[dict]:
                 "online": is_user_online(peer_id) if peer_id else False,
                 "ticket_status": ticket.status if ticket else "",
                 "assigned_to": ticket.assigned_to if ticket else None,
+                "avatar_url": avatar_url_for(peer) if peer else None,
             }
         )
     items.sort(key=lambda row: (0 if row["pinned"] else 1, row["last_message_at"] or ""), reverse=False)
@@ -133,6 +136,16 @@ def list_messages(db: Session, user_id: str, thread_id: str) -> list[dict]:
             ChatThreadMember.user_id == user_id,
         )
     ).scalar_one_or_none()
+    if member is None:
+        found = find_dm(db, user_id, thread_id)
+        if found is not None:
+            thread_id = found.id
+            member = db.execute(
+                select(ChatThreadMember).where(
+                    ChatThreadMember.thread_id == thread_id,
+                    ChatThreadMember.user_id == user_id,
+                )
+            ).scalar_one_or_none()
     if member is None:
         raise PermissionError("Нет доступа к диалогу")
     rows = db.execute(

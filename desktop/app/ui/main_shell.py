@@ -310,9 +310,15 @@ class MainShell(QWidget):
         self._deleted_workflow_ids: set[str] = set()
         self._pending_start_demo = False
 
-        self.sidebar = GlassSidebar(self)
+        self.sidebar = GlassSidebar(
+            self,
+            search_users=self._api.search_users,
+            fetch_avatar=self._fetch_peer_avatar,
+        )
         self.sidebar.page_changed.connect(self._on_page_changed)
         self.sidebar.collapse_toggled.connect(self._on_sidebar_collapse)
+        self.sidebar.dialog_selected.connect(self._on_sidebar_dialog)
+        self.sidebar.fio_search_chosen.connect(self._on_sidebar_fio)
 
         self._pages = QStackedWidget()
         self._page_create = CreateAgentPage()
@@ -339,6 +345,7 @@ class MainShell(QWidget):
         self._page_group_runs = AgentGroupRunsPage()
         self._page_chat = ChatPage(self._api)
         self._page_chat.open_agent_requested.connect(self._on_agent_history_requested)
+        self._page_chat.threads_changed.connect(self._sync_sidebar_dialogs)
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_implementation_agents)
@@ -620,12 +627,18 @@ class MainShell(QWidget):
             activity_status=user.activity_status,
         )
         self._page_chat.set_user(user)
+        self._sync_sidebar_dialogs()
         self._load_avatar(user)
         pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap
         self._page_settings.set_user(user, pixmap)
         if not self._notify_timer.isActive():
             self._notify_timer.start()
         QTimer.singleShot(0, self.refresh_notification_badge)
+
+    def _fetch_peer_avatar(self, peer_id: str) -> QPixmap:
+        from app.chat.avatars import load_peer_avatar
+
+        return load_peer_avatar(self._api, peer_id)
 
     def _load_avatar(self, user: UserProfile) -> None:
         if not user.avatar_url:
@@ -1333,7 +1346,26 @@ class MainShell(QWidget):
         elif key == "files":
             self._page_files.refresh()
         elif key == "chat":
-            self._page_chat.refresh()
+            return
+        self.sidebar.hide_search_suggestions()
+
+    def _sync_sidebar_dialogs(self) -> None:
+        self.sidebar.set_dialogs(self._page_chat.sidebar_dialogs())
+        current = self._page_chat.current_thread_id()
+        if self.sidebar.active_key() == "chat" and current:
+            self.sidebar.highlight_dialog(current)
+
+    def _on_sidebar_dialog(self, thread_id: str) -> None:
+        self._pages.setCurrentIndex(self._page_index["chat"])
+        self._page_chat.open_existing_dialog(thread_id)
+
+    def _on_sidebar_fio(self, fio: str) -> None:
+        self._pages.setCurrentIndex(self._page_index["chat"])
+        self._page_chat.open_by_fio(fio)
+        current = self._page_chat.current_thread_id()
+        if current:
+            self.sidebar.highlight_dialog(current)
+        self._sync_sidebar_dialogs()
 
     def _on_open_saved_workflow(self, record: object) -> None:
         from app.api_client import WorkflowRecord as WorkflowRecordType
