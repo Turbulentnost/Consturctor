@@ -300,6 +300,7 @@ class AgentRunPage(QWidget):
                     prompt=build_sdk_prompt(self._workflow, message),
                     workflow_id=workflow_id,
                     on_event=handle_sdk_event,
+                    confirm_writes=True,
                 )
                 answer = str(sdk_result.get("answer") or "").strip()
                 result = {

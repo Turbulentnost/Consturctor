@@ -35,35 +35,19 @@ def _ensure_path(subdir: str) -> Path:
 
 def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     args = arguments if isinstance(arguments, dict) else {}
-    _SERVER_ONEC = {
-        "onec.odata_catalog",
-        "onec.odata_get",
-        "onec.odata_post",
-        "onec.odata_patch",
-        "onec.attach_file",
-        "onec.sql_query",
-        "onec.erp_tasks_current",
-        "onec.erp_tasks_period",
-        "onec.erp_subordinate_tasks",
-        "onec.docflow_tasks",
-    }
-    _SERVER_CONSTRUCTOR = {
-        "users.current",
-        "users.subordinates",
-        "data.process",
-    }
-    if name.startswith("imap."):
+
+    # Server-executed tools (1C OData/SQL, IMAP, users, notify) are proxied to the
+    # Constructor backend. Everything else runs on this desktop by default, so no
+    # locally written tool can leak to the server.
+    from app.tools.server_tools import SERVER_TOOL_NAMES
+
+    if name in SERVER_TOOL_NAMES:
+        return _invoke_server_tool(name, args)
+    if name == "data.process":
         raise ToolHostError(
-            f"Инструмент {name} выполняется на сервере (IMAP), не на desktop."
+            "Инструмент data.process доступен только в серверном прогоне, не на desktop."
         )
-    if name in _SERVER_ONEC:
-        raise ToolHostError(
-            f"Инструмент {name} выполняется на сервере (1С OData/SQL), не на desktop."
-        )
-    if name in _SERVER_CONSTRUCTOR:
-        raise ToolHostError(
-            f"Инструмент {name} выполняется на сервере Constructor, не на desktop."
-        )
+
     handler = _HANDLERS.get(name)
     if handler is not None:
         return handler(args)
@@ -73,6 +57,29 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str,
         return invoke_ac_tool(name, args)
     except AcToolError as exc:
         raise ToolHostError(str(exc)) from exc
+
+
+def _invoke_server_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Proxy a server-executed tool to the Constructor backend.
+
+    Uses the same endpoint as the turboproject proxy:
+    POST /api/v1/tools/{name}/invoke with {"arguments": args}.
+    """
+    from app.tools import runtime_api
+
+    try:
+        data = runtime_api.request(
+            "POST",
+            f"/api/v1/tools/{name}/invoke",
+            json={"arguments": args},
+            timeout=180.0,
+        )
+    except RuntimeError as exc:
+        raise ToolHostError(str(exc)) from exc
+    if isinstance(data, dict) and "result" in data:
+        result = data.get("result")
+        return result if isinstance(result, dict) else {"result": result}
+    return data if isinstance(data, dict) else {"result": data}
 
 
 def _web_search(arguments: dict[str, Any]) -> dict[str, Any]:

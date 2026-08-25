@@ -35,7 +35,15 @@ _IMAP_TOOLS = frozenset(
 )
 
 _TURBOPROJECT_TOOLS = TURBOPROJECT_TOOLS
-_SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS | _TURBOPROJECT_TOOLS
+_USERS_TOOLS = frozenset(
+    {
+        "users.current",
+        "users.subordinates",
+        "users.list",
+        "notify.send",
+    }
+)
+_SERVER_TOOLS = _IMAP_TOOLS | ONEC_TOOLS | _TURBOPROJECT_TOOLS | _USERS_TOOLS
 
 
 class ToolInvokeBody(BaseModel):
@@ -97,6 +105,8 @@ async def invoke_tool(
             result = invoke_imap(tool_name, body.arguments)
         elif tool_name in _TURBOPROJECT_TOOLS:
             result = invoke_turboproject(tool_name, body.arguments)
+        elif tool_name in _USERS_TOOLS:
+            result = _invoke_users_tool(tool_name, body.arguments, auth)
         else:
             result = invoke_onec(
                 tool_name,
@@ -106,7 +116,41 @@ async def invoke_tool(
             )
     except (ImapToolError, OnecToolError, TurboProjectError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"ok": True, "tool": tool_name, "result": result}
+
+
+def _invoke_users_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    auth: AuthContext,
+) -> dict[str, Any]:
+    """Serverside users.* / notify.send for the desktop SDK agent proxy.
+
+    Sets tool context from the JWT session so users.current / notify.send
+    resolve the caller without an active SSE run.
+    """
+    from app.services.workflows.cursor_tools import (
+        _invoke_notify_send,
+        _invoke_users_current,
+        _invoke_users_list,
+        _invoke_users_subordinates,
+        clear_tool_context,
+        set_tool_context,
+    )
+
+    set_tool_context(run_id="", user_id=auth.user_id)
+    try:
+        if tool_name == "users.current":
+            return _invoke_users_current()
+        if tool_name == "users.subordinates":
+            return _invoke_users_subordinates(arguments)
+        if tool_name == "users.list":
+            return _invoke_users_list(arguments)
+        return _invoke_notify_send(arguments)
+    finally:
+        clear_tool_context()
 
 
 @router.post("/web-search", response_model=WebSearchResponse)

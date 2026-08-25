@@ -277,6 +277,7 @@ class AppWindow(QMainWindow):
         self._pending_run_id = ""
         self._pending_open_live = False
         self._pending_start_demo = False
+        self.main_shell.set_user(user, reset_home=not pending)
         if pending:
             if pending_demo:
                 self.main_shell.navigate_to_agent_run(pending, start_demo=True)

@@ -81,4 +81,16 @@ def list_desktop_tools() -> list[dict[str, Any]]:
         if definition.runtime:
             item["runtime"] = definition.runtime
         tools.append(item)
+
+    # Server-executed tools (1C OData/SQL, IMAP, users, notify). They are proxied
+    # to the backend by host.invoke_tool. The local registry stays authoritative:
+    # a server tool is added only if no local tool already owns that name.
+    from app.tools.server_tools import list_server_tools
+
+    for item in list_server_tools():
+        name = str(item.get("name") or "")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        tools.append(item)
     return tools

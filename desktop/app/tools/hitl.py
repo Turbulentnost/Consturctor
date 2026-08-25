@@ -161,6 +161,10 @@ _TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
         "Встреча в Outlook",
         "Создаёт событие в календаре Outlook. В теме и тексте будет пометка, что это ИИ-агент.",
     ),
+    "report.export_document": (
+        "Отчёт в файл",
+        "Сохраняет отчёт файлом (Word или Markdown) в папке агента.",
+    ),
     "excel.edit_workbook": (
         "Изменение Excel",
         "Правит существующую книгу Excel в папке агента.",

@@ -83,6 +83,7 @@ def test_demo_sdk_prompt_requires_playbook_and_tests() -> None:
     assert "TESTS: PASS" in prompt
     assert "playbook" in prompt
     assert "Продолжи работу этого агента" in prompt
+    assert "до 3 карточек" in prompt
     assert "limit 3-5" not in prompt
 
 
@@ -650,3 +651,28 @@ def test_mcp_tool_name_unwraps_constructor_tool() -> None:
     assert _is_constructor_mcp_wrap(wrap) is True
     assert _is_constructor_mcp_wrap({"tool": "read"}) is False
     assert _live_tool_name({"tool": "read"}) == "read"
+
+
+def test_confirm_write_tool_read_is_allowed() -> None:
+    allowed, rejected = CursorSdkBridge._confirm_write_tool("onec.odata_get", {})
+    assert allowed is True
+    assert rejected is None
+
+
+def test_confirm_write_tool_is_autonomous_without_ui() -> None:
+    # No QApplication instance in this test process -> headless: proceed.
+    allowed, rejected = CursorSdkBridge._confirm_write_tool("onec.odata_post", {"entity": "X"})
+    assert allowed is True
+    assert rejected is None
+
+
+def test_server_catalog_exposes_both_worlds() -> None:
+    from app.tools.server_tools import SERVER_TOOL_NAMES
+
+    names = {str(t.get("name")) for t in sdk_tool_specs()}
+    # Server-executed tools are offered to the local SDK agent.
+    assert {"onec.odata_get", "imap.list_unread", "users.current"} <= names
+    # Local COM tools stay in the catalog too.
+    assert "onec.search_documents" in names
+    # Local COM 1C must not be routed to the server.
+    assert "onec.search_documents" not in SERVER_TOOL_NAMES

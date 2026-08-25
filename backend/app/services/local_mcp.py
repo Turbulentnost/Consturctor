@@ -431,7 +431,7 @@ def _raw_tools() -> list[dict[str, Any]]:
             "description": (
                 "Быстрый список проектов TurboProject с 1С из /api/projects/files. "
                 "Не читает карточки и не считает просрочки. Используй первым, выбери нужные file_id, "
-                "затем вызывай turboproject.get для 3-10 карточек."
+                "затем вызывай turboproject.get максимум для 3 карточек с риском и пиши результат."
             ),
             "execution": "server",
             "input_schema": {
@@ -779,9 +779,23 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             },
             ["code"],
         ),
-        ("report.build_task_report", "Собрать отчёт по поручениям из собранных данных.", {}),
-        ("report.build_meeting_summary", "Сводка/протокол совещания из собранных данных.", {}),
-        ("report.build_schedule_recommendations", "Рекомендации по графику из календаря.", {}),
+        ("report.build_task_report", "Текст отчёта по поручениям из собранных данных (не файл). Для файла используй report.export_document.", {}),
+        ("report.build_meeting_summary", "Текст сводки/протокола совещания (не файл). Для файла используй report.export_document.", {}),
+        ("report.build_schedule_recommendations", "Текст рекомендаций по графику из календаря (не файл). Для файла используй report.export_document.", {}),
+        (
+            "report.export_document",
+            "Сохранить готовый отчёт файлом (Word .docx, иначе Markdown) в папке агента. "
+            "Единственный инструмент для 'отчёт Word/документ файл' из любых собранных данных. "
+            "Возвращает file (путь). Текст разделов пиши сам в sections.",
+            {
+                "filename": _prop("string", "Имя файла без пути; расширение подставится"),
+                "title": _prop("string", "Заголовок документа"),
+                "summary": _prop("string", "Короткое резюме в начале"),
+                "sections": _prop("array", "Разделы [{heading, body}]; body - готовый текст"),
+                "table": _prop("object", "Необязательная таблица {headers:[...], rows:[[...]]}"),
+            },
+            ["filename"],
+        ),
         ("users.current", "Текущий пользователь сессии Constructor: id, ФИО, должность, подразделение. Если регламент говорит «текущий пользователь», «данный пользователь» или «мои данные» — вызови этот tool, не спрашивай человека.", {}),
         ("users.list", "Список пользователей Constructor: id, ФИО, должность, подразделение. Вызови перед notify.send, чтобы выбрать получателя.", {
             "query": _prop("string", "ФИО, email или id — не роль и не «все» / «получатели»"),
@@ -956,9 +970,10 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     "code.run_python": ("desktop", "code", "execute", [], ["text"], "none"),
     "agent.wait": ("constructor", "agent", "execute", ["seconds"], [], "none"),
     "data.process": ("constructor", "dataset", "execute", ["code"], ["result"], "none"),
-    "report.build_task_report": ("desktop", "report", "export", [], ["file"], "none"),
-    "report.build_meeting_summary": ("desktop", "report", "export", [], ["file"], "none"),
-    "report.build_schedule_recommendations": ("desktop", "report", "export", [], ["file"], "none"),
+    "report.build_task_report": ("desktop", "report", "generate", [], ["text"], "none"),
+    "report.build_meeting_summary": ("desktop", "report", "generate", [], ["text"], "none"),
+    "report.build_schedule_recommendations": ("desktop", "report", "generate", [], ["text"], "none"),
+    "report.export_document": ("desktop", "report", "export", ["filename"], ["file"], "none"),
     "users.current": ("constructor", "user", "read", [], ["user"], "none"),
     "users.list": ("constructor", "user", "list", [], ["users"], "count"),
     "users.subordinates": ("constructor", "subordinate", "list", [], ["users"], "count"),

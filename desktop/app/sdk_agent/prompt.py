@@ -144,6 +144,7 @@ def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
         "Live-данные бери через Constructor tools; файлы, код и анализ делай tools Cursor SDK.",
         "Если Constructor tool вернул externalized=true и result_file: продолжай по summary и sample.",
         "Не вызывай тот же tool повторно. Cursor Read по result_file - только если нужна одна запись.",
+        "После 1-3 живых фактов пиши WORK_RESULT. Не снимай весь портфель карточками.",
         "",
         "Доступные инструменты Constructor:",
         format_tool_catalog(),
@@ -193,6 +194,7 @@ def build_demo_sdk_prompt(workflow: WorkflowRecord) -> str:
     task = (
         "Продолжи работу этого агента и выполни пробный прогон на реальных доступных tools. "
         "Сформируй устойчивую инструкцию для будущих повторных запусков. "
+        "Не обходи все 200+ проектов: индекс, затем до 3 карточек с риском, затем отчёт. "
         "В ответе обязательно укажи WORK_RESULT, какие tools использованы, TESTS: PASS или TESTS: FAIL, "
         "и краткую инструкцию playbook для следующего запуска."
     )

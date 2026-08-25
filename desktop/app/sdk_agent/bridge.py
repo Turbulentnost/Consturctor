@@ -126,6 +126,41 @@ class CursorSdkBridge:
             self._active_tool_names.pop(rid, None)
 
     @staticmethod
+    def _confirm_write_tool(tool: str, args: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+        """Ask the user before a write tool runs. Returns (allowed, rejected_result).
+
+        Reuses the existing HITL card infra. If there is no Qt UI (headless
+        scheduled run) or HITL is unavailable, the call proceeds autonomously.
+        """
+        try:
+            from app.tools.hitl import confirm_level1_tool, needs_confirmation
+        except Exception:
+            return True, None
+        if not needs_confirmation(tool):
+            return True, None
+        try:
+            from PySide6.QtWidgets import QApplication
+
+            if QApplication.instance() is None:
+                return True, None
+        except Exception:
+            return True, None
+        try:
+            approved = confirm_level1_tool(tool, args)
+        except Exception:
+            return True, None
+        if approved:
+            return True, None
+        return False, {
+            "rejected": True,
+            "tool": tool,
+            "summary": (
+                "User rejected this tool. Do not retry it. "
+                "Continue with the task or finish without this action."
+            ),
+        }
+
+    @staticmethod
     def skipped_tool_result(tool: str) -> dict[str, Any]:
         name = (tool or "").strip() or "tool"
         return {
@@ -149,6 +184,7 @@ class CursorSdkBridge:
         on_event: SdkEventCallback | None = None,
         on_question: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        confirm_writes: bool = False,
     ) -> dict[str, Any]:
         self._ensure_ready()
         run_id = str(uuid.uuid4())
@@ -207,6 +243,7 @@ class CursorSdkBridge:
                         cwd=run_cwd,
                         on_question=on_question,
                         should_stop=should_stop,
+                        confirm_writes=confirm_writes,
                     )
                     continue
                 if event_type == "agent":
@@ -339,6 +376,7 @@ class CursorSdkBridge:
         cwd: str,
         on_question: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        confirm_writes: bool = False,
     ) -> None:
         request_id = str(payload.get("requestId") or "")
         tool = str(payload.get("tool") or "")
@@ -406,6 +444,16 @@ class CursorSdkBridge:
                 ):
                     box["result"] = self.skipped_tool_result(tool)
                     return
+                if confirm_writes:
+                    allowed, rejected = self._confirm_write_tool(tool, args)
+                    if not allowed:
+                        box["result"] = rejected
+                        return
+                    if self._is_skipped(request_id) or (
+                        should_stop is not None and should_stop()
+                    ):
+                        box["result"] = self.skipped_tool_result(tool)
+                        return
                 result = invoke_sdk_tool(tool, args)
                 if self._is_skipped(request_id) or (
                     should_stop is not None and should_stop()

@@ -4483,6 +4483,7 @@ class WorkflowPage(QWidget):
                     mode="design",
                     on_event=on_sdk_event,
                     on_question=self._wait_sdk_answer,
+                    confirm_writes=True,
                 )
             finally:
                 if self._sdk_bridge is bridge:
@@ -4575,6 +4576,7 @@ class WorkflowPage(QWidget):
                     resume_agent_id=resume_agent_id,
                     on_event=on_sdk_event,
                     on_question=self._wait_sdk_answer,
+                    confirm_writes=True,
                 )
             finally:
                 if self._sdk_bridge is bridge:

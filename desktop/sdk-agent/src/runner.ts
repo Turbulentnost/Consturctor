@@ -202,7 +202,7 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
         const result = payload.result || {};
         const skipped = Boolean((result as { skipped?: unknown }).skipped);
         emit({ type: "tool_result", requestId, tool: name, ok: true, skipped, result });
-        return result as JsonValue;
+        return modelView(result);
       },
     };
   }
@@ -228,6 +228,34 @@ function playbookDraftReady(text: string): boolean {
   } catch {
     return false;
   }
+}
+
+const MODEL_RESULT_CHARS = 8000;
+const MODEL_NEXT_STEP =
+  "If you have enough facts, write the final answer now. Do not fetch the whole portfolio.";
+
+function modelView(result: JsonValue): JsonValue {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return result;
+  }
+  const rec = result as Record<string, JsonValue>;
+  const raw = JSON.stringify(rec);
+  if (raw.length <= MODEL_RESULT_CHARS) {
+    if (typeof rec.next_step === "string" && rec.next_step.trim()) {
+      return rec;
+    }
+    return { ...rec, next_step: MODEL_NEXT_STEP };
+  }
+  const projects = Array.isArray(rec.projects) ? rec.projects.slice(0, 2) : undefined;
+  return {
+    summary: rec.summary || "Result truncated for the model",
+    total_projects: rec.total_projects ?? null,
+    projects_with_1c_count: rec.projects_with_1c_count ?? null,
+    sample: projects,
+    externalized: rec.externalized ?? true,
+    result_file: rec.result_file ?? null,
+    next_step: MODEL_NEXT_STEP,
+  };
 }
 
 function waitForToolResult(requestId: string, timeoutMs = 15 * 60 * 1000): Promise<ToolResultCommand> {

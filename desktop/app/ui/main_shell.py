@@ -599,10 +599,11 @@ class MainShell(QWidget):
         self._collapse_btn.setToolTip("Развернуть меню" if collapsed else "Свернуть меню")
         QTimer.singleShot(0, self._position_overlays)
 
-    def set_user(self, user: UserProfile) -> None:
+    def set_user(self, user: UserProfile, *, reset_home: bool = True) -> None:
         self._apply_user(user)
-        self.sidebar.set_active_key("create", animate=False)
-        self._pages.setCurrentIndex(0)
+        if reset_home:
+            self.sidebar.set_active_key("create", animate=False)
+            self._pages.setCurrentIndex(0)
         QTimer.singleShot(0, self._refresh_profile)
 
     def _apply_user(self, user: UserProfile) -> None:
@@ -1884,6 +1885,7 @@ class MainShell(QWidget):
         if not wid:
             return
         self._pending_start_demo = bool(start_demo)
+        self._pages.setCurrentIndex(self._page_index["loading"])
 
         def run() -> None:
             try:
