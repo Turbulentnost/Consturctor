@@ -96,8 +96,9 @@ def build_design_sdk_prompt(workflow: WorkflowRecord, design_prompt: str) -> str
         "Это не проектные MCP-серверы Cursor и не mcp.json репозитория.",
         "Не ищи MCP в проекте и не пиши, что MCP не найден: список инструментов ниже.",
         "Live-данные бери через Constructor tools; файлы, код и анализ делай tools Cursor SDK.",
-        "Если Constructor tool вернул externalized=true и result_file: продолжай по summary и sample.",
-        "Не вызывай тот же tool повторно. Cursor Read по result_file - только если нужна одна запись.",
+        "Если Constructor tool вернул externalized=true и result_file: полный JSON в этом файле.",
+        "Достань нужные поля Cursor Read или кодом (code.write_python / code.run_python).",
+        "Не вызывай тот же Constructor tool повторно ради тех же данных.",
         "Сначала собери инструкцию будущего агента, а не отчёт по материалам.",
         "Перед JSON проверь: сможет ли агент на следующем запуске отработать,",
         "не додумывая бизнес-правило, которого нет в тексте.",
@@ -142,9 +143,10 @@ def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
         "Не пиши, что MCP не найден, если нужный инструмент есть в списке ниже.",
         "Не пиши JSON вызова инструмента в чат. Вызывай настоящий tool.",
         "Live-данные бери через Constructor tools; файлы, код и анализ делай tools Cursor SDK.",
-        "Если Constructor tool вернул externalized=true и result_file: продолжай по summary и sample.",
-        "Не вызывай тот же tool повторно. Cursor Read по result_file - только если нужна одна запись.",
-        "После 1-3 живых фактов пиши WORK_RESULT. Не снимай весь портфель карточками.",
+        "Если Constructor tool вернул externalized=true и result_file: полный JSON в этом файле.",
+        "Достань нужные поля Cursor Read или кодом (code.write_python / code.run_python).",
+        "Не вызывай тот же Constructor tool повторно ради тех же данных.",
+        "Портфель сотрудника - turboproject.get_user_portfolio(employee из users.current), не серия карточек.",
         "",
         "Доступные инструменты Constructor:",
         format_tool_catalog(),
@@ -194,7 +196,8 @@ def build_demo_sdk_prompt(workflow: WorkflowRecord) -> str:
     task = (
         "Продолжи работу этого агента и выполни пробный прогон на реальных доступных tools. "
         "Сформируй устойчивую инструкцию для будущих повторных запусков. "
-        "Не обходи все 200+ проектов: индекс, затем до 3 карточек с риском, затем отчёт. "
+        "Проекты пользователя бери одним вызовом turboproject.get_user_portfolio "
+        "(employee = ФИО из users.current). Большой ответ разбирай из result_file. "
         "В ответе обязательно укажи WORK_RESULT, какие tools использованы, TESTS: PASS или TESTS: FAIL, "
         "и краткую инструкцию playbook для следующего запуска."
     )

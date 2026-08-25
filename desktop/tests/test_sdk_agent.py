@@ -83,7 +83,8 @@ def test_demo_sdk_prompt_requires_playbook_and_tests() -> None:
     assert "TESTS: PASS" in prompt
     assert "playbook" in prompt
     assert "Продолжи работу этого агента" in prompt
-    assert "до 3 карточек" in prompt
+    assert "get_user_portfolio" in prompt
+    assert "result_file" in prompt
     assert "limit 3-5" not in prompt
 
 

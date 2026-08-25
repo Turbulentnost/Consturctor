@@ -21,13 +21,12 @@ from app.sdk_agent.tool_adapter import (
 from app.tools import ToolHostError
 
 DEFAULT_SDK_MODEL = "grok-4.6"
-LARGE_TOOL_RESULT_BYTES = 60_000
+LARGE_TOOL_RESULT_BYTES = 8_000
 EXTERNALIZED_SAMPLE_ITEMS = 8
 EXTERNALIZED_NEXT_STEP = (
     "Full JSON is in result_file relative to cwd. "
-    "Continue from summary and sample. "
-    "Do not call the same Constructor tool again. "
-    "Use Cursor Read on result_file only if you need one specific record."
+    "Extract the fields you need with Cursor Read or by writing and running Python. "
+    "Do not call the same Constructor tool again for this data."
 )
 
 

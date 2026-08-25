@@ -23,6 +23,7 @@ GET_OVERDUE_PROJECTS_TOOL_NAME = "turboproject.get_overdue_projects"
 GET_BLOCKED_TASKS_TOOL_NAME = "turboproject.get_projects_with_blocked_tasks"
 GET_WORKLOAD_SUMMARY_TOOL_NAME = "turboproject.get_workload_summary"
 GET_PORTFOLIO_SUMMARY_TOOL_NAME = "turboproject.get_project_portfolio_summary"
+GET_USER_PORTFOLIO_TOOL_NAME = "turboproject.get_user_portfolio"
 
 TURBOPROJECT_TOOLS = frozenset(
     {
@@ -38,6 +39,7 @@ TURBOPROJECT_TOOLS = frozenset(
         GET_BLOCKED_TASKS_TOOL_NAME,
         GET_WORKLOAD_SUMMARY_TOOL_NAME,
         GET_PORTFOLIO_SUMMARY_TOOL_NAME,
+        GET_USER_PORTFOLIO_TOOL_NAME,
     }
 )
 
@@ -107,10 +109,14 @@ _AGG_NARROW_KEYS = (
     "from",
     "date_to",
     "to",
+    "employee",
+    "fio",
+    "user",
 )
 _ANALYTICS_CONCURRENCY = 12
 _ANALYTICS_TIME_BUDGET_SEC = 30.0
 _MAX_PROJECT_IDS = 20
+_MAX_USER_PORTFOLIO = 500
 _MAX_OVERDUE_ITEMS = 8
 _MAX_RESOURCES = 20
 _token = ""
@@ -279,17 +285,87 @@ def build_project_payload(summary_item: dict[str, Any], details: dict[str, Any])
     }
 
 
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _index_people(item: dict[str, Any]) -> dict[str, Any]:
+    """Owner and 1C participants from the cheap /api/projects/files row.
+
+    Live index stores people on the item itself (rukovoditel_1c, project.author),
+    not inside data_1c. Cards keep the same names under data_1c.
+    """
+    project = item.get("project") if isinstance(item.get("project"), dict) else {}
+    data_1c = item.get("data_1c") if isinstance(item.get("data_1c"), dict) else {}
+    owner = _first_text(
+        item.get("rukovoditel_1c"),
+        data_1c.get("rukovoditel"),
+        project.get("author"),
+        project.get("manager"),
+        item.get("owner"),
+    )
+    curator = _first_text(
+        item.get("kurator_1c"),
+        data_1c.get("kurator"),
+        project.get("curator"),
+        item.get("curator"),
+    )
+    customer = _first_text(
+        item.get("zakazchik_1c"),
+        data_1c.get("zakazchik"),
+        project.get("customer"),
+        item.get("customer"),
+    )
+    deputy = _first_text(data_1c.get("zam_rp"), item.get("zam_rp"))
+    participants = unique_resource_names([owner, curator, customer, deputy])
+    return {
+        "owner": owner,
+        "curator": curator,
+        "customer": customer,
+        "deputy": deputy,
+        "participants": participants,
+    }
+
+
+def _index_data_1c(item: dict[str, Any], people: dict[str, Any]) -> dict[str, Any]:
+    raw = item.get("data_1c") if isinstance(item.get("data_1c"), dict) else {}
+    mapped = {
+        "nomer_proekta": _first_text(raw.get("nomer_proekta"), item.get("nomer_proekta")),
+        "status_proekta": _first_text(raw.get("status_proekta"), item.get("status_1c"), item.get("status")),
+        "rukovoditel": people.get("owner") or "",
+        "kurator": people.get("curator") or "",
+        "zakazchik": people.get("customer") or "",
+        "zam_rp": people.get("deputy") or "",
+        "podrazdelenie": _first_text(raw.get("podrazdelenie"), item.get("podrazdelenie_1c")),
+        "organizatsiya": _first_text(raw.get("organizatsiya"), item.get("organizatsiya_1c")),
+        "tip_proekta": _first_text(raw.get("tip_proekta"), item.get("tip_proekta_1c")),
+        "data_nachala": raw.get("data_nachala"),
+        "data_okonchaniya": raw.get("data_okonchaniya"),
+        "planovaya_data_okonchaniya": raw.get("planovaya_data_okonchaniya"),
+    }
+    return {key: value for key, value in mapped.items() if value not in (None, "")}
+
+
 def build_project_index_item(item: dict[str, Any]) -> dict[str, Any]:
     """Cheap project index row from /api/projects/files without reading an MPP card."""
     raw_file_id = item.get("id") or item.get("file_id") or item.get("fileId")
     project = item.get("project") if isinstance(item.get("project"), dict) else {}
-    data_1c = item.get("data_1c") if isinstance(item.get("data_1c"), dict) else {}
+    people = _index_people(item)
+    data_1c = _index_data_1c(item, people)
     return {
         "file_id": raw_file_id,
         "original_name": item.get("original_name") or item.get("name"),
         "uploaded_at": iso_or_none(item.get("uploaded_at")),
         "has_1c": bool(item.get("has_1c") or data_1c),
         "project_name": project.get("name") or item.get("project_name") or item.get("original_name") or item.get("name"),
+        "owner": people["owner"],
+        "curator": people["curator"],
+        "customer": people["customer"],
+        "participants": people["participants"],
         "dates": {
             "start_date": iso_or_none(project.get("start_date") or item.get("start_date")),
             "finish_date": iso_or_none(project.get("finish_date") or item.get("finish_date")),
@@ -298,21 +374,7 @@ def build_project_index_item(item: dict[str, Any]) -> dict[str, Any]:
             "baseline_finish": iso_or_none(project.get("baseline_finish") or item.get("baseline_finish")),
             "plan_finish_1c": iso_or_none(project.get("plan_finish_1c") or item.get("plan_finish_1c")),
         },
-        "data_1c": {
-            key: data_1c.get(key)
-            for key in (
-                "nomer_proekta",
-                "status_proekta",
-                "rukovoditel",
-                "podrazdelenie",
-                "kurator",
-                "zakazchik",
-                "data_nachala",
-                "data_okonchaniya",
-                "planovaya_data_okonchaniya",
-            )
-            if data_1c.get(key) not in (None, "")
-        },
+        "data_1c": data_1c,
     }
 
 
@@ -515,11 +577,34 @@ def _matches_query(item: dict[str, Any], query: str) -> bool:
     return needle in hay
 
 
-def _matches_manager(item: dict[str, Any], manager: str) -> bool:
-    if not manager:
+def _people_values(item: dict[str, Any]) -> list[str]:
+    data = _data_1c(item)
+    values = [
+        item.get("owner"),
+        item.get("curator"),
+        item.get("customer"),
+        item.get("deputy"),
+        data.get("rukovoditel"),
+        data.get("kurator"),
+        data.get("zakazchik"),
+        data.get("zam_rp"),
+        data.get("rukovodstvo_proektom"),
+    ]
+    participants = item.get("participants")
+    if isinstance(participants, list):
+        values.extend(participants)
+    return [str(value).strip() for value in values if str(value or "").strip()]
+
+
+def _matches_person(item: dict[str, Any], person: str) -> bool:
+    if not person:
         return True
-    data = item.get("data_1c") if isinstance(item.get("data_1c"), dict) else {}
-    return manager.casefold() in str(data.get("rukovoditel") or "").casefold()
+    needle = person.casefold()
+    return any(needle in value.casefold() for value in _people_values(item))
+
+
+def _matches_manager(item: dict[str, Any], manager: str) -> bool:
+    return _matches_person(item, manager)
 
 
 def _string_filter(payload: dict[str, Any], *names: str) -> str:
@@ -574,13 +659,7 @@ def _matches_status(item: dict[str, Any], status: str) -> bool:
 
 
 def _matches_owner(item: dict[str, Any], owner: str) -> bool:
-    if not owner:
-        return True
-    data = _data_1c(item)
-    return any(
-        _matches_text(data.get(key), owner)
-        for key in ("rukovoditel", "rukovodstvo_proektom", "kurator", "zam_rp")
-    )
+    return _matches_person(item, owner)
 
 
 def _matches_department(item: dict[str, Any], department: str) -> bool:
@@ -623,7 +702,9 @@ def _filtered_index_projects(args: dict[str, Any], *, token: str | None = None) 
     raw_query = _string_filter(args, "query", "project_name")
     query = raw_query if is_project_name_query(raw_query) else ""
     status = _string_filter(args, "status", "status_proekta")
-    owner = _string_filter(args, "owner_id", "owner", "manager", "rukovoditel")
+    owner = _string_filter(
+        args, "owner_id", "owner", "manager", "rukovoditel", "employee", "fio", "user"
+    )
     department = _string_filter(args, "department_id", "department", "podrazdelenie")
     date_from = _string_filter(args, "date_from", "from")
     date_to = _string_filter(args, "date_to", "to")
@@ -676,9 +757,9 @@ def _aggregator_refusal(mode: str) -> dict[str, Any]:
     """Дешёвый отказ агрегатора без сканирования портфеля."""
     return {
         "summary": (
-            "Портфель целиком не сканируется. Сначала turboproject.search_projects "
-            "(manager / query / sort_by=finish_date), возьми до 3 file_id и передай их "
-            "как project_ids сюда, либо задай фильтр manager/query."
+            "Портфель целиком не сканируется. Сначала turboproject.get_user_portfolio "
+            "(employee = ФИО из users.current) или search_projects с manager/query, "
+            "затем передай нужные file_id как project_ids."
         ),
         "matched_projects_count": 0,
         "scanned_projects_count": 0,
@@ -902,6 +983,52 @@ def search_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
         "projects": page,
         "source": "turboproject",
         "mode": "search",
+    }
+
+
+def get_user_portfolio(args: dict[str, Any] | None = None) -> dict[str, Any]:
+    """All cheap index rows where employee is owner, curator, customer or deputy.
+
+    One call, no card scan. Pass employee = users.current.user.fio.
+    """
+    payload = args if isinstance(args, dict) else {}
+    employee = _string_filter(
+        payload, "employee", "fio", "user", "manager", "owner", "rukovoditel"
+    )
+    if not employee:
+        return {
+            "summary": (
+                "Нужно ФИО сотрудника. Сначала users.current, затем вызови "
+                "turboproject.get_user_portfolio с employee = user.fio."
+            ),
+            "matched_projects_count": 0,
+            "projects": [],
+            "source": "turboproject",
+            "mode": "user_portfolio",
+            "needs": "users.current",
+        }
+    filter_args = dict(payload)
+    filter_args["owner"] = employee
+    projects, total_projects, with_1c_count = _filtered_index_projects(filter_args)
+    limit = _int_filter(payload, "limit", _MAX_USER_PORTFOLIO, _MAX_USER_PORTFOLIO)
+    cursor = _cursor_offset(payload)
+    page, next_cursor = _page(projects, limit=limit, cursor=cursor)
+    return {
+        "summary": (
+            f"Портфель {employee}: {len(page)} из {len(projects)} проект(ов), "
+            "где сотрудник руководитель, куратор, заказчик или зам. "
+            "Карточки читай только если нужны задачи или просрочки."
+        ),
+        "employee": employee,
+        "total_projects": total_projects,
+        "projects_with_1c_count": with_1c_count,
+        "matched_projects_count": len(projects),
+        "limit": limit,
+        "cursor": str(cursor),
+        "next_cursor": next_cursor,
+        "projects": page,
+        "source": "turboproject",
+        "mode": "user_portfolio",
     }
 
 
@@ -1317,6 +1444,8 @@ def invoke_turboproject(tool: str, arguments: dict[str, Any] | None = None) -> d
     try:
         if tool == SEARCH_PROJECTS_TOOL_NAME:
             return search_projects(args)
+        if tool == GET_USER_PORTFOLIO_TOOL_NAME:
+            return get_user_portfolio(args)
         if tool == GET_PROJECT_TOOL_NAME:
             return get_project(args)
         if tool == GET_PROJECT_TASKS_TOOL_NAME:

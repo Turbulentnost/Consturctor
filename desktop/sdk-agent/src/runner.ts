@@ -232,7 +232,7 @@ function playbookDraftReady(text: string): boolean {
 
 const MODEL_RESULT_CHARS = 8000;
 const MODEL_NEXT_STEP =
-  "If you have enough facts, write the final answer now. Do not fetch the whole portfolio.";
+  "If result_file is set, extract what you need from that file with Read or code. Do not recall the same Constructor tool for this data.";
 
 function modelView(result: JsonValue): JsonValue {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
@@ -247,14 +247,17 @@ function modelView(result: JsonValue): JsonValue {
     return { ...rec, next_step: MODEL_NEXT_STEP };
   }
   const projects = Array.isArray(rec.projects) ? rec.projects.slice(0, 2) : undefined;
+  const resultFile = typeof rec.result_file === "string" ? rec.result_file : null;
   return {
     summary: rec.summary || "Result truncated for the model",
     total_projects: rec.total_projects ?? null,
     projects_with_1c_count: rec.projects_with_1c_count ?? null,
     sample: projects,
-    externalized: rec.externalized ?? true,
-    result_file: rec.result_file ?? null,
-    next_step: MODEL_NEXT_STEP,
+    externalized: Boolean(rec.externalized && resultFile),
+    result_file: resultFile,
+    next_step: resultFile
+      ? MODEL_NEXT_STEP
+      : "Result was truncated and no result_file was written. Use summary and sample; do not invent a file.",
   };
 }
 
