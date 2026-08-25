@@ -14,12 +14,14 @@ from PySide6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from app.ui.theme import (
     COLOR_ACTIVE_BG,
     COLOR_ACTIVE_FG,
     ICON_CHAT,
+    MAIN_TEXT,
     MINT,
     MINT_SOFT,
     NAV_ITEM_HEIGHT,
@@ -47,6 +49,8 @@ ICON_SIZE = 20
 SIDEBAR_PAD_LEFT = SIDEBAR_PADDING_X
 SIDEBAR_PAD_RIGHT = 28
 _TEMP = Path(__file__).resolve().parents[1] / "temp"
+_ICONS = Path(__file__).resolve().parents[1] / "icons"
+_ORCHESTRATOR_SVG = _ICONS / "orchestrator.svg"
 
 # Filename prefixes: серый* = active/pressed, белый* = inactive.
 _ICON_STEMS = {
@@ -86,8 +90,31 @@ def _load_nav_icon(filename: str) -> QPixmap:
     )
 
 
+def _load_svg_shape(path: Path) -> QPixmap:
+    if not path.exists() or path.stat().st_size <= 0:
+        return QPixmap()
+    renderer = QSvgRenderer(str(path))
+    if not renderer.isValid():
+        return QPixmap()
+    pix = QPixmap(ICON_SIZE, ICON_SIZE)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    renderer.render(painter, QRectF(0, 0, ICON_SIZE, ICON_SIZE))
+    painter.end()
+    return pix
+
+
 def _load_icon_pair(kind: str) -> tuple[QPixmap, QPixmap]:
     """Return (inactive/белый*, active/серый*)."""
+    if kind == "orchestrator":
+        shape = _load_svg_shape(_ORCHESTRATOR_SVG)
+        if shape.isNull():
+            return QPixmap(), QPixmap()
+        inactive = _tint_pixmap(shape, QColor("#FFFFFF"))
+        active = _tint_pixmap(shape, MAIN_TEXT)
+        return inactive, active
     stem = _ICON_STEMS.get(kind)
     if not stem:
         return QPixmap(), QPixmap()
@@ -235,6 +262,7 @@ class GlassSidebar(QWidget):
             NavItem("agents", "Мои агенты", "home"),
             NavItem("kpi", "KPI", "kpi"),
             NavItem("dashboard", "Мой дашборд", "dashboard"),
+            NavItem("orchestrator", "Оркестратор", "orchestrator"),
             NavItem("chat", "Чат", "chat"),
         ]
         self._active_key = "create"

@@ -63,6 +63,7 @@ from app.ui.pages.revision_result_page import RevisionResultPage
 from app.ui.pages.role_match_page import RoleMatchPage
 from app.ui.pages.saved_workflows_page import SavedWorkflowsPage
 from app.ui.pages.notifications_page import NotificationsPage
+from app.ui.pages.orchestrator_page import OrchestratorPage
 from app.chat.page import ChatPage
 from app.ui.pages.settings_page import SettingsPage
 from app.ui.pages.workflow_page import WorkflowPage
@@ -223,6 +224,7 @@ class MainShell(QWidget):
         self._page_group_runs = AgentGroupRunsPage()
         self._page_chat = ChatPage(self._api)
         self._page_chat.open_agent_requested.connect(self._on_agent_history_requested)
+        self._page_orchestrator = OrchestratorPage()
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_implementation_agents)
@@ -245,6 +247,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_history)
         self._pages.addWidget(self._page_group_runs)
         self._pages.addWidget(self._page_chat)
+        self._pages.addWidget(self._page_orchestrator)
         self._page_index = {
             "create": 0,
             "agents": 1,
@@ -268,6 +271,7 @@ class MainShell(QWidget):
             "agent_history": 19,
             "agent_group_runs": 20,
             "chat": 21,
+            "orchestrator": 22,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
@@ -501,6 +505,7 @@ class MainShell(QWidget):
             activity_status=user.activity_status,
         )
         self._page_chat.set_user(user)
+        self._page_orchestrator.set_user(user.id)
         self._load_avatar(user)
         pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap
         self._page_settings.set_user(user, pixmap)
@@ -1213,6 +1218,8 @@ class MainShell(QWidget):
             self._page_kpi.refresh()
         elif key == "chat":
             self._page_chat.refresh()
+        elif key == "orchestrator":
+            self._page_orchestrator.refresh()
 
     def _on_open_saved_workflow(self, record: object) -> None:
         from app.api_client import WorkflowRecord as WorkflowRecordType

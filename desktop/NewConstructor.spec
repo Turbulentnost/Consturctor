@@ -40,6 +40,7 @@ def _pywin32_binaries() -> list[tuple[str, str]]:
 datas = []
 datas += _datas_dir(root / "assets", "assets")
 datas += _datas_dir(root / "app" / "ui" / "temp", "app/ui/temp")
+datas += _datas_dir(root / "app" / "ui" / "icons", "app/ui/icons")
 if (root / ".env.example").is_file():
     datas.append((str(root / ".env.example"), "."))
 try:
