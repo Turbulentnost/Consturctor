@@ -12,6 +12,7 @@ from app.api.v1 import (
     triggers,
     workflows,
 )
+from app.modules.chat.api import router as chat_router
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -24,3 +25,4 @@ api_router.include_router(workflows.router, prefix="/api/v1")
 api_router.include_router(tools.router, prefix="/api/v1")
 api_router.include_router(notifications.router, prefix="/api/v1")
 api_router.include_router(triggers.router, prefix="/api/v1")
+api_router.include_router(chat_router, prefix="/api/v1")

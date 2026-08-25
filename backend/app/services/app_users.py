@@ -59,6 +59,8 @@ def to_user_out(user: AppUser) -> UserOut:
         avatar_url=avatar_url_for(user),
         can_change_department=can_change,
         department_change_available_at=available_at,
+        activity_status=getattr(user, "activity_status", None) or "online",
+        is_support=bool(getattr(user, "is_support", False)),
     )
 
 

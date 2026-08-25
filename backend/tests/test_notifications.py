@@ -1,4 +1,7 @@
+from types import SimpleNamespace
+
 from app.services.local_mcp import list_tools
+from app.services.notifications.service import latest_due_by_recipient, split_latest
 from app.services.workflows.cursor_tools import (
     _format_tool_output,
     required_live_tools_from_plan,
@@ -6,6 +9,22 @@ from app.services.workflows.cursor_tools import (
 )
 from app.services.workflows.plan_models import OpenQuestion, WorkflowPlan
 from app.services.workflows.prompts import build_demo_continue_prompt, build_published_run_prompt
+
+
+def test_split_latest_keeps_only_newest() -> None:
+    older, latest = split_latest(["a", "b", "c"])
+    assert older == ["a", "b"]
+    assert latest == "c"
+    assert split_latest([]) == ([], None)
+
+
+def test_latest_due_by_recipient_keeps_one_per_user() -> None:
+    first = SimpleNamespace(id="1", recipient_user_id="u1")
+    second = SimpleNamespace(id="2", recipient_user_id="u1")
+    other = SimpleNamespace(id="3", recipient_user_id="u2")
+    older, latest = latest_due_by_recipient([first, other, second])
+    assert [item.id for item in older] == ["1"]
+    assert {item.id for item in latest} == {"2", "3"}
 
 
 def test_notify_send_is_server_tool() -> None:

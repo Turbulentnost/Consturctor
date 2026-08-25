@@ -55,6 +55,10 @@ class Settings(BaseSettings):
         "postgresql+psycopg://constructor:constructor@192.168.1.157:5435/constructor"
     )
     redis_url: str = "redis://127.0.0.1:6382/0"
+    rabbitmq_url: str = "amqp://constructor:constructor@127.0.0.1:5672/"
+    chat_support_user_ids: str = ""
+    chat_encryption_key: str = ""
+    chat_storage_dir: Path = BACKEND_ROOT / "storage" / "chat"
     avatar_storage_dir: Path = BACKEND_ROOT / "storage" / "avatars"
     regulation_storage_dir: Path = BACKEND_ROOT / "storage" / "regulations"
     workflow_storage_dir: Path = BACKEND_ROOT / "storage" / "workflows"
@@ -91,6 +95,7 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+settings.chat_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)
