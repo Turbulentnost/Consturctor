@@ -33,10 +33,9 @@ from app.chat.api import ChatApi, guess_mime
 from app.chat.icons import agent_icon, agent_icon_size, paperclip_icon, paperclip_icon_size
 from app.chat.models import ChatAttachment, ChatMessage, ChatThread, DirectoryUser
 from app.chat.crypto import decrypt_text, encrypt_text
-from app.chat.shared_bus import append_shared, load_shared, roster_list, roster_upsert
+from app.chat.shared_bus import append_shared, load_shared, roster_upsert
 from app.chat.store import load_dialogs, load_history, save_history
 from app.chat.support_agent import echo_command
-from app.chat.test_user import TEST_USER_ID, test_directory_user
 from app.chat.widgets.agent_offer_dialog import AgentOfferDialog
 from app.chat.widgets.agent_picker import AgentPickerDialog
 from app.chat.widgets.profile_dialog import ChatProfileDialog
@@ -149,6 +148,33 @@ def sort_threads(threads: list[ChatThread]) -> list[ChatThread]:
     return pinned + rest
 
 
+def peer_key(thread: ChatThread) -> str:
+    title = (thread.title or "").strip().casefold()
+    if title:
+        return f"fio:{title}"
+    peer = (thread.peer_id or thread.id or "").strip()
+    return f"id:{peer.casefold()}"
+
+
+def dedupe_dm_threads(threads: list[ChatThread]) -> list[ChatThread]:
+    best: dict[str, ChatThread] = {}
+    order: list[str] = []
+    for thread in threads:
+        key = peer_key(thread)
+        prev = best.get(key)
+        if prev is None:
+            best[key] = thread
+            order.append(key)
+            continue
+        prev_ts = prev.last_message_at or ""
+        next_ts = thread.last_message_at or ""
+        if next_ts > prev_ts:
+            best[key] = thread
+        elif next_ts == prev_ts and thread.peer_id and not prev.peer_id:
+            best[key] = thread
+    return [best[key] for key in order]
+
+
 def preview_of(message: ChatMessage | None) -> str:
     if message is None:
         return ""
@@ -178,6 +204,7 @@ def _support_thread(preview: str = "", last_message_at: str = "") -> ChatThread:
 
 class ChatPage(QWidget):
     open_agent_requested = Signal(str, str)
+    threads_changed = Signal()
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -204,7 +231,7 @@ class ChatPage(QWidget):
         title = QLabel("Чат")
         title.setFont(app_font(28, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        title.setContentsMargins(0, 0, 320, 0)
+        title.setContentsMargins(0, 0, 0, 0)
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("Поиск по словам…")
@@ -412,18 +439,83 @@ class ChatPage(QWidget):
 
         body = QHBoxLayout()
         body.setSpacing(10)
-        left_wrap = QWidget()
-        left_wrap.setFixedWidth(268)
-        left_wrap.setLayout(left)
+        self._left_wrap = QWidget()
+        self._left_wrap.setFixedWidth(268)
+        self._left_wrap.setLayout(left)
+        self._left_wrap.hide()
         right_wrap = QWidget()
         right_wrap.setLayout(right)
-        body.addWidget(left_wrap, 0)
+        body.addWidget(self._left_wrap, 0)
         body.addWidget(right_wrap, 1)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(title)
         root.addLayout(body, 1)
+
+    def current_thread_id(self) -> str:
+        return self._current
+
+    def sidebar_dialogs(self) -> list[ChatThread]:
+        result: list[ChatThread] = []
+        for thread in list(self._threads) + list(self._local_threads.values()):
+            if thread.id == _VIRTUAL_SUPPORT or thread.kind == "support":
+                continue
+            if not self._dialog_has_messages(thread):
+                continue
+            result.append(thread)
+        return sort_threads(dedupe_dm_threads(result))
+
+    def _dialog_has_messages(self, thread: ChatThread) -> bool:
+        rows = self._local.get(thread.id) or []
+        if self._user is not None:
+            shared = load_shared(self._user.id, thread.peer_id or thread.id)
+            if shared:
+                rows = shared
+        if rows:
+            return True
+        preview = (thread.preview or "").strip()
+        return bool(preview) and preview != "Нет сообщений"
+
+    def open_existing_dialog(self, thread_id: str) -> None:
+        if not thread_id:
+            return
+        self._reload_threads()
+        self._open_thread(thread_id)
+        self._select_thread(thread_id)
+
+    def open_by_fio(self, fio: str) -> None:
+        needle = (fio or "").strip()
+        if not needle:
+            return
+        lowered = needle.casefold()
+        for thread in list(self._local_threads.values()) + list(self._threads):
+            if thread.id == _VIRTUAL_SUPPORT:
+                continue
+            if thread.title.strip().casefold() == lowered:
+                self.open_existing_dialog(thread.id)
+                return
+        try:
+            users = self._api.directory(needle)
+        except ApiError:
+            users = []
+        me_id = self._user.id if self._user is not None else ""
+        me_fio = (self._user.fio if self._user is not None else "").casefold()
+        peer: DirectoryUser | None = None
+        for user in users:
+            if user.fio.strip().casefold() != lowered:
+                continue
+            if me_id and user.id == me_id:
+                continue
+            if me_fio and user.fio.casefold() == me_fio:
+                continue
+            peer = user
+            break
+        if peer is None:
+            if me_fio and lowered == me_fio:
+                return
+            peer = DirectoryUser(id="", fio=needle)
+        self._start_dm(peer)
 
     def set_user(self, user: UserProfile | None) -> None:
         previous = self._user.id if self._user is not None else ""
@@ -432,11 +524,15 @@ class ChatPage(QWidget):
         self._support_box.setVisible(support)
         self._support_caption.setVisible(support)
         self._shelf.setVisible(support)
+        self._left_wrap.setVisible(support)
         if user is not None and user.id != previous:
             self._local = load_history(user.id)
             self._local_threads = {item.id: item for item in load_dialogs(user.id)}
             roster_upsert(user.id, user.fio, user.position)
             self._sync_roster_threads()
+            self._reload_threads()
+            return
+        self.threads_changed.emit()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -519,47 +615,15 @@ class ChatPage(QWidget):
     def _sync_roster_threads(self) -> None:
         if self._user is None:
             return
-        peers = roster_list(self._user.id)
-        if self._user.id != TEST_USER_ID:
-            anna = test_directory_user()
-            if all(item.id != anna.id for item in peers):
-                peers.append(anna)
-        known = {item.id for item in peers}
         for thread in list(self._local_threads.values()):
-            if thread.id and thread.id != _VIRTUAL_SUPPORT and thread.id not in known:
-                peers.append(
-                    DirectoryUser(
-                        id=thread.id,
-                        fio=thread.title,
-                        position=thread.position,
-                        department=thread.department,
-                    )
-                )
-        for peer in peers:
-            thread = self._local_threads.get(peer.id)
-            if thread is None:
-                thread = ChatThread(
-                    id=peer.id,
-                    kind="dm",
-                    title=peer.fio,
-                    position=peer.position or "Сотрудник 1С",
-                    department=peer.department,
-                    preview="Нет сообщений",
-                    peer_id=peer.id,
-                    online=peer.online,
-                )
-                self._local_threads[peer.id] = thread
-                self._fresh_ids.add(peer.id)
-            if peer.fio:
-                thread.title = peer.fio
-            if peer.position:
-                thread.position = peer.position
-            if peer.department:
-                thread.department = peer.department
-            thread.online = peer.online
-            shared = load_shared(self._user.id, peer.id)
-            if shared:
-                self._apply_activity(thread, shared, viewing=peer.id == self._current)
+            if thread.id == _VIRTUAL_SUPPORT or thread.kind == "support":
+                continue
+            peer_id = thread.peer_id or thread.id
+            shared = load_shared(self._user.id, peer_id)
+            local = self._local.get(thread.id) or []
+            rows = shared or local
+            if rows:
+                self._apply_activity(thread, rows, viewing=thread.id == self._current)
         support_rows = self._local.get(_VIRTUAL_SUPPORT) or []
         if support_rows:
             support = self._local_threads.get(_VIRTUAL_SUPPORT)
@@ -620,12 +684,17 @@ class ChatPage(QWidget):
                     rows = shared
             if rows:
                 self._apply_activity(thread, rows, viewing=thread.id == self._current)
+            if not self._dialog_has_messages(thread):
+                continue
             blob = " ".join([thread.title, thread.position, thread.preview]).casefold()
             if needle and needle not in blob:
                 continue
             local_dms.append(thread)
-        visible = ([support] if not needle or needle in hay else []) + local_dms + remote
-        self._threads = sort_threads(visible)
+        remote = [item for item in remote if self._dialog_has_messages(item)]
+        visible = local_dms + remote
+        if self._user and self._user.is_support and (not needle or needle in hay):
+            visible = [support] + visible
+        self._threads = sort_threads(dedupe_dm_threads(visible))
         current = self._current or _VIRTUAL_SUPPORT
         self._list.blockSignals(True)
         self._list.clear()
@@ -647,6 +716,7 @@ class ChatPage(QWidget):
             self._list.setCurrentRow(0)
         self._list.blockSignals(False)
         self._fit_thread_items()
+        self.threads_changed.emit()
 
     def _list_item_width(self) -> int:
         return max(180, self._list.viewport().width() - 4)
@@ -987,10 +1057,22 @@ class ChatPage(QWidget):
             return
         self._start_dm(dialog.chosen)
 
+    def _find_existing_dm(self, peer: DirectoryUser) -> ChatThread | None:
+        peer_id = (peer.id or "").strip()
+        fio = (peer.fio or "").strip().casefold()
+        for thread in list(self._local_threads.values()) + list(self._threads):
+            if thread.id == _VIRTUAL_SUPPORT or thread.kind == "support":
+                continue
+            if peer_id and (thread.peer_id == peer_id or thread.id == peer_id):
+                return thread
+            if fio and thread.title.strip().casefold() == fio:
+                return thread
+        return None
+
     def _start_dm(self, peer: DirectoryUser) -> None:
-        thread_id = peer.id or f"dm:{peer.fio}"
-        existing = self._local_threads.get(thread_id)
-        thread = existing or ChatThread(
+        existing = self._find_existing_dm(peer)
+        thread_id = (existing.id if existing is not None else "") or peer.id or f"dm:{peer.fio}"
+        thread = existing or self._local_threads.get(thread_id) or ChatThread(
             id=thread_id,
             kind="dm",
             title=peer.fio,
