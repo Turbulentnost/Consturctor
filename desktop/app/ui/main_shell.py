@@ -65,6 +65,7 @@ from app.ui.pages.revision_result_page import RevisionResultPage
 from app.ui.pages.role_match_page import RoleMatchPage
 from app.ui.pages.saved_workflows_page import SavedWorkflowsPage
 from app.ui.pages.notifications_page import NotificationsPage
+from app.chat.page import ChatPage
 from app.ui.pages.settings_page import SettingsPage
 from app.ui.pages.workflow_page import WorkflowPage
 from app.ui.theme import (
@@ -336,6 +337,8 @@ class MainShell(QWidget):
         self._page_notifications = NotificationsPage()
         self._page_history = AgentHistoryPage(self._api)
         self._page_group_runs = AgentGroupRunsPage()
+        self._page_chat = ChatPage(self._api)
+        self._page_chat.open_agent_requested.connect(self._on_agent_history_requested)
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_implementation_agents)
@@ -358,6 +361,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_notifications)
         self._pages.addWidget(self._page_history)
         self._pages.addWidget(self._page_group_runs)
+        self._pages.addWidget(self._page_chat)
         self._page_index = {
             "create": 0,
             "agents": 1,
@@ -381,6 +385,7 @@ class MainShell(QWidget):
             "notifications": 19,
             "agent_history": 20,
             "agent_group_runs": 21,
+            "chat": 22,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
@@ -609,7 +614,12 @@ class MainShell(QWidget):
     def _apply_user(self, user: UserProfile) -> None:
         self._user = user
         self._api._user_id = user.id
-        self.user_menu.set_user(fio=user.fio, position=user.position)
+        self.user_menu.set_user(
+            fio=user.fio,
+            position=user.position,
+            activity_status=user.activity_status,
+        )
+        self._page_chat.set_user(user)
         self._load_avatar(user)
         pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap
         self._page_settings.set_user(user, pixmap)
@@ -642,6 +652,19 @@ class MainShell(QWidget):
             self._apply_user(profile)
         except ApiError:
             pass
+
+    def apply_chat_event(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        from app.chat.events import dispatch
+
+        dispatch(payload, self._page_chat.apply_event)
+        if str(payload.get("type") or "") == "presence" and self._user is not None:
+            if str(payload.get("user_id") or "") == self._user.id:
+                from dataclasses import replace
+
+                status = str(payload.get("activity_status") or self._user.activity_status)
+                self._apply_user(replace(self._user, activity_status=status))
 
     def refresh_notification_badge(self) -> None:
         try:
@@ -1309,6 +1332,8 @@ class MainShell(QWidget):
             self._page_kpi.refresh()
         elif key == "files":
             self._page_files.refresh()
+        elif key == "chat":
+            self._page_chat.refresh()
 
     def _on_open_saved_workflow(self, record: object) -> None:
         from app.api_client import WorkflowRecord as WorkflowRecordType

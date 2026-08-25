@@ -11,11 +11,12 @@ from app.clients.erp_sql import (
     find_user_by_id,
     get_user_profile_by_fio,
     list_departments,
+    search_user_directory,
     search_user_fios,
 )
 from app.config import settings
 from app.core.jwt import create_access_token
-from app.schemas.auth import LoginResponse, UserOut
+from app.schemas.auth import LoginResponse, UserDirectoryItem, UserOut
 from app.services import app_users
 from app.services.sessions import new_session_id, replace_session
 from tools.onec.password import verify_password
@@ -193,6 +194,22 @@ async def list_user_fios(search: str | None = None) -> list[str]:
     except ErpSqlError as exc:
         logger.exception("ERP SQL error listing users")
         raise AuthError("Не удалось загрузить список пользователей", status_code=503) from exc
+
+
+async def list_user_directory(search: str | None = None) -> list[UserDirectoryItem]:
+    if _erp_sql_bypass_enabled():
+        fio = settings.erp_login.strip()
+        if not fio:
+            return []
+        if search and _fio_key(search) not in _fio_key(fio):
+            return []
+        return [UserDirectoryItem(id="local", fio=fio)]
+    try:
+        rows = await asyncio.to_thread(search_user_directory, search)
+    except ErpSqlError as exc:
+        logger.exception("ERP SQL error listing user directory")
+        raise AuthError("Не удалось загрузить список пользователей", status_code=503) from exc
+    return [UserDirectoryItem(id=row.id, fio=row.fio) for row in rows]
 
 
 async def list_department_names() -> list[str]:

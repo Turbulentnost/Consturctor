@@ -23,9 +23,11 @@ from app.services.notifications.service import (
     due_undelivered,
     list_directory_users,
     list_inbox,
+    latest_due_by_recipient,
     list_pending,
     mark_all_read,
     mark_delivered,
+    split_latest,
     mark_read,
     payload_dict,
     unread_count,
@@ -147,10 +149,14 @@ async def notifications_ws(websocket: WebSocket, token: str = "") -> None:
     mark_online(auth.user_id, auth.session_id)
     db = SessionLocal()
     try:
-        for item in list_pending(db, user_id=auth.user_id):
-            sent = await hub.push(auth.user_id, payload_dict(item))
+        pending = list_pending(db, user_id=auth.user_id)
+        older, latest = split_latest(pending)
+        for item in older:
+            mark_delivered(db, item.id)
+        if latest is not None:
+            sent = await hub.push(auth.user_id, payload_dict(latest))
             if sent:
-                mark_delivered(db, item.id)
+                mark_delivered(db, latest.id)
         while True:
             await websocket.receive_text()
             if not is_current_session(auth.user_id, auth.session_id):
@@ -184,7 +190,10 @@ async def _deliver_if_due(db: Session, item: NotificationOut) -> None:
 async def deliver_due_notifications() -> None:
     db = SessionLocal()
     try:
-        for row in due_undelivered(db):
+        older, latest_rows = latest_due_by_recipient(due_undelivered(db))
+        for row in older:
+            mark_delivered(db, row.id)
+        for row in latest_rows:
             sent = await hub.push(row.recipient_user_id, payload_dict(row))
             if sent:
                 mark_delivered(db, row.id)

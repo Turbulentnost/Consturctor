@@ -5,6 +5,34 @@ services:
       - "6382:6379"
     restart: unless-stopped
 
+  constructor-rabbit:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: constructor
+      RABBITMQ_DEFAULT_PASS: constructor
+    restart: unless-stopped
+
+  constructor-chat-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      REDIS_URL: redis://constructor-redis:6379/0
+      RABBITMQ_URL: amqp://constructor:constructor@constructor-rabbit:5672/
+      DATABASE_URL: postgresql+psycopg://constructor:constructor@host.docker.internal:5435/constructor
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - constructor-redis
+      - constructor-rabbit
+    command: python -m app.modules.chat.worker
+    restart: unless-stopped
+
   constructor-worker:
     build:
       context: ./backend

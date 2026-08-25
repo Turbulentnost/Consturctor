@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QRectF, QTimer, Qt, Signal
@@ -7,6 +8,7 @@ from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QP
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -22,7 +24,14 @@ from PySide6.QtWidgets import (
 )
 
 from app.api_client import ApiClient, ApiError, UserProfile
+from app.chat.api import ChatApi
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font
+
+_ACTIVITY_LABELS = (
+    ("online", "В сети"),
+    ("busy", "Занят"),
+    ("away", "Не активен"),
+)
 
 _AVATAR_SIZE = 128
 _DEFAULT_LOGO = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
@@ -460,6 +469,18 @@ class SettingsPage(QWidget):
         self._position.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self._position.setWordWrap(True)
 
+        self._status_label = QLabel("Статус")
+        self._status_label.setFont(app_font(12, QFont.Weight.DemiBold))
+        self._status_label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        self._status = QComboBox()
+        self._status.setFixedWidth(220)
+        self._status.setFont(app_font(13))
+        for value, label in _ACTIVITY_LABELS:
+            self._status.addItem(label, value)
+        self._status.currentIndexChanged.connect(self._on_activity_chosen)
+
         self._dept_label = QLabel("Отдел")
         self._dept_label.setFont(app_font(12, QFont.Weight.DemiBold))
         self._dept_label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
@@ -501,6 +522,9 @@ class SettingsPage(QWidget):
         layout.addSpacing(4)
         layout.addWidget(self._position)
         layout.addSpacing(10)
+        layout.addWidget(self._status_label)
+        layout.addWidget(self._status, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addSpacing(10)
         layout.addWidget(self._dept_label)
         layout.addWidget(dept_row, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self._dept_hint)
@@ -512,6 +536,11 @@ class SettingsPage(QWidget):
         self._user = user
         self._fio.setText(user.fio or "—")
         self._position.setText(f"Должность: {user.position.strip() or 'не указана'}")
+        status = user.activity_status or "online"
+        index = next((i for i, (value, _) in enumerate(_ACTIVITY_LABELS) if value == status), 0)
+        self._status.blockSignals(True)
+        self._status.setCurrentIndex(index)
+        self._status.blockSignals(False)
         self._ensure_departments()
         self._dept_edit.set_items(self._departments)
         self._dept_edit.set_department(user.department.strip() or "")
@@ -619,5 +648,21 @@ class SettingsPage(QWidget):
             QMessageBox.warning(self, "Отдел", exc.message)
             self._dept_edit.set_department(self._user.department.strip())
             return
+        self.set_user(user)
+        self.profile_updated.emit(user)
+
+    def _on_activity_chosen(self, index: int) -> None:
+        if self._user is None or index < 0:
+            return
+        status = str(self._status.itemData(index) or "online")
+        if status == (self._user.activity_status or "online"):
+            return
+        try:
+            ChatApi(self._api).set_activity(status)
+        except ApiError as exc:
+            QMessageBox.warning(self, "Статус", exc.message)
+            self.set_user(self._user)
+            return
+        user = replace(self._user, activity_status=status)
         self.set_user(user)
         self.profile_updated.emit(user)

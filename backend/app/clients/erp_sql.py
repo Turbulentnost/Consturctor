@@ -472,6 +472,63 @@ def search_user_fios(search: str | None = None, limit: int = 200) -> list[str]:
         conn.close()
 
 
+@dataclass(frozen=True, slots=True)
+class ErpDirectoryRow:
+    id: str
+    fio: str
+
+
+def search_user_directory(search: str | None = None, limit: int = 200) -> list[ErpDirectoryRow]:
+    """1C v8users: id + ФИО for the chat directory."""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        term = (search or "").strip()
+        if term:
+            starts = f"{term}%"
+            word_starts = f"% {term}%"
+            cur.execute(
+                f"""
+                SELECT DISTINCT TOP (?)
+                    CONVERT(varchar(64), v.ID, 2) AS UserId,
+                    {_FIO_EXPR} AS Fio
+                FROM dbo.v8users v WITH (NOLOCK)
+                WHERE {_FIO_EXPR} LIKE ?
+                   OR {_FIO_EXPR} LIKE ?
+                   OR LTRIM(RTRIM(v.Name)) LIKE ?
+                   OR LTRIM(RTRIM(v.Name)) LIKE ?
+                   OR LTRIM(RTRIM(v.Descr)) LIKE ?
+                   OR LTRIM(RTRIM(v.Descr)) LIKE ?
+                ORDER BY Fio
+                """,
+                (limit, starts, word_starts, starts, word_starts, starts, word_starts),
+            )
+        else:
+            cur.execute(
+                f"""
+                SELECT DISTINCT TOP (?)
+                    CONVERT(varchar(64), v.ID, 2) AS UserId,
+                    {_FIO_EXPR} AS Fio
+                FROM dbo.v8users v WITH (NOLOCK)
+                WHERE {_FIO_EXPR} <> N''
+                ORDER BY Fio
+                """,
+                (limit,),
+            )
+        rows: list[ErpDirectoryRow] = []
+        for row in cur.fetchall():
+            fio = (row.Fio or "").strip()
+            user_id = (row.UserId or "").strip().upper()
+            if fio and user_id:
+                rows.append(ErpDirectoryRow(id=user_id, fio=fio))
+        return rows
+    except pyodbc.Error as exc:
+        raise ErpSqlError(f"Failed to search v8users directory: {exc}") from exc
+    finally:
+        conn.close()
+
+
 def list_departments(limit: int = 500) -> list[str]:
     """Distinct department names from 1C catalog _Reference513."""
     conn = _connect()

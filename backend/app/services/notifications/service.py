@@ -126,6 +126,25 @@ def create_notification(
     return _to_out(row)
 
 
+def split_latest(items: list) -> tuple[list, object | None]:
+    """Keep only the newest item from a backlog ordered oldest-first."""
+    if not items:
+        return [], None
+    return list(items[:-1]), items[-1]
+
+
+def latest_due_by_recipient(rows: list[Notification]) -> tuple[list[Notification], list[Notification]]:
+    """Return (older, latest-per-user) for a due-undelivered backlog."""
+    latest: dict[str, Notification] = {}
+    older: list[Notification] = []
+    for row in rows:
+        previous = latest.get(row.recipient_user_id)
+        if previous is not None:
+            older.append(previous)
+        latest[row.recipient_user_id] = row
+    return older, list(latest.values())
+
+
 def list_pending(db: Session, *, user_id: str) -> list[NotificationOut]:
     now = datetime.now(timezone.utc)
     rows = (
