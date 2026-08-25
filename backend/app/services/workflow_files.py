@@ -12,7 +12,13 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.models.workflow import Workflow, WorkflowFile
-from app.schemas.workflow import AttachmentMetaSchema, WorkflowFileSchema, WorkflowFilesResponse
+from app.schemas.workflow import (
+    AttachmentMetaSchema,
+    PlatformFileSchema,
+    PlatformFilesResponse,
+    WorkflowFileSchema,
+    WorkflowFilesResponse,
+)
 from app.services.triggers.service import workflow_is_deleted
 from app.services.workflows.document import DocumentError, compose_document, load_attachment_bytes
 
@@ -142,6 +148,60 @@ def register_agent_files(
     )
     db.flush()
     return rows
+
+
+def list_user_platform_files(db: Session, *, user_id: str) -> PlatformFilesResponse:
+    rows = (
+        db.query(
+            WorkflowFile.id,
+            WorkflowFile.workflow_id,
+            WorkflowFile.run_id,
+            WorkflowFile.source,
+            WorkflowFile.scope,
+            WorkflowFile.origin,
+            WorkflowFile.filename,
+            WorkflowFile.mime_type,
+            WorkflowFile.kind,
+            WorkflowFile.size,
+            WorkflowFile.sha256,
+            WorkflowFile.summary,
+            WorkflowFile.created_at,
+            WorkflowFile.updated_at,
+            Workflow.title,
+            Workflow.phase,
+            Workflow.local_run,
+        )
+        .join(Workflow, Workflow.id == WorkflowFile.workflow_id)
+        .filter(Workflow.user_id == user_id)
+        .order_by(WorkflowFile.created_at.desc(), WorkflowFile.filename.asc())
+        .all()
+    )
+    files: list[PlatformFileSchema] = []
+    for item in rows:
+        workflow = type("W", (), {"phase": item.phase, "local_run": item.local_run})()
+        if workflow_is_deleted(workflow):
+            continue
+        files.append(
+            PlatformFileSchema(
+                id=item.id,
+                workflow_id=item.workflow_id,
+                run_id=item.run_id or "",
+                source=item.source or SOURCE_USER,
+                scope=item.scope or SCOPE_KNOWLEDGE,
+                origin=item.origin or "",
+                filename=item.filename or "file",
+                mime_type=item.mime_type or "",
+                kind=item.kind or "text",
+                size=int(item.size or 0),
+                sha256=item.sha256 or "",
+                summary=item.summary or "",
+                text_preview="",
+                created_at=_iso(item.created_at),
+                updated_at=_iso(item.updated_at),
+                agent_title=item.title or "Агент",
+            )
+        )
+    return PlatformFilesResponse(files=files)
 
 
 def list_workflow_files(

@@ -274,6 +274,10 @@ class ChatPage(QWidget):
         self._opening = False
         self._aliases: dict[str, str] = {}
         self._avatar_peer_id = ""
+        self._remote_cache: list[ChatThread] = []
+        self._rendered_keys: list[str] = []
+        self._rendered_day = ""
+        self._pending_remote_thread = ""
         self._poll = QTimer(self)
         self._poll.setInterval(800)
         self._poll.timeout.connect(self._poll_shared)
@@ -545,6 +549,12 @@ class ChatPage(QWidget):
     def current_thread_id(self) -> str:
         return self._current
 
+    def current_peer_id(self) -> str:
+        thread = self._current_thread()
+        if thread is None:
+            return ""
+        return thread.peer_id or ("" if thread.id.startswith("thr-") else thread.id)
+
     def _canon(self, thread_id: str) -> str:
         return self._aliases.get(thread_id, thread_id)
 
@@ -690,9 +700,9 @@ class ChatPage(QWidget):
         )
         if thread is not None and thread.peer_id:
             self._bind_ids(thread.id, thread.peer_id)
-        self._reload_threads()
         self._open_thread(self._canon(thread_id))
         self._select_thread(self._canon(thread_id))
+        self.threads_changed.emit()
 
     def open_by_fio(self, fio: str) -> None:
         needle = (fio or "").strip()
@@ -777,11 +787,15 @@ class ChatPage(QWidget):
                 incoming.thread_id,
                 incoming.sender_id if not incoming.mine else "",
             ):
-                rows = self._collect_local_rows(incoming.thread_id)
-                if rows:
-                    self._shared_stamp = rows[-1].id
-                    self._render_rows(rows, pin_bottom=self._stick_bottom)
-            self._reload_threads()
+                already = bool(client_id and client_id in self._bubbles)
+                if already:
+                    self._set_receipt(client_id, "delivered")
+                else:
+                    rows = self._collect_local_rows(incoming.thread_id)
+                    if rows:
+                        self._shared_stamp = rows[-1].id
+                        self._render_rows(rows, pin_bottom=self._stick_bottom)
+            self._reload_threads(remote=False)
             return
         if kind == "thread_opened" and thread_id:
             self._bind_ids(thread_id, peer_id)
@@ -901,21 +915,23 @@ class ChatPage(QWidget):
                 self._render_rows(rows, pin_bottom=self._stick_bottom)
         if before != after:
             self._persist()
-            self._reload_threads()
+            self._reload_threads(remote=False)
 
-    def _reload_threads(self) -> None:
+    def _reload_threads(self, *, remote: bool = True) -> None:
         needle = self._search.text().strip().casefold()
-        remote: list[ChatThread] = []
-        if self._api_chat:
+        fetched: list[ChatThread] = []
+        if remote and self._api_chat:
             try:
-                remote = [
+                fetched = [
                     item
                     for item in self._api.threads(self._search.text().strip())
                     if item.id != _VIRTUAL_SUPPORT
                 ]
+                self._remote_cache = fetched
             except ApiError:
                 self._api_chat = False
-                remote = []
+                fetched = []
+        remote_rows = fetched if remote else list(self._remote_cache)
         local_rows = self._local.get(_VIRTUAL_SUPPORT) or []
         last = local_rows[-1] if local_rows else None
         stored_support = self._local_threads.get(_VIRTUAL_SUPPORT)
@@ -923,7 +939,7 @@ class ChatPage(QWidget):
         if last is not None:
             self._apply_activity(support, local_rows, viewing=self._current == _VIRTUAL_SUPPORT)
         hay = " ".join([support.title, support.position, support.preview]).casefold()
-        remote_ids = {item.id for item in remote}
+        remote_ids = {item.id for item in remote_rows}
         local_dms: list[ChatThread] = []
         for thread in self._local_threads.values():
             if thread.id in remote_ids or thread.id == _VIRTUAL_SUPPORT:
@@ -941,8 +957,8 @@ class ChatPage(QWidget):
             if needle and needle not in blob:
                 continue
             local_dms.append(thread)
-        remote = [item for item in remote if self._dialog_has_messages(item)]
-        visible = local_dms + remote
+        remote_rows = [item for item in remote_rows if self._dialog_has_messages(item)]
+        visible = local_dms + remote_rows
         if self._user and self._user.is_support and (not needle or needle in hay):
             visible = [support] + visible
         self._threads = sort_threads(dedupe_dm_threads(visible))
@@ -1042,9 +1058,14 @@ class ChatPage(QWidget):
     def _show_thread(self, thread_id: str) -> None:
         self._current = thread_id
         self._paint_selection()
-        thread = next((item for item in self._threads if item.id == thread_id), None)
-        if thread is None:
-            thread = self._local_threads.get(thread_id)
+        thread = next(
+            (
+                item
+                for item in list(self._threads) + list(self._local_threads.values())
+                if item.id == thread_id or item.peer_id == thread_id
+            ),
+            None,
+        )
         if thread_id == _VIRTUAL_SUPPORT and thread is None:
             thread = _support_thread()
         self._peer.setText(thread.title if thread else "Диалог")
@@ -1053,11 +1074,10 @@ class ChatPage(QWidget):
             peer_id = thread.peer_id or ("" if thread.id.startswith("thr-") else thread.id)
         self._set_avatar(thread.title if thread else "", peer_id=peer_id)
         self._sync_pin_button(thread)
+        rows = self._collect_local_rows(thread_id) if thread is not None else []
         if thread is not None:
-            rows = self._collect_local_rows(thread_id)
             if rows:
                 self._local[self._canon(thread_id)] = rows
-            if rows:
                 self._apply_activity(thread, rows, viewing=True)
             else:
                 thread.unread = 0
@@ -1076,7 +1096,18 @@ class ChatPage(QWidget):
         self._stick_bottom = True
         if thread_id == _VIRTUAL_SUPPORT:
             self._ensure_support_welcome()
-            self._render_local_or_remote(thread_id)
+            self._render_rows(self._collect_local_rows(thread_id), pin_bottom=True)
+        elif rows:
+            self._render_rows(rows, pin_bottom=True)
+        else:
+            self._clear_feed()
+        self._pending_remote_thread = thread_id
+        QTimer.singleShot(0, lambda tid=thread_id: self._load_remote_if_current(tid))
+
+    def _load_remote_if_current(self, thread_id: str) -> None:
+        if thread_id != self._current or thread_id != self._pending_remote_thread:
+            return
+        if thread_id == _VIRTUAL_SUPPORT:
             return
         self._load_messages(thread_id, pin_bottom=True)
         if self._api_chat:
@@ -1091,6 +1122,9 @@ class ChatPage(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+        self._rendered_keys = []
+        self._rendered_day = ""
+        self._bubbles.clear()
 
     def _ensure_support_welcome(self) -> None:
         rows = self._local.setdefault(_VIRTUAL_SUPPORT, [])
@@ -1144,28 +1178,46 @@ class ChatPage(QWidget):
         QTimer.singleShot(0, lambda: bar.setValue(bar.maximum()))
         QTimer.singleShot(80, lambda: bar.setValue(bar.maximum()))
 
+    def _message_key(self, message: ChatMessage) -> str:
+        return str(message.id or message.client_id or "")
+
+    def _append_row_widget(self, message: ChatMessage) -> None:
+        day = _message_day(message.created_at)
+        if day and day != self._rendered_day:
+            self._rendered_day = day
+            self._feed.insertWidget(
+                self._feed.count() - 1,
+                DateSeparator(_date_label(message.created_at)),
+                0,
+                Qt.AlignmentFlag.AlignHCenter,
+            )
+        pending = self._pending.get(message.client_id)
+        if pending is not None and pending.receipt == "failed":
+            message.receipt = "failed"
+        bubble = MessageBubble(message)
+        bubble.agent_opened.connect(self._open_agent_card)
+        bubble.attachment_requested.connect(self._save_attachment)
+        if message.client_id:
+            self._bubbles[message.client_id] = bubble
+        self._feed.insertWidget(self._feed.count() - 1, bubble)
+
     def _render_rows(self, rows: list[ChatMessage], *, pin_bottom: bool = True) -> None:
-        self._clear_feed()
-        current_day = ""
-        for message in rows:
-            day = _message_day(message.created_at)
-            if day and day != current_day:
-                current_day = day
-                self._feed.insertWidget(
-                    self._feed.count() - 1,
-                    DateSeparator(_date_label(message.created_at)),
-                    0,
-                    Qt.AlignmentFlag.AlignHCenter,
-                )
-            pending = self._pending.get(message.client_id)
-            if pending is not None and pending.receipt == "failed":
-                message.receipt = "failed"
-            bubble = MessageBubble(message)
-            bubble.agent_opened.connect(self._open_agent_card)
-            bubble.attachment_requested.connect(self._save_attachment)
-            if message.client_id:
-                self._bubbles[message.client_id] = bubble
-            self._feed.insertWidget(self._feed.count() - 1, bubble)
+        new_keys = [key for key in (self._message_key(item) for item in rows) if key]
+        old_keys = list(self._rendered_keys)
+        can_append = bool(old_keys) and new_keys[: len(old_keys)] == old_keys
+        if can_append:
+            known = set(old_keys)
+            for message in rows:
+                key = self._message_key(message)
+                if key and key in known:
+                    continue
+                self._append_row_widget(message)
+            self._rendered_keys = new_keys
+        else:
+            self._clear_feed()
+            for message in rows:
+                self._append_row_widget(message)
+            self._rendered_keys = new_keys
         self._sync_info_panel(rows)
         if pin_bottom:
             self._scroll_to_bottom(force=True)
@@ -1173,8 +1225,16 @@ class ChatPage(QWidget):
     def _current_thread(self) -> ChatThread | None:
         if self._current == _VIRTUAL_SUPPORT:
             return _support_thread()
-        return self._local_threads.get(self._current) or next(
-            (item for item in self._threads if item.id == self._current),
+        current = self._canon(self._current)
+        found = self._local_threads.get(current) or self._local_threads.get(self._current)
+        if found is not None:
+            return found
+        return next(
+            (
+                item
+                for item in self._threads
+                if item.id in {self._current, current} or item.peer_id in {self._current, current}
+            ),
             None,
         )
 
@@ -1579,11 +1639,9 @@ class ChatPage(QWidget):
             agent=agent,
         )
         self._pending[client_id] = optimistic
-        bubble = MessageBubble(optimistic)
-        bubble.agent_opened.connect(self._open_agent_card)
-        bubble.attachment_requested.connect(self._save_attachment)
-        self._bubbles[client_id] = bubble
-        self._feed.insertWidget(self._feed.count() - 1, bubble)
+        self._append_row_widget(optimistic)
+        if client_id not in self._rendered_keys:
+            self._rendered_keys.append(client_id)
         self._scroll_to_bottom(force=True)
         target = self._local_threads.get(thread_id) or self._local_threads.get(raw_id)
         if target is None:
@@ -1653,7 +1711,7 @@ class ChatPage(QWidget):
             self._input.setPlaceholderText("Напишите сообщение...")
             self._pending_files.clear()
             self._refresh_file_chips()
-        self._reload_threads()
+        self._reload_threads(remote=False)
 
     def _set_receipt(self, client_id: str, status: str) -> None:
         pending = self._pending.get(client_id)

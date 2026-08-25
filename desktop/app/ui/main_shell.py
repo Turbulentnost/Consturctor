@@ -11,11 +11,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -65,6 +63,7 @@ from app.ui.pages.revision_result_page import RevisionResultPage
 from app.ui.pages.role_match_page import RoleMatchPage
 from app.ui.pages.saved_workflows_page import SavedWorkflowsPage
 from app.ui.pages.notifications_page import NotificationsPage
+from app.ui.pages.platform_files_page import PlatformFilesPage
 from app.chat.page import ChatPage
 from app.ui.pages.settings_page import SettingsPage
 from app.ui.pages.workflow_page import WorkflowPage
@@ -161,118 +160,6 @@ class LoadingPage(QWidget):
     def set_message(self, title: str, subtitle: str) -> None:
         self._title.setText(title)
         self._subtitle.setText(subtitle)
-
-
-class PlatformFilesPage(QWidget):
-    def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._api = api
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(14)
-        title = QLabel("Файлы")
-        title.setFont(app_font(28, QFont.Weight.DemiBold))
-        title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        subtitle = QLabel("Все документы, которые приложены к агентам или созданы ими.")
-        subtitle.setFont(app_font(13))
-        subtitle.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        self._search = QLineEdit()
-        self._search.setPlaceholderText("Поиск по файлам")
-        self._search.setFixedHeight(38)
-        self._search.setStyleSheet(
-            "QLineEdit { background: #FFFFFF; border: 1px solid rgba(16,24,23,0.10); "
-            "border-radius: 12px; padding: 8px 12px; }"
-        )
-        self._search.textChanged.connect(lambda _text: self._render())
-        refresh = QPushButton("Обновить")
-        refresh.setFixedHeight(38)
-        refresh.setCursor(Qt.CursorShape.PointingHandCursor)
-        refresh.setStyleSheet(
-            "QPushButton { background: #08745F; color: #FFFFFF; border: none; "
-            "border-radius: 12px; padding: 8px 14px; }"
-        )
-        refresh.clicked.connect(self.refresh)
-        row.addWidget(self._search, 1)
-        row.addWidget(refresh, 0)
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        self._content = QWidget()
-        self._content_lay = QVBoxLayout(self._content)
-        self._content_lay.setContentsMargins(0, 0, 0, 0)
-        self._content_lay.setSpacing(10)
-        self._scroll.setWidget(self._content)
-        self._items: list[tuple[str, str, str]] = []
-        self._message = ""
-        root.addWidget(title)
-        root.addWidget(subtitle)
-        root.addLayout(row)
-        root.addWidget(self._scroll, 1)
-        self._render()
-
-    def refresh(self) -> None:
-        self._message = ""
-        items: list[tuple[str, str, str]] = []
-        try:
-            for workflow in self._api.list_workflows():
-                files = self._api.list_workflow_files(workflow.id)
-                for item in list(files.user_files) + list(files.agent_files):
-                    items.append((workflow.title, item.filename, item.summary or item.text_preview))
-        except ApiError:
-            self._message = "Не удалось загрузить базу файлов. Проверьте соединение и попробуйте снова."
-        self._items = items
-        self._render()
-
-    def _render(self) -> None:
-        while self._content_lay.count():
-            item = self._content_lay.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        query = self._search.text().strip().casefold()
-        rows = [item for item in self._items if not query or query in item[1].casefold()]
-        if self._message:
-            self._content_lay.addWidget(self._empty(self._message))
-        elif not rows:
-            self._content_lay.addWidget(self._empty("Файлов пока нет. Они появятся после загрузки материалов в агентах."))
-        else:
-            for workflow, filename, summary in rows:
-                self._content_lay.addWidget(self._card(workflow, filename, summary))
-        self._content_lay.addStretch(1)
-
-    def _empty(self, text: str) -> QWidget:
-        label = QLabel(text)
-        label.setWordWrap(True)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setFont(app_font(14))
-        label.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent; padding: 40px;")
-        return label
-
-    def _card(self, workflow: str, filename: str, summary: str) -> QWidget:
-        card = QFrame()
-        card.setStyleSheet(
-            "QFrame { background: #FFFFFF; border: 1px solid rgba(16,24,23,0.08); border-radius: 14px; }"
-        )
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(14, 12, 14, 12)
-        name = QLabel(filename or "file")
-        name.setFont(app_font(14, QFont.Weight.DemiBold))
-        name.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
-        meta = QLabel(workflow or "Агент")
-        meta.setFont(app_font(11))
-        meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        info = QLabel((summary or "").strip()[:220])
-        info.setWordWrap(True)
-        info.setFont(app_font(12))
-        info.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
-        lay.addWidget(name)
-        lay.addWidget(meta)
-        if info.text():
-            lay.addWidget(info)
-        return card
 
 
 class MainShell(QWidget):
@@ -1344,7 +1231,7 @@ class MainShell(QWidget):
         elif key == "kpi":
             self._page_kpi.refresh()
         elif key == "files":
-            self._page_files.refresh()
+            QTimer.singleShot(0, self._page_files.refresh)
         elif key == "chat":
             return
         self.sidebar.hide_search_suggestions()
@@ -1353,11 +1240,13 @@ class MainShell(QWidget):
         self.sidebar.set_dialogs(self._page_chat.sidebar_dialogs())
         current = self._page_chat.current_thread_id()
         if self.sidebar.active_key() == "chat" and current:
-            self.sidebar.highlight_dialog(current)
+            self.sidebar.highlight_dialog(current, self._page_chat.current_peer_id())
 
     def _on_sidebar_dialog(self, thread_id: str) -> None:
         self._pages.setCurrentIndex(self._page_index["chat"])
         self._page_chat.open_existing_dialog(thread_id)
+        current = self._page_chat.current_thread_id() or thread_id
+        self.sidebar.highlight_dialog(current, self._page_chat.current_peer_id())
 
     def _on_sidebar_fio(self, fio: str) -> None:
         self._pages.setCurrentIndex(self._page_index["chat"])

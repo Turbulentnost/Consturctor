@@ -27,6 +27,7 @@ from app.schemas.workflow import (
     ExecuteRequest,
     LocalRunUpdate,
     LocalDemoFinish,
+    PlatformFilesResponse,
     WorkflowBoard,
     WorkflowFilesResponse,
     WorkflowHealth,
@@ -75,6 +76,7 @@ from app.services.workflow_files import (
     delete_workflow_file,
     ensure_workflow_files_table,
     get_workflow_file,
+    list_user_platform_files,
     list_workflow_files,
     register_agent_files,
 )
@@ -317,6 +319,14 @@ async def read_workflow_board(
         window_to=window_to,
         workflow_id=workflow_id,
     )
+
+
+@router.get("/files", response_model=PlatformFilesResponse)
+async def read_platform_files(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PlatformFilesResponse:
+    return list_user_platform_files(db, user_id=auth.user_id)
 
 
 @router.post("/{workflow_id}/agent-runs/stream")

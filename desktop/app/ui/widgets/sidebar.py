@@ -70,6 +70,12 @@ _ICON_STEMS = {
 }
 
 
+def dialog_ids_match(thread_id: str, peer_id: str, active_id: str, active_peer: str = "") -> bool:
+    left = {item for item in (thread_id, peer_id) if item}
+    right = {item for item in (active_id, active_peer) if item}
+    return bool(left & right)
+
+
 def short_fio(fio: str) -> str:
     parts = [part for part in (fio or "").replace(".", " ").split() if part]
     if not parts:
@@ -388,6 +394,18 @@ class ChatPeerItem(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setToolTip(title)
 
+    def bind(self, thread_id: str, title: str, *, peer_id: str = "") -> None:
+        self.thread_id = thread_id
+        self.peer_id = peer_id
+        if title != self._title:
+            self._title = title
+            self._short = short_fio(title) or title
+            self._initials = _initials(title)
+            self.setToolTip(title)
+            if self._pixmap.isNull():
+                self.update()
+        self.update()
+
     def set_pixmap(self, pixmap: QPixmap) -> None:
         self._pixmap = circular_pixmap(pixmap, 28) if not pixmap.isNull() else QPixmap()
         self.update()
@@ -519,6 +537,7 @@ class GlassSidebar(QWidget):
         ]
         self._active_key = "create"
         self._active_dialog_id = ""
+        self._active_peer_id = ""
         self._collapsed = False
         self._buttons: dict[str, NavigationItem] = {}
         self._peer_items: dict[str, ChatPeerItem] = {}
@@ -540,6 +559,7 @@ class GlassSidebar(QWidget):
             return
         self._active_key = key
         self._active_dialog_id = ""
+        self._active_peer_id = ""
         for item_key, button in self._buttons.items():
             button.set_active(item_key == key)
         self._sync_peer_active()
@@ -675,29 +695,72 @@ class GlassSidebar(QWidget):
         if hasattr(self, "_search"):
             self._search.edit.hide_suggestions()
 
-    def highlight_dialog(self, thread_id: str) -> None:
+    def highlight_dialog(self, thread_id: str, peer_id: str = "") -> None:
         self._active_key = "chat"
         self._active_dialog_id = thread_id
+        self._active_peer_id = peer_id
         for button in self._buttons.values():
             button.set_active(False)
         self._sync_peer_active()
 
+    def _is_dialog_active(self, thread_id: str, peer_id: str = "") -> bool:
+        return dialog_ids_match(
+            thread_id,
+            peer_id,
+            self._active_dialog_id,
+            self._active_peer_id,
+        )
+
     def set_dialogs(self, threads: list[ChatThread]) -> None:
+        pool: dict[str, ChatPeerItem] = {}
+        for item in self._peer_items.values():
+            pool[item.thread_id] = item
+            if item.peer_id and item.peer_id not in pool:
+                pool[item.peer_id] = item
+
         while self._peers_layout.count() > 1:
-            item = self._peers_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self._peer_items = {}
+            self._peers_layout.takeAt(0)
+
+        used: set[int] = set()
+        next_items: dict[str, ChatPeerItem] = {}
         for thread in threads:
             peer_id = thread.peer_id or ("" if thread.id.startswith("thr-") else thread.id)
-            peer = ChatPeerItem(thread.id, thread.title, peer_id=peer_id)
-            peer.clicked.connect(self._on_peer_clicked)
-            peer.set_collapsed(self._collapsed)
-            peer.set_active(thread.id == self._active_dialog_id)
-            self._peers_layout.insertWidget(self._peers_layout.count() - 1, peer)
-            self._peer_items[thread.id] = peer
+            item = None
+            for key in (thread.id, peer_id):
+                found = pool.get(key) if key else None
+                if found is not None and id(found) not in used:
+                    item = found
+                    break
+            if item is None:
+                title = (thread.title or "").strip().casefold()
+                if title:
+                    for found in pool.values():
+                        if id(found) in used:
+                            continue
+                        if found._title.strip().casefold() == title:
+                            item = found
+                            break
+            if item is None:
+                item = ChatPeerItem(thread.id, thread.title, peer_id=peer_id)
+                item.clicked.connect(self._on_peer_clicked)
+            else:
+                item.bind(thread.id, thread.title, peer_id=peer_id)
+            item.set_collapsed(self._collapsed)
+            item.set_active(self._is_dialog_active(thread.id, peer_id))
+            used.add(id(item))
+            self._peers_layout.insertWidget(self._peers_layout.count() - 1, item)
+            next_items[thread.id] = item
             self._queue_avatar(peer_id)
+
+        for item in self._peer_items.values():
+            if id(item) not in used:
+                item.setParent(None)
+                item.deleteLater()
+        self._peer_items = next_items
+
+    def _sync_peer_active(self) -> None:
+        for item in self._peer_items.values():
+            item.set_active(self._is_dialog_active(item.thread_id, item.peer_id))
 
     def _queue_avatar(self, peer_id: str) -> None:
         if not peer_id or self._fetch_avatar is None:
@@ -732,12 +795,10 @@ class GlassSidebar(QWidget):
             if item.peer_id == peer_id:
                 item.set_pixmap(pixmap)
 
-    def _sync_peer_active(self) -> None:
-        for thread_id, item in self._peer_items.items():
-            item.set_active(thread_id == self._active_dialog_id)
-
     def _on_peer_clicked(self, thread_id: str) -> None:
-        self.highlight_dialog(thread_id)
+        item = self._peer_items.get(thread_id)
+        peer_id = item.peer_id if item is not None else ""
+        self.highlight_dialog(thread_id, peer_id)
         self.hide_search_suggestions()
         self.dialog_selected.emit(thread_id)
 
