@@ -75,7 +75,19 @@ class OneCSearchDocumentsTool(OneCReadOnlyTool):
     def __init__(self, worker: BaseWorker) -> None:
         """Создать инструмент."""
         super().__init__(
-            _definition("onec.search_documents", "Поиск документов 1С"),
+            _definition(
+                "onec.search_documents",
+                "Поиск документов 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "document_type": {"type": "string", "description": "Вид документа 1С, если известен"},
+                        "number": {"type": "string", "description": "Номер документа"},
+                        "query": {"type": "string", "description": "Подстрока в номере или названии, не фраза-ТЗ"},
+                        "max_results": {"type": "integer", "description": "Максимум документов"},
+                    },
+                },
+            ),
             worker,
         )
 
@@ -86,7 +98,18 @@ class OneCGetDocumentCardTool(OneCReadOnlyTool):
     def __init__(self, worker: BaseWorker) -> None:
         """Создать инструмент."""
         super().__init__(
-            _definition("onec.get_document_card", "Чтение карточки документа 1С"),
+            _definition(
+                "onec.get_document_card",
+                "Чтение карточки документа 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "document_ref": {"type": "string", "description": "Ссылка или номер из onec.search_documents"},
+                        "number": {"type": "string", "description": "Номер документа, например 000013243"},
+                        "query": {"type": "string", "description": "Номер или подстрока, если ссылки нет"},
+                    },
+                },
+            ),
             worker,
         )
 
@@ -96,7 +119,21 @@ class OneCSearchTasksTool(OneCReadOnlyTool):
 
     def __init__(self, worker: BaseWorker) -> None:
         """Создать инструмент."""
-        super().__init__(_definition("onec.search_tasks", "Поиск задач 1С"), worker)
+        super().__init__(
+            _definition(
+                "onec.search_tasks",
+                "Поиск задач 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Подстрока в названии задачи"},
+                        "status": {"type": "string", "description": "Статус, если нужен фильтр"},
+                        "max_results": {"type": "integer", "description": "Максимум задач"},
+                    },
+                },
+            ),
+            worker,
+        )
 
 
 class OneCGetTaskCardTool(OneCReadOnlyTool):
@@ -105,7 +142,16 @@ class OneCGetTaskCardTool(OneCReadOnlyTool):
     def __init__(self, worker: BaseWorker) -> None:
         """Создать инструмент."""
         super().__init__(
-            _definition("onec.get_task_card", "Чтение карточки задачи 1С"),
+            _definition(
+                "onec.get_task_card",
+                "Чтение карточки задачи 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "task_ref": {"type": "string", "description": "Ссылка задачи из onec.search_tasks"},
+                    },
+                },
+            ),
             worker,
         )
 
@@ -167,17 +213,21 @@ def register_onec_readonly_tools(
         registry.register(tool)
 
 
-def _definition(name: str, title: str) -> ToolDefinition:
+def _definition(
+    name: str,
+    title: str,
+    input_schema: dict | None = None,
+) -> ToolDefinition:
     """Создать единый ToolDefinition для read-only 1С tool."""
     return ToolDefinition(
         name=name,
         title=title,
-        description=f"{title} в read-only режиме.",
+        description=f"{title} в read-only режиме (COM 32-bit через cscript).",
         side_effect_level=ToolSideEffectLevel.READ,
         execution_mode=ToolExecutionMode.COM_WORKER,
         requires_human_approval=False,
         timeout_seconds=ONEC_COM32_TIMEOUT_SECONDS,
-        input_schema={"type": "object"},
+        input_schema=input_schema or {"type": "object"},
         output_schema={"type": "object"},
         runtime=ONEC_COM32_RUNTIME,
     )

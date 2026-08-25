@@ -1,30 +1,3 @@
-from app.services.workflows.service import (
-    WorkflowError,
-    build_artifacts_zip,
-    build_local_design_prompt,
-    clarify_workflow,
-    confirm_agent_kpi,
-    create_workflow,
-    delete_workflow,
-    demo_workflow,
-    download_artifacts,
-    execute_workflow,
-    finish_local_demo_workflow,
-    finish_local_design_workflow,
-    playbook_of,
-    generate_agent_kpi,
-    get_agent_kpi,
-    get_workflow,
-    list_artifacts_for_workflow,
-    list_workflows,
-    plan_workflow,
-    publish_workflow,
-    resume_auto_run,
-    stop_auto_run,
-    update_local_run,
-    workflow_health,
-)
-
 __all__ = [
     "WorkflowError",
     "build_artifacts_zip",
@@ -51,3 +24,11 @@ __all__ = [
     "update_local_run",
     "workflow_health",
 ]
+
+
+def __getattr__(name: str):
+    if name not in __all__:
+        raise AttributeError(name)
+    from app.services.workflows import service
+
+    return getattr(service, name)

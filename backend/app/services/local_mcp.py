@@ -390,12 +390,11 @@ def _raw_tools() -> list[dict[str, Any]]:
         {
             "name": "turboproject",
             "description": (
-                "Проекты TurboProject с синхронизацией 1С. "
-                "Карточка: имя, даты MSP/1С, статистика задач, просроченные задачи и вехи, "
-                "ресурсы (ФИО), руководитель/куратор/заказчик и весь блок data_1c. "
-                "Фильтры: query (только название / имя MPP / номер 1С, не фраза), "
-                "manager (одно ФИО руководителя 1С), file_id, overdue_only, limit. "
-                "Учётка на сервере. Исполняется на сервере."
+                "Compatibility-инструмент TurboProject. Проекты текущего пользователя - "
+                "turboproject.get_user_portfolio(employee = ФИО из users.current): индекс с "
+                "owner/participants, без карточек. Поиск по названию - search_projects. "
+                "Карточка - get_project, только если нужны задачи. Большой ответ может прийти "
+                "файлом: разбирай result_file. Учётка на сервере."
             ),
             "execution": "server",
             "input_schema": {
@@ -414,21 +413,220 @@ def _raw_tools() -> list[dict[str, Any]]:
                     },
                     "file_id": {
                         "type": "string",
-                        "description": "ID файла проекта (ProjectFile.id)",
+                        "description": "Если задан, вернётся полная карточка как turboproject.get",
                     },
                     "overdue_only": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Только проекты с просроченными задачами или вехами",
+                        "description": "Для индекса не применяется: сначала выбери file_id, затем turboproject.get",
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Максимум проектов в ответе (пусто — все, не больше 200)",
+                        "description": "Максимум строк индекса в ответе",
                     },
                 },
             },
         },
+        {
+            "name": "turboproject.list",
+            "description": (
+                "Быстрый список проектов TurboProject с 1С из /api/projects/files. "
+                "Не читает карточки и не считает просрочки. Используй первым, выбери нужные file_id, "
+                "затем вызывай turboproject.get максимум для 3 карточек с риском и пиши результат."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Название проекта, имя MPP или номер 1С — не фраза "
+                            "и не список участников"
+                        ),
+                    },
+                    "manager": {
+                        "type": "string",
+                        "description": "ФИО руководителя проекта из 1С, если поле есть в индексе",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Максимум строк индекса в ответе",
+                    },
+                },
+            },
+        },
+        {
+            "name": "turboproject.get",
+            "description": (
+                "Compatibility-карточка одного проекта TurboProject по file_id из turboproject.list. "
+                "Для новых сценариев используй turboproject.get_project(project_id, fields)."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "required": ["file_id"],
+                "properties": {
+                    "file_id": {
+                        "type": "string",
+                        "description": "ID файла проекта из turboproject.list",
+                    },
+                    "overdue_only": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Вернуть проект только если в карточке есть просроченные задачи или вехи",
+                    },
+                },
+            },
+        },
+        {
+            "name": "turboproject.projects",
+            "description": (
+                "Compatibility-чтение нескольких карточек TurboProject. Для новых сценариев "
+                "используй turboproject.search_projects, get_project_metrics или агрегаторы."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": _prop("string", "Название, имя MPP или номер 1С"),
+                    "manager": _prop("string", "ФИО руководителя проекта из 1С"),
+                    "limit": _prop("integer", "Максимум карточек, только для совместимости"),
+                },
+            },
+        },
+        *_turboproject_advanced_tools(),
         *_desktop_ac_tools(),
+    ]
+
+
+def _turboproject_filters() -> dict[str, dict[str, Any]]:
+    return {
+        "query": _prop("string", "Название, имя MPP или номер 1С"),
+        "status": _prop("string", "Статус проекта из 1С"),
+        "owner": _prop("string", "Руководитель/куратор проекта"),
+        "department": _prop("string", "Подразделение проекта"),
+        "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
+        "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
+        "limit": _prop("integer", "Размер страницы результата"),
+        "cursor": _prop("string", "Cursor из предыдущего ответа"),
+    }
+
+
+def _turboproject_schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
+    return {"type": "object", "required": required or [], "properties": properties}
+
+
+def _turboproject_advanced_tools() -> list[dict[str, Any]]:
+    filters = _turboproject_filters()
+    items: list[tuple[str, str, dict[str, Any], list[str] | None]] = [
+        (
+            "turboproject.search_projects",
+            "Индексный поиск. В каждой строке owner, curator, customer, participants. "
+            "Не читает карточки. Для проектов сотрудника лучше get_user_portfolio.",
+            {
+                **filters,
+                "employee": _prop("string", "ФИО: руководитель, куратор, заказчик или зам"),
+                "sort_by": _prop("string", "finish_date или project_name"),
+            },
+            None,
+        ),
+        (
+            "turboproject.get_user_portfolio",
+            "Портфель сотрудника одним вызовом: все проекты, где employee руководитель, "
+            "куратор, заказчик или зам. employee = users.current.user.fio. Без карточек. "
+            "Если ответ большой - разбирай result_file Read/кодом, не зови tool снова.",
+            {
+                **filters,
+                "employee": _prop("string", "ФИО из users.current.user.fio"),
+            },
+            ["employee"],
+        ),
+        (
+            "turboproject.get_project",
+            "Подробности по одному проекту. Используй только когда есть project_id и ограничивай fields.",
+            {
+                "project_id": _prop("string", "ProjectFile.id из поиска"),
+                "fields": _prop("array", "Блоки: identity, dates, data_1c, task_stats, overdue, resources, budget, decisions"),
+            },
+            ["project_id"],
+        ),
+        (
+            "turboproject.get_project_tasks",
+            "Задачи одного проекта с фильтрами overdue/status/assignee и cursor-пагинацией.",
+            {
+                "project_id": _prop("string", "ProjectFile.id проекта"),
+                "status": _prop("string", "completed/open/incomplete или текст"),
+                "assignee": _prop("string", "Исполнитель задачи"),
+                "overdue_only": _prop("boolean", "Только просроченные задачи"),
+                "limit": _prop("integer", "Размер страницы"),
+                "cursor": _prop("string", "Cursor из предыдущего ответа"),
+            },
+            ["project_id"],
+        ),
+        (
+            "turboproject.get_project_metrics",
+            "Компактные метрики по ограниченному списку project_ids, не для полного портфеля.",
+            {
+                "project_ids": _prop("array", "До 20 ProjectFile.id"),
+                "metrics": _prop("array", "task_stats, overdue, resources, dates"),
+            },
+            ["project_ids"],
+        ),
+        (
+            "turboproject.get_overdue_projects",
+            "Считает delay_days по УЖЕ выбранным проектам. Передай project_ids (до 20 file_id из "
+            "turboproject.search_projects) или фильтр manager. Без них портфель не сканируется - "
+            "инструмент попросит сначала сузить выборку через search_projects.",
+            {
+                **filters,
+                "project_ids": _prop("array", "До 20 file_id из turboproject.search_projects (основной путь)"),
+                "min_delay_days": _prop("integer", "Минимальная просрочка в днях"),
+                "scan_limit": _prop("integer", "Скан по фильтру, если нет project_ids"),
+            },
+            None,
+        ),
+        (
+            "turboproject.get_projects_with_blocked_tasks",
+            "Проблемные задачи по УЖЕ выбранным проектам. Передай project_ids (file_id из "
+            "turboproject.search_projects) или фильтр manager. Без них портфель не сканируется. "
+            "При отсутствии явного флага блокировки вернёт partial_result.",
+            {
+                **filters,
+                "project_ids": _prop("array", "До 20 file_id из turboproject.search_projects (основной путь)"),
+                "blocked_days": _prop("integer", "Сколько дней просрочки считать блокировкой"),
+                "scan_limit": _prop("integer", "Скан по фильтру, если нет project_ids"),
+            },
+            None,
+        ),
+        (
+            "turboproject.get_workload_summary",
+            "Сводка загрузки сотрудников по задачам и просрочкам.",
+            {
+                **filters,
+                "employee": _prop("string", "Фильтр по сотруднику"),
+                "scan_limit": _prop("integer", "Сколько проектов сканировать"),
+            },
+            None,
+        ),
+        (
+            "turboproject.get_project_portfolio_summary",
+            "Портфельная сводка по статусу, подразделению или руководителю.",
+            {
+                **filters,
+                "group_by": _prop("string", "status, department или owner"),
+            },
+            None,
+        ),
+    ]
+    return [
+        {
+            "name": name,
+            "description": description,
+            "execution": "server",
+            "input_schema": _turboproject_schema(properties, required),
+        }
+        for name, description, properties, required in items
     ]
 
 
@@ -443,12 +641,13 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "query": _prop("string", "Подстрока в теме или отправителе, не список людей"),
             "max_results": _prop("integer", "Максимум писем"),
         }),
-        ("outlook.read_calendar", "Все запланированные встречи Outlook за период. Без дат — ближайший год с сегодня, не неделя. В ответе events и free_slots.", {
+        ("outlook.read_calendar", "Встречи Outlook за период. Без дат - год вперёд. Тело встреч не читается. В ответе events и free_slots.", {
             "date": _prop("string", "Один день YYYY-MM-DD"),
             "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
             "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
             "days_forward": _prop("integer", "Сколько дней вперёд от сегодня, если дат нет. По умолчанию 365"),
             "max_results": _prop("integer", "Максимум событий, до 500"),
+            "include_body": _prop("boolean", "Включить body_preview. По умолчанию false"),
         }),
         ("outlook.create_event", "Создать встречи в свободных слотах календаря Outlook. Тема и текст помечаются как ИИ-агент. Нужно подтверждение человека.", {
             "subject": _prop("string", "Тема встречи без префикса ИИ-агент — его добавит инструмент"),
@@ -600,9 +799,23 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             },
             ["code"],
         ),
-        ("report.build_task_report", "Собрать отчёт по поручениям из собранных данных.", {}),
-        ("report.build_meeting_summary", "Сводка/протокол совещания из собранных данных.", {}),
-        ("report.build_schedule_recommendations", "Рекомендации по графику из календаря.", {}),
+        ("report.build_task_report", "Текст отчёта по поручениям из собранных данных (не файл). Для файла используй report.export_document.", {}),
+        ("report.build_meeting_summary", "Текст сводки/протокола совещания (не файл). Для файла используй report.export_document.", {}),
+        ("report.build_schedule_recommendations", "Текст рекомендаций по графику из календаря (не файл). Для файла используй report.export_document.", {}),
+        (
+            "report.export_document",
+            "Сохранить готовый отчёт файлом (Word .docx, иначе Markdown) в папке агента. "
+            "Единственный инструмент для 'отчёт Word/документ файл' из любых собранных данных. "
+            "Возвращает file (путь). Текст разделов пиши сам в sections.",
+            {
+                "filename": _prop("string", "Имя файла без пути; расширение подставится"),
+                "title": _prop("string", "Заголовок документа"),
+                "summary": _prop("string", "Короткое резюме в начале"),
+                "sections": _prop("array", "Разделы [{heading, body}]; body - готовый текст"),
+                "table": _prop("object", "Необязательная таблица {headers:[...], rows:[[...]]}"),
+            },
+            ["filename"],
+        ),
         ("users.current", "Текущий пользователь сессии Constructor: id, ФИО, должность, подразделение. Если регламент говорит «текущий пользователь», «данный пользователь» или «мои данные» — вызови этот tool, не спрашивай человека.", {}),
         ("users.list", "Список пользователей Constructor: id, ФИО, должность, подразделение. Вызови перед notify.send, чтобы выбрать получателя.", {
             "query": _prop("string", "ФИО, email или id — не роль и не «все» / «получатели»"),
@@ -743,6 +956,66 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         ["projects"],
         "count",
     ),
+    # Index -> cards contract. search_projects is the cheap default for
+    # search/list; carding is get_project(_metrics). The aggregators are
+    # id-scoped: required_filters=["project_ids"] keeps routing from picking
+    # them for a plain project search, so no hidden full-portfolio scan.
+    "turboproject.search_projects": (
+        "turboproject",
+        "project",
+        ("search", "list"),
+        [],
+        ["projects"],
+        "cursor",
+    ),
+    "turboproject.get_user_portfolio": (
+        "turboproject",
+        "project",
+        ("search", "list"),
+        ["employee"],
+        ["projects"],
+        "cursor",
+    ),
+    "turboproject.get_project": (
+        "turboproject",
+        "project",
+        "read",
+        ["project_id"],
+        ["projects"],
+        "none",
+    ),
+    "turboproject.get_project_tasks": (
+        "turboproject",
+        "task",
+        ("list", "search"),
+        ["project_id"],
+        ["tasks"],
+        "cursor",
+    ),
+    "turboproject.get_project_metrics": (
+        "turboproject",
+        "project",
+        "read",
+        ["project_ids"],
+        ["projects"],
+        "none",
+    ),
+    "turboproject.get_overdue_projects": (
+        "turboproject",
+        "project",
+        "search",
+        ["project_ids"],
+        ["projects"],
+        "none",
+    ),
+    "turboproject.get_projects_with_blocked_tasks": (
+        "turboproject",
+        "project",
+        "search",
+        ["project_ids"],
+        ["projects"],
+        "none",
+    ),
     "outlook.search_mail": ("outlook", "mail_message", "search", [], ["messages"], "count"),
     "outlook.read_calendar": ("outlook", "calendar_event", "list", [], ["events"], "count"),
     "outlook.create_event": (
@@ -777,9 +1050,10 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     "code.run_python": ("desktop", "code", "execute", [], ["text"], "none"),
     "agent.wait": ("constructor", "agent", "execute", ["seconds"], [], "none"),
     "data.process": ("constructor", "dataset", "execute", ["code"], ["result"], "none"),
-    "report.build_task_report": ("desktop", "report", "export", [], ["file"], "none"),
-    "report.build_meeting_summary": ("desktop", "report", "export", [], ["file"], "none"),
-    "report.build_schedule_recommendations": ("desktop", "report", "export", [], ["file"], "none"),
+    "report.build_task_report": ("desktop", "report", "generate", [], ["text"], "none"),
+    "report.build_meeting_summary": ("desktop", "report", "generate", [], ["text"], "none"),
+    "report.build_schedule_recommendations": ("desktop", "report", "generate", [], ["text"], "none"),
+    "report.export_document": ("desktop", "report", "export", ["filename"], ["file"], "none"),
     "users.current": ("constructor", "user", "read", [], ["user"], "none"),
     "users.list": ("constructor", "user", "list", [], ["users"], "count"),
     "users.subordinates": ("constructor", "subordinate", "list", [], ["users"], "count"),

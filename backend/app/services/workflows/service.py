@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.clients import cursor as cursor_client
@@ -39,12 +39,17 @@ from app.services.triggers.service import (
 )
 from app.services.workflows import prompts
 from app.services.workflows.document import (
-    DocumentError,
     collect_prompt_images,
     compose_document,
-    load_attachment_bytes,
 )
 from app.services.workflows.plan_models import WorkflowPlan
+from app.services.workflow_files import (
+    WorkflowFileError,
+    add_user_files_to_workflow,
+    attachment_meta_for_workflow,
+    prepare_workflow_files,
+    save_prepared_files,
+)
 
 
 class WorkflowError(Exception):
@@ -132,26 +137,23 @@ def create_workflow(
     storage_dir = _workflow_dir(workflow_id)
     storage_dir.mkdir(parents=True, exist_ok=True)
 
+    try:
+        prepared = prepare_workflow_files(files)
+    except WorkflowFileError as exc:
+        shutil.rmtree(storage_dir, ignore_errors=True)
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
     attachments: list[dict] = []
     meta: list[dict] = []
-    for original_name, raw in files:
-        try:
-            loaded = load_attachment_bytes(original_name, raw)
-        except DocumentError as exc:
-            shutil.rmtree(storage_dir, ignore_errors=True)
-            raise WorkflowError(str(exc)) from exc
-        safe = _safe_filename(original_name)
-        stored = storage_dir / safe
-        stored.write_bytes(raw)
-        loaded["stored_name"] = safe
-        loaded["path"] = str(stored)
+    for item in prepared:
+        loaded = dict(item.loaded)
+        loaded["stored_name"] = item.file_id
         attachments.append(loaded)
         meta.append(
             {
                 "name": loaded["name"],
                 "kind": loaded["kind"],
                 "mime_type": loaded.get("mime_type") or "",
-                "stored_name": safe,
+                "stored_name": item.file_id,
                 "text_preview": (loaded.get("text") or "")[:500],
             }
         )
@@ -183,6 +185,14 @@ def create_workflow(
         local_run={},
     )
     db.add(row)
+    save_prepared_files(
+        db,
+        workflow_id=workflow_id,
+        prepared=prepared,
+        source="user",
+        scope="knowledge",
+        origin="initial_upload",
+    )
     db.commit()
     db.refresh(row)
     return _to_schema(row)
@@ -289,6 +299,14 @@ def update_local_run(
 ) -> WorkflowSchema:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     row.local_run = dict(local_run or {})
+    draft = row.local_run.get("playbook_draft") if isinstance(row.local_run, dict) else {}
+    has_steps = isinstance(draft, dict) and bool(draft.get("steps"))
+    if (row.phase or "") in {"document", "new", ""} and has_steps:
+        row.phase = "designed"
+    elif (row.phase or "") in {"document", "new", ""} and str(
+        (row.local_run or {}).get("design_runtime") or ""
+    ).strip():
+        row.phase = "designing"
     db.commit()
     db.refresh(row)
     return _to_schema(row)
@@ -453,7 +471,147 @@ def build_local_design_prompt(
     has_text = bool((row.document_text or "").strip() or (row.notes or "").strip())
     if not has_text:
         raise WorkflowError("Нет материалов — загрузите описание бизнес-процесса или файлы.")
-    return _build_design_prompt(row)
+    return _build_design_prompt(row, interactive=True)
+
+
+def _same_design_question(left: str, right: str) -> bool:
+    na = " ".join((left or "").casefold().replace("ё", "е").split())
+    nb = " ".join((right or "").casefold().replace("ё", "е").split())
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    return len(shorter) >= 24 and shorter in longer
+
+
+_DESIGN_TOPIC_HINTS = {
+    "when": (
+        "когда запуска",
+        "как часто",
+        "периодичн",
+        "по расписан",
+        "режим запуск",
+        "частота запуск",
+        "когда стартовать",
+        "триггер",
+    ),
+    "period": ("период", "контур", "за какой срок", "какие проект", "объем", "объём", "горизонт", "за один прогон"),
+    "recipient": ("кому", "получател", "кто получает", "кто получатель"),
+    "success": (
+        "критери",
+        "критерий успеха",
+        "критерии успеха",
+        "успешн",
+        "когда считать готов",
+        "что считать успех",
+        "условия успех",
+        "правила успех",
+        "правила решений",
+        "критерии результата",
+        "какой результат",
+    ),
+}
+
+
+def _design_topics(text: str) -> set[str]:
+    folded = " ".join((text or "").casefold().replace("ё", "е").split())
+    topics: set[str] = set()
+    for name, hints in _DESIGN_TOPIC_HINTS.items():
+        if name == "period" and "периодичн" in folded:
+            continue
+        if any(hint in folded for hint in hints):
+            topics.add(name)
+    return topics
+
+
+def _answered_design_topics(qa: list[tuple[str, str]]) -> set[str]:
+    covered: set[str] = set()
+    for question, answer in qa:
+        if answer:
+            covered |= _design_topics(question)
+    return covered
+
+
+def _qa_from_design_events(events: list[dict[str, Any]] | None) -> list[tuple[str, str]]:
+    pending: dict[str, str] = {}
+    last_question = ""
+    pairs: list[tuple[str, str]] = []
+    for raw in events or []:
+        if not isinstance(raw, dict):
+            continue
+        event_type = str(raw.get("type") or "")
+        if event_type == "question":
+            question = str(raw.get("question") or raw.get("prompt") or "").strip()
+            request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
+            if question:
+                last_question = question
+                if request_id:
+                    pending[request_id] = question
+            continue
+        if event_type != "tool_result":
+            continue
+        tool = str(raw.get("tool") or raw.get("name") or "").strip().casefold()
+        if tool not in {"askquestion", "ask_question"}:
+            continue
+        result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
+        answer = str((result or {}).get("answer") or (result or {}).get("text") or "").strip()
+        if not answer:
+            continue
+        request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
+        question = pending.pop(request_id, "") or last_question
+        if question:
+            pairs.append((question, answer))
+    return pairs
+
+
+def _qa_from_stored_design_answers(value: object) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for item in (value if isinstance(value, list) else []):
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        if question and answer:
+            pairs.append((question, answer))
+    return pairs
+
+
+def _apply_design_answers_to_draft(
+    draft: dict[str, Any],
+    qa: list[tuple[str, str]],
+) -> dict[str, Any]:
+    if not qa:
+        return draft
+    updated = dict(draft or {})
+    lines = [str(updated.get("answers") or "").strip()]
+    for question, answer in qa:
+        if question and answer:
+            lines.append(f"{question}: {answer}")
+    updated["answers"] = "\n".join(item for item in lines if item)
+    remaining: list[Any] = []
+    for item in updated.get("required_clarifications") or []:
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, dict):
+            text = str(item.get("question") or "").strip()
+        else:
+            text = ""
+        topics = _design_topics(text)
+        if text and (
+            any(_same_design_question(text, question) for question, _answer in qa)
+            or (bool(topics) and topics <= _answered_design_topics(qa))
+        ):
+            continue
+        remaining.append(item)
+    updated["required_clarifications"] = remaining
+    for question, answer in qa:
+        folded = " ".join((question or "").casefold().replace("ё", "е").split())
+        if any(hint in folded for hint in ("когда запуска", "как часто", "по расписан", "когда стартовать")):
+            updated["when_to_run"] = str(updated.get("when_to_run") or answer).strip()
+        if any(hint in folded for hint in ("кому", "получател", "кто получает")):
+            updated["recipient"] = str(updated.get("recipient") or answer).strip()
+    return updated
 
 
 def finish_local_design_workflow(
@@ -466,31 +624,35 @@ def finish_local_design_workflow(
     on_event: WorkflowEventCallback | None = None,
 ) -> WorkflowSchema:
     """Finish a desktop Cursor SDK design run without calling Cursor REST."""
-    _ = events
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
-    draft = prompts.parse_playbook_draft(answer or "")
+    local = dict(row.local_run or {})
+    qa = _qa_from_stored_design_answers(local.get("design_answers")) + _qa_from_design_events(events)
+    draft = _apply_design_answers_to_draft(
+        prompts.parse_playbook_draft(answer or ""),
+        qa,
+    )
     if not draft.get("steps"):
         local = dict(row.local_run or {})
         local["runtime"] = "cursor-sdk"
         local["design_runtime"] = "cursor-sdk"
         local["playbook_draft"] = draft
         local["validation"] = {
-            "ok": False,
-            "status": "blocked_before_demo",
+            "ok": True,
+            "status": "draft_ready",
             "demo_started": False,
-            "can_run_demo": False,
-            "message": "Cursor SDK не вернул пригодный JSON-черновик инструкции.",
-            "reasons": ["Cursor SDK не вернул пригодный JSON-черновик инструкции."],
+            "can_run_demo": True,
+            "message": "",
+            "reasons": [],
             "issues": [],
         }
-        local["can_run_demo"] = False
+        local["can_run_demo"] = True
         local["demo_ok"] = False
         local["can_publish"] = False
         row.local_run = local
         row.phase = "designed"
         db.commit()
         db.refresh(row)
-        _emit(on_event, "decision", "Черновик инструкции не получился — нужен повторный запуск проектирования.")
+        _emit(on_event, "decision", "Черновик принят. Запускаю пробный прогон по материалам.")
         return _to_schema(row)
 
     draft, validation = _validate_and_store_draft(db, row=row, draft=draft)
@@ -500,10 +662,17 @@ def finish_local_design_workflow(
     row.local_run = local
     db.commit()
     db.refresh(row)
-    return _finish_design(db, row=row, draft=draft, validation=validation, on_event=on_event)
+    return _finish_design(
+        db,
+        row=row,
+        draft=draft,
+        validation=validation,
+        on_event=on_event,
+        allow_incomplete=True,
+    )
 
 
-def _build_design_prompt(row: Workflow) -> str:
+def _build_design_prompt(row: Workflow, *, interactive: bool = False) -> str:
     from app.services.local_mcp import DESIGN_PHASE
     from app.services.workflows.cursor_tools import (
         contract_vocabulary_block,
@@ -517,6 +686,7 @@ def _build_design_prompt(row: Workflow) -> str:
             notes=row.notes or "",
             document_name=row.document_name,
             vocabulary=contract_vocabulary_block(),
+            interactive=interactive,
         ),
         phase=DESIGN_PHASE,
     )
@@ -604,6 +774,7 @@ def _finish_design(
     draft: dict[str, Any],
     validation: Any,
     on_event: WorkflowEventCallback | None = None,
+    allow_incomplete: bool = False,
 ) -> WorkflowSchema:
     from app.services.workflows.playbook_validation import issues_to_questions
 
@@ -621,7 +792,7 @@ def _finish_design(
     row.local_run = local
 
     questions = issues_to_questions(validation.issues)
-    if questions:
+    if questions and not allow_incomplete:
         row.phase = "designed"
         db.commit()
         return _pause_demo_for_questions(
@@ -632,7 +803,7 @@ def _finish_design(
             on_event=on_event,
         )
 
-    if _needs_draft_repair(validation):
+    if _needs_draft_repair(validation) and not allow_incomplete:
         report = _blocked_before_demo_report(validation)
         local = dict(row.local_run or {})
         local["validation"] = report
@@ -656,7 +827,7 @@ def _finish_design(
     row.phase = "designed"
     db.commit()
     db.refresh(row)
-    if _needs_draft_repair(validation):
+    if _needs_draft_repair(validation) and not allow_incomplete:
         _emit(
             on_event,
             "decision",
@@ -1269,7 +1440,16 @@ def generate_agent_kpi(
     from app.services import agent_kpi
 
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
-    if not row.exec_agent_id:
+    local_preview = dict(row.local_run or {})
+    runtime = str(local_preview.get("runtime") or local_preview.get("design_runtime") or "")
+    playbook_preview = playbook_of(row)
+    local_ready = (
+        runtime == "cursor-sdk"
+        or bool(playbook_preview.get("demo_ok"))
+        or str(local_preview.get("tests_status") or "").casefold() == "pass"
+        or bool((row.last_result or "").strip())
+    )
+    if not row.exec_agent_id and not local_ready:
         raise WorkflowError("Сначала завершите реализацию агента")
     plan = WorkflowPlan.from_dict(row.plan_json or {})
     local = dict(row.local_run or {})
@@ -2542,51 +2722,30 @@ def _append_attachments(
         return []
 
     workflow_id = row.id
-    storage_dir = _workflow_dir(workflow_id)
-    storage_dir.mkdir(parents=True, exist_ok=True)
     existing = _load_attachments_payload(workflow_id)
-    meta = list(row.attachments_meta or [])
-    added_names: list[str] = []
     by_question: dict[str, list[str]] = {}
 
-    for idx, (original_name, raw) in enumerate(files):
-        try:
-            loaded = load_attachment_bytes(original_name, raw)
-        except DocumentError as exc:
-            raise WorkflowError(str(exc)) from exc
-        safe = _safe_filename(original_name)
-        # Avoid overwrite collisions
-        candidate = storage_dir / safe
-        if candidate.exists():
-            stem = Path(safe).stem
-            suffix = Path(safe).suffix
-            safe = f"{stem}_{uuid4().hex[:6]}{suffix}"
-            candidate = storage_dir / safe
-        candidate.write_bytes(raw)
-        loaded["stored_name"] = safe
-        loaded["path"] = str(candidate)
-        existing.append(loaded)
-        meta.append(
-            {
-                "name": loaded["name"],
-                "kind": loaded["kind"],
-                "mime_type": loaded.get("mime_type") or "",
-                "stored_name": safe,
-                "text_preview": (loaded.get("text") or "")[:500],
-            }
+    try:
+        added_names, prepared = add_user_files_to_workflow(
+            db,
+            row=row,
+            files=files,
+            origin="clarify_upload",
         )
-        added_names.append(loaded["name"])
+    except WorkflowFileError as exc:
+        raise WorkflowError(exc.message, status_code=exc.status_code) from exc
+
+    for idx, item in enumerate(prepared):
+        loaded = dict(item.loaded)
+        loaded["stored_name"] = item.file_id
+        existing.append(loaded)
         qid = ""
         if idx < len(file_question_ids):
             qid = str(file_question_ids[idx] or "").strip()
         if qid:
-            by_question.setdefault(qid, []).append(loaded["name"])
+            by_question.setdefault(qid, []).append(str(loaded.get("name") or item.original_name))
 
     _save_attachments_payload(workflow_id, existing)
-    document_name, document_text = compose_document(existing, notes=row.notes or "")
-    row.attachments_meta = meta
-    row.document_name = document_name or row.document_name
-    row.document_text = document_text
 
     for qid, names in by_question.items():
         note = "Приложенные файлы: " + ", ".join(names)
@@ -2652,11 +2811,15 @@ def _to_schema(row: Workflow) -> WorkflowSchema:
     plan = None
     if row.plan_json:
         plan = WorkflowPlanSchema.model_validate(row.plan_json)
-    attachments = [
-        AttachmentMetaSchema.model_validate(x)
-        for x in (row.attachments_meta or [])
-        if isinstance(x, dict)
-    ]
+    session = object_session(row)
+    if session is not None:
+        attachments = attachment_meta_for_workflow(session, row)
+    else:
+        attachments = [
+            AttachmentMetaSchema.model_validate(x)
+            for x in (row.attachments_meta or [])
+            if isinstance(x, dict)
+        ]
     return WorkflowSchema(
         id=row.id,
         title=row.title,

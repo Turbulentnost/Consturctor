@@ -9,14 +9,17 @@ from PySide6.QtWidgets import QWidget
 from app.ui.theme import COLOR_CONTENT_BG
 
 CHAT_BG_GRID = Path(__file__).resolve().parent / "assets" / "bg" / "chat_bg_grid.png"
+CHAT_BG_ROBO = Path(__file__).resolve().parents[1] / "ui" / "temp" / "robo2.png"
 
 
 class ChatWallpaper(QWidget):
-    """Fixed chat backdrop from chat_bg_grid.png."""
+    """Fixed light chat backdrop from robo2.png."""
 
     def __init__(self, parent: QWidget | None = None, path: str | Path | None = None) -> None:
         super().__init__(parent)
-        self._tile = QPixmap(str(path or CHAT_BG_GRID))
+        self._background = QPixmap(str(path or CHAT_BG_ROBO))
+        if self._background.isNull():
+            self._background = QPixmap(str(CHAT_BG_GRID))
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAutoFillBackground(False)
@@ -25,10 +28,10 @@ class ChatWallpaper(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.fillRect(self.rect(), COLOR_CONTENT_BG)
-        if self._tile.isNull() or self._tile.width() < 8:
+        if self._background.isNull() or self._background.width() < 8:
             painter.end()
             return
-        scaled = self._tile.scaled(
+        scaled = self._background.scaled(
             self.size(),
             Qt.AspectRatioMode.KeepAspectRatioByExpanding,
             Qt.TransformationMode.SmoothTransformation,

@@ -10,7 +10,7 @@ from app.models.user import AppUser
 from app.modules.chat.crypto import decrypt_text
 from app.modules.chat.domain.messages import add_message, mark_read, member_ids
 from app.modules.chat.domain.presence import set_activity
-from app.modules.chat.domain.threads import open_dm
+from app.modules.chat.domain.threads import find_dm, open_dm
 from app.modules.chat.models import ChatSupportTicket, ChatThread
 from app.modules.chat.support.tickets import (
     drain_queued,
@@ -57,17 +57,25 @@ def handle_command_and_emit(command: dict[str, Any]) -> None:
 
 def _thread_for(db: Session, user_id: str, command: dict[str, Any]) -> ChatThread:
     thread_id = str(command.get("thread_id") or "")
+    peer_id = str(command.get("peer_id") or "")
     if thread_id:
         thread = db.get(ChatThread, thread_id)
-        if thread is None:
-            raise ValueError("Диалог не найден")
-        return thread
+        if thread is not None:
+            return thread
+        # Desktop often sends the peer user id as thread_id before open_dm returns.
+        found = find_dm(db, user_id, thread_id)
+        if found is not None:
+            return found
+        if thread_id != user_id:
+            try:
+                return open_dm(db, user_id, thread_id)
+            except ValueError:
+                pass
     if str(command.get("kind") or "") == "support":
         thread, ticket = get_or_create_support_thread(db, user_id)
         reopen_if_closed(ticket)
         ensure_assigned(db, ticket)
         return thread
-    peer_id = str(command.get("peer_id") or "")
     if not peer_id:
         raise ValueError("Не указан собеседник")
     return open_dm(db, user_id, peer_id)
@@ -92,11 +100,13 @@ def _send(db: Session, user_id: str, client_id: str, command: dict[str, Any]) ->
         client_id=client_id,
         file_ids=list(command.get("file_ids") or []),
     )
+    members = member_ids(db, thread.id)
     events = [
         {
             "type": "chat_message",
-            "user_ids": member_ids(db, thread.id),
+            "user_ids": members,
             "thread_id": thread.id,
+            "members": members,
             "message": {
                 "id": message.id,
                 "thread_id": thread.id,
@@ -152,8 +162,17 @@ def _activity(db: Session, user_id: str, command: dict[str, Any]) -> list[dict[s
 
 
 def _open_dm(db: Session, user_id: str, command: dict[str, Any]) -> list[dict[str, Any]]:
-    thread = open_dm(db, user_id, str(command.get("peer_id") or ""))
-    return [{"type": "thread_opened", "user_ids": [user_id], "thread_id": thread.id, "kind": "dm"}]
+    peer_id = str(command.get("peer_id") or "")
+    thread = open_dm(db, user_id, peer_id)
+    return [
+        {
+            "type": "thread_opened",
+            "user_ids": [user_id],
+            "thread_id": thread.id,
+            "kind": "dm",
+            "peer_id": peer_id,
+        }
+    ]
 
 
 def _ticket_status(db: Session, user_id: str, command: dict[str, Any], status: str) -> list[dict[str, Any]]:

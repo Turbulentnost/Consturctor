@@ -365,6 +365,20 @@ def test_explicit_schedule_in_materials_skips_when_question() -> None:
     assert validation.ok
 
 
+def test_event_trigger_in_materials_skips_when_question() -> None:
+    from app.services.workflows.schedule_draft import WHEN_TO_RUN_QUESTION
+
+    validation = validate_draft(
+        attach_tool_candidates(_draft()),
+        materials=(
+            "В паспорте указан событийный триггер: событие вместо расписания. "
+            "Агент запускается при смене статуса этапа или нарушении SLA."
+        ),
+    )
+
+    assert all(issue.message != WHEN_TO_RUN_QUESTION for issue in validation.clarifications)
+
+
 def test_missing_business_param_is_clarify() -> None:
     draft = _draft()
     draft["required_clarifications"] = [
@@ -833,9 +847,22 @@ def test_draft_prompt_asks_for_json_only_without_transport_lecture() -> None:
     assert "constructor_tool" not in prompt
     assert "вернуть JSON черновика" in prompt
     assert "не решай" in prompt.casefold()
-    assert "когда запускать" in prompt.casefold()
+    assert "додумывать логику" in prompt
     assert "service_note" in prompt
     assert "6.4" in prompt
+
+
+def test_draft_prompt_interactive_asks_gaps_before_json() -> None:
+    prompt = prompts.build_playbook_draft_prompt(
+        document_text="регламент",
+        title="Агент",
+        interactive=True,
+    )
+
+    assert "askQuestion" in prompt
+    assert "после закрытых пробелов" in prompt
+    assert "период, объём, получатель" not in prompt
+    assert "единственная задача" not in prompt
 
 
 def test_draft_prompt_carries_contract_vocabulary() -> None:

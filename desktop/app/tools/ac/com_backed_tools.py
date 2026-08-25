@@ -73,7 +73,20 @@ class OutlookSearchMailComTool(ComBackedTool):
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
                 timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
-                input_schema={"type": "object"},
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "folder": {"type": "string", "description": "Папка Outlook, например Inbox"},
+                        "date": {"type": "string", "description": "Один день YYYY-MM-DD"},
+                        "date_from": {"type": "string", "description": "Начало периода YYYY-MM-DD"},
+                        "date_to": {"type": "string", "description": "Конец периода YYYY-MM-DD"},
+                        "query": {
+                            "type": "string",
+                            "description": "Подстрока в теме или отправителе, не список людей",
+                        },
+                        "max_results": {"type": "integer", "description": "Максимум писем"},
+                    },
+                },
                 output_schema={"type": "object"},
             ),
             worker,
@@ -89,12 +102,44 @@ class OutlookReadCalendarComTool(ComBackedTool):
             ToolDefinition(
                 name="outlook.read_calendar",
                 title="Чтение календаря Outlook",
-                description="Читает все запланированные встречи Outlook за период (по умолчанию год).",
+                description=(
+                    "Встречи Outlook за период. Без дат - год вперёд. "
+                    "Передавай date_from/date_to, если нужен короткий интервал. "
+                    "Тело встреч не читается. В ответе events и free_slots."
+                ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
                 timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
-                input_schema={"type": "object"},
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "date": {
+                            "type": "string",
+                            "description": "Один день YYYY-MM-DD",
+                        },
+                        "date_from": {
+                            "type": "string",
+                            "description": "Начало периода YYYY-MM-DD",
+                        },
+                        "date_to": {
+                            "type": "string",
+                            "description": "Конец периода YYYY-MM-DD",
+                        },
+                        "days_forward": {
+                            "type": "integer",
+                            "description": "Дней вперёд, если дат нет. По умолчанию 365",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Максимум событий, до 500",
+                        },
+                        "include_body": {
+                            "type": "boolean",
+                            "description": "Включить body_preview. По умолчанию false",
+                        },
+                    },
+                },
                 output_schema={"type": "object"},
             ),
             worker,
@@ -118,7 +163,25 @@ class OutlookCreateEventComTool(ComBackedTool):
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=True,
                 timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
-                input_schema={"type": "object"},
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "subject": {
+                            "type": "string",
+                            "description": "Тема встречи без префикса ИИ-агент - его добавит инструмент",
+                        },
+                        "start": {"type": "string", "description": "Начало ISO datetime, слот должен быть свободным"},
+                        "end": {"type": "string", "description": "Конец ISO datetime"},
+                        "duration_minutes": {"type": "integer", "description": "Длительность в минутах, если end нет"},
+                        "body": {"type": "string", "description": "Текст встречи; в конец добавится подпись ИИ-агента"},
+                        "location": {"type": "string", "description": "Место или ссылка"},
+                        "events": {
+                            "type": "array",
+                            "description": "Несколько встреч за вызов: subject, start, end или duration_minutes",
+                            "items": {"type": "object"},
+                        },
+                    },
+                },
                 output_schema={"type": "object"},
             ),
             worker,

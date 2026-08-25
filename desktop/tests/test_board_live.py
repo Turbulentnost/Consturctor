@@ -1,5 +1,5 @@
 from app.api_client import _parse_workflow_board
-from app.notifications.service import classify_ws_payload
+from app.notifications.service import classify_ws_payload, latest_pending_payloads
 
 
 def test_classify_board_updated() -> None:
@@ -15,6 +15,20 @@ def test_classify_board_updated() -> None:
     assert classify_ws_payload({"type": "presence"}) == "chat"
     assert classify_ws_payload({"type": "ticket_updated"}) == "chat"
     assert classify_ws_payload({"type": "thread_opened"}) == "chat"
+
+
+def test_latest_pending_payloads_keeps_only_last() -> None:
+    older, latest = latest_pending_payloads(
+        [
+            {"id": "1", "title": "Старое"},
+            {"id": "2", "title": "Новое"},
+            "skip",
+        ]
+    )
+    assert [item["id"] for item in older] == ["1"]
+    assert latest is not None
+    assert latest["id"] == "2"
+    assert latest_pending_payloads([]) == ([], None)
 
 
 def test_parse_live_board_payload() -> None:

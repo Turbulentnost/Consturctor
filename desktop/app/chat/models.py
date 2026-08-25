@@ -20,6 +20,7 @@ class ChatThread:
     activity_status: str = ""
     online: bool = False
     ticket_status: str = ""
+    avatar_url: str = ""
 
 
 @dataclass

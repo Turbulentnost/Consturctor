@@ -8,6 +8,7 @@ from typing import Any
 
 from app.tools.ac.agent_workspace import AgentWorkspaceResolver
 from app.tools.ac.code_execution_tools import register_code_execution_tools
+from app.tools.ac.document_tools import register_document_tools
 from app.tools.ac.com_backed_tools import (
     OutlookCreateEventComTool,
     OutlookReadCalendarComTool,
@@ -68,6 +69,7 @@ def build_registry() -> ToolRegistry:
     registry.register(OutlookCreateEventComTool(outlook_write))
     register_onec_readonly_tools(registry, _onec_com_worker())
     register_report_tools(registry, skip_existing=True)
+    register_document_tools(registry, resolver, skip_existing=True)
     register_web_tools(registry, skip_existing=True, workspace_resolver=resolver)
     register_excel_tools(registry, resolver, skip_existing=True)
     register_powershell_tools(registry, resolver, skip_existing=True)

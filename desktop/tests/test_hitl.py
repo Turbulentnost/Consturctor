@@ -35,6 +35,9 @@ def test_read_tools_do_not_ask_hitl() -> None:
     assert not needs_confirmation("onec.odata_catalog")
     assert not needs_confirmation("users.list")
     assert not needs_confirmation("imap.fetch")
+    assert not needs_confirmation("turboproject.search_projects")
+    assert not needs_confirmation("turboproject.get_project")
+    assert not needs_confirmation("turboproject.get_user_portfolio")
 
 
 def test_write_tools_need_confirmation() -> None:

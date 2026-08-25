@@ -79,6 +79,8 @@ def explicit_when_to_run(*parts: str) -> bool:
         hint = _passport_trigger_line(blob)
         if hint and _parse_trigger_hint(hint) is not None:
             return True
+    if re.search(r"событийн.{0,30}триггер|триггер.{0,30}событи|событие вместо расписания", low):
+        return True
     if _is_explicit_event_condition(blob) and (
         len(low) < 160 or _event_is_scheduled(low)
     ):
@@ -108,6 +110,28 @@ def is_when_to_run_question(question: str) -> bool:
 def triggers_from_when_answer(answer: str) -> list[ScheduleTriggerSpec]:
     spec = _parse_trigger_hint(answer or "")
     return [spec] if spec is not None else []
+
+
+def _trigger_from_when_to_run(when_to_run: str) -> ScheduleTriggerSpec | None:
+    """Trigger detected from the playbook when_to_run text.
+
+    Try the strict parser first. If the text is not a manual-only run and the
+    strict parser did not recognize a schedule, surface it as an editable event
+    so the detected trigger is not silently dropped from the passport.
+    """
+    raw = (when_to_run or "").strip()
+    if not raw:
+        return None
+    low = raw.casefold().replace("\u0451", "\u0435")
+    if any(hint in low for hint in _MANUAL_HINTS):
+        return None
+    parsed = _parse_trigger_hint(raw)
+    if parsed is not None:
+        return parsed
+    if len(low) < 6:
+        return None
+    condition = _short_event_condition(raw) or raw
+    return ScheduleTriggerSpec(kind="event", message="", condition=condition[:120].strip(), once=False)
 
 
 def draft_after_demo(
@@ -157,6 +181,10 @@ def draft_after_demo(
             for parsed in triggers_from_when_answer(reply):
                 if not _same_trigger(parsed, triggers):
                     triggers.append(parsed)
+    if not triggers:
+        detected = _trigger_from_when_to_run(str(playbook.get("when_to_run") or ""))
+        if detected is not None and not _same_trigger(detected, triggers):
+            triggers.append(detected)
     return ScheduleDraftOut(name=name or title or "ИИ-агент", goal=goal, triggers=triggers)
 
 
@@ -175,9 +203,11 @@ def propose_schedule_draft(
 
     existing_raw = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
     existing = _normalize_draft(existing_raw, ScheduleDraftOut()) if existing_raw else None
+    playbook_draft = local.get("playbook_draft") if isinstance(local.get("playbook_draft"), dict) else {}
+    when_to_run = str(playbook_draft.get("when_to_run") or "").strip()
     ground = "\n".join(
         part
-        for part in (row.notes or "", row.document_text or "", _answered_scope_lines(plan))
+        for part in (row.notes or "", row.document_text or "", _answered_scope_lines(plan), when_to_run)
         if str(part).strip()
     )
     if existing is not None and existing.triggers:
@@ -209,6 +239,10 @@ def propose_schedule_draft(
     draft = draft.model_copy(
         update={"triggers": [item for item in draft.triggers if _trigger_grounded(item, ground)]}
     )
+    if not draft.triggers and when_to_run:
+        detected = _trigger_from_when_to_run(when_to_run)
+        if detected is not None:
+            draft = draft.model_copy(update={"triggers": [detected]})
     local["schedule_draft"] = draft.model_dump()
     row.local_run = local
     db.commit()

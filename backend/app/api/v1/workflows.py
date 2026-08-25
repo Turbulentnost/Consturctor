@@ -4,8 +4,9 @@ import json
 import logging
 from queue import Queue
 from threading import Event, Thread
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,7 @@ from app.schemas.workflow import (
     LocalRunUpdate,
     LocalDemoFinish,
     WorkflowBoard,
+    WorkflowFilesResponse,
     WorkflowHealth,
     WorkflowListItem,
     WorkflowSchema,
@@ -67,6 +69,15 @@ from app.services.workflows import (
 )
 from app.services.workflows.board import get_workflow_board
 from app.services.workflows.schedule_draft import propose_schedule_draft
+from app.services.workflow_files import (
+    WorkflowFileError,
+    add_user_files_to_workflow,
+    delete_workflow_file,
+    ensure_workflow_files_table,
+    get_workflow_file,
+    list_workflow_files,
+    register_agent_files,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +85,10 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 
 def _raise(exc: WorkflowError) -> None:
+    raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+def _raise_file(exc: WorkflowFileError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
@@ -469,6 +484,124 @@ def read_agent_run(
     except WorkflowError as exc:
         _raise(exc)
         raise
+
+
+@router.get("/{workflow_id}/files", response_model=WorkflowFilesResponse)
+async def read_workflow_files(
+    workflow_id: str,
+    run_id: str = "",
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowFilesResponse:
+    try:
+        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
+        return list_workflow_files(db, row=row, run_id=run_id)
+    except WorkflowFileError as exc:
+        _raise_file(exc)
+        raise
+
+
+@router.post("/{workflow_id}/files", response_model=WorkflowFilesResponse)
+async def upload_workflow_files(
+    workflow_id: str,
+    files: list[UploadFile] = File(default=[]),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowFilesResponse:
+    payloads: list[tuple[str, bytes]] = []
+    for upload in files:
+        raw = await upload.read()
+        payloads.append((upload.filename or "file", raw))
+    try:
+        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
+        add_user_files_to_workflow(db, row=row, files=payloads, origin="user_upload")
+        db.commit()
+        db.refresh(row)
+        return list_workflow_files(db, row=row)
+    except WorkflowFileError as exc:
+        db.rollback()
+        _raise_file(exc)
+        raise
+
+
+@router.post("/{workflow_id}/runs/{run_id}/files", response_model=WorkflowFilesResponse)
+async def upload_workflow_run_files(
+    workflow_id: str,
+    run_id: str,
+    files: list[UploadFile] = File(default=[]),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowFilesResponse:
+    payloads: list[tuple[str, bytes]] = []
+    for upload in files:
+        raw = await upload.read()
+        payloads.append((upload.filename or "file", raw))
+    try:
+        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
+        register_agent_files(db, row=row, files=payloads, run_id=run_id)
+        db.commit()
+        return list_workflow_files(db, row=row, run_id=run_id)
+    except WorkflowFileError as exc:
+        db.rollback()
+        _raise_file(exc)
+        raise
+
+
+@router.get("/{workflow_id}/files/{file_id}/text")
+async def read_workflow_file_text(
+    workflow_id: str,
+    file_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    try:
+        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
+        item = get_workflow_file(db, row=row, file_id=file_id)
+        return {"text": item.extracted_text or "", "summary": item.summary or ""}
+    except WorkflowFileError as exc:
+        _raise_file(exc)
+        raise
+
+
+@router.get("/{workflow_id}/files/{file_id}/download")
+async def download_workflow_file(
+    workflow_id: str,
+    file_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
+        item = get_workflow_file(db, row=row, file_id=file_id)
+    except WorkflowFileError as exc:
+        _raise_file(exc)
+        raise
+    filename = item.filename or "file"
+    encoded = quote(filename)
+    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"}
+    return Response(
+        content=item.content or b"",
+        media_type=item.mime_type or "application/octet-stream",
+        headers=headers,
+    )
+
+
+@router.delete("/{workflow_id}/files/{file_id}")
+async def remove_workflow_file(
+    workflow_id: str,
+    file_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    try:
+        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
+        delete_workflow_file(db, row=row, file_id=file_id)
+        db.commit()
+    except WorkflowFileError as exc:
+        db.rollback()
+        _raise_file(exc)
+        raise
+    return {"ok": True}
 
 
 @router.get("/{workflow_id}", response_model=WorkflowSchema)

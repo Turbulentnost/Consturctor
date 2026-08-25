@@ -7,7 +7,7 @@ from app.chat.store import load_history, save_history
 from app.chat.api import _directory_users
 from app.chat.shared_bus import append_shared, load_shared
 from app.chat.models import ChatThread
-from app.chat.page import sort_threads
+from app.chat.page import dedupe_dm_threads, sort_threads, thread_matches
 from app.chat.store import load_dialogs, save_history
 from app.chat.test_user import (
     TEST_USER_FIO,
@@ -190,3 +190,35 @@ def test_shared_bus_roundtrip(tmp_path, monkeypatch) -> None:
     assert incoming[0].text == "привет, Анна"
     assert incoming[0].mine is False
     assert TEST_USER_FIO
+
+
+def test_short_fio_uses_last_name_and_initials() -> None:
+    from app.ui.widgets.sidebar import short_fio
+
+    assert short_fio("Иванов Иван Иванович") == "Иванов И. И."
+    assert short_fio("Петрова Анна") == "Петрова А."
+    assert short_fio("") == ""
+
+
+def test_thread_matches_peer_and_server_ids() -> None:
+    assert thread_matches("user-1", "thr-1", "user-1")
+    assert thread_matches("thr-1", "thr-1", "user-1")
+    assert not thread_matches("user-2", "thr-1", "user-1")
+    assert not thread_matches("", "thr-1", "user-1")
+
+
+def test_dedupe_dm_threads_keeps_one_chat_per_person() -> None:
+    first = ChatThread(id="a", kind="dm", title="Уставицкий Андрей Алексеевич", last_message_at="1")
+    second = ChatThread(
+        id="b",
+        kind="dm",
+        title="Уставицкий Андрей Алексеевич",
+        peer_id="peer-1",
+        last_message_at="2",
+    )
+    empty = ChatThread(id="c", kind="dm", title="Комарькова Анастасия Эдуардовна")
+    merged = dedupe_dm_threads([first, second, empty])
+    titles = [item.title for item in merged]
+    assert titles.count("Уставицкий Андрей Алексеевич") == 1
+    assert next(item for item in merged if item.title.startswith("Уставицкий")).id == "b"
+    assert "Комарькова Анастасия Эдуардовна" in titles

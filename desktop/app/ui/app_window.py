@@ -31,12 +31,14 @@ class AppWindow(QMainWindow):
         *,
         open_workflow_id: str = "",
         open_run_id: str = "",
+        start_demo: bool = False,
     ) -> None:
         super().__init__()
         self.api = api or ApiClient()
         self._force_quit = False
         self._pending_workflow_id = (open_workflow_id or "").strip()
         self._pending_run_id = (open_run_id or "").strip()
+        self._pending_start_demo = bool(start_demo)
         self._pending_open_live = False
         self._last_toast_run_id = ""
         self.setWindowTitle("turbobot — Анна Де Армас" if auth_test_user() else "turbobot")
@@ -94,6 +96,10 @@ class AppWindow(QMainWindow):
 
     def handle_external_command(self, command: str) -> None:
         text = (command or "").strip()
+        if text.startswith("start-demo:"):
+            workflow_id = text.split(":", 1)[1].strip()
+            self.open_workflow(workflow_id, start_demo=True)
+            return
         if text.startswith("open-workflow:"):
             rest = text.split(":", 1)[1].strip()
             workflow_id, _, run_id = rest.partition("|")
@@ -105,20 +111,29 @@ class AppWindow(QMainWindow):
             return
         self.reveal()
 
-    def open_workflow(self, workflow_id: str, run_id: str = "") -> None:
+    def open_workflow(
+        self,
+        workflow_id: str,
+        run_id: str = "",
+        *,
+        start_demo: bool = False,
+    ) -> None:
         wid = (workflow_id or "").strip()
         if not wid:
             return
         self.reveal()
-        open_live = notification_opens_live(wid)
+        open_live = notification_opens_live(wid) and not start_demo
         if self._stack.currentWidget() is self.main_shell:
-            if open_live:
+            if start_demo:
+                self.main_shell.navigate_to_agent_run(wid, start_demo=True)
+            elif open_live:
                 self.main_shell.show_live_agent(wid)
             else:
                 self.main_shell.navigate_to_agent_history(wid, run_id)
         else:
             self._pending_workflow_id = wid
             self._pending_run_id = (run_id or "").strip()
+            self._pending_start_demo = start_demo
             self._pending_open_live = open_live
 
     def reveal(self) -> None:
@@ -266,11 +281,16 @@ class AppWindow(QMainWindow):
         pending = self._pending_workflow_id
         pending_run = self._pending_run_id
         pending_live = self._pending_open_live
+        pending_demo = self._pending_start_demo
         self._pending_workflow_id = ""
         self._pending_run_id = ""
         self._pending_open_live = False
+        self._pending_start_demo = False
+        self.main_shell.set_user(user, reset_home=not pending)
         if pending:
-            if pending_live:
+            if pending_demo:
+                self.main_shell.navigate_to_agent_run(pending, start_demo=True)
+            elif pending_live:
                 self.main_shell.show_live_agent(pending)
             else:
                 self.main_shell.navigate_to_agent_history(pending, pending_run)

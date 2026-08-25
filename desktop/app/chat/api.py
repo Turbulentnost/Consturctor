@@ -125,6 +125,7 @@ def _thread(item: dict) -> ChatThread:
         activity_status=str(item.get("activity_status") or ""),
         online=bool(item.get("online")),
         ticket_status=str(item.get("ticket_status") or ""),
+        avatar_url=str(item.get("avatar_url") or ""),
     )
 
 

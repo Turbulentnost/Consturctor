@@ -59,7 +59,7 @@ _READ_EXACT = frozenset(
         "agent.schedule.cancel",
     }
 )
-_READ_PREFIXES = ("onec.search_", "onec.get_", "imap.")
+_READ_PREFIXES = ("onec.search_", "onec.get_", "imap.", "turboproject.")
 
 _host: "_ConfirmHost | None" = None
 _away_notify: Callable[[str, str, str], None] | None = None
@@ -160,6 +160,10 @@ _TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
     "outlook.create_event": (
         "Встреча в Outlook",
         "Создаёт событие в календаре Outlook. В теме и тексте будет пометка, что это ИИ-агент.",
+    ),
+    "report.export_document": (
+        "Отчёт в файл",
+        "Сохраняет отчёт файлом (Word или Markdown) в папке агента.",
     ),
     "excel.edit_workbook": (
         "Изменение Excel",

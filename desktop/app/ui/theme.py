@@ -151,6 +151,16 @@ def nerd_font(size: int = 13) -> QFont:
     return font
 
 
+def nerd_font(size: int = 13) -> QFont:
+    font = QFont(NERD_FAMILY)
+    font.setPixelSize(size)
+    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+    font.setStyleStrategy(
+        QFont.StyleStrategy.PreferQuality | QFont.StyleStrategy.PreferAntialias
+    )
+    return font
+
+
 def circular_pixmap(src: QPixmap, size: int) -> QPixmap:
     """Crop/scale pixmap into a circle of the given diameter."""
     if src.isNull() or size <= 0:

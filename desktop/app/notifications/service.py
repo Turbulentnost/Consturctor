@@ -24,6 +24,14 @@ _PS_AUMID = (
 )
 
 
+def latest_pending_payloads(items: list[object]) -> tuple[list[dict], dict | None]:
+    """From a pending backlog, keep only the newest toast payload."""
+    rows = [item for item in items if isinstance(item, dict)]
+    if not rows:
+        return [], None
+    return rows[:-1], rows[-1]
+
+
 def classify_ws_payload(payload: dict) -> str:
     kind = str(payload.get("type") or "")
     if kind == "session_replaced":
@@ -68,6 +76,11 @@ class NotificationService(QObject):
         self._ping.setInterval(20000)
         self._ping.timeout.connect(self._send_ping)
         self._kicked = False
+        self._queued_toast: dict | None = None
+        self._toast_batch = QTimer(self)
+        self._toast_batch.setInterval(600)
+        self._toast_batch.setSingleShot(True)
+        self._toast_batch.timeout.connect(self._flush_toast_batch)
         self._ws.connected.connect(self._on_connected)
         self._ws.disconnected.connect(self._on_disconnected)
         self._ws.textMessageReceived.connect(self._on_message)
@@ -150,7 +163,7 @@ class NotificationService(QObject):
             return
         if kind != "notification":
             return
-        self._present(payload)
+        self._queue_toast(payload)
 
     def _poll_pending(self) -> None:
         if not self._token:
@@ -172,13 +185,18 @@ class NotificationService(QObject):
             return
         if not isinstance(items, list):
             return
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            shown = self._present(item)
+        older, latest = latest_pending_payloads(items)
+        for item in older:
             nid = str(item.get("id") or "")
-            if shown and nid:
+            if nid:
+                self._seen.add(nid)
                 self._ack(nid)
+        if latest is None:
+            return
+        shown = self._present(latest)
+        nid = str(latest.get("id") or "")
+        if shown and nid:
+            self._ack(nid)
 
     def _kick(self, message: str) -> None:
         if self._kicked:
@@ -197,10 +215,25 @@ class NotificationService(QObject):
         except Exception:  # noqa: BLE001
             logger.debug("Notification ack failed id=%s", notification_id, exc_info=True)
 
-    def _present(self, payload: dict) -> bool:
+    def _queue_toast(self, payload: dict) -> None:
         nid = str(payload.get("id") or "")
         if nid and nid in self._seen:
-            return False
+            return
+        if nid:
+            self._seen.add(nid)
+        self._queued_toast = payload
+        if not self._toast_batch.isActive():
+            self._toast_batch.start()
+
+    def _flush_toast_batch(self) -> None:
+        payload = self._queued_toast
+        self._queued_toast = None
+        if payload is None:
+            return
+        self._present(payload)
+
+    def _present(self, payload: dict) -> bool:
+        nid = str(payload.get("id") or "")
         if nid:
             self._seen.add(nid)
         title = str(payload.get("title") or "Уведомление")
