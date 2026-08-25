@@ -40,10 +40,11 @@ from app.chat.store import load_dialogs, load_history, save_history
 from app.chat.support_agent import echo_command
 from app.chat.widgets.agent_offer_dialog import AgentOfferDialog
 from app.chat.widgets.agent_picker import AgentPickerDialog
+from app.chat.widgets.employee_panel import EmployeePanel
 from app.chat.widgets.profile_dialog import ChatProfileDialog
 from app.chat.widgets.user_picker import UserPickerDialog
 from app.chat.widgets.file_chip import FileChip, FlowLayout
-from app.chat.wallpaper import CHAT_BG_GRID, ChatWallpaper
+from app.chat.wallpaper import ChatWallpaper
 from app.chat.widgets.message_bubble import MessageBubble
 from app.chat.widgets.thread_card import ThreadCard
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, circular_pixmap, scroll_bar_qss
@@ -51,6 +52,7 @@ from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, circular_pixm
 _VIRTUAL_SUPPORT = "support"
 _SHELVES = (("queue", "Не назначенные"), ("mine", "Мои"), ("all", "Все"))
 _SEND_TIMEOUT_MS = 20_000
+_CHAT_SURFACE_MAX_WIDTH = 860
 _WELCOME = (
     "Здравствуйте! Я агент поддержки turbobot. "
     "Напишите вопрос — помогу с конструктором и агентами."
@@ -63,17 +65,17 @@ class ChatComposer(QPlainTextEdit):
 
     _MIN_LINES = 1
     _MAX_LINES = 10
-    _PAD = 16
+    _PAD = 14
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setPlaceholderText("Сообщение…  Enter — отправить, Shift+Enter — новая строка")
+        self.setPlaceholderText("Напишите сообщение...")
         self.setFont(app_font(13))
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setStyleSheet(
-            "QPlainTextEdit { background: #FFFFFF; border: 1px solid rgba(6,72,61,0.12);"
-            " border-radius: 12px; padding: 8px; color: #101817; }"
+            "QPlainTextEdit { background: transparent; border: none;"
+            " padding: 7px 8px; color: #101817; }"
         )
         self.textChanged.connect(self._adjust_height)
         self.document().documentLayout().documentSizeChanged.connect(self._adjust_height)
@@ -196,6 +198,42 @@ def preview_of(message: ChatMessage | None) -> str:
     if message.attachments:
         return message.attachments[0].filename
     return ""
+
+
+def _message_day(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().date().isoformat()
+    except ValueError:
+        return value[:10] if len(value) >= 10 else ""
+
+
+def _date_label(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        day = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().date()
+    except ValueError:
+        return value[:10] if len(value) >= 10 else value
+    today = datetime.now().astimezone().date()
+    if day == today:
+        return "Сегодня"
+    if (today - day).days == 1:
+        return "Вчера"
+    return day.strftime("%d.%m.%Y")
+
+
+class DateSeparator(QLabel):
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFont(app_font(10, QFont.Weight.Medium))
+        self.setStyleSheet(
+            "QLabel { background: rgba(255,255,255,0.78); color: #6B7773;"
+            " border-radius: 12px; padding: 4px 12px; }"
+        )
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
 
 def _support_thread(preview: str = "", last_message_at: str = "") -> ChatThread:
@@ -354,10 +392,22 @@ class ChatPage(QWidget):
         self._feed = QVBoxLayout()
         self._feed.setContentsMargins(8, 8, 8, 8)
         self._feed.addStretch(1)
+        self._feed_host = QWidget()
+        self._feed_host.setMinimumWidth(640)
+        self._feed_host.setMaximumWidth(_CHAT_SURFACE_MAX_WIDTH)
+        self._feed_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._feed_host.setStyleSheet("background: transparent;")
+        self._feed_host.setAutoFillBackground(False)
+        self._feed_host.setLayout(self._feed)
         inner = QWidget()
         inner.setStyleSheet("background: transparent;")
         inner.setAutoFillBackground(False)
-        inner.setLayout(self._feed)
+        inner_layout = QHBoxLayout(inner)
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+        inner_layout.setSpacing(0)
+        inner_layout.addStretch(1)
+        inner_layout.addWidget(self._feed_host, 1)
+        inner_layout.addStretch(1)
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -374,8 +424,9 @@ class ChatPage(QWidget):
         bar.rangeChanged.connect(self._on_scroll_range)
 
         self._feed_wrap = QWidget()
+        self._feed_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._feed_wrap.setStyleSheet("background: transparent;")
-        self._wallpaper = ChatWallpaper(self._feed_wrap, CHAT_BG_GRID)
+        self._wallpaper = ChatWallpaper(self._feed_wrap)
         stack = QStackedLayout(self._feed_wrap)
         stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
         stack.setContentsMargins(0, 0, 0, 0)
@@ -410,43 +461,66 @@ class ChatPage(QWidget):
         self._attach.clicked.connect(self._pick_file)
         self._agent_btn = QPushButton()
         self._agent_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._agent_btn.setToolTip("Отправить агента")
-        self._agent_btn.setFixedSize(36, 36)
-        self._agent_btn.setIcon(agent_icon(22))
-        self._agent_btn.setIconSize(agent_icon_size(22))
+        self._agent_btn.setToolTip("Связать с агентом")
+        self._agent_btn.setText("Связать с агентом")
+        self._agent_btn.setFixedHeight(36)
+        self._agent_btn.setIcon(agent_icon(16))
+        self._agent_btn.setIconSize(agent_icon_size(16))
         self._agent_btn.setStyleSheet(
-            "QPushButton { background: transparent; border: none; border-radius: 10px; }"
-            "QPushButton:hover { background: rgba(8,116,95,0.10); }"
-            "QPushButton:pressed { background: rgba(8,116,95,0.18); }"
+            "QPushButton { background: #F3FAF7; color: #08745F; border: none;"
+            " border-radius: 12px; padding: 0 14px; }"
+            "QPushButton:hover { background: #EAF7F3; }"
         )
         self._agent_btn.clicked.connect(self._pick_agent)
-        self._send_btn = QPushButton("Отправить")
+        self._send_btn = QPushButton("➤")
         self._send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._send_btn.setFixedHeight(36)
+        self._send_btn.setFixedSize(48, 48)
         self._send_btn.setStyleSheet(
             "QPushButton { background: #08745F; color: #FFFFFF; border: none;"
-            " border-radius: 12px; padding: 0 16px; }"
+            " border-radius: 24px; font-size: 20px; padding-left: 2px; }"
+            "QPushButton:hover { background: #0A8670; }"
         )
         self._send_btn.clicked.connect(lambda: self._send())
         self._files_host = QWidget()
+        self._files_host.setMinimumWidth(640)
+        self._files_host.setMaximumWidth(_CHAT_SURFACE_MAX_WIDTH)
         self._files_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._files_layout = FlowLayout(self._files_host, spacing=8)
         self._files_host.hide()
         chips = QHBoxLayout()
         chips.setContentsMargins(0, 0, 0, 0)
-        chips.addSpacing(80)
+        chips.addStretch(1)
         chips.addWidget(self._files_host, 1)
-        composer = QHBoxLayout()
-        composer.addWidget(self._attach, 0, Qt.AlignmentFlag.AlignBottom)
-        composer.addWidget(self._agent_btn, 0, Qt.AlignmentFlag.AlignBottom)
-        composer.addWidget(self._input, 1)
-        composer.addWidget(self._send_btn, 0, Qt.AlignmentFlag.AlignBottom)
+        chips.addStretch(1)
+        composer_box = QFrame()
+        composer_box.setObjectName("composerBox")
+        composer_box.setMinimumWidth(640)
+        composer_box.setMaximumWidth(_CHAT_SURFACE_MAX_WIDTH)
+        composer_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        composer_box.setStyleSheet(
+            "QFrame#composerBox { background: #FFFFFF; border: 1px solid rgba(6,72,61,0.10);"
+            " border-radius: 18px; }"
+        )
+        composer = QHBoxLayout(composer_box)
+        composer.setContentsMargins(12, 8, 12, 8)
+        composer.setSpacing(10)
+        composer.addWidget(self._attach, 0, Qt.AlignmentFlag.AlignVCenter)
+        composer.addWidget(self._input, 1, Qt.AlignmentFlag.AlignVCenter)
+        composer.addWidget(self._agent_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        composer.addWidget(self._send_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         compose_col = QVBoxLayout()
         compose_col.setSpacing(8)
         compose_col.addLayout(chips)
-        compose_col.addLayout(composer)
+        compose_col.addWidget(composer_box, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self._info_panel = EmployeePanel()
+        self._info_panel.profile_requested.connect(self._open_profile)
+        self._info_panel.agent_opened.connect(lambda payload: self._open_agent_card(payload, mine=False))
+        self._info_panel.hide()
 
         right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(10)
         right.addLayout(header)
         right.addWidget(self._feed_wrap, 1)
         right.addLayout(compose_col)
@@ -461,6 +535,7 @@ class ChatPage(QWidget):
         right_wrap.setLayout(right)
         body.addWidget(self._left_wrap, 0)
         body.addWidget(right_wrap, 1)
+        body.addWidget(self._info_panel, 0)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1071,17 +1146,50 @@ class ChatPage(QWidget):
 
     def _render_rows(self, rows: list[ChatMessage], *, pin_bottom: bool = True) -> None:
         self._clear_feed()
+        current_day = ""
         for message in rows:
+            day = _message_day(message.created_at)
+            if day and day != current_day:
+                current_day = day
+                self._feed.insertWidget(
+                    self._feed.count() - 1,
+                    DateSeparator(_date_label(message.created_at)),
+                    0,
+                    Qt.AlignmentFlag.AlignHCenter,
+                )
             pending = self._pending.get(message.client_id)
             if pending is not None and pending.receipt == "failed":
                 message.receipt = "failed"
             bubble = MessageBubble(message)
             bubble.agent_opened.connect(self._open_agent_card)
+            bubble.attachment_requested.connect(self._save_attachment)
             if message.client_id:
                 self._bubbles[message.client_id] = bubble
             self._feed.insertWidget(self._feed.count() - 1, bubble)
+        self._sync_info_panel(rows)
         if pin_bottom:
             self._scroll_to_bottom(force=True)
+
+    def _current_thread(self) -> ChatThread | None:
+        if self._current == _VIRTUAL_SUPPORT:
+            return _support_thread()
+        return self._local_threads.get(self._current) or next(
+            (item for item in self._threads if item.id == self._current),
+            None,
+        )
+
+    def _sync_info_panel(self, rows: list[ChatMessage] | None = None) -> None:
+        thread = self._current_thread()
+        if thread is None or thread.id == _VIRTUAL_SUPPORT or thread.kind == "support":
+            self._info_panel.hide()
+            return
+        self._info_panel.show()
+        data = rows if rows is not None else self._collect_local_rows(thread.id)
+        self._info_panel.set_thread(thread, data)
+        peer_id = thread.peer_id or ("" if thread.id.startswith("thr-") else thread.id)
+        cached = peek_avatar(peer_id)
+        if cached is not None:
+            self._info_panel.set_avatar_pixmap(peer_id, cached)
 
     def _render_local_or_remote(self, thread_id: str) -> None:
         if self._api_chat and thread_id != _VIRTUAL_SUPPORT:
@@ -1167,6 +1275,7 @@ class ChatPage(QWidget):
             return
         self._avatar.setText("")
         self._avatar.setPixmap(circular_pixmap(pixmap, 40))
+        self._info_panel.set_avatar_pixmap(getattr(self, "_avatar_peer_id", ""), pixmap)
 
     def _open_profile(self) -> None:
         thread = next((item for item in self._threads if item.id == self._current), None)
@@ -1371,6 +1480,24 @@ class ChatPage(QWidget):
         if added:
             self._refresh_file_chips()
 
+    def _save_attachment(self, attachment: object) -> None:
+        if not isinstance(attachment, ChatAttachment):
+            return
+        if not attachment.id:
+            QMessageBox.warning(self, "Файл", "Файл ещё не готов к скачиванию.")
+            return
+        default_name = attachment.filename or "file"
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить файл", default_name)
+        if not path:
+            return
+        try:
+            data = self._client.fetch_bytes(f"/api/v1/chat/files/{attachment.id}")
+            Path(path).write_bytes(data)
+        except ApiError as exc:
+            QMessageBox.warning(self, "Файл", exc.message or "Не удалось скачать файл.")
+        except OSError as exc:
+            QMessageBox.warning(self, "Файл", str(exc) or "Не удалось сохранить файл.")
+
     def _remove_file(self, path: str) -> None:
         self._pending_files = [item for item in self._pending_files if item != path]
         self._refresh_file_chips()
@@ -1454,6 +1581,7 @@ class ChatPage(QWidget):
         self._pending[client_id] = optimistic
         bubble = MessageBubble(optimistic)
         bubble.agent_opened.connect(self._open_agent_card)
+        bubble.attachment_requested.connect(self._save_attachment)
         self._bubbles[client_id] = bubble
         self._feed.insertWidget(self._feed.count() - 1, bubble)
         self._scroll_to_bottom(force=True)
@@ -1471,15 +1599,10 @@ class ChatPage(QWidget):
                 target.peer_id = peer_id
         if not support and self._user is not None:
             optimistic.receipt = "delivered"
-            append_shared(self._user.id, peer_id or thread_id, optimistic)
-            if peer_id and peer_id != thread_id:
-                append_shared(self._user.id, thread_id, optimistic)
             self._set_receipt(client_id, "delivered")
             self._pending.pop(client_id, None)
-            self._store_local(optimistic)
-            self._shared_stamp = optimistic.id
         queued = False
-        for path, meta in zip(files, attachments_meta):
+        for index, (path, meta) in enumerate(zip(files, attachments_meta)):
             try:
                 uploaded = self._api.upload(path)
             except ApiError:
@@ -1492,8 +1615,19 @@ class ChatPage(QWidget):
                 meta["filename"] = str(uploaded.get("filename") or meta["filename"])
                 meta["mime"] = str(uploaded.get("mime") or meta["mime"])
                 meta["size"] = int(uploaded.get("size") or meta["size"])
+                if 0 <= index < len(optimistic.attachments):
+                    optimistic.attachments[index].id = remote_id
+                    optimistic.attachments[index].filename = str(meta["filename"])
+                    optimistic.attachments[index].mime = str(meta["mime"])
+                    optimistic.attachments[index].size = int(meta["size"] or 0)
         payload["file_ids"] = [str(item["file_id"]) for item in attachments_meta]
         payload["files"] = attachments_meta
+        if not support and self._user is not None:
+            append_shared(self._user.id, peer_id or thread_id, optimistic)
+            if peer_id and peer_id != thread_id:
+                append_shared(self._user.id, thread_id, optimistic)
+            self._store_local(optimistic)
+            self._shared_stamp = optimistic.id
         try:
             self._api.command(payload)
             queued = True
@@ -1516,7 +1650,7 @@ class ChatPage(QWidget):
             self._load_messages(self._current)
         if not keep_composer:
             self._input.clear()
-            self._input.setPlaceholderText("Сообщение…  Enter — отправить, Shift+Enter — новая строка")
+            self._input.setPlaceholderText("Напишите сообщение...")
             self._pending_files.clear()
             self._refresh_file_chips()
         self._reload_threads()
