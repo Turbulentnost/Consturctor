@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Thread
 from uuid import uuid4
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QKeyEvent
+from PySide6.QtGui import QFont, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from app.api_client import ApiClient, ApiError, BoardAgent, UserProfile
 from app.chat.agent_share import agent_share_payload
+from app.chat.avatars import load_peer_avatar, peek_avatar
 from app.chat.api import ChatApi, guess_mime
 from app.chat.icons import agent_icon, agent_icon_size, paperclip_icon, paperclip_icon_size
 from app.chat.models import ChatAttachment, ChatMessage, ChatThread, DirectoryUser
@@ -44,7 +46,7 @@ from app.chat.widgets.file_chip import FileChip, FlowLayout
 from app.chat.wallpaper import CHAT_BG_GRID, ChatWallpaper
 from app.chat.widgets.message_bubble import MessageBubble
 from app.chat.widgets.thread_card import ThreadCard
-from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
+from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, circular_pixmap, scroll_bar_qss
 
 _VIRTUAL_SUPPORT = "support"
 _SHELVES = (("queue", "Не назначенные"), ("mine", "Мои"), ("all", "Все"))
@@ -156,6 +158,14 @@ def peer_key(thread: ChatThread) -> str:
     return f"id:{peer.casefold()}"
 
 
+def thread_matches(current: str, thread_id: str, peer_id: str = "") -> bool:
+    if not current:
+        return False
+    if thread_id and current == thread_id:
+        return True
+    return bool(peer_id) and current == peer_id
+
+
 def dedupe_dm_threads(threads: list[ChatThread]) -> list[ChatThread]:
     best: dict[str, ChatThread] = {}
     order: list[str] = []
@@ -205,6 +215,7 @@ def _support_thread(preview: str = "", last_message_at: str = "") -> ChatThread:
 class ChatPage(QWidget):
     open_agent_requested = Signal(str, str)
     threads_changed = Signal()
+    _avatar_ready = Signal(str, object)
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -223,10 +234,13 @@ class ChatPage(QWidget):
         self._shared_stamp = ""
         self._fresh_ids: set[str] = set()
         self._opening = False
+        self._aliases: dict[str, str] = {}
+        self._avatar_peer_id = ""
         self._poll = QTimer(self)
         self._poll.setInterval(800)
         self._poll.timeout.connect(self._poll_shared)
         self._poll.start()
+        self._avatar_ready.connect(self._on_avatar_ready)
 
         title = QLabel("Чат")
         title.setFont(app_font(28, QFont.Weight.DemiBold))
@@ -456,6 +470,112 @@ class ChatPage(QWidget):
     def current_thread_id(self) -> str:
         return self._current
 
+    def _canon(self, thread_id: str) -> str:
+        return self._aliases.get(thread_id, thread_id)
+
+    def _bind_ids(self, server_id: str, peer_id: str) -> None:
+        if not server_id:
+            return
+        self._aliases[server_id] = server_id
+        if peer_id and peer_id != server_id:
+            self._aliases[peer_id] = server_id
+            self._migrate_thread(peer_id, server_id, peer_id)
+
+    def _migrate_thread(self, old_id: str, new_id: str, peer_id: str) -> None:
+        if not old_id or not new_id or old_id == new_id:
+            return
+        old_thread = self._local_threads.pop(old_id, None)
+        new_thread = self._local_threads.get(new_id)
+        if old_thread is not None and new_thread is None:
+            old_thread.id = new_id
+            old_thread.peer_id = peer_id or old_thread.peer_id
+            self._local_threads[new_id] = old_thread
+        elif old_thread is not None and new_thread is not None:
+            new_thread.peer_id = peer_id or new_thread.peer_id or old_thread.peer_id
+            if old_thread.title:
+                new_thread.title = old_thread.title
+        old_rows = self._local.pop(old_id, [])
+        if old_rows:
+            dest = self._local.setdefault(new_id, [])
+            seen = {item.id or item.client_id for item in dest}
+            for item in old_rows:
+                key = item.id or item.client_id
+                if key and key in seen:
+                    continue
+                dest.append(item)
+                if key:
+                    seen.add(key)
+        if self._current == old_id:
+            self._current = new_id
+
+    def _peer_for(self, thread_id: str) -> str:
+        thread = self._local_threads.get(thread_id) or next(
+            (item for item in self._threads if item.id == thread_id),
+            None,
+        )
+        if thread is None:
+            return ""
+        return thread.peer_id or ""
+
+    def _is_viewing(self, thread_id: str, peer_id: str = "") -> bool:
+        current = self._current
+        if not current:
+            return False
+        if self._canon(current) == self._canon(thread_id):
+            return True
+        return thread_matches(current, thread_id, peer_id)
+
+    def _ingest_remote_message(self, payload: dict) -> ChatMessage | None:
+        raw = payload.get("message") or {}
+        if not isinstance(raw, dict):
+            return None
+        thread_id = str(payload.get("thread_id") or raw.get("thread_id") or "")
+        sender = str(raw.get("sender_id") or "")
+        me = self._user.id if self._user is not None else ""
+        members = [str(item) for item in (payload.get("members") or []) if item]
+        peer_id = next((item for item in members if item != me), "")
+        if not peer_id and sender and sender != me:
+            peer_id = sender
+        if thread_id:
+            self._bind_ids(thread_id, peer_id)
+        canon = self._canon(thread_id or peer_id)
+        incoming = ChatMessage(
+            id=str(raw.get("id") or ""),
+            thread_id=canon,
+            sender_id=sender,
+            mine=bool(me) and sender == me,
+            text=decrypt_text(str(raw.get("text") or "")),
+            client_id=str(raw.get("client_id") or ""),
+            created_at=str(raw.get("created_at") or ""),
+            receipt="delivered",
+        )
+        rows = self._local.setdefault(canon, [])
+        if not any(
+            (incoming.id and item.id == incoming.id)
+            or (incoming.client_id and item.client_id == incoming.client_id)
+            for item in rows
+        ):
+            rows.append(incoming)
+        if self._user is not None:
+            if peer_id:
+                append_shared(self._user.id, peer_id, incoming)
+            if canon:
+                append_shared(self._user.id, canon, incoming)
+        thread = self._local_threads.get(canon)
+        if thread is None:
+            thread = ChatThread(
+                id=canon,
+                kind="dm",
+                title="",
+                peer_id=peer_id,
+            )
+            self._local_threads[canon] = thread
+        if peer_id:
+            thread.peer_id = peer_id
+        self._apply_activity(thread, [incoming], viewing=self._is_viewing(canon, peer_id))
+        self._persist()
+        return incoming
+
     def sidebar_dialogs(self) -> list[ChatThread]:
         result: list[ChatThread] = []
         for thread in list(self._threads) + list(self._local_threads.values()):
@@ -467,11 +587,20 @@ class ChatPage(QWidget):
         return sort_threads(dedupe_dm_threads(result))
 
     def _dialog_has_messages(self, thread: ChatThread) -> bool:
-        rows = self._local.get(thread.id) or []
+        keys = [thread.id, thread.peer_id, self._canon(thread.id)]
+        rows = []
+        for key in keys:
+            if key and self._local.get(key):
+                rows = self._local[key]
+                break
         if self._user is not None:
-            shared = load_shared(self._user.id, thread.peer_id or thread.id)
-            if shared:
-                rows = shared
+            for key in keys:
+                if not key:
+                    continue
+                shared = load_shared(self._user.id, key)
+                if shared:
+                    rows = shared
+                    break
         if rows:
             return True
         preview = (thread.preview or "").strip()
@@ -480,9 +609,15 @@ class ChatPage(QWidget):
     def open_existing_dialog(self, thread_id: str) -> None:
         if not thread_id:
             return
+        thread = self._local_threads.get(thread_id) or next(
+            (item for item in self._threads if item.id == thread_id),
+            None,
+        )
+        if thread is not None and thread.peer_id:
+            self._bind_ids(thread.id, thread.peer_id)
         self._reload_threads()
-        self._open_thread(thread_id)
-        self._select_thread(thread_id)
+        self._open_thread(self._canon(thread_id))
+        self._select_thread(self._canon(thread_id))
 
     def open_by_fio(self, fio: str) -> None:
         needle = (fio or "").strip()
@@ -550,25 +685,39 @@ class ChatPage(QWidget):
     def apply_event(self, payload: dict) -> None:
         kind = str(payload.get("type") or "")
         thread_id = str(payload.get("thread_id") or "")
+        peer_id = str(payload.get("peer_id") or "")
         if kind == "chat_message":
-            message = payload.get("message") or {}
-            if isinstance(message, dict):
-                message["text"] = decrypt_text(str(message.get("text") or ""))
-            client_id = str(message.get("client_id") or "")
-            pending = self._pending.pop(client_id, None)
+            incoming = self._ingest_remote_message(payload)
+            client_id = incoming.client_id if incoming is not None else ""
+            pending = self._pending.pop(client_id, None) if client_id else None
             if pending is not None:
                 self._set_receipt(client_id, "delivered")
-            if thread_id and self._current in {"", _VIRTUAL_SUPPORT}:
-                self._current = thread_id
+            viewing = incoming is not None and self._is_viewing(
+                incoming.thread_id,
+                incoming.sender_id if not incoming.mine else peer_id,
+            )
+            if viewing or (thread_id and self._current in {"", _VIRTUAL_SUPPORT}):
+                self._current = incoming.thread_id if incoming is not None else thread_id
+            if incoming is not None and self._is_viewing(
+                incoming.thread_id,
+                incoming.sender_id if not incoming.mine else "",
+            ):
+                rows = self._collect_local_rows(incoming.thread_id)
+                if rows:
+                    self._shared_stamp = rows[-1].id
+                    self._render_rows(rows, pin_bottom=self._stick_bottom)
             self._reload_threads()
-            if thread_id and thread_id == self._current:
-                self._load_messages(self._current, pin_bottom=self._stick_bottom)
             return
         if kind == "thread_opened" and thread_id:
-            self._current = thread_id
+            self._bind_ids(thread_id, peer_id)
+            if self._is_viewing(thread_id, peer_id) or self._current in {"", _VIRTUAL_SUPPORT} or (
+                peer_id and self._current == peer_id
+            ):
+                self._current = thread_id
             self._reload_threads()
-            self._select_thread(thread_id)
-            self._load_messages(thread_id, pin_bottom=True)
+            self._select_thread(self._current or thread_id)
+            if self._is_viewing(thread_id, peer_id):
+                self._load_messages(thread_id, pin_bottom=True)
             return
         if kind in {"chat_receipt", "ticket_updated", "presence"}:
             self._reload_threads()
@@ -632,6 +781,31 @@ class ChatPage(QWidget):
                 self._local_threads[_VIRTUAL_SUPPORT] = support
             self._apply_activity(support, support_rows, viewing=self._current == _VIRTUAL_SUPPORT)
 
+    def _collect_local_rows(self, thread_id: str) -> list[ChatMessage]:
+        canon = self._canon(thread_id)
+        peer = self._peer_for(canon) or self._peer_for(thread_id)
+        merged: list[ChatMessage] = []
+        seen: set[str] = set()
+
+        def _add(rows: list[ChatMessage]) -> None:
+            for item in rows:
+                key = item.id or item.client_id
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                merged.append(item)
+
+        _add(self._local.get(canon) or [])
+        if thread_id != canon:
+            _add(self._local.get(thread_id) or [])
+        if self._user is not None:
+            for key in (canon, thread_id, peer):
+                if key:
+                    _add(load_shared(self._user.id, key))
+        merged.sort(key=lambda item: item.created_at or "")
+        return merged
+
     def _poll_shared(self) -> None:
         if self._user is None:
             return
@@ -639,12 +813,14 @@ class ChatPage(QWidget):
         self._sync_roster_threads()
         after = self._activity_fingerprint()
         if self._current and self._current != _VIRTUAL_SUPPORT:
-            rows = load_shared(self._user.id, self._current)
-            stamp = rows[-1].id if rows else ""
-            if stamp != self._shared_stamp:
+            rows = self._collect_local_rows(self._current)
+            stamp = rows[-1].id if rows else self._shared_stamp
+            if rows and stamp != self._shared_stamp:
                 self._shared_stamp = stamp
-                self._local[self._current] = rows
-                thread = self._local_threads.get(self._current)
+                self._local[self._canon(self._current)] = rows
+                thread = self._local_threads.get(self._canon(self._current)) or self._local_threads.get(
+                    self._current
+                )
                 if thread is not None:
                     self._apply_activity(thread, rows, viewing=True)
                 self._render_rows(rows, pin_bottom=self._stick_bottom)
@@ -792,18 +968,20 @@ class ChatPage(QWidget):
         self._current = thread_id
         self._paint_selection()
         thread = next((item for item in self._threads if item.id == thread_id), None)
+        if thread is None:
+            thread = self._local_threads.get(thread_id)
         if thread_id == _VIRTUAL_SUPPORT and thread is None:
             thread = _support_thread()
         self._peer.setText(thread.title if thread else "Диалог")
-        self._set_avatar(thread.title if thread else "")
+        peer_id = ""
+        if thread is not None:
+            peer_id = thread.peer_id or ("" if thread.id.startswith("thr-") else thread.id)
+        self._set_avatar(thread.title if thread else "", peer_id=peer_id)
         self._sync_pin_button(thread)
         if thread is not None:
-            rows = self._local.get(thread_id) or []
-            if self._user is not None and thread_id != _VIRTUAL_SUPPORT:
-                shared = load_shared(self._user.id, thread_id)
-                if shared:
-                    rows = shared
-                    self._local[thread_id] = shared
+            rows = self._collect_local_rows(thread_id)
+            if rows:
+                self._local[self._canon(thread_id)] = rows
             if rows:
                 self._apply_activity(thread, rows, viewing=True)
             else:
@@ -917,30 +1095,78 @@ class ChatPage(QWidget):
                     return
             except ApiError:
                 self._api_chat = False
-        self._render_rows(list(self._local.get(thread_id) or []), pin_bottom=True)
+        self._render_rows(self._collect_local_rows(thread_id), pin_bottom=True)
 
     def _load_messages(self, thread_id: str, *, pin_bottom: bool = True) -> None:
-        if self._user is not None and thread_id and thread_id != _VIRTUAL_SUPPORT:
-            shared = load_shared(self._user.id, thread_id)
-            if shared:
-                self._local[thread_id] = shared
-                self._shared_stamp = shared[-1].id
-                self._render_rows(shared, pin_bottom=pin_bottom)
-                return
-        try:
-            rows = self._api.messages(thread_id)
-        except ApiError:
-            rows = list(self._local.get(thread_id) or [])
-        self._render_rows(rows, pin_bottom=pin_bottom)
+        if not thread_id:
+            self._render_rows([], pin_bottom=pin_bottom)
+            return
+        canon = self._canon(thread_id)
+        peer = self._peer_for(canon) or self._peer_for(thread_id)
+        merged = self._collect_local_rows(thread_id)
+        seen = {item.id or item.client_id for item in merged if item.id or item.client_id}
 
-    def _set_avatar(self, name: str) -> None:
+        def _add(rows: list[ChatMessage]) -> None:
+            for item in rows:
+                key = item.id or item.client_id
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                merged.append(item)
+
+        if self._api_chat and thread_id != _VIRTUAL_SUPPORT:
+            for key in dict.fromkeys([canon, thread_id, peer]):
+                if not key or key == _VIRTUAL_SUPPORT:
+                    continue
+                try:
+                    _add(self._api.messages(key))
+                    self._bind_ids(canon if canon.startswith("thr-") else key, peer)
+                    break
+                except ApiError:
+                    continue
+        merged.sort(key=lambda item: item.created_at or "")
+        self._local[canon] = merged
+        if merged:
+            self._shared_stamp = merged[-1].id
+        self._render_rows(merged, pin_bottom=pin_bottom)
+
+    def _set_avatar(self, name: str, *, peer_id: str = "") -> None:
         parts = [part for part in (name or "").split() if part]
         initials = "?"
         if len(parts) == 1:
             initials = parts[0][:1].upper()
         elif parts:
             initials = (parts[0][:1] + parts[1][:1]).upper()
+        self._avatar.setPixmap(QPixmap())
         self._avatar.setText(initials)
+        self._avatar_peer_id = peer_id
+        if not peer_id:
+            return
+        cached = peek_avatar(peer_id)
+        if cached is not None:
+            self._apply_header_avatar(cached)
+            return
+        Thread(target=self._fetch_header_avatar, args=(peer_id,), daemon=True).start()
+
+    def _fetch_header_avatar(self, peer_id: str) -> None:
+        try:
+            pixmap = load_peer_avatar(self._client, peer_id)
+        except Exception:
+            pixmap = QPixmap()
+        self._avatar_ready.emit(peer_id, pixmap)
+
+    def _on_avatar_ready(self, peer_id: str, pixmap: object) -> None:
+        if peer_id != getattr(self, "_avatar_peer_id", ""):
+            return
+        if isinstance(pixmap, QPixmap):
+            self._apply_header_avatar(pixmap)
+
+    def _apply_header_avatar(self, pixmap: QPixmap) -> None:
+        if pixmap.isNull():
+            return
+        self._avatar.setText("")
+        self._avatar.setPixmap(circular_pixmap(pixmap, 40))
 
     def _open_profile(self) -> None:
         thread = next((item for item in self._threads if item.id == self._current), None)
@@ -1091,6 +1317,7 @@ class ChatPage(QWidget):
         self._local.setdefault(thread_id, [])
         self._persist()
         if peer.id:
+            self._bind_ids(thread_id, peer.id)
             try:
                 self._api.command({"type": "open_dm", "peer_id": peer.id})
             except ApiError:
@@ -1184,7 +1411,9 @@ class ChatPage(QWidget):
         if not text and not files and not agent:
             return
         support = self._current in {"", _VIRTUAL_SUPPORT}
-        thread_id = _VIRTUAL_SUPPORT if support else self._current
+        raw_id = _VIRTUAL_SUPPORT if support else self._current
+        thread_id = raw_id if support else self._canon(raw_id)
+        peer_id = "" if support else (self._peer_for(thread_id) or self._peer_for(raw_id))
         client_id = uuid4().hex
         created_at = datetime.now(timezone.utc).isoformat()
         attachments_meta = self._describe_files(files)
@@ -1193,6 +1422,7 @@ class ChatPage(QWidget):
             "type": "send_message",
             "client_id": client_id,
             "thread_id": "" if support else thread_id,
+            "peer_id": peer_id,
             "kind": "support" if support else "",
             "text": encrypt_text(text),
             "file_ids": file_ids,
@@ -1227,9 +1457,9 @@ class ChatPage(QWidget):
         self._bubbles[client_id] = bubble
         self._feed.insertWidget(self._feed.count() - 1, bubble)
         self._scroll_to_bottom(force=True)
-        target = self._local_threads.get(thread_id)
+        target = self._local_threads.get(thread_id) or self._local_threads.get(raw_id)
         if target is None:
-            target = next((item for item in self._threads if item.id == thread_id), None)
+            target = next((item for item in self._threads if item.id in {thread_id, raw_id}), None)
             if target is not None:
                 self._local_threads[thread_id] = target
         if target is not None:
@@ -1237,9 +1467,13 @@ class ChatPage(QWidget):
             target.last_message_at = created_at
             target.unread = 0
             target.last_read_id = client_id
+            if peer_id:
+                target.peer_id = peer_id
         if not support and self._user is not None:
             optimistic.receipt = "delivered"
-            append_shared(self._user.id, thread_id, optimistic)
+            append_shared(self._user.id, peer_id or thread_id, optimistic)
+            if peer_id and peer_id != thread_id:
+                append_shared(self._user.id, thread_id, optimistic)
             self._set_receipt(client_id, "delivered")
             self._pending.pop(client_id, None)
             self._store_local(optimistic)

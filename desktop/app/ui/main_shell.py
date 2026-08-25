@@ -310,7 +310,11 @@ class MainShell(QWidget):
         self._deleted_workflow_ids: set[str] = set()
         self._pending_start_demo = False
 
-        self.sidebar = GlassSidebar(self, search_users=self._api.search_users)
+        self.sidebar = GlassSidebar(
+            self,
+            search_users=self._api.search_users,
+            fetch_avatar=self._fetch_peer_avatar,
+        )
         self.sidebar.page_changed.connect(self._on_page_changed)
         self.sidebar.collapse_toggled.connect(self._on_sidebar_collapse)
         self.sidebar.dialog_selected.connect(self._on_sidebar_dialog)
@@ -630,6 +634,11 @@ class MainShell(QWidget):
         if not self._notify_timer.isActive():
             self._notify_timer.start()
         QTimer.singleShot(0, self.refresh_notification_badge)
+
+    def _fetch_peer_avatar(self, peer_id: str) -> QPixmap:
+        from app.chat.avatars import load_peer_avatar
+
+        return load_peer_avatar(self._api, peer_id)
 
     def _load_avatar(self, user: UserProfile) -> None:
         if not user.avatar_url:

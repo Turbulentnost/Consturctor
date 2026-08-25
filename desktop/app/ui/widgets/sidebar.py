@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Thread
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
@@ -363,12 +364,21 @@ class SidebarSearch(QWidget):
 class ChatPeerItem(QWidget):
     clicked = Signal(str)
 
-    def __init__(self, thread_id: str, title: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        thread_id: str,
+        title: str,
+        *,
+        peer_id: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.thread_id = thread_id
+        self.peer_id = peer_id
         self._title = title
         self._short = short_fio(title) or title
         self._initials = _initials(title)
+        self._pixmap = QPixmap()
         self._active = False
         self._hover = False
         self._pressed = False
@@ -377,6 +387,10 @@ class ChatPeerItem(QWidget):
         self.setFixedHeight(NAV_ITEM_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setToolTip(title)
+
+    def set_pixmap(self, pixmap: QPixmap) -> None:
+        self._pixmap = circular_pixmap(pixmap, 28) if not pixmap.isNull() else QPixmap()
+        self.update()
 
     def set_active(self, active: bool) -> None:
         if self._active == active:
@@ -449,16 +463,22 @@ class ChatPeerItem(QWidget):
         avatar = 28
         cx = rect.center().x() if self._collapsed else rect.left() + 22
         cy = rect.center().y()
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(avatar_bg)
-        p.drawEllipse(int(cx - avatar / 2), int(cy - avatar / 2), avatar, avatar)
-        p.setPen(avatar_fg)
-        p.setFont(app_font(10, QFont.Weight.DemiBold))
-        p.drawText(
-            QRectF(cx - avatar / 2, cy - avatar / 2, avatar, avatar),
-            int(Qt.AlignmentFlag.AlignCenter),
-            self._initials,
-        )
+        left = int(cx - avatar / 2)
+        top = int(cy - avatar / 2)
+        if not self._pixmap.isNull():
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            p.drawPixmap(left, top, self._pixmap)
+        else:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(avatar_bg)
+            p.drawEllipse(left, top, avatar, avatar)
+            p.setPen(avatar_fg)
+            p.setFont(app_font(10, QFont.Weight.DemiBold))
+            p.drawText(
+                QRectF(left, top, avatar, avatar),
+                int(Qt.AlignmentFlag.AlignCenter),
+                self._initials,
+            )
         if not self._collapsed:
             p.setPen(text)
             p.setFont(app_font(13, QFont.Weight.Medium if not self._active else QFont.Weight.DemiBold))
@@ -476,14 +496,20 @@ class GlassSidebar(QWidget):
     dialog_selected = Signal(str)
     fio_search_chosen = Signal(str)
 
+    _avatar_ready = Signal(str, object)
+
     def __init__(
         self,
         parent: QWidget | None = None,
         *,
         search_users: Callable[[str], list[str]] | None = None,
+        fetch_avatar: Callable[[str], QPixmap] | None = None,
     ) -> None:
         super().__init__(parent)
         self._search_users = search_users or (lambda _query: [])
+        self._fetch_avatar = fetch_avatar
+        self._avatar_inflight: set[str] = set()
+        self._avatar_ready.connect(self._on_avatar_ready)
         self._items = [
             NavItem("create", "Создать", "plus"),
             NavItem("agents", "Мои агенты", "home"),
@@ -664,12 +690,47 @@ class GlassSidebar(QWidget):
                 widget.deleteLater()
         self._peer_items = {}
         for thread in threads:
-            peer = ChatPeerItem(thread.id, thread.title)
+            peer_id = thread.peer_id or ("" if thread.id.startswith("thr-") else thread.id)
+            peer = ChatPeerItem(thread.id, thread.title, peer_id=peer_id)
             peer.clicked.connect(self._on_peer_clicked)
             peer.set_collapsed(self._collapsed)
             peer.set_active(thread.id == self._active_dialog_id)
             self._peers_layout.insertWidget(self._peers_layout.count() - 1, peer)
             self._peer_items[thread.id] = peer
+            self._queue_avatar(peer_id)
+
+    def _queue_avatar(self, peer_id: str) -> None:
+        if not peer_id or self._fetch_avatar is None:
+            return
+        from app.chat.avatars import peek_avatar
+
+        cached = peek_avatar(peer_id)
+        if cached is not None:
+            self._apply_avatar(peer_id, cached)
+            return
+        if peer_id in self._avatar_inflight:
+            return
+        self._avatar_inflight.add(peer_id)
+        Thread(target=self._load_avatar_bg, args=(peer_id,), daemon=True).start()
+
+    def _load_avatar_bg(self, peer_id: str) -> None:
+        try:
+            pixmap = self._fetch_avatar(peer_id) if self._fetch_avatar is not None else QPixmap()
+        except Exception:
+            pixmap = QPixmap()
+        self._avatar_ready.emit(peer_id, pixmap)
+
+    def _on_avatar_ready(self, peer_id: str, pixmap: object) -> None:
+        self._avatar_inflight.discard(peer_id)
+        if isinstance(pixmap, QPixmap):
+            self._apply_avatar(peer_id, pixmap)
+
+    def _apply_avatar(self, peer_id: str, pixmap: QPixmap) -> None:
+        if pixmap.isNull():
+            return
+        for item in self._peer_items.values():
+            if item.peer_id == peer_id:
+                item.set_pixmap(pixmap)
 
     def _sync_peer_active(self) -> None:
         for thread_id, item in self._peer_items.items():
