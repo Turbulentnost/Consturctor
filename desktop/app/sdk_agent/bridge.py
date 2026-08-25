@@ -21,12 +21,12 @@ from app.sdk_agent.tool_adapter import (
 from app.tools import ToolHostError
 
 DEFAULT_SDK_MODEL = "grok-4.6"
-LARGE_TOOL_RESULT_BYTES = 1_200
-ALWAYS_ENVELOPE_LIST_MIN = 2
-EXTERNALIZED_SAMPLE_ITEMS = 8
+LARGE_TOOL_RESULT_BYTES = 6_000
+ENVELOPE_LIST_MIN = 50
 EXTERNALIZED_NEXT_STEP = (
     "Full JSON is in result_file relative to cwd. "
-    "Extract the fields you need with Cursor Read or by writing and running Python. "
+    "Open it with the built-in Read tool in pages (offset/limit) or search inside it; "
+    "do not load the whole file at once. "
     "Do not call the same Constructor tool again for this data."
 )
 
@@ -562,7 +562,6 @@ class CursorSdkBridge:
         rel_path = target.relative_to(base).as_posix()
         return {
             "summary": self._result_summary(result),
-            "sample": self._result_sample(result),
             "tool": tool,
             "result_file": rel_path,
             "result_bytes": raw_bytes,
@@ -575,7 +574,7 @@ class CursorSdkBridge:
         if raw_bytes > LARGE_TOOL_RESULT_BYTES:
             return True
         for value in result.values():
-            if isinstance(value, list) and len(value) >= ALWAYS_ENVELOPE_LIST_MIN:
+            if isinstance(value, list) and len(value) >= ENVELOPE_LIST_MIN:
                 return True
         return False
 
@@ -595,39 +594,6 @@ class CursorSdkBridge:
             elif isinstance(value, dict):
                 summary[f"{key}_keys"] = list(value.keys())[:20]
         return summary
-
-    @staticmethod
-    def _result_sample(result: dict[str, Any]) -> dict[str, Any]:
-        sample: dict[str, Any] = {}
-        for key, value in result.items():
-            if isinstance(value, list):
-                sample[key] = [
-                    CursorSdkBridge._shrink_sample_item(item)
-                    for item in value[:EXTERNALIZED_SAMPLE_ITEMS]
-                ]
-            elif isinstance(value, dict):
-                sample[key] = {
-                    inner_key: CursorSdkBridge._shrink_sample_item(inner)
-                    for inner_key, inner in list(value.items())[:12]
-                }
-            elif isinstance(value, str):
-                sample[key] = value[:500]
-            else:
-                sample[key] = value
-        return sample
-
-    @staticmethod
-    def _shrink_sample_item(value: Any) -> Any:
-        if isinstance(value, str):
-            return value[:240]
-        if isinstance(value, dict):
-            return {
-                key: CursorSdkBridge._shrink_sample_item(inner)
-                for key, inner in list(value.items())[:12]
-            }
-        if isinstance(value, list):
-            return [CursorSdkBridge._shrink_sample_item(item) for item in value[:4]]
-        return value
 
     @staticmethod
     def _parse_line(line: str) -> dict[str, Any]:

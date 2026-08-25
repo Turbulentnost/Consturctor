@@ -552,14 +552,14 @@ def test_bridge_externalizes_large_tool_result(tmp_path: Path) -> None:
     assert compact["summary"]["projects_count"] == 40
     assert compact["summary"]["total_projects"] == 251
     assert compact["next_step"]
-    assert len(compact["sample"]["projects"]) == 8
+    assert "sample" not in compact
     assert "preview" not in compact
     path = tmp_path / compact["result_file"]
     assert path.is_file()
     assert "big payload" in path.read_text(encoding="utf-8")
 
 
-def test_bridge_externalizes_list_payload_even_when_small(tmp_path: Path) -> None:
+def test_bridge_keeps_small_list_result_inline(tmp_path: Path) -> None:
     bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
     result = {
         "projects": [{"id": "1", "name": "A"}, {"id": "2", "name": "B"}],
@@ -571,10 +571,25 @@ def test_bridge_externalizes_list_payload_even_when_small(tmp_path: Path) -> Non
         result=result,
         cwd=str(tmp_path),
     )
+    assert compact == result
+    assert "result_file" not in compact
+    assert "next_step" not in compact
+
+
+def test_bridge_externalizes_long_list_even_when_items_tiny(tmp_path: Path) -> None:
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+    result = {"entities": [{"name": f"E{index}"} for index in range(60)]}
+    compact = bridge._externalize_large_result(
+        tool="onec.odata_catalog",
+        request_id="req-4",
+        result=result,
+        cwd=str(tmp_path),
+    )
     assert compact["externalized"] is True
     assert compact["result_file"]
     assert compact["next_step"]
-    assert compact["summary"]["projects_count"] == 2
+    assert compact["summary"]["entities_count"] == 60
+    assert "sample" not in compact
     assert (tmp_path / compact["result_file"]).is_file()
 
 

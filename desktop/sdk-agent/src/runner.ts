@@ -260,7 +260,27 @@ async function settleRun(run: {
 
 const MODEL_RESULT_CHARS = 8000;
 const MODEL_NEXT_STEP =
-  "If result_file is set, extract what you need from that file with Read or code. Do not recall the same Constructor tool for this data.";
+  "Full JSON is in result_file. Open it with the built-in Read tool in pages (offset/limit) or search inside it; do not load the whole file at once. Do not recall the same Constructor tool for this data.";
+
+function compactSummary(rec: Record<string, JsonValue>): Record<string, JsonValue> {
+  const summary: Record<string, JsonValue> = {};
+  const text = rec.summary;
+  if (typeof text === "string" && text.trim()) {
+    summary.summary = text.trim();
+  }
+  for (const [key, value] of Object.entries(rec)) {
+    if (value === null || typeof value === "number" || typeof value === "boolean") {
+      summary[key] = value;
+    } else if (typeof value === "string") {
+      summary[key] = value.slice(0, 500);
+    } else if (Array.isArray(value)) {
+      summary[`${key}_count`] = value.length;
+    } else if (value && typeof value === "object") {
+      summary[`${key}_keys`] = Object.keys(value).slice(0, 20);
+    }
+  }
+  return summary;
+}
 
 function modelView(result: JsonValue): JsonValue {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
@@ -269,27 +289,22 @@ function modelView(result: JsonValue): JsonValue {
   const rec = result as Record<string, JsonValue>;
   const resultFile =
     typeof rec.result_file === "string" && rec.result_file.trim() ? rec.result_file : null;
-  const raw = JSON.stringify(rec);
-  if (raw.length <= MODEL_RESULT_CHARS) {
-    if (!resultFile) {
-      return rec;
-    }
+  // The Python bridge already returns a minimal pointer for large results.
+  if (resultFile) {
     if (typeof rec.next_step === "string" && rec.next_step.trim()) {
       return rec;
     }
     return { ...rec, next_step: MODEL_NEXT_STEP };
   }
-  const projects = Array.isArray(rec.projects) ? rec.projects.slice(0, 2) : undefined;
+  const raw = JSON.stringify(rec);
+  if (raw.length <= MODEL_RESULT_CHARS) {
+    return rec;
+  }
+  // Oversized but no result_file was written: fall back to a compact summary.
   return {
-    summary: rec.summary || "Result truncated for the model",
-    total_projects: rec.total_projects ?? null,
-    projects_with_1c_count: rec.projects_with_1c_count ?? null,
-    sample: projects,
-    externalized: Boolean(rec.externalized && resultFile),
-    result_file: resultFile,
-    next_step: resultFile
-      ? MODEL_NEXT_STEP
-      : "Result was truncated and no result_file was written. Use summary and sample; do not invent a file.",
+    ...compactSummary(rec),
+    next_step:
+      "Result was too large and no result_file was written. Use this summary; do not invent a file.",
   };
 }
 
