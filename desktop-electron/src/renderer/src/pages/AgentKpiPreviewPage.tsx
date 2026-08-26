@@ -1,0 +1,232 @@
+import { useEffect, useRef, useState } from 'react'
+import { api, kpiFromRecord } from '../api/client'
+import type { AgentKpi, KpiSide, KpiTile, ScheduleDraft } from '../api/types'
+import { triggerChipLabel } from './AgentSchedulePage'
+
+interface AgentKpiPreviewPageProps {
+  workflowId: string
+  title: string
+  draft: ScheduleDraft
+  onBack: () => void
+  onPublished: (workflowId: string, title: string) => void
+}
+
+function formatKpiValue(side: KpiSide | null | undefined): string {
+  if (!side || side.value === null || side.value === undefined || side.value === '') return '—'
+  const unit = side.unit ? ` ${side.unit}` : ''
+  return `${side.value}${unit}`
+}
+
+function tileStatusClass(tile: KpiTile): string {
+  const color = (tile.color || '').toLowerCase()
+  if (color.includes('green')) return 'green'
+  if (color.includes('yellow')) return 'yellow'
+  if (color.includes('red')) return 'red'
+  if (tile.scorePercent === null || tile.scorePercent === undefined) return 'muted'
+  const green = tile.method?.greenMin ?? 90
+  const yellow = tile.method?.yellowMin ?? 70
+  if (tile.scorePercent >= green) return 'green'
+  if (tile.scorePercent >= yellow) return 'yellow'
+  return 'red'
+}
+
+function frequencyLabel(tile: KpiTile): string {
+  const seconds = tile.method?.schedule?.intervalSeconds ?? 0
+  if (!seconds) return 'Обновляется после запусков'
+  if (seconds % 86400 === 0) {
+    const d = seconds / 86400
+    return d === 1 ? 'Обновляется раз в день' : `Обновляется раз в ${d} дн.`
+  }
+  if (seconds % 3600 === 0) {
+    const h = seconds / 3600
+    return h === 1 ? 'Обновляется раз в час' : `Обновляется раз в ${h} ч`
+  }
+  const m = Math.round(seconds / 60)
+  return `Обновляется раз в ${m} мин`
+}
+
+function KpiPreviewTile({ tile }: { tile: KpiTile }): React.JSX.Element {
+  const [flipped, setFlipped] = useState(false)
+  const status = tileStatusClass(tile)
+  const scoreText =
+    tile.scorePercent === null || tile.scorePercent === undefined
+      ? 'KPI'
+      : `${Math.round(tile.scorePercent)}% KPI`
+
+  return (
+    <div
+      className={`kpi-tile status-${status}`}
+      onClick={() => setFlipped((v) => !v)}
+      role="button"
+    >
+      {!flipped ? (
+        <>
+          <div className="kpi-tile-name">{tile.name || 'KPI'}</div>
+          <div className="kpi-tile-freq">{frequencyLabel(tile)}</div>
+          <div className="kpi-tile-fact">{formatKpiValue(tile.fact)}</div>
+          <div className="kpi-tile-badge">{scoreText}</div>
+          <div className="kpi-tile-plan">
+            <span>План</span>
+            <strong>{formatKpiValue(tile.plan)}</strong>
+          </div>
+          {tile.plan.description && <div className="kpi-tile-desc">{tile.plan.description}</div>}
+        </>
+      ) : (
+        <div className="kpi-tile-back">
+          <div className="kpi-tile-name">Как считается</div>
+          {tile.method?.planExplanation && (
+            <p>
+              <b>План.</b> {tile.method.planExplanation}
+            </p>
+          )}
+          {tile.method?.factExplanation && (
+            <p>
+              <b>Факт.</b> {tile.method.factExplanation}
+            </p>
+          )}
+          {tile.method?.scoreExplanation && (
+            <p>
+              <b>Оценка.</b> {tile.method.scoreExplanation}
+            </p>
+          )}
+          {!tile.method?.planExplanation &&
+            !tile.method?.factExplanation &&
+            !tile.method?.scoreExplanation && <p>{tile.plan.description || 'Расчёт по фактам запусков.'}</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function AgentKpiPreviewPage({
+  workflowId,
+  title,
+  draft,
+  onBack,
+  onPublished
+}: AgentKpiPreviewPageProps): React.JSX.Element {
+  const [kpi, setKpi] = useState<AgentKpi | null>(null)
+  const [loadingKpi, setLoadingKpi] = useState(true)
+  const [statusText, setStatusText] = useState('Куратор собирает KPI…')
+  const [publishing, setPublishing] = useState(false)
+  const [error, setError] = useState('')
+  const kpiStartedRef = useRef(false)
+
+  useEffect(() => {
+    if (kpiStartedRef.current) return
+    kpiStartedRef.current = true
+    let alive = true
+    void api
+      .streamGenerateWorkflowKpi(workflowId, (event) => {
+        if (!alive) return
+        const text = event.text || event.message || ''
+        if (text && (event.type === 'assistant' || event.type === 'thinking' || event.type === 'status')) {
+          setStatusText(text.slice(0, 120))
+        }
+      })
+      .then(async (record) => {
+        if (!alive) return
+        let parsed = kpiFromRecord(record)
+        if (!parsed || parsed.tiles.length === 0) {
+          try {
+            parsed = await api.getWorkflowKpi(workflowId)
+          } catch {
+            /* ignore */
+          }
+        }
+        if (alive) setKpi(parsed)
+      })
+      .catch(() => {
+        if (alive) setError('Не удалось сформировать KPI, можно опубликовать без него.')
+      })
+      .finally(() => {
+        if (alive) setLoadingKpi(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [workflowId])
+
+  const publish = async (): Promise<void> => {
+    setPublishing(true)
+    setError('')
+    try {
+      await api.confirmWorkflowKpi(workflowId)
+      for (const spec of draft.triggers) {
+        await api.createTriggerFromSpec(workflowId, spec)
+      }
+      onPublished(workflowId, draft.name || title)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось опубликовать агента')
+    } finally {
+      setPublishing(false)
+    }
+  }
+
+  const triggerText =
+    draft.triggers.length === 0
+      ? 'Только вручную из чата'
+      : draft.triggers.map((t) => triggerChipLabel(t)).join(', ')
+
+  return (
+    <div className="agent-studio">
+      <div className="agent-studio-head">
+        <button className="btn-ghost" onClick={onBack}>
+          Назад
+        </button>
+        <div className="studio-titles">
+          <h2>KPI агента</h2>
+          <p>План — как агент должен работать. Факт — что произошло после запусков.</p>
+        </div>
+      </div>
+
+      <div className="agent-studio-body">
+        <div className="agent-studio-main" style={{ padding: 20, overflowY: 'auto' }}>
+          <div className="passport-card" style={{ marginBottom: 14 }}>
+            <div className="kpi-agent-name">{draft.name || title}</div>
+            {draft.goal && <div className="kpi-agent-goal">{draft.goal}</div>}
+            <div className="kpi-agent-schedule">
+              <span className="kpi-agent-schedule-label">Расписание:</span> {triggerText}
+            </div>
+          </div>
+
+          <h4 className="kpi-section-title">KPI и ожидаемый результат</h4>
+
+          {loadingKpi && (
+            <div className="feed-system" style={{ marginBottom: 14 }}>
+              <span className="kpi-busy-dot" /> {statusText}
+            </div>
+          )}
+
+          {kpi?.summary && <p className="kpi-summary">{kpi.summary}</p>}
+
+          {kpi && kpi.tiles.length > 0 ? (
+            <div className="kpi-preview-grid">
+              {kpi.tiles.map((tile) => (
+                <KpiPreviewTile key={tile.id || tile.name} tile={tile} />
+              ))}
+            </div>
+          ) : (
+            !loadingKpi && (
+              <p className="kpi-empty-note">
+                KPI будут уточнены после первых запусков. Агента можно опубликовать сейчас.
+              </p>
+            )
+          )}
+
+          {error && (
+            <div className="feed-system error" style={{ margin: '14px 0' }}>
+              {error}
+            </div>
+          )}
+
+          <div className="feed-clarify-actions" style={{ marginTop: 16 }}>
+            <button className="btn-primary" disabled={publishing || loadingKpi} onClick={publish}>
+              {publishing ? 'Публикуем…' : 'Опубликовать агента'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -49,3 +49,10 @@ backend/storage/
 # Desktop packaging artifacts (rebuild via build_exe.bat / installer/build_installer.bat)
 desktop/installer/payload/
 *.exe
+
+# Electron desktop (rebuild via npm run build)
+desktop-electron/node_modules/
+desktop-electron/out/
+desktop-electron/release/
+desktop-electron/dist/
+*.tsbuildinfo

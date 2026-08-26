@@ -68,6 +68,90 @@ function stringFrom(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function recordFrom(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function requestIdFrom(value: unknown): string {
+  const rec = recordFrom(value);
+  return (
+    stringFrom(rec.call_id) ||
+    stringFrom(rec.callId) ||
+    stringFrom(rec.toolCallId) ||
+    stringFrom(rec.requestId) ||
+    stringFrom(rec.id)
+  );
+}
+
+function toolNameFrom(value: unknown, fallback = ""): string {
+  const rec = recordFrom(value);
+  const direct = stringFrom(rec.name) || stringFrom(rec.type) || fallback;
+  const args = recordFrom(rec.args || rec.arguments);
+  if (direct.toLowerCase() === "mcp") {
+    const inner = stringFrom(args.toolName) || stringFrom(args.tool) || stringFrom(args.name);
+    if (inner) return inner;
+  }
+  return direct;
+}
+
+function emitSdkToolCall(event: Record<string, unknown>, extra: Record<string, unknown> = {}): void {
+  const args = recordFrom(event.args || event.arguments);
+  const provider = stringFrom(args.providerIdentifier);
+  const rawName = stringFrom(event.name) || stringFrom(event.type);
+  if (rawName.toLowerCase() === "mcp" && provider === "custom-user-tools") {
+    return;
+  }
+  emit({
+    type: "tool_call",
+    tool: toolNameFrom(event, rawName),
+    status: stringFrom(event.status) || "running",
+    requestId: requestIdFrom(event),
+    arguments: args,
+    result: event.result,
+    ...extra,
+  });
+}
+
+function emitNestedTask(parentId: string, nested: unknown): void {
+  const update = recordFrom(nested);
+  const kind = stringFrom(update.type);
+  if (kind === "thinking-delta" || kind === "text-delta") {
+    const text = stringFrom(update.text);
+    if (!text) return;
+    emit({ type: "task", requestId: parentId, status: "running", text });
+    return;
+  }
+  if (kind !== "tool-call-started" && kind !== "partial-tool-call" && kind !== "tool-call-completed") {
+    return;
+  }
+  const toolCall = recordFrom(update.toolCall);
+  const args = recordFrom(toolCall.args || toolCall.arguments);
+  const name = toolNameFrom(toolCall, stringFrom(toolCall.type));
+  const childId = requestIdFrom(update) || requestIdFrom(toolCall);
+  const completed = kind === "tool-call-completed";
+  if (childId && childId !== parentId) {
+    emit({
+      type: "tool_call",
+      tool: name || "task",
+      status: completed ? stringFrom(update.status) || "completed" : "running",
+      requestId: childId,
+      parentId,
+      arguments: args,
+      result: toolCall.result ?? update.result,
+    });
+  }
+  if (name) {
+    emit({
+      type: "task",
+      requestId: parentId,
+      status: "running",
+      text: completed ? `\nГотово: ${name}` : `\nВыполняется: ${name}`,
+    });
+  }
+}
+
 const ASK_QUESTION_SCHEMA: Record<string, JsonValue> = {
   type: "object",
   properties: {
@@ -337,6 +421,48 @@ function isActiveRunError(error: unknown): boolean {
   return message.includes("already has active run") || message.includes("agentbusy");
 }
 
+/**
+ * The local SDK persists agent/session state in a shared SQLite database.
+ * When several agent runs touch it at the same time one of them can fail with
+ * "database is locked" (SQLITE_BUSY). It is transient contention, not a hard
+ * one-at-a-time limit, so a few retries with backoff let parallel runs proceed.
+ */
+function isDatabaseLockedError(error: unknown): boolean {
+  const message = safeError(error).toLowerCase();
+  return (
+    message.includes("database is locked") ||
+    message.includes("database table is locked") ||
+    message.includes("sqlite_busy")
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withDbLockRetry<T>(
+  op: () => Promise<T>,
+  label: string,
+  attempts = 5,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await op();
+    } catch (error) {
+      if (!isDatabaseLockedError(error) || attempt === attempts) throw error;
+      lastError = error;
+      const backoff = Math.min(200 * 2 ** (attempt - 1), 2000);
+      emit({
+        type: "status",
+        text: `Локальная база SDK занята, повтор ${attempt}/${attempts - 1} (${label})...`,
+      });
+      await delay(backoff);
+    }
+  }
+  throw lastError;
+}
+
 async function runAgent(command: RunCommand): Promise<void> {
   const id = command.id || randomUUID();
   const model = command.model || process.env.CURSOR_SDK_MODEL || "grok-4.6";
@@ -378,9 +504,13 @@ async function runAgent(command: RunCommand): Promise<void> {
         settingSources: [],
       },
     };
-    agent = command.resumeAgentId
-      ? await Agent.resume(command.resumeAgentId, agentOptions as never)
-      : await Agent.create(agentOptions as never);
+    agent = await withDbLockRetry(
+      () =>
+        command.resumeAgentId
+          ? Agent.resume(command.resumeAgentId as string, agentOptions as never)
+          : Agent.create(agentOptions as never),
+      command.resumeAgentId ? "resume" : "create",
+    );
     const agentId = readAgentId(agent, command.resumeAgentId || "");
     emit({ type: "agent", id, agentId, resumed: Boolean(command.resumeAgentId) });
     const sendOptions = {
@@ -388,21 +518,25 @@ async function runAgent(command: RunCommand): Promise<void> {
         force: true,
         customTools: customTools as never,
       },
+      onDelta: (payload: { update?: Record<string, unknown> }) => {
+        const update = recordFrom(payload?.update);
+        if (stringFrom(update.type) !== "tool-call-delta") return;
+        const parentId = requestIdFrom(update);
+        if (!parentId) return;
+        emitNestedTask(parentId, update.taskUpdate);
+      },
     };
+    const sendOnce = () =>
+      (agent as NonNullable<typeof agent>).send(command.prompt, sendOptions as never);
     let run;
     try {
-      run = await agent.send(command.prompt, sendOptions);
+      run = await withDbLockRetry(sendOnce, "send");
     } catch (error) {
       if (!command.resumeAgentId || !isActiveRunError(error)) {
         throw error;
       }
       emit({ type: "status", text: "Закрываю предыдущий запуск того же агента..." });
-      run = await agent.send(command.prompt, {
-        local: {
-          force: true,
-          customTools: customTools as never,
-        },
-      });
+      run = await withDbLockRetry(sendOnce, "send");
     }
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
     const finishIfReady = async (draft: string): Promise<boolean> => {
@@ -418,7 +552,7 @@ async function runAgent(command: RunCommand): Promise<void> {
       emit({ type: "final", id, status: "ok", answer: draft });
       emit({ type: "done", id, status: "ok", answer: draft });
       await settleRun(run);
-      await agent.close();
+      await (agent as NonNullable<typeof agent>).close();
       return true;
     };
     for await (const event of run.stream()) {
@@ -435,19 +569,14 @@ async function runAgent(command: RunCommand): Promise<void> {
         emit({ type: "thinking", text: event.text });
         if ((await finishIfReady(thought)) || (await finishIfReady(answer))) return;
       } else if (event.type === "tool_call") {
-        const args = event.args && typeof event.args === "object" && !Array.isArray(event.args)
-          ? event.args as Record<string, unknown>
-          : {};
-        const provider = String(args.providerIdentifier || "");
-        if (String(event.name || "") === "mcp" && provider === "custom-user-tools") {
-          continue;
-        }
+        emitSdkToolCall(event as unknown as Record<string, unknown>);
+      } else if (event.type === "task") {
+        const rec = event as { status?: string; text?: string };
         emit({
-          type: "tool_call",
-          tool: event.name,
-          status: event.status,
-          arguments: args,
-          result: event.result,
+          type: "task",
+          requestId: requestIdFrom(event),
+          status: rec.status || "running",
+          text: rec.text || "",
         });
       } else if (event.type === "system") {
         const listed = Array.isArray(event.tools) ? event.tools.filter(Boolean) : [];

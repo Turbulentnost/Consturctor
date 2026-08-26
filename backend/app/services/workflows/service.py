@@ -19,6 +19,8 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
+from app.models.regulation import AgentDraft
+from app.services.agent_draft_files import copy_draft_files_to_workflow
 from app.schemas.workflow import (
     ArtifactItem,
     ArtifactsDownloadResult,
@@ -132,6 +134,7 @@ def create_workflow(
     user_id: str,
     notes: str,
     files: list[tuple[str, bytes]],
+    draft_id: str = "",
 ) -> WorkflowSchema:
     workflow_id = str(uuid4())
     storage_dir = _workflow_dir(workflow_id)
@@ -193,6 +196,14 @@ def create_workflow(
         scope="knowledge",
         origin="initial_upload",
     )
+    if draft_id:
+        draft = (
+            db.query(AgentDraft)
+            .filter(AgentDraft.id == draft_id, AgentDraft.user_id == user_id)
+            .first()
+        )
+        if draft is not None:
+            copy_draft_files_to_workflow(db, draft=draft, workflow=row)
     db.commit()
     db.refresh(row)
     return _to_schema(row)
@@ -1512,6 +1523,38 @@ def get_agent_kpi(db: Session, *, user_id: str, workflow_id: str):
     else:
         kpi = agent_kpi.build_kpi_record(None, title=title, goal=goal, schedule=draft, status="draft")
     return agent_kpi.kpi_to_schema(kpi, workflow_id=workflow_id, title=title)
+
+
+def recalculate_agent_kpi(db: Session, *, user_id: str, workflow_id: str):
+    """Force a KPI fact recalc for all tiles of this agent."""
+    from app.services import agent_kpi
+    from app.services.workflows.kpi_calc import calculate_workflow_kpi
+
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    plan = WorkflowPlan.from_dict(row.plan_json or {})
+    local = dict(row.local_run or {})
+    draft = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+    stored = local.get("kpi") if isinstance(local.get("kpi"), dict) else None
+    if not stored or not (stored.get("tiles") or []):
+        stored = agent_kpi.build_kpi_record(
+            None,
+            title=str(draft.get("name") or row.title or plan.title or ""),
+            goal=str(draft.get("goal") or plan.goal or ""),
+            schedule=draft,
+            status="draft",
+        )
+        local["kpi"] = stored
+        row.local_run = local
+        db.commit()
+    tile_ids = [
+        str(item.get("id") or "")
+        for item in (stored.get("tiles") or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
+    if not tile_ids:
+        raise WorkflowError("У агента нет KPI для пересчёта")
+    calculate_workflow_kpi(db, row, tile_ids)
+    return get_agent_kpi(db, user_id=user_id, workflow_id=workflow_id)
 
 
 def confirm_agent_kpi(db: Session, *, user_id: str, workflow_id: str) -> WorkflowSchema:

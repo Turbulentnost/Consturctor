@@ -74,6 +74,21 @@ class RegulationFragmentContext(BaseModel):
     nextText: str = ""
 
 
+class FragmentEntityTag(BaseModel):
+    entityId: str
+    kind: Literal["role", "process"]
+    title: str
+    shortTitle: str = ""
+
+
+class RegulationEntityLegendItem(BaseModel):
+    entityId: str
+    kind: Literal["role", "process"]
+    title: str
+    shortTitle: str = ""
+    fragmentIds: list[str] = Field(default_factory=list)
+
+
 class RegulationFragment(BaseModel):
     fragmentId: str
     page: int
@@ -96,6 +111,7 @@ class RegulationFragment(BaseModel):
     contentHash: str = ""
     context: RegulationFragmentContext | None = None
     ocrConfidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    entities: list[FragmentEntityTag] = Field(default_factory=list)
 
 
 class RegulationParseResult(BaseModel):
@@ -109,6 +125,7 @@ class RegulationParseResult(BaseModel):
     sections: list[str] = Field(default_factory=list)
     sectionTree: list[DocumentSection] = Field(default_factory=list)
     fragments: list[RegulationFragment] = Field(default_factory=list)
+    entityLegend: list[RegulationEntityLegendItem] = Field(default_factory=list)
     createdAt: datetime | None = None
 
 
@@ -582,6 +599,29 @@ class AgentDraftListResult(BaseModel):
 
 class AgentDraftStatusRequest(BaseModel):
     status: AgentDraftStatus
+
+
+class AgentDraftFileItem(BaseModel):
+    fileId: str
+    draftId: str
+    functionId: str = ""
+    filename: str
+    mimeType: str = ""
+    kind: str = "text"
+    size: int = 0
+    sha256: str = ""
+    summary: str = ""
+    textPreview: str = ""
+    createdAt: datetime | None = None
+
+
+class AgentDraftFilesResponse(BaseModel):
+    files: list[AgentDraftFileItem] = Field(default_factory=list)
+
+
+class AgentDraftSdkReadinessRequest(BaseModel):
+    answer: str = ""
+    events: list[dict] = Field(default_factory=list)
 
 
 class QuestionChatMessageResult(BaseModel):

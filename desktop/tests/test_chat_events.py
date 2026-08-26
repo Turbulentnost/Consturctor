@@ -228,6 +228,14 @@ def test_shared_bus_roundtrip(tmp_path, monkeypatch) -> None:
     assert TEST_USER_FIO
 
 
+def test_dialog_ids_match_peer_and_server() -> None:
+    from app.ui.widgets.sidebar import dialog_ids_match
+
+    assert dialog_ids_match("thr-1", "user-1", "user-1")
+    assert dialog_ids_match("user-1", "", "thr-1", "user-1")
+    assert not dialog_ids_match("thr-1", "user-1", "thr-2", "user-2")
+
+
 def test_short_fio_uses_last_name_and_initials() -> None:
     from app.ui.widgets.sidebar import short_fio
 

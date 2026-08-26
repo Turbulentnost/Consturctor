@@ -27,6 +27,7 @@ from app.schemas.workflow import (
     ExecuteRequest,
     LocalRunUpdate,
     LocalDemoFinish,
+    PlatformFilesResponse,
     WorkflowBoard,
     WorkflowFilesResponse,
     WorkflowHealth,
@@ -57,6 +58,7 @@ from app.services.workflows import (
     finish_local_demo_workflow,
     generate_agent_kpi,
     get_agent_kpi,
+    recalculate_agent_kpi,
     get_workflow,
     list_artifacts_for_workflow,
     list_workflows,
@@ -75,6 +77,7 @@ from app.services.workflow_files import (
     delete_workflow_file,
     ensure_workflow_files_table,
     get_workflow_file,
+    list_user_platform_files,
     list_workflow_files,
     register_agent_files,
 )
@@ -319,6 +322,14 @@ async def read_workflow_board(
     )
 
 
+@router.get("/files", response_model=PlatformFilesResponse)
+async def read_platform_files(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PlatformFilesResponse:
+    return list_user_platform_files(db, user_id=auth.user_id)
+
+
 @router.post("/{workflow_id}/agent-runs/stream")
 async def run_workflow_agent_stream(
     workflow_id: str,
@@ -367,6 +378,7 @@ async def submit_agent_tool_result(
 @router.post("", response_model=WorkflowSchema)
 async def create_workflow_endpoint(
     notes: str = Form(default=""),
+    draftId: str = Form(default=""),
     files: list[UploadFile] = File(default=[]),
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -376,7 +388,13 @@ async def create_workflow_endpoint(
         raw = await upload.read()
         payloads.append((upload.filename or "file", raw))
     try:
-        return create_workflow(db, user_id=auth.user_id, notes=notes, files=payloads)
+        return create_workflow(
+            db,
+            user_id=auth.user_id,
+            notes=notes,
+            files=payloads,
+            draft_id=draftId,
+        )
     except WorkflowError as exc:
         _raise(exc)
         raise  # pragma: no cover
@@ -998,6 +1016,19 @@ async def read_workflow_kpi(
 ) -> AgentKpiSchema:
     try:
         return get_agent_kpi(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/kpi/calculate", response_model=AgentKpiSchema)
+async def calculate_workflow_kpi_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentKpiSchema:
+    try:
+        return recalculate_agent_kpi(db, user_id=auth.user_id, workflow_id=workflow_id)
     except WorkflowError as exc:
         _raise(exc)
         raise

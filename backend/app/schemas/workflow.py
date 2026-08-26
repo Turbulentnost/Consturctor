@@ -78,6 +78,14 @@ class WorkflowFilesResponse(BaseModel):
     agent_files: list[WorkflowFileSchema] = Field(default_factory=list)
 
 
+class PlatformFileSchema(WorkflowFileSchema):
+    agent_title: str = ""
+
+
+class PlatformFilesResponse(BaseModel):
+    files: list[PlatformFileSchema] = Field(default_factory=list)
+
+
 class WorkflowSchema(BaseModel):
     id: str
     title: str

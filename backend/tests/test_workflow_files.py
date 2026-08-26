@@ -9,6 +9,7 @@ from app.models.workflow import Workflow
 from app.services.workflow_files import (
     add_user_files_to_workflow,
     get_workflow_file,
+    list_user_platform_files,
     list_workflow_files,
     register_agent_files,
 )
@@ -85,3 +86,38 @@ def test_add_user_file_refreshes_document_text_without_autoflush() -> None:
 
     assert "important context" in workflow.document_text
     assert workflow.attachments_meta
+
+
+def test_list_user_platform_files_returns_agent_title_without_other_users() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    db.add(AppUser(id="user-2", fio="Другой"))
+    own = Workflow(id="wf-1", user_id="user-1", title="Контроль сроков", phase="done")
+    other = Workflow(id="wf-2", user_id="user-2", title="Чужой агент", phase="done")
+    deleted = Workflow(id="wf-3", user_id="user-1", title="Удалён", phase="deleted")
+    db.add_all([own, other, deleted])
+    db.commit()
+    add_user_files_to_workflow(
+        db,
+        row=own,
+        files=[("plan.txt", b"plan")],
+        origin="user_upload",
+    )
+    add_user_files_to_workflow(
+        db,
+        row=other,
+        files=[("secret.txt", b"no")],
+        origin="user_upload",
+    )
+    add_user_files_to_workflow(
+        db,
+        row=deleted,
+        files=[("gone.txt", b"gone")],
+        origin="user_upload",
+    )
+    db.commit()
+
+    payload = list_user_platform_files(db, user_id="user-1")
+    assert [item.filename for item in payload.files] == ["plan.txt"]
+    assert payload.files[0].agent_title == "Контроль сроков"
+    assert payload.files[0].workflow_id == "wf-1"

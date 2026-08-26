@@ -6,6 +6,7 @@ from app.services.regulation.document_structure import (
     prepare_blocks,
     section_nodes_to_dicts,
 )
+from app.services.regulation.entity_tags import annotate_entities, filter_display_noise
 from app.services.regulation.quality import recognition_quality
 from app.services.regulation.types import ExtractedDocument
 
@@ -71,7 +72,14 @@ def build_result(
             )
         )
 
-    table_count = sum(1 for block in blocks if block.block_type == "table")
+    fragments = filter_display_noise(fragments)
+    fragments, entity_legend = annotate_entities(fragments)
+    sections = [
+        section
+        for section in sections
+        if section and "...." not in section
+    ]
+    table_count = sum(1 for fragment in fragments if fragment.blockType == "table")
     return RegulationParseResult(
         regulationId=regulation_id,
         fileName=filename,
@@ -83,6 +91,7 @@ def build_result(
         sections=sections,
         sectionTree=section_nodes_to_dicts(section_tree),
         fragments=fragments,
+        entityLegend=entity_legend,
     )
 
 

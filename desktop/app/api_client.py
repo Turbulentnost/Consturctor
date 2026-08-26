@@ -430,6 +430,7 @@ class WorkflowFileItem:
     text_preview: str = ""
     created_at: str = ""
     updated_at: str = ""
+    agent_title: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -897,6 +898,7 @@ def _parse_workflow_file_item(raw: object) -> WorkflowFileItem:
         text_preview=str(data.get("text_preview") or ""),
         created_at=str(data.get("created_at") or ""),
         updated_at=str(data.get("updated_at") or ""),
+        agent_title=str(data.get("agent_title") or ""),
     )
 
 
@@ -1408,6 +1410,21 @@ class ApiClient:
             f"/api/v1/agents/drafts/{draft_id}/status",
             json={"status": status},
             timeout=max(self._timeout, 60.0),
+        )
+        return self._parse_agent_draft(data)
+
+    def finish_sdk_readiness(
+        self,
+        draft_id: str,
+        *,
+        answer: str,
+        events: list[dict] | None = None,
+    ) -> AgentDraft:
+        data = self._request(
+            "POST",
+            f"/api/v1/agents/drafts/{draft_id}/sdk-readiness",
+            json={"answer": answer, "events": events or []},
+            timeout=max(self._timeout, 120.0),
         )
         return self._parse_agent_draft(data)
 
@@ -2508,6 +2525,11 @@ class ApiClient:
         except zipfile.BadZipFile as exc:
             raise ApiError("Backend вернул некорректный zip артефактов") from exc
         return ArtifactsDownloadResult(dest_dir=str(dest), files=extracted)
+
+    def list_platform_files(self) -> list[WorkflowFileItem]:
+        data = self._request("GET", "/api/v1/workflows/files", timeout=20.0)
+        raw = data.get("files") if isinstance(data, dict) else []
+        return [_parse_workflow_file_item(item) for item in raw if isinstance(item, dict)]
 
     def list_workflow_files(self, workflow_id: str, *, run_id: str = "") -> WorkflowFiles:
         params = {"run_id": run_id} if run_id else None

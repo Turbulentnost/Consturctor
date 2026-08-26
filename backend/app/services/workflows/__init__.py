@@ -14,6 +14,7 @@ __all__ = [
     "playbook_of",
     "generate_agent_kpi",
     "get_agent_kpi",
+    "recalculate_agent_kpi",
     "get_workflow",
     "list_artifacts_for_workflow",
     "list_workflows",

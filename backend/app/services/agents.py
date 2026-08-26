@@ -11,6 +11,7 @@ from app.schemas.regulation import (
     AgentDraftListResult,
     AgentSuggestion,
     AgentSuggestionListResult,
+    AgentDraftSdkReadinessRequest,
     AgentDraftStatusRequest,
     AgentDraftSummary,
     AgentReadinessResult,
@@ -137,6 +138,31 @@ def update_draft_status(
     draft.status = request.status
     if request.status == "ready":
         draft.result_json = _ensure_agent_suggestions(db, draft)
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return _draft_detail(db, draft)
+
+
+def finish_sdk_readiness(
+    db: Session,
+    *,
+    user_id: str,
+    draft_id: str,
+    request: AgentDraftSdkReadinessRequest,
+) -> AgentDraftDetail:
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    data = _ensure_agent_suggestions(db, draft)
+    data = {
+        **data,
+        "sdkReadiness": {
+            "answer": request.answer,
+            "events": request.events,
+        },
+    }
+    draft.result_json = data
+    draft.status = "ready"
+    draft.progress = 100
     db.add(draft)
     db.commit()
     db.refresh(draft)
