@@ -821,6 +821,39 @@ export class ApiClient {
     return parseCreationSession(data)
   }
 
+  async streamRegulationCreationMessage(
+    draftId: string,
+    message: string,
+    filePaths: string[],
+    onEvent: (event: StreamEvent) => void
+  ): Promise<RegulationCreationSession> {
+    const unsubscribe = window.api.onStreamEvent((payload) => {
+      const type = String(payload.type || '')
+      if (type === 'session') return
+      onEvent({
+        type,
+        text: String(payload.text || payload.message || ''),
+        message: String(payload.message || ''),
+        tool: String(payload.tool || '')
+      })
+    })
+    try {
+      const hasFiles = Array.isArray(filePaths) && filePaths.length > 0
+      const res = await window.api.stream<Record<string, unknown>>({
+        method: 'POST',
+        path: `/api/v1/regulation-creation/sessions/${draftId}/messages/stream`,
+        body: hasFiles ? undefined : { message },
+        filePaths: hasFiles ? filePaths : undefined,
+        extraFields: hasFiles ? { message } : undefined,
+        token: this.token
+      })
+      if (!res.ok) throw new ApiError(res.error || 'Ошибка потока регламента', res.status)
+      return parseCreationSession(res.data ?? {})
+    } finally {
+      unsubscribe()
+    }
+  }
+
   async terminateRegulationCreationSessions(): Promise<void> {
     try {
       await this.request('POST', '/api/v1/regulation-creation/sessions/terminate-active', {

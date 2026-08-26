@@ -47,6 +47,8 @@ const api = {
     path: string
     body?: unknown
     token?: string | null
+    filePaths?: string[]
+    extraFields?: Record<string, string>
   }): Promise<ApiResponse<T>> => ipcRenderer.invoke('api:stream', opts),
   onStreamEvent: (callback: (payload: Record<string, unknown>) => void): (() => void) => {
     const listener = (_event: unknown, payload: Record<string, unknown>): void => {

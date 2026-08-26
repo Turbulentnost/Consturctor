@@ -349,12 +349,33 @@ async function handleCreateWorkflow(
 
 async function handleStream(
   event: Electron.IpcMainInvokeEvent,
-  opts: { method?: string; path: string; body?: unknown; token?: string | null }
+  opts: {
+    method?: string
+    path: string
+    body?: unknown
+    token?: string | null
+    filePaths?: string[]
+    extraFields?: Record<string, string>
+  }
 ) {
   const headers: Record<string, string> = { Accept: 'text/event-stream' }
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
-  let bodyInit: string | undefined
-  if (opts.body !== undefined && opts.body !== null) {
+  let bodyInit: string | FormData | undefined
+  if (Array.isArray(opts.filePaths) && opts.filePaths.length > 0) {
+    const form = new FormData()
+    for (const [key, value] of Object.entries(opts.extraFields || {})) {
+      form.append(key, value)
+    }
+    for (const filePath of opts.filePaths) {
+      if (!existsSync(filePath)) continue
+      const buffer = readFileSync(filePath)
+      const name = basename(filePath)
+      const mime = MIME_BY_EXT[extname(filePath).toLowerCase()] || 'application/octet-stream'
+      const blob = new Blob([new Uint8Array(buffer)], { type: mime })
+      form.append('files', blob, name)
+    }
+    bodyInit = form
+  } else if (opts.body !== undefined && opts.body !== null) {
     headers['Content-Type'] = 'application/json'
     bodyInit = JSON.stringify(opts.body)
   }
