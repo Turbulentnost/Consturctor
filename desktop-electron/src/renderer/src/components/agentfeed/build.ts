@@ -1,5 +1,5 @@
 import type { AgentRunnerEvent } from '../../api/types'
-import { toolLabel } from './labels'
+import { isTaskTool, toolArgHint, toolCardTitle } from './labels'
 import { appendThinkingText } from './thinkingText'
 import type { FeedItem, ToolItem } from './types'
 
@@ -140,16 +140,26 @@ export function buildFeedItems(events: AgentRunnerEvent[]): FeedItem[] {
           if (done) current.summary = summarizeResult(current.result)
           current.done = current.done || done
           current.error = current.error || errored
+          current.statusText = current.error
+            ? current.summary || 'Ошибка'
+            : current.done
+              ? current.summary || 'Готово'
+              : current.statusText || 'Выполняется…'
         } else {
+          const args = (event.arguments as Record<string, unknown>) || {}
+          const hint = toolArgHint(args)
+          const summary = done ? summarizeResult(resultObj) : ''
           items.push({
             kind: 'tool',
             id: nextId('tool'),
             tool,
             requestId,
-            title: toolLabel(tool),
-            arguments: (event.arguments as Record<string, unknown>) || {},
+            title: toolCardTitle(tool, args),
+            hint,
+            arguments: args,
             result: resultObj,
-            summary: done ? summarizeResult(resultObj) : '',
+            summary,
+            statusText: errored ? summary || 'Ошибка' : done ? summary || 'Готово' : hint ? `Выполняется: ${hint}` : 'Выполняется…',
             done,
             error: errored
           })
@@ -187,6 +197,7 @@ export function buildFeedItems(events: AgentRunnerEvent[]): FeedItem[] {
           current.requestId = requestId || current.requestId
           current.result = resultObj ?? current.result
           current.summary = summary
+          current.statusText = !ok ? summary || 'Ошибка' : summary
           current.done = true
           current.error = !ok
         } else {
@@ -195,12 +206,56 @@ export function buildFeedItems(events: AgentRunnerEvent[]): FeedItem[] {
             id: nextId('tool'),
             tool,
             requestId,
-            title: toolLabel(tool),
+            title: toolCardTitle(tool),
+            hint: '',
             arguments: {},
             result: resultObj,
             summary,
+            statusText: !ok ? summary || 'Ошибка' : summary,
             done: true,
             error: !ok
+          })
+        }
+        break
+      }
+      case 'task': {
+        const requestId = String(event.requestId || '')
+        const status = String(event.status || '')
+        const done = isDoneStatus(status)
+        const errored = isErrorStatus(status)
+        let idx = -1
+        if (requestId) {
+          idx = items.findIndex((it) => it.kind === 'tool' && it.requestId === requestId)
+        }
+        if (idx < 0) {
+          for (let i = items.length - 1; i >= 0; i -= 1) {
+            const candidate = items[i]
+            if (candidate.kind === 'tool' && !candidate.done && isTaskTool(candidate.tool)) {
+              idx = i
+              break
+            }
+          }
+        }
+        if (idx >= 0) {
+          const current = items[idx] as ToolItem
+          current.requestId = requestId || current.requestId
+          if (text) current.statusText = `${current.statusText || ''}${text}`
+          current.done = current.done || done
+          current.error = current.error || errored
+        } else {
+          items.push({
+            kind: 'tool',
+            id: nextId('tool'),
+            tool: 'Task',
+            requestId,
+            title: 'Вложенный агент',
+            hint: '',
+            arguments: {},
+            result: null,
+            summary: '',
+            statusText: text || (done ? 'Готово' : 'Выполняется…'),
+            done,
+            error: errored
           })
         }
         break

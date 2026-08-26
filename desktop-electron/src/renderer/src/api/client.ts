@@ -617,6 +617,7 @@ export function parseWorkflow(data: Record<string, unknown>): WorkflowRecord {
     title: String(data.title ?? 'Без названия'),
     phase: String(data.phase ?? 'document'),
     notes: String(data.notes ?? ''),
+    localRun: asRecord(data.local_run ?? data.localRun),
     lastResult: String(data.last_result ?? data.lastResult ?? ''),
     plan: hasPlan
       ? {

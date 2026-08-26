@@ -68,6 +68,90 @@ function stringFrom(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function recordFrom(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function requestIdFrom(value: unknown): string {
+  const rec = recordFrom(value);
+  return (
+    stringFrom(rec.call_id) ||
+    stringFrom(rec.callId) ||
+    stringFrom(rec.toolCallId) ||
+    stringFrom(rec.requestId) ||
+    stringFrom(rec.id)
+  );
+}
+
+function toolNameFrom(value: unknown, fallback = ""): string {
+  const rec = recordFrom(value);
+  const direct = stringFrom(rec.name) || stringFrom(rec.type) || fallback;
+  const args = recordFrom(rec.args || rec.arguments);
+  if (direct.toLowerCase() === "mcp") {
+    const inner = stringFrom(args.toolName) || stringFrom(args.tool) || stringFrom(args.name);
+    if (inner) return inner;
+  }
+  return direct;
+}
+
+function emitSdkToolCall(event: Record<string, unknown>, extra: Record<string, unknown> = {}): void {
+  const args = recordFrom(event.args || event.arguments);
+  const provider = stringFrom(args.providerIdentifier);
+  const rawName = stringFrom(event.name) || stringFrom(event.type);
+  if (rawName.toLowerCase() === "mcp" && provider === "custom-user-tools") {
+    return;
+  }
+  emit({
+    type: "tool_call",
+    tool: toolNameFrom(event, rawName),
+    status: stringFrom(event.status) || "running",
+    requestId: requestIdFrom(event),
+    arguments: args,
+    result: event.result,
+    ...extra,
+  });
+}
+
+function emitNestedTask(parentId: string, nested: unknown): void {
+  const update = recordFrom(nested);
+  const kind = stringFrom(update.type);
+  if (kind === "thinking-delta" || kind === "text-delta") {
+    const text = stringFrom(update.text);
+    if (!text) return;
+    emit({ type: "task", requestId: parentId, status: "running", text });
+    return;
+  }
+  if (kind !== "tool-call-started" && kind !== "partial-tool-call" && kind !== "tool-call-completed") {
+    return;
+  }
+  const toolCall = recordFrom(update.toolCall);
+  const args = recordFrom(toolCall.args || toolCall.arguments);
+  const name = toolNameFrom(toolCall, stringFrom(toolCall.type));
+  const childId = requestIdFrom(update) || requestIdFrom(toolCall);
+  const completed = kind === "tool-call-completed";
+  if (childId && childId !== parentId) {
+    emit({
+      type: "tool_call",
+      tool: name || "task",
+      status: completed ? stringFrom(update.status) || "completed" : "running",
+      requestId: childId,
+      parentId,
+      arguments: args,
+      result: toolCall.result ?? update.result,
+    });
+  }
+  if (name) {
+    emit({
+      type: "task",
+      requestId: parentId,
+      status: "running",
+      text: completed ? `\nГотово: ${name}` : `\nВыполняется: ${name}`,
+    });
+  }
+}
+
 const ASK_QUESTION_SCHEMA: Record<string, JsonValue> = {
   type: "object",
   properties: {
@@ -388,21 +472,23 @@ async function runAgent(command: RunCommand): Promise<void> {
         force: true,
         customTools: customTools as never,
       },
+      onDelta: (payload: { update?: Record<string, unknown> }) => {
+        const update = recordFrom(payload?.update);
+        if (stringFrom(update.type) !== "tool-call-delta") return;
+        const parentId = requestIdFrom(update);
+        if (!parentId) return;
+        emitNestedTask(parentId, update.taskUpdate);
+      },
     };
     let run;
     try {
-      run = await agent.send(command.prompt, sendOptions);
+      run = await agent.send(command.prompt, sendOptions as never);
     } catch (error) {
       if (!command.resumeAgentId || !isActiveRunError(error)) {
         throw error;
       }
       emit({ type: "status", text: "Закрываю предыдущий запуск того же агента..." });
-      run = await agent.send(command.prompt, {
-        local: {
-          force: true,
-          customTools: customTools as never,
-        },
-      });
+      run = await agent.send(command.prompt, sendOptions as never);
     }
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
     const finishIfReady = async (draft: string): Promise<boolean> => {
@@ -435,19 +521,14 @@ async function runAgent(command: RunCommand): Promise<void> {
         emit({ type: "thinking", text: event.text });
         if ((await finishIfReady(thought)) || (await finishIfReady(answer))) return;
       } else if (event.type === "tool_call") {
-        const args = event.args && typeof event.args === "object" && !Array.isArray(event.args)
-          ? event.args as Record<string, unknown>
-          : {};
-        const provider = String(args.providerIdentifier || "");
-        if (String(event.name || "") === "mcp" && provider === "custom-user-tools") {
-          continue;
-        }
+        emitSdkToolCall(event as unknown as Record<string, unknown>);
+      } else if (event.type === "task") {
+        const rec = event as { status?: string; text?: string };
         emit({
-          type: "tool_call",
-          tool: event.name,
-          status: event.status,
-          arguments: args,
-          result: event.result,
+          type: "task",
+          requestId: requestIdFrom(event),
+          status: rec.status || "running",
+          text: rec.text || "",
         });
       } else if (event.type === "system") {
         const listed = Array.isArray(event.tools) ? event.tools.filter(Boolean) : [];

@@ -42,6 +42,7 @@ import threading
 import traceback
 import uuid
 from dataclasses import asdict, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -189,6 +190,7 @@ class HitlGate:
         self._run_id = run_id
         self._hitl: dict[str, queue.Queue[bool]] = {}
         self._answers: dict[str, queue.Queue[dict[str, Any]]] = {}
+        self.qa_history: list[dict[str, str]] = []
         self._lock = threading.Lock()
 
     def request(self, tool: str, args: dict[str, Any]) -> bool:
@@ -244,6 +246,8 @@ class HitlGate:
                 self._answers.pop(request_id, None)
         answer = str(reply.get("answer") or reply.get("text") or "").strip()
         ok = bool(reply.get("ok", True)) and bool(answer)
+        if question or answer:
+            self.qa_history.append({"question": question, "answer": answer})
         return {"ok": ok, "answer": answer, "text": answer}
 
     def resolve_answer(self, request_id: str, reply: dict[str, Any]) -> None:
@@ -464,6 +468,130 @@ def _build_readiness_prompt() -> str:
         "В каждом askQuestion передай 2-6 конкретных вариантов в options. "
         "Когда все пробелы закрыты, верни JSON readiness и остановись."
     )
+
+
+RUN_JOURNAL_RELATIVE = "materials/run_journal.md"
+
+
+def _run_journal_path(cwd: str) -> Path:
+    root = Path(cwd).resolve()
+    target = (root / RUN_JOURNAL_RELATIVE).resolve()
+    if root not in target.parents and target != root:
+        raise ValueError(f"refusing to write outside workspace: {RUN_JOURNAL_RELATIVE}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _with_run_journal_prompt(prompt: str, cwd: str) -> str:
+    if not _run_journal_path(cwd).is_file():
+        return prompt
+    hint = "Read materials/run_journal.md before acting; use it as the prior run route."
+    return f"{hint}\n\n{prompt}"
+
+
+def _append_run_journal(
+    cwd: str,
+    *,
+    message: str,
+    answer: str,
+    events: list[dict[str, Any]],
+    qa_history: list[dict[str, str]],
+    status: str,
+    run_ref: str,
+) -> None:
+    path = _run_journal_path(cwd)
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    parts = []
+    if not existing.strip():
+        parts.extend(
+            [
+                "# Журнал запусков агента",
+                "",
+                "Этот файл читает Cursor SDK агент перед следующими запусками.",
+                "Используй его как маршрут уже согласованной работы, не начинай с нуля.",
+                "",
+            ]
+        )
+    parts.extend(
+        [
+            f"## Запуск {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            f"- runId: {run_ref or 'local'}",
+            f"- status: {status or 'ok'}",
+            "",
+            "### Задача пользователя",
+            (message or "(пусто)").strip(),
+            "",
+        ]
+    )
+    questions = _journal_questions(events, qa_history)
+    if questions:
+        parts.extend(["### Вопросы и ответы", *questions, ""])
+    agent_lines = _journal_agent_messages(events)
+    if agent_lines:
+        parts.extend(["### Что писал агент", *agent_lines, ""])
+    tools = _journal_tools(events)
+    if tools:
+        parts.extend(["### Инструменты", *tools, ""])
+    parts.extend(["### Итог", (answer or "(нет ответа)").strip(), ""])
+    body = "\n".join(parts).rstrip() + "\n"
+    prefix = existing.rstrip() + "\n\n" if existing.strip() else ""
+    path.write_text(prefix + body, encoding="utf-8")
+
+
+def _journal_questions(events: list[dict[str, Any]], qa_history: list[dict[str, str]]) -> list[str]:
+    out: list[str] = []
+    for item in qa_history:
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        if question or answer:
+            out.append(f"- Вопрос: {question or '(без текста)'}\n  Ответ: {answer or '(нет ответа)'}")
+    pending = ""
+    for event in events:
+        event_type = str(event.get("type") or "")
+        if event_type in {"question", "tool_request"}:
+            question = str(event.get("question") or event.get("text") or "").strip()
+            args = event.get("arguments") if isinstance(event.get("arguments"), dict) else {}
+            if not question and isinstance(args, dict):
+                question = str(args.get("question") or args.get("text") or "").strip()
+            if question:
+                pending = question
+        elif event_type in {"tool_result", "question_answer"}:
+            result = event.get("result")
+            answer = ""
+            if isinstance(result, dict):
+                answer = str(result.get("answer") or result.get("text") or "").strip()
+            if not answer:
+                answer = str(event.get("answer") or event.get("text") or "").strip()
+            if pending and answer:
+                out.append(f"- Вопрос: {pending}\n  Ответ: {answer}")
+                pending = ""
+    return out
+
+
+def _journal_agent_messages(events: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for event in events:
+        if str(event.get("type") or "") not in {"assistant", "agent_message", "final", "work_result"}:
+            continue
+        text = str(event.get("text") or event.get("message") or "").strip()
+        if text:
+            lines.append(f"- {text[:2000]}")
+    return lines
+
+
+def _journal_tools(events: list[dict[str, Any]]) -> list[str]:
+    tools: list[str] = []
+    seen: set[str] = set()
+    for event in events:
+        if str(event.get("type") or "") not in {"tool_call", "tool_result", "tool_request"}:
+            continue
+        tool = str(event.get("tool") or event.get("name") or "").strip()
+        if not tool or tool in seen:
+            continue
+        seen.add(tool)
+        tools.append(f"- {tool}")
+    return tools
 
 
 class Sidecar:
@@ -717,8 +845,10 @@ class Sidecar:
             if resume_agent_id and message
             else build_sdk_prompt(workflow, message)
         )
+        prompt = _with_run_journal_prompt(prompt, run_cwd)
         status = "ok"
         answer = ""
+        agent_id = resume_agent_id
         try:
             result = bridge.run(
                 prompt=prompt,
@@ -743,11 +873,35 @@ class Sidecar:
                 )
             except ApiError:
                 pass
+            try:
+                _append_run_journal(
+                    run_cwd,
+                    message=message,
+                    answer=answer,
+                    events=events,
+                    qa_history=active.gate.qa_history,
+                    status=status,
+                    run_ref=run_ref,
+                )
+            except Exception as journal_exc:  # noqa: BLE001
+                log("run journal write failed: " + repr(journal_exc))
             raise
         self._api.finish_local_agent_run(
             workflow_id, run_ref, status=status, answer=answer,
             events=events, message=message,
         )
+        try:
+            _append_run_journal(
+                run_cwd,
+                message=message,
+                answer=answer,
+                events=events,
+                qa_history=active.gate.qa_history,
+                status=status,
+                run_ref=run_ref,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("run journal write failed: " + repr(exc))
         emit(
             {
                 "type": "result",
@@ -755,6 +909,7 @@ class Sidecar:
                 "kind": "run",
                 "workflowId": workflow_id,
                 "runRef": run_ref,
+                "agentId": agent_id,
                 "status": status,
                 "answer": answer,
             }

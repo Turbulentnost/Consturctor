@@ -24,9 +24,11 @@ export interface ToolItem {
   tool: string
   requestId: string
   title: string
+  hint: string
   arguments: Record<string, unknown>
   result: Record<string, unknown> | null
   summary: string
+  statusText: string
   done: boolean
   error: boolean
 }

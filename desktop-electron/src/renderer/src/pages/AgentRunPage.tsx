@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api } from '../api/client'
 import {
   AgentFeed,
   useAgentSession,
@@ -26,6 +27,24 @@ export function AgentRunPage({
   }, [])
 
   const session = useAgentSession({ onResult })
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadResumeAgent(): Promise<void> {
+      try {
+        const workflow = await api.getWorkflow(workflowId)
+        if (cancelled) return
+        const agentId = String(workflow.localRun?.sdk_agent_id || workflow.localRun?.sdkAgentId || '')
+        if (agentId) resumeAgentRef.current = agentId
+      } catch {
+        /* sidecar also falls back to workflow.local_run.sdk_agent_id */
+      }
+    }
+    void loadResumeAgent()
+    return () => {
+      cancelled = true
+    }
+  }, [workflowId])
 
   const submit = (): void => {
     const message = input.trim()

@@ -399,6 +399,7 @@ export interface WorkflowRecord {
   title: string
   phase: string
   notes: string
+  localRun: Record<string, unknown>
   plan: WorkflowPlan | null
   lastResult: string
 }

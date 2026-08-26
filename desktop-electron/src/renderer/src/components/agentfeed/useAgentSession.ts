@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { agentClient, type StartCommand } from '../../api/agent'
 import type { AgentEvent, AgentRunnerEvent } from '../../api/types'
-import { toolLabel } from './labels'
+import { isTaskTool, resolveToolName, toolArgHint, toolCardTitle, toolLabel } from './labels'
 import { isAskQuestion, parseQuestionArgs } from './questionArgs'
 import { appendThinkingText, streamDelta } from './thinkingText'
 import type { FeedItem, PendingHitl, PendingQuestion, ToolItem } from './types'
@@ -119,6 +119,56 @@ function isErrorStatus(status: string): boolean {
   return value === 'error' || value === 'failed'
 }
 
+function isRunningStatus(status: string): boolean {
+  const value = (status || '').toLowerCase()
+  return !value || value === 'running' || value === 'in_progress' || value === 'pending' || value === 'started'
+}
+
+function argsFingerprint(tool: string, args: Record<string, unknown>): string {
+  const hint = toolArgHint(args)
+  if (hint) return `${tool}:${hint}`
+  try {
+    return `${tool}:${JSON.stringify(args)}`
+  } catch {
+    return tool
+  }
+}
+
+function toolStatusText(done: boolean, error: boolean, summary: string, hint: string): string {
+  if (error) return summary || 'Ошибка'
+  if (done) return summary || 'Готово'
+  return hint ? `Выполняется: ${hint}` : 'Выполняется…'
+}
+
+function findToolIndex(
+  items: FeedItem[],
+  tool: string,
+  requestId: string,
+  args: Record<string, unknown>,
+  running: boolean
+): number {
+  if (requestId) {
+    const byId = items.findIndex((item) => item.kind === 'tool' && item.requestId === requestId)
+    if (byId >= 0) return byId
+  }
+  const fingerprint = argsFingerprint(tool, args)
+  const distinct = fingerprint !== tool && fingerprint !== `${tool}:{}` && !fingerprint.endsWith(':')
+  if (distinct) {
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const item = items[i]
+      if (item.kind !== 'tool' || item.done || item.tool !== tool) continue
+      if (argsFingerprint(item.tool, item.arguments) === fingerprint) return i
+    }
+  }
+  if (!running) {
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const item = items[i]
+      if (item.kind === 'tool' && !item.done && item.tool === tool) return i
+    }
+  }
+  return -1
+}
+
 export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentSessionValue {
   const [items, setItems] = useState<FeedItem[]>([])
   const [status, setStatus] = useState('')
@@ -186,40 +236,46 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
   }, [])
 
   const handleToolCall = useCallback((payload: AgentRunnerEvent) => {
-    const tool = String(payload.tool || '')
+    const rawTool = String(payload.tool || '')
     const requestId = String(payload.requestId || '')
-    if (isAskQuestion(tool)) {
+    const args = (payload.arguments as Record<string, unknown>) || {}
+    const tool = resolveToolName(rawTool, args)
+    if (isAskQuestion(tool) || isAskQuestion(rawTool)) {
       applyQuestion(requestId, payload.arguments)
       return
     }
     const status = String(payload.status || '')
     const resultObj = normalizeResult(payload.result)
-    const done = isDoneStatus(status) || (resultObj !== null && status !== 'running')
+    const running = isRunningStatus(status) && !isDoneStatus(status)
+    const done = isDoneStatus(status) || (!running && resultObj !== null)
     const errored = isErrorStatus(status)
+    const hint = toolArgHint(args)
+    const summary = done ? summarizeResult(resultObj) : ''
+    const title = toolCardTitle(tool, args)
     setItems((prev) => {
       const merged = [...prev]
-      let idx = -1
-      if (requestId) {
-        idx = merged.findIndex((it) => it.kind === 'tool' && it.requestId === requestId)
-      }
-      if (idx < 0) {
-        for (let i = merged.length - 1; i >= 0; i -= 1) {
-          const candidate = merged[i]
-          if (candidate.kind === 'tool' && !candidate.done && !candidate.requestId && candidate.tool === tool) {
-            idx = i
-            break
-          }
-        }
-      }
+      const idx = findToolIndex(merged, tool, requestId, args, running)
       if (idx >= 0) {
         const current = merged[idx] as ToolItem
+        const nextDone = current.done || done
+        const nextError = current.error || errored
+        const nextHint = hint || current.hint
+        const nextSummary = nextDone ? summary || current.summary : current.summary
+        const nextArgs = Object.keys(args).length ? args : current.arguments
         merged[idx] = {
           ...current,
+          tool: tool || current.tool,
           requestId: requestId || current.requestId,
+          title: title.startsWith('Инструмент: внешний') ? current.title : title,
+          hint: nextHint,
+          arguments: nextArgs,
           result: resultObj ?? current.result,
-          summary: done ? summarizeResult(resultObj ?? current.result) : current.summary,
-          done: current.done || done,
-          error: current.error || errored
+          summary: nextSummary,
+          statusText: nextDone
+            ? toolStatusText(nextDone, nextError, nextSummary, nextHint)
+            : current.statusText || toolStatusText(false, false, '', nextHint),
+          done: nextDone,
+          error: nextError
         }
         return merged
       }
@@ -228,10 +284,12 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
         id: nextId('tool'),
         tool,
         requestId,
-        title: toolLabel(tool),
-        arguments: (payload.arguments as Record<string, unknown>) || {},
+        title,
+        hint,
+        arguments: args,
         result: resultObj,
-        summary: done ? summarizeResult(resultObj) : '',
+        summary,
+        statusText: toolStatusText(done, errored, summary, hint),
         done,
         error: errored
       })
@@ -239,6 +297,59 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
     })
     if (!done) setStatus(`Вызываю ${toolLabel(tool)}…`)
   }, [applyQuestion])
+
+  const handleTask = useCallback((payload: AgentRunnerEvent) => {
+    const requestId = String(payload.requestId || '')
+    const text = String(payload.text || payload.message || '')
+    const status = String(payload.status || '')
+    const done = isDoneStatus(status)
+    const errored = isErrorStatus(status)
+    if (!text && !requestId && !done) return
+    setItems((prev) => {
+      const merged = [...prev]
+      let idx = -1
+      if (requestId) {
+        idx = merged.findIndex((item) => item.kind === 'tool' && item.requestId === requestId)
+      }
+      if (idx < 0) {
+        for (let i = merged.length - 1; i >= 0; i -= 1) {
+          const item = merged[i]
+          if (item.kind === 'tool' && !item.done && isTaskTool(item.tool)) {
+            idx = i
+            break
+          }
+        }
+      }
+      if (idx >= 0) {
+        const current = merged[idx] as ToolItem
+        const nextText = text ? current.statusText + streamDelta(current.statusText, text) : current.statusText
+        merged[idx] = {
+          ...current,
+          requestId: requestId || current.requestId,
+          statusText: nextText || toolStatusText(done || current.done, errored || current.error, current.summary, current.hint),
+          done: current.done || done,
+          error: current.error || errored
+        }
+        return merged
+      }
+      merged.push({
+        kind: 'tool',
+        id: nextId('tool'),
+        tool: 'Task',
+        requestId,
+        title: 'Вложенный агент',
+        hint: '',
+        arguments: {},
+        result: null,
+        summary: '',
+        statusText: text || toolStatusText(done, errored, '', ''),
+        done,
+        error: errored
+      })
+      return merged
+    })
+    if (!done) setStatus('Вложенный агент работает…')
+  }, [])
 
   /** Handle a host-tool `tool_result` (ok/error/skipped). Completes the card. */
   const handleToolResult = useCallback((payload: AgentRunnerEvent) => {
@@ -276,6 +387,7 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
           requestId: requestId || current.requestId,
           result: resultObj ?? current.result,
           summary,
+          statusText: toolStatusText(true, !ok, summary, current.hint),
           done: true,
           error: !ok
         }
@@ -287,9 +399,11 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
         tool,
         requestId,
         title: toolLabel(tool),
+        hint: '',
         arguments: {},
         result: resultObj,
         summary,
+        statusText: toolStatusText(true, !ok, summary, ''),
         done: true,
         error: !ok
       })
@@ -312,6 +426,9 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
           break
         case 'tool_call':
           handleToolCall(payload)
+          break
+        case 'task':
+          handleTask(payload)
           break
         case 'tool_result':
           handleToolResult(payload)
@@ -336,7 +453,7 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
           break
       }
     },
-    [appendAssistant, appendSystem, appendThinking, handleToolCall, handleToolResult]
+    [appendAssistant, appendSystem, appendThinking, handleTask, handleToolCall, handleToolResult]
   )
 
   useEffect(() => {
