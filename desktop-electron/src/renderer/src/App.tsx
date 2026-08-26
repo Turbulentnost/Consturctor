@@ -13,6 +13,8 @@ import { ReadinessPage } from './pages/ReadinessPage'
 import { SuggestionsPage } from './pages/SuggestionsPage'
 import { PassportPage } from './pages/PassportPage'
 import { AgentStudioPage } from './pages/AgentStudioPage'
+import { FormationBanner } from './components/FormationBanner'
+import { useFormation } from './components/agentfeed'
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentSchedulePage, type ScheduleSpec } from './pages/AgentSchedulePage'
 import { AgentKpiPreviewPage } from './pages/AgentKpiPreviewPage'
@@ -75,6 +77,7 @@ export function App(): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   const kickedRef = useRef(false)
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
+  const formation = useFormation()
 
   useEffect(() => {
     let done = false
@@ -600,6 +603,7 @@ export function App(): React.JSX.Element {
         <AgentStudioPage
           workflowId={view.workflowId}
           title={view.title}
+          formation={formation}
           onBack={() => setView({ kind: 'tab', key: 'agents' })}
           onGoSchedule={(workflowId, title) => setView({ kind: 'schedule', workflowId, title })}
         />
@@ -716,6 +720,22 @@ export function App(): React.JSX.Element {
               showLogout={showLogout}
             />
           </div>
+          {formation.inProgress &&
+            !(view.kind === 'studio' && view.workflowId === formation.workflowId) && (
+              <FormationBanner
+                title={formation.title}
+                output={formation.latestOutput}
+                running={formation.running}
+                awaiting={formation.awaiting}
+                onOpen={() =>
+                  setView({
+                    kind: 'studio',
+                    workflowId: formation.workflowId,
+                    title: formation.title
+                  })
+                }
+              />
+            )}
           {renderContent()}
         </div>
       </main>

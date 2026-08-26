@@ -1541,6 +1541,96 @@ input {
   height: 46px;
 }
 
+/* ---------- Formation banner (background agent formation) ---------- */
+.formation-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  /* Drop below the floating user menu (absolute, top:24px) so the banner never
+     overlaps the header row. */
+  margin: 48px 0 16px;
+  padding: 10px 14px;
+  border: 1px solid rgba(8, 116, 95, 0.25);
+  background: #eef7f3;
+  border-radius: 14px;
+  position: relative;
+  z-index: 1;
+}
+.formation-banner-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #9bb3ac;
+  flex: 0 0 auto;
+}
+.formation-banner-dot.busy {
+  background: #08745f;
+  animation: formation-pulse 1.2s infinite ease-in-out;
+}
+.formation-banner-dot.wait {
+  background: #e0a300;
+}
+.formation-banner-copy {
+  flex: 1;
+  min-width: 0;
+}
+.formation-banner-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.formation-banner-name {
+  font-weight: 600;
+  color: var(--main-text);
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+.formation-banner-status {
+  font-size: 12px;
+  color: #08745f;
+  background: rgba(8, 116, 95, 0.12);
+  border-radius: 10px;
+  padding: 2px 8px;
+  flex: 0 0 auto;
+}
+.formation-banner-text {
+  margin-top: 2px;
+  color: var(--content-muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.formation-banner-open {
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: none;
+  background: #08745f;
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.formation-banner-open:hover {
+  background: #0a8670;
+}
+@keyframes formation-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
 /* ---------- Review page ---------- */
 .review-stats {
   display: flex;
@@ -3515,8 +3605,16 @@ button.feed-tool-head:hover {
   justify-content: space-between;
   gap: 16px;
 }
+.kpi-head {
+  align-items: flex-start;
+  padding-right: 240px;
+}
 .kpi-period {
-  height: 42px;
+  position: absolute;
+  top: 24px;
+  right: 300px;
+  z-index: 21;
+  height: 40px;
   min-width: 210px;
   border: 1px solid var(--card-border);
   border-radius: 12px;
@@ -3525,6 +3623,7 @@ button.feed-tool-head:hover {
   align-items: center;
   gap: 10px;
   padding: 0 12px;
+  box-sizing: border-box;
 }
 .kpi-period img {
   width: 18px;
@@ -3599,6 +3698,10 @@ button.feed-tool-head:hover {
 }
 .kpi-card {
   padding: 18px;
+  min-width: 0;
+}
+.kpi-efficiency {
+  overflow: hidden;
 }
 .kpi-card h3 {
   margin: 0;
@@ -3619,14 +3722,21 @@ button.feed-tool-head:hover {
   font-weight: 700;
   padding: 5px 9px;
 }
-.kpi-table {
+.kpi-table-scroll {
   margin-top: 16px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+}
+.kpi-table {
   display: flex;
   flex-direction: column;
+  min-width: 920px;
 }
 .kpi-table-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.7fr) 105px 70px 120px 140px 110px 96px;
+  grid-template-columns: minmax(200px, 1.6fr) 100px 68px 120px 140px 110px 96px;
   align-items: center;
   gap: 12px;
   padding: 10px 0;
@@ -3839,12 +3949,6 @@ button.feed-tool-head:hover {
   .kpi-grid-main,
   .kpi-bottom-grid {
     grid-template-columns: 1fr;
-  }
-  .kpi-table-row {
-    grid-template-columns: minmax(180px, 1fr) 100px 70px 90px;
-  }
-  .kpi-table-row > :nth-last-child(-n + 3) {
-    display: none;
   }
 }
 

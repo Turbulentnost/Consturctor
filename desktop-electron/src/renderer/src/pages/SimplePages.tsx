@@ -319,6 +319,7 @@ export function KpiPage(): React.JSX.Element {
             </div>
             {loading && <span className="kpi-loading">Обновляем...</span>}
           </div>
+          <div className="kpi-table-scroll">
           <div className="kpi-table">
             <div className="kpi-table-row head">
               <span>ИИ-агент</span>
@@ -354,6 +355,7 @@ export function KpiPage(): React.JSX.Element {
               </div>
             ))}
             {!model.top.length && <div className="kpi-empty">Агенты появятся после публикации.</div>}
+          </div>
           </div>
         </section>
 

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import type { WorkflowFileItem, WorkflowRecord } from '../api/types'
-import { AgentFeed, StageStepper, useAgentSession, type AgentResult } from '../components/agentfeed'
+import { AgentFeed, StageStepper, type FormationController } from '../components/agentfeed'
 import { ClarifyCard } from '../components/agentfeed/ClarifyCard'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
 import { presentAgentText } from '../components/agentfeed/formatAgentText'
@@ -359,7 +359,7 @@ export function AgentStudioPage({
           )}
 
           {busy && (
-            <button className="wf-stop" onClick={session.cancel}>
+            <button className="wf-stop" onClick={formation.cancel}>
               Остановить
             </button>
           )}

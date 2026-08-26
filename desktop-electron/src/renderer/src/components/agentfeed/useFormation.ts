@@ -23,6 +23,8 @@ export interface FormationController {
   runDemo: () => void
   /** Send a follow-up message to the running agent. */
   sendMessage: (shownMessage: string, message: string, filePaths?: string[]) => void
+  /** Stop the current run: cancels it and suppresses the auto trial run. */
+  cancel: () => void
   /** Stop tracking this formation (does not kill the sidecar run). */
   clear: () => void
 }
@@ -39,6 +41,7 @@ export function useFormation(): FormationController {
   const [designDone, setDesignDone] = useState(false)
   const [demoDone, setDemoDone] = useState(false)
   const [designDraft, setDesignDraft] = useState('')
+  const [stopped, setStopped] = useState(false)
 
   const startedForRef = useRef('')
   const demoAutoForRef = useRef('')
@@ -67,12 +70,14 @@ export function useFormation(): FormationController {
     setDesignDone(false)
     setDemoDone(false)
     setDesignDraft('')
+    setStopped(false)
     sessionRef.current.start({ kind: 'design', workflowId: wf })
   }, [])
 
-  // Auto-start the trial run once the design draft is ready.
+  // Auto-start the trial run once the design draft is ready (unless the user
+  // stopped the run - cancelling design must not silently start the demo).
   useEffect(() => {
-    if (!designDone || !workflowId) return
+    if (!designDone || !workflowId || stopped) return
     if (demoAutoForRef.current === workflowId) return
     if (session.running || session.pendingQuestion || session.pendingHitl) return
     demoAutoForRef.current = workflowId
@@ -81,11 +86,12 @@ export function useFormation(): FormationController {
       1200
     )
     return () => clearTimeout(timer)
-  }, [designDone, workflowId, session.running, session.pendingQuestion, session.pendingHitl])
+  }, [designDone, workflowId, stopped, session.running, session.pendingQuestion, session.pendingHitl])
 
   const runDemo = useCallback(() => {
     if (!workflowId) return
     setDemoDone(false)
+    setStopped(false)
     demoAutoForRef.current = workflowId
     sessionRef.current.start({ kind: 'demo', workflowId })
   }, [workflowId])
@@ -93,6 +99,7 @@ export function useFormation(): FormationController {
   const sendMessage = useCallback(
     (shownMessage: string, message: string, filePaths?: string[]) => {
       if (!workflowId) return
+      setStopped(false)
       sessionRef.current.pushUserMessage(shownMessage)
       sessionRef.current.start({
         kind: 'run',
@@ -105,6 +112,13 @@ export function useFormation(): FormationController {
     [workflowId]
   )
 
+  const cancel = useCallback(() => {
+    // Suppress the auto trial run for this workflow and hide the banner.
+    demoAutoForRef.current = workflowId
+    setStopped(true)
+    sessionRef.current.cancel()
+  }, [workflowId])
+
   const clear = useCallback(() => {
     startedForRef.current = ''
     demoAutoForRef.current = ''
@@ -114,6 +128,7 @@ export function useFormation(): FormationController {
     setDesignDone(false)
     setDemoDone(false)
     setDesignDraft('')
+    setStopped(false)
     sessionRef.current.reset()
   }, [])
 
@@ -137,7 +152,7 @@ export function useFormation(): FormationController {
     return ''
   }, [session.items])
 
-  const inProgress = Boolean(workflowId) && !demoDone
+  const inProgress = Boolean(workflowId) && !demoDone && !stopped
 
   return {
     session,
@@ -154,6 +169,7 @@ export function useFormation(): FormationController {
     begin,
     runDemo,
     sendMessage,
+    cancel,
     clear
   }
 }
