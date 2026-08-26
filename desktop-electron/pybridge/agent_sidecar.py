@@ -83,6 +83,7 @@ from app.sdk_agent.prompt import (  # noqa: E402
     build_followup_sdk_prompt,
     build_sdk_prompt,
 )
+from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
 
 # HITL classification replicated from app.tools.hitl.needs_confirmation.
 # We do NOT import that module because it pulls in PySide6/Qt at import time,
@@ -160,6 +161,168 @@ def _json_default(value: Any) -> Any:
     return str(value)
 
 
+KEEP_KNOWLEDGE_FILE_NAME = "keepKnowledgeFile"
+KEEP_KNOWLEDGE_FILE_SPEC: dict[str, Any] = {
+    "name": KEEP_KNOWLEDGE_FILE_NAME,
+    "description": (
+        "Polozhit fayl iz workspace v dolgosrochnuyu bazu znaniy agenta. "
+        "Call only if the document is needed on every later run "
+        "(schedule, catalog, regulation table). "
+        "Do not call for a one-off example, screenshot, or one-time dump."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Workspace-relative or absolute path inside cwd",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this file is needed on later runs",
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+KEEP_FILE_HINT = (
+    "Files in materials/attachments are one-off: read them now. "
+    "If a file is needed on every later run (schedule, catalog, regulation table), "
+    "call keepKnowledgeFile with the workspace path. "
+    "If the file is only needed to extract one fact (example, screenshot, one-time dump), "
+    "do not call keepKnowledgeFile."
+)
+
+# Distinctive phrase so the rule is appended once to playbook / agent.md.
+OUTLOOK_SERIES_MARKER = "самый ранний удобный свободный день"
+
+OUTLOOK_MEETING_HINT = (
+    "If the task is to schedule planned meetings in Outlook, do not stop after reading. "
+    "Call outlook.read_calendar (free_slots) first, then outlook.create_event. "
+    "Writing the calendar is the result; a plan in chat is not. "
+    "Weekly or monthly meeting without a date: pick the earliest convenient free weekday "
+    "(prefer Monday if free). Keep that same weekday every week; for monthly keep the "
+    "same weekday pattern (for example the first Monday). "
+    "outlook.create_event has no recurrence field: pass events[] with one item per "
+    "occurrence (about 8 weeks weekly, 6 months monthly). "
+    "Wait for HITL approval. Done only after create_event returns ok."
+)
+
+OUTLOOK_MEETING_RULE = (
+    "Плановые совещания записывай в Outlook: сначала outlook.read_calendar "
+    "(свободные слоты), затем outlook.create_event. Не ограничивайся чтением календаря. "
+    "Если совещание еженедельное или ежемесячное, а конкретная дата не задана: выбери "
+    "самый ранний удобный свободный день (предпочтительно понедельник, если он свободен). "
+    "Дальше всегда этот же день недели: каждую неделю в один и тот же день; каждый месяц "
+    "тот же день недели (например первый понедельник). "
+    "Повторяемости в outlook.create_event нет: передай events[] — отдельную встречу "
+    "на каждую дату серии (около 8 недель для еженедельных, 6 месяцев для ежемесячных). "
+    "Дождись подтверждения записи. Задача выполнена только после ok от create_event."
+)
+
+_MEETING_TIPS = (
+    "outlook",
+    "календар",
+    "совещан",
+    "встреч",
+    "планерк",
+    "create_event",
+)
+
+
+def _is_keep_knowledge_file(name: str) -> bool:
+    folded = (name or "").strip().casefold()
+    return folded in {"keepknowledgefile", "keep_knowledge_file"}
+
+
+def _with_sidecar_prompt(prompt: str) -> str:
+    parts = [KEEP_FILE_HINT, OUTLOOK_MEETING_HINT]
+    text = (prompt or "").strip()
+    if text:
+        parts.append(text)
+    return "\n\n".join(parts)
+
+
+def _with_keep_file_prompt(prompt: str) -> str:
+    return _with_sidecar_prompt(prompt)
+
+
+def _meeting_blob(*parts: Any) -> str:
+    return " ".join(str(part or "") for part in parts).casefold()
+
+
+def _is_meeting_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    return any(tip in blob for tip in _MEETING_TIPS)
+
+
+def _is_meeting_workflow(record: Any) -> bool:
+    parts: list[Any] = [
+        getattr(record, "title", "") or "",
+        getattr(record, "notes", "") or "",
+        getattr(record, "document_text", "") or "",
+        getattr(record, "last_result", "") or "",
+    ]
+    plan = getattr(record, "plan", None)
+    if plan is not None:
+        parts.extend(
+            [
+                getattr(plan, "title", "") or "",
+                getattr(plan, "goal", "") or "",
+            ]
+        )
+    local = getattr(record, "local_run", None) or {}
+    if isinstance(local, dict):
+        for key in ("playbook", "playbook_draft"):
+            raw = local.get(key)
+            if isinstance(raw, dict):
+                parts.extend(
+                    str(raw.get(item) or "")
+                    for item in (
+                        "instructions",
+                        "name",
+                        "expected_result",
+                        "when_to_run",
+                        "example_run",
+                    )
+                )
+    return _is_meeting_text(*parts)
+
+
+def _merge_outlook_rule_into_playbook(local_run: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return updated local_run if the series rule was added, else None."""
+    local = dict(local_run or {})
+    changed = False
+    for key in ("playbook", "playbook_draft"):
+        raw = local.get(key)
+        if not isinstance(raw, dict):
+            continue
+        current = str(raw.get("instructions") or "").strip()
+        if OUTLOOK_SERIES_MARKER in current:
+            continue
+        updated = dict(raw)
+        updated["instructions"] = (
+            f"{current}\n\n{OUTLOOK_MEETING_RULE}".strip() if current else OUTLOOK_MEETING_RULE
+        )
+        local[key] = updated
+        changed = True
+    return local if changed else None
+
+
+def _ensure_outlook_rule_in_brief(cwd: str) -> None:
+    path = Path(cwd) / "materials" / "agent.md"
+    if not cwd or not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8")
+    if OUTLOOK_SERIES_MARKER in text:
+        return
+    path.write_text(
+        text.rstrip() + "\n\n## Плановые совещания в Outlook\n" + OUTLOOK_MEETING_RULE + "\n",
+        encoding="utf-8",
+    )
+
+
 class ElectronBridge(CursorSdkBridge):
     """CursorSdkBridge that routes HITL write approvals to Electron.
 
@@ -171,6 +334,127 @@ class ElectronBridge(CursorSdkBridge):
     def __init__(self, hitl_gate: HitlGate, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._hitl_gate = hitl_gate
+        self._knowledge_api: ApiClient | None = None
+        self._knowledge_workflow_id = ""
+        self._knowledge_cwd = ""
+        self._knowledge_run_id = ""
+
+    def bind_knowledge(
+        self,
+        api: ApiClient | None,
+        workflow_id: str,
+        cwd: str,
+        run_id: str = "",
+    ) -> None:
+        self._knowledge_api = api
+        self._knowledge_workflow_id = (workflow_id or "").strip()
+        self._knowledge_cwd = (cwd or "").strip()
+        self._knowledge_run_id = (run_id or "").strip()
+
+    def run(
+        self,
+        *,
+        prompt: str,
+        workflow_id: str,
+        model: str = "",
+        cwd: str = "",
+        mode: str = "run",
+        tools: list[dict[str, Any]] | None = None,
+        resume_agent_id: str = "",
+        on_event: Any = None,
+        on_question: Any = None,
+        should_stop: Any = None,
+        confirm_writes: bool = False,
+    ) -> dict[str, Any]:
+        specs = list(tools) if tools is not None else list(sdk_tool_specs())
+        if not any(_is_keep_knowledge_file(str(item.get("name") or "")) for item in specs):
+            specs.append(dict(KEEP_KNOWLEDGE_FILE_SPEC))
+        if workflow_id:
+            self._knowledge_workflow_id = workflow_id
+        if cwd:
+            self._knowledge_cwd = cwd
+        return super().run(
+            prompt=_with_sidecar_prompt(prompt),
+            workflow_id=workflow_id,
+            model=model,
+            cwd=cwd,
+            mode=mode,
+            tools=specs,
+            resume_agent_id=resume_agent_id,
+            on_event=on_event,
+            on_question=on_question,
+            should_stop=should_stop,
+            confirm_writes=confirm_writes,
+        )
+
+    def _handle_tool_request(
+        self,
+        process: Any,
+        payload: dict[str, Any],
+        *,
+        workflow_id: str,
+        cwd: str,
+        on_question: Any = None,
+        should_stop: Any = None,
+        confirm_writes: bool = False,
+    ) -> None:
+        tool = str(payload.get("tool") or "")
+        if _is_keep_knowledge_file(tool):
+            request_id = str(payload.get("requestId") or "")
+            args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+            result = self._keep_knowledge_file(dict(args), workflow_id=workflow_id, cwd=cwd)
+            self._send(
+                process,
+                {
+                    "type": "tool_result",
+                    "requestId": request_id,
+                    "ok": bool(result.get("ok", True)),
+                    "result": result,
+                    "error": result.get("error"),
+                },
+            )
+            return
+        return super()._handle_tool_request(
+            process,
+            payload,
+            workflow_id=workflow_id,
+            cwd=cwd,
+            on_question=on_question,
+            should_stop=should_stop,
+            confirm_writes=confirm_writes,
+        )
+
+    def _keep_knowledge_file(
+        self,
+        args: dict[str, Any],
+        *,
+        workflow_id: str,
+        cwd: str,
+    ) -> dict[str, Any]:
+        raw = str(args.get("path") or args.get("file") or args.get("filePath") or "").strip()
+        reason = str(args.get("reason") or "").strip()
+        target = _resolve_workspace_file(cwd or self._knowledge_cwd, raw)
+        wf = (workflow_id or self._knowledge_workflow_id).strip()
+        if target is None:
+            return {"ok": False, "error": "File not found in workspace", "path": raw}
+        if self._knowledge_api is None or not wf:
+            return {"ok": False, "error": "Workflow is not bound", "path": raw}
+        ok = _upload_knowledge_files(
+            self._knowledge_api,
+            wf,
+            cwd or self._knowledge_cwd,
+            [str(target)],
+            run_id=self._knowledge_run_id,
+        )
+        if not ok:
+            return {"ok": False, "error": "Failed to save file to knowledge base", "path": raw}
+        return {
+            "ok": True,
+            "kept": True,
+            "path": raw,
+            "reason": reason,
+            "summary": "File saved to the agent knowledge base",
+        }
 
     def _confirm_write_tool(
         self, tool: str, args: dict[str, Any]
@@ -200,6 +484,7 @@ class HitlGate:
         self._run_id = run_id
         self._hitl: dict[str, queue.Queue[bool]] = {}
         self._answers: dict[str, queue.Queue[dict[str, Any]]] = {}
+        self._needs_file: dict[str, bool] = {}
         self.qa_history: list[dict[str, str]] = []
         self._lock = threading.Lock()
 
@@ -241,6 +526,7 @@ class HitlGate:
         box: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         with self._lock:
             self._answers[request_id] = box
+            self._needs_file[request_id] = needs_file
         emit(
             {
                 "type": "question",
@@ -262,6 +548,10 @@ class HitlGate:
         if question or answer:
             self.qa_history.append({"question": question, "answer": answer})
         return {"ok": ok, "answer": answer, "text": answer}
+
+    def consume_needs_file(self, request_id: str) -> bool:
+        with self._lock:
+            return bool(self._needs_file.pop(request_id, False))
 
     def resolve_answer(self, request_id: str, reply: dict[str, Any]) -> None:
         with self._lock:
@@ -365,7 +655,6 @@ def _question_from_payload(payload: dict[str, Any]) -> tuple[str, list[str]]:
     return question, options
 
 
-_KB_SUFFIXES = {".xlsx", ".xlsm", ".docx"}
 _KB_ACCEPT = ("xlsx", "xlsm", "docx")
 
 
@@ -401,25 +690,66 @@ def _file_request_from_payload(payload: dict[str, Any]) -> tuple[bool, list[str]
     return needs, accept
 
 
+def _emit_files_updated(workflow_id: str, run_id: str = "") -> None:
+    wf = (workflow_id or "").strip()
+    if not wf:
+        return
+    emit({"type": "files_updated", "workflowId": wf, "runId": (run_id or "").strip()})
+
+
+def _upload_knowledge_files(
+    api: ApiClient,
+    workflow_id: str,
+    run_cwd: str,
+    file_paths: list[str],
+    run_id: str = "",
+) -> bool:
+    allowed = [str(path) for path in file_paths if Path(str(path)).is_file()]
+    if not (workflow_id.strip() and allowed):
+        return False
+    try:
+        api.upload_workflow_files(workflow_id, allowed)
+        if run_cwd.strip():
+            seed_workflow_files(api, workflow_id, run_cwd)
+        _emit_files_updated(workflow_id, run_id)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log("knowledge upload failed: " + _ascii(repr(exc)))
+        return False
+
+
 def _persist_knowledge_files(
     api: ApiClient,
     workflow_id: str,
     run_cwd: str,
     file_paths: list[str],
+    keep: bool = False,
+    run_id: str = "",
 ) -> list[str]:
     copied = _copy_attachments(run_cwd, file_paths)
-    allowed = [
-        path
-        for path in file_paths
-        if Path(str(path)).suffix.lower() in _KB_SUFFIXES
-    ]
-    if workflow_id.strip() and allowed:
-        try:
-            api.upload_workflow_files(workflow_id, allowed)
-            seed_workflow_files(api, workflow_id, run_cwd)
-        except Exception as exc:  # noqa: BLE001
-            log("knowledge upload failed: " + _ascii(repr(exc)))
+    if keep:
+        _upload_knowledge_files(api, workflow_id, run_cwd, file_paths, run_id=run_id)
     return copied
+
+
+def _resolve_workspace_file(cwd: str, raw: str) -> Path | None:
+    text = (raw or "").strip()
+    root = Path((cwd or "").strip()).resolve() if (cwd or "").strip() else None
+    if not text:
+        return None
+    candidate = Path(text)
+    if not candidate.is_absolute() and root is not None:
+        candidate = (root / text).resolve()
+    else:
+        candidate = candidate.resolve()
+    if not candidate.is_file():
+        return None
+    if root is not None:
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None
+    return candidate
 
 
 def _safe_args(args: dict[str, Any]) -> dict[str, Any]:
@@ -831,6 +1161,9 @@ class Sidecar:
             workflow=record,
             extra_brief=design_prompt,
         )
+        if _is_meeting_workflow(record) or _is_meeting_text(design_prompt):
+            _ensure_outlook_rule_in_brief(run_cwd)
+        bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
         events: list[dict[str, Any]] = []
         result = bridge.run(
             prompt=build_design_sdk_prompt(record, design_prompt),
@@ -852,6 +1185,7 @@ class Sidecar:
         except ApiError as exc:
             if exc.status_code not in {404, 405}:
                 raise
+        self._ensure_outlook_rule_in_playbook(workflow_id)
         emit(
             {
                 "type": "result",
@@ -909,6 +1243,9 @@ class Sidecar:
         active.run_cwd = run_cwd
         active.workflow_id = workflow_id
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=record)
+        if _is_meeting_workflow(record):
+            _ensure_outlook_rule_in_brief(run_cwd)
+        bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
         events: list[dict[str, Any]] = []
         result = bridge.run(
             prompt=build_demo_sdk_prompt(record, resume=bool(resume_agent_id)),
@@ -930,6 +1267,7 @@ class Sidecar:
         except ApiError as exc:
             if exc.status_code not in {404, 405}:
                 raise
+        self._ensure_outlook_rule_in_playbook(workflow_id)
         emit(
             {
                 "type": "result",
@@ -971,8 +1309,14 @@ class Sidecar:
         active.run_cwd = run_cwd
         active.workflow_id = workflow_id
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=workflow)
+        if _is_meeting_workflow(workflow):
+            _ensure_outlook_rule_in_brief(run_cwd)
+            self._ensure_outlook_rule_in_playbook(workflow_id, record=workflow)
+        bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
         file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
-        attachment_paths = _persist_knowledge_files(self._api, workflow_id, run_cwd, file_paths)
+        attachment_paths = _persist_knowledge_files(
+            self._api, workflow_id, run_cwd, file_paths, keep=False, run_id=active.run_id
+        )
         events: list[dict[str, Any]] = []
         prompt = (
             build_followup_sdk_prompt(message)
@@ -1116,6 +1460,27 @@ class Sidecar:
         except ApiError:
             pass
 
+    def _ensure_outlook_rule_in_playbook(
+        self,
+        workflow_id: str,
+        record: Any = None,
+    ) -> None:
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return
+        try:
+            current = record if record is not None else self._api.get_workflow(wid)
+            if not _is_meeting_workflow(current):
+                return
+            merged = _merge_outlook_rule_into_playbook(
+                dict(getattr(current, "local_run", None) or {})
+            )
+            if merged is None:
+                return
+            self._api.update_workflow_local_run(wid, merged)
+        except ApiError:
+            pass
+
     # -- responses -----------------------------------------------------
     def answer(self, command: dict[str, Any]) -> None:
         request_id = str(command.get("requestId") or "")
@@ -1123,6 +1488,7 @@ class Sidecar:
         file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
         for active in list(self._active.values()):
             note = ""
+            keep = active.gate.consume_needs_file(request_id)
             if file_paths and active.run_cwd:
                 note = _attachments_note(
                     _persist_knowledge_files(
@@ -1130,6 +1496,8 @@ class Sidecar:
                         active.workflow_id,
                         active.run_cwd,
                         file_paths,
+                        keep=keep,
+                        run_id=active.run_id,
                     )
                 )
             reply = {

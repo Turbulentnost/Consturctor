@@ -4155,6 +4155,9 @@ button.feed-tool-head:hover {
 .kpi-metric-legend .warn { color: #b26a00; }
 .kpi-metric-legend .danger { color: #c0392b; }
 .kpi-metric-legend .grey { color: #7d8a85; }
+.kpi-agent-tiles {
+  margin: 0 0 16px;
+}
 .kpi-metric-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

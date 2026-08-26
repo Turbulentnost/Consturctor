@@ -154,6 +154,7 @@ export interface AgentRunHistoryItem {
   runId: string
   workflowId: string
   status: string
+  source: string
   startedAt: string
   finishedAt: string
   summary: string
@@ -517,6 +518,7 @@ export interface AgentEvent {
     | 'error'
     | 'sidecar_exit'
     | 'log'
+    | 'files_updated'
   runId?: string
   requestId?: string
   payload?: AgentRunnerEvent

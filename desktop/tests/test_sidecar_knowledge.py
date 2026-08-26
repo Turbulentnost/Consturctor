@@ -10,7 +10,15 @@ PYBRIDGE = ROOT / "desktop-electron" / "pybridge"
 if str(PYBRIDGE) not in sys.path:
     sys.path.insert(0, str(PYBRIDGE))
 
-from agent_sidecar import _file_request_from_payload, _persist_knowledge_files  # noqa: E402
+from agent_sidecar import (  # noqa: E402
+    OUTLOOK_MEETING_RULE,
+    OUTLOOK_SERIES_MARKER,
+    _file_request_from_payload,
+    _is_meeting_text,
+    _merge_outlook_rule_into_playbook,
+    _persist_knowledge_files,
+    _with_sidecar_prompt,
+)
 
 
 class _Api:
@@ -62,12 +70,42 @@ def test_persist_xlsx_uploads_and_seeds_manifest(tmp_path: Path) -> None:
     cwd.mkdir()
     api = _Api(tmp_path)
 
-    copied = _persist_knowledge_files(api, "wf-meet", str(cwd), [str(source)])
+    copied = _persist_knowledge_files(api, "wf-meet", str(cwd), [str(source)], keep=False)
 
     assert copied
     assert copied[0].startswith("materials/attachments/")
+    assert api.uploaded == []
+
+    copied_keep = _persist_knowledge_files(api, "wf-meet", str(cwd), [str(source)], keep=True)
+    assert copied_keep
     assert api.uploaded == [("wf-meet", [str(source)])]
     manifest = cwd / "materials" / "manifest.json"
     assert manifest.is_file()
     assert "schedule.xlsx" in manifest.read_text(encoding="utf-8")
     assert (cwd / "materials" / "001_schedule.xlsx").read_bytes() == b"XLSX"
+
+
+def test_sidecar_prompt_includes_outlook_series_rule() -> None:
+    text = _with_sidecar_prompt("Sdelai demo")
+    assert "keepKnowledgeFile" in text
+    assert "outlook.create_event" in text
+    assert "Sdelai demo" in text
+
+
+def test_meeting_text_detects_outlook_task() -> None:
+    assert _is_meeting_text("Nuzhno zaplanirovat soveschaniya v Outlook")
+    assert not _is_meeting_text("Sochini otchet po KPI")
+
+
+def test_merge_outlook_rule_appends_once() -> None:
+    first = _merge_outlook_rule_into_playbook(
+        {"playbook": {"instructions": "Chitai sluzhebki 1C"}}
+    )
+    assert first is not None
+    instructions = str(first["playbook"]["instructions"])
+    assert "Chitai sluzhebki 1C" in instructions
+    assert OUTLOOK_SERIES_MARKER in instructions
+    assert OUTLOOK_MEETING_RULE in instructions
+
+    second = _merge_outlook_rule_into_playbook(first)
+    assert second is None

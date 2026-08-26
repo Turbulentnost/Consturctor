@@ -1098,6 +1098,7 @@ export class ApiClient {
         runId: String(item.run_id ?? item.runId ?? item.id ?? ''),
         workflowId: String(item.workflow_id ?? item.workflowId ?? workflowId),
         status: String(item.status ?? ''),
+        source: String(item.source ?? ''),
         startedAt: String(item.started_at ?? item.startedAt ?? ''),
         finishedAt: String(item.finished_at ?? item.finishedAt ?? ''),
         summary: String(item.summary ?? item.result ?? '')
@@ -1438,6 +1439,7 @@ export class ApiClient {
         runId: String(data.run_id ?? data.runId ?? data.id ?? runId),
         workflowId: String(data.workflow_id ?? data.workflowId ?? workflowId),
         status: String(data.status ?? ''),
+        source: String(data.source ?? ''),
         startedAt: String(data.started_at ?? data.startedAt ?? ''),
         finishedAt: String(data.finished_at ?? data.finishedAt ?? ''),
         summary: String(data.summary ?? data.answer ?? data.result ?? '')
@@ -1495,6 +1497,19 @@ export class ApiClient {
     })
     const raw = (data.files as Record<string, unknown>[]) ?? []
     return raw.map(parsePlatformFile)
+  }
+
+  async listWorkflowFiles(workflowId: string): Promise<WorkflowFileItem[]> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/workflows/${workflowId}/files`,
+      { timeoutMs: 20_000 }
+    )
+    const userFiles = (data.user_files as Record<string, unknown>[]) ?? []
+    const agentFiles = (data.agent_files as Record<string, unknown>[]) ?? []
+    return [...userFiles, ...agentFiles].map((item) =>
+      parsePlatformFile({ ...item, workflow_id: workflowId })
+    )
   }
 
   async uploadWorkflowFiles(workflowId: string, filePaths: string[]): Promise<WorkflowFileItem[]> {

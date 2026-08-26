@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { WorkflowFileItem } from '../api/types'
 import { AgentFeed } from '../components/agentfeed'
@@ -72,12 +73,19 @@ export function AgentRunPage({
 
   const refreshFiles = useCallback(async () => {
     try {
-      const list = await api.listPlatformFiles()
-      setFiles(list.filter((f) => !f.workflowId || f.workflowId === workflowId))
+      setFiles(await api.listWorkflowFiles(workflowId))
     } catch {
       setFiles([])
     }
   }, [workflowId])
+
+  useEffect(() => {
+    return agentClient.onEvent((event) => {
+      if (event.type !== 'files_updated') return
+      if (event.workflowId && event.workflowId !== workflowId) return
+      void refreshFiles()
+    })
+  }, [workflowId, refreshFiles])
 
   useEffect(() => {
     let cancelled = false
@@ -173,9 +181,14 @@ export function AgentRunPage({
               pendingHitl={state?.pendingHitl ?? null}
               emptyHint="Опишите задачу для агента и нажмите отправить. Записи требуют подтверждения."
               allowQuestionFiles
-              onAnswer={(requestId, value, filePaths) =>
+              onAnswer={(requestId, value, filePaths) => {
                 runs.answer(workflowId, requestId, value, filePaths)
-              }
+                if (filePaths && filePaths.length > 0) {
+                  window.setTimeout(() => {
+                    void refreshFiles()
+                  }, 400)
+                }
+              }}
               onHitl={(requestId, approved) => runs.respondHitl(workflowId, requestId, approved)}
               onSkip={() => runs.skip(workflowId)}
             />

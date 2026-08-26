@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { WorkflowFileItem, WorkflowRecord } from '../api/types'
 import { AgentFeed, StageStepper, type FormationController } from '../components/agentfeed'
@@ -116,8 +117,7 @@ export function AgentStudioPage({
 
   const refreshFiles = useCallback(async () => {
     try {
-      const list = await api.listPlatformFiles()
-      setFiles(list.filter((f) => !f.workflowId || f.workflowId === workflowId))
+      setFiles(await api.listWorkflowFiles(workflowId))
     } catch {
       setFiles([])
     }
@@ -179,6 +179,14 @@ export function AgentStudioPage({
     void refreshFiles()
   }, [tab, refreshFiles])
 
+  useEffect(() => {
+    return agentClient.onEvent((event) => {
+      if (event.type !== 'files_updated') return
+      if (event.workflowId && event.workflowId !== workflowId) return
+      void refreshFiles()
+    })
+  }, [workflowId, refreshFiles])
+
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({
       title: 'Прикрепить файл',
@@ -190,6 +198,19 @@ export function AgentStudioPage({
 
   const removeAttachment = (path: string): void => {
     setAttachments((prev) => prev.filter((item) => item !== path))
+  }
+
+  const answerWithRefresh = (
+    requestId: string,
+    value: string,
+    filePaths?: string[]
+  ): void => {
+    session.answer(requestId, value, filePaths)
+    if (filePaths && filePaths.length > 0) {
+      window.setTimeout(() => {
+        void refreshFiles()
+      }, 400)
+    }
   }
 
   const submit = (): void => {
@@ -228,7 +249,7 @@ export function AgentStudioPage({
               hideRunningStatus
               dockQuestion
               emptyHint="Проектировщик готовит черновик агента. Ответьте на уточняющие вопросы, если они появятся."
-              onAnswer={session.answer}
+              onAnswer={answerWithRefresh}
               onHitl={session.respondHitl}
               onSkip={session.skip}
             />
@@ -240,7 +261,7 @@ export function AgentStudioPage({
                   key={`${session.pendingQuestion.requestId}:${session.pendingQuestion.question}:${session.pendingQuestion.options.join('|')}`}
                   question={session.pendingQuestion}
                   allowFiles
-                  onAnswer={session.answer}
+                  onAnswer={answerWithRefresh}
                 />
               </div>
             )}
