@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -14,16 +13,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.orchestrator.engine import counts, decide, start_process
-from app.orchestrator.models import (
-    COMPLETED,
-    DEFINITIONS,
-    READY,
-    WAITING_HUMAN,
-    ProcessDefinition,
-    ProcessInstance,
-)
-from app.orchestrator.store import latest_by_definition, load_instances
+from app.api_client import BoardAgent
+from app.orchestrator.agents import bound_workflow_id
+from app.orchestrator.engine import counts
+from app.orchestrator.kpi import format_percent, has_position_kpi, score_rows, weighted_score
+from app.orchestrator.models import DEFINITIONS, ProcessDefinition, ProcessInstance
+from app.orchestrator.store import load_instances
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, scroll_bar_qss
 
 _USER_MENU_RESERVE = 360
@@ -63,22 +58,16 @@ QPushButton {
 QPushButton:hover { background: #0A8A70; }
 QPushButton:pressed { background: #06483D; }
 """
-_SECONDARY_BTN = """
-QPushButton {
-    background: #FFFFFF;
-    color: #06483D;
-    border: 1px solid rgba(16,24,23,0.12);
-    border-radius: 12px;
-    padding: 0 14px;
-}
-QPushButton:hover { background: #F4F7F6; }
-"""
 
 
 class OrchestratorPage(QWidget):
+    run_requested = Signal(str)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._user_id = "local"
+        self._user_fio = ""
+        self._bound_agents: list[BoardAgent] = []
         title = QLabel("Оркестратор")
         title.setFont(app_font(28, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
@@ -113,7 +102,7 @@ class OrchestratorPage(QWidget):
         self._cards.setContentsMargins(0, 0, 0, 0)
         self._cards.setSpacing(12)
 
-        note = QLabel("Старт создаёт экземпляр локально и останавливается на решении человека. Агенты ещё не подключены.")
+        note = QLabel("Запуск открывает опубликованного агента и выполняет его рабочую задачу.")
         note.setWordWrap(True)
         note.setFont(app_font(13))
         note.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
@@ -125,7 +114,20 @@ class OrchestratorPage(QWidget):
         inner_lay.setSpacing(16)
         inner_lay.addWidget(today)
         inner_lay.addLayout(chips)
+        self._kpi_title = QLabel("KPI должности")
+        self._kpi_title.setFont(app_font(16, QFont.Weight.DemiBold))
+        self._kpi_title.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        self._kpi_score = QLabel("")
+        self._kpi_score.setFont(app_font(13, QFont.Weight.Medium))
+        self._kpi_score.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
+        self._kpi_box = QVBoxLayout()
+        self._kpi_box.setContentsMargins(0, 0, 0, 0)
+        self._kpi_box.setSpacing(8)
+
         inner_lay.addLayout(self._cards)
+        inner_lay.addWidget(self._kpi_title)
+        inner_lay.addWidget(self._kpi_score)
+        inner_lay.addLayout(self._kpi_box)
         inner_lay.addWidget(note)
         inner_lay.addStretch(1)
 
@@ -142,24 +144,104 @@ class OrchestratorPage(QWidget):
         root.addWidget(scroll, 1)
         self.refresh()
 
-    def set_user(self, user_id: str) -> None:
+    def set_user(self, user_id: str, fio: str = "") -> None:
         self._user_id = user_id or "local"
+        self._user_fio = fio or ""
+        self.refresh()
+
+    def set_bound_agents(self, agents: list[BoardAgent] | None) -> None:
+        self._bound_agents = [item for item in (agents or []) if item.kind == "workflow"]
         self.refresh()
 
     def refresh(self) -> None:
         instances = load_instances(self._user_id)
-        waiting, active, errors = counts(instances)
+        waiting, active, errors = self._today_counts(instances)
         self._set_chip(self._chip_waiting, str(waiting))
         self._set_chip(self._chip_active, str(active))
         self._set_chip(self._chip_errors, str(errors))
-        latest = latest_by_definition(instances)
         while self._cards.count():
             taken = self._cards.takeAt(0)
             widget = taken.widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
         for definition in DEFINITIONS:
-            self._cards.addWidget(self._process_card(definition, latest.get(definition.id)))
+            self._cards.addWidget(self._process_card(definition))
+        self._render_kpi(instances)
+
+    def _today_counts(self, instances: list[ProcessInstance]) -> tuple[int, int, int]:
+        if self._bound_agents:
+            waiting = sum(1 for item in self._bound_agents if item.status == "needs_attention")
+            active = sum(1 for item in self._bound_agents if item.status == "active")
+            errors = sum(1 for item in self._bound_agents if item.last_run_status == "error")
+            return waiting, active, errors
+        return counts(instances)
+
+    def _render_kpi(self, instances: list[ProcessInstance]) -> None:
+        show = has_position_kpi(self._user_id, self._user_fio)
+        self._kpi_title.setVisible(show)
+        self._kpi_score.setVisible(show)
+        while self._kpi_box.count():
+            taken = self._kpi_box.takeAt(0)
+            widget = taken.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+        if not show:
+            return
+        rows = score_rows(instances)
+        score = weighted_score(rows)
+        self._kpi_score.setText(f"Итого: {format_percent(score)}")
+        header = self._kpi_row("№", "Показатель", "Цель", "Вес", "Факт", header=True)
+        self._kpi_box.addWidget(header)
+        for row in rows:
+            self._kpi_box.addWidget(
+                self._kpi_row(
+                    str(row.number),
+                    row.name,
+                    f"≥ {format_percent(row.target)}",
+                    f"{row.weight:g}%",
+                    format_percent(row.fact),
+                    color=row.color,
+                )
+            )
+
+    def _kpi_row(
+        self,
+        number: str,
+        name: str,
+        target: str,
+        weight: str,
+        fact: str,
+        *,
+        header: bool = False,
+        color: str = "",
+    ) -> QFrame:
+        card = QFrame()
+        card.setObjectName("OrchCard")
+        card.setStyleSheet(_CARD)
+        row = QHBoxLayout(card)
+        row.setContentsMargins(16, 10, 16, 10)
+        row.setSpacing(12)
+        weight_font = app_font(12, QFont.Weight.DemiBold if header else QFont.Weight.Medium)
+        fact_color = COLOR_CONTENT_MUTED.name() if header else (color or MAIN_TEXT.name())
+        cells = (
+            (number, 28),
+            (name, 0),
+            (target, 90),
+            (weight, 56),
+            (fact, 90),
+        )
+        for index, (text, width) in enumerate(cells):
+            label = QLabel(text)
+            label.setWordWrap(index == 1)
+            label.setFont(weight_font)
+            tone = fact_color if index == 4 else (COLOR_CONTENT_MUTED.name() if header else MAIN_TEXT.name())
+            label.setStyleSheet(f"color: {tone}; background: transparent;")
+            if width:
+                label.setFixedWidth(width)
+            row.addWidget(label, 1 if index == 1 else 0)
+        return card
 
     def _chip(self, label: str, value: str) -> QFrame:
         card = QFrame()
@@ -186,10 +268,20 @@ class OrchestratorPage(QWidget):
         if number is not None:
             number.setText(value)
 
-    def _process_card(self, definition: ProcessDefinition, instance: ProcessInstance | None) -> QFrame:
-        status = instance.status if instance is not None else READY
-        status_label = instance.status_label if instance is not None else "Готов к запуску"
-        waiting = instance.waiting if instance is not None else 0
+    def _process_card(self, definition: ProcessDefinition) -> QFrame:
+        workflow_id = bound_workflow_id(definition, self._bound_agents)
+        agent = next((item for item in self._bound_agents if item.id == workflow_id), None)
+        status_label = "Опубликован"
+        status_code = "active"
+        if agent is not None:
+            status_code = agent.status or "active"
+            status_label = "Нужно внимание" if status_code == "needs_attention" else "Активен"
+            if agent.paused:
+                status_label = "Пауза"
+                status_code = "paused"
+        goal = ""
+        if agent is not None:
+            goal = agent.description or ""
         card = QFrame()
         card.setObjectName("OrchCard")
         card.setStyleSheet(_CARD)
@@ -199,38 +291,26 @@ class OrchestratorPage(QWidget):
         name.setWordWrap(True)
         name.setStyleSheet(f"color: {MAIN_TEXT.name()}; background: transparent;")
 
-        pill = QLabel(f"{status_label} · {status}")
+        pill = QLabel(f"{status_label} · {status_code}")
         pill.setObjectName("OrchStatus")
         pill.setFont(app_font(12, QFont.Weight.Medium))
         pill.setStyleSheet(_STATUS)
 
-        meta = QLabel(f"ждут меня: {waiting}")
+        meta = QLabel(goal or "Запуск откроет агента из «Мои агенты».")
         meta.setFont(app_font(13))
+        meta.setWordWrap(True)
         meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
+
+        start = QPushButton("Запустить")
+        start.setCursor(Qt.CursorShape.PointingHandCursor)
+        start.setFixedHeight(36)
+        start.setStyleSheet(_START_BTN)
+        start.clicked.connect(lambda _checked=False, wid=workflow_id: self.run_requested.emit(wid))
 
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
         actions.setSpacing(8)
-        if status == WAITING_HUMAN and instance is not None:
-            approve = QPushButton("Подтвердить")
-            approve.setCursor(Qt.CursorShape.PointingHandCursor)
-            approve.setFixedHeight(36)
-            approve.setStyleSheet(_START_BTN)
-            approve.clicked.connect(lambda: self._decide(instance.id, True))
-            reject = QPushButton("Вернуть")
-            reject.setCursor(Qt.CursorShape.PointingHandCursor)
-            reject.setFixedHeight(36)
-            reject.setStyleSheet(_SECONDARY_BTN)
-            reject.clicked.connect(lambda: self._decide(instance.id, False))
-            actions.addWidget(approve)
-            actions.addWidget(reject)
-        if status in {READY, COMPLETED} or instance is None:
-            start = QPushButton("Старт")
-            start.setCursor(Qt.CursorShape.PointingHandCursor)
-            start.setFixedHeight(36)
-            start.setStyleSheet(_START_BTN)
-            start.clicked.connect(lambda _checked=False, did=definition.id: self._start(did))
-            actions.addWidget(start)
+        actions.addWidget(start)
         actions.addStretch(1)
 
         top = QHBoxLayout()
@@ -246,17 +326,3 @@ class OrchestratorPage(QWidget):
         lay.addWidget(pill, 0, Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(meta)
         return card
-
-    def _start(self, definition_id: str) -> None:
-        _instances, error = start_process(self._user_id, definition_id)
-        if error:
-            QMessageBox.information(self, "Оркестратор", error)
-            return
-        self.refresh()
-
-    def _decide(self, instance_id: str, approved: bool) -> None:
-        _instances, error = decide(self._user_id, instance_id, approved)
-        if error:
-            QMessageBox.information(self, "Оркестратор", error)
-            return
-        self.refresh()

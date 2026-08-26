@@ -492,6 +492,15 @@ def test_is_ask_question_name() -> None:
     assert not is_ask_question("web_search")
 
 
+def test_cursor_env_fallback_reads_named_key(tmp_path: Path) -> None:
+    from app.config import _env_value
+
+    path = tmp_path / ".env"
+    path.write_text("CURSOR_API_KEY=secret-value\nOTHER=1\n", encoding="utf-8")
+    assert _env_value(path, "CURSOR_API_KEY") == "secret-value"
+    assert _env_value(path, "MISSING") == ""
+
+
 def test_bridge_reports_missing_api_key(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
     runner = tmp_path / "runner.ts"

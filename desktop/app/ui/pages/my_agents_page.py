@@ -335,7 +335,7 @@ class MyAgentsPage(QWidget):
         left.setFixedWidth(_AGENTS_PANE_WIDTH)
         left.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
-        self.calendar = RunCalendar()
+        self.calendar = RunCalendar(self)
         self.calendar.range_changed.connect(self.board_range_changed.emit)
         self.calendar.event_clicked.connect(self.open_run_requested.emit)
         self.calendar.schedule_run_requested.connect(self.schedule_run_requested.emit)
@@ -448,6 +448,7 @@ class MyAgentsPage(QWidget):
             item = self._list.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
         agents = self._visible_agents()
         self._count.setText(f"Агенты  ·  {len(agents)}")

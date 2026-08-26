@@ -136,6 +136,42 @@ def test_anna_credentials() -> None:
     assert not matches_test_user_query("иван")
 
 
+def test_zhalybin_credentials() -> None:
+    from app.chat.test_user import (
+        ZHALYBIN_FIO,
+        ZHALYBIN_PASSWORD,
+        is_local_test_user,
+        is_zhalybin_user,
+        test_login_result,
+    )
+
+    assert is_test_user_fio("Жалыбин Максим")
+    assert is_test_credentials(ZHALYBIN_FIO, ZHALYBIN_PASSWORD)
+    assert is_test_credentials(ZHALYBIN_FIO, "any-local")
+    result = test_login_result(ZHALYBIN_FIO)
+    assert result.user.fio == ZHALYBIN_FIO
+    assert result.user.position == "Промпт-инженер 2 категории"
+    assert is_zhalybin_user(result.user.id, result.user.fio)
+    assert is_local_test_user(result.user.id, result.user.fio)
+
+
+def test_ilchenko_credentials() -> None:
+    from app.chat.test_user import ILCHENKO_FIO, ILCHENKO_PASSWORD, test_login_result
+
+    assert is_test_user_fio("Ильченко Екатерина")
+    assert is_test_credentials(ILCHENKO_FIO, ILCHENKO_PASSWORD)
+    assert not is_test_credentials(ILCHENKO_FIO, "anna")
+    result = test_login_result("Ильченко Екатерина Александровна")
+    assert result.user.fio == ILCHENKO_FIO
+    assert result.access_token == ""
+    from app.chat.test_user import canonical_test_credentials, is_local_test_user
+
+    assert is_local_test_user(result.user.id, result.user.fio)
+    creds = canonical_test_credentials(fio=ILCHENKO_FIO)
+    assert creds is not None
+    assert creds[1] == ILCHENKO_PASSWORD
+
+
 def test_threads_sort_by_pin_then_last_message() -> None:
     older = ChatThread(id="a", kind="dm", title="A", last_message_at="2026-08-24T10:00:00+00:00")
     newer = ChatThread(id="b", kind="dm", title="B", last_message_at="2026-08-24T12:00:00+00:00")

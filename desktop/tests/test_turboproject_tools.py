@@ -29,6 +29,8 @@ def test_desktop_catalog_contains_new_turboproject_tools() -> None:
         GET_PORTFOLIO_SUMMARY_TOOL_NAME,
     } <= names
     overdue_tool = registry.get(GET_OVERDUE_PROJECTS_TOOL_NAME)
-    assert "просрочены" in overdue_tool.definition.description.casefold()
+    overdue_text = f"{overdue_tool.definition.title} {overdue_tool.definition.description}".casefold()
+    assert "просрочен" in overdue_text
+    assert "project_ids" in overdue_tool.definition.description
     tasks_tool = registry.get(GET_PROJECT_TASKS_TOOL_NAME)
     assert "project_id" in tasks_tool.definition.input_schema.get("required", [])

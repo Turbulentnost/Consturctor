@@ -141,8 +141,11 @@ class LoginPage(QWidget):
         )
 
         saved = saved_fio()
-        if saved:
-            self.fio_edit.setText(saved)
+        from app.chat.test_user import ZHALYBIN_FIO, is_ilchenko_user
+
+        if not saved or is_ilchenko_user(fio=saved):
+            saved = ZHALYBIN_FIO
+        self.fio_edit.setText(saved)
 
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
@@ -214,9 +217,12 @@ class LoginPage(QWidget):
         self.error_label.setText("")
         self.login_btn.setEnabled(True)
         self.remember_check.setChecked(remember_preference())
+        from app.chat.test_user import ZHALYBIN_FIO, is_ilchenko_user
+
         fio = saved_fio()
-        if fio:
-            self.fio_edit.setText(fio)
+        if not fio or is_ilchenko_user(fio=fio):
+            fio = ZHALYBIN_FIO
+        self.fio_edit.setText(fio)
 
     def _search_fios(self, query: str) -> list[str]:
         return self._api.search_users(query)
@@ -232,18 +238,18 @@ class LoginPage(QWidget):
 
         self.login_btn.setEnabled(False)
         self.fio_edit.hide_suggestions()
-        from app.chat.test_user import is_test_user_fio, test_login_result
+        from app.chat.test_user import is_test_credentials, test_login_result
 
         try:
-            if is_test_user_fio(fio):
-                result = test_login_result()
-            else:
-                result: LoginResult = self._api.login(fio, password)
+            result = self._api.login(fio, password)
         except ApiError as exc:
-            self.error_label.setText(exc.message)
-            if exc.status_code == 503:
-                QMessageBox.warning(self, "Сервис недоступен", exc.message)
-            return
+            if is_test_credentials(fio, password):
+                result = test_login_result(fio)
+            else:
+                self.error_label.setText(exc.message)
+                if exc.status_code == 503:
+                    QMessageBox.warning(self, "Сервис недоступен", exc.message)
+                return
         finally:
             self.login_btn.setEnabled(True)
 

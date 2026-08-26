@@ -50,26 +50,30 @@ def _dump(instance: ProcessInstance) -> dict:
 def load_instances(user_id: str) -> list[ProcessInstance]:
     path = store_path(user_id)
     if not path.is_file():
-        seeded = _seed()
+        seeded = _seed_for(user_id)
         save_instances(user_id, seeded)
         return seeded
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return _seed()
+        return _seed_for(user_id)
     rows = payload.get("instances") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
-        return _seed()
+        return _seed_for(user_id)
     instances = [parsed for item in rows if isinstance(item, dict) and (parsed := _parse(item))]
-    return instances or _seed()
+    return instances or _seed_for(user_id)
 
 
 def save_instances(user_id: str, instances: list[ProcessInstance]) -> None:
     path = store_path(user_id)
-    path.write_text(
-        json.dumps({"instances": [_dump(item) for item in instances]}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    try:
+        path.write_text(
+            json.dumps({"instances": [_dump(item) for item in instances]}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        # Disk full: keep working from memory, do not crash login.
+        return
 
 
 def latest_by_definition(instances: list[ProcessInstance]) -> dict[str, ProcessInstance]:
@@ -79,6 +83,15 @@ def latest_by_definition(instances: list[ProcessInstance]) -> dict[str, ProcessI
         if current is None or item.updated_at >= current.updated_at:
             latest[item.definition_id] = item
     return latest
+
+
+def _seed_for(user_id: str) -> list[ProcessInstance]:
+    from app.chat.test_user import ILCHENKO_USER_ID
+    from app.orchestrator.kpi import seed_ilchenko_instances
+
+    if user_id == ILCHENKO_USER_ID:
+        return seed_ilchenko_instances()
+    return _seed()
 
 
 def _seed() -> list[ProcessInstance]:
@@ -103,4 +116,3 @@ def _seed() -> list[ProcessInstance]:
             events=[{"type": "seed", "status": READY, "at": now}],
         ),
     ]
-

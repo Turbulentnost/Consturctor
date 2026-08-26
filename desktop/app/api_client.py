@@ -965,7 +965,7 @@ class ApiClient:
         )
 
     def search_users(self, search: str = "") -> list[str]:
-        from app.chat.test_user import TEST_USER_FIO, matches_test_user_query
+        from app.chat.test_user import matching_test_fios
 
         items: list[str] = []
         error: ApiError | None = None
@@ -975,8 +975,9 @@ class ApiClient:
             items = [str(item) for item in (data.get("items") or [])]
         except ApiError as exc:
             error = exc
-        if matches_test_user_query(search) and TEST_USER_FIO not in items:
-            items.insert(0, TEST_USER_FIO)
+        for fio in matching_test_fios(search):
+            if fio not in items:
+                items.insert(0, fio)
         if items:
             return items
         if error is not None:

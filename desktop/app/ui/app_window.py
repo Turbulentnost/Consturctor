@@ -241,15 +241,32 @@ class AppWindow(QMainWindow):
         stored = load_session()
         if stored is None:
             return False
-        self.api.set_token(stored.access_token)
-        try:
-            user = self.api.me()
-        except ApiError:
-            clear_session(keep_fio=True)
-            self.api.set_token(None)
-            return False
-        self._enter_main(user)
-        return True
+        from app.chat.test_user import canonical_test_credentials, test_login_result
+
+        if stored.access_token:
+            self.api.set_token(stored.access_token)
+            try:
+                user = self.api.me()
+            except ApiError:
+                self.api.set_token(None)
+            else:
+                self._enter_main(user)
+                return True
+        creds = canonical_test_credentials(fio=stored.fio)
+        if creds is not None:
+            try:
+                result = self.api.login(*creds)
+            except ApiError:
+                result = test_login_result(stored.fio)
+                self.api.set_token(None)
+                save_session(access_token="", fio=stored.fio)
+            else:
+                save_session(access_token=result.access_token, fio=result.user.fio)
+            self._enter_main(result.user)
+            return True
+        clear_session(keep_fio=True)
+        self.api.set_token(None)
+        return False
 
     def _try_auto_login(self) -> bool:
         if auth_test_user():

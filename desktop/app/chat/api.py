@@ -72,19 +72,19 @@ class ChatApi:
                 if not prev.id and user.id:
                     merged[key] = user
         from app.chat.shared_bus import roster_list
-        from app.chat.test_user import TEST_USER_ID, test_directory_user
+        from app.chat.test_user import test_directory_users
 
         for user in roster_list():
             key = user.id or user.fio.casefold()
             merged.setdefault(key, user)
-        anna = test_directory_user()
-        merged.setdefault(anna.id, anna)
-        merged.setdefault(TEST_USER_ID, anna)
+        locals_ = test_directory_users()
+        for user in locals_:
+            merged.setdefault(user.id, user)
         if merged:
             return sorted(merged.values(), key=lambda item: item.fio.casefold())
         if last_error is not None:
             raise last_error
-        return [anna]
+        return locals_
 
     def support_shelf(self, name: str) -> list[dict]:
         data = self._api._request("GET", f"/api/v1/chat/support/{name}")

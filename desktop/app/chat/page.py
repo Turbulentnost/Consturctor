@@ -44,10 +44,18 @@ from app.chat.widgets.employee_panel import EmployeePanel
 from app.chat.widgets.profile_dialog import ChatProfileDialog
 from app.chat.widgets.user_picker import UserPickerDialog
 from app.chat.widgets.file_chip import FileChip, FlowLayout
-from app.chat.wallpaper import ChatWallpaper
+from app.chat.wallpaper import CHAT_BG_GRID, CHAT_FRAME_RADIUS, ChatFrameRing, ChatWallpaper
 from app.chat.widgets.message_bubble import MessageBubble
 from app.chat.widgets.thread_card import ThreadCard
 from app.ui.theme import COLOR_CONTENT_MUTED, MAIN_TEXT, app_font, circular_pixmap, scroll_bar_qss
+
+_CHAT_PANE_QSS = """
+QFrame#ChatListPane, QFrame#ChatPane {
+    background: #FFFFFF;
+    border: 1px solid rgba(16, 24, 23, 0.10);
+    border-radius: 18px;
+}
+"""
 
 _VIRTUAL_SUPPORT = "support"
 _SHELVES = (("queue", "Не назначенные"), ("mine", "Мои"), ("all", "Все"))
@@ -390,7 +398,7 @@ class ChatPage(QWidget):
         header.addWidget(self._pin_btn, 0, Qt.AlignmentFlag.AlignTop)
 
         self._feed = QVBoxLayout()
-        self._feed.setContentsMargins(8, 8, 8, 8)
+        self._feed.setContentsMargins(12, 12, 12, 12)
         self._feed.addStretch(1)
         self._feed_host = QWidget()
         self._feed_host.setMinimumWidth(640)
@@ -426,12 +434,14 @@ class ChatPage(QWidget):
         self._feed_wrap = QWidget()
         self._feed_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._feed_wrap.setStyleSheet("background: transparent;")
-        self._wallpaper = ChatWallpaper(self._feed_wrap)
+        self._wallpaper = ChatWallpaper(self._feed_wrap, CHAT_BG_GRID, CHAT_FRAME_RADIUS)
+        self._frame_ring = ChatFrameRing(self._feed_wrap, CHAT_FRAME_RADIUS)
         stack = QStackedLayout(self._feed_wrap)
         stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
         stack.setContentsMargins(0, 0, 0, 0)
         stack.addWidget(self._wallpaper)
         stack.addWidget(self._scroll)
+        stack.addWidget(self._frame_ring)
         stack.setCurrentWidget(self._scroll)
         self._down_btn = QPushButton("↓", self._feed_wrap)
         self._down_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -518,20 +528,30 @@ class ChatPage(QWidget):
         self._info_panel.agent_opened.connect(lambda payload: self._open_agent_card(payload, mine=False))
         self._info_panel.hide()
 
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet("background: rgba(8, 116, 95, 0.12); border: none;")
+
         right = QVBoxLayout()
-        right.setContentsMargins(0, 0, 0, 0)
+        right.setContentsMargins(14, 12, 14, 12)
         right.setSpacing(10)
         right.addLayout(header)
+        right.addWidget(divider)
         right.addWidget(self._feed_wrap, 1)
         right.addLayout(compose_col)
 
         body = QHBoxLayout()
-        body.setSpacing(10)
-        self._left_wrap = QWidget()
-        self._left_wrap.setFixedWidth(268)
+        body.setSpacing(12)
+        left.setContentsMargins(12, 12, 12, 12)
+        self._left_wrap = QFrame()
+        self._left_wrap.setObjectName("ChatListPane")
+        self._left_wrap.setStyleSheet(_CHAT_PANE_QSS)
+        self._left_wrap.setFixedWidth(280)
         self._left_wrap.setLayout(left)
         self._left_wrap.hide()
-        right_wrap = QWidget()
+        right_wrap = QFrame()
+        right_wrap.setObjectName("ChatPane")
+        right_wrap.setStyleSheet(_CHAT_PANE_QSS)
         right_wrap.setLayout(right)
         body.addWidget(self._left_wrap, 0)
         body.addWidget(right_wrap, 1)

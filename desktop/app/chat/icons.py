@@ -69,10 +69,15 @@ def agent_icon_size(size: int = 22) -> QSize:
     return QSize(size, size)
 
 
-_SVG_PIN = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
-  <path d="M15.2 4.6 19.4 8.8c.5.5.3 1.3-.4 1.6l-3.2 1.2-3.4 3.4-1.3-1.3 3.4-3.4 1.2-3.2c.3-.7 1.1-.9 1.5-.5Z"
-        fill="#08745F"/>
-  <path d="M10.4 13.6 6 20" stroke="#08745F" stroke-width="1.9" stroke-linecap="round"/>
+_SVG_PIN = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <g transform="rotate(-45 12 12)" stroke="{_CLIP_COLOR}" stroke-width="1.85"
+     stroke-linecap="round" stroke-linejoin="round">
+    <rect x="7.5" y="2.6" width="9" height="3.3" rx="1.15"/>
+    <path d="M12 5.9 V8.5"/>
+    <path d="M8 8.5 h8 c1.15 0 1.7 1.2 1.05 2.1 C15.9 12.7 13.5 14.4 12 14.4
+             S8.1 12.7 6.95 10.6 C6.3 9.7 6.85 8.5 8 8.5 Z"/>
+    <path d="M12 14.4 V21.2"/>
+  </g>
 </svg>"""
 
 

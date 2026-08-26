@@ -120,6 +120,7 @@ def _run_gui() -> int:
     else:
         command = "raise"
     if not background and send_to_running(command):
+        print("Уже запущен — поднимаю существующее окно.")
         return 0
     if background and send_to_running("ping"):
         return 0

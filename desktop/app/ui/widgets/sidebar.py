@@ -5,16 +5,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Thread
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QMimeData, QPoint, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
+    QDrag,
     QFont,
-    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
     QPixmap,
-    QRadialGradient,
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -28,21 +27,18 @@ from PySide6.QtWidgets import (
 )
 
 from app.chat.models import ChatThread
+from app.ui.widgets.dock_layout import NAV_MIME
 from app.ui.theme import (
     COLOR_ACTIVE_BG,
     COLOR_ACTIVE_FG,
     ICON_CHAT,
     MAIN_TEXT,
-    MINT,
-    MINT_SOFT,
     NAV_ITEM_HEIGHT,
     NAV_ITEM_RADIUS,
-    SIDEBAR_BOTTOM,
     SIDEBAR_COLLAPSED,
     SIDEBAR_EXPANDED,
     SIDEBAR_MIDDLE,
     SIDEBAR_PADDING_X,
-    SIDEBAR_TOP,
     TEXT_LIGHT,
     TEXT_MUTED,
     app_font,
@@ -63,6 +59,11 @@ SIDEBAR_PAD_RIGHT = 28
 _TEMP = Path(__file__).resolve().parents[1] / "temp"
 _ICONS = Path(__file__).resolve().parents[1] / "icons"
 _ORCHESTRATOR_SVG = _ICONS / "orchestrator.svg"
+_CHAT_SVG = _ICONS / "chat.svg"
+_SVG_KINDS = {
+    "orchestrator": _ORCHESTRATOR_SVG,
+    "chat": _CHAT_SVG,
+}
 
 # Filename prefixes: серый* = active/pressed, белый* = inactive.
 _ICON_STEMS = {
@@ -139,8 +140,9 @@ def _load_svg_shape(path: Path) -> QPixmap:
 
 def _load_icon_pair(kind: str) -> tuple[QPixmap, QPixmap]:
     """Return (inactive/белый*, active/серый*)."""
-    if kind == "orchestrator":
-        shape = _load_svg_shape(_ORCHESTRATOR_SVG)
+    svg_path = _SVG_KINDS.get(kind)
+    if svg_path is not None:
+        shape = _load_svg_shape(svg_path)
         if shape.isNull():
             return QPixmap(), QPixmap()
         inactive = _tint_pixmap(shape, QColor("#FFFFFF"))
@@ -173,8 +175,55 @@ class NavItem:
     icon: str
 
 
+ALL_NAV_ITEMS: tuple[NavItem, ...] = (
+    NavItem("create", "Создать", "plus"),
+    NavItem("agents", "Мои агенты", "home"),
+    NavItem("files", "Файлы", "files"),
+    NavItem("kpi", "KPI", "kpi"),
+    NavItem("dashboard", "Мой дашборд", "dashboard"),
+    NavItem("orchestrator", "Оркестратор", "orchestrator"),
+    NavItem("chat", "Чат", "chat"),
+)
+NAV_BY_KEY = {item.key: item for item in ALL_NAV_ITEMS}
+_DRAG_THRESHOLD = 8
+
+
+def circle_ghost(item: NavItem, size: int = 48) -> QPixmap:
+    inactive, active = _load_icon_pair(item.icon)
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#08745F"))
+    painter.drawEllipse(1, 1, size - 2, size - 2)
+    icon = inactive if not inactive.isNull() else active
+    if icon.isNull():
+        painter.setPen(QColor("#FFFFFF"))
+        painter.setFont(nerd_font(18))
+        painter.drawText(QRectF(0, 0, size, size), int(Qt.AlignmentFlag.AlignCenter), ICON_CHAT)
+    else:
+        scaled = icon.scaled(22, 22, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        painter.drawPixmap((size - scaled.width()) // 2, (size - scaled.height()) // 2, scaled)
+    painter.end()
+    return pix
+
+
+def start_nav_drag(widget: QWidget, item: NavItem) -> None:
+    mime = QMimeData()
+    mime.setData(NAV_MIME, item.key.encode("utf-8"))
+    drag = QDrag(widget)
+    drag.setMimeData(mime)
+    ghost = circle_ghost(item)
+    drag.setPixmap(ghost)
+    drag.setHotSpot(QPoint(ghost.width() // 2, ghost.height() // 2))
+    drag.exec(Qt.DropAction.MoveAction)
+
+
 class NavigationItem(QWidget):
     clicked = Signal(str)
+    drag_started = Signal(str)
+    drag_finished = Signal()
 
     def __init__(
         self,
@@ -191,6 +240,8 @@ class NavigationItem(QWidget):
         self._active = False
         self._hover = False
         self._pressed = False
+        self._dragging = False
+        self._press_pos = QPoint()
         self._collapsed = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(NAV_ITEM_HEIGHT)
@@ -223,13 +274,35 @@ class NavigationItem(QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
             self._pressed = True
+            self._dragging = False
+            self._press_pos = event.position().toPoint()
             self.update()
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._pressed and not self._dragging:
+            delta = event.position().toPoint() - self._press_pos
+            if delta.manhattanLength() >= _DRAG_THRESHOLD:
+                self._dragging = True
+                self.drag_started.emit(self.item.key)
+                start_nav_drag(self, self.item)
+                self.drag_finished.emit()
+                self._pressed = False
+                self._dragging = False
+                self.update()
+                return
+        super().mouseMoveEvent(event)
+
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if self._pressed and event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.pos()):
+        if (
+            self._pressed
+            and not self._dragging
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.rect().contains(event.pos())
+        ):
             self.clicked.emit(self.item.key)
         self._pressed = False
+        self._dragging = False
         self.update()
         super().mouseReleaseEvent(event)
 
@@ -522,6 +595,8 @@ class GlassSidebar(QWidget):
     collapse_toggled = Signal(bool)
     dialog_selected = Signal(str)
     fio_search_chosen = Signal(str)
+    drag_started = Signal(str)
+    drag_finished = Signal()
 
     _avatar_ready = Signal(str, object)
 
@@ -537,15 +612,7 @@ class GlassSidebar(QWidget):
         self._fetch_avatar = fetch_avatar
         self._avatar_inflight: set[str] = set()
         self._avatar_ready.connect(self._on_avatar_ready)
-        self._items = [
-            NavItem("create", "Создать", "plus"),
-            NavItem("agents", "Мои агенты", "home"),
-            NavItem("files", "Файлы", "files"),
-            NavItem("kpi", "KPI", "kpi"),
-            NavItem("dashboard", "Мой дашборд", "dashboard"),
-            NavItem("orchestrator", "Оркестратор", "orchestrator"),
-            NavItem("chat", "Чат", "chat"),
-        ]
+        self._items = list(ALL_NAV_ITEMS)
         self._active_key = "create"
         self._active_dialog_id = ""
         self._collapsed = False
@@ -556,7 +623,7 @@ class GlassSidebar(QWidget):
         logo_path = Path(__file__).resolve().parents[1] / "temp" / "logo.png"
         self._logo = QPixmap(str(logo_path)) if logo_path.exists() else QPixmap()
         self._build_layout()
-        self.set_active_key("create", animate=False)
+        self.mark_active("create")
 
     def items(self) -> list[NavItem]:
         return list(self._items)
@@ -565,15 +632,28 @@ class GlassSidebar(QWidget):
         return self._active_key
 
     def set_active_key(self, key: str, *, animate: bool = True) -> None:
-        if key not in self._buttons:
-            return
+        self.mark_active(key)
+        self.page_changed.emit(key)
+
+    def mark_active(self, key: str) -> None:
         self._active_key = key
         self._active_dialog_id = ""
         for item_key, button in self._buttons.items():
             button.set_active(item_key == key)
         self._sync_peer_active()
         self.hide_search_suggestions()
-        self.page_changed.emit(key)
+
+    def set_keys(self, keys: list[str]) -> None:
+        self._items = [NAV_BY_KEY[key] for key in keys if key in NAV_BY_KEY]
+        while self._nav.count():
+            taken = self._nav.takeAt(0)
+            widget = taken.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._buttons.clear()
+        for item in self._items:
+            self._add_nav_button(item)
+        self.mark_active(self._active_key)
 
     def is_collapsed(self) -> bool:
         return self._collapsed
@@ -647,20 +727,12 @@ class GlassSidebar(QWidget):
         self._root.addWidget(self._search)
         self._root.addSpacing(ITEM_GAP)
 
-        nav = QVBoxLayout()
-        nav.setContentsMargins(0, 0, 0, 0)
-        nav.setSpacing(ITEM_GAP)
+        self._nav = QVBoxLayout()
+        self._nav.setContentsMargins(0, 0, 0, 0)
+        self._nav.setSpacing(ITEM_GAP)
         for item in self._items:
-            inactive_icon, active_icon = _load_icon_pair(item.icon)
-            button = NavigationItem(
-                item,
-                icon_inactive=inactive_icon,
-                icon_active=active_icon,
-            )
-            button.clicked.connect(self.set_active_key)
-            nav.addWidget(button)
-            self._buttons[item.key] = button
-        self._root.addLayout(nav)
+            self._add_nav_button(item)
+        self._root.addLayout(self._nav)
         self._root.addSpacing(12)
 
         self._divider = QFrame()
@@ -783,22 +855,24 @@ class GlassSidebar(QWidget):
         self._search.edit.setFocus(Qt.FocusReason.MouseFocusReason)
         self._search.edit.open_suggestions()
 
+    def _add_nav_button(self, item: NavItem) -> None:
+        inactive_icon, active_icon = _load_icon_pair(item.icon)
+        button = NavigationItem(
+            item,
+            icon_inactive=inactive_icon,
+            icon_active=active_icon,
+        )
+        button.set_collapsed(self._collapsed)
+        button.clicked.connect(self.set_active_key)
+        button.drag_started.connect(self.drag_started.emit)
+        button.drag_finished.connect(self.drag_finished.emit)
+        self._nav.addWidget(button)
+        self._buttons[item.key] = button
+
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect())
-
-        gradient = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
-        gradient.setColorAt(0.0, SIDEBAR_TOP)
-        gradient.setColorAt(0.45, SIDEBAR_MIDDLE)
-        gradient.setColorAt(1.0, SIDEBAR_BOTTOM)
-        p.fillRect(rect, gradient)
-
-        glow = QRadialGradient(rect.left() + 56, rect.top() + 70, 145)
-        glow.setColorAt(0.0, MINT_SOFT)
-        glow.setColorAt(1.0, QColor(98, 224, 190, 0))
-        p.fillRect(rect, glow)
-
-        p.setPen(QPen(QColor(MINT.red(), MINT.green(), MINT.blue(), 34), 1))
-        p.drawLine(rect.right() - 0.5, rect.top() + 18, rect.right() - 0.5, rect.bottom() - 18)
+        p.fillRect(rect, SIDEBAR_MIDDLE)
+        p.setPen(QPen(QColor(255, 255, 255, 18), 1))
+        p.drawLine(rect.right() - 0.5, rect.top(), rect.right() - 0.5, rect.bottom())
         p.end()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from threading import Thread
+from uuid import uuid4
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
@@ -294,8 +295,12 @@ class AgentRunPage(QWidget):
             try:
                 bridge = CursorSdkBridge()
                 bridge.check_ready()
-                record = self._api.start_local_agent_run(workflow_id, message=message)
-                run_id = record.id
+                has_token = bool(self._api.token)
+                if has_token:
+                    record = self._api.start_local_agent_run(workflow_id, message=message)
+                    run_id = record.id
+                else:
+                    run_id = str(uuid4())
                 self._event_ready.emit({"type": "run", "run_id": run_id})
                 run_cwd = bridge.workspace_cwd(workflow_id)
                 prepare_sdk_workspace(
@@ -317,15 +322,19 @@ class AgentRunPage(QWidget):
                     "run_id": run_id,
                     "work_result": {"text": answer},
                 }
-                self._api.finish_local_agent_run(
-                    workflow_id,
-                    run_id,
-                    status="ok",
-                    answer=answer,
-                    events=events,
-                    message=message,
-                )
-            except CursorSdkUnavailable:
+                if has_token:
+                    self._api.finish_local_agent_run(
+                        workflow_id,
+                        run_id,
+                        status="ok",
+                        answer=answer,
+                        events=events,
+                        message=message,
+                    )
+            except CursorSdkUnavailable as exc:
+                if not self._api.token:
+                    self.failed.emit(str(exc) or "Локальный Cursor SDK недоступен.")
+                    return
                 result = self._api.stream_workflow_agent_run(
                     workflow_id,
                     message,
@@ -335,7 +344,7 @@ class AgentRunPage(QWidget):
                 self.failed.emit(exc.message)
                 return
             except Exception as exc:  # noqa: BLE001
-                if run_id:
+                if run_id and self._api.token:
                     try:
                         self._api.finish_local_agent_run(
                             workflow_id,

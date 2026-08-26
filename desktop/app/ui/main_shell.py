@@ -4,7 +4,7 @@ from pathlib import Path
 from threading import Thread
 
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QFileDialog,
@@ -77,6 +77,19 @@ from app.ui.theme import (
     MAIN_TEXT,
     app_font,
 )
+from app.ui.widgets.detached_tab import DetachedTabWindow
+from app.ui.widgets.dock_layout import (
+    FLOAT,
+    detach_key,
+    first_docked_key,
+    load_float_geom,
+    load_layout,
+    move_key,
+    save_float_geom,
+    save_layout,
+)
+from app.ui.widgets.dock_overlay import DockDropOverlay
+from app.ui.widgets.dock_rail import DockRail
 from app.ui.widgets.sidebar import GlassSidebar
 from app.ui.widgets.user_menu import UserMenuHeader
 
@@ -348,6 +361,7 @@ class MainShell(QWidget):
         self._page_chat.open_agent_requested.connect(self._on_agent_history_requested)
         self._page_orchestrator = OrchestratorPage()
         self._page_chat.threads_changed.connect(self._sync_sidebar_dialogs)
+        self._page_orchestrator.run_requested.connect(self.navigate_to_agent_run)
         self._pages.addWidget(self._page_create)
         self._pages.addWidget(self._page_agents)
         self._pages.addWidget(self._page_implementation_agents)
@@ -398,6 +412,18 @@ class MainShell(QWidget):
             "chat": 22,
             "orchestrator": 23,
         }
+        self._nav_pages = {
+            "create": self._page_create,
+            "agents": self._page_agents,
+            "files": self._page_files,
+            "kpi": self._page_kpi,
+            "dashboard": self._page_dashboard,
+            "orchestrator": self._page_orchestrator,
+            "chat": self._page_chat,
+        }
+        self._float_windows: dict[str, DetachedTabWindow] = {}
+        self._dragging_key = ""
+        self._drag_consumed = False
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
         self._page_workflows.launch_requested.connect(self._on_launch_workflow_agent)
@@ -426,15 +452,11 @@ class MainShell(QWidget):
         self._page_agents.schedule_requested.connect(self._on_board_schedule_requested)
         self._page_agents.schedule_run_requested.connect(self._on_board_schedule_run)
         self._page_agents.board_range_changed.connect(self._load_agent_drafts)
-        self._page_history.back_requested.connect(
-            lambda: self._pages.setCurrentIndex(self._page_index["agents"])
-        )
-        self._page_group_runs.back_requested.connect(
-            lambda: self._pages.setCurrentIndex(self._page_index["agents"])
-        )
+        self._page_history.back_requested.connect(lambda: self._show_page("agents"))
+        self._page_group_runs.back_requested.connect(lambda: self._show_page("agents"))
         self._page_group_runs.open_requested.connect(self._on_calendar_run_requested)
         self._page_history.failed.connect(self._readiness_failed.emit)
-        self._page_passport.back_requested.connect(lambda: self._pages.setCurrentIndex(self._page_index["agents"]))
+        self._page_passport.back_requested.connect(lambda: self._show_page("agents"))
         self._page_passport.draft_requested.connect(self._on_passport_draft_requested)
         self._page_passport.answer_requested.connect(self._on_passport_answer_requested)
         self._page_passport.finished_requested.connect(self._on_passport_finished)
@@ -550,11 +572,33 @@ class MainShell(QWidget):
         self._expand_btn.raise_()
         self.user_menu.raise_()
 
+        self._rail_top = DockRail("top", self)
+        self._rail_right = DockRail("right", self)
+        self._rail_bottom = DockRail("bottom", self)
+        center = QWidget(self)
+        center_layout = QVBoxLayout(center)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(0)
+        center_layout.addWidget(self._rail_top, 0)
+        center_layout.addWidget(self._content, 1)
+        center_layout.addWidget(self._rail_bottom, 0)
+
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self.sidebar, 0)
-        root.addWidget(self._content, 1)
+        root.addWidget(center, 1)
+        root.addWidget(self._rail_right, 0)
+
+        self._dock_overlay = DockDropOverlay(self)
+        self._dock_layout = load_layout()
+        for rail in (self._rail_top, self._rail_right, self._rail_bottom):
+            rail.page_changed.connect(self._on_page_changed)
+            rail.drag_started.connect(self._on_nav_drag)
+            rail.drag_finished.connect(self._on_nav_drag_end)
+        self.sidebar.drag_started.connect(self._on_nav_drag)
+        self.sidebar.drag_finished.connect(self._on_nav_drag_end)
+        self._dock_overlay.dropped.connect(self._on_nav_docked)
 
         self._collapse_btn = QPushButton("‹", self)
         self._collapse_btn.setFixedSize(28, 28)
@@ -574,12 +618,66 @@ class MainShell(QWidget):
         )
         self._collapse_btn.clicked.connect(self.sidebar.toggle_collapsed)
 
+        self._apply_dock_layout(save=False)
         self.sidebar.set_active_key("create", animate=False)
+        QTimer.singleShot(0, self._restore_floated_tabs)
         QTimer.singleShot(0, self._position_overlays)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        self._dock_overlay.setGeometry(self.rect())
         self._position_overlays()
+
+    def _on_nav_drag(self, key: str) -> None:
+        self._dragging_key = key
+        self._drag_consumed = False
+        self._dock_overlay.setGeometry(self.rect())
+        self._dock_overlay.show()
+        self._dock_overlay.raise_()
+
+    def _on_nav_drag_end(self) -> None:
+        self._dock_overlay.hide()
+        key = self._dragging_key
+        consumed = self._drag_consumed
+        self._dragging_key = ""
+        self._drag_consumed = False
+        if consumed or not key:
+            return
+        pos = QCursor.pos()
+        host = self.window()
+        if host is not None and not host.frameGeometry().contains(pos):
+            self._detach_tab(key, pos)
+
+    def _on_nav_docked(self, side: str, key: str) -> None:
+        self._drag_consumed = True
+        if side == FLOAT:
+            self._detach_tab(key)
+            return
+        if key in self._float_windows:
+            self._redock_tab(key, side)
+            return
+        self._dock_layout = move_key(self._dock_layout, key, side)
+        self._apply_dock_layout()
+        self._sync_nav_active(self.sidebar.active_key())
+
+    def _apply_dock_layout(self, *, save: bool = True) -> None:
+        self.sidebar.set_keys(self._dock_layout.get("left") or [])
+        left_has = bool(self._dock_layout.get("left"))
+        self.sidebar.setVisible(left_has)
+        if hasattr(self, "_collapse_btn"):
+            self._collapse_btn.setVisible(left_has)
+        self._rail_top.set_keys(self._dock_layout.get("top") or [])
+        self._rail_right.set_keys(self._dock_layout.get("right") or [])
+        self._rail_bottom.set_keys(self._dock_layout.get("bottom") or [])
+        if save:
+            save_layout(self._dock_layout)
+        QTimer.singleShot(0, self._position_overlays)
+
+    def _sync_nav_active(self, key: str) -> None:
+        self.sidebar.mark_active(key)
+        self._rail_top.mark_active(key)
+        self._rail_right.mark_active(key)
+        self._rail_bottom.mark_active(key)
 
     def _position_overlays(self) -> None:
         self._position_collapse_btn()
@@ -587,12 +685,16 @@ class MainShell(QWidget):
 
     def _position_collapse_btn(self) -> None:
         btn = self._collapse_btn
+        if not self.sidebar.isVisible():
+            btn.hide()
+            return
+        btn.show()
+        origin = self.sidebar.mapTo(self, self.sidebar.rect().topLeft())
         if self.sidebar.is_collapsed():
-            x = (self.sidebar.width() - btn.width()) // 2
+            x = origin.x() + (self.sidebar.width() - btn.width()) // 2
         else:
-            # Bottom-right inside the left menu, not crossing into the content pane.
-            x = self.sidebar.width() - btn.width() - 12
-        y = self.height() - btn.height() - 22
+            x = origin.x() + self.sidebar.width() - btn.width() - 12
+        y = origin.y() + self.sidebar.height() - btn.height() - 22
         btn.move(max(0, x), max(0, y))
         btn.raise_()
 
@@ -618,8 +720,12 @@ class MainShell(QWidget):
     def set_user(self, user: UserProfile, *, reset_home: bool = True) -> None:
         self._apply_user(user)
         if reset_home:
-            self.sidebar.set_active_key("create", animate=False)
-            self._pages.setCurrentIndex(0)
+            from app.chat.test_user import is_ilchenko_user
+
+            start_key = "orchestrator" if is_ilchenko_user(user.id, user.fio) else "create"
+            self.sidebar.set_active_key(start_key, animate=False)
+            idx = self._page_index.get(start_key, 0)
+            self._pages.setCurrentIndex(idx)
         QTimer.singleShot(0, self._refresh_profile)
 
     def _apply_user(self, user: UserProfile) -> None:
@@ -631,7 +737,10 @@ class MainShell(QWidget):
             activity_status=user.activity_status,
         )
         self._page_chat.set_user(user)
-        self._page_orchestrator.set_user(user.id)
+        self._page_orchestrator.set_user(user.id, user.fio)
+        if self._is_local_test_user():
+            self._page_orchestrator.set_bound_agents(self._local_session_board().agents)
+        QTimer.singleShot(0, self._ensure_backend_token)
         self._sync_sidebar_dialogs()
         self._load_avatar(user)
         pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap
@@ -771,6 +880,11 @@ class MainShell(QWidget):
             self._apply_user(user)
 
     def _on_create_regulation(self) -> None:
+        if not self._ensure_backend_token():
+            self._show_regulation_error(
+                "Нет сессии на сервере. Для создания регламента нужен вход, который выдаёт токен."
+            )
+            return
         self._page_loading.set_message(
             "Создаём чат регламента",
             "Готовим профиль стиля и первый вопрос.",
@@ -837,13 +951,27 @@ class MainShell(QWidget):
 
     def _on_regulation_selected(self, path: str) -> None:
         self._page_create.set_processing(True)
+        use_local = self._is_local_test_user() and not self._ensure_backend_token()
 
         def run() -> None:
             try:
-                result = self._api.upload_regulation(path)
+                if use_local:
+                    from app.local_auth import parse_local_regulation
+
+                    result = parse_local_regulation(path)
+                else:
+                    result = self._api.upload_regulation(path)
             except ApiError as exc:
-                self._regulation_failed.emit(exc.message)
-                return
+                if not self._is_local_test_user():
+                    self._regulation_failed.emit(exc.message)
+                    return
+                from app.local_auth import parse_local_regulation
+
+                try:
+                    result = parse_local_regulation(path)
+                except Exception:
+                    self._regulation_failed.emit(exc.message)
+                    return
             self._regulation_ready.emit(result)
 
         Thread(target=run, daemon=True).start()
@@ -859,6 +987,8 @@ class MainShell(QWidget):
 
     def _show_regulation_error(self, message: str) -> None:
         self._page_create.set_processing(False)
+        if self._pages.currentIndex() == self._page_index["loading"]:
+            self._pages.setCurrentIndex(self._page_index["create"])
         QMessageBox.warning(self, "Создание регламента", message)
 
     def _back_to_create(self) -> None:
@@ -900,12 +1030,23 @@ class MainShell(QWidget):
 
         def run() -> None:
             try:
-                result = self._api.extract_regulation_functions(
-                    self._current_regulation.regulation_id,
-                    position=position,
-                    department=department,
-                )
+                if self._is_local_test_user() and not self._api.token:
+                    from app.local_auth import local_role_match
+
+                    result = local_role_match(self._current_regulation, position, department)
+                else:
+                    result = self._api.extract_regulation_functions(
+                        self._current_regulation.regulation_id,
+                        position=position,
+                        department=department,
+                    )
             except ApiError as exc:
+                if self._is_local_test_user():
+                    from app.local_auth import local_role_match
+
+                    result = local_role_match(self._current_regulation, position, department)
+                    self._role_match_ready.emit(result)
+                    return
                 self._role_match_failed.emit(exc.message)
                 return
             self._role_match_ready.emit(result)
@@ -919,7 +1060,74 @@ class MainShell(QWidget):
         self._page_role_match.set_result(result, self._current_regulation)
         self._pages.setCurrentIndex(self._page_index["role_match"])
 
+    def _is_local_test_user(self) -> bool:
+        from app.chat.test_user import is_local_test_user
+
+        user = self._user
+        if user is None:
+            return False
+        return is_local_test_user(user.id, user.fio)
+
+    def _is_local_test_session(self) -> bool:
+        return not bool(getattr(self._api, "_token", None) or getattr(self._api, "token", None))
+
+    def _token_accepted_by_server(self) -> bool:
+        if not getattr(self._api, "token", None):
+            return False
+        try:
+            self._api.me()
+        except ApiError:
+            self._api.set_token(None)
+            return False
+        return True
+
+    def _ensure_backend_token(self) -> bool:
+        if self._token_accepted_by_server():
+            return True
+        from app.chat.test_user import canonical_test_credentials
+        from app.session_store import save_session
+
+        user = self._user
+        creds = canonical_test_credentials(
+            user_id=user.id if user is not None else "",
+            fio=user.fio if user is not None else "",
+        )
+        if creds is None:
+            return False
+        try:
+            result = self._api.login(*creds)
+        except ApiError:
+            return False
+        if not result.access_token or not self._token_accepted_by_server():
+            self._api.set_token(None)
+            return False
+        save_session(access_token=result.access_token, fio=result.user.fio or (user.fio if user else ""))
+        return True
+
+    def _local_session_board(self) -> WorkflowBoard:
+        from app.orchestrator.agents import local_board
+
+        return without_deleted_workflows(local_board(), self._deleted_workflow_ids)
+
+    def _merge_local_board(self, board: WorkflowBoard) -> WorkflowBoard:
+        if not self._is_local_test_user():
+            return board
+        from dataclasses import replace
+
+        local = self._local_session_board()
+        seen = {agent.id for agent in board.agents}
+        extra = [agent for agent in local.agents if agent.id not in seen]
+        if not extra:
+            return board
+        return replace(
+            board,
+            agents=[*extra, *board.agents],
+            stats=replace(board.stats, active_agents=board.stats.active_agents + len(extra)),
+        )
+
     def _show_role_match_error(self, message: str) -> None:
+        if self._is_local_test_session():
+            return
         if self._pages.currentIndex() == self._page_index["loading"]:
             self._pages.setCurrentIndex(self._page_index["review"])
         QMessageBox.warning(self, "Поиск фрагментов по должности", message)
@@ -1013,6 +1221,8 @@ class MainShell(QWidget):
         self._page_readiness.set_chat(result)
 
     def _show_readiness_error(self, message: str) -> None:
+        if self._is_local_test_session():
+            return
         self._pages.setCurrentIndex(self._page_index["role_match"])
         QMessageBox.warning(self, "Готовность регламента", message)
 
@@ -1334,13 +1544,96 @@ class MainShell(QWidget):
             self._page_review.set_fullscreen(False)
         self._set_expand_visible(on_review)
 
-    def _on_page_changed(self, key: str) -> None:
-        if self._review_fullscreen:
-            self._page_review.set_fullscreen(False)
+    def _show_page(self, key: str) -> None:
+        window = self._float_windows.get(key)
+        if window is not None:
+            window.show()
+            window.raise_()
+            window.activateWindow()
+            self._sync_nav_active(key)
+            return
         idx = self._page_index.get(key)
         if idx is None:
             return
         self._pages.setCurrentIndex(idx)
+        self._sync_nav_active(key)
+
+    def _restore_floated_tabs(self) -> None:
+        for key in list(self._dock_layout.get(FLOAT) or []):
+            self._detach_tab(key, restore=True)
+
+    def _detach_tab(self, key: str, pos=None, *, restore: bool = False) -> None:
+        if key not in self._nav_pages:
+            return
+        if key in self._float_windows:
+            self._show_page(key)
+            return
+        page = self._nav_pages[key]
+        idx = self._pages.indexOf(page)
+        if idx < 0:
+            return
+        placeholder = QWidget()
+        placeholder.setObjectName(f"float_placeholder_{key}")
+        self._pages.insertWidget(idx, placeholder)
+        self._pages.removeWidget(page)
+        window = DetachedTabWindow(key, page, self)
+        window.closed.connect(self._on_float_closed)
+        window.moved_or_resized.connect(self._on_float_geom)
+        window.drag_started.connect(self._on_nav_drag)
+        window.drag_finished.connect(self._on_nav_drag_end)
+        geom = load_float_geom(key)
+        if geom is not None:
+            window.setGeometry(*geom)
+        elif pos is not None:
+            window.move(max(0, pos.x() - 80), max(0, pos.y() - 20))
+        self._float_windows[key] = window
+        self._dock_layout = detach_key(self._dock_layout, key)
+        self._apply_dock_layout()
+        next_key = first_docked_key(self._dock_layout)
+        if next_key and self.sidebar.active_key() == key:
+            self.sidebar.mark_active(next_key)
+            self._show_page(next_key)
+        window.show()
+        if not restore:
+            window.raise_()
+            window.activateWindow()
+
+    def _redock_tab(self, key: str, side: str = "left") -> None:
+        window = self._float_windows.pop(key, None)
+        page = self._nav_pages.get(key)
+        if page is None:
+            return
+        if window is not None:
+            window.closed.disconnect(self._on_float_closed)
+            window.release_page()
+            window.hide()
+            window.deleteLater()
+        idx = self._page_index.get(key)
+        if idx is None:
+            return
+        placeholder = self._pages.widget(idx)
+        self._pages.insertWidget(idx, page)
+        if placeholder is not None and placeholder is not page:
+            self._pages.removeWidget(placeholder)
+            placeholder.deleteLater()
+        page.show()
+        self._dock_layout = move_key(self._dock_layout, key, side)
+        self._apply_dock_layout()
+        self._show_page(key)
+
+    def _on_float_closed(self, key: str) -> None:
+        if key in self._float_windows:
+            self._redock_tab(key, "left")
+
+    def _on_float_geom(self, key: str, x: int, y: int, width: int, height: int) -> None:
+        save_float_geom(key, x, y, width, height)
+
+    def _on_page_changed(self, key: str) -> None:
+        if self._review_fullscreen:
+            self._page_review.set_fullscreen(False)
+        if key not in self._page_index:
+            return
+        self._show_page(key)
         if key == "agents":
             self._page_agents.show_agents()
             self._load_agent_drafts()
@@ -1385,6 +1678,9 @@ class MainShell(QWidget):
         self._pages.setCurrentIndex(self._page_index["workflows"])
 
     def _load_agent_drafts(self) -> None:
+        if self._is_local_test_user() and self._is_local_test_session():
+            self._drafts_ready.emit((self._local_session_board(), []))
+            return
         window_from, window_to = self._page_agents.calendar_window()
 
         def run() -> None:
@@ -1392,6 +1688,9 @@ class MainShell(QWidget):
                 board = self._api.get_workflow_board(window_from=window_from, window_to=window_to)
                 drafts = self._api.list_agent_drafts()
             except ApiError as exc:
+                if self._is_local_test_user():
+                    self._drafts_ready.emit((self._local_session_board(), []))
+                    return
                 self._readiness_failed.emit(exc.message)
                 return
             self._drafts_ready.emit((board, drafts))
@@ -1418,10 +1717,13 @@ class MainShell(QWidget):
 
     def _show_drafts_result(self, result: object) -> None:
         if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[0], WorkflowBoard):
-            board = without_deleted_workflows(result[0], self._deleted_workflow_ids)
+            board = self._merge_local_board(
+                without_deleted_workflows(result[0], self._deleted_workflow_ids)
+            )
             drafts = [item for item in result[1] if isinstance(item, AgentDraft)] if isinstance(result[1], list) else []
             self._page_agents.set_board(board)
             self._page_agents.set_drafts(drafts)
+            self._page_orchestrator.set_bound_agents(board.agents)
             self.refresh_notification_badge()
             return
         if isinstance(result, tuple) and len(result) >= 2:
@@ -1617,6 +1919,13 @@ class MainShell(QWidget):
         if not wid:
             return
         self._schedule_from_agents = True
+        from app.orchestrator.agents import local_workflow
+
+        local = local_workflow(wid)
+        if local is not None:
+            goal = local.plan.goal if local.plan else ""
+            self._schedule_draft_ready.emit((local, ScheduleDraft(name=local.title or "ИИ-агент", goal=goal or "")))
+            return
 
         def run() -> None:
             try:
@@ -1636,6 +1945,11 @@ class MainShell(QWidget):
     def _on_board_schedule_run(self, workflow_id: str, at_iso: str) -> None:
         wid = (workflow_id or "").strip()
         if not wid or not (at_iso or "").strip():
+            return
+
+        from app.orchestrator.agents import is_local_workflow
+
+        if is_local_workflow(wid):
             return
 
         def run() -> None:
@@ -1858,6 +2172,10 @@ class MainShell(QWidget):
         Thread(target=run, daemon=True).start()
 
     def _on_stop_published_agent(self, workflow_id: str) -> None:
+        from app.orchestrator.agents import is_local_workflow
+
+        if is_local_workflow(workflow_id):
+            return
         answer = QMessageBox.question(
             self,
             "Приостановить агента",
@@ -1877,6 +2195,11 @@ class MainShell(QWidget):
         Thread(target=run, daemon=True).start()
 
     def _on_resume_published_agent(self, workflow_id: str) -> None:
+        from app.orchestrator.agents import is_local_workflow
+
+        if is_local_workflow(workflow_id):
+            return
+
         def run() -> None:
             try:
                 self._api.resume_workflow_auto_run(workflow_id)
@@ -1899,9 +2222,13 @@ class MainShell(QWidget):
         self._deleted_workflow_ids.add(workflow_id)
         current = getattr(self._page_agents, "_board", None)
         if isinstance(current, WorkflowBoard):
-            self._page_agents.set_board(
-                without_deleted_workflows(current, self._deleted_workflow_ids)
-            )
+            cleaned = without_deleted_workflows(current, self._deleted_workflow_ids)
+            self._page_agents.set_board(cleaned)
+            self._page_orchestrator.set_bound_agents(cleaned.agents)
+        from app.orchestrator.agents import is_local_workflow
+
+        if is_local_workflow(workflow_id):
+            return
 
         def run() -> None:
             try:
@@ -1948,6 +2275,12 @@ class MainShell(QWidget):
         wid = (workflow_id or "").strip()
         if not wid:
             return
+        from app.orchestrator.agents import local_workflow
+
+        record = local_workflow(wid)
+        if record is not None:
+            self._published_agent_ready.emit(record)
+            return
         self._pending_start_demo = bool(start_demo)
         self._pages.setCurrentIndex(self._page_index["loading"])
 
@@ -1969,6 +2302,12 @@ class MainShell(QWidget):
     def navigate_to_agent_history(self, workflow_id: str, run_id: str = "") -> None:
         wid = (workflow_id or "").strip()
         if not wid:
+            return
+        from app.orchestrator.agents import local_workflow
+
+        local = local_workflow(wid)
+        if local is not None:
+            self._agent_history_ready.emit((local.title, wid, [], None))
             return
 
         def run() -> None:
@@ -2002,6 +2341,12 @@ class MainShell(QWidget):
         self.navigate_to_agent_run(workflow_id)
 
     def _on_agent_history_requested(self, workflow_id: str, title: str) -> None:
+        from app.orchestrator.agents import local_workflow
+
+        if local_workflow(workflow_id) is not None:
+            self._agent_history_ready.emit((title, workflow_id, []))
+            return
+
         def run() -> None:
             try:
                 runs = self._api.list_agent_runs(workflow_id)

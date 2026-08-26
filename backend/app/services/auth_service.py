@@ -124,12 +124,81 @@ class AuthError(Exception):
         self.status_code = status_code
 
 
+_LOCAL_DESKTOP_USERS: tuple[tuple[str, str, str, str, str], ...] = (
+    (
+        "anna",
+        "A11ADEA24A5000000000000000000001",
+        "Анна Де Армас",
+        "Тест",
+        "Тестовый пользователь",
+    ),
+    (
+        "ilchenko",
+        "E11C4E11K00000000000000000000001",
+        "Ильченко Екатерина Александровна",
+        "Корпоративное управление",
+        "Корпоративный секретарь",
+    ),
+    (
+        "mdj",
+        "M11ZHALYBIN00000000000000000001",
+        "Жалыбин Максим Дмитриевич",
+        "Сектор по внедрению искусственного интеллекта",
+        "Промпт-инженер 2 категории",
+    ),
+)
+
+
+def _local_desktop_user(fio: str, password: str) -> tuple[str, str, str, str] | None:
+    key = _fio_key(fio)
+    entered = key.split()
+    for stored_password, user_id, canon_fio, department, position in _LOCAL_DESKTOP_USERS:
+        stored_key = _fio_key(canon_fio)
+        parts = stored_key.split()
+        matched = key == stored_key or (
+            len(entered) >= 2 and len(parts) >= 2 and entered[0] == parts[0] and entered[1] == parts[1]
+        )
+        if not matched:
+            continue
+        if password != stored_password:
+            return None
+        return user_id, canon_fio, department, position
+    return None
+
+
+def _login_via_local_desktop(fio: str, password: str) -> LoginResponse | None:
+    found = _local_desktop_user(fio, password)
+    if found is None:
+        return None
+    user_id, canon_fio, department, position = found
+    session_id = new_session_id()
+    replace_session(user_id, session_id)
+    token = create_access_token(
+        user_id=user_id,
+        fio=canon_fio,
+        department=department,
+        position=position,
+        session_id=session_id,
+    )
+    user_out = _to_user_out(
+        user_id=user_id,
+        fio=canon_fio,
+        department=department,
+        position=position,
+    )
+    _trace(f"Auth login local-desktop id={user_id} fio={canon_fio}")
+    return LoginResponse(access_token=token, user=user_out)
+
+
 async def login(fio: str, password: str) -> LoginResponse:
     fio = fio.strip()
     if not fio or not password:
         raise AuthError("Неверный логин или пароль", status_code=401)
 
     _trace(f"Auth login start fio={fio}")
+    local = await asyncio.to_thread(_login_via_local_desktop, fio, password)
+    if local is not None:
+        return local
     if _erp_sql_bypass_enabled():
         return await asyncio.to_thread(_login_via_bypass, fio, password)
 

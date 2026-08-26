@@ -97,14 +97,29 @@ QPushButton:hover { background: #0A8670; }
 """
 
 
+def _discard_widget(widget: QWidget | None) -> None:
+    if widget is None:
+        return
+    widget.hide()
+    widget.deleteLater()
+
+
 class _FlowLayout(QLayout):
     """Left-to-right row that wraps to the next line instead of shrinking items."""
 
     def __init__(self, parent: QWidget | None = None, spacing: int = 8) -> None:
-        super().__init__(parent)
+        super().__init__()
         self._items: list = []
         self.setContentsMargins(0, 0, 0, 0)
         self.setSpacing(spacing)
+        if parent is not None:
+            parent.setLayout(self)
+
+    def addWidget(self, widget: QWidget) -> None:  # noqa: N802
+        host = self.parentWidget()
+        if host is not None:
+            widget.setParent(host)
+        super().addWidget(widget)
 
     def addItem(self, item) -> None:  # noqa: N802
         self._items.append(item)
@@ -547,7 +562,7 @@ class _WeekGrid(QWidget):
 
     def _rebuild(self) -> None:
         for block in self._blocks:
-            block.deleteLater()
+            _discard_widget(block)
         self._blocks = []
         for group in group_by_slot(self._events):
             if len(group) == 1:
@@ -586,7 +601,8 @@ class _WeekGrid(QWidget):
             y = header + int(minutes / 60 * self._hour_h) + 4
             x = int(self._gutter + index * col_w) + 4
             block.setGeometry(QRect(x, y, max(72, int(col_w) - 10), min(46, self._hour_h - 8)))
-            block.show()
+            if self.isVisible():
+                block.show()
             block.raise_()
         self.setFixedHeight(header + self._hour_count() * self._hour_h)
         self.setFixedWidth(self._min_width())
@@ -670,7 +686,7 @@ class _MonthGrid(QWidget):
         from PySide6.QtWidgets import QGridLayout
 
         old = self._body
-        self._body = QWidget()
+        self._body = QWidget(self)
         grid = QGridLayout(self._body)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(6)
@@ -712,11 +728,11 @@ class _MonthGrid(QWidget):
                 if chips >= 3:
                     break
                 if len(group) == 1:
-                    chip = _EventBlock(group[0])
+                    chip = _EventBlock(group[0], frame)
                     chip.setMaximumHeight(36)
                     chip.clicked.connect(self.event_clicked.emit)
                 else:
-                    chip = _GroupBlock(group)
+                    chip = _GroupBlock(group, frame)
                     chip.setMaximumHeight(42)
                     chip.clicked.connect(self.group_clicked.emit)
                 col.addWidget(chip)
@@ -729,7 +745,7 @@ class _MonthGrid(QWidget):
             col.addStretch(1)
             grid.addWidget(frame, 1 + cell // 7, cell % 7)
         self._layout.replaceWidget(old, self._body)
-        old.deleteLater()
+        _discard_widget(old)
 
 
 class RunCalendar(QFrame):
@@ -1009,8 +1025,7 @@ class RunCalendar(QFrame):
         while self._tags.count():
             item = self._tags.takeAt(0)
             widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+            _discard_widget(widget)
         tags: list[tuple[str, str]] = []
         if self._agent_filter:
             title = next((agent.title for agent in self._agents if agent.id == self._agent_filter), "агент")

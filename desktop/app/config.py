@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-from app.envfile import load_env_file
+from app.envfile import load_env_file, read_env_text
 
 
 def _desktop_root() -> Path:
@@ -32,6 +32,47 @@ if getattr(sys, "frozen", False):
     _bundled_browsers = DESKTOP_ROOT / "ms-playwright"
     if _bundled_browsers.is_dir() and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_bundled_browsers)
+
+_CURSOR_ENV_KEYS = ("CURSOR_API_KEY", "CURSOR_API_BASE_URL", "CURSOR_SDK_MODEL")
+
+
+def _env_value(path: Path, name: str) -> str:
+    if not path.is_file():
+        return ""
+    prefix = f"{name}="
+    for line in read_env_text(path).splitlines():
+        text = line.strip()
+        if not text.startswith(prefix):
+            continue
+        raw = text[len(prefix):].strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+            raw = raw[1:-1]
+        return raw.strip()
+    return ""
+
+
+def _load_missing_cursor_env() -> None:
+    missing = [name for name in _CURSOR_ENV_KEYS if not os.getenv(name, "").strip()]
+    if not missing:
+        return
+    workspace = REPO_ROOT.parent if not getattr(sys, "frozen", False) else DESKTOP_ROOT
+    candidates = (
+        REPO_ROOT / "backend" / ".env",
+        DESKTOP_ROOT / "backend" / ".env",
+        workspace / "RegAgent" / ".env",
+        REPO_ROOT.parent / "RegAgent" / ".env",
+    )
+    for path in candidates:
+        for name in list(missing):
+            value = _env_value(path, name)
+            if value:
+                os.environ[name] = value
+        missing = [name for name in _CURSOR_ENV_KEYS if not os.getenv(name, "").strip()]
+        if not missing:
+            return
+
+
+_load_missing_cursor_env()
 
 
 def _env_flag(name: str) -> bool:

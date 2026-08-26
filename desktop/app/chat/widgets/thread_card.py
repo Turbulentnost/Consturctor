@@ -100,7 +100,7 @@ class ThreadCard(QFrame):
             )
 
         pin = QLabel()
-        pin.setPixmap(pin_icon(12).pixmap(pin_icon_size(12)))
+        pin.setPixmap(pin_icon(16).pixmap(pin_icon_size(16)))
         pin.setStyleSheet("background: transparent; border: none;")
         pin.setToolTip("Закреплён")
         pin.setVisible(thread.pinned)
