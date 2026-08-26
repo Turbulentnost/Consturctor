@@ -4,6 +4,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 
+from app.services.regulation.entity_tags import is_toc_line, strip_toc_leaders
 from app.services.regulation.types import ExtractedBlock
 
 _SPACE_RE = re.compile(r"[ \t]+")
@@ -37,6 +38,12 @@ def prepare_blocks(blocks: list[ExtractedBlock]) -> tuple[list[ExtractedBlock], 
         page = max(1, int(raw.page or 1))
         counters[page] = counters.get(page, 0) + 1
         raw.block_id = raw.block_id or f"B-{page:04d}-{counters[page]:04d}"
+
+        if is_toc_line(raw.text):
+            raw.block_type = "paragraph"
+            raw.text = raw.text
+            structured.append(raw)
+            continue
 
         heading = detect_heading(raw)
         if heading is not None:
@@ -87,6 +94,9 @@ def detect_heading(block: ExtractedBlock) -> tuple[str, int] | None:
         return None
     if text.startswith(("- ", "• ", "– ")):
         return None
+    if is_toc_line(text):
+        return None
+    text = strip_toc_leaders(text)
     numbering = block.numbering or _extract_numbering(text)
     lower = text.lower()
     heading_words = (

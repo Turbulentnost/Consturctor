@@ -37,6 +37,7 @@ def extract_pdf_text(path: Path) -> ExtractedDocument:
                 for piece, bbox, style_runs in text_blocks:
                     is_list_item = _is_bullet(piece)
                     font_size = _style_font_size(style_runs) or _guess_font_size(piece, baseline)
+                    left_pt = float(bbox[0]) if bbox else 0.0
                     blocks.append(
                         ExtractedBlock(
                             page=idx,
@@ -54,6 +55,10 @@ def extract_pdf_text(path: Path) -> ExtractedDocument:
                             numbering=_leading_numbering(piece),
                             bbox=bbox,
                             style_runs=style_runs,
+                            location={
+                                "leftPt": left_pt,
+                                "indentPt": max(0.0, left_pt - 72.0),
+                            },
                             confidence=1.0,
                         )
                     )

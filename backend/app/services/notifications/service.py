@@ -236,6 +236,14 @@ def mark_read(db: Session, *, user_id: str, notification_id: str) -> None:
         db.commit()
 
 
+def delete_notification(db: Session, *, user_id: str, notification_id: str) -> None:
+    row = db.get(Notification, notification_id)
+    if row is None or row.recipient_user_id != user_id:
+        raise NotificationError("Уведомление не найдено", 404)
+    db.delete(row)
+    db.commit()
+
+
 def clear_inbox(db: Session, *, user_id: str) -> int:
     count = (
         db.query(Notification)

@@ -20,6 +20,7 @@ from app.services.notifications.service import (
     NotificationError,
     clear_inbox,
     create_notification,
+    delete_notification,
     due_undelivered,
     list_directory_users,
     list_inbox,
@@ -104,6 +105,19 @@ def read_pending(
     # Desktop polls every ~15s; keep Redis presence alive even if WS briefly drops.
     mark_online(auth.user_id, auth.session_id)
     return list_pending(db, user_id=auth.user_id)
+
+
+@router.delete("/{notification_id}")
+def delete_one_notification(
+    notification_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    try:
+        delete_notification(db, user_id=auth.user_id, notification_id=notification_id)
+    except NotificationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return {"ok": True}
 
 
 @router.post("/{notification_id}/read")
