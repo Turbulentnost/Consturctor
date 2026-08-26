@@ -51,6 +51,28 @@ function optionalUrl(value: unknown): string | null {
   return text || null
 }
 
+function parsePlatformFile(item: Record<string, unknown>): WorkflowFileItem {
+  const id = String(item.id ?? '')
+  const workflowId = String(item.workflow_id ?? item.workflowId ?? '')
+  const downloadUrl =
+    String(item.downloadUrl ?? item.download_url ?? '') ||
+    (id && workflowId ? `/api/v1/workflows/${workflowId}/files/${id}/download` : '')
+  return {
+    id,
+    name: String(item.filename ?? item.name ?? item.fileName ?? ''),
+    sizeBytes: Number(item.size ?? item.sizeBytes ?? item.size_bytes ?? 0),
+    mime: String(item.mime_type ?? item.mime ?? ''),
+    downloadUrl,
+    createdAt: String(item.created_at ?? item.createdAt ?? ''),
+    workflowId,
+    runId: String(item.run_id ?? item.runId ?? ''),
+    source: String(item.source ?? 'user'),
+    origin: String(item.origin ?? ''),
+    scope: String(item.scope ?? ''),
+    agentTitle: String(item.agent_title ?? item.agentTitle ?? '')
+  }
+}
+
 function parseUser(data: Record<string, unknown>): UserProfile {
   return {
     id: String(data.id ?? ''),
@@ -1184,15 +1206,7 @@ export class ApiClient {
       timeoutMs: 20_000
     })
     const raw = (data.files as Record<string, unknown>[]) ?? []
-    return raw.map((item) => ({
-      id: String(item.id ?? ''),
-      name: String(item.filename ?? item.name ?? item.fileName ?? ''),
-      sizeBytes: Number(item.size ?? item.sizeBytes ?? item.size_bytes ?? 0),
-      mime: String(item.mime_type ?? item.mime ?? ''),
-      downloadUrl: String(item.downloadUrl ?? item.download_url ?? ''),
-      createdAt: String(item.created_at ?? item.createdAt ?? ''),
-      workflowId: String(item.workflow_id ?? item.workflowId ?? '')
-    }))
+    return raw.map(parsePlatformFile)
   }
 
   // ---------- Notifications ----------

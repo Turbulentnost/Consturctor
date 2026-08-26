@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import type { WorkflowFileItem } from '../api/types'
+import { groupFileSessions, type FileSessionGroup } from './filesGrouping'
 
 function formatSize(bytes: number): string {
   if (!bytes) return ''
@@ -30,6 +31,70 @@ function extIcon(name: string): string {
   return map[ext] ?? ext.toUpperCase().slice(0, 4) ?? 'FILE'
 }
 
+function originLabel(item: WorkflowFileItem): string {
+  return item.source === 'agent' ? 'создан агентом' : 'загружен вами'
+}
+
+function FileRow({
+  item,
+  onDownload
+}: {
+  item: WorkflowFileItem
+  onDownload: (item: WorkflowFileItem) => void
+}): React.JSX.Element {
+  const meta = [formatSize(item.sizeBytes), originLabel(item)].filter(Boolean).join(' · ')
+  return (
+    <div className="files-row">
+      <div className="files-ext">{extIcon(item.name)}</div>
+      <div className="files-row-body">
+        <div className="files-row-name">{item.name || 'file'}</div>
+        <div className="files-row-meta">{meta}</div>
+      </div>
+      {item.downloadUrl && (
+        <button className="icon-btn" title="Скачать файл" onClick={() => onDownload(item)}>
+          {'\u2913'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function SessionBlock({
+  group,
+  onDownload
+}: {
+  group: FileSessionGroup
+  onDownload: (item: WorkflowFileItem) => void
+}): React.JSX.Element {
+  const title = group.stamp ? `${group.title} · ${group.stamp}` : group.title
+  return (
+    <section className="files-session">
+      <h2 className="files-session-title">{title}</h2>
+      <p className="files-session-agent">{group.agentTitle}</p>
+      {group.ours.length > 0 && (
+        <>
+          <div className="files-source-label">Сформировано нами · {group.ours.length}</div>
+          <div className="files-session-list">
+            {group.ours.map((item) => (
+              <FileRow key={item.id} item={item} onDownload={onDownload} />
+            ))}
+          </div>
+        </>
+      )}
+      {group.agent.length > 0 && (
+        <>
+          <div className="files-source-label">Создано агентом · {group.agent.length}</div>
+          <div className="files-session-list">
+            {group.agent.map((item) => (
+              <FileRow key={item.id} item={item} onDownload={onDownload} />
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
 export function FilesPage(): React.JSX.Element {
   const [items, setItems] = useState<WorkflowFileItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -52,6 +117,8 @@ export function FilesPage(): React.JSX.Element {
     }
   }, [])
 
+  const groups = useMemo(() => groupFileSessions(items), [items])
+
   async function download(item: WorkflowFileItem): Promise<void> {
     if (!item.downloadUrl) return
     await api.download(item.downloadUrl, item.name)
@@ -60,7 +127,9 @@ export function FilesPage(): React.JSX.Element {
   return (
     <div>
       <h1 className="page-title">Файлы</h1>
-      <p className="page-subtitle">Файлы, созданные и загруженные ИИ-агентами</p>
+      <p className="page-subtitle">
+        Документы по сессиям формирования и запускам агента: отдельно наши файлы и файлы агента.
+      </p>
 
       {loading && (
         <div className="center-state">
@@ -73,63 +142,10 @@ export function FilesPage(): React.JSX.Element {
         <div className="placeholder-card">Пока нет файлов</div>
       )}
 
-      {!loading && !error && items.length > 0 && (
-        <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {items.map((item) => (
-            <div
-              key={item.id}
-              style={{
-                background: '#fff',
-                border: '1px solid var(--card-border)',
-                borderRadius: 14,
-                padding: '12px 16px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 14
-              }}
-            >
-              <div
-                style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 10,
-                  background: '#eef7f3',
-                  color: '#06483d',
-                  fontSize: 11,
-                  fontWeight: 700,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center'
-                }}
-              >
-                {extIcon(item.name)}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div
-                  style={{
-                    fontWeight: 500,
-                    color: 'var(--main-text)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap'
-                  }}
-                >
-                  {item.name}
-                </div>
-                <div style={{ fontSize: 12, color: 'var(--content-muted)' }}>
-                  {formatSize(item.sizeBytes)}
-                </div>
-              </div>
-              {item.downloadUrl && (
-                <button
-                  className="icon-btn"
-                  title="Скачать файл"
-                  onClick={() => download(item)}
-                >
-                  {'\u2913'}
-                </button>
-              )}
-            </div>
+      {!loading && !error && groups.length > 0 && (
+        <div className="files-sessions">
+          {groups.map((group) => (
+            <SessionBlock key={group.key} group={group} onDownload={download} />
           ))}
         </div>
       )}

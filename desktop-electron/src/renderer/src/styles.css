@@ -3141,8 +3141,13 @@ input {
   position: relative;
   z-index: 1;
   height: 100%;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: transparent;
+}
+.messenger-feed::-webkit-scrollbar {
+  width: 8px;
+  height: 0;
 }
 .messenger-feed-items {
   display: flex;
@@ -3150,12 +3155,17 @@ input {
   gap: 10px;
   padding: 16px 18px 20px;
   min-height: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 .messenger-item {
   display: flex;
   flex-direction: column;
   gap: 10px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 .messenger-date {
   align-self: center;
@@ -3172,13 +3182,17 @@ input {
   color: var(--content-muted);
 }
 .messenger-bubble {
-  max-width: 72%;
+  max-width: min(420px, 68%);
+  width: fit-content;
+  min-width: 0;
   align-self: flex-start;
   background: rgba(255, 255, 255, 0.94);
   border: 1px solid rgba(6, 72, 61, 0.08);
   border-radius: 16px 16px 16px 6px;
   padding: 10px 12px;
   box-shadow: 0 6px 16px rgba(16, 24, 23, 0.05);
+  overflow: hidden;
+  outline: none;
 }
 .messenger-bubble.mine {
   align-self: flex-end;
@@ -3186,10 +3200,25 @@ input {
   border-color: transparent;
   border-radius: 16px 16px 6px 16px;
 }
+.messenger-bubble:focus,
+.messenger-bubble:focus-visible {
+  outline: none;
+  box-shadow: 0 6px 16px rgba(16, 24, 23, 0.05);
+}
 .messenger-bubble-text {
   white-space: pre-wrap;
-  font-size: 14px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  word-wrap: break-word;
+  font-family: Calibri, Candara, 'Trebuchet MS', 'Segoe UI', sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
   color: var(--main-text);
+}
+.messenger-bubble-text::selection,
+.messenger-composer textarea::selection {
+  background: #c8e8dc;
+  color: #101817;
 }
 .messenger-bubble-time {
   margin-top: 6px;
@@ -3277,6 +3306,7 @@ input {
 }
 .messenger-composer textarea {
   flex: 1;
+  min-width: 0;
   min-height: 42px;
   max-height: 220px;
   height: 42px;
@@ -3284,10 +3314,24 @@ input {
   border-radius: 14px;
   padding: 10px 12px;
   resize: none;
+  overflow-x: hidden;
   overflow-y: hidden;
-  font-size: 14px;
+  font-family: Calibri, Candara, 'Trebuchet MS', 'Segoe UI', sans-serif;
+  font-size: 15px;
   line-height: 1.4;
   box-sizing: border-box;
+  outline: none;
+  box-shadow: none;
+  appearance: none;
+  -webkit-appearance: none;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.messenger-composer textarea:focus,
+.messenger-composer textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border-color: #08745f;
 }
 .messenger-icon-btn {
   width: 42px;
@@ -3408,4 +3452,70 @@ input {
 .messenger-offer-actions .btn-ghost,
 .messenger-offer-actions .btn-primary {
   flex: 1;
+}
+
+.files-sessions {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+.files-session-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--main-text);
+}
+.files-session-agent {
+  margin: 4px 0 12px;
+  font-size: 13px;
+  color: var(--content-muted);
+}
+.files-source-label {
+  margin: 12px 0 8px;
+  font-size: 13px;
+  font-weight: 650;
+  color: #08745f;
+}
+.files-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.files-row {
+  background: #fff;
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.files-ext {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #eef7f3;
+  color: #06483d;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.files-row-body {
+  flex: 1;
+  min-width: 0;
+}
+.files-row-name {
+  font-weight: 500;
+  color: var(--main-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-row-meta {
+  font-size: 12px;
+  color: var(--content-muted);
 }

@@ -93,6 +93,11 @@ export interface WorkflowFileItem {
   downloadUrl?: string
   createdAt?: string
   workflowId?: string
+  runId?: string
+  source?: string
+  origin?: string
+  scope?: string
+  agentTitle?: string
 }
 
 export interface AgentKpiRow {
