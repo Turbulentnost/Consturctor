@@ -404,6 +404,83 @@ export interface WorkflowRecord {
   lastResult: string
 }
 
+export type TriggerKind = 'interval' | 'event' | 'datetime'
+export type IntervalUnit = 'minutes' | 'hours' | 'days'
+
+export interface ScheduleTriggerSpec {
+  kind: TriggerKind
+  message: string
+  intervalValue: number
+  intervalUnit: IntervalUnit
+  condition: string
+  at: string
+  once: boolean
+}
+
+export interface ScheduleDraft {
+  name: string
+  goal: string
+  summary: string
+  triggers: ScheduleTriggerSpec[]
+}
+
+export interface KpiSide {
+  label: string
+  value: number | string | null
+  unit: string
+  description: string
+}
+
+export interface KpiMeasure {
+  kind: string
+  params: Record<string, unknown>
+  formula: string
+}
+
+export interface KpiSchedule {
+  kind: string
+  intervalSeconds: number
+  at: string
+}
+
+export interface KpiMethod {
+  how: string
+  when: string
+  planUpdate: string
+  factUpdate: string
+  percentFormula: string
+  planExplanation: string
+  factExplanation: string
+  scoreExplanation: string
+  system: string
+  greenMin: number
+  yellowMin: number
+  schedule: KpiSchedule | null
+}
+
+export interface KpiTile {
+  id: string
+  name: string
+  plan: KpiSide
+  fact: KpiSide
+  measure: KpiMeasure | null
+  scorePercent: number | null
+  color: string
+  updatedAt: string
+  nextRunAt: string
+  evidence: string
+  method: KpiMethod | null
+}
+
+export interface AgentKpi {
+  status: string
+  generatedAt: string
+  summary: string
+  title: string
+  workflowId: string
+  tiles: KpiTile[]
+}
+
 export interface StreamEvent {
   type: string
   text?: string

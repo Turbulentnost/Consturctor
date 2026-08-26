@@ -35,6 +35,14 @@ import {
   type WorkflowFileItem,
   type WorkflowListItem,
   type WorkflowRecord,
+  type ScheduleDraft,
+  type ScheduleTriggerSpec,
+  type TriggerKind,
+  type IntervalUnit,
+  type AgentKpi,
+  type KpiTile,
+  type KpiSide,
+  type KpiMethod,
   type AgentSharePayload,
   type ChatAttachment,
   type ChatMessage,
@@ -651,6 +659,114 @@ export function parseWorkflow(data: Record<string, unknown>): WorkflowRecord {
   }
 }
 
+export function parseScheduleTrigger(raw: Record<string, unknown>): ScheduleTriggerSpec {
+  const kindRaw = String(raw.kind ?? 'event').toLowerCase()
+  const kind: TriggerKind =
+    kindRaw === 'interval' || kindRaw === 'datetime' ? (kindRaw as TriggerKind) : 'event'
+  const unitRaw = String(raw.interval_unit ?? raw.intervalUnit ?? 'hours').toLowerCase()
+  const intervalUnit: IntervalUnit =
+    unitRaw === 'minutes' || unitRaw === 'days' ? (unitRaw as IntervalUnit) : 'hours'
+  return {
+    kind,
+    message: String(raw.message ?? ''),
+    intervalValue: Number(raw.interval_value ?? raw.intervalValue ?? 0) || 0,
+    intervalUnit,
+    condition: String(raw.condition ?? ''),
+    at: String(raw.at ?? ''),
+    once: Boolean(raw.once)
+  }
+}
+
+export function parseScheduleDraft(raw: Record<string, unknown>): ScheduleDraft {
+  const triggers = ((raw.triggers as Record<string, unknown>[]) ?? [])
+    .filter((t) => t && typeof t === 'object')
+    .map((t) => parseScheduleTrigger(t))
+  return {
+    name: String(raw.name ?? ''),
+    goal: String(raw.goal ?? ''),
+    summary: String(raw.summary ?? raw.description ?? raw.recommendation ?? ''),
+    triggers
+  }
+}
+
+function parseKpiSide(raw: Record<string, unknown>): KpiSide {
+  const value = raw.value
+  return {
+    label: String(raw.label ?? ''),
+    value: value === null || value === undefined ? null : (value as number | string),
+    unit: String(raw.unit ?? ''),
+    description: String(raw.description ?? '')
+  }
+}
+
+function parseKpiMethod(raw: Record<string, unknown>): KpiMethod {
+  const schedule = asRecord(raw.schedule)
+  const hasSchedule = Boolean(raw.schedule && typeof raw.schedule === 'object')
+  return {
+    how: String(raw.how ?? ''),
+    when: String(raw.when ?? ''),
+    planUpdate: String(raw.plan_update ?? raw.planUpdate ?? ''),
+    factUpdate: String(raw.fact_update ?? raw.factUpdate ?? ''),
+    percentFormula: String(raw.percent_formula ?? raw.percentFormula ?? ''),
+    planExplanation: String(raw.plan_explanation ?? raw.planExplanation ?? ''),
+    factExplanation: String(raw.fact_explanation ?? raw.factExplanation ?? ''),
+    scoreExplanation: String(raw.score_explanation ?? raw.scoreExplanation ?? ''),
+    system: String(raw.system ?? ''),
+    greenMin: Number(raw.green_min ?? raw.greenMin ?? 90) || 90,
+    yellowMin: Number(raw.yellow_min ?? raw.yellowMin ?? 70) || 70,
+    schedule: hasSchedule
+      ? {
+          kind: String(schedule.kind ?? ''),
+          intervalSeconds: Number(schedule.interval_seconds ?? schedule.intervalSeconds ?? 0) || 0,
+          at: String(schedule.at ?? '')
+        }
+      : null
+  }
+}
+
+export function parseKpiTile(raw: Record<string, unknown>): KpiTile {
+  const measure = asRecord(raw.measure)
+  const hasMeasure = Boolean(raw.measure && typeof raw.measure === 'object')
+  const method = asRecord(raw.method)
+  const hasMethod = Boolean(raw.method && typeof raw.method === 'object')
+  const score = raw.score_percent ?? raw.scorePercent
+  return {
+    id: String(raw.id ?? ''),
+    name: String(raw.name ?? ''),
+    plan: parseKpiSide(asRecord(raw.plan)),
+    fact: parseKpiSide(asRecord(raw.fact)),
+    measure: hasMeasure
+      ? {
+          kind: String(measure.kind ?? ''),
+          params: asRecord(measure.params),
+          formula: String(measure.formula ?? '')
+        }
+      : null,
+    scorePercent: score === null || score === undefined ? null : Number(score),
+    color: String(raw.color ?? ''),
+    updatedAt: String(raw.updated_at ?? raw.updatedAt ?? ''),
+    nextRunAt: String(raw.next_run_at ?? raw.nextRunAt ?? ''),
+    evidence: String(raw.evidence ?? ''),
+    method: hasMethod ? parseKpiMethod(method) : null
+  }
+}
+
+export function parseAgentKpi(raw: Record<string, unknown> | null | undefined): AgentKpi | null {
+  if (!raw || typeof raw !== 'object') return null
+  const tiles = ((raw.tiles as Record<string, unknown>[]) ?? [])
+    .filter((t) => t && typeof t === 'object')
+    .map((t) => parseKpiTile(t))
+  if (tiles.length === 0 && !raw.summary) return null
+  return {
+    status: String(raw.status ?? ''),
+    generatedAt: String(raw.generated_at ?? raw.generatedAt ?? ''),
+    summary: String(raw.summary ?? ''),
+    title: String(raw.title ?? ''),
+    workflowId: String(raw.workflow_id ?? raw.workflowId ?? ''),
+    tiles
+  }
+}
+
 export function passportToApi(passport: AgentPassport): Record<string, unknown> {
   return {
     name: passport.name,
@@ -917,12 +1033,13 @@ export class ApiClient {
     })
   }
 
-  async proposeScheduleDraft(workflowId: string): Promise<Record<string, unknown>> {
-    return this.request<Record<string, unknown>>(
+  async proposeScheduleDraft(workflowId: string): Promise<ScheduleDraft> {
+    const data = await this.request<Record<string, unknown>>(
       'POST',
       `/api/v1/workflows/${workflowId}/schedule-draft`,
       { timeoutMs: 90_000 }
     )
+    return parseScheduleDraft(data ?? {})
   }
 
   async listAgentRuns(workflowId: string): Promise<AgentRunHistoryItem[]> {
