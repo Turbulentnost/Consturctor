@@ -52,3 +52,13 @@ def test_annotate_groups_role_and_process_blocks() -> None:
 def test_toc_line_detected() -> None:
     assert is_toc_line("1 Назначение и область применения ...................................................................... 3")
     assert not is_toc_line("1 Назначение и область применения")
+
+
+def test_annotate_skips_directors_genitive() -> None:
+    fragments = [
+        _frag(fragmentId="h", text="8.1. Заседания Совета директоров", blockType="heading"),
+        _frag(fragmentId="b", text="Секретарь готовит повестку."),
+    ]
+    tagged, legend = annotate_entities(fragments)
+    assert tagged[1].entities == []
+    assert legend == []

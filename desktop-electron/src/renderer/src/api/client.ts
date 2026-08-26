@@ -944,7 +944,7 @@ export class ApiClient {
       endpoint: '/api/v1/regulations/upload',
       filePath,
       token: this.token,
-      timeoutMs: 300_000
+      timeoutMs: 420_000
     })
     if (!res.ok) throw new ApiError(res.error || 'Ошибка распознавания', res.status)
     return parseRegulation(res.data ?? {})

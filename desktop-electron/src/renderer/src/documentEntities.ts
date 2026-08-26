@@ -38,6 +38,8 @@ const ROLE_MARKERS = [
   'специалист',
   'менеджер',
   'директор',
+  'помощник',
+  'секретарь',
   'исполнитель'
 ]
 const PROCESS_MARKERS = ['этап', 'процесс', 'порядок', 'жизненный цикл', 'согласование']
@@ -125,7 +127,7 @@ function inferEntity(title: string): FragmentEntityTag | null {
   if (!clean || clean.length > 140) return null
   const lower = clean.toLowerCase()
   const numbered = /^\d+(?:\.\d+)+/.test(clean)
-  if (ROLE_MARKERS.some((marker) => lower.includes(marker))) {
+  if (ROLE_MARKERS.some((marker) => new RegExp(`(?<![а-яёa-z])${marker}(?![а-яёa-z])`, 'i').test(clean))) {
     return { entityId: `role:${lower}`, kind: 'role', title: clean, shortTitle: clean.replace(/^\d+(?:\.\d+)*\s+/, '') }
   }
   if (numbered && PROCESS_MARKERS.some((marker) => lower.includes(marker))) {

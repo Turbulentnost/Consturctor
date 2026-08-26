@@ -13,8 +13,9 @@ import { ReadinessPage } from './pages/ReadinessPage'
 import { SuggestionsPage } from './pages/SuggestionsPage'
 import { PassportPage } from './pages/PassportPage'
 import { AgentStudioPage } from './pages/AgentStudioPage'
-import { FormationBanner } from './components/FormationBanner'
+import { RunBannerCarousel, type BannerEntry } from './components/RunBannerCarousel'
 import { useFormation } from './components/agentfeed'
+import { useRuns, deriveLatestOutput } from './store/runs'
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentKpiPreviewPage } from './pages/AgentKpiPreviewPage'
@@ -79,6 +80,7 @@ export function App(): React.JSX.Element {
   const kickedRef = useRef(false)
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
   const formation = useFormation()
+  const runs = useRuns()
 
   useEffect(() => {
     let done = false
@@ -699,6 +701,37 @@ export function App(): React.JSX.Element {
     }
   }
 
+  const bannerEntries: BannerEntry[] = []
+  if (
+    formation.inProgress &&
+    !(view.kind === 'studio' && view.workflowId === formation.workflowId)
+  ) {
+    bannerEntries.push({
+      id: `formation:${formation.workflowId}`,
+      title: formation.title,
+      output: formation.latestOutput,
+      running: formation.running,
+      awaiting: formation.awaiting,
+      onOpen: () =>
+        setView({ kind: 'studio', workflowId: formation.workflowId, title: formation.title })
+    })
+  }
+  for (const entry of Object.values(runs.entries)) {
+    const active =
+      entry.state.running || Boolean(entry.state.pendingQuestion) || Boolean(entry.state.pendingHitl)
+    if (!active) continue
+    if (view.kind === 'agentrun' && view.workflowId === entry.workflowId) continue
+    bannerEntries.push({
+      id: `run:${entry.workflowId}`,
+      title: entry.title,
+      output: deriveLatestOutput(entry.state.items),
+      running: entry.state.running,
+      awaiting: Boolean(entry.state.pendingQuestion || entry.state.pendingHitl),
+      onOpen: () =>
+        setView({ kind: 'agentrun', workflowId: entry.workflowId, title: entry.title })
+    })
+  }
+
   return (
     <div className="app-root">
       <Sidebar
@@ -721,22 +754,7 @@ export function App(): React.JSX.Element {
               showLogout={showLogout}
             />
           </div>
-          {formation.inProgress &&
-            !(view.kind === 'studio' && view.workflowId === formation.workflowId) && (
-              <FormationBanner
-                title={formation.title}
-                output={formation.latestOutput}
-                running={formation.running}
-                awaiting={formation.awaiting}
-                onOpen={() =>
-                  setView({
-                    kind: 'studio',
-                    workflowId: formation.workflowId,
-                    title: formation.title
-                  })
-                }
-              />
-            )}
+          <RunBannerCarousel entries={bannerEntries} />
           {renderContent()}
         </div>
       </main>

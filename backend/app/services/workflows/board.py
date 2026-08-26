@@ -532,7 +532,9 @@ def get_workflow_board(
                 upcoming.append(stamp)
     upcoming.sort()
     stats = BoardStats(
-        active_agents=sum(1 for item in agents if item.kind == "workflow" and item.status == "active"),
+        active_agents=sum(
+            1 for item in agents if item.kind == "workflow" and not item.paused
+        ),
         runs_today=runs_today,
         errors_today=errors_today,
         needs_attention=sum(1 for item in agents if item.status == "needs_attention"),

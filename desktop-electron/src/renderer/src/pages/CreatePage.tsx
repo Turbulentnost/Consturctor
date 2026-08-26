@@ -41,7 +41,7 @@ export function CreatePage({
     }
     setFileName(path.split(/[\\/]/).pop() ?? path)
     setBusy(true)
-    setStatus('Распознаём документ...')
+    setStatus('Распознаём документ и размечаем, какие блоки к кому относятся...')
     try {
       const result = await api.uploadRegulation(path)
       setStatus('')

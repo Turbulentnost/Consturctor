@@ -6033,3 +6033,43 @@ button.feed-tool-head:hover {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============ Running-agents banner slider ============ */
+.run-banner-carousel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 48px 0 16px;
+  position: relative;
+  z-index: 1;
+}
+.run-banner-carousel .formation-banner {
+  margin: 0;
+  flex: 1;
+}
+.run-banner-nav {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(8, 116, 95, 0.25);
+  background: #ffffff;
+  color: #08745f;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.run-banner-nav:hover {
+  background: #eef7f3;
+}
+.run-banner-count {
+  flex-shrink: 0;
+  min-width: 34px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--content-muted);
+}

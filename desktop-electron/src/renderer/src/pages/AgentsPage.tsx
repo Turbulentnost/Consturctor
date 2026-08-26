@@ -164,7 +164,11 @@ export function AgentsPage({
 
   const visibleAgents = useMemo(() => {
     let items = [...board.agents]
-    if (statusFilter === 'active') items = items.filter((item) => item.status === 'active')
+    if (statusFilter === 'active') {
+      items = items.filter(
+        (item) => item.kind === 'workflow' && !item.paused && item.status !== 'draft'
+      )
+    }
     else if (statusFilter === 'paused') items = items.filter((item) => item.status === 'paused')
     else if (statusFilter === 'errors')
       items = items.filter(
@@ -350,7 +354,12 @@ export function AgentsPage({
             ) : error ? (
               <div className="agents-empty">{error}</div>
             ) : visibleAgents.length === 0 ? (
-              <div className="agents-empty">Нет агентов по текущему фильтру.</div>
+              <div className="agents-empty">
+                {statusFilter === 'active' &&
+                board.agents.some((item) => item.kind === 'workflow' && item.status === 'needs_attention')
+                  ? 'Опубликованный агент есть, но последний запуск с ошибкой. Откройте «Все» или фильтр «С ошибками».'
+                  : 'Нет агентов по текущему фильтру.'}
+              </div>
             ) : (
               visibleAgents.map((agent) =>
                 agent.kind === 'draft' ? (

@@ -490,6 +490,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  console.log(`Constructor backend: ${CONFIG.backendUrl}`)
   ipcMain.handle('app:getConfig', () => ({
     backendUrl: CONFIG.backendUrl,
     testUser: CONFIG.testUser

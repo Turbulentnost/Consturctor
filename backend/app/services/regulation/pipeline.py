@@ -15,6 +15,7 @@ from app.services.regulation.storage import (
     save_result,
     save_upload,
 )
+from app.services.regulation.entity_cursor import annotate_parse_result_with_cursor
 from app.services.regulation.structure import build_result
 from app.services.regulation.text_extract import extract_text_file
 from app.services.regulation.types import ExtractedDocument
@@ -51,6 +52,7 @@ def parse_upload(
     try:
         extracted = _extract(path, suffix=suffix, regulation_id=regulation_id)
         result = build_result(regulation_id=regulation_id, filename=filename, extracted=extracted)
+        result = _apply_cursor_entities(result, user_id=user_id)
     except RegulationError:
         raise
     except RuntimeError as exc:
@@ -74,6 +76,15 @@ def parse_upload(
             status_code=500,
         ) from exc
     return result
+
+
+def _apply_cursor_entities(result: RegulationParseResult, *, user_id: str) -> RegulationParseResult:
+    from app.services.app_users import get_app_user
+
+    user = get_app_user(user_id)
+    position = (user.position if user else "") or ""
+    department = (user.department if user else "") or ""
+    return annotate_parse_result_with_cursor(result, position=position, department=department)
 
 
 def get_result(db: Session, *, regulation_id: str, user_id: str) -> RegulationParseResult:
