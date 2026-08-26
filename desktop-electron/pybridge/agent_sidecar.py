@@ -12,6 +12,7 @@ Protocol: newline-delimited JSON.
        "login": str, "password": str}
     {"type": "check_ready"}
     {"type": "design", "id": str, "workflowId": str}
+    {"type": "readiness", "id": str, "draftId": str}
     {"type": "demo", "id": str, "workflowId": str}
     {"type": "run", "id": str, "workflowId": str, "message": str,
        "source": str, "triggerId": str, "resumeAgentId": str,
@@ -679,6 +680,13 @@ class Sidecar:
             active = ActiveRun(run_id=run_id, gate=gate, stop=stop, bridge=bridge)
             active.dedup_key = dedup_key
             self._active[run_id] = active
+        emit(
+            {
+                "type": "event",
+                "runId": run_id,
+                "payload": {"type": "status", "text": f"Запускаю агента ({kind})."},
+            }
+        )
         worker = threading.Thread(
             target=self._run_safe,
             args=(kind, command, active),
@@ -1154,12 +1162,13 @@ def main() -> None:
         if not isinstance(command, dict):
             continue
         ctype = str(command.get("type") or "")
+        log("command: " + _ascii(ctype))
         try:
             if ctype == "configure":
                 sidecar.configure(command)
             elif ctype == "check_ready":
                 sidecar.check_ready()
-            elif ctype in {"design", "demo", "run", "check_trigger"}:
+            elif ctype in {"design", "readiness", "demo", "run", "check_trigger"}:
                 sidecar.start(ctype, command)
             elif ctype == "answer":
                 sidecar.answer(command)
@@ -1173,6 +1182,13 @@ def main() -> None:
                 break
             else:
                 log("unknown command type: " + _ascii(ctype))
+                emit(
+                    {
+                        "type": "error",
+                        "runId": str(command.get("id") or ""),
+                        "message": "unknown command type: " + _ascii(ctype),
+                    }
+                )
         except Exception as exc:  # noqa: BLE001
             log("command failed: " + repr(exc))
             log(traceback.format_exc())

@@ -75,10 +75,28 @@ def create_cursor_function_extraction(
         if not agent_id or not run_id:
             raise CursorAgentError("Cursor API не вернул agent/run id")
         final = cursor_client.wait_for_run(agent_id, run_id)
+        parsed = _parse_agent_response(str(final.get("result") or ""))
+        if not _has_functions(parsed):
+            follow = cursor_client.create_run(
+                agent_id,
+                prompt=_recovery_prompt(position=position, parsed=parsed),
+                mode="agent",
+            )
+            follow_id = str(follow.get("id") or "")
+            if follow_id:
+                final = cursor_client.wait_for_run(agent_id, follow_id)
+                parsed_follow = _parse_agent_response(str(final.get("result") or ""))
+                if _has_functions(parsed_follow):
+                    parsed = parsed_follow
+                    run_id = follow_id
+        if not _has_functions(parsed):
+            recovered = functions_from_questions(parsed.get("questions") or [])
+            if recovered:
+                for item in recovered:
+                    item["actor"] = item.get("actor") or position
+                parsed = {**parsed, "functions": recovered}
     except CursorAgentError as exc:
         raise RegulationFunctionExtractionError(exc.message, status_code=exc.status_code) from exc
-
-    parsed = _parse_agent_response(str(final.get("result") or ""))
     role_result = _map_agent_result(
         parsed,
         regulation=result,
@@ -105,18 +123,17 @@ def create_cursor_function_extraction(
 def _build_prompt(result: RegulationParseResult, *, position: str, department: str) -> str:
     document_text = compose_regulation_text(result)
     return (
-        "Ты Cursor Agent, который анализирует распознанный регламент и выделяет функциональные блоки "
-        "только для должности текущего пользователя.\n"
-        "КРИТИЧНО: верни функции ТОЛЬКО там, где исполнитель — должность пользователя "
-        f"(или её явный алиас в тексте). Должность пользователя: «{position}». "
-        f"Подразделение: «{department}».\n"
-        "Любые другие должности и роли из документа НЕ включай как отдельные функции — "
-        "даже если они соседние в том же разделе, таблице или процессе. "
-        "Их можно кратко упомянуть только в sharedContext как внешний контекст взаимодействия.\n"
-        "Если должность пользователя — администратор, ИТ, заказчик или любая другая, "
-        f"выделяй именно её функции: ориентир всегда «{position}», а не фиксированный список ролей.\n"
-        "Анализируй документ целиком, чтобы не потерять связанные обязанности именно этой должности "
-        "через разные разделы, таблицы, входы, выходы и контрольные операции.\n\n"
+        "Ты Cursor Agent. Тебе передан полный распознанный регламент. "
+        "Выдели функциональные блоки должности пользователя.\n"
+        f"Должность: «{position}». Подразделение: «{department}».\n"
+        "Документ целиком про эту должность, даже если в тексте алиас "
+        "«Помощник ПСД», «помощник председателя», «аппарат ПСД». "
+        "Это та же роль — включай такие блоки.\n"
+        "Главное — массив functions. Он не должен быть пустым, если в документе есть "
+        "обязанности, процессы, контроль, совещания, командировки, документооборот.\n"
+        "Сначала выпиши functions, потом не больше 2 вопросов на функцию.\n"
+        "Чужие роли (ПСД, СД, секретарь РК) не делай отдельными функциями, "
+        "только упомяни в sharedContext, если пользователь с ними взаимодействует.\n\n"
         "Верни строго JSON без markdown и пояснений вне JSON. Контракт:\n"
         "{\n"
         '  "functions": [\n'
@@ -160,17 +177,70 @@ def _build_prompt(result: RegulationParseResult, *, position: str, department: s
         "- action — глагол/сказуемое; object — объект в нужном падеже; recipient — отдельно, не в title.\n"
         "- Выделяй только реальные процессы/функции этой должности, которые можно оптимизировать или автоматизировать.\n"
         "- Для связанных блоков ЭТОЙ ЖЕ должности заполняй relatedFunctionIds и sharedContext.\n"
-        "- Вопросы — ключевая часть ответа: по КАЖДОЙ включённой функции сформируй набор вопросов, "
-        "который в полной мере описывает исполнимый процесс работы "
-        "(trigger, inputs, system, result, recipient, conditions, errors/escalation, approval, deadline — "
-        "где это релевантно и не закрыто однозначно текстом документа).\n"
-        "- Каждый вопрос должен быть конкретным: после ответа агент сможет выполнить шаг без догадок.\n"
-        "- В questions.context указывай связку фрагментов/связанных функций; quickAnswers — 2–4 коротких варианта.\n"
-        "- Вопросы формируй только по включённым функциям, не теряя контекст.\n"
+        "- Вопросы вторичны: максимум 2 на функцию, только если без ответа агент не сможет выполнить шаг.\n"
         "- sourceRefs.fragmentId должен соответствовать fragmentId из документа.\n"
-        "- Если подходящих функций нет, верни пустые массивы functions и questions.\n\n"
+        "- Не возвращай functions: [] если в документе есть обязанности этой должности.\n\n"
         f"Распознанный документ:\n{document_text}"
     )
+
+
+def _recovery_prompt(*, position: str, parsed: dict[str, Any]) -> str:
+    ids = sorted(
+        {
+            str(item.get("functionId") or "").strip()
+            for item in (parsed.get("questions") or [])
+            if isinstance(item, dict) and str(item.get("functionId") or "").strip()
+        }
+    )
+    id_hint = ", ".join(ids[:24]) if ids else "f1, f2, f3"
+    return (
+        f"Предыдущий JSON вернул пустой functions, хотя вопросы ссылаются на {id_hint}. "
+        f"Должность пользователя: «{position}». "
+        "Верни строго JSON с заполненным functions по этим id: title, description, action, "
+        f"object, actor=«{position}», sourceRefs.fragmentId из документа. "
+        "questions можно оставить пустым массивом."
+    )
+
+
+def _has_functions(payload: dict[str, Any] | None) -> bool:
+    items = (payload or {}).get("functions") or []
+    return isinstance(items, list) and any(isinstance(item, dict) for item in items)
+
+
+def functions_from_questions(questions: list[Any]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for raw in questions:
+        if not isinstance(raw, dict):
+            continue
+        function_id = str(raw.get("functionId") or "").strip() or "f1"
+        item = grouped.setdefault(
+            function_id,
+            {
+                "id": function_id,
+                "title": "",
+                "description": "",
+                "action": "",
+                "object": "",
+                "actor": "",
+                "sourceRefs": [],
+                "relatedFunctionIds": [],
+            },
+        )
+        context = _clean(raw.get("context"))
+        text = _clean(raw.get("text"))
+        if context and not item["description"]:
+            item["description"] = context
+            item["title"] = context.split(".")[0].strip()[:90]
+        elif text and not item["title"]:
+            item["title"] = text[:90]
+        refs = raw.get("sourceRefs") if isinstance(raw.get("sourceRefs"), list) else []
+        for ref in refs:
+            if isinstance(ref, dict) and ref not in item["sourceRefs"]:
+                item["sourceRefs"].append(ref)
+        for related in _list_text(raw.get("relatedFunctionIds")):
+            if related not in item["relatedFunctionIds"]:
+                item["relatedFunctionIds"].append(related)
+    return [item for item in grouped.values() if item.get("title") or item.get("description")]
 
 
 def _map_agent_result(
@@ -403,15 +473,13 @@ def _function_belongs_to_position(
     foreign_actor = _names_other_role(actor, position_terms) if actor else False
 
     # Доказательства явно про другую роль — отбрасываем, даже если agent подставил должность в actor.
-    if foreign_evidence and not evidence_mentions_user:
-        return False
     if foreign_actor and not actor_mentions_user:
         return False
-    if evidence_mentions_user or title_mentions_user:
+    if evidence_mentions_user or title_mentions_user or actor_mentions_user:
         return True
-    if actor_mentions_user and not foreign_evidence and not foreign_actor:
-        return True
-    return False
+    # Cursor already scoped the prompt to this position. Keep the block unless
+    # the actor is clearly another role.
+    return not foreign_actor
 
 
 def _source_quotes(item: dict[str, Any]) -> list[str]:

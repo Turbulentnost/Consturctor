@@ -47,8 +47,18 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
   stateRef.current = state
 
   const activeRunRef = useRef<string | null>(null)
+  const lastCommandRef = useRef<StartCommand | null>(null)
+  const retriesRef = useRef(0)
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const optionsRef = useRef(options)
   optionsRef.current = options
+
+  const resendLast = useCallback((): void => {
+    const command = lastCommandRef.current
+    const runId = activeRunRef.current
+    if (!command || !runId) return
+    agentClient.start({ ...command, id: runId })
+  }, [])
 
   useEffect(() => {
     const unsubscribe = agentClient.onEvent((event: AgentEvent) => {
@@ -58,17 +68,34 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
       const outcome = applyAgentEvent(stateRef.current, event)
       stateRef.current = outcome.state
       setState(outcome.state)
+      if (event.type === 'sidecar_exit' && lastCommandRef.current && retriesRef.current < 3) {
+        retriesRef.current += 1
+        if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = setTimeout(() => {
+          retryTimerRef.current = null
+          resendLast()
+        }, 1200)
+      }
+      if (event.type !== 'sidecar_exit' && event.type !== 'ready' && event.type !== 'ready_state') {
+        retriesRef.current = 0
+      }
       if (outcome.state.activeRunId === null && (event.type === 'result' || event.type === 'error')) {
         activeRunRef.current = null
+        lastCommandRef.current = null
       }
       if (outcome.result) optionsRef.current.onResult?.(outcome.result)
       if (outcome.error) optionsRef.current.onError?.(outcome.error)
     })
-    return unsubscribe
-  }, [])
+    return () => {
+      unsubscribe()
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+    }
+  }, [resendLast])
 
   const start = useCallback((command: StartCommand): string => {
     const id = agentClient.start(command)
+    lastCommandRef.current = { ...command, id }
+    retriesRef.current = 0
     activeRunRef.current = id
     setState((s) => ({
       ...s,
@@ -103,7 +130,15 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
 
   const cancel = useCallback(() => {
     if (activeRunRef.current) agentClient.cancel(activeRunRef.current)
-    setState((s) => ({ ...s, status: 'Останавливаю…' }))
+    activeRunRef.current = null
+    setState((s) => ({
+      ...s,
+      running: false,
+      pendingQuestion: null,
+      pendingHitl: null,
+      activeRunId: null,
+      status: 'Агент остановлен'
+    }))
   }, [])
 
   const reset = useCallback(() => {

@@ -325,7 +325,10 @@ export function App(): React.JSX.Element {
     })
     try {
       const created = await api.createAgentDraft(regulation.regulationId, roleMatch.runId)
-      setDraft(created)
+      const items = created.agentSuggestions.length
+        ? created.agentSuggestions
+        : suggestionsFromRoleMatch(roleMatch)
+      setDraft({ ...created, agentSuggestions: items })
       setBusy(false)
       setView({ kind: 'readiness' })
     } catch (err) {
@@ -359,7 +362,7 @@ export function App(): React.JSX.Element {
       setDraft(loaded)
       const items = loaded.agentSuggestions ?? []
       setSuggestions(items)
-      if (items.length) {
+      if (loaded.status === 'ready' && items.length) {
         setView({ kind: 'suggestions' })
       } else {
         setView({ kind: 'readiness' })

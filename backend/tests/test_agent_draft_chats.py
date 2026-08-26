@@ -31,6 +31,8 @@ def test_agent_draft_created_once_and_user_scoped() -> None:
     second = create_or_get_draft(db, user_id="user-1", regulation_id="reg-1", role_match_run_id="run-1")
 
     assert first.draftId == second.draftId
+    assert first.agentSuggestions
+    assert first.agentSuggestions[0].functionId == "F-001"
     assert [item.draftId for item in list_drafts(db, user_id="user-1").items] == [first.draftId]
     assert list_drafts(db, user_id="user-2").items == []
 

@@ -42,6 +42,7 @@ def create_or_get_draft(
         .first()
     )
     if existing is not None:
+        _persist_agent_suggestions(db, existing)
         return _draft_detail(db, existing)
     doc, role_run = _get_doc_and_role_run(
         db,
@@ -66,6 +67,7 @@ def create_or_get_draft(
     draft = db.merge(draft)
     db.commit()
     db.refresh(draft)
+    _persist_agent_suggestions(db, draft)
     return _draft_detail(db, draft)
 
 
@@ -80,7 +82,9 @@ def list_drafts(db: Session, *, user_id: str) -> AgentDraftListResult:
 
 
 def get_draft(db: Session, *, user_id: str, draft_id: str) -> AgentDraftDetail:
-    return _draft_detail(db, _get_draft(db, user_id=user_id, draft_id=draft_id))
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    _persist_agent_suggestions(db, draft)
+    return _draft_detail(db, draft)
 
 
 def get_draft_row(db: Session, *, user_id: str, draft_id: str) -> AgentDraft:
@@ -231,9 +235,10 @@ def _agent_suggestions_from_role_result(role_result: RoleMatchResult) -> list[Ag
     for index, function in enumerate(functions, start=1):
         if function is None:
             continue
-        if not function.isFunction and not (function.action or function.object):
+        title_text = (getattr(function, "title", None) or "").strip()
+        if not function.isFunction and not (function.action or function.object or title_text):
             continue
-        key = function.duplicateGroup or function.functionId or f"{function.action}:{function.object}"
+        key = function.duplicateGroup or function.functionId or f"{function.action}:{function.object}" or title_text
         if key in seen:
             continue
         seen.add(key)
@@ -250,6 +255,19 @@ def _agent_suggestions_from_role_result(role_result: RoleMatchResult) -> list[Ag
             )
         )
     return suggestions
+
+
+def _persist_agent_suggestions(db: Session, draft: AgentDraft) -> AgentDraft:
+    if (draft.result_json or {}).get("agentSuggestions"):
+        return draft
+    data = _ensure_agent_suggestions(db, draft)
+    if not data.get("agentSuggestions"):
+        return draft
+    draft.result_json = data
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return draft
 
 
 def _ensure_agent_suggestions(db: Session, draft: AgentDraft) -> dict:
@@ -272,6 +290,9 @@ def _ensure_agent_suggestions(db: Session, draft: AgentDraft) -> dict:
 
 
 def _agent_title_from_function(function, index: int) -> str:
+    raw_title = (getattr(function, "title", None) or "").replace("\u2192", "->").split("->", 1)[0].strip()
+    if raw_title:
+        return f"ИИ-агент: {raw_title}"[:180]
     action = (function.action or "").strip()
     obj = (function.object or "").strip()
     if action and obj:
