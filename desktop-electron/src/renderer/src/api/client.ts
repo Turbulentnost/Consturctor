@@ -689,6 +689,26 @@ export function parseScheduleDraft(raw: Record<string, unknown>): ScheduleDraft 
   }
 }
 
+export function scheduleTriggerToApi(spec: ScheduleTriggerSpec): Record<string, unknown> {
+  return {
+    kind: spec.kind,
+    message: spec.message,
+    interval_value: spec.intervalValue,
+    interval_unit: spec.intervalUnit,
+    condition: spec.condition,
+    at: spec.at,
+    once: spec.once
+  }
+}
+
+export function scheduleDraftToApi(draft: ScheduleDraft): Record<string, unknown> {
+  return {
+    name: draft.name,
+    goal: draft.goal,
+    triggers: draft.triggers.map((t) => scheduleTriggerToApi(t))
+  }
+}
+
 function parseKpiSide(raw: Record<string, unknown>): KpiSide {
   const value = raw.value
   return {
@@ -749,6 +769,29 @@ export function parseKpiTile(raw: Record<string, unknown>): KpiTile {
     evidence: String(raw.evidence ?? ''),
     method: hasMethod ? parseKpiMethod(method) : null
   }
+}
+
+export function intervalSecondsFromUnit(value: number, unit: IntervalUnit): number {
+  const amount = Math.max(0, Number(value) || 0)
+  if (unit === 'minutes') return Math.round(amount * 60)
+  if (unit === 'days') return Math.round(amount * 86400)
+  return Math.round(amount * 3600)
+}
+
+export function kpiFromRecord(record: WorkflowRecord | null | undefined): AgentKpi | null {
+  if (!record) return null
+  const local = record.localRun ?? {}
+  return parseAgentKpi(asRecord((local as Record<string, unknown>).kpi))
+}
+
+export function scheduleDraftFromRecord(
+  record: WorkflowRecord | null | undefined
+): ScheduleDraft | null {
+  if (!record) return null
+  const local = record.localRun ?? {}
+  const raw = (local as Record<string, unknown>).schedule_draft
+  if (!raw || typeof raw !== 'object') return null
+  return parseScheduleDraft(asRecord(raw))
 }
 
 export function parseAgentKpi(raw: Record<string, unknown> | null | undefined): AgentKpi | null {
@@ -1292,6 +1335,60 @@ export class ApiClient {
     onEvent: (event: StreamEvent) => void
   ): Promise<WorkflowRecord> {
     return this.streamWorkflow(`/api/v1/workflows/${workflowId}/kpi/generate/stream`, onEvent)
+  }
+
+  async persistScheduleDraft(workflowId: string, draft: ScheduleDraft): Promise<WorkflowRecord> {
+    const current = await this.getWorkflow(workflowId)
+    const merged: Record<string, unknown> = {
+      ...(current.localRun ?? {}),
+      schedule_draft: scheduleDraftToApi(draft)
+    }
+    return this.updateWorkflowLocalRun(workflowId, merged)
+  }
+
+  async getWorkflowKpi(workflowId: string): Promise<AgentKpi | null> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/workflows/${workflowId}/kpi`,
+      { timeoutMs: 60_000 }
+    )
+    return parseAgentKpi(data ?? {})
+  }
+
+  async calculateWorkflowKpi(workflowId: string): Promise<AgentKpi | null> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/workflows/${workflowId}/kpi/calculate`,
+      { timeoutMs: 180_000 }
+    )
+    return parseAgentKpi(data ?? {})
+  }
+
+  async createTriggerFromSpec(workflowId: string, spec: ScheduleTriggerSpec): Promise<void> {
+    if (spec.kind === 'interval') {
+      await this.createTrigger({
+        workflowId,
+        message: spec.message,
+        intervalSeconds: intervalSecondsFromUnit(spec.intervalValue, spec.intervalUnit),
+        once: false
+      })
+      return
+    }
+    if (spec.kind === 'event') {
+      await this.createTrigger({
+        workflowId,
+        message: spec.message,
+        condition: spec.condition,
+        once: Boolean(spec.once)
+      })
+      return
+    }
+    await this.createTrigger({
+      workflowId,
+      message: spec.message,
+      at: spec.at,
+      once: Boolean(spec.once)
+    })
   }
 
   async createTrigger(spec: {

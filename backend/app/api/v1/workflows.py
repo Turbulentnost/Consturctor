@@ -58,6 +58,7 @@ from app.services.workflows import (
     finish_local_demo_workflow,
     generate_agent_kpi,
     get_agent_kpi,
+    recalculate_agent_kpi,
     get_workflow,
     list_artifacts_for_workflow,
     list_workflows,
@@ -1015,6 +1016,19 @@ async def read_workflow_kpi(
 ) -> AgentKpiSchema:
     try:
         return get_agent_kpi(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/kpi/calculate", response_model=AgentKpiSchema)
+async def calculate_workflow_kpi_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentKpiSchema:
+    try:
+        return recalculate_agent_kpi(db, user_id=auth.user_id, workflow_id=workflow_id)
     except WorkflowError as exc:
         _raise(exc)
         raise

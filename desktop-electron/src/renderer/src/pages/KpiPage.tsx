@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
-import type { AgentRunHistoryItem, BoardAgent } from '../api/types'
+import type { AgentKpi, AgentRunHistoryItem, BoardAgent, KpiTile } from '../api/types'
 
 const iconCalendar = new URL('../../../temp/KPI/calendar.png', import.meta.url).href
 const iconActive = new URL('../../../temp/KPI/ChatGPT Image 26 авг. 2026 г., 11_22_41.png', import.meta.url).href
@@ -40,6 +40,8 @@ interface AgentKpiView {
   completeness: number
   averageMinutes: number | null
   score: number
+  uncalculated: boolean
+  lastCalculatedAt: string
   dailySuccess: number[]
   dailyScore: number[]
 }
@@ -199,19 +201,22 @@ function Donut({ score }: { score: number }): React.JSX.Element {
   )
 }
 
-function robotFor(index: number, attention: boolean, critical = false): string {
+function robotFor(index: number, attention: boolean, critical = false, uncalculated = false): string {
+  if (uncalculated) return robotBlue
   if (critical) return robotRed
   if (attention) return robotYellow
   return [robotGreen, robotBlue, robotYellow, robotGreen][index % 4]
 }
 
 function statusLabel(row: AgentKpiView): string {
+  if (row.uncalculated) return 'Нет расчёта'
   if (row.critical) return 'Ошибка'
   if (row.attention) return 'Внимание'
   return 'Работает'
 }
 
-function statusTone(row: AgentKpiView): 'green' | 'orange' | 'red' {
+function statusTone(row: AgentKpiView): 'green' | 'orange' | 'red' | 'grey' {
+  if (row.uncalculated) return 'grey'
   if (row.critical) return 'red'
   if (row.attention) return 'orange'
   return 'green'
@@ -242,9 +247,56 @@ function formatDayLabel(key: string): string {
   return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
 }
 
+function tileNumber(tile?: KpiTile | null): number | null {
+  if (!tile) return null
+  const raw = tile.fact?.value
+  if (raw === null || raw === undefined || raw === '') return null
+  const value = Number(raw)
+  return Number.isFinite(value) ? value : null
+}
+
+function latestTileUpdate(kpi: AgentKpi | null | undefined): string {
+  if (!kpi?.tiles.length) return kpi?.generatedAt || ''
+  return kpi.tiles.reduce((latest, tile) => {
+    if (!tile.updatedAt) return latest
+    return !latest || tile.updatedAt > latest ? tile.updatedAt : latest
+  }, '')
+}
+
+function tilesHaveFacts(kpi: AgentKpi | null | undefined): boolean {
+  return Boolean(
+    kpi?.tiles.some((tile) => tile.scorePercent != null || tileNumber(tile) != null || Boolean(tile.updatedAt))
+  )
+}
+
+function applyKpiTiles(
+  metrics: ReturnType<typeof metricsFromRuns>,
+  kpi: AgentKpi | null | undefined
+): ReturnType<typeof metricsFromRuns> {
+  if (!kpi) return metrics
+  const byId = new Map(kpi.tiles.map((tile) => [tile.id, tile]))
+  const success = tileNumber(byId.get('success_rate'))
+  const timely = tileNumber(byId.get('on_schedule_rate'))
+  const fails = tileNumber(byId.get('fail_count'))
+  const runs = tileNumber(byId.get('runs_count'))
+  const interval = tileNumber(byId.get('expected_interval'))
+  const scores = kpi.tiles.map((tile) => tile.scorePercent).filter((value): value is number => value != null)
+  return {
+    ...metrics,
+    successRate: success != null ? Math.round(success) : metrics.successRate,
+    timelinessRate: timely != null ? Math.round(timely) : metrics.timelinessRate,
+    errors: fails != null ? Math.round(fails) : metrics.errors,
+    total: runs != null ? Math.round(runs) : metrics.total,
+    averageMinutes: interval != null ? Math.round(interval) : metrics.averageMinutes,
+    score: scores.length
+      ? Math.round(scores.reduce((sum, value) => sum + value, 0) / scores.length)
+      : metrics.score
+  }
+}
+
 function metricsFromRuns(runs: AgentRunHistoryItem[], dayCount: number): Omit<
   AgentKpiView,
-  'agent' | 'runs' | 'attention' | 'critical' | 'dailySuccess' | 'dailyScore'
+  'agent' | 'runs' | 'attention' | 'critical' | 'uncalculated' | 'lastCalculatedAt' | 'dailySuccess' | 'dailyScore'
 > {
   const successful = runs.filter((run) => isSuccess(run.status)).length
   const errors = runs.filter((run) => isErrorStatus(run.status)).length
@@ -317,12 +369,17 @@ export function KpiPage(): React.JSX.Element {
   const [dynamicsMode, setDynamicsMode] = useState<DynamicsMode>('runs')
   const [agents, setAgents] = useState<BoardAgent[]>([])
   const [runsByAgent, setRunsByAgent] = useState<Record<string, AgentRunHistoryItem[]>>({})
+  const [kpiByAgent, setKpiByAgent] = useState<Record<string, AgentKpi | null>>({})
   const [loading, setLoading] = useState(true)
   const [agentFilter, setAgentFilter] = useState<AgentFilter>('all')
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState('')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [snapshots, setSnapshots] = useState<KpiSnapshot[]>(() => loadSnapshots())
+  const [recalcId, setRecalcId] = useState('')
+  const [recalcAll, setRecalcAll] = useState(false)
+  const [recalcError, setRecalcError] = useState('')
+  const [recalcNote, setRecalcNote] = useState('')
 
   useEffect(() => {
     let alive = true
@@ -338,14 +395,19 @@ export function KpiPage(): React.JSX.Element {
         const pairs = await Promise.all(
           formedAgents.map(async (agent) => {
             try {
-              return [agent.id, await api.listAgentRuns(agent.id)] as const
+              const [runs, kpi] = await Promise.all([
+                api.listAgentRuns(agent.id),
+                api.getWorkflowKpi(agent.id).catch(() => null)
+              ])
+              return [agent.id, runs, kpi] as const
             } catch {
-              return [agent.id, []] as const
+              return [agent.id, [] as AgentRunHistoryItem[], null] as const
             }
           })
         )
         if (!alive) return
-        setRunsByAgent(Object.fromEntries(pairs))
+        setRunsByAgent(Object.fromEntries(pairs.map(([id, runs]) => [id, runs])))
+        setKpiByAgent(Object.fromEntries(pairs.map(([id, , kpi]) => [id, kpi])))
       } finally {
         if (alive) setLoading(false)
       }
@@ -362,7 +424,9 @@ export function KpiPage(): React.JSX.Element {
     return agents.map((agent) => {
       const allRuns = runsByAgent[agent.id] ?? []
       const runs = allRuns.filter((run) => inWindow(run, bounds.from, bounds.to))
-      const metrics = metricsFromRuns(runs, bounds.days.length)
+      const runMetrics = metricsFromRuns(runs, bounds.days.length)
+      const kpi = kpiByAgent[agent.id]
+      const metrics = applyKpiTiles(runMetrics, kpi)
       const dailySuccess: number[] = []
       const dailyScore: number[] = []
       for (const day of bounds.days) {
@@ -370,22 +434,26 @@ export function KpiPage(): React.JSX.Element {
         dailySuccess.push(dayRuns.filter((run) => isSuccess(run.status)).length)
         dailyScore.push(scoreForRuns(dayRuns))
       }
+      const uncalculated = runMetrics.total === 0 && !tilesHaveFacts(kpi)
       const attention =
-        metrics.successRate < 90 ||
-        isAttentionStatus(agent.status) ||
-        isAttentionStatus(agent.lastRunStatus)
-      const critical = metrics.successRate < 75 || isErrorStatus(agent.lastRunStatus)
+        !uncalculated &&
+        (metrics.successRate < 90 ||
+          isAttentionStatus(agent.status) ||
+          isAttentionStatus(agent.lastRunStatus))
+      const critical = !uncalculated && (metrics.successRate < 75 || isErrorStatus(agent.lastRunStatus))
       return {
         agent,
         runs,
         ...metrics,
         attention,
         critical,
+        uncalculated,
+        lastCalculatedAt: latestTileUpdate(kpi),
         dailySuccess,
         dailyScore
       } satisfies AgentKpiView
     })
-  }, [agents, runsByAgent, bounds])
+  }, [agents, runsByAgent, kpiByAgent, bounds])
 
   useEffect(() => {
     if (!rows.length) return
@@ -484,6 +552,57 @@ export function KpiPage(): React.JSX.Element {
     setHistoryOpen(false)
   }
 
+  const recalculate = async (workflowId: string): Promise<boolean> => {
+    setRecalcError('')
+    setRecalcNote('')
+    setRecalcId(workflowId)
+    try {
+      const kpi = await api.calculateWorkflowKpi(workflowId)
+      const runs = await api.listAgentRuns(workflowId)
+      setKpiByAgent((prev) => ({ ...prev, [workflowId]: kpi }))
+      setRunsByAgent((prev) => ({ ...prev, [workflowId]: runs }))
+      const periodRuns = runs.filter((run) => inWindow(run, bounds.from, bounds.to))
+      const metrics = applyKpiTiles(metricsFromRuns(periodRuns, bounds.days.length), kpi)
+      setSnapshots(
+        upsertSnapshots([
+          {
+            date: todayKey(),
+            agentId: workflowId,
+            score: metrics.score,
+            successRate: metrics.successRate,
+            timelinessRate: metrics.timelinessRate,
+            total: metrics.total,
+            errors: metrics.errors,
+            averageMinutes: metrics.averageMinutes
+          }
+        ])
+      )
+      if (!tilesHaveFacts(kpi) && periodRuns.length === 0) {
+        setRecalcNote('Пересчёт выполнен. Фактов пока нет: у агента нет запусков за период.')
+      }
+      return true
+    } catch (error) {
+      setRecalcError(error instanceof Error ? error.message : 'Не удалось пересчитать KPI')
+      return false
+    } finally {
+      setRecalcId('')
+    }
+  }
+
+  const recalculateAll = async (): Promise<void> => {
+    setRecalcAll(true)
+    try {
+      for (const row of rows) {
+        const ok = await recalculate(row.agent.id)
+        if (!ok) break
+      }
+    } finally {
+      setRecalcAll(false)
+    }
+  }
+
+  const recalcBusy = Boolean(recalcId) || recalcAll
+
   return (
     <div className="kpi-page">
       <div className="kpi-head">
@@ -503,6 +622,15 @@ export function KpiPage(): React.JSX.Element {
           </button>
         </div>
         <div className="kpi-period-bar">
+          {tab === 'agents' && (
+            <button
+              className="btn-primary kpi-recalc-all"
+              onClick={() => void recalculateAll()}
+              disabled={recalcBusy || !rows.length}
+            >
+              {recalcBusy ? 'Пересчитываем...' : 'Пересчитать все KPI'}
+            </button>
+          )}
           <label className="kpi-period">
             <img src={iconCalendar} alt="" />
             <select
@@ -562,6 +690,10 @@ export function KpiPage(): React.JSX.Element {
           onSelect={setSelectedId}
           onToggleHistory={() => setHistoryOpen((value) => !value)}
           onJump={jumpToDate}
+          recalcBusy={recalcBusy}
+          recalcError={recalcError}
+          recalcNote={recalcNote}
+          onRecalc={() => selected && void recalculate(selected.agent.id)}
         />
       )}
     </div>
@@ -655,10 +787,14 @@ function Overview({
               {model.top.map((row, index) => (
                 <div className="kpi-table-row" key={row.agent.id}>
                   <span className="kpi-agent-cell">
-                    <img src={robotFor(index, row.attention, row.critical)} alt="" />
+                    <img src={robotFor(index, row.attention, row.critical, row.uncalculated)} alt="" />
                     <span>{row.agent.title}</span>
                   </span>
-                  <span className={`kpi-badge ${row.critical ? 'danger' : row.attention ? 'warn' : 'ok'}`}>
+                  <span
+                    className={`kpi-badge ${
+                      row.uncalculated ? 'grey' : row.critical ? 'danger' : row.attention ? 'warn' : 'ok'
+                    }`}
+                  >
                     {statusLabel(row)}
                   </span>
                   <span>{row.total}</span>
@@ -762,7 +898,11 @@ function AgentsPane({
   onQuery,
   onSelect,
   onToggleHistory,
-  onJump
+  onJump,
+  recalcBusy,
+  recalcError,
+  recalcNote,
+  onRecalc
 }: {
   rows: AgentKpiView[]
   allCount: number
@@ -780,6 +920,10 @@ function AgentsPane({
   onSelect: (id: string) => void
   onToggleHistory: () => void
   onJump: (date: string) => void
+  recalcBusy: boolean
+  recalcError: string
+  recalcNote: string
+  onRecalc: () => void
 }): React.JSX.Element {
   return (
     <div className="kpi-agents">
@@ -812,10 +956,14 @@ function AgentsPane({
               className={`kpi-agent-item${selected?.agent.id === row.agent.id ? ' selected' : ''}`}
               onClick={() => onSelect(row.agent.id)}
             >
-              <img src={robotFor(index, row.attention, row.critical)} alt="" />
+              <img src={robotFor(index, row.attention, row.critical, row.uncalculated)} alt="" />
               <span>
                 <b>{row.agent.title}</b>
-                <i>Расчёт: {formatWhen(row.agent.lastRunAt)}</i>
+                <i>
+                  {row.uncalculated
+                    ? 'KPI ещё не рассчитаны'
+                    : `Расчёт: ${formatWhen(row.lastCalculatedAt || row.agent.lastRunAt)}`}
+                </i>
               </span>
               <em className={`kpi-dot ${statusTone(row)}`} />
             </button>
@@ -829,23 +977,43 @@ function AgentsPane({
           <>
             <section className="kpi-card kpi-agent-hero">
               <div className="kpi-agent-hero-main">
-                <img src={robotFor(0, selected.attention, selected.critical)} alt="" />
+                <img src={robotFor(0, selected.attention, selected.critical, selected.uncalculated)} alt="" />
                 <div>
                   <h3>{selected.agent.title}</h3>
                   <p>{selected.agent.triggerSummary || selected.agent.description || 'Опубликованный агент'}</p>
-                  <span className={`kpi-badge ${selected.critical ? 'danger' : selected.attention ? 'warn' : 'ok'}`}>
+                  <small className="kpi-hero-meta">
+                    {selected.uncalculated
+                      ? 'KPI ещё не рассчитаны'
+                      : `Последний пересчёт: ${formatWhen(selected.lastCalculatedAt || selected.agent.lastRunAt)}`}
+                  </small>
+                  <span
+                    className={`kpi-badge ${
+                      selected.uncalculated ? 'grey' : selected.critical ? 'danger' : selected.attention ? 'warn' : 'ok'
+                    }`}
+                  >
                     {statusLabel(selected)}
                   </span>
                 </div>
               </div>
-              <div className="kpi-agent-scorebox">
-                <strong>{selected.score}</strong>
-                <span>из 100</span>
-                <em className={selected.attention ? 'warn' : 'ok'}>
-                  {selected.attention ? 'Есть отклонения' : 'В норме'}
-                </em>
+              <div className="kpi-agent-hero-side">
+                <div className="kpi-agent-scorebox">
+                  <strong>{selected.uncalculated ? '—' : selected.score}</strong>
+                  <span>из 100</span>
+                  <em className={selected.uncalculated ? 'grey' : selected.attention ? 'warn' : 'ok'}>
+                    {selected.uncalculated
+                      ? 'Нет расчёта'
+                      : selected.attention
+                        ? 'Есть отклонения'
+                        : 'В норме'}
+                  </em>
+                </div>
+                <button className="btn-primary kpi-recalc-btn" onClick={onRecalc} disabled={recalcBusy}>
+                  {recalcBusy ? 'Пересчитываем...' : 'Пересчитать KPI'}
+                </button>
               </div>
             </section>
+            {recalcError && <div className="kpi-empty kpi-recalc-error">{recalcError}</div>}
+            {recalcNote && !recalcError && <div className="kpi-empty">{recalcNote}</div>}
 
             <div className="kpi-metric-legend">
               <span className="ok">Норма</span>

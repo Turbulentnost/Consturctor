@@ -16,7 +16,7 @@ import { AgentStudioPage } from './pages/AgentStudioPage'
 import { FormationBanner } from './components/FormationBanner'
 import { useFormation } from './components/agentfeed'
 import { AgentRunPage } from './pages/AgentRunPage'
-import { AgentSchedulePage, type ScheduleSpec } from './pages/AgentSchedulePage'
+import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentKpiPreviewPage } from './pages/AgentKpiPreviewPage'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { MessengerPage } from './pages/MessengerPage'
@@ -31,6 +31,7 @@ import type {
   RegulationCreationSession,
   RegulationParseResult,
   RoleMatchResult,
+  ScheduleDraft,
   UserProfile,
   ChatThread
 } from './api/types'
@@ -54,7 +55,7 @@ type View =
   | { kind: 'studio'; workflowId: string; title: string }
   | { kind: 'agentrun'; workflowId: string; title: string }
   | { kind: 'schedule'; workflowId: string; title: string }
-  | { kind: 'kpi'; workflowId: string; title: string; schedule: ScheduleSpec }
+  | { kind: 'kpi'; workflowId: string; title: string; draft: ScheduleDraft }
   | { kind: 'history'; workflowId: string; title: string }
   | { kind: 'chat'; thread: ChatThread }
   | { kind: 'loading'; title: string; subtitle: string }
@@ -625,8 +626,8 @@ export function App(): React.JSX.Element {
           workflowId={view.workflowId}
           title={view.title}
           onBack={() => setView({ kind: 'studio', workflowId: view.workflowId, title: view.title })}
-          onNext={(schedule) =>
-            setView({ kind: 'kpi', workflowId: view.workflowId, title: view.title, schedule })
+          onNext={(draft) =>
+            setView({ kind: 'kpi', workflowId: view.workflowId, title: view.title, draft })
           }
         />
       )
@@ -636,7 +637,7 @@ export function App(): React.JSX.Element {
         <AgentKpiPreviewPage
           workflowId={view.workflowId}
           title={view.title}
-          schedule={view.schedule}
+          draft={view.draft}
           onBack={() => setView({ kind: 'schedule', workflowId: view.workflowId, title: view.title })}
           onPublished={() => setView({ kind: 'tab', key: 'agents' })}
         />
