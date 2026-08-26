@@ -559,8 +559,8 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
     return id
   }, [])
 
-  const answer = useCallback((requestId: string, value: string, _filePaths?: string[], ok = true) => {
-    agentClient.answer(requestId, value, ok)
+  const answer = useCallback((requestId: string, value: string, filePaths?: string[], ok = true) => {
+    agentClient.answer(requestId, value, ok, filePaths || [])
     setPendingQuestion(null)
     setStatus('Агент работает…')
   }, [])

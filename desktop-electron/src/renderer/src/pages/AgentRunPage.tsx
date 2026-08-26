@@ -20,6 +20,7 @@ export function AgentRunPage({
   onOpenHistory
 }: AgentRunPageProps): React.JSX.Element {
   const [input, setInput] = useState('')
+  const [attachments, setAttachments] = useState<string[]>([])
   const resumeAgentRef = useRef<string>('')
 
   const onResult = useCallback((result: AgentResult) => {
@@ -46,16 +47,36 @@ export function AgentRunPage({
     }
   }, [workflowId])
 
+  const pickFiles = async (): Promise<void> => {
+    const paths = await window.api.openFile({
+      title: 'Прикрепить файл',
+      properties: ['openFile', 'multiSelections']
+    })
+    if (!paths.length) return
+    setAttachments((prev) => Array.from(new Set([...prev, ...paths])))
+  }
+
+  const removeAttachment = (path: string): void => {
+    setAttachments((prev) => prev.filter((item) => item !== path))
+  }
+
   const submit = (): void => {
     const message = input.trim()
-    if (!message || session.running) return
+    if ((!message && attachments.length === 0) || session.running) return
+    const names = attachments.map((path) => path.split(/[\\/]/).pop()).filter(Boolean)
+    const shownMessage = [message, names.length ? `Прикреплённые файлы: ${names.join(', ')}` : '']
+      .filter(Boolean)
+      .join('\n')
+    const filePaths = attachments
     setInput('')
-    session.pushUserMessage(message)
+    setAttachments([])
+    session.pushUserMessage(shownMessage || message)
     session.start({
       kind: 'run',
       workflowId,
-      message,
-      resumeAgentId: resumeAgentRef.current || undefined
+      message: message || shownMessage,
+      resumeAgentId: resumeAgentRef.current || undefined,
+      filePaths: filePaths.length ? filePaths : undefined
     })
   }
 
@@ -92,11 +113,36 @@ export function AgentRunPage({
             pendingQuestion={session.pendingQuestion}
             pendingHitl={session.pendingHitl}
             emptyHint="Опишите задачу для агента и нажмите отправить. Записи требуют подтверждения."
+            allowQuestionFiles
             onAnswer={session.answer}
             onHitl={session.respondHitl}
             onSkip={session.skip}
           />
+          {attachments.length > 0 && (
+            <div className="wf-attachments">
+              {attachments.map((path) => (
+                <span key={path} className="wf-attachment">
+                  <span className="wf-attachment-name">{path.split(/[\\/]/).pop() || path}</span>
+                  <button
+                    className="wf-attachment-remove"
+                    onClick={() => removeAttachment(path)}
+                    title="Убрать файл"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="agent-run-input">
+            <button
+              className="wf-clip"
+              title="Прикрепить файл"
+              disabled={session.running}
+              onClick={() => void pickFiles()}
+            >
+              📎
+            </button>
             <textarea
               placeholder="Что должен сделать агент?"
               value={input}
@@ -108,7 +154,11 @@ export function AgentRunPage({
                 }
               }}
             />
-            <button className="btn-primary" disabled={!input.trim() || session.running} onClick={submit}>
+            <button
+              className="btn-primary"
+              disabled={(!input.trim() && attachments.length === 0) || session.running}
+              onClick={submit}
+            >
               Отправить
             </button>
           </div>

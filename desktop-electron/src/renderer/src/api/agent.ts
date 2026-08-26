@@ -26,6 +26,7 @@ export interface RunCommand {
   source?: string
   triggerId?: string
   resumeAgentId?: string
+  filePaths?: string[]
 }
 
 export interface CheckTriggerCommand {
@@ -58,8 +59,8 @@ export const agentClient = {
     return id
   },
 
-  answer(requestId: string, answer: string, ok = true): void {
-    void window.agent.answer({ requestId, answer, ok })
+  answer(requestId: string, answer: string, ok = true, filePaths: string[] = []): void {
+    void window.agent.answer({ requestId, answer, ok, filePaths })
   },
 
   hitl(requestId: string, approved: boolean): void {

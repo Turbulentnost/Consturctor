@@ -13,9 +13,11 @@ Protocol: newline-delimited JSON.
     {"type": "design", "id": str, "workflowId": str}
     {"type": "demo", "id": str, "workflowId": str}
     {"type": "run", "id": str, "workflowId": str, "message": str,
-       "source": str, "triggerId": str, "resumeAgentId": str}
+       "source": str, "triggerId": str, "resumeAgentId": str,
+       "filePaths": [str, ...]}
     {"type": "check_trigger", "id": str, "triggerId": str}
-    {"type": "answer", "requestId": str, "ok": bool, "answer": str}
+    {"type": "answer", "requestId": str, "ok": bool, "answer": str,
+       "filePaths": [str, ...]}
     {"type": "hitl", "requestId": str, "approved": bool}
     {"type": "skip", "requestId": str}
     {"type": "cancel", "id": str}
@@ -66,7 +68,7 @@ DESKTOP_ROOT = _bootstrap_desktop_path()
 # Importing app.config loads desktop/.env (CURSOR_API_KEY, BACKEND_URL, ...).
 from app.api_client import ApiClient, ApiError  # noqa: E402
 from app.sdk_agent.bridge import CursorSdkBridge, CursorSdkUnavailable  # noqa: E402
-from app.sdk_agent.files import prepare_sdk_workspace  # noqa: E402
+from app.sdk_agent.files import _safe_filename, prepare_sdk_workspace  # noqa: E402
 from app.sdk_agent.prompt import (  # noqa: E402
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
@@ -618,13 +620,49 @@ class Sidecar:
             emit({"type": "ready_state", "ok": False, "message": _ascii(str(exc))})
 
     # -- run dispatch --------------------------------------------------
+    @staticmethod
+    def _dedup_key(kind: str, command: dict[str, Any]) -> str:
+        """Identity of a run so duplicate starts can be collapsed.
+
+        StrictMode double-invoke, double clicks or a resume racing a still
+        active run would otherwise spawn two SDK subprocesses that write to the
+        same local SDK SQLite at once and fail with "database is locked".
+        """
+        target = str(
+            command.get("workflowId")
+            or command.get("draftId")
+            or command.get("triggerId")
+            or ""
+        ).strip()
+        return f"{kind}:{target}" if target else ""
+
     def start(self, kind: str, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or uuid.uuid4().hex)
-        gate = HitlGate(run_id)
-        stop = threading.Event()
-        bridge = ElectronBridge(gate)
-        active = ActiveRun(run_id=run_id, gate=gate, stop=stop, bridge=bridge)
+        dedup_key = self._dedup_key(kind, command)
         with self._lock:
+            if dedup_key:
+                for existing in self._active.values():
+                    if existing.dedup_key == dedup_key:
+                        log(
+                            "skip duplicate run: "
+                            + _ascii(f"{dedup_key} (active run {existing.run_id})")
+                        )
+                        emit(
+                            {
+                                "type": "event",
+                                "runId": existing.run_id,
+                                "payload": {
+                                    "type": "status",
+                                    "text": "Продолжаю текущий запуск агента.",
+                                },
+                            }
+                        )
+                        return
+            gate = HitlGate(run_id)
+            stop = threading.Event()
+            bridge = ElectronBridge(gate)
+            active = ActiveRun(run_id=run_id, gate=gate, stop=stop, bridge=bridge)
+            active.dedup_key = dedup_key
             self._active[run_id] = active
         worker = threading.Thread(
             target=self._run_safe,
@@ -697,6 +735,7 @@ class Sidecar:
                 raise
             design_prompt = ""
         run_cwd = bridge.workspace_cwd(workflow_id)
+        active.run_cwd = run_cwd
         prepare_sdk_workspace(
             self._api,
             workflow_id,
@@ -778,6 +817,7 @@ class Sidecar:
         record = self._api.get_workflow(workflow_id)
         resume_agent_id = str((record.local_run or {}).get("sdk_agent_id") or "").strip()
         run_cwd = bridge.workspace_cwd(workflow_id)
+        active.run_cwd = run_cwd
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=record)
         events: list[dict[str, Any]] = []
         result = bridge.run(
@@ -838,13 +878,19 @@ class Sidecar:
         run_ref = getattr(run_record, "id", "") or getattr(run_record, "run_id", "")
         emit({"type": "event", "runId": active.run_id, "payload": {"type": "run", "run_id": run_ref}})
         run_cwd = bridge.workspace_cwd(workflow_id)
+        active.run_cwd = run_cwd
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=workflow)
+        file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
+        attachment_paths = _copy_attachments(run_cwd, file_paths)
         events: list[dict[str, Any]] = []
         prompt = (
             build_followup_sdk_prompt(message)
             if resume_agent_id and message
             else build_sdk_prompt(workflow, message)
         )
+        note = _attachments_note(attachment_paths)
+        if note:
+            prompt = prompt + "\n\n" + note
         prompt = _with_run_journal_prompt(prompt, run_cwd)
         status = "ok"
         answer = ""
@@ -982,11 +1028,16 @@ class Sidecar:
     # -- responses -----------------------------------------------------
     def answer(self, command: dict[str, Any]) -> None:
         request_id = str(command.get("requestId") or "")
-        reply = {
-            "ok": bool(command.get("ok", True)),
-            "answer": str(command.get("answer") or command.get("text") or ""),
-        }
+        answer_text = str(command.get("answer") or command.get("text") or "")
+        file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
         for active in list(self._active.values()):
+            note = ""
+            if file_paths and active.run_cwd:
+                note = _attachments_note(_copy_attachments(active.run_cwd, file_paths))
+            reply = {
+                "ok": bool(command.get("ok", True)),
+                "answer": answer_text + (("\n\n" + note) if note else ""),
+            }
             active.gate.resolve_answer(request_id, reply)
 
     def hitl(self, command: dict[str, Any]) -> None:
@@ -1023,10 +1074,54 @@ class ActiveRun:
         self.stop = stop
         self.bridge = bridge
         self.thread: threading.Thread | None = None
+        self.run_cwd: str = ""
+        self.dedup_key: str = ""
 
 
 def _ascii(text: str) -> str:
     return (text or "").encode("ascii", errors="replace").decode("ascii")
+
+
+def _copy_attachments(run_cwd: str, file_paths: list[str]) -> list[str]:
+    """Copy user-attached files into materials/attachments of the run cwd.
+
+    Returns the list of workspace-relative posix paths so the SDK agent can
+    read them (mirrors how seed_workflow_files stages persistent documents).
+    """
+    cwd = (run_cwd or "").strip()
+    if not cwd or not file_paths:
+        return []
+    root = Path(cwd)
+    attachments = root / "materials" / "attachments"
+    attachments.mkdir(parents=True, exist_ok=True)
+    existing = sum(1 for _ in attachments.glob("*") if _.is_file())
+    relative: list[str] = []
+    index = existing
+    for source in file_paths:
+        src = Path(str(source or "").strip())
+        if not src.is_file():
+            log("attachment not found: " + _ascii(str(source)))
+            continue
+        index += 1
+        filename = _safe_filename(src.name or f"file-{index}")
+        target = attachments / f"{index:03d}_{filename}"
+        try:
+            target.write_bytes(src.read_bytes())
+        except Exception as exc:  # noqa: BLE001
+            log("attachment copy failed: " + repr(exc))
+            continue
+        relative.append(target.relative_to(root).as_posix())
+    return relative
+
+
+def _attachments_note(relative_paths: list[str]) -> str:
+    if not relative_paths:
+        return ""
+    listing = ", ".join(relative_paths)
+    return (
+        "Прикреплённые файлы (прочитай их из рабочей области): "
+        + listing
+    )
 
 
 def main() -> None:

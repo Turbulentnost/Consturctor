@@ -48,12 +48,15 @@ export function AgentStudioPage({
 }: AgentStudioPageProps): React.JSX.Element {
   const [record, setRecord] = useState<WorkflowRecord | null>(null)
   const [designDone, setDesignDone] = useState(false)
+  const [designDraft, setDesignDraft] = useState('')
   const [demoDone, setDemoDone] = useState(false)
   const [tab, setTab] = useState<StudioTab>('stages')
   const [files, setFiles] = useState<WorkflowFileItem[]>([])
   const [input, setInput] = useState('')
+  const [attachments, setAttachments] = useState<string[]>([])
   const startedRef = useRef(false)
   const demoAutoRef = useRef(false)
+  const lastWorkflowRef = useRef<string>('')
   const resumeAgentRef = useRef<string>('')
   const startDemoRef = useRef<(id: string) => void>(() => undefined)
 
@@ -80,18 +83,15 @@ export function AgentStudioPage({
     (result: AgentResult) => {
       if (result.agentId) resumeAgentRef.current = result.agentId
       if (result.kind === 'design') {
+        setDesignDraft((result.answer || '').trim())
         setDesignDone(true)
         void refreshRecord()
-        if (!demoAutoRef.current) {
-          demoAutoRef.current = true
-          startDemoRef.current(workflowId)
-        }
       } else if (result.kind === 'demo') {
         setDemoDone(true)
         void refreshRecord()
       }
     },
-    [refreshRecord, workflowId]
+    [refreshRecord]
   )
 
   const session = useAgentSession({ onResult })
@@ -103,9 +103,18 @@ export function AgentStudioPage({
     void refreshFiles()
   }, [refreshRecord, refreshFiles])
 
+  // Reset only when the workflow really changes. Without the guard, React
+  // StrictMode's double-invoke of effects in dev would reset startedRef and
+  // fire a second design run against the same local SDK SQLite ("database is
+  // locked").
   useEffect(() => {
+    if (lastWorkflowRef.current === workflowId) return
+    lastWorkflowRef.current = workflowId
     startedRef.current = false
     demoAutoRef.current = false
+    setDesignDone(false)
+    setDesignDraft('')
+    setDemoDone(false)
   }, [workflowId])
 
   useEffect(() => {
@@ -113,6 +122,16 @@ export function AgentStudioPage({
     startedRef.current = true
     start({ kind: 'design', workflowId })
   }, [autoStart, start, workflowId])
+
+  // Auto-start the trial run only AFTER design is done and the draft is on
+  // screen (a short beat so the user can see "Черновик готов" before the run).
+  useEffect(() => {
+    if (!designDone || demoAutoRef.current) return
+    if (session.running || session.pendingQuestion || session.pendingHitl) return
+    demoAutoRef.current = true
+    const timer = setTimeout(() => startDemoRef.current(workflowId), 1200)
+    return () => clearTimeout(timer)
+  }, [designDone, session.running, session.pendingQuestion, session.pendingHitl, workflowId])
 
   const runDemo = (): void => {
     setDemoDone(false)
@@ -149,16 +168,36 @@ export function AgentStudioPage({
   const canDemo = designDone && !busy && !awaiting
   const composerDisabled = busy || awaiting
 
+  const pickFiles = async (): Promise<void> => {
+    const paths = await window.api.openFile({
+      title: 'Прикрепить файл',
+      properties: ['openFile', 'multiSelections']
+    })
+    if (!paths.length) return
+    setAttachments((prev) => Array.from(new Set([...prev, ...paths])))
+  }
+
+  const removeAttachment = (path: string): void => {
+    setAttachments((prev) => prev.filter((item) => item !== path))
+  }
+
   const submit = (): void => {
     const message = input.trim()
-    if (!message || composerDisabled) return
+    if ((!message && attachments.length === 0) || composerDisabled) return
+    const names = attachments.map((path) => path.split(/[\\/]/).pop()).filter(Boolean)
+    const shownMessage = [message, names.length ? `Прикреплённые файлы: ${names.join(', ')}` : '']
+      .filter(Boolean)
+      .join('\n')
     setInput('')
-    session.pushUserMessage(message)
+    const filePaths = attachments
+    setAttachments([])
+    session.pushUserMessage(shownMessage || message)
     start({
       kind: 'run',
       workflowId,
-      message,
-      resumeAgentId: resumeAgentRef.current || undefined
+      message: message || shownMessage,
+      resumeAgentId: resumeAgentRef.current || undefined,
+      filePaths: filePaths.length ? filePaths : undefined
     })
   }
 
@@ -196,14 +235,36 @@ export function AgentStudioPage({
                 <ClarifyCard
                   key={`${session.pendingQuestion.requestId}:${session.pendingQuestion.question}:${session.pendingQuestion.options.join('|')}`}
                   question={session.pendingQuestion}
+                  allowFiles
                   onAnswer={session.answer}
                 />
               </div>
             )}
+            {attachments.length > 0 && (
+              <div className="wf-attachments">
+                {attachments.map((path) => (
+                  <span key={path} className="wf-attachment">
+                    <span className="wf-attachment-name">{path.split(/[\\/]/).pop() || path}</span>
+                    <button
+                      className="wf-attachment-remove"
+                      onClick={() => removeAttachment(path)}
+                      title="Убрать файл"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             <div className="wf-composer">
-              <span className="wf-clip" title="Прикрепить файл">
+              <button
+                className="wf-clip"
+                title="Прикрепить файл"
+                disabled={composerDisabled}
+                onClick={() => void pickFiles()}
+              >
                 📎
-              </span>
+              </button>
               <textarea
                 className="wf-composer-input"
                 placeholder="Напишите сообщение агенту…"
@@ -219,7 +280,7 @@ export function AgentStudioPage({
               />
               <button
                 className="wf-send"
-                disabled={!input.trim() || composerDisabled}
+                disabled={(!input.trim() && attachments.length === 0) || composerDisabled}
                 onClick={submit}
                 title="Отправить"
               >
@@ -267,6 +328,12 @@ export function AgentStudioPage({
                   </button>
                 )}
               </div>
+              {designDraft && (
+                <div className="wf-result-card">
+                  <div className="wf-result-title">Черновик агента</div>
+                  <MarkdownBody text={presentAgentText(designDraft)} />
+                </div>
+              )}
               {record?.lastResult && (
                 <div className="wf-result-card">
                   <div className="wf-result-title">Результат пробного прогона</div>

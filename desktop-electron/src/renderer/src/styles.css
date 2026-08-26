@@ -3276,14 +3276,11 @@ input {
   overflow: hidden;
   background: #f1f4f3;
 }
-.feed-tool + .feed-tool {
-  margin-top: -12px;
-  border-top-left-radius: 0;
-  border-top-right-radius: 0;
+button.feed-tool-head {
+  cursor: pointer;
 }
-.feed-tool:has(+ .feed-tool) {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
+button.feed-tool-head:hover {
+  background: rgba(6, 72, 61, 0.04);
 }
 .feed-tool-head {
   width: 100%;
@@ -3291,6 +3288,7 @@ input {
   align-items: flex-start;
   gap: 10px;
   padding: 10px 12px;
+  text-align: left;
   background: none;
   border: none;
   text-align: left;
@@ -3332,20 +3330,14 @@ input {
   font-size: 12px;
   color: #6b7773;
   line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .feed-tool-status.live {
   color: #8a6a12;
 }
-.feed-tool-status-block {
-  padding: 0 12px 10px 32px;
-  font-size: 12px;
-  color: #6b7773;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.feed-tool-status-block.live {
-  color: #8a6a12;
+.feed-tool-status.error {
+  color: #c0392b;
 }
 .feed-tool.live {
   border-color: #e3d6a8;
@@ -4583,8 +4575,61 @@ input {
   line-height: 1;
   padding: 6px 4px;
   color: var(--content-muted);
-  cursor: default;
+  cursor: pointer;
   user-select: none;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.wf-clip:hover:not(:disabled) {
+  color: var(--main-text);
+  background: rgba(6, 72, 61, 0.08);
+}
+.wf-clip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.wf-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.wf-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 12px;
+  background: rgba(6, 72, 61, 0.08);
+  border: 1px solid var(--card-border);
+  font-size: 12px;
+  color: var(--main-text);
+}
+.wf-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-attachment-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--content-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.wf-attachment-remove:hover {
+  background: rgba(180, 77, 77, 0.16);
+  color: #b44d4d;
 }
 .wf-composer-input {
   flex: 1;

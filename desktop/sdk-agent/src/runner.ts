@@ -421,6 +421,48 @@ function isActiveRunError(error: unknown): boolean {
   return message.includes("already has active run") || message.includes("agentbusy");
 }
 
+/**
+ * The local SDK persists agent/session state in a shared SQLite database.
+ * When several agent runs touch it at the same time one of them can fail with
+ * "database is locked" (SQLITE_BUSY). It is transient contention, not a hard
+ * one-at-a-time limit, so a few retries with backoff let parallel runs proceed.
+ */
+function isDatabaseLockedError(error: unknown): boolean {
+  const message = safeError(error).toLowerCase();
+  return (
+    message.includes("database is locked") ||
+    message.includes("database table is locked") ||
+    message.includes("sqlite_busy")
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withDbLockRetry<T>(
+  op: () => Promise<T>,
+  label: string,
+  attempts = 5,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await op();
+    } catch (error) {
+      if (!isDatabaseLockedError(error) || attempt === attempts) throw error;
+      lastError = error;
+      const backoff = Math.min(200 * 2 ** (attempt - 1), 2000);
+      emit({
+        type: "status",
+        text: `Локальная база SDK занята, повтор ${attempt}/${attempts - 1} (${label})...`,
+      });
+      await delay(backoff);
+    }
+  }
+  throw lastError;
+}
+
 async function runAgent(command: RunCommand): Promise<void> {
   const id = command.id || randomUUID();
   const model = command.model || process.env.CURSOR_SDK_MODEL || "grok-4.6";
@@ -462,9 +504,13 @@ async function runAgent(command: RunCommand): Promise<void> {
         settingSources: [],
       },
     };
-    agent = command.resumeAgentId
-      ? await Agent.resume(command.resumeAgentId, agentOptions as never)
-      : await Agent.create(agentOptions as never);
+    agent = await withDbLockRetry(
+      () =>
+        command.resumeAgentId
+          ? Agent.resume(command.resumeAgentId as string, agentOptions as never)
+          : Agent.create(agentOptions as never),
+      command.resumeAgentId ? "resume" : "create",
+    );
     const agentId = readAgentId(agent, command.resumeAgentId || "");
     emit({ type: "agent", id, agentId, resumed: Boolean(command.resumeAgentId) });
     const sendOptions = {
@@ -480,15 +526,17 @@ async function runAgent(command: RunCommand): Promise<void> {
         emitNestedTask(parentId, update.taskUpdate);
       },
     };
+    const sendOnce = () =>
+      (agent as NonNullable<typeof agent>).send(command.prompt, sendOptions as never);
     let run;
     try {
-      run = await agent.send(command.prompt, sendOptions as never);
+      run = await withDbLockRetry(sendOnce, "send");
     } catch (error) {
       if (!command.resumeAgentId || !isActiveRunError(error)) {
         throw error;
       }
       emit({ type: "status", text: "Закрываю предыдущий запуск того же агента..." });
-      run = await agent.send(command.prompt, sendOptions as never);
+      run = await withDbLockRetry(sendOnce, "send");
     }
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
     const finishIfReady = async (draft: string): Promise<boolean> => {
@@ -504,7 +552,7 @@ async function runAgent(command: RunCommand): Promise<void> {
       emit({ type: "final", id, status: "ok", answer: draft });
       emit({ type: "done", id, status: "ok", answer: draft });
       await settleRun(run);
-      await agent.close();
+      await (agent as NonNullable<typeof agent>).close();
       return true;
     };
     for await (const event of run.stream()) {

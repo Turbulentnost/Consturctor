@@ -22,17 +22,22 @@ export function ToolCard({ item }: ToolCardProps): React.JSX.Element {
   if (!item.done) classes.push('live')
   const status = item.statusText || (item.done ? item.summary || 'Готово' : 'Выполняется…')
 
+  const Head = hasResult ? 'button' : 'div'
   return (
     <div className={classes.join(' ')}>
-      <button className="feed-tool-head" onClick={() => hasResult && setOpen((v) => !v)}>
+      <Head
+        className="feed-tool-head"
+        {...(hasResult ? { onClick: () => setOpen((v) => !v) } : {})}
+      >
         <span className={`feed-tool-dot${item.error ? ' error' : item.done ? ' done' : ' run'}`} />
         <span className="feed-tool-copy">
           <span className="feed-tool-title">{item.title}</span>
-          {item.hint && item.hint !== status && <span className="feed-tool-hint">{item.hint}</span>}
+          <span className={`feed-tool-status${item.done ? '' : ' live'}${item.error ? ' error' : ''}`}>
+            {status}
+          </span>
         </span>
         {hasResult && <span className="feed-tool-chevron">{open ? '\u25B2' : '\u25BC'}</span>}
-      </button>
-      <div className={`feed-tool-status-block${item.done ? '' : ' live'}`}>{status}</div>
+      </Head>
       {open && hasResult && item.result && (
         <div className="feed-tool-body">
           <div className="feed-tool-block">
