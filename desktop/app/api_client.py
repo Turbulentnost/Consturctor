@@ -1412,6 +1412,21 @@ class ApiClient:
         )
         return self._parse_agent_draft(data)
 
+    def finish_sdk_readiness(
+        self,
+        draft_id: str,
+        *,
+        answer: str,
+        events: list[dict] | None = None,
+    ) -> AgentDraft:
+        data = self._request(
+            "POST",
+            f"/api/v1/agents/drafts/{draft_id}/sdk-readiness",
+            json={"answer": answer, "events": events or []},
+            timeout=max(self._timeout, 120.0),
+        )
+        return self._parse_agent_draft(data)
+
     def reanalyze_revision_document(self, draft_id: str) -> list[AgentSuggestion]:
         data = self._request(
             "POST",

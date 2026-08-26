@@ -39,6 +39,7 @@ const api = {
     ipcRenderer.invoke('api:download', opts),
   createWorkflow: <T = unknown>(opts: {
     notes: string
+    draftId?: string
     token?: string | null
   }): Promise<ApiResponse<T>> => ipcRenderer.invoke('api:createWorkflow', opts),
   stream: <T = unknown>(opts: {

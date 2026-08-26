@@ -302,6 +302,19 @@ export interface AgentDraft {
   agentSuggestions: AgentSuggestion[]
 }
 
+export interface AgentDraftFile {
+  fileId: string
+  draftId: string
+  functionId: string
+  filename: string
+  mimeType: string
+  kind: string
+  size: number
+  sha256: string
+  summary: string
+  textPreview: string
+}
+
 export interface QuestionChatMessage {
   messageId: string
   sessionId: string
@@ -429,8 +442,9 @@ export interface AgentEvent {
   options?: string[]
   tool?: string
   arguments?: Record<string, unknown>
-  kind?: 'design' | 'demo' | 'run' | 'trigger'
+  kind?: 'design' | 'readiness' | 'demo' | 'run' | 'trigger'
   workflowId?: string
+  draftId?: string
   agentId?: string
   runRef?: string
   answer?: string

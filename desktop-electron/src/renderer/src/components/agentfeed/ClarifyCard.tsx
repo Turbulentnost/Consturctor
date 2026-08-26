@@ -3,17 +3,32 @@ import type { PendingQuestion } from './types'
 
 interface ClarifyCardProps {
   question: PendingQuestion
-  onAnswer: (requestId: string, value: string) => void
+  allowFiles?: boolean
+  onAnswer: (requestId: string, value: string, filePaths?: string[]) => void
 }
 
-export function ClarifyCard({ question, onAnswer }: ClarifyCardProps): React.JSX.Element {
+export function ClarifyCard({ question, allowFiles = false, onAnswer }: ClarifyCardProps): React.JSX.Element {
   const [selected, setSelected] = useState('')
   const [custom, setCustom] = useState('')
+  const [filePaths, setFilePaths] = useState<string[]>([])
 
   const submit = (): void => {
-    const value = (custom.trim() || selected).trim()
-    if (!value) return
-    onAnswer(question.requestId, value)
+    const text = (custom.trim() || selected).trim()
+    if (!text && filePaths.length === 0) return
+    const names = filePaths.map((path) => path.split(/[\\/]/).pop()).filter(Boolean)
+    const value = [text, names.length ? `Прикрепленные файлы: ${names.join(', ')}` : '']
+      .filter(Boolean)
+      .join('\n')
+    onAnswer(question.requestId, value, filePaths)
+  }
+
+  const pickFiles = async (): Promise<void> => {
+    const paths = await window.api.openFile({
+      title: 'Прикрепить файл к ответу',
+      properties: ['openFile', 'multiSelections']
+    })
+    if (!paths.length) return
+    setFilePaths((prev) => Array.from(new Set([...prev, ...paths])))
   }
 
   return (
@@ -50,10 +65,24 @@ export function ClarifyCard({ question, onAnswer }: ClarifyCardProps): React.JSX
           if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit()
         }}
       />
+      {allowFiles && (
+        <div className="feed-clarify-files">
+          <button type="button" className="btn-ghost" onClick={() => void pickFiles()}>
+            Прикрепить файл
+          </button>
+          {filePaths.length > 0 && (
+            <div className="feed-clarify-file-list">
+              {filePaths.map((path) => (
+                <span key={path}>{path.split(/[\\/]/).pop() || path}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div className="feed-clarify-actions">
         <button
           className="btn-primary"
-          disabled={!custom.trim() && !selected}
+          disabled={!custom.trim() && !selected && filePaths.length === 0}
           onClick={submit}
         >
           Ответить и продолжить

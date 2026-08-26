@@ -313,7 +313,7 @@ async function handleDownload(
 
 async function handleCreateWorkflow(
   _evt: unknown,
-  opts: { notes: string; token?: string | null }
+  opts: { notes: string; draftId?: string; token?: string | null }
 ) {
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
@@ -321,6 +321,7 @@ async function handleCreateWorkflow(
     const form = new FormData()
     const notes = opts.notes || ''
     form.append('notes', notes)
+    if (opts.draftId) form.append('draftId', opts.draftId)
     const blob = new Blob([notes], { type: 'text/plain' })
     form.append('files', blob, 'notes.txt')
     const response = await fetch(`${CONFIG.backendUrl}/api/v1/workflows`, {

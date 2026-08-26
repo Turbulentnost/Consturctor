@@ -377,6 +377,7 @@ async def submit_agent_tool_result(
 @router.post("", response_model=WorkflowSchema)
 async def create_workflow_endpoint(
     notes: str = Form(default=""),
+    draftId: str = Form(default=""),
     files: list[UploadFile] = File(default=[]),
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -386,7 +387,13 @@ async def create_workflow_endpoint(
         raw = await upload.read()
         payloads.append((upload.filename or "file", raw))
     try:
-        return create_workflow(db, user_id=auth.user_id, notes=notes, files=payloads)
+        return create_workflow(
+            db,
+            user_id=auth.user_id,
+            notes=notes,
+            files=payloads,
+            draft_id=draftId,
+        )
     except WorkflowError as exc:
         _raise(exc)
         raise  # pragma: no cover

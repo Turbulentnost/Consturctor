@@ -1,46 +1,67 @@
-import { useEffect, useRef, useState } from 'react'
-import type { AgentDraft, QuestionChatSession } from '../api/types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api } from '../api/client'
+import { AgentFeed, useAgentSession, type AgentResult } from '../components/agentfeed'
+import type { AgentDraft } from '../api/types'
 
 interface ReadinessPageProps {
   draft: AgentDraft
-  chat: QuestionChatSession | null
   busy?: boolean
   onBack: () => void
-  onSend: (questionId: string, message: string) => void
-  onSkipToAgents: () => void
+  onComplete: (draft: AgentDraft) => void
 }
 
 export function ReadinessPage({
   draft,
-  chat,
   busy,
   onBack,
-  onSend,
-  onSkipToAgents
+  onComplete
 }: ReadinessPageProps): React.JSX.Element {
-  const readiness = draft.readiness
-  const questions = readiness?.questions ?? []
-  const unanswered = questions.filter((q) => !q.answered)
-  const current = unanswered[0]
-  const [input, setInput] = useState('')
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const startedRef = useRef('')
+  const [uploading, setUploading] = useState(false)
+
+  const handleResult = useCallback(
+    async (result: AgentResult) => {
+      if (result.kind !== 'readiness') return
+      const updated = await api.getAgentDraft(draft.draftId)
+      onComplete(updated)
+    },
+    [draft.draftId, onComplete]
+  )
+
+  const session = useAgentSession({ onResult: handleResult })
+  const { start } = session
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
-  }, [chat?.messages.length, busy])
+    if (!draft.draftId || startedRef.current === draft.draftId) return
+    startedRef.current = draft.draftId
+    start({ kind: 'readiness', draftId: draft.draftId })
+  }, [draft.draftId, start])
 
-  const visible = (chat?.messages ?? []).filter((m) => m.role === 'assistant' || m.role === 'user')
-  const questionId = chat?.questionId || current?.questionId || ''
-
-  function send(text: string): void {
-    const message = text.trim()
-    if (!message || !questionId || busy) return
-    setInput('')
-    onSend(questionId, message)
+  const answer = async (requestId: string, value: string, filePaths: string[] = []): Promise<void> => {
+    let finalValue = value
+    if (filePaths.length > 0) {
+      setUploading(true)
+      try {
+        const files = await api.uploadAgentDraftFiles(draft.draftId, filePaths)
+        const names = files.map((file) => file.filename).filter(Boolean)
+        if (names.length) {
+          finalValue = `${value.trim()}\nФайлы сохранены в черновике: ${names.join(', ')}`.trim()
+        }
+      } catch (err) {
+        session.pushSystem(err instanceof Error ? err.message : 'Не удалось прикрепить файл')
+        return
+      } finally {
+        setUploading(false)
+      }
+    }
+    session.answer(requestId, finalValue)
   }
 
+  const totalBlocks = draft.agentSuggestions.length
+  const locked = Boolean(busy || uploading)
+
   return (
-    <div className="chat-page">
+    <div className="agent-studio">
       <div className="chat-head">
         <button className="btn-ghost" onClick={onBack}>
           {'\u2039'} Назад
@@ -55,67 +76,48 @@ export function ReadinessPage({
 
       <div className="review-stats">
         <div className="stat">
-          <div className="stat-value">{questions.length}</div>
-          <div className="stat-label">вопросов</div>
+          <div className="stat-value">{totalBlocks}</div>
+          <div className="stat-label">блоков</div>
         </div>
         <div className="stat">
-          <div className="stat-value">{unanswered.length}</div>
-          <div className="stat-label">осталось</div>
+          <div className="stat-value">{session.pendingQuestion ? 1 : 0}</div>
+          <div className="stat-label">нужен ответ</div>
         </div>
         <div className="stat">
-          <div className="stat-value">{readiness?.score ?? 0}</div>
+          <div className="stat-value">{draft.progress ?? 0}</div>
           <div className="stat-label">готовность</div>
         </div>
       </div>
 
-      <div className="chat-scroll" ref={scrollRef}>
-        {current && (
-          <div className="chat-hint">
-            <b>{current.question}</b>
-            {current.reason && <div style={{ marginTop: 6 }}>{current.reason}</div>}
+      <div className="agent-studio-body">
+        <div className="agent-studio-main">
+          <AgentFeed
+            items={session.items}
+            status={uploading ? 'Прикрепляю файл к черновику…' : session.status}
+            running={session.running || locked}
+            pendingQuestion={locked ? null : session.pendingQuestion}
+            pendingHitl={session.pendingHitl}
+            emptyHint="Локальный Cursor SDK анализирует функциональные блоки и задаст вопросы по пробелам логики."
+            allowQuestionFiles
+            onAnswer={(requestId, value, filePaths) => void answer(requestId, value, filePaths)}
+            onHitl={session.respondHitl}
+            onSkip={session.skip}
+          />
+        </div>
+        <div className="agent-studio-side">
+          <div className="agent-side-card">
+            <h4>Уточнение регламента</h4>
+            <p>
+              Локальный Cursor SDK проходит функциональные блоки по очереди. На вопрос можно выбрать вариант,
+              написать свой ответ или прикрепить файл.
+            </p>
+            {session.running && (
+              <button className="btn-ghost" style={{ marginTop: 10 }} onClick={session.cancel}>
+                Остановить
+              </button>
+            )}
           </div>
-        )}
-        {visible.map((m, index) => (
-          <div key={m.messageId || index} className={m.role === 'user' ? 'bubble user' : 'bubble ai'}>
-            <div className="bubble-text">{m.content}</div>
-          </div>
-        ))}
-        {busy && (
-          <div className="bubble ai">
-            <div className="typing">
-              <span></span>
-              <span></span>
-              <span></span>
-            </div>
-          </div>
-        )}
-        {!current && !busy && (
-          <div className="chat-ready">
-            <div>Все уточнения закрыты. Можно перейти к списку ИИ-агентов.</div>
-            <button className="btn-primary" style={{ maxWidth: 260 }} onClick={onSkipToAgents}>
-              К агентам
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="chat-input">
-        <textarea
-          value={input}
-          placeholder="Ответьте своими словами..."
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              send(input)
-            }
-          }}
-          disabled={busy || !current}
-          rows={2}
-        />
-        <button className="btn-primary" style={{ width: 120 }} onClick={() => send(input)} disabled={busy || !current}>
-          Отправить
-        </button>
+        </div>
       </div>
     </div>
   )

@@ -6,6 +6,12 @@ export interface DesignCommand {
   workflowId: string
 }
 
+export interface ReadinessCommand {
+  kind: 'readiness'
+  id?: string
+  draftId: string
+}
+
 export interface DemoCommand {
   kind: 'demo'
   id?: string
@@ -29,7 +35,7 @@ export interface CheckTriggerCommand {
   workflowId?: string
 }
 
-export type StartCommand = DesignCommand | DemoCommand | RunCommand | CheckTriggerCommand
+export type StartCommand = DesignCommand | ReadinessCommand | DemoCommand | RunCommand | CheckTriggerCommand
 
 function newRunId(): string {
   return `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`

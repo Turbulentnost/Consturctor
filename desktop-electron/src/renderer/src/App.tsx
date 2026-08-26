@@ -26,7 +26,6 @@ import type {
   AgentSuggestion,
   LoginResult,
   PassportSession,
-  QuestionChatSession,
   RegulationCreationSession,
   RegulationParseResult,
   RoleMatchResult,
@@ -62,7 +61,6 @@ export function App(): React.JSX.Element {
   const [regulation, setRegulation] = useState<RegulationParseResult | null>(null)
   const [roleMatch, setRoleMatch] = useState<RoleMatchResult | null>(null)
   const [draft, setDraft] = useState<AgentDraft | null>(null)
-  const [chat, setChat] = useState<QuestionChatSession | null>(null)
   const [suggestions, setSuggestions] = useState<AgentSuggestion[]>([])
   const [suggestion, setSuggestion] = useState<AgentSuggestion | null>(null)
   const [passport, setPassport] = useState<PassportSession | null>(null)
@@ -298,20 +296,6 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function firstChatForDraft(next: AgentDraft): Promise<QuestionChatSession | null> {
-    const readiness = next.readiness
-    const question = readiness?.questions.find((item) => !item.answered)
-    try {
-      const latest = await api.latestQuestionChat(next.draftId)
-      if (latest.status !== 'answered') return latest
-      if (!question) return latest
-    } catch {
-      /* no latest chat */
-    }
-    if (!question) return null
-    return api.createQuestionChat(next.draftId, question.questionId)
-  }
-
   async function finishRoleMatch(): Promise<void> {
     if (!regulation || !roleMatch) return
     setBusy(true)
@@ -322,55 +306,11 @@ export function App(): React.JSX.Element {
     })
     try {
       const created = await api.createAgentDraft(regulation.regulationId, roleMatch.runId)
-      const ensured = await api.ensureDraftReadiness(created.draftId)
-      const unanswered = (ensured.readiness?.questions ?? []).some((item) => !item.answered)
-      if (!unanswered) {
-        const ready = await api.updateAgentDraftStatus(ensured.draftId, 'ready')
-        setDraft(ready)
-        setSuggestions(
-          ready.agentSuggestions.length ? ready.agentSuggestions : suggestionsFromRoleMatch(roleMatch)
-        )
-        setBusy(false)
-        setView({ kind: 'suggestions' })
-        return
-      }
-      const nextChat = await firstChatForDraft(ensured)
-      setDraft(ensured)
-      setChat(nextChat)
+      setDraft(created)
       setBusy(false)
       setView({ kind: 'readiness' })
     } catch (err) {
       fail('Готовность регламента', err)
-    }
-  }
-
-  async function sendReadinessMessage(questionId: string, message: string): Promise<void> {
-    if (!draft) return
-    setBusy(true)
-    try {
-      let nextChat = await api.sendQuestionChatMessage(draft.draftId, questionId, message)
-      const nextDraft = await api.getAgentDraft(draft.draftId)
-      if (nextChat.status === 'answered') {
-        nextChat = (await firstChatForDraft(nextDraft)) || nextChat
-      }
-      setDraft(nextDraft)
-      setChat(nextChat)
-      if (!(nextDraft.readiness?.questions ?? []).some((item) => !item.answered)) {
-        const ready = await api.updateAgentDraftStatus(nextDraft.draftId, 'ready')
-        setDraft(ready)
-        setSuggestions(
-          ready.agentSuggestions.length
-            ? ready.agentSuggestions
-            : roleMatch
-              ? suggestionsFromRoleMatch(roleMatch)
-              : []
-        )
-        setView({ kind: 'suggestions' })
-      }
-    } catch (err) {
-      fail('Готовность регламента', err)
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -403,12 +343,23 @@ export function App(): React.JSX.Element {
       if (items.length) {
         setView({ kind: 'suggestions' })
       } else {
-        setChat(await firstChatForDraft(loaded))
         setView({ kind: 'readiness' })
       }
     } catch (err) {
       fail('Не удалось открыть черновик', err)
     }
+  }
+
+  function completeReadiness(nextDraft: AgentDraft): void {
+    setDraft(nextDraft)
+    setSuggestions(
+      nextDraft.agentSuggestions.length
+        ? nextDraft.agentSuggestions
+        : roleMatch
+          ? suggestionsFromRoleMatch(roleMatch)
+          : []
+    )
+    setView({ kind: 'suggestions' })
   }
 
   async function formDraftSuggestion(draftId: string, agentId: string): Promise<void> {
@@ -479,7 +430,10 @@ export function App(): React.JSX.Element {
     })
     setBusy(true)
     try {
-      const created = await api.createWorkflow(notesFromPassport(passport))
+      const created = await api.createWorkflow(
+        notesFromPassport(passport),
+        draft?.draftId || passport.draftId || ''
+      )
       setView({ kind: 'studio', workflowId: created.id, title: created.title || title })
     } catch (err) {
       fail('Ошибка создания агента', err)
@@ -599,20 +553,9 @@ export function App(): React.JSX.Element {
       return (
         <ReadinessPage
           draft={draft}
-          chat={chat}
           busy={busy}
           onBack={() => setView({ kind: 'rolematch' })}
-          onSend={sendReadinessMessage}
-          onSkipToAgents={() => {
-            setSuggestions(
-              draft.agentSuggestions.length
-                ? draft.agentSuggestions
-                : roleMatch
-                  ? suggestionsFromRoleMatch(roleMatch)
-                  : []
-            )
-            setView({ kind: 'suggestions' })
-          }}
+          onComplete={completeReadiness}
         />
       )
     }

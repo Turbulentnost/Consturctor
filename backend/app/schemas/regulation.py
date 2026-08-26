@@ -601,6 +601,29 @@ class AgentDraftStatusRequest(BaseModel):
     status: AgentDraftStatus
 
 
+class AgentDraftFileItem(BaseModel):
+    fileId: str
+    draftId: str
+    functionId: str = ""
+    filename: str
+    mimeType: str = ""
+    kind: str = "text"
+    size: int = 0
+    sha256: str = ""
+    summary: str = ""
+    textPreview: str = ""
+    createdAt: datetime | None = None
+
+
+class AgentDraftFilesResponse(BaseModel):
+    files: list[AgentDraftFileItem] = Field(default_factory=list)
+
+
+class AgentDraftSdkReadinessRequest(BaseModel):
+    answer: str = ""
+    events: list[dict] = Field(default_factory=list)
+
+
 class QuestionChatMessageResult(BaseModel):
     messageId: str
     sessionId: str

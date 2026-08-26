@@ -1,6 +1,7 @@
 import {
   ApiError,
   type AgentDraft,
+  type AgentDraftFile,
   type AgentPassport,
   type AgentReadinessResult,
   type AgentRunHistoryItem,
@@ -529,6 +530,21 @@ export function parseDraft(data: Record<string, unknown>): AgentDraft {
   }
 }
 
+function parseDraftFile(data: Record<string, unknown>): AgentDraftFile {
+  return {
+    fileId: String(data.fileId ?? ''),
+    draftId: String(data.draftId ?? ''),
+    functionId: String(data.functionId ?? ''),
+    filename: String(data.filename ?? 'file'),
+    mimeType: String(data.mimeType ?? ''),
+    kind: String(data.kind ?? 'text'),
+    size: Number(data.size ?? 0),
+    sha256: String(data.sha256 ?? ''),
+    summary: String(data.summary ?? ''),
+    textPreview: String(data.textPreview ?? '')
+  }
+}
+
 function parseQuestionChat(data: Record<string, unknown>): QuestionChatSession {
   return {
     sessionId: String(data.sessionId ?? ''),
@@ -965,6 +981,28 @@ export class ApiClient {
     return parseDraft(data)
   }
 
+  async uploadAgentDraftFiles(
+    draftId: string,
+    filePaths: string[],
+    functionId = ''
+  ): Promise<AgentDraftFile[]> {
+    const uploaded: AgentDraftFile[] = []
+    for (const filePath of filePaths) {
+      const res = await window.api.upload<Record<string, unknown>>({
+        endpoint: `/api/v1/agents/drafts/${draftId}/files`,
+        filePath,
+        fieldName: 'files',
+        token: this.token,
+        extraFields: functionId ? { functionId } : undefined,
+        timeoutMs: 180_000
+      })
+      if (!res.ok) throw new ApiError(res.error || 'Не удалось прикрепить файл', res.status)
+      const files = ((res.data?.files as Record<string, unknown>[]) ?? []).map(parseDraftFile)
+      uploaded.splice(0, uploaded.length, ...files)
+    }
+    return uploaded
+  }
+
   async createQuestionChat(draftId: string, questionId: string): Promise<QuestionChatSession> {
     const data = await this.request<Record<string, unknown>>(
       'POST',
@@ -1057,9 +1095,10 @@ export class ApiClient {
     return parsePassportSession(data)
   }
 
-  async createWorkflow(notes: string): Promise<WorkflowRecord> {
+  async createWorkflow(notes: string, draftId = ''): Promise<WorkflowRecord> {
     const res = await window.api.createWorkflow<Record<string, unknown>>({
       notes,
+      draftId,
       token: this.token
     })
     if (!res.ok) throw new ApiError(res.error || 'Ошибка создания workflow', res.status)

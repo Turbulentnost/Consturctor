@@ -11,7 +11,8 @@ interface AgentFeedProps {
   pendingQuestion: PendingQuestion | null
   pendingHitl: PendingHitl | null
   emptyHint?: string
-  onAnswer: (requestId: string, value: string) => void
+  allowQuestionFiles?: boolean
+  onAnswer: (requestId: string, value: string, filePaths?: string[]) => void
   onHitl: (requestId: string, approved: boolean) => void
   onSkip: () => void
 }
@@ -50,6 +51,7 @@ export function AgentFeed({
   pendingQuestion,
   pendingHitl,
   emptyHint,
+  allowQuestionFiles = false,
   onAnswer,
   onHitl,
   onSkip
@@ -68,7 +70,13 @@ export function AgentFeed({
       {items.map((item) => (
         <FeedRow key={item.id} item={item} />
       ))}
-      {pendingQuestion && <ClarifyCard question={pendingQuestion} onAnswer={onAnswer} />}
+      {pendingQuestion && (
+        <ClarifyCard
+          question={pendingQuestion}
+          allowFiles={allowQuestionFiles}
+          onAnswer={onAnswer}
+        />
+      )}
       {pendingHitl && <HitlCard hitl={pendingHitl} onRespond={onHitl} onSkip={onSkip} />}
       {running && !pendingQuestion && !pendingHitl && (
         <div className="agent-feed-status">

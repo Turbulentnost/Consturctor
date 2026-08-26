@@ -2952,6 +2952,26 @@ input {
   resize: vertical;
   margin-bottom: 12px;
 }
+.feed-clarify-files {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.feed-clarify-file-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--muted-text);
+  font-size: 12px;
+}
+.feed-clarify-file-list span {
+  border: 1px solid #cfe0ec;
+  border-radius: 999px;
+  background: #fff;
+  padding: 4px 8px;
+}
 .feed-clarify-actions,
 .feed-hitl-actions {
   display: flex;

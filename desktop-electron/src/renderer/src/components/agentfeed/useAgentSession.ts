@@ -5,8 +5,9 @@ import { toolLabel } from './labels'
 import type { FeedItem, PendingHitl, PendingQuestion, ToolItem } from './types'
 
 export interface AgentResult {
-  kind: 'design' | 'demo' | 'run' | 'trigger'
+  kind: 'design' | 'readiness' | 'demo' | 'run' | 'trigger'
   workflowId?: string
+  draftId?: string
   agentId?: string
   runRef?: string
   answer?: string
@@ -28,7 +29,7 @@ interface UseAgentSessionValue {
   pendingHitl: PendingHitl | null
   activeRunId: string | null
   start: (command: StartCommand) => string
-  answer: (requestId: string, value: string, ok?: boolean) => void
+  answer: (requestId: string, value: string, filePaths?: string[], ok?: boolean) => void
   respondHitl: (requestId: string, approved: boolean) => void
   skip: () => void
   cancel: () => void
@@ -260,6 +261,7 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
             optionsRef.current.onResult?.({
               kind: (event.kind as AgentResult['kind']) || 'run',
               workflowId: event.workflowId,
+              draftId: event.draftId,
               agentId: event.agentId,
               runRef: event.runRef,
               answer: event.answer,
@@ -309,7 +311,7 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
     return id
   }, [])
 
-  const answer = useCallback((requestId: string, value: string, ok = true) => {
+  const answer = useCallback((requestId: string, value: string, _filePaths?: string[], ok = true) => {
     agentClient.answer(requestId, value, ok)
     setPendingQuestion(null)
     setStatus('Агент работает…')

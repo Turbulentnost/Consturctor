@@ -271,6 +271,108 @@ def _safe_args(args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+READINESS_AGENTS_MD = """\
+# Уточнение регламента Constructor
+
+Инструменты Constructor уже подключены как customTools. Не ищи проектный MCP или mcp.json.
+Работай только на русском.
+
+Твоя задача - закрыть пробелы логики регламента перед созданием ИИ-агентов.
+Сначала прочитай materials/regulation.md, materials/functions.md, materials/answers.md и materials/manifest.json.
+
+Иди по каждому функциональному блоку из materials/functions.md.
+Для каждого блока проверь, понятны ли: входы, стартовое событие, условия, система, конкретное действие,
+ветвления, результат, получатель, контроль выполнения, ошибки и эскалация.
+Если без ответа будущий агент будет угадывать, вызови askQuestion.
+
+Правила вопросов:
+- один пробел - один вопрос;
+- в вопросе называй функциональный блок простыми словами;
+- если есть разумные варианты, передай их в options;
+- не спрашивай то, что уже есть в материалах или в ответах пользователя;
+- после ответа продолжай с учетом этого ответа, не начинай заново;
+- если пользователь упомянул прикрепленные файлы, считай их обязательными материалами.
+
+Когда все блоки закрыты, напиши строго JSON без markdown:
+{
+  "status": "ready",
+  "blocks": [
+    {"functionId": "...", "title": "...", "closedGaps": ["..."], "logic": "..."}
+  ],
+  "required_clarifications": []
+}
+После JSON остановись.
+"""
+
+
+def _write_text(cwd: str, relative: str, text: str) -> str:
+    root = Path(cwd).resolve()
+    target = (root / relative).resolve()
+    if root not in target.parents and target != root:
+        raise ValueError(f"refusing to write outside workspace: {relative}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    return relative.replace("\\", "/")
+
+
+def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> None:
+    regulation = api.get_regulation(draft.regulation_id)
+    suggestions = list(draft.agent_suggestions or [])
+    by_block = {item.fragment_id: item for item in regulation.fragments}
+
+    _write_text(cwd, "AGENTS.md", READINESS_AGENTS_MD)
+    regulation_lines = [f"# {regulation.file_name}", ""]
+    for fragment in regulation.fragments:
+        text = (fragment.text or "").strip()
+        if not text:
+            continue
+        section = (fragment.section or "").strip()
+        header = f"## {fragment.fragment_id}"
+        if section:
+            header += f" - {section}"
+        regulation_lines.extend([header, text, ""])
+    _write_text(cwd, "materials/regulation.md", "\n".join(regulation_lines).strip() + "\n")
+
+    function_lines = ["# Функциональные блоки", ""]
+    for index, item in enumerate(suggestions, start=1):
+        source = by_block.get(item.source_block_id)
+        function_lines.extend(
+            [
+                f"## {index}. {item.title}",
+                f"functionId: {item.function_id}",
+                f"sourceBlockId: {item.source_block_id}",
+            ]
+        )
+        if item.description:
+            function_lines.extend(["", item.description.strip()])
+        if source is not None and source.text:
+            function_lines.extend(["", "Цитата регламента:", source.text.strip()])
+        function_lines.append("")
+    if not suggestions:
+        function_lines.append("Функциональные блоки не найдены в черновике. Сначала уточни общий процесс.")
+    _write_text(cwd, "materials/functions.md", "\n".join(function_lines).strip() + "\n")
+
+    data = getattr(draft, "result_json", None)
+    if not isinstance(data, dict):
+        data = {}
+    readiness = data.get("sdkReadiness") if isinstance(data.get("sdkReadiness"), dict) else {}
+    previous = str(readiness.get("answer") or "").strip()
+    _write_text(
+        cwd,
+        "materials/answers.md",
+        (previous or "Ответов пользователя пока нет.") + "\n",
+    )
+    _write_text(cwd, "materials/manifest.json", json.dumps({"files": []}, ensure_ascii=False, indent=2) + "\n")
+
+
+def _build_readiness_prompt() -> str:
+    return (
+        "Прочитай AGENTS.md и все файлы в materials. "
+        "Закрой через askQuestion пробелы логики по каждому функциональному блоку. "
+        "Когда все пробелы закрыты, верни JSON readiness и остановись."
+    )
+
+
 class Sidecar:
     def __init__(self) -> None:
         self._api = ApiClient()
@@ -315,6 +417,8 @@ class Sidecar:
         try:
             if kind == "design":
                 self._run_design(command, active)
+            elif kind == "readiness":
+                self._run_readiness(command, active)
             elif kind == "demo":
                 self._run_demo(command, active)
             elif kind == "run":
@@ -407,6 +511,39 @@ class Sidecar:
                 "kind": "design",
                 "workflowId": workflow_id,
                 "agentId": agent_id,
+                "answer": answer,
+            }
+        )
+
+    def _run_readiness(self, command: dict[str, Any], active: ActiveRun) -> None:
+        draft_id = str(command.get("draftId") or "").strip()
+        if not draft_id:
+            raise ValueError("readiness requires draftId")
+        bridge = active.bridge
+        bridge.check_ready()
+        draft = self._api.get_agent_draft(draft_id)
+        run_cwd = bridge.workspace_cwd(f"draft-{draft_id}")
+        _prepare_readiness_workspace(self._api, draft, run_cwd)
+        events: list[dict[str, Any]] = []
+        result = bridge.run(
+            prompt=_build_readiness_prompt(),
+            workflow_id=f"draft-{draft_id}",
+            cwd=run_cwd,
+            mode="design",
+            on_event=self._forward_events(active, events),
+            on_question=active.gate.ask_question,
+            should_stop=active.stop.is_set,
+            confirm_writes=True,
+        )
+        answer = str(result.get("answer") or "").strip()
+        updated = self._api.finish_sdk_readiness(draft_id, answer=answer, events=events)
+        emit(
+            {
+                "type": "result",
+                "runId": active.run_id,
+                "kind": "readiness",
+                "draftId": draft_id,
+                "status": updated.status,
                 "answer": answer,
             }
         )

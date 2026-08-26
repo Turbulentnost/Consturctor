@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -8,7 +8,9 @@ from app.core.jwt import AuthContext
 from app.db.session import get_db
 from app.schemas.regulation import (
     AgentDraftDetail,
+    AgentDraftFilesResponse,
     AgentDraftListResult,
+    AgentDraftSdkReadinessRequest,
     AgentSuggestionListResult,
     AgentDraftStatusRequest,
     QuestionChatSendRequest,
@@ -20,10 +22,17 @@ from app.services.agents import (
     delete_draft,
     delete_draft_suggestion,
     ensure_draft_readiness,
+    finish_sdk_readiness,
     get_draft,
+    get_draft_row,
     list_drafts,
     reanalyze_revision_document,
     update_draft_status,
+)
+from app.services.agent_draft_files import (
+    WorkflowFileError,
+    add_files_to_draft,
+    list_draft_files,
 )
 from app.services.readiness.chat import (
     create_or_get_question_chat,
@@ -95,6 +104,19 @@ async def ensure_agent_draft_readiness(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
+@router.post("/drafts/{draft_id}/sdk-readiness", response_model=AgentDraftDetail)
+async def finish_agent_draft_sdk_readiness(
+    draft_id: str,
+    request: AgentDraftSdkReadinessRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentDraftDetail:
+    try:
+        return finish_sdk_readiness(db, user_id=auth.user_id, draft_id=draft_id, request=request)
+    except AgentDraftError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
 @router.patch("/drafts/{draft_id}/status", response_model=AgentDraftDetail)
 async def update_agent_draft_status(
     draft_id: str,
@@ -105,6 +127,44 @@ async def update_agent_draft_status(
     try:
         return update_draft_status(db, user_id=auth.user_id, draft_id=draft_id, request=request)
     except AgentDraftError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.get("/drafts/{draft_id}/files", response_model=AgentDraftFilesResponse)
+async def read_agent_draft_files(
+    draft_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentDraftFilesResponse:
+    try:
+        draft = get_draft_row(db, user_id=auth.user_id, draft_id=draft_id)
+        return list_draft_files(db, draft=draft)
+    except AgentDraftError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/drafts/{draft_id}/files", response_model=AgentDraftFilesResponse)
+async def upload_agent_draft_files(
+    draft_id: str,
+    functionId: str = Form(default=""),
+    files: list[UploadFile] = File(default=[]),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentDraftFilesResponse:
+    payloads: list[tuple[str, bytes]] = []
+    for upload in files:
+        raw = await upload.read()
+        payloads.append((upload.filename or "file", raw))
+    try:
+        draft = get_draft_row(db, user_id=auth.user_id, draft_id=draft_id)
+        result = add_files_to_draft(db, draft=draft, files=payloads, function_id=functionId)
+        db.commit()
+        return result
+    except WorkflowFileError as exc:
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except AgentDraftError as exc:
+        db.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 

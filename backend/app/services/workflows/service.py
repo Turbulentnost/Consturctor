@@ -19,6 +19,8 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
+from app.models.regulation import AgentDraft
+from app.services.agent_draft_files import copy_draft_files_to_workflow
 from app.schemas.workflow import (
     ArtifactItem,
     ArtifactsDownloadResult,
@@ -132,6 +134,7 @@ def create_workflow(
     user_id: str,
     notes: str,
     files: list[tuple[str, bytes]],
+    draft_id: str = "",
 ) -> WorkflowSchema:
     workflow_id = str(uuid4())
     storage_dir = _workflow_dir(workflow_id)
@@ -193,6 +196,14 @@ def create_workflow(
         scope="knowledge",
         origin="initial_upload",
     )
+    if draft_id:
+        draft = (
+            db.query(AgentDraft)
+            .filter(AgentDraft.id == draft_id, AgentDraft.user_id == user_id)
+            .first()
+        )
+        if draft is not None:
+            copy_draft_files_to_workflow(db, draft=draft, workflow=row)
     db.commit()
     db.refresh(row)
     return _to_schema(row)
