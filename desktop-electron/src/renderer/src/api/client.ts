@@ -70,7 +70,8 @@ function parsePlatformFile(item: Record<string, unknown>): WorkflowFileItem {
     source: String(item.source ?? 'user'),
     origin: String(item.origin ?? ''),
     scope: String(item.scope ?? ''),
-    agentTitle: String(item.agent_title ?? item.agentTitle ?? '')
+    agentTitle: String(item.agent_title ?? item.agentTitle ?? ''),
+    summary: String(item.summary ?? item.text_preview ?? item.textPreview ?? '')
   }
 }
 
@@ -1246,6 +1247,26 @@ export class ApiClient {
     })
     const raw = (data.files as Record<string, unknown>[]) ?? []
     return raw.map(parsePlatformFile)
+  }
+
+  async uploadWorkflowFiles(workflowId: string, filePaths: string[]): Promise<WorkflowFileItem[]> {
+    let latest: WorkflowFileItem[] = []
+    for (const filePath of filePaths) {
+      const res = await window.api.upload<Record<string, unknown>>({
+        endpoint: `/api/v1/workflows/${workflowId}/files`,
+        filePath,
+        fieldName: 'files',
+        token: this.token,
+        timeoutMs: 180_000
+      })
+      if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить файл', res.status)
+      const userFiles = (res.data?.user_files as Record<string, unknown>[]) ?? []
+      const agentFiles = (res.data?.agent_files as Record<string, unknown>[]) ?? []
+      latest = [...userFiles, ...agentFiles].map((item) =>
+        parsePlatformFile({ ...item, workflow_id: workflowId })
+      )
+    }
+    return latest
   }
 
   // ---------- Notifications ----------

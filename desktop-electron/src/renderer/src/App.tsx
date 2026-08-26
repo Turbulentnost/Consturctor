@@ -666,7 +666,12 @@ export function App(): React.JSX.Element {
           />
         )
       case 'files':
-        return <FilesPage />
+        return (
+          <FilesPage
+            ownerName={user?.fio || ''}
+            onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+          />
+        )
       case 'kpi':
         return <KpiPage />
       case 'dashboard':

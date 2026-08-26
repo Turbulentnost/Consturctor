@@ -98,6 +98,7 @@ export interface WorkflowFileItem {
   origin?: string
   scope?: string
   agentTitle?: string
+  summary?: string
 }
 
 export interface AgentKpiRow {
