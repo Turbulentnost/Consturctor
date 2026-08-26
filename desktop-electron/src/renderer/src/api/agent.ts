@@ -47,9 +47,12 @@ function newRunId(): string {
  * Every start returns the runId so callers can correlate events/results.
  */
 export const agentClient = {
-  ready(token: string | null): Promise<{ ok: boolean }> {
+  ready(
+    token: string | null,
+    credentials?: { login?: string; password?: string }
+  ): Promise<{ ok: boolean }> {
     if (!window.agent?.ready) return Promise.resolve({ ok: false })
-    return window.agent.ready(token)
+    return window.agent.ready(token, credentials)
   },
 
   start(command: StartCommand): string {

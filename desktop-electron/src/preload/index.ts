@@ -95,8 +95,10 @@ const api = {
 }
 
 const agent = {
-  ready: (token: string | null): Promise<{ ok: boolean }> =>
-    ipcRenderer.invoke('agent:ready', token),
+  ready: (
+    token: string | null,
+    credentials?: { login?: string; password?: string }
+  ): Promise<{ ok: boolean }> => ipcRenderer.invoke('agent:ready', token, credentials),
   start: (command: Record<string, unknown>): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('agent:start', command),
   answer: (command: Record<string, unknown>): Promise<{ ok: boolean }> =>

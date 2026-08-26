@@ -34,3 +34,21 @@ export function rememberPreference(): boolean {
 export function setRememberPreference(value: boolean): void {
   localStorage.setItem(REMEMBER_KEY, value ? '1' : '0')
 }
+
+/** In-memory 1C credentials for COM. Not persisted to disk. */
+let comLogin = ''
+let comPassword = ''
+
+export function setComCredentials(login: string, password: string): void {
+  comLogin = (login || '').trim()
+  comPassword = password || ''
+}
+
+export function clearComCredentials(): void {
+  comLogin = ''
+  comPassword = ''
+}
+
+export function comCredentials(): { login: string; password: string } {
+  return { login: comLogin, password: comPassword }
+}

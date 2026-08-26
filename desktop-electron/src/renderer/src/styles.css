@@ -2068,6 +2068,9 @@ input {
 .passport-page .chat-input {
   flex-shrink: 0;
 }
+.passport-page .page-footer {
+  justify-content: flex-end;
+}
 .passport-page .passport-card {
   height: 100%;
   min-height: 0;
@@ -4933,14 +4936,45 @@ button.feed-tool-head:hover {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
-.wf-file {
+.wf-file-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.wf-file-section h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #06483d;
+}
+.wf-file-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
   border: 1px solid var(--card-border);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+}
+.wf-file-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wf-file-name {
   font-size: 13px;
+  font-weight: 600;
   color: var(--main-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-file-meta {
+  font-size: 11px;
+  color: var(--content-muted);
 }
 .wf-files-empty {
   font-size: 13px;

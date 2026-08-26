@@ -8,7 +8,8 @@ askQuestion clarify and HITL write approvals.
 
 Protocol: newline-delimited JSON.
   stdin  (from Electron):
-    {"type": "configure", "backendUrl": str, "token": str}
+    {"type": "configure", "backendUrl": str, "token": str,
+       "login": str, "password": str}
     {"type": "check_ready"}
     {"type": "design", "id": str, "workflowId": str}
     {"type": "demo", "id": str, "workflowId": str}
@@ -38,6 +39,7 @@ All console/log text is ASCII to stay safe on Windows consoles.
 from __future__ import annotations
 
 import json
+import os
 import queue
 import sys
 import threading
@@ -69,6 +71,7 @@ DESKTOP_ROOT = _bootstrap_desktop_path()
 from app.api_client import ApiClient, ApiError  # noqa: E402
 from app.sdk_agent.bridge import CursorSdkBridge, CursorSdkUnavailable  # noqa: E402
 from app.sdk_agent.files import _safe_filename, prepare_sdk_workspace  # noqa: E402
+from app.tools.runtime_api import configure as configure_runtime_api  # noqa: E402
 from app.sdk_agent.prompt import (  # noqa: E402
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
@@ -607,8 +610,20 @@ class Sidecar:
         backend_url = str(command.get("backendUrl") or "").strip()
         if backend_url:
             self._api = ApiClient(base_url=backend_url)
-        token = command.get("token")
-        self._api.set_token(str(token) if token else None)
+        token = str(command.get("token") or "").strip() or None
+        self._api.set_token(token)
+        # Server-side tools (users.current, 1C tasks, ...) read this process-global
+        # token. Without it they fail with "no user session" even if the UI is logged in.
+        configure_runtime_api(token=token, base_url=self._api.base_url)
+        # COM 1C workers read ERP_LOGIN / ERP_PASSWORD from the process env.
+        login = str(command.get("login") or "").strip()
+        password = str(command.get("password") or "")
+        if login:
+            os.environ["ERP_LOGIN"] = login
+        if password:
+            os.environ["ERP_PASSWORD"] = password
+        elif "password" in command:
+            os.environ.pop("ERP_PASSWORD", None)
 
     def check_ready(self) -> None:
         try:

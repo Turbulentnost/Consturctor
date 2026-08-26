@@ -19,6 +19,8 @@ export class AgentSidecar {
   private restarts = 0
   private stopping = false
   private lastToken: string | null = null
+  private lastLogin = ''
+  private lastPassword = ''
 
   constructor(
     private readonly backendUrl: string,
@@ -176,15 +178,25 @@ export class AgentSidecar {
     }
   }
 
-  configure(token: string | null): void {
+  configure(token: string | null, credentials?: { login?: string; password?: string }): void {
     this.lastToken = token ?? null
-    this.send({ type: 'configure', backendUrl: this.backendUrl, token: this.lastToken })
+    if (credentials) {
+      if (credentials.login !== undefined) this.lastLogin = String(credentials.login || '')
+      if (credentials.password !== undefined) this.lastPassword = String(credentials.password || '')
+    }
+    this.send({
+      type: 'configure',
+      backendUrl: this.backendUrl,
+      token: this.lastToken,
+      login: this.lastLogin,
+      password: this.lastPassword
+    })
   }
 
-  ready(token: string | null): void {
+  ready(token: string | null, credentials?: { login?: string; password?: string }): void {
     this.lastToken = token ?? null
     this.start()
-    this.configure(this.lastToken)
+    this.configure(this.lastToken, credentials)
   }
 
   stop(): void {

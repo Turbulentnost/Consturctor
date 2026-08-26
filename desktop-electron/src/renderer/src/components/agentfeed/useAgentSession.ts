@@ -22,7 +22,7 @@ interface UseAgentSessionOptions {
   onError?: (message: string) => void
 }
 
-interface UseAgentSessionValue {
+export interface UseAgentSessionValue {
   items: FeedItem[]
   status: string
   running: boolean

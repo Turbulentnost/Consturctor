@@ -500,10 +500,13 @@ app.whenReady().then(() => {
   ipcMain.handle('api:download', handleDownload)
   ipcMain.handle('api:createWorkflow', handleCreateWorkflow)
   ipcMain.handle('api:stream', handleStream)
-  ipcMain.handle('agent:ready', (_evt, token: string | null) => {
-    agentSidecar.ready(token ?? null)
-    return { ok: true }
-  })
+  ipcMain.handle(
+    'agent:ready',
+    (_evt, token: string | null, credentials?: { login?: string; password?: string }) => {
+      agentSidecar.ready(token ?? null, credentials)
+      return { ok: true }
+    }
+  )
   ipcMain.handle('agent:start', (_evt, command: AgentSidecarMessage) => {
     const ok = agentSidecar.send(command)
     return { ok }

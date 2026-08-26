@@ -115,29 +115,31 @@ export function PassportPage({
             </div>
           )}
 
-          <div className="chat-input">
-            <textarea
-              value={input}
-              placeholder={ready ? 'Паспорт готов' : 'Ответьте на уточнение...'}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  send()
-                }
-              }}
-              disabled={busy || ready}
-              rows={2}
-            />
-            <button
-              className="btn-primary"
-              style={{ width: 120 }}
-              onClick={send}
-              disabled={busy || ready || !input.trim()}
-            >
-              Отправить
-            </button>
-          </div>
+          {!ready && (
+            <div className="chat-input">
+              <textarea
+                value={input}
+                placeholder="Ответьте на уточнение..."
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    send()
+                  }
+                }}
+                disabled={busy}
+                rows={2}
+              />
+              <button
+                className="btn-primary"
+                style={{ width: 120 }}
+                onClick={send}
+                disabled={busy || !input.trim()}
+              >
+                Отправить
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="option-card passport-card">
@@ -158,10 +160,10 @@ export function PassportPage({
       </div>
 
       <div className="page-footer">
-        <button className="btn-ghost-dark" onClick={onBack}>
-          Назад
-        </button>
         <div className="page-footer-actions">
+          <button className="btn-ghost-dark" onClick={onBack}>
+            Назад
+          </button>
           <button
             className="btn-primary"
             style={{ maxWidth: 280 }}

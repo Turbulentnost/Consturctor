@@ -5,16 +5,59 @@ import { AgentFeed, StageStepper, useAgentSession, type AgentResult } from '../c
 import { ClarifyCard } from '../components/agentfeed/ClarifyCard'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
 import { presentAgentText } from '../components/agentfeed/formatAgentText'
+import { fileTypeIconSrc } from '../utils/fileTypeIcon'
+import { formatSize } from './filesGrouping'
 
 interface AgentStudioPageProps {
   workflowId: string
   title: string
+  formation: FormationController
   autoStart?: boolean
   onBack: () => void
   onGoSchedule: (workflowId: string, title: string) => void
 }
 
 type StudioTab = 'stages' | 'files'
+
+function isAgentFile(file: WorkflowFileItem): boolean {
+  return (file.source || '').toLowerCase() === 'agent'
+}
+
+function StudioFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
+  const name = file.name || 'file'
+  const size = formatSize(file.sizeBytes)
+  return (
+    <li className="wf-file-card">
+      <img className="files-type-icon" src={fileTypeIconSrc(name)} alt="" />
+      <div className="wf-file-copy">
+        <span className="wf-file-name" title={name}>
+          {name}
+        </span>
+        {size ? <span className="wf-file-meta">{size}</span> : null}
+      </div>
+    </li>
+  )
+}
+
+function FileSection({
+  title,
+  items
+}: {
+  title: string
+  items: WorkflowFileItem[]
+}): React.JSX.Element | null {
+  if (items.length === 0) return null
+  return (
+    <section className="wf-file-section">
+      <h4>{title}</h4>
+      <ul className="wf-files">
+        {items.map((file) => (
+          <StudioFileCard key={file.id || file.name} file={file} />
+        ))}
+      </ul>
+    </section>
+  )
+}
 
 /** Keep the status hint to one short line (desktop shows a single-line phrase). */
 function clampWords(text: string, max: number): string {
@@ -42,23 +85,24 @@ function useAnimatedStatus(base: string, active: boolean): string {
 export function AgentStudioPage({
   workflowId,
   title,
+  formation,
   autoStart = true,
   onBack,
   onGoSchedule
 }: AgentStudioPageProps): React.JSX.Element {
   const [record, setRecord] = useState<WorkflowRecord | null>(null)
-  const [designDone, setDesignDone] = useState(false)
-  const [designDraft, setDesignDraft] = useState('')
-  const [demoDone, setDemoDone] = useState(false)
   const [tab, setTab] = useState<StudioTab>('stages')
   const [files, setFiles] = useState<WorkflowFileItem[]>([])
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<string[]>([])
-  const startedRef = useRef(false)
-  const demoAutoRef = useRef(false)
-  const lastWorkflowRef = useRef<string>('')
-  const resumeAgentRef = useRef<string>('')
-  const startDemoRef = useRef<(id: string) => void>(() => undefined)
+
+  // The session and design/demo orchestration live in the shared formation
+  // controller (above this page), so leaving the page does not stop the run and
+  // returning does not restart the planner.
+  const session = formation.session
+  const { designDone, demoDone, designDraft, phase } = formation
+  const busy = formation.running
+  const awaiting = formation.awaiting
 
   const refreshRecord = useCallback(async () => {
     try {
@@ -79,74 +123,34 @@ export function AgentStudioPage({
     }
   }, [workflowId])
 
-  const onResult = useCallback(
-    (result: AgentResult) => {
-      if (result.agentId) resumeAgentRef.current = result.agentId
-      if (result.kind === 'design') {
-        setDesignDraft((result.answer || '').trim())
-        setDesignDone(true)
-        void refreshRecord()
-      } else if (result.kind === 'demo') {
-        setDemoDone(true)
-        void refreshRecord()
-      }
-    },
-    [refreshRecord]
-  )
-
-  const session = useAgentSession({ onResult })
-  const { start } = session
-  startDemoRef.current = (id) => start({ kind: 'demo', workflowId: id })
-
   useEffect(() => {
     void refreshRecord()
     void refreshFiles()
   }, [refreshRecord, refreshFiles])
 
-  // Reset only when the workflow really changes. Without the guard, React
-  // StrictMode's double-invoke of effects in dev would reset startedRef and
-  // fire a second design run against the same local SDK SQLite ("database is
-  // locked").
+  // Attach to (or start) the formation for this workflow. begin() is idempotent
+  // per workflow, so remounts / navigation back never restart the planner.
   useEffect(() => {
-    if (lastWorkflowRef.current === workflowId) return
-    lastWorkflowRef.current = workflowId
-    startedRef.current = false
-    demoAutoRef.current = false
-    setDesignDone(false)
-    setDesignDraft('')
-    setDemoDone(false)
-  }, [workflowId])
+    if (!autoStart) return
+    formation.begin(workflowId, title)
+  }, [autoStart, workflowId, title, formation.begin])
+
+  // Refresh the workflow record + files whenever a phase completes.
+  useEffect(() => {
+    if (!designDone) return
+    void refreshRecord()
+    void refreshFiles()
+  }, [designDone, refreshRecord, refreshFiles])
 
   useEffect(() => {
-    if (!autoStart || startedRef.current) return
-    startedRef.current = true
-    start({ kind: 'design', workflowId })
-  }, [autoStart, start, workflowId])
-
-  // Auto-start the trial run only AFTER design is done and the draft is on
-  // screen (a short beat so the user can see "Черновик готов" before the run).
-  useEffect(() => {
-    if (!designDone || demoAutoRef.current) return
-    if (session.running || session.pendingQuestion || session.pendingHitl) return
-    demoAutoRef.current = true
-    const timer = setTimeout(() => startDemoRef.current(workflowId), 1200)
-    return () => clearTimeout(timer)
-  }, [designDone, session.running, session.pendingQuestion, session.pendingHitl, workflowId])
+    if (!demoDone) return
+    void refreshRecord()
+    void refreshFiles()
+  }, [demoDone, refreshRecord, refreshFiles])
 
   const runDemo = (): void => {
-    setDemoDone(false)
-    start({ kind: 'demo', workflowId })
+    formation.runDemo()
   }
-
-  const busy = session.running
-  const awaiting = Boolean(session.pendingQuestion || session.pendingHitl)
-
-  const phase = useMemo(() => {
-    if (demoDone) return 'tested'
-    if (designDone && busy) return 'executing'
-    if (designDone) return 'designed'
-    return 'designing'
-  }, [demoDone, designDone, busy])
 
   const basePhrase = useMemo(() => {
     if (session.pendingQuestion) return 'Агент ждёт ваш ответ'
@@ -167,6 +171,13 @@ export function AgentStudioPage({
 
   const canDemo = designDone && !busy && !awaiting
   const composerDisabled = busy || awaiting
+  const attachedFiles = useMemo(() => files.filter((file) => !isAgentFile(file)), [files])
+  const generatedFiles = useMemo(() => files.filter(isAgentFile), [files])
+
+  useEffect(() => {
+    if (tab !== 'files') return
+    void refreshFiles()
+  }, [tab, refreshFiles])
 
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({
@@ -191,14 +202,7 @@ export function AgentStudioPage({
     setInput('')
     const filePaths = attachments
     setAttachments([])
-    session.pushUserMessage(shownMessage || message)
-    start({
-      kind: 'run',
-      workflowId,
-      message: message || shownMessage,
-      resumeAgentId: resumeAgentRef.current || undefined,
-      filePaths: filePaths.length ? filePaths : undefined
-    })
+    formation.sendMessage(shownMessage || message, message || shownMessage, filePaths)
   }
 
   return (
@@ -346,13 +350,10 @@ export function AgentStudioPage({
               {files.length === 0 ? (
                 <div className="wf-files-empty">Файлы не прикреплены</div>
               ) : (
-                <ul className="wf-files">
-                  {files.map((file) => (
-                    <li key={file.id} className="wf-file">
-                      <span className="wf-file-name">{file.name}</span>
-                    </li>
-                  ))}
-                </ul>
+                <div className="wf-file-groups">
+                  <FileSection title="Прикрепили мы" items={attachedFiles} />
+                  <FileSection title="Создано агентом" items={generatedFiles} />
+                </div>
               )}
             </div>
           )}

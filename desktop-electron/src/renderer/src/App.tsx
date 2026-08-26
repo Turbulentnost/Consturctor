@@ -32,7 +32,14 @@ import type {
   UserProfile,
   ChatThread
 } from './api/types'
-import { clearSession, loadSession, saveSession } from './store/session'
+import {
+  clearComCredentials,
+  clearSession,
+  comCredentials,
+  loadSession,
+  saveSession,
+  setComCredentials
+} from './store/session'
 
 type View =
   | { kind: 'tab'; key: PageKey }
@@ -137,13 +144,17 @@ export function App(): React.JSX.Element {
     if (!user) {
       kickedRef.current = false
       void window.api.stopNotifications?.()
+      void agentClient.ready(null, { login: '', password: '' }).catch(() => undefined)
       return
     }
     const token = api.getToken()
     if (token) {
       void window.api.startNotifications?.(token)
-      void agentClient.ready(token).catch(() => undefined)
     }
+    const creds = comCredentials()
+    void agentClient
+      .ready(token, { login: creds.login || user.fio, password: creds.password })
+      .catch(() => undefined)
   }, [user?.id])
 
   useEffect(() => {
@@ -168,8 +179,9 @@ export function App(): React.JSX.Element {
     return () => unsubscribe?.()
   }, [])
 
-  function onLoggedIn(result: LoginResult, remember: boolean): void {
+  function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
     api.setToken(result.accessToken || null)
+    setComCredentials(result.user.fio, password)
     if (remember && result.accessToken) {
       saveSession({ accessToken: result.accessToken, fio: result.user.fio })
     } else {
@@ -186,6 +198,7 @@ export function App(): React.JSX.Element {
     void window.api.stopNotifications?.()
     await api.terminateRegulationCreationSessions()
     clearSession(true)
+    clearComCredentials()
     api.setToken(null)
     clearAvatarCache()
     setAvatarUrl(null)
