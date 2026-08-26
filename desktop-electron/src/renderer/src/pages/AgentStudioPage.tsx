@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { WorkflowFileItem, WorkflowRecord } from '../api/types'
 import { AgentFeed, StageStepper, useAgentSession, type AgentResult } from '../components/agentfeed'
+import { ClarifyCard } from '../components/agentfeed/ClarifyCard'
+import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
+import { presentAgentText } from '../components/agentfeed/formatAgentText'
 
 interface AgentStudioPageProps {
   workflowId: string
@@ -50,7 +53,9 @@ export function AgentStudioPage({
   const [files, setFiles] = useState<WorkflowFileItem[]>([])
   const [input, setInput] = useState('')
   const startedRef = useRef(false)
+  const demoAutoRef = useRef(false)
   const resumeAgentRef = useRef<string>('')
+  const startDemoRef = useRef<(id: string) => void>(() => undefined)
 
   const refreshRecord = useCallback(async () => {
     try {
@@ -77,21 +82,31 @@ export function AgentStudioPage({
       if (result.kind === 'design') {
         setDesignDone(true)
         void refreshRecord()
+        if (!demoAutoRef.current) {
+          demoAutoRef.current = true
+          startDemoRef.current(workflowId)
+        }
       } else if (result.kind === 'demo') {
         setDemoDone(true)
         void refreshRecord()
       }
     },
-    [refreshRecord]
+    [refreshRecord, workflowId]
   )
 
   const session = useAgentSession({ onResult })
   const { start } = session
+  startDemoRef.current = (id) => start({ kind: 'demo', workflowId: id })
 
   useEffect(() => {
     void refreshRecord()
     void refreshFiles()
   }, [refreshRecord, refreshFiles])
+
+  useEffect(() => {
+    startedRef.current = false
+    demoAutoRef.current = false
+  }, [workflowId])
 
   useEffect(() => {
     if (!autoStart || startedRef.current) return
@@ -123,7 +138,7 @@ export function AgentStudioPage({
       return 'Планирование черновика'
     }
     if (demoDone) return 'Пробный прогон завершён — можно перейти к расписанию'
-    if (designDone) return 'Черновик готов — запустите пробный прогон'
+    if (designDone) return 'Черновик готов — запускаю пробный прогон'
     return 'Готов к работе'
   }, [session.pendingQuestion, session.pendingHitl, session.status, busy, phase, demoDone, designDone])
 
@@ -168,37 +183,49 @@ export function AgentStudioPage({
               pendingQuestion={session.pendingQuestion}
               pendingHitl={session.pendingHitl}
               hideRunningStatus
+              dockQuestion
               emptyHint="Проектировщик готовит черновик агента. Ответьте на уточняющие вопросы, если они появятся."
               onAnswer={session.answer}
               onHitl={session.respondHitl}
               onSkip={session.skip}
             />
           </div>
-          <div className="wf-composer">
-            <span className="wf-clip" title="Прикрепить файл">
-              📎
-            </span>
-            <textarea
-              className="wf-composer-input"
-              placeholder="Напишите сообщение агенту…"
-              value={input}
-              disabled={composerDisabled}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  submit()
-                }
-              }}
-            />
-            <button
-              className="wf-send"
-              disabled={!input.trim() || composerDisabled}
-              onClick={submit}
-              title="Отправить"
-            >
-              ↑
-            </button>
+          <div className={session.pendingQuestion ? 'wf-dock has-clarify' : 'wf-dock'}>
+            {session.pendingQuestion && (
+              <div className="wf-dock-clarify">
+                <ClarifyCard
+                  key={`${session.pendingQuestion.requestId}:${session.pendingQuestion.question}:${session.pendingQuestion.options.join('|')}`}
+                  question={session.pendingQuestion}
+                  onAnswer={session.answer}
+                />
+              </div>
+            )}
+            <div className="wf-composer">
+              <span className="wf-clip" title="Прикрепить файл">
+                📎
+              </span>
+              <textarea
+                className="wf-composer-input"
+                placeholder="Напишите сообщение агенту…"
+                value={input}
+                disabled={composerDisabled}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    submit()
+                  }
+                }}
+              />
+              <button
+                className="wf-send"
+                disabled={!input.trim() || composerDisabled}
+                onClick={submit}
+                title="Отправить"
+              >
+                ↑
+              </button>
+            </div>
           </div>
           <div className="wf-status">
             <span className={`wf-status-dot${busy ? ' busy' : awaiting ? ' wait' : ''}`} />
@@ -243,7 +270,7 @@ export function AgentStudioPage({
               {record?.lastResult && (
                 <div className="wf-result-card">
                   <div className="wf-result-title">Результат пробного прогона</div>
-                  <p>{record.lastResult}</p>
+                  <MarkdownBody text={presentAgentText(record.lastResult)} />
                 </div>
               )}
             </div>

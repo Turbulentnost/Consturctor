@@ -1,19 +1,12 @@
 import type { AgentRunnerEvent } from '../../api/types'
 import { toolLabel } from './labels'
+import { appendThinkingText } from './thinkingText'
 import type { FeedItem, ToolItem } from './types'
 
 let counter = 0
 function nextId(prefix: string): string {
   counter += 1
   return `hist-${prefix}-${counter}`
-}
-
-function cleanThinking(text: string): string {
-  const value = (text || '').trim()
-  if (value && (value.startsWith('{') || value.toLowerCase().includes('traceback'))) {
-    return 'Агент анализирует задачу…'
-  }
-  return value || 'Агент анализирует задачу…'
 }
 
 function visibleAssistant(text: string): string {
@@ -100,13 +93,11 @@ export function buildFeedItems(events: AgentRunnerEvent[]): FeedItem[] {
         if (text.trim()) items.push({ kind: 'message', id: nextId('user'), role: 'user', text })
         break
       case 'thinking': {
-        const clean = cleanThinking(text)
         const last = items[items.length - 1]
         if (last && last.kind === 'thinking') {
-          const prev = last.text === 'Агент анализирует задачу…' ? '' : last.text
-          last.text = (prev + clean).trim() || clean
+          last.text = appendThinkingText(last.text, text)
         } else {
-          items.push({ kind: 'thinking', id: nextId('think'), text: clean })
+          items.push({ kind: 'thinking', id: nextId('think'), text: appendThinkingText('', text) })
         }
         break
       }

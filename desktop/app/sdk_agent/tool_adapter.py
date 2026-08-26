@@ -27,7 +27,7 @@ ASK_QUESTION_SPEC: dict[str, Any] = {
             "options": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Варианты ответа, 2-6 пунктов",
+                "description": "Всегда передай 2-6 конкретных вариантов ответа",
             },
         },
         "required": ["question"],

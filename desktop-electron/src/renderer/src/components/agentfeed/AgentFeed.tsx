@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { ClarifyCard } from './ClarifyCard'
 import { HitlCard } from './HitlCard'
+import { MarkdownBody } from './MarkdownBody'
+import { presentAgentText } from './formatAgentText'
 import { ToolCard } from './ToolCard'
 import type { FeedItem, PendingHitl, PendingQuestion } from './types'
 
@@ -27,6 +29,7 @@ interface AgentFeedProps {
   emptyHint?: string
   allowQuestionFiles?: boolean
   hideRunningStatus?: boolean
+  dockQuestion?: boolean
   onAnswer: (requestId: string, value: string, filePaths?: string[]) => void
   onHitl: (requestId: string, approved: boolean) => void
   onSkip: () => void
@@ -44,13 +47,21 @@ function FeedRow({ item }: { item: FeedItem }): React.JSX.Element | null {
           </div>
         )
       }
-      return <div className="feed-assistant">{item.text}</div>
+      return (
+        <div className="feed-assistant">
+          <MarkdownBody text={presentAgentText(item.text)} />
+        </div>
+      )
     case 'system':
       return <div className={`feed-system ${item.tone || 'info'}`}>{item.text}</div>
     case 'tool':
       return <ToolCard item={item} />
     case 'result':
-      return <div className="feed-result">{item.text}</div>
+      return (
+        <div className="feed-result">
+          <MarkdownBody text={presentAgentText(item.text)} />
+        </div>
+      )
     default:
       return null
   }
@@ -65,6 +76,7 @@ export function AgentFeed({
   emptyHint,
   allowQuestionFiles = false,
   hideRunningStatus = false,
+  dockQuestion = false,
   onAnswer,
   onHitl,
   onSkip
@@ -95,9 +107,9 @@ export function AgentFeed({
       {items.map((item) => (
         <FeedRow key={item.id} item={item} />
       ))}
-      {pendingQuestion && (
+      {pendingQuestion && !dockQuestion && (
         <ClarifyCard
-          key={pendingQuestion.requestId}
+          key={`${pendingQuestion.requestId}:${pendingQuestion.question}:${pendingQuestion.options.join('|')}`}
           question={pendingQuestion}
           allowFiles={allowQuestionFiles}
           onAnswer={onAnswer}

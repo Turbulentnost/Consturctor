@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { agentClient, type StartCommand } from '../../api/agent'
 import type { AgentEvent, AgentRunnerEvent } from '../../api/types'
 import { toolLabel } from './labels'
+import { isAskQuestion, parseQuestionArgs } from './questionArgs'
+import { appendThinkingText, streamDelta } from './thinkingText'
 import type { FeedItem, PendingHitl, PendingQuestion, ToolItem } from './types'
 
 export interface AgentResult {
@@ -44,14 +46,6 @@ function nextId(prefix: string): string {
   return `${prefix}-${counter}`
 }
 
-function cleanThinking(text: string): string {
-  const value = (text || '').trim()
-  if (value && (value.startsWith('{') || value.toLowerCase().includes('traceback'))) {
-    return 'Агент анализирует задачу…'
-  }
-  return value || 'Агент анализирует задачу…'
-}
-
 /** Strip constructor_tool / tool code fences from assistant text. */
 function visibleAssistant(text: string): string {
   let cleaned = (text || '').replace(/\ufffd/g, '')
@@ -72,7 +66,7 @@ function visibleAssistant(text: string): string {
     }
     cleaned = out.join('\n')
   }
-  return cleaned.trim()
+  return cleaned
 }
 
 function normalizeResult(raw: unknown): Record<string, unknown> | null {
@@ -139,27 +133,25 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
   optionsRef.current = options
 
   const appendThinking = useCallback((text: string) => {
-    const clean = cleanThinking(text)
     setItems((prev) => {
       const last = prev[prev.length - 1]
       if (last && last.kind === 'thinking') {
         const merged = [...prev]
-        const prevText = last.text === 'Агент анализирует задачу…' ? '' : last.text
-        merged[merged.length - 1] = { ...last, text: (prevText + clean).trim() || clean }
+        merged[merged.length - 1] = { ...last, text: appendThinkingText(last.text, text) }
         return merged
       }
-      return [...prev, { kind: 'thinking', id: nextId('think'), text: clean }]
+      return [...prev, { kind: 'thinking', id: nextId('think'), text: appendThinkingText('', text) }]
     })
   }, [])
 
   const appendAssistant = useCallback((text: string) => {
     const clean = visibleAssistant(text)
-    if (!clean) return
+    if (!clean.trim()) return
     setItems((prev) => {
       const last = prev[prev.length - 1]
       if (last && last.kind === 'message' && last.role === 'agent') {
         const merged = [...prev]
-        merged[merged.length - 1] = { ...last, text: `${last.text}${clean}` }
+        merged[merged.length - 1] = { ...last, text: last.text + streamDelta(last.text, clean) }
         return merged
       }
       return [...prev, { kind: 'message', id: nextId('msg'), role: 'agent', text: clean }]
@@ -180,9 +172,26 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
    * We upsert one card per invocation (correlated by requestId, else the last
    * running card with the same tool name) instead of pushing duplicates.
    */
+  const applyQuestion = useCallback((requestId: string, raw: unknown, fallback?: PendingQuestion | null) => {
+    const parsed = parseQuestionArgs(raw)
+    const question = parsed.question || fallback?.question || ''
+    const options = parsed.options.length ? parsed.options : fallback?.options || []
+    if (!question && options.length === 0 && !requestId) return
+    setPendingQuestion({
+      requestId: requestId || fallback?.requestId || '',
+      question,
+      options
+    })
+    setStatus('Нужен ваш ответ')
+  }, [])
+
   const handleToolCall = useCallback((payload: AgentRunnerEvent) => {
     const tool = String(payload.tool || '')
     const requestId = String(payload.requestId || '')
+    if (isAskQuestion(tool)) {
+      applyQuestion(requestId, payload.arguments)
+      return
+    }
     const status = String(payload.status || '')
     const resultObj = normalizeResult(payload.result)
     const done = isDoneStatus(status) || (resultObj !== null && status !== 'running')
@@ -229,7 +238,7 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
       return merged
     })
     if (!done) setStatus(`Вызываю ${toolLabel(tool)}…`)
-  }, [])
+  }, [applyQuestion])
 
   /** Handle a host-tool `tool_result` (ok/error/skipped). Completes the card. */
   const handleToolResult = useCallback((payload: AgentRunnerEvent) => {
@@ -316,7 +325,9 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
           break
         case 'final':
         case 'work_result':
-          if (text) appendSystem(text, 'success')
+          if (text) {
+            setItems((prev) => [...prev, { kind: 'result', id: nextId('res'), text }])
+          }
           break
         case 'error':
           if (text) appendSystem(text, 'error')
@@ -341,10 +352,19 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
           break
         case 'question':
           if (matchesRun) {
-            setPendingQuestion({
-              requestId: String(event.requestId || ''),
-              question: String(event.question || ''),
-              options: Array.isArray(event.options) ? event.options.map(String) : []
+            setPendingQuestion((prev) => {
+              const parsed = parseQuestionArgs({
+                question: event.question,
+                options: event.options,
+                ...(event.arguments || {})
+              })
+              const question = parsed.question || prev?.question || ''
+              const options = parsed.options.length ? parsed.options : prev?.options || []
+              return {
+                requestId: String(event.requestId || prev?.requestId || ''),
+                question,
+                options
+              }
             })
             setStatus('Нужен ваш ответ')
           }

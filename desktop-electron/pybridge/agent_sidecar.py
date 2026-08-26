@@ -222,24 +222,9 @@ class HitlGate:
 
     def ask_question(self, payload: dict[str, Any]) -> dict[str, Any]:
         request_id = str(payload.get("requestId") or uuid.uuid4().hex)
-        # The runner delivers a tool_request whose question/options live under
-        # payload["arguments"]; fall back to top-level keys for safety.
-        args = payload.get("arguments")
-        if not isinstance(args, dict):
-            args = {}
-        question = str(
-            payload.get("question")
-            or payload.get("text")
-            or args.get("question")
-            or args.get("prompt")
-            or args.get("text")
-            or ""
-        ).strip()
-        options = payload.get("options")
-        if not isinstance(options, list):
-            options = args.get("options")
-        if not isinstance(options, list):
-            options = []
+        # Runner emits a dedicated "question" event, then tool_request with
+        # raw arguments. Parse both shapes the same way as desktop runner.
+        question, options = _question_from_payload(payload)
         box: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         with self._lock:
             self._answers[request_id] = box
@@ -249,7 +234,7 @@ class HitlGate:
                 "runId": self._run_id,
                 "requestId": request_id,
                 "question": question,
-                "options": [str(opt) for opt in options],
+                "options": options,
             }
         )
         try:
@@ -269,6 +254,98 @@ class HitlGate:
                 box.put_nowait(reply)
             except queue.Full:
                 pass
+
+
+def _as_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, dict):
+        for key in ("label", "text", "value", "question", "title"):
+            text = _as_text(value.get(key))
+            if text:
+                return text
+    return ""
+
+
+def _as_record(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return {}
+            if isinstance(parsed, dict):
+                return parsed
+    return {}
+
+
+def _as_options(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        return [item for item in (_as_text(part) for part in raw) if item][:6]
+    if isinstance(raw, str):
+        found: list[str] = []
+        for line in raw.replace(";", "\n").splitlines():
+            cleaned = line.strip()
+            if cleaned[:1] in {"-", "*", "•"}:
+                cleaned = cleaned[1:].strip()
+            if cleaned:
+                found.append(cleaned)
+        return found[:6]
+    return []
+
+
+def _options_from_text(text: str) -> list[str]:
+    found: list[str] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line[:1] in {"-", "*", "•"}:
+            value = line[1:].strip()
+        elif len(line) > 2 and line[1] in {")", ".", ":"} and line[0].isalnum():
+            value = line[2:].strip()
+        else:
+            continue
+        if value and not value.endswith("?"):
+            found.append(value)
+        if len(found) >= 6:
+            break
+    return found
+
+
+def _question_from_payload(payload: dict[str, Any]) -> tuple[str, list[str]]:
+    args = _as_record(payload.get("arguments"))
+    nested = _as_record(args.get("arguments") or args.get("input") or args.get("properties"))
+    source = {**nested, **args}
+    question = (
+        _as_text(payload.get("question"))
+        or _as_text(payload.get("prompt"))
+        or _as_text(payload.get("title"))
+        or _as_text(payload.get("message"))
+        or _as_text(payload.get("text"))
+        or _as_text(source.get("question"))
+        or _as_text(source.get("prompt"))
+        or _as_text(source.get("title"))
+        or _as_text(source.get("message"))
+        or _as_text(source.get("text"))
+    )
+    options = _as_options(payload.get("options"))
+    if not options:
+        options = _as_options(source.get("options"))
+    if not options:
+        options = _as_options(source.get("choices"))
+    if not options:
+        options = _as_options(source.get("answers"))
+    if not options:
+        options = _as_options(source.get("variants"))
+    if not options and question:
+        options = _options_from_text(question)
+    return question, options
 
 
 def _safe_args(args: dict[str, Any]) -> dict[str, Any]:
@@ -302,7 +379,8 @@ READINESS_AGENTS_MD = """\
 Правила вопросов:
 - один пробел - один вопрос;
 - в вопросе называй функциональный блок простыми словами;
-- если есть разумные варианты, передай их в options;
+- всегда передай 2-6 конкретных вариантов ответа в options;
+- не вызывай askQuestion без options;
 - не спрашивай то, что уже есть в материалах или в ответах пользователя;
 - после ответа продолжай с учетом этого ответа, не начинай заново;
 - если пользователь упомянул прикрепленные файлы, считай их обязательными материалами.
@@ -383,6 +461,7 @@ def _build_readiness_prompt() -> str:
     return (
         "Прочитай AGENTS.md и все файлы в materials. "
         "Закрой через askQuestion пробелы логики по каждому функциональному блоку. "
+        "В каждом askQuestion передай 2-6 конкретных вариантов в options. "
         "Когда все пробелы закрыты, верни JSON readiness и остановись."
     )
 
