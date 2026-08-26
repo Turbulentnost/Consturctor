@@ -75,16 +75,54 @@ function visibleAssistant(text: string): string {
   return cleaned.trim()
 }
 
+function normalizeResult(raw: unknown): Record<string, unknown> | null {
+  if (raw == null) return null
+  if (typeof raw === 'object') return raw as Record<string, unknown>
+  return { value: raw }
+}
+
+/** Mirror desktop compact_tool_result: only the tool OUTPUT, summarized. */
 function summarizeResult(result: Record<string, unknown> | null): string {
-  if (!result || typeof result !== 'object') return 'Готово'
+  if (!result || typeof result !== 'object') return 'Данные получены.'
   const summary = result.summary
   if (typeof summary === 'string' && summary.trim()) return summary.trim()
+  if (typeof result.result_file === 'string' && result.result_file.trim()) {
+    return `Файл: ${result.result_file}`
+  }
   if (result.externalized && typeof result.result_file === 'string') {
-    return `Данные сохранены в файл ${result.result_file}`
+    return `Файл: ${result.result_file}`
   }
   if (result.skipped) return 'Пропущено пользователем'
   if (result.rejected) return 'Отклонено пользователем'
-  return 'Готово'
+  for (const key of ['items', 'rows', 'results', 'messages', 'events', 'files', 'records', 'documents', 'tasks']) {
+    const value = result[key]
+    if (Array.isArray(value)) return `Получено записей: ${value.length}`
+  }
+  if (typeof result.text === 'string' && result.text.trim()) return result.text.trim().slice(0, 200)
+  if (typeof result.value === 'string' && result.value.trim()) return result.value.trim().slice(0, 200)
+  return 'Данные получены.'
+}
+
+const _DONE_STATUS = new Set([
+  'completed',
+  'complete',
+  'success',
+  'succeeded',
+  'ok',
+  'done',
+  'error',
+  'failed',
+  'cancelled',
+  'canceled'
+])
+
+function isDoneStatus(status: string): boolean {
+  return _DONE_STATUS.has((status || '').toLowerCase())
+}
+
+function isErrorStatus(status: string): boolean {
+  const value = (status || '').toLowerCase()
+  return value === 'error' || value === 'failed'
 }
 
 export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentSessionValue {
@@ -134,47 +172,117 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
     setItems((prev) => [...prev, { kind: 'system', id: nextId('sys'), text: value, tone }])
   }, [])
 
-  const addToolCall = useCallback((payload: AgentRunnerEvent) => {
+  /**
+   * Handle a runner `tool_call`. Two shapes exist:
+   * - host tools: {requestId, tool, arguments} (result arrives later as tool_result)
+   * - SDK-native tools: repeated {tool, status, arguments, result} with status
+   *   running -> completed and the result inline (no separate tool_result).
+   * We upsert one card per invocation (correlated by requestId, else the last
+   * running card with the same tool name) instead of pushing duplicates.
+   */
+  const handleToolCall = useCallback((payload: AgentRunnerEvent) => {
     const tool = String(payload.tool || '')
-    const item: ToolItem = {
-      kind: 'tool',
-      id: nextId('tool'),
-      tool,
-      title: toolLabel(tool),
-      arguments: (payload.arguments as Record<string, unknown>) || {},
-      result: null,
-      summary: '',
-      done: false
-    }
-    setItems((prev) => [...prev, item])
-  }, [])
-
-  const completeToolResult = useCallback((payload: AgentRunnerEvent) => {
-    const tool = String(payload.tool || '')
-    const result = (payload.result as Record<string, unknown>) || {}
+    const requestId = String(payload.requestId || '')
+    const status = String(payload.status || '')
+    const resultObj = normalizeResult(payload.result)
+    const done = isDoneStatus(status) || (resultObj !== null && status !== 'running')
+    const errored = isErrorStatus(status)
     setItems((prev) => {
       const merged = [...prev]
-      for (let i = merged.length - 1; i >= 0; i -= 1) {
-        const candidate = merged[i]
-        if (candidate.kind === 'tool' && !candidate.done && (!tool || candidate.tool === tool)) {
-          merged[i] = {
-            ...candidate,
-            result,
-            summary: summarizeResult(result),
-            done: true
+      let idx = -1
+      if (requestId) {
+        idx = merged.findIndex((it) => it.kind === 'tool' && it.requestId === requestId)
+      }
+      if (idx < 0) {
+        for (let i = merged.length - 1; i >= 0; i -= 1) {
+          const candidate = merged[i]
+          if (candidate.kind === 'tool' && !candidate.done && !candidate.requestId && candidate.tool === tool) {
+            idx = i
+            break
           }
-          return merged
         }
+      }
+      if (idx >= 0) {
+        const current = merged[idx] as ToolItem
+        merged[idx] = {
+          ...current,
+          requestId: requestId || current.requestId,
+          result: resultObj ?? current.result,
+          summary: done ? summarizeResult(resultObj ?? current.result) : current.summary,
+          done: current.done || done,
+          error: current.error || errored
+        }
+        return merged
       }
       merged.push({
         kind: 'tool',
         id: nextId('tool'),
         tool,
+        requestId,
+        title: toolLabel(tool),
+        arguments: (payload.arguments as Record<string, unknown>) || {},
+        result: resultObj,
+        summary: done ? summarizeResult(resultObj) : '',
+        done,
+        error: errored
+      })
+      return merged
+    })
+    if (!done) setStatus(`Вызываю ${toolLabel(tool)}…`)
+  }, [])
+
+  /** Handle a host-tool `tool_result` (ok/error/skipped). Completes the card. */
+  const handleToolResult = useCallback((payload: AgentRunnerEvent) => {
+    const tool = String(payload.tool || '')
+    const requestId = String(payload.requestId || '')
+    const ok = payload.ok !== false
+    const errText = String(payload.error || '')
+    const resultObj = normalizeResult(payload.result)
+    const skipped =
+      Boolean(payload.skipped) || Boolean(resultObj && (resultObj as Record<string, unknown>).skipped)
+    const summary = !ok
+      ? errText || 'Ошибка инструмента'
+      : skipped
+        ? 'Пропущено пользователем'
+        : summarizeResult(resultObj)
+    setItems((prev) => {
+      const merged = [...prev]
+      let idx = -1
+      if (requestId) {
+        idx = merged.findIndex((it) => it.kind === 'tool' && it.requestId === requestId)
+      }
+      if (idx < 0) {
+        for (let i = merged.length - 1; i >= 0; i -= 1) {
+          const candidate = merged[i]
+          if (candidate.kind === 'tool' && !candidate.done && (!tool || candidate.tool === tool)) {
+            idx = i
+            break
+          }
+        }
+      }
+      if (idx >= 0) {
+        const current = merged[idx] as ToolItem
+        merged[idx] = {
+          ...current,
+          requestId: requestId || current.requestId,
+          result: resultObj ?? current.result,
+          summary,
+          done: true,
+          error: !ok
+        }
+        return merged
+      }
+      merged.push({
+        kind: 'tool',
+        id: nextId('tool'),
+        tool,
+        requestId,
         title: toolLabel(tool),
         arguments: {},
-        result,
-        summary: summarizeResult(result),
-        done: true
+        result: resultObj,
+        summary,
+        done: true,
+        error: !ok
       })
       return merged
     })
@@ -187,16 +295,17 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
       switch (type) {
         case 'thinking':
           appendThinking(text)
+          setStatus('Думает…')
           break
         case 'assistant':
         case 'agent_message':
           appendAssistant(text)
           break
         case 'tool_call':
-          addToolCall(payload)
+          handleToolCall(payload)
           break
         case 'tool_result':
-          completeToolResult(payload)
+          handleToolResult(payload)
           break
         case 'decision':
         case 'progress':
@@ -216,7 +325,7 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
           break
       }
     },
-    [appendAssistant, appendSystem, appendThinking, addToolCall, completeToolResult]
+    [appendAssistant, appendSystem, appendThinking, handleToolCall, handleToolResult]
   )
 
   useEffect(() => {
@@ -226,7 +335,9 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
         !activeRunRef.current || !runId || runId === activeRunRef.current
       switch (event.type) {
         case 'event':
-          if (matchesRun && event.payload) handleRunnerEvent(event.payload)
+          // Feed events are processed regardless of runId: only one run is
+          // active at a time and strict gating risks silently dropping the feed.
+          if (event.payload) handleRunnerEvent(event.payload)
           break
         case 'question':
           if (matchesRun) {

@@ -222,8 +222,22 @@ class HitlGate:
 
     def ask_question(self, payload: dict[str, Any]) -> dict[str, Any]:
         request_id = str(payload.get("requestId") or uuid.uuid4().hex)
-        question = str(payload.get("question") or payload.get("text") or "").strip()
+        # The runner delivers a tool_request whose question/options live under
+        # payload["arguments"]; fall back to top-level keys for safety.
+        args = payload.get("arguments")
+        if not isinstance(args, dict):
+            args = {}
+        question = str(
+            payload.get("question")
+            or payload.get("text")
+            or args.get("question")
+            or args.get("prompt")
+            or args.get("text")
+            or ""
+        ).strip()
         options = payload.get("options")
+        if not isinstance(options, list):
+            options = args.get("options")
         if not isinstance(options, list):
             options = []
         box: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
