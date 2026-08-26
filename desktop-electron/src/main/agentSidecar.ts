@@ -146,6 +146,17 @@ export class AgentSidecar {
           message = { type: 'log', text: line }
         }
         if (message.type === 'ready') this.restarts = 0
+        // Opt-in diagnostics (set AGENT_SIDECAR_DEBUG=1) to confirm that runner
+        // events (thinking/tool_call/tool_result) actually reach the main process.
+        if (process.env.AGENT_SIDECAR_DEBUG) {
+          const mtype = String(message.type || '')
+          if (mtype === 'event') {
+            const payload = message.payload as { type?: string } | undefined
+            console.log('[agent-sidecar] event', payload?.type)
+          } else {
+            console.log('[agent-sidecar]', mtype)
+          }
+        }
         this.onEvent(message)
       }
       index = this.stdoutBuffer.indexOf('\n')

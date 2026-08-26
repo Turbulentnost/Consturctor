@@ -22,11 +22,13 @@ export interface ToolItem {
   kind: 'tool'
   id: string
   tool: string
+  requestId: string
   title: string
   arguments: Record<string, unknown>
   result: Record<string, unknown> | null
   summary: string
   done: boolean
+  error: boolean
 }
 
 export interface ResultItem {

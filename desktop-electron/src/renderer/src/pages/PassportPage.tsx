@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AgentSuggestion, PassportSession } from '../api/types'
 
 const FIELDS: { key: keyof PassportSession['passport']; label: string }[] = [
@@ -13,6 +13,11 @@ const FIELDS: { key: keyof PassportSession['passport']; label: string }[] = [
   { key: 'forbidden', label: 'Не может' },
   { key: 'result', label: 'Результат' }
 ]
+
+interface ChatMsg {
+  role: 'ai' | 'user'
+  text: string
+}
 
 interface PassportPageProps {
   suggestion: AgentSuggestion
@@ -34,6 +39,10 @@ export function PassportPage({
   onFinish
 }: PassportPageProps): React.JSX.Element {
   const [input, setInput] = useState('')
+  const [messages, setMessages] = useState<ChatMsg[]>([])
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const lastPromptRef = useRef<string>('')
+
   const passport = session?.passport
   const missing = passport?.missingFields ?? []
   const questions = passport?.questions ?? []
@@ -41,16 +50,28 @@ export function PassportPage({
   const prompt = String(current?.prompt || current?.question || '')
   const ready = Boolean(passport?.name.trim()) && missing.length === 0
 
+  useEffect(() => {
+    if (prompt && prompt !== lastPromptRef.current) {
+      lastPromptRef.current = prompt
+      setMessages((prev) => [...prev, { role: 'ai', text: prompt }])
+    }
+  }, [prompt])
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+  }, [messages, busy, ready])
+
   function send(): void {
     const text = input.trim()
-    if (!text || busy) return
+    if (!text || busy || ready) return
     setInput('')
+    setMessages((prev) => [...prev, { role: 'user', text }])
     const field = String(current?.field || missing[0] || 'answer')
     onAnswer({ [field]: text, answer: text })
   }
 
   return (
-    <div>
+    <div className="passport-page page-with-footer">
       <div className="chat-head">
         <button className="btn-ghost" onClick={onBack}>
           {'\u2039'} Назад
@@ -63,24 +84,41 @@ export function PassportPage({
 
       <div className="passport-grid">
         <div className="chat-col">
-          {error && <div className="status-line" style={{ color: 'var(--error)' }}>{error}</div>}
-          {!session && (
-            <div className="chat-hint">Собираю черновик паспорта агента…</div>
-          )}
-          {session && prompt && !ready && (
-            <div className="chat-hint">
-              <b>{prompt}</b>
+          <div className="passport-chat-scroll" ref={scrollRef}>
+            {!session && !messages.length && (
+              <div className="chat-hint">Собираю черновик паспорта агента…</div>
+            )}
+            {messages.map((message, index) => (
+              <div key={index} className={`bubble ${message.role}`}>
+                <div className="bubble-text">{message.text}</div>
+              </div>
+            ))}
+            {busy && (
+              <div className="bubble ai">
+                <div className="typing">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+            )}
+            {ready && (
+              <div className="chat-ready">
+                <div>Паспорт готов — можно перейти к проектированию агента.</div>
+              </div>
+            )}
+          </div>
+
+          {error && (
+            <div className="status-line" style={{ color: 'var(--error)' }}>
+              {error}
             </div>
           )}
-          {ready && (
-            <div className="chat-ready">
-              <div>Паспорт готов — можно перейти к проектированию агента.</div>
-            </div>
-          )}
+
           <div className="chat-input">
             <textarea
               value={input}
-              placeholder="Ответьте на уточнение..."
+              placeholder={ready ? 'Паспорт готов' : 'Ответьте на уточнение...'}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -91,7 +129,12 @@ export function PassportPage({
               disabled={busy || ready}
               rows={2}
             />
-            <button className="btn-primary" style={{ width: 120 }} onClick={send} disabled={busy || ready}>
+            <button
+              className="btn-primary"
+              style={{ width: 120 }}
+              onClick={send}
+              disabled={busy || ready || !input.trim()}
+            >
               Отправить
             </button>
           </div>
@@ -99,26 +142,35 @@ export function PassportPage({
 
         <div className="option-card passport-card">
           <h3>Паспорт агента</h3>
-          {FIELDS.map((field) => {
-            const value = String(passport?.[field.key] || '').trim()
-            const isMissing = missing.includes(field.key) || missing.includes(toSnake(field.key))
-            return (
-              <div key={field.key} className={isMissing ? 'passport-field missing' : 'passport-field'}>
-                <div className="passport-label">{field.label}</div>
-                <div className="passport-value">{value || (busy ? '…' : '—')}</div>
-              </div>
-            )
-          })}
+          <div className="passport-fields">
+            {FIELDS.map((field) => {
+              const value = String(passport?.[field.key] || '').trim()
+              const isMissing = missing.includes(field.key) || missing.includes(toSnake(field.key))
+              return (
+                <div key={field.key} className={isMissing ? 'passport-field missing' : 'passport-field'}>
+                  <div className="passport-label">{field.label}</div>
+                  <div className="passport-value">{value || (busy ? '…' : '—')}</div>
+                </div>
+              )
+            })}
+          </div>
         </div>
       </div>
 
-      <div className="review-actions">
+      <div className="page-footer">
         <button className="btn-ghost-dark" onClick={onBack}>
           Назад
         </button>
-        <button className="btn-primary" style={{ maxWidth: 280 }} onClick={onFinish} disabled={!ready || busy}>
-          К проектированию
-        </button>
+        <div className="page-footer-actions">
+          <button
+            className="btn-primary"
+            style={{ maxWidth: 280 }}
+            onClick={onFinish}
+            disabled={!ready || busy}
+          >
+            К проектированию
+          </button>
+        </div>
       </div>
     </div>
   )

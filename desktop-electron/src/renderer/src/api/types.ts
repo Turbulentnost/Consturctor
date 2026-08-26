@@ -397,9 +397,12 @@ export interface AgentRunnerEvent {
   text?: string
   message?: string
   tool?: string
+  requestId?: string
   arguments?: Record<string, unknown>
-  result?: Record<string, unknown>
+  result?: unknown
   ok?: boolean
+  skipped?: boolean
+  error?: string
   status?: string
   agentId?: string
   run_id?: string
