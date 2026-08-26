@@ -223,7 +223,9 @@ function handleToolCall(state: RunState, payload: AgentRunnerEvent): RunState {
       pendingQuestion: {
         requestId: requestId || state.pendingQuestion?.requestId || '',
         question,
-        options
+        options,
+        needsFile: parsed.needsFile || state.pendingQuestion?.needsFile,
+        accept: parsed.accept.length ? parsed.accept : state.pendingQuestion?.accept
       },
       status: 'Нужен ваш ответ'
     }
@@ -438,6 +440,8 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
       const parsed = parseQuestionArgs({
         question: event.question,
         options: event.options,
+        needsFile: event.needsFile,
+        accept: event.accept,
         ...(event.arguments || {})
       })
       const question = parsed.question || state.pendingQuestion?.question || ''
@@ -448,7 +452,13 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
           pendingQuestion: {
             requestId: String(event.requestId || state.pendingQuestion?.requestId || ''),
             question,
-            options
+            options,
+            needsFile: parsed.needsFile || Boolean(event.needsFile) || state.pendingQuestion?.needsFile,
+            accept: parsed.accept.length
+              ? parsed.accept
+              : event.accept?.length
+                ? event.accept
+                : state.pendingQuestion?.accept
           },
           status: 'Нужен ваш ответ'
         }

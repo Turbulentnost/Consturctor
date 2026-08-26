@@ -23,6 +23,7 @@ __all__ = [
     "resume_auto_run",
     "stop_auto_run",
     "update_local_run",
+    "apply_operating_instruction",
     "workflow_health",
 ]
 

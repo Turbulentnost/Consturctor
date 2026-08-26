@@ -39,11 +39,16 @@ class AgentWorkspace:
         return candidate
 
     def list_files(self) -> list[dict]:
-        """Вернуть список файлов в папке агента с размером."""
+        """Вернуть файлы в папке агента, включая materials/."""
         files: list[dict] = []
-        for path in sorted(self.directory.iterdir()):
-            if path.is_file():
-                files.append({"name": path.name, "size_bytes": path.stat().st_size})
+        root = self.directory.resolve()
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root).as_posix()
+            if relative.startswith("code/") or relative.startswith("tool_results/"):
+                continue
+            files.append({"name": relative, "size_bytes": path.stat().st_size})
         return files
 
 

@@ -522,6 +522,8 @@ export interface AgentEvent {
   payload?: AgentRunnerEvent
   question?: string
   options?: string[]
+  needsFile?: boolean
+  accept?: string[]
   tool?: string
   arguments?: Record<string, unknown>
   kind?: 'design' | 'readiness' | 'demo' | 'run' | 'trigger'

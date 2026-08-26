@@ -38,6 +38,8 @@ export interface RunStore {
   skip: (workflowId: string) => void
   cancel: (workflowId: string) => void
   clear: (workflowId: string) => void
+  /** Drop every run and stop sidecar workers. Used on logout / user switch. */
+  clearAll: () => void
 }
 
 const RunContext = createContext<RunStore | null>(null)
@@ -184,6 +186,12 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     })
   }, [])
 
+  const clearAll = useCallback(() => {
+    agentClient.cancel('')
+    indexRef.current = {}
+    setEntries({})
+  }, [])
+
   const getRun = useCallback((workflowId: string) => entriesRef.current[workflowId], [])
 
   const activeAgents = useCallback(
@@ -192,8 +200,8 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
   )
 
   const value = useMemo<RunStore>(
-    () => ({ entries, getRun, activeAgents, startRun, answer, respondHitl, skip, cancel, clear }),
-    [entries, getRun, activeAgents, startRun, answer, respondHitl, skip, cancel, clear]
+    () => ({ entries, getRun, activeAgents, startRun, answer, respondHitl, skip, cancel, clear, clearAll }),
+    [entries, getRun, activeAgents, startRun, answer, respondHitl, skip, cancel, clear, clearAll]
   )
 
   return <RunContext.Provider value={value}>{children}</RunContext.Provider>

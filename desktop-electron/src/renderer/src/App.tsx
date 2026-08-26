@@ -186,6 +186,11 @@ export function App(): React.JSX.Element {
   }, [])
 
   function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
+    if (user && user.id !== result.user.id) {
+      formation.cancel()
+      formation.clear()
+      runs.clearAll()
+    }
     api.setToken(result.accessToken || null)
     setComCredentials(result.user.fio, password)
     if (remember && result.accessToken) {
@@ -202,12 +207,23 @@ export function App(): React.JSX.Element {
 
   async function resetToLogin(): Promise<void> {
     void window.api.stopNotifications?.()
+    formation.cancel()
+    formation.clear()
+    runs.clearAll()
     await api.terminateRegulationCreationSessions()
     clearSession(true)
     clearComCredentials()
     api.setToken(null)
     clearAvatarCache()
     setAvatarUrl(null)
+    setRegulation(null)
+    setRoleMatch(null)
+    setDraft(null)
+    setSuggestions([])
+    setSuggestion(null)
+    setPassport(null)
+    setPassportError('')
+    setView({ kind: 'tab', key: 'create' })
     setUser(null)
   }
 

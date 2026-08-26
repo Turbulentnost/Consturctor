@@ -71,7 +71,11 @@ DESKTOP_ROOT = _bootstrap_desktop_path()
 # Importing app.config loads desktop/.env (CURSOR_API_KEY, BACKEND_URL, ...).
 from app.api_client import ApiClient, ApiError  # noqa: E402
 from app.sdk_agent.bridge import CursorSdkBridge, CursorSdkUnavailable  # noqa: E402
-from app.sdk_agent.files import _safe_filename, prepare_sdk_workspace  # noqa: E402
+from app.sdk_agent.files import (  # noqa: E402
+    _safe_filename,
+    prepare_sdk_workspace,
+    seed_workflow_files,
+)
 from app.tools.runtime_api import configure as configure_runtime_api  # noqa: E402
 from app.sdk_agent.prompt import (  # noqa: E402
     build_demo_sdk_prompt,
@@ -233,6 +237,7 @@ class HitlGate:
         # Runner emits a dedicated "question" event, then tool_request with
         # raw arguments. Parse both shapes the same way as desktop runner.
         question, options = _question_from_payload(payload)
+        needs_file, accept = _file_request_from_payload(payload)
         box: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         with self._lock:
             self._answers[request_id] = box
@@ -243,6 +248,8 @@ class HitlGate:
                 "requestId": request_id,
                 "question": question,
                 "options": options,
+                "needsFile": needs_file,
+                "accept": accept,
             }
         )
         try:
@@ -353,9 +360,66 @@ def _question_from_payload(payload: dict[str, Any]) -> tuple[str, list[str]]:
         options = _as_options(source.get("answers"))
     if not options:
         options = _as_options(source.get("variants"))
-    if not options and question:
+    if not options and question and not _file_request_from_payload(payload)[0]:
         options = _options_from_text(question)
     return question, options
+
+
+_KB_SUFFIXES = {".xlsx", ".xlsm", ".docx"}
+_KB_ACCEPT = ("xlsx", "xlsm", "docx")
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes"} or text == "да"
+
+
+def _accept_extensions(raw: Any) -> list[str]:
+    items = raw if isinstance(raw, list) else [raw] if raw else []
+    out: list[str] = []
+    for item in items:
+        ext = str(item or "").strip().lower().lstrip(".")
+        if ext in _KB_ACCEPT and ext not in out:
+            out.append(ext)
+    return out
+
+
+def _file_request_from_payload(payload: dict[str, Any]) -> tuple[bool, list[str]]:
+    args = _as_record(payload.get("arguments"))
+    nested = _as_record(args.get("arguments") or args.get("input") or args.get("properties"))
+    source = {**nested, **args, **payload}
+    needs = _as_bool(
+        source.get("needsFile")
+        or source.get("needs_file")
+        or source.get("expectFile")
+    )
+    accept = _accept_extensions(source.get("accept") or source.get("allowedExtensions"))
+    if needs and not accept:
+        accept = list(_KB_ACCEPT)
+    return needs, accept
+
+
+def _persist_knowledge_files(
+    api: ApiClient,
+    workflow_id: str,
+    run_cwd: str,
+    file_paths: list[str],
+) -> list[str]:
+    copied = _copy_attachments(run_cwd, file_paths)
+    allowed = [
+        path
+        for path in file_paths
+        if Path(str(path)).suffix.lower() in _KB_SUFFIXES
+    ]
+    if workflow_id.strip() and allowed:
+        try:
+            api.upload_workflow_files(workflow_id, allowed)
+            seed_workflow_files(api, workflow_id, run_cwd)
+        except Exception as exc:  # noqa: BLE001
+            log("knowledge upload failed: " + _ascii(repr(exc)))
+    return copied
 
 
 def _safe_args(args: dict[str, Any]) -> dict[str, Any]:
@@ -759,6 +823,7 @@ class Sidecar:
             design_prompt = ""
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
+        active.workflow_id = workflow_id
         prepare_sdk_workspace(
             self._api,
             workflow_id,
@@ -806,6 +871,7 @@ class Sidecar:
         bridge.check_ready()
         draft = self._api.get_agent_draft(draft_id)
         run_cwd = bridge.workspace_cwd(f"draft-{draft_id}")
+        active.run_cwd = run_cwd
         _prepare_readiness_workspace(self._api, draft, run_cwd)
         events: list[dict[str, Any]] = []
         result = bridge.run(
@@ -841,6 +907,7 @@ class Sidecar:
         resume_agent_id = str((record.local_run or {}).get("sdk_agent_id") or "").strip()
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
+        active.workflow_id = workflow_id
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=record)
         events: list[dict[str, Any]] = []
         result = bridge.run(
@@ -902,9 +969,10 @@ class Sidecar:
         emit({"type": "event", "runId": active.run_id, "payload": {"type": "run", "run_id": run_ref}})
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
+        active.workflow_id = workflow_id
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=workflow)
         file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
-        attachment_paths = _copy_attachments(run_cwd, file_paths)
+        attachment_paths = _persist_knowledge_files(self._api, workflow_id, run_cwd, file_paths)
         events: list[dict[str, Any]] = []
         prompt = (
             build_followup_sdk_prompt(message)
@@ -1056,7 +1124,14 @@ class Sidecar:
         for active in list(self._active.values()):
             note = ""
             if file_paths and active.run_cwd:
-                note = _attachments_note(_copy_attachments(active.run_cwd, file_paths))
+                note = _attachments_note(
+                    _persist_knowledge_files(
+                        self._api,
+                        active.workflow_id,
+                        active.run_cwd,
+                        file_paths,
+                    )
+                )
             reply = {
                 "ok": bool(command.get("ok", True)),
                 "answer": answer_text + (("\n\n" + note) if note else ""),
@@ -1098,6 +1173,7 @@ class ActiveRun:
         self.bridge = bridge
         self.thread: threading.Thread | None = None
         self.run_cwd: str = ""
+        self.workflow_id: str = ""
         self.dedup_key: str = ""
 
 

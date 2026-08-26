@@ -449,6 +449,16 @@ class CursorSdkBridge:
                     if not allowed:
                         box["result"] = rejected
                         return
+                    args["human_approved"] = True
+                    runtime = args.get("runtime_context")
+                    if isinstance(runtime, dict):
+                        runtime["human_approved"] = True
+                    else:
+                        args["runtime_context"] = {
+                            "workflow_id": workflow_id,
+                            "agent_id": workflow_id,
+                            "human_approved": True,
+                        }
                     if self._is_skipped(request_id) or (
                         should_stop is not None and should_stop()
                     ):

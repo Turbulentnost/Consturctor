@@ -13,7 +13,7 @@ from app.services.workflow_files import (
     list_workflow_files,
     register_agent_files,
 )
-from app.services.workflows.service import create_workflow, get_workflow
+from app.services.workflows.service import apply_operating_instruction, create_workflow, get_workflow
 
 
 def _session():
@@ -121,3 +121,27 @@ def test_list_user_platform_files_returns_agent_title_without_other_users() -> N
     assert [item.filename for item in payload.files] == ["plan.txt"]
     assert payload.files[0].agent_title == "Контроль сроков"
     assert payload.files[0].workflow_id == "wf-1"
+
+
+def test_apply_operating_instruction_appends_notes_and_playbook() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    workflow = Workflow(
+        id="wf-meet",
+        user_id="user-1",
+        title="Развёртка",
+        phase="tested",
+        notes="Старый паспорт",
+        local_run={"playbook": {"instructions": "Старая инструкция"}},
+    )
+    db.add(workflow)
+    db.commit()
+
+    text = "График плановых совещаний загружает пользователь Excel-файлом."
+    apply_operating_instruction(db, user_id="user-1", workflow_id="wf-meet", instruction=text)
+    row = db.query(Workflow).filter(Workflow.id == "wf-meet").one()
+    assert text in row.notes
+    assert text in (row.local_run or {}).get("playbook", {}).get("instructions", "")
+    apply_operating_instruction(db, user_id="user-1", workflow_id="wf-meet", instruction=text)
+    row = db.query(Workflow).filter(Workflow.id == "wf-meet").one()
+    assert row.notes.count(text) == 1

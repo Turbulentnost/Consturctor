@@ -323,6 +323,35 @@ def update_local_run(
     return _to_schema(row)
 
 
+def apply_operating_instruction(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    instruction: str,
+) -> WorkflowSchema:
+    """Append a lasting operating rule to notes and playbook instructions."""
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    text = (instruction or "").strip()
+    if not text:
+        return _to_schema(row)
+    notes = str(row.notes or "").strip()
+    if text not in notes:
+        row.notes = f"{notes}\n\n{text}".strip() if notes else text
+    local = dict(row.local_run or {})
+    playbook = dict(local.get("playbook") or {}) if isinstance(local.get("playbook"), dict) else {}
+    current = str(playbook.get("instructions") or "").strip()
+    if text not in current:
+        playbook["instructions"] = f"{current}\n\n{text}".strip() if current else text
+        local["playbook"] = playbook
+        row.local_run = local
+        flag_modified(row, "local_run")
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _to_schema(row)
+
+
 WorkflowEventCallback = Callable[..., None]
 
 

@@ -14,11 +14,11 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 from app.frozen_runtime import agent_python_command
+from app.tools.ac.process_run import run_captured
 from app.tools.ac.tooling import (
     ToolCallResult,
     ToolDefinition,
@@ -35,7 +35,7 @@ from app.tools.ac.registry import ToolRegistry
 
 CODE_SUBDIR = "code"
 DEFAULT_SCRIPT_NAME = "main.py"
-DEFAULT_TIMEOUT_SECONDS = 60
+DEFAULT_TIMEOUT_SECONDS = 180
 MAX_TIMEOUT_SECONDS = 600
 MAX_OUTPUT_CHARS = 20_000
 SUMMARY_CHARS = 2_000
@@ -229,22 +229,10 @@ class CodeRunPythonTool(BaseTool):
         args = [str(item) for item in (input_data.get("args") or []) if str(item)]
         timeout = _timeout(input_data.get("timeout_seconds"))
         try:
-            completed = subprocess.run(
+            completed = run_captured(
                 [*command_prefix, str(target), *args],
-                cwd=str(workspace.directory),
-                capture_output=True,
-                text=True,
+                cwd=workspace.directory,
                 timeout=timeout,
-                errors="replace",
-            )
-        except subprocess.TimeoutExpired as exc:
-            return self._result(
-                workspace=workspace,
-                target=target,
-                exit_code=None,
-                stdout=_coerce(exc.stdout),
-                stderr=_coerce(exc.stderr),
-                timed_out=True,
             )
         except Exception as exc:  # noqa: BLE001 - subprocess может вернуть OSError
             return _fail(self.definition.name, "PYTHON_EXECUTION_ERROR", str(exc))
@@ -252,10 +240,10 @@ class CodeRunPythonTool(BaseTool):
         return self._result(
             workspace=workspace,
             target=target,
-            exit_code=completed.returncode,
+            exit_code=completed.exit_code,
             stdout=completed.stdout,
             stderr=completed.stderr,
-            timed_out=False,
+            timed_out=completed.timed_out,
         )
 
     def _result(

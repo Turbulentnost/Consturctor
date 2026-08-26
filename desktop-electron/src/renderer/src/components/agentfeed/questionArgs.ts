@@ -63,7 +63,32 @@ function optionsFromText(text: string): string[] {
   return found
 }
 
-export function parseQuestionArgs(raw: unknown): { question: string; options: string[] } {
+function asBool(value: unknown): boolean {
+  if (typeof value === 'boolean') return value
+  const text = String(value || '').trim().toLowerCase()
+  return text === '1' || text === 'true' || text === 'yes'
+}
+
+function acceptList(raw: unknown): string[] {
+  const allowed = new Set(['xlsx', 'xlsm', 'docx'])
+  const items = Array.isArray(raw) ? raw : raw ? [raw] : []
+  const out: string[] = []
+  for (const item of items) {
+    const ext = String(item || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^\./, '')
+    if (allowed.has(ext) && !out.includes(ext)) out.push(ext)
+  }
+  return out
+}
+
+export function parseQuestionArgs(raw: unknown): {
+  question: string
+  options: string[]
+  needsFile: boolean
+  accept: string[]
+} {
   const args = asRecord(raw)
   const nested = asRecord(args.arguments || args.input || args.properties)
   const source = Object.keys(nested).length ? { ...nested, ...args } : args
@@ -73,12 +98,15 @@ export function parseQuestionArgs(raw: unknown): { question: string; options: st
     asText(source.title) ||
     asText(source.message) ||
     asText(source.text)
+  const needsFile = asBool(source.needsFile ?? source.needs_file ?? source.expectFile)
+  let accept = acceptList(source.accept || source.allowedExtensions)
+  if (needsFile && !accept.length) accept = ['xlsx', 'xlsm', 'docx']
   let options = asOptions(source.options)
   if (!options.length) options = asOptions(source.choices)
   if (!options.length) options = asOptions(source.answers)
   if (!options.length) options = asOptions(source.variants)
-  if (!options.length && question) options = optionsFromText(question)
-  return { question, options }
+  if (!options.length && question && !needsFile) options = optionsFromText(question)
+  return { question, options, needsFile, accept }
 }
 
 export function isAskQuestion(name: string): boolean {

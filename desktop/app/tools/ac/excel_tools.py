@@ -32,11 +32,12 @@ def _cell_value(value: object) -> object:
 
 
 def _ensure_xlsx(name: str) -> str:
-    """Гарантировать расширение .xlsx у имени файла."""
+    """Гарантировать расширение Excel у имени файла."""
     name = str(name).strip()
-    if not name.lower().endswith(".xlsx"):
-        name = f"{name}.xlsx"
-    return name
+    lower = name.lower()
+    if lower.endswith(".xlsx") or lower.endswith(".xlsm"):
+        return name
+    return f"{name}.xlsx"
 
 
 class _WorkspaceTool(BaseTool):
@@ -71,7 +72,10 @@ class ExcelListFilesTool(_WorkspaceTool):
             ToolDefinition(
                 name="excel.list_files",
                 title="Список файлов агента",
-                description="Возвращает список файлов в рабочей папке агента.",
+                description=(
+                    "Возвращает список файлов в рабочей папке агента, "
+                    "включая materials/ и загруженные Excel."
+                ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.LOCAL,
                 requires_human_approval=False,

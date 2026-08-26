@@ -392,6 +392,7 @@ def test_sdk_tool_specs_include_desktop_schema() -> None:
     assert "web_search" in names
     ask = next(item for item in tools if item.get("name") == "askQuestion")
     assert "question" in (ask.get("inputSchema") or {}).get("properties", {})
+    assert "needsFile" in (ask.get("inputSchema") or {}).get("properties", {})
     assert "расписание, период" not in str(ask.get("description") or "")
     assert "пробел" in str(ask.get("description") or "")
     web = next(item for item in tools if item.get("name") == "web_search")
@@ -763,6 +764,7 @@ def test_seed_agent_brief_writes_plan_and_design_text(tmp_path: Path) -> None:
                 )
             ],
         ),
+        local_run={"playbook": {"instructions": "График загружает пользователь Excel-файлом."}},
     )
     path = seed_agent_brief(str(tmp_path), record, extra="Верни ТОЛЬКО один JSON-объект")
     text = (tmp_path / path).read_text(encoding="utf-8")
@@ -772,9 +774,12 @@ def test_seed_agent_brief_writes_plan_and_design_text(tmp_path: Path) -> None:
     assert "Прочитать проекты TurboProject" in text
     assert "Верни ТОЛЬКО один JSON-объект" in text
     assert "recipient: руководитель" in text
+    assert "График загружает пользователь Excel-файлом." in text
     agents = seed_agents_md(str(tmp_path))
     assert agents == "AGENTS.md"
-    assert "customTools" in (tmp_path / agents).read_text(encoding="utf-8")
+    agents_text = (tmp_path / agents).read_text(encoding="utf-8")
+    assert "customTools" in agents_text
+    assert "needsFile" in agents_text
 
 
 def test_mcp_tool_name_unwraps_constructor_tool() -> None:

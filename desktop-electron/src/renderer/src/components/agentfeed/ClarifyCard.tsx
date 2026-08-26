@@ -27,7 +27,12 @@ export function ClarifyCard({
     cardRef.current?.focus()
   }, [useCustom, question.requestId])
 
-  const hasAnswer = Boolean(useCustom ? custom.trim() || filePaths.length : selected)
+  const needsFile = Boolean(question.needsFile)
+  const accept = question.accept?.length ? question.accept : ['xlsx', 'xlsm', 'docx']
+  const canAttach = allowFiles || needsFile
+  const hasAnswer = needsFile
+    ? filePaths.length > 0
+    : Boolean(useCustom ? custom.trim() || filePaths.length : selected)
 
   const submit = (): void => {
     const text = (useCustom ? custom.trim() : selected).trim()
@@ -41,8 +46,16 @@ export function ClarifyCard({
 
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({
-      title: 'Прикрепить файл к ответу',
-      properties: ['openFile', 'multiSelections']
+      title: needsFile ? 'Загрузить Excel или Word' : 'Прикрепить файл к ответу',
+      properties: ['openFile', 'multiSelections'],
+      filters: canAttach
+        ? [
+            {
+              name: 'Excel или Word',
+              extensions: accept
+            }
+          ]
+        : undefined
     })
     if (!paths.length) return
     setFilePaths((prev) => Array.from(new Set([...prev, ...paths])))
@@ -120,10 +133,10 @@ export function ClarifyCard({
         />
       </div>
 
-      {allowFiles && (
+      {canAttach && (
         <div className="clarify-files">
           <button type="button" className="btn-ghost clarify-attach" onClick={() => void pickFiles()}>
-            Прикрепить файл
+            {needsFile ? 'Загрузить Excel или Word' : 'Прикрепить файл'}
           </button>
           {filePaths.map((path) => (
             <span key={path} className="clarify-file-name">
