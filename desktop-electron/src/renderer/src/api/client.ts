@@ -312,7 +312,8 @@ function parseDirectoryUsers(data: unknown): DirectoryUser[] {
           department: '',
           activityStatus: 'online',
           online: false,
-          isSupport: false
+          isSupport: false,
+          avatarUrl: null
         })
       }
       continue
@@ -327,7 +328,8 @@ function parseDirectoryUsers(data: unknown): DirectoryUser[] {
       department: String(row.department ?? ''),
       activityStatus: String(row.activityStatus ?? row.activity_status ?? 'online'),
       online: Boolean(row.online),
-      isSupport: Boolean(row.isSupport ?? row.is_support)
+      isSupport: Boolean(row.isSupport ?? row.is_support),
+      avatarUrl: optionalUrl(row.avatarUrl) ?? optionalUrl(row.avatar_url)
     })
   }
   return users

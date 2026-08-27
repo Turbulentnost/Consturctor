@@ -15,15 +15,23 @@ from agent_sidecar import (  # noqa: E402
     OUTLOOK_MEETING_RULE,
     OUTLOOK_SERIES_MARKER,
     RUN_INPUTS_HINT,
+    RUN_INPUTS_NO,
+    RUN_INPUTS_QUESTION,
+    RUN_INPUTS_RUN_HINT,
+    RUN_INPUTS_YES,
     WHEN_TO_RUN_HINT,
     WHEN_TO_RUN_QUESTION,
     _file_request_from_payload,
     _is_meeting_text,
     _merge_outlook_rule_into_playbook,
+    _merge_run_input_gate,
+    _merge_run_inputs,
     _merge_when_to_run,
     _persist_knowledge_files,
     _persist_run_attachment,
+    _run_inputs_from_answer,
     _run_inputs_from_local,
+    _run_inputs_user_answered,
     _when_to_run_known,
     _when_to_run_user_answered,
     _with_sidecar_prompt,
@@ -239,9 +247,12 @@ def test_keep_knowledge_upload_uses_keep_origin(tmp_path: Path) -> None:
 def test_design_prompt_requires_run_inputs_hint() -> None:
     text = _with_sidecar_prompt("Sproektiruy", mode="design")
     assert RUN_INPUTS_HINT in text
+    assert "needsFile=true" in text
     assert "run_inputs" in text
     run_text = _with_sidecar_prompt("Sdelai demo")
     assert RUN_INPUTS_HINT not in run_text
+    assert RUN_INPUTS_RUN_HINT in run_text
+    assert "Do not substitute" in run_text
 
 
 def test_run_inputs_from_local_normalizes_entries() -> None:
@@ -263,3 +274,59 @@ def test_run_inputs_from_local_normalizes_entries() -> None:
 def test_run_inputs_from_local_empty() -> None:
     assert _run_inputs_from_local({}) == []
     assert _run_inputs_from_local({"playbook": {}}) == []
+
+
+def test_run_inputs_user_answered_ignores_llm_invented_list() -> None:
+    record = SimpleNamespace(
+        local_run={"playbook_draft": {"run_inputs": [{"name": "grafik.xlsx"}]}}
+    )
+    assert _run_inputs_user_answered(record) is False
+
+
+def test_run_inputs_user_answered_no() -> None:
+    record = SimpleNamespace(
+        local_run={"design_answers": [{"question": RUN_INPUTS_QUESTION, "answer": RUN_INPUTS_NO}]}
+    )
+    assert _run_inputs_user_answered(record) is True
+
+
+def test_run_inputs_user_answered_yes_needs_spec() -> None:
+    yes_only = SimpleNamespace(
+        local_run={"design_answers": [{"question": RUN_INPUTS_QUESTION, "answer": RUN_INPUTS_YES}]}
+    )
+    assert _run_inputs_user_answered(yes_only) is False
+    complete = SimpleNamespace(
+        local_run={
+            "design_answers": [{"question": RUN_INPUTS_QUESTION, "answer": RUN_INPUTS_YES}],
+            "playbook_draft": {"run_inputs": [{"name": "grafik.xlsx"}]},
+        }
+    )
+    assert _run_inputs_user_answered(complete) is True
+
+
+def test_merge_run_input_gate_does_not_write_run_inputs() -> None:
+    merged = _merge_run_input_gate({}, RUN_INPUTS_NO)
+    assert merged is not None
+    assert merged["design_answers"][0]["question"] == RUN_INPUTS_QUESTION
+    assert "playbook_draft" not in merged
+    assert _merge_run_input_gate(merged, RUN_INPUTS_NO) is None
+
+
+def test_merge_run_inputs_writes_spec() -> None:
+    merged = _merge_run_inputs(
+        {},
+        [{"name": "grafik.xlsx", "description": "obrazec", "accept": ".xlsx"}],
+        gate_answer=RUN_INPUTS_YES,
+    )
+    assert merged is not None
+    assert merged["playbook_draft"]["run_inputs"][0]["name"] == "grafik.xlsx"
+    assert merged["design_answers"][0]["answer"] == RUN_INPUTS_YES
+
+
+def test_run_inputs_from_answer_parses_attachment_note() -> None:
+    specs = _run_inputs_from_answer(
+        "Прикрепленные файлы: grafik.xlsx\n\n"
+        "Прикреплённые файлы (прочитай их из рабочей области): materials/attachments/001_grafik.xlsx"
+    )
+    assert [item["name"] for item in specs] == ["grafik.xlsx"]
+    assert specs[0]["accept"] == ".xlsx"

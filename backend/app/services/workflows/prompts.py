@@ -378,6 +378,7 @@ _DRAFT_SCHEMA = (
     "{\n"
     '  "goal": "зачем агент нужен и чем заканчивается его работа",\n'
     '  "inputs": ["что нужно на входе"],\n'
+    '  "run_inputs": [{"name": "имя файла", "description": "зачем нужен на каждом запуске", "accept": ".xlsx"}],\n'
     '  "required_clarifications": [\n'
     "    {\n"
     '      "question": "вопрос человеку про бизнес-параметр, которого нет в регламенте",\n'
@@ -558,6 +559,33 @@ def _draft_clarification_from(raw: Any) -> dict[str, Any] | None:
     }
 
 
+def _parse_run_inputs(raw: Any) -> list[dict[str, str]]:
+    """Normalize playbook_draft.run_inputs from the designer JSON."""
+    if not isinstance(raw, list):
+        return []
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if isinstance(item, str):
+            name = item.strip()
+            description = ""
+            accept = ""
+        elif isinstance(item, dict):
+            name = str(item.get("name") or item.get("title") or item.get("label") or "").strip()
+            description = str(item.get("description") or item.get("why") or "").strip()
+            accept = str(item.get("accept") or item.get("extensions") or "").strip()
+        else:
+            continue
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"name": name, "description": description, "accept": accept})
+    return result
+
+
 def parse_playbook_draft(text: str) -> dict[str, Any]:
     """Черновик из ответа проектировщика. Пустой steps — значит черновик не получился."""
     data = _extract_json_blob(text) or {}
@@ -571,6 +599,7 @@ def parse_playbook_draft(text: str) -> dict[str, Any]:
         "status": DRAFT_STATUS_DRAFT,
         "goal": str(data.get("goal") or "").strip(),
         "inputs": [str(x).strip() for x in (data.get("inputs") or []) if str(x).strip()],
+        "run_inputs": _parse_run_inputs(data.get("run_inputs")),
         "required_clarifications": [
             item
             for item in (

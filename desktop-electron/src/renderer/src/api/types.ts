@@ -599,6 +599,7 @@ export interface DirectoryUser {
   activityStatus: string
   online: boolean
   isSupport: boolean
+  avatarUrl: string | null
 }
 
 export interface InboxNotification {

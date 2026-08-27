@@ -59,6 +59,8 @@ ICON_SIZE = 20
 SIDEBAR_PAD_LEFT = SIDEBAR_PADDING_X
 SIDEBAR_PAD_RIGHT = 28
 _TEMP = Path(__file__).resolve().parents[1] / "temp"
+_ICONS = Path(__file__).resolve().parents[1] / "icons"
+_ORCHESTRATOR_SVG = _ICONS / "orchestrator.svg"
 
 # Filename prefixes: серый* = active/pressed, белый* = inactive.
 _ICON_STEMS = {
@@ -125,6 +127,17 @@ def _load_nav_icon(filename: str) -> QPixmap:
 
 def _load_icon_pair(kind: str) -> tuple[QPixmap, QPixmap]:
     """Return (inactive/белый*, active/серый*)."""
+    if kind == "orchestrator":
+        src = QPixmap(str(_ORCHESTRATOR_SVG)) if _ORCHESTRATOR_SVG.is_file() else QPixmap()
+        if src.isNull():
+            return QPixmap(), QPixmap()
+        scaled = src.scaled(
+            ICON_SIZE,
+            ICON_SIZE,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        return _tint_pixmap(scaled, QColor("#FFFFFF")), scaled
     if kind == "files":
         # Single source files.png is grey; tint white for the inactive state.
         src = _load_nav_icon("files.png")
@@ -532,8 +545,8 @@ class GlassSidebar(QWidget):
             NavItem("create", "Создать", "plus"),
             NavItem("agents", "Мои агенты", "home"),
             NavItem("files", "Файлы", "files"),
-            NavItem("kpi", "KPI", "kpi"),
-            NavItem("dashboard", "Мой дашборд", "dashboard"),
+            NavItem("kpi", "KPI агента", "kpi"),
+            NavItem("orchestrator", "Оркестратор", "orchestrator"),
         ]
         self._active_key = "create"
         self._active_dialog_id = ""

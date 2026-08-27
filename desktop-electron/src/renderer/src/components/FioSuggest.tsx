@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { loadUserAvatar } from '../api/avatars'
 import { api } from '../api/client'
+import type { DirectoryUser } from '../api/types'
 
 interface FioSuggestProps {
   value: string
@@ -10,6 +12,17 @@ interface FioSuggestProps {
   variant?: 'light' | 'dark'
   onEnter?: () => void
   autoFocus?: boolean
+}
+
+function initials(name: string): string {
+  const parts = (name || '').replace(/\./g, ' ').split(/\s+/).filter(Boolean)
+  if (!parts.length) return '?'
+  if (parts.length === 1) return parts[0][0].toUpperCase()
+  return (parts[0][0] + parts[1][0]).toUpperCase()
+}
+
+function userKey(user: DirectoryUser): string {
+  return user.id || user.fio
 }
 
 export function FioSuggest({
@@ -23,7 +36,8 @@ export function FioSuggest({
   autoFocus
 }: FioSuggestProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
-  const [items, setItems] = useState<string[]>([])
+  const [items, setItems] = useState<DirectoryUser[]>([])
+  const [avatars, setAvatars] = useState<Record<string, string>>({})
   const [highlight, setHighlight] = useState(-1)
   const wrapRef = useRef<HTMLDivElement>(null)
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -38,10 +52,48 @@ export function FioSuggest({
     return () => document.removeEventListener('mousedown', onDocClick)
   }, [])
 
+  useEffect(() => {
+    let alive = true
+    void Promise.all(
+      items.map(async (user) => {
+        const url = await loadUserAvatar({ id: user.id, avatarUrl: user.avatarUrl })
+        return [userKey(user), url] as const
+      })
+    ).then((rows) => {
+      if (!alive) return
+      const next: Record<string, string> = {}
+      for (const [key, url] of rows) {
+        if (url) next[key] = url
+      }
+      setAvatars(next)
+    })
+    return () => {
+      alive = false
+    }
+  }, [items])
+
   function query(search: string): void {
     if (debounce.current) clearTimeout(debounce.current)
     debounce.current = setTimeout(async () => {
-      const results = await api.searchUsers(search)
+      let results: DirectoryUser[] = []
+      try {
+        results = await api.listDirectoryUsers(search)
+      } catch {
+        results = []
+      }
+      if (!results.length) {
+        const names = await api.searchUsers(search)
+        results = names.map((fio) => ({
+          id: '',
+          fio,
+          position: '',
+          department: '',
+          activityStatus: 'online',
+          online: false,
+          isSupport: false,
+          avatarUrl: null
+        }))
+      }
       setItems(results.slice(0, 20))
       setHighlight(-1)
     }, 180)
@@ -58,10 +110,10 @@ export function FioSuggest({
     query(next)
   }
 
-  function choose(fio: string): void {
-    onChange(fio)
+  function choose(user: DirectoryUser): void {
+    onChange(user.fio)
     setOpen(false)
-    onSelect?.(fio)
+    onSelect?.(user.fio)
   }
 
   function onKeyDown(e: React.KeyboardEvent): void {
@@ -87,8 +139,10 @@ export function FioSuggest({
     }
   }
 
+  const showPopup = open && items.length > 0
+
   return (
-    <div className="fio-suggest" ref={wrapRef}>
+    <div className={showPopup ? 'fio-suggest open' : 'fio-suggest'} ref={wrapRef}>
       <input
         className={inputClassName}
         value={value}
@@ -98,21 +152,28 @@ export function FioSuggest({
         onChange={(e) => handleChange(e.target.value)}
         onKeyDown={onKeyDown}
       />
-      {open && items.length > 0 && (
+      {showPopup && (
         <div className={variant === 'dark' ? 'fio-popup dark' : 'fio-popup'}>
-          {items.map((fio, index) => (
-            <div
-              key={fio}
-              className={index === highlight ? 'fio-option active' : 'fio-option'}
-              onMouseEnter={() => setHighlight(index)}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                choose(fio)
-              }}
-            >
-              {fio}
-            </div>
-          ))}
+          {items.map((user, index) => {
+            const key = userKey(user)
+            const avatar = avatars[key]
+            return (
+              <div
+                key={key}
+                className={index === highlight ? 'fio-option active' : 'fio-option'}
+                onMouseEnter={() => setHighlight(index)}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  choose(user)
+                }}
+              >
+                <span className="fio-option-avatar">
+                  {avatar ? <img src={avatar} alt="" /> : initials(user.fio)}
+                </span>
+                <span className="fio-option-name">{user.fio}</span>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>

@@ -654,6 +654,27 @@ def _apply_design_answers_to_draft(
     return updated
 
 
+def _merge_preserved_run_inputs(
+    draft: dict[str, Any],
+    local: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Keep sidecar-persisted run_inputs when the designer JSON omitted them."""
+    updated = dict(draft or {})
+    current = updated.get("run_inputs")
+    if isinstance(current, list) and current:
+        return updated
+    data = local if isinstance(local, dict) else {}
+    for key in ("playbook_draft", "playbook"):
+        raw = data.get(key)
+        if not isinstance(raw, dict):
+            continue
+        existing = raw.get("run_inputs")
+        if isinstance(existing, list) and existing:
+            updated["run_inputs"] = existing
+            return updated
+    return updated
+
+
 def finish_local_design_workflow(
     db: Session,
     *,
@@ -667,9 +688,12 @@ def finish_local_design_workflow(
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     local = dict(row.local_run or {})
     qa = _qa_from_stored_design_answers(local.get("design_answers")) + _qa_from_design_events(events)
-    draft = _apply_design_answers_to_draft(
-        prompts.parse_playbook_draft(answer or ""),
-        qa,
+    draft = _merge_preserved_run_inputs(
+        _apply_design_answers_to_draft(
+            prompts.parse_playbook_draft(answer or ""),
+            qa,
+        ),
+        local,
     )
     if not draft.get("steps"):
         local = dict(row.local_run or {})

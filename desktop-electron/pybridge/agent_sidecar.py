@@ -271,14 +271,35 @@ _AGENT_WHEN_LABELS = (
     "триггер агента",
 )
 
+RUN_INPUTS_QUESTION = (
+    "Нужен ли этому агенту файл, который пользователь будет прикладывать при каждом запуске?"
+)
+RUN_INPUTS_YES = "Да — сейчас прикреплю образец, чтобы проанализировать"
+RUN_INPUTS_NO = "Нет — все данные агент берёт из систем"
+RUN_INPUTS_SAMPLE_QUESTION = "Прикрепите образец временного файла"
+RUN_INPUTS_WHY = (
+    "Если агенту на каждый запуск нужен свежий файл пользователя, образец "
+    "нужен сейчас: проектировщик прочитает его и задаст уточнения. "
+    "Файл временный, в базу знаний не попадает."
+)
 RUN_INPUTS_HINT = (
-    "Identify files the user must attach on EVERY run (per-run inputs that change "
-    "each time, for example a yearly meetings file to schedule from). "
-    "Record each such input into playbook_draft.run_inputs as a JSON list of "
-    "{name, description, accept} (accept is an optional extension hint like '.xlsx,.csv'). "
-    "These are temporary per-run inputs: never call keepKnowledgeFile for them and never "
-    "store them in the permanent knowledge base. If no per-run input is required, leave "
-    "run_inputs empty."
+    "If the future agent needs a user file on EVERY run (a table, export, or "
+    "document that changes each time), you MUST call askQuestion with needsFile=true "
+    "NOW, then read the sample, then ask follow-up questions about its structure. "
+    "Do not invent the file and do not replace a missing user file with another "
+    "tool or system. Record confirmed inputs into playbook_draft.run_inputs as "
+    "{name, description, accept}. These stay temporary: never keepKnowledgeFile. "
+    "If no per-run file is required, leave run_inputs empty."
+)
+RUN_INPUTS_RUN_HINT = (
+    "If playbook.run_inputs lists a required per-run file and it is not already "
+    "in materials/attachments, stop and ask via askQuestion with needsFile=true. "
+    "Do not substitute another tool or system for a missing user file."
+)
+_RUN_INPUT_GATE_HINTS = (
+    "файл, который пользователь будет прикладывать",
+    "прикладывать при каждом запуске",
+    RUN_INPUTS_QUESTION.casefold(),
 )
 
 
@@ -287,6 +308,8 @@ def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
     if (mode or "").strip().casefold() == "design":
         parts.append(WHEN_TO_RUN_HINT)
         parts.append(RUN_INPUTS_HINT)
+    else:
+        parts.append(RUN_INPUTS_RUN_HINT)
     text = (prompt or "").strip()
     if text:
         parts.append(text)
@@ -517,6 +540,147 @@ def _run_inputs_from_local(local: dict[str, Any] | None) -> list[dict[str, str]]
             if result:
                 return result
     return []
+
+
+def _is_run_input_gate_question(question: str) -> bool:
+    folded = (question or "").casefold().replace("ё", "е")
+    return bool(folded) and any(hint in folded for hint in _RUN_INPUT_GATE_HINTS)
+
+
+def _is_run_input_yes(answer: str) -> bool:
+    folded = (answer or "").casefold().replace("ё", "е")
+    return folded.startswith("да") or "прикреплю образец" in folded or "проанализ" in folded
+
+
+def _is_run_input_no(answer: str) -> bool:
+    folded = (answer or "").casefold().replace("ё", "е")
+    return folded.startswith("нет") or "из систем" in folded
+
+
+def _run_input_gate_from_local(local: dict[str, Any] | None) -> str:
+    data = local if isinstance(local, dict) else {}
+    for item in data.get("design_answers") or []:
+        if not isinstance(item, dict):
+            continue
+        if _is_run_input_gate_question(str(item.get("question") or "")):
+            answer = str(item.get("answer") or "").strip()
+            if answer:
+                return answer
+    return ""
+
+
+def _run_inputs_user_answered(record: Any) -> bool:
+    """True if the user already closed the design-time file-input gate.
+
+    A yes without a persisted run_inputs list does not count: we still owe
+    the sample-file question. An LLM-invented playbook_draft.run_inputs
+    without a design_answers gate also does not count.
+    """
+    local = getattr(record, "local_run", None) or {}
+    answer = _run_input_gate_from_local(local)
+    if not answer:
+        return False
+    if _is_run_input_no(answer):
+        return True
+    return bool(_run_inputs_from_local(local))
+
+
+def _run_input_from_filename(name: str) -> dict[str, str] | None:
+    clean = Path(str(name or "").strip()).name
+    clean = re.sub(r"^\d{3}_", "", clean).strip()
+    if not clean:
+        return None
+    suffix = Path(clean).suffix
+    return {
+        "name": clean,
+        "description": "Образец временного файла, приложенный при формировании.",
+        "accept": suffix,
+    }
+
+
+def _run_inputs_from_answer(answer: str) -> list[dict[str, str]]:
+    """Extract run_inputs specs from a ClarifyCard / attachments note."""
+    text = (answer or "").replace("ё", "е").replace("Ё", "Е")
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        spec = _run_input_from_filename(raw.strip().strip(".,;"))
+        if spec is None:
+            return
+        key = spec["name"].casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        names.append(spec["name"])
+
+    for match in re.finditer(r"materials/attachments/([^\s,]+)", text):
+        _add(match.group(1))
+    marker = re.search(
+        r"прикрепленн\w*\s+файлы:\s*(.+)$",
+        text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    if marker:
+        for part in marker.group(1).split(","):
+            _add(part)
+    result: list[dict[str, str]] = []
+    for name in names:
+        spec = _run_input_from_filename(name)
+        if spec is not None:
+            result.append(spec)
+    return result
+
+
+def _merge_run_input_gate(local_run: dict[str, Any] | None, answer: str) -> dict[str, Any] | None:
+    """Persist the yes/no file-input answer. Does not write run_inputs."""
+    text = (answer or "").strip()
+    if not text:
+        return None
+    local = dict(local_run or {})
+    if _run_input_gate_from_local(local) == text:
+        return None
+    answers = [item for item in (local.get("design_answers") or []) if isinstance(item, dict)]
+    if not any(
+        _is_run_input_gate_question(str(item.get("question") or ""))
+        and str(item.get("answer") or "").strip()
+        for item in answers
+    ):
+        answers.append({"question": RUN_INPUTS_QUESTION, "answer": text})
+        local["design_answers"] = answers
+        return local
+    return None
+
+
+def _merge_run_inputs(
+    local_run: dict[str, Any] | None,
+    entries: list[dict[str, str]],
+    *,
+    gate_answer: str = "",
+) -> dict[str, Any] | None:
+    specs = [_normalize_run_input(item) for item in entries]
+    specs = [item for item in specs if item is not None]
+    if not specs and not (gate_answer or "").strip():
+        return None
+    local = dict(local_run or {})
+    changed = False
+    if (gate_answer or "").strip():
+        gated = _merge_run_input_gate(local, gate_answer)
+        if gated is not None:
+            local = gated
+            changed = True
+    if specs:
+        current = _run_inputs_from_local(local)
+        if [item["name"] for item in current] != [item["name"] for item in specs]:
+            for key in ("playbook_draft", "playbook"):
+                raw = local.get(key)
+                if key == "playbook" and not isinstance(raw, dict):
+                    continue
+                updated = dict(raw) if isinstance(raw, dict) else {}
+                updated["run_inputs"] = specs
+                local[key] = updated
+            changed = True
+    return local if changed else None
 
 
 class ElectronBridge(CursorSdkBridge):
@@ -1412,6 +1576,9 @@ class Sidecar:
         if _is_meeting_workflow(record) or _is_meeting_text(design_prompt):
             _ensure_outlook_rule_in_brief(run_cwd)
         bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
+        # Ask for a per-run file sample before the designer writes the draft,
+        # so the SDK run can read it and ask follow-up questions.
+        self._ensure_run_input_sample_asked(active, workflow_id)
         events: list[dict[str, Any]] = []
         result = bridge.run(
             prompt=build_design_sdk_prompt(record, design_prompt),
@@ -1756,6 +1923,90 @@ class Sidecar:
         if not answer or active.stop.is_set():
             return
         self._persist_when_to_run(workflow_id, answer)
+
+    def _persist_run_input_gate(self, workflow_id: str, answer: str) -> None:
+        wid = (workflow_id or "").strip()
+        text = (answer or "").strip()
+        if not wid or not text:
+            return
+        try:
+            record = self._api.get_workflow(wid)
+            merged = _merge_run_input_gate(
+                dict(getattr(record, "local_run", None) or {}), text
+            )
+            if merged is None:
+                return
+            self._api.update_workflow_local_run(wid, merged)
+        except ApiError:
+            pass
+
+    def _persist_run_inputs(
+        self,
+        workflow_id: str,
+        entries: list[dict[str, str]],
+        *,
+        gate_answer: str = "",
+    ) -> None:
+        wid = (workflow_id or "").strip()
+        if not wid:
+            return
+        try:
+            record = self._api.get_workflow(wid)
+            merged = _merge_run_inputs(
+                dict(getattr(record, "local_run", None) or {}),
+                entries,
+                gate_answer=gate_answer,
+            )
+            if merged is None:
+                return
+            self._api.update_workflow_local_run(wid, merged)
+        except ApiError:
+            pass
+
+    def _ensure_run_input_sample_asked(self, active: ActiveRun, workflow_id: str) -> None:
+        if active.stop.is_set():
+            return
+        try:
+            record = self._api.get_workflow(workflow_id)
+        except ApiError:
+            return
+        if _run_inputs_user_answered(record):
+            return
+        local = dict(getattr(record, "local_run", None) or {})
+        gate = _run_input_gate_from_local(local)
+        if not gate:
+            reply = active.gate.ask_question(
+                {
+                    "question": RUN_INPUTS_QUESTION,
+                    "options": [RUN_INPUTS_YES, RUN_INPUTS_NO],
+                    "why": RUN_INPUTS_WHY,
+                },
+                should_stop=active.stop.is_set,
+            )
+            gate = str(reply.get("answer") or "").strip()
+            if not gate or active.stop.is_set():
+                return
+            self._persist_run_input_gate(workflow_id, gate)
+            if _is_run_input_no(gate):
+                return
+        sample = active.gate.ask_question(
+            {
+                "question": RUN_INPUTS_SAMPLE_QUESTION,
+                "options": [],
+                "needsFile": True,
+                "why": (
+                    "Образец нужен проектировщику, чтобы прочитать структуру "
+                    "и задать уточнения. Файл временный, в базу знаний не попадает."
+                ),
+            },
+            should_stop=active.stop.is_set,
+        )
+        if active.stop.is_set():
+            return
+        specs = _run_inputs_from_answer(str(sample.get("answer") or ""))
+        if not specs:
+            return
+        self._persist_run_inputs(workflow_id, specs, gate_answer=gate or RUN_INPUTS_YES)
 
     def _ensure_run_inputs_provided(
         self,

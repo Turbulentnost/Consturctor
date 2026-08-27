@@ -5,7 +5,8 @@ import { LoginPage } from './pages/LoginPage'
 import { CreatePage } from './pages/CreatePage'
 import { AgentsPage } from './pages/AgentsPage'
 import { FilesPage } from './pages/FilesPage'
-import { KpiPage, DashboardPage } from './pages/SimplePages'
+import { KpiPage } from './pages/SimplePages'
+import { OrchestratorPage } from './pages/OrchestratorPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { RegulationChatPage } from './pages/RegulationChatPage'
 import { RoleMatchPage } from './pages/RoleMatchPage'
@@ -761,8 +762,15 @@ export function App(): React.JSX.Element {
         )
       case 'kpi':
         return <KpiPage />
-      case 'dashboard':
-        return <DashboardPage />
+      case 'orchestrator':
+        return (
+          <OrchestratorPage
+            user={user!}
+            onRun={(workflowId, title) =>
+              setView({ kind: 'agentrun', workflowId, title, autoStart: true })
+            }
+          />
+        )
       default:
         return <CreatePage onRegulationParsed={() => {}} onStartRegulationChat={startRegulationChat} />
     }

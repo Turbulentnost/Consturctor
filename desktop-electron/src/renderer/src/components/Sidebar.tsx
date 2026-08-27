@@ -8,10 +8,10 @@ import iconCreate from '../assets/nav-create.png'
 import iconAgents from '../assets/nav-agents.png'
 import iconFiles from '../assets/nav-files.png'
 import iconKpi from '../assets/nav-kpi.png'
-import iconDashboard from '../assets/nav-dashboard.png'
+import iconOrchestrator from '../assets/nav-orchestrator.svg'
 import iconSearch from '../assets/search.png'
 
-export type PageKey = 'create' | 'agents' | 'files' | 'kpi' | 'dashboard'
+export type PageKey = 'create' | 'agents' | 'files' | 'kpi' | 'orchestrator'
 
 interface NavItem {
   key: PageKey
@@ -23,8 +23,8 @@ const ITEMS: NavItem[] = [
   { key: 'create', label: 'Создать', icon: iconCreate },
   { key: 'agents', label: 'Мои агенты', icon: iconAgents },
   { key: 'files', label: 'Файлы', icon: iconFiles },
-  { key: 'kpi', label: 'KPI', icon: iconKpi },
-  { key: 'dashboard', label: 'Мой дашборд', icon: iconDashboard }
+  { key: 'kpi', label: 'KPI агента', icon: iconKpi },
+  { key: 'orchestrator', label: 'Оркестратор', icon: iconOrchestrator }
 ]
 
 function initials(fio: string): string {

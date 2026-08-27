@@ -63,6 +63,7 @@ from app.ui.pages.revision_result_page import RevisionResultPage
 from app.ui.pages.role_match_page import RoleMatchPage
 from app.ui.pages.saved_workflows_page import SavedWorkflowsPage
 from app.ui.pages.notifications_page import NotificationsPage
+from app.ui.pages.orchestrator_page import OrchestratorPage
 from app.ui.pages.platform_files_page import PlatformFilesPage
 from app.chat.page import ChatPage
 from app.ui.pages.settings_page import SettingsPage
@@ -231,6 +232,8 @@ class MainShell(QWidget):
         self._page_history = AgentHistoryPage(self._api)
         self._page_group_runs = AgentGroupRunsPage()
         self._page_chat = ChatPage(self._api)
+        self._page_orchestrator = OrchestratorPage()
+        self._page_orchestrator.run_requested.connect(self._on_orchestrator_run)
         self._page_chat.open_agent_requested.connect(self._on_agent_history_requested)
         self._page_chat.threads_changed.connect(self._sync_sidebar_dialogs)
         self._pages.addWidget(self._page_create)
@@ -256,6 +259,7 @@ class MainShell(QWidget):
         self._pages.addWidget(self._page_history)
         self._pages.addWidget(self._page_group_runs)
         self._pages.addWidget(self._page_chat)
+        self._pages.addWidget(self._page_orchestrator)
         self._page_index = {
             "create": 0,
             "agents": 1,
@@ -280,6 +284,7 @@ class MainShell(QWidget):
             "agent_history": 20,
             "agent_group_runs": 21,
             "chat": 22,
+            "orchestrator": 23,
         }
         self._page_workflows.saved.connect(lambda _id: self._page_saved_workflows.refresh())
         self._page_workflows.saved_record.connect(self._on_workflow_record_saved)
@@ -514,6 +519,7 @@ class MainShell(QWidget):
             activity_status=user.activity_status,
         )
         self._page_chat.set_user(user)
+        self._page_orchestrator.set_user(user.id, user.fio)
         self._sync_sidebar_dialogs()
         self._load_avatar(user)
         pixmap = None if self._avatar_pixmap.isNull() else self._avatar_pixmap
@@ -1234,6 +1240,8 @@ class MainShell(QWidget):
             QTimer.singleShot(0, self._page_files.refresh)
         elif key == "chat":
             return
+        elif key == "orchestrator":
+            self._page_orchestrator.refresh()
         self.sidebar.hide_search_suggestions()
 
     def _sync_sidebar_dialogs(self) -> None:
@@ -1297,6 +1305,7 @@ class MainShell(QWidget):
             self._deleted_workflow_ids,
         )
         self._page_agents.set_board(board)
+        self._page_orchestrator.set_bound_agents(board.agents)
 
     def _show_drafts_result(self, result: object) -> None:
         if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[0], WorkflowBoard):
@@ -1304,6 +1313,7 @@ class MainShell(QWidget):
             drafts = [item for item in result[1] if isinstance(item, AgentDraft)] if isinstance(result[1], list) else []
             self._page_agents.set_board(board)
             self._page_agents.set_drafts(drafts)
+            self._page_orchestrator.set_bound_agents(board.agents)
             self.refresh_notification_badge()
             return
         if isinstance(result, tuple) and len(result) >= 2:
@@ -1816,6 +1826,19 @@ class MainShell(QWidget):
             attach_pending_for(wid)
             return
         self.navigate_to_agent_run(wid)
+
+    def _on_orchestrator_run(self, workflow_id: str) -> None:
+        from app.orchestrator.agents import is_local_workflow
+
+        wid = (workflow_id or "").strip()
+        if not wid or is_local_workflow(wid):
+            QMessageBox.information(
+                self,
+                "Оркестратор",
+                "Опубликованный агент для этого процесса ещё не найден.",
+            )
+            return
+        self.navigate_to_agent_run(wid, start_demo=True)
 
     def navigate_to_agent_run(
         self,
