@@ -11,6 +11,10 @@ from app.db.base import Base
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
+    pool_size=20,
+    max_overflow=40,
+    pool_recycle=1800,
+    pool_timeout=10,
     future=True,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)

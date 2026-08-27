@@ -12,6 +12,8 @@ if str(PYBRIDGE) not in sys.path:
     sys.path.insert(0, str(PYBRIDGE))
 
 from agent_sidecar import (  # noqa: E402
+    _persist_run_outputs,
+    needs_confirmation,
     OUTLOOK_MEETING_RULE,
     OUTLOOK_SERIES_MARKER,
     RUN_INPUTS_HINT,
@@ -44,6 +46,7 @@ class _Api:
         self.uploaded: list[tuple[str, list[str]]] = []
         self.uploaded_origins: list[str] = []
         self.run_attachments: list[tuple[str, str, list[str]]] = []
+        self.run_outputs: list[tuple[str, str, list[str]]] = []
 
     def upload_workflow_files(
         self, workflow_id: str, paths: list[str], *, origin: str = ""
@@ -57,6 +60,11 @@ class _Api:
         self.run_attachments.append(
             (workflow_id, run_id, [str(item) for item in paths])
         )
+
+    def register_workflow_run_files(
+        self, workflow_id: str, run_id: str, paths: list[str]
+    ) -> None:
+        self.run_outputs.append((workflow_id, run_id, [str(item) for item in paths]))
 
     def list_workflow_files(self, workflow_id: str) -> WorkflowFiles:
         assert workflow_id == "wf-meet"
@@ -330,3 +338,57 @@ def test_run_inputs_from_answer_parses_attachment_note() -> None:
     )
     assert [item["name"] for item in specs] == ["grafik.xlsx"]
     assert specs[0]["accept"] == ".xlsx"
+
+
+def test_sandbox_python_tools_skip_sidecar_hitl() -> None:
+    assert needs_confirmation("code.write_python") is False
+    assert needs_confirmation("code.run_python") is False
+    assert needs_confirmation("outlook.send_mail") is True
+
+
+def test_run_demo_asks_for_file_before_sdk() -> None:
+    from agent_sidecar import Sidecar
+
+    names = Sidecar._run_demo.__code__.co_names
+    assert "_ensure_run_input_sample_asked" in names
+    assert "_ensure_run_inputs_provided" in names
+
+
+def test_empty_draft_is_not_file_gate_answered() -> None:
+    record = SimpleNamespace(local_run={"playbook_draft": {}, "playbook": {}})
+    assert _run_inputs_user_answered(record) is False
+    assert _run_inputs_from_local(record.local_run) == []
+
+
+def test_persist_run_outputs_uploads_created_document(tmp_path: Path, monkeypatch) -> None:
+    report = tmp_path / "plan.md"
+    report.write_text("ok", encoding="utf-8")
+    monkeypatch.setattr("app.tools.result_files.workspace_for", lambda _wid: tmp_path)
+    api = _Api(tmp_path)
+    uploaded = _persist_run_outputs(
+        api,
+        "wf-meet",
+        str(tmp_path),
+        tool="report.export_document",
+        result={"path": str(report), "file": str(report), "filename": report.name},
+        run_id="run-1",
+    )
+    assert uploaded == [str(report.resolve())]
+    assert api.run_outputs == [("wf-meet", "run-1", [str(report.resolve())])]
+
+
+def test_persist_run_outputs_skips_read_tools(tmp_path: Path, monkeypatch) -> None:
+    leftover = tmp_path / "old.json"
+    leftover.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr("app.tools.result_files.workspace_for", lambda _wid: tmp_path)
+    api = _Api(tmp_path)
+    uploaded = _persist_run_outputs(
+        api,
+        "wf-meet",
+        str(tmp_path),
+        tool="outlook.read_calendar",
+        result={"events": [], "count": 0},
+        run_id="run-1",
+    )
+    assert uploaded == []
+    assert api.run_outputs == []

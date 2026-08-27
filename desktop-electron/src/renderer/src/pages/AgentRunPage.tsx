@@ -20,14 +20,22 @@ function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
   const name = file.name || 'file'
   const size = formatSize(file.sizeBytes)
   return (
-    <li className="wf-file-card">
-      <img className="files-type-icon" src={fileTypeIconSrc(name)} alt="" />
-      <div className="wf-file-copy">
-        <span className="wf-file-name" title={name}>
-          {name}
-        </span>
-        {size ? <span className="wf-file-meta">{size}</span> : null}
-      </div>
+    <li>
+      <button
+        className="wf-file-card history-file-btn"
+        type="button"
+        onClick={() => {
+          if (file.downloadUrl) void api.download(file.downloadUrl, name)
+        }}
+      >
+        <img className="files-type-icon" src={fileTypeIconSrc(name)} alt="" />
+        <div className="wf-file-copy">
+          <span className="wf-file-name" title={name}>
+            {name}
+          </span>
+          {size ? <span className="wf-file-meta">{size}</span> : null}
+        </div>
+      </button>
     </li>
   )
 }

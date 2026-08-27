@@ -32,3 +32,15 @@ def test_run_captured_times_out_and_kills() -> None:
     )
     assert completed.timed_out is True
     assert completed.exit_code is None
+
+
+def test_run_captured_stdin_is_eof_not_parent_pipe() -> None:
+    """Child must not inherit sidecar/Electron stdin or it waits until timeout."""
+    completed = run_captured(
+        [sys.executable, "-c", "import sys; print(sys.stdin.read() or 'eof')"],
+        cwd=Path(__file__).resolve().parent,
+        timeout=10,
+    )
+    assert completed.timed_out is False
+    assert completed.exit_code == 0
+    assert "eof" in completed.stdout

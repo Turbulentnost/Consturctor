@@ -10,6 +10,37 @@ from app.tools.result_files import (
 )
 
 
+def test_collect_workspace_outputs_skips_inputs(tmp_path: Path, monkeypatch) -> None:
+    from app.tools.result_files import collect_workspace_output_files
+
+    (tmp_path / "materials").mkdir()
+    (tmp_path / "code").mkdir()
+    (tmp_path / "tool_results").mkdir()
+    (tmp_path / "materials" / "table.xlsx").write_bytes(b"xlsx")
+    (tmp_path / "code" / "build.py").write_text("print(1)", encoding="utf-8")
+    (tmp_path / "tool_results" / "dump.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("brief", encoding="utf-8")
+    report = tmp_path / "plan.md"
+    report.write_text("ok", encoding="utf-8")
+    events = tmp_path / "planned_events.json"
+    events.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr("app.tools.result_files.workspace_for", lambda _wid: tmp_path)
+    names = {path.name for path in collect_workspace_output_files("wf-1")}
+    assert names == {"plan.md", "planned_events.json"}
+
+
+def test_extract_run_python_collects_workspace_outputs(tmp_path: Path, monkeypatch) -> None:
+    book = tmp_path / "slots.json"
+    book.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr("app.tools.result_files.workspace_for", lambda _wid: tmp_path)
+    files = extract_result_files(
+        {"script": "code/build.py", "cwd": str(tmp_path)},
+        tool="code.run_python",
+        workflow_id="wf-1",
+    )
+    assert files == [book.resolve()]
+
+
 def test_extract_skips_json_dump_and_read_tools(tmp_path: Path) -> None:
     book = tmp_path / "kalendar.xlsx"
     book.write_bytes(b"xlsx")
@@ -65,6 +96,33 @@ def test_extract_relative_name_via_workspace(tmp_path: Path, monkeypatch) -> Non
         workflow_id="wf-1",
     )
     assert files == [book.resolve()]
+
+
+def test_publish_result_files_remembers_without_qt(tmp_path: Path, monkeypatch) -> None:
+    from app.tools.result_files import publish_result_files
+
+    book = tmp_path / "slots.json"
+    book.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr("app.tools.result_files.workspace_for", lambda _wid: tmp_path)
+    clear_remembered_result_files("wf-qt")
+
+    class _NoApp:
+        @staticmethod
+        def instance():
+            return None
+
+    monkeypatch.setattr("PySide6.QtWidgets.QApplication", _NoApp)
+
+    def _should_not_offer(*_args, **_kwargs):
+        raise AssertionError("sidecar must not open Qt file cards")
+
+    monkeypatch.setattr(
+        "app.ui.widgets.result_file_card.offer_result_files",
+        _should_not_offer,
+    )
+    publish_result_files({"ok": True}, tool="code.run_python", workflow_id="wf-qt")
+    assert "slots.json" in remembered_result_names("wf-qt")
+    clear_remembered_result_files("wf-qt")
 
 
 def test_publish_answer_picks_excel_from_text(tmp_path: Path, monkeypatch) -> None:

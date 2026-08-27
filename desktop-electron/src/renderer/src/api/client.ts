@@ -321,15 +321,19 @@ function parseDirectoryUsers(data: unknown): DirectoryUser[] {
     const row = asRecord(item)
     const fio = String(row.fio ?? row.name ?? '').trim()
     if (!fio) continue
+    const id = String(row.id ?? row.user_id ?? row.userId ?? '').trim()
     users.push({
-      id: String(row.id ?? '').trim(),
+      id,
       fio,
       position: String(row.position ?? ''),
       department: String(row.department ?? ''),
       activityStatus: String(row.activityStatus ?? row.activity_status ?? 'online'),
       online: Boolean(row.online),
       isSupport: Boolean(row.isSupport ?? row.is_support),
-      avatarUrl: optionalUrl(row.avatarUrl) ?? optionalUrl(row.avatar_url)
+      avatarUrl:
+        optionalUrl(row.avatarUrl) ??
+        optionalUrl(row.avatar_url) ??
+        (id ? `/api/v1/auth/users/${id}/avatar` : null)
     })
   }
   return users
@@ -1104,7 +1108,8 @@ export class ApiClient {
         source: String(item.source ?? ''),
         startedAt: String(item.started_at ?? item.startedAt ?? ''),
         finishedAt: String(item.finished_at ?? item.finishedAt ?? ''),
-        summary: String(item.summary ?? item.result ?? '')
+        summary: String(item.summary ?? item.answer ?? item.result ?? ''),
+        answer: String(item.answer ?? item.summary ?? item.result ?? '')
       }))
   }
 
@@ -1445,7 +1450,8 @@ export class ApiClient {
         source: String(data.source ?? ''),
         startedAt: String(data.started_at ?? data.startedAt ?? ''),
         finishedAt: String(data.finished_at ?? data.finishedAt ?? ''),
-        summary: String(data.summary ?? data.answer ?? data.result ?? '')
+        summary: String(data.summary ?? data.answer ?? data.result ?? ''),
+        answer: String(data.answer ?? data.summary ?? data.result ?? '')
       },
       events
     }
@@ -1502,11 +1508,11 @@ export class ApiClient {
     return raw.map(parsePlatformFile)
   }
 
-  async listWorkflowFiles(workflowId: string): Promise<WorkflowFileItem[]> {
+  async listWorkflowFiles(workflowId: string, runId = ''): Promise<WorkflowFileItem[]> {
     const data = await this.request<Record<string, unknown>>(
       'GET',
       `/api/v1/workflows/${workflowId}/files`,
-      { timeoutMs: 20_000 }
+      { timeoutMs: 20_000, params: runId ? { run_id: runId } : undefined }
     )
     const userFiles = (data.user_files as Record<string, unknown>[]) ?? []
     const agentFiles = (data.agent_files as Record<string, unknown>[]) ?? []
@@ -1561,28 +1567,42 @@ export class ApiClient {
 
   async listDirectoryUsers(search = ''): Promise<DirectoryUser[]> {
     const paths = [
+      '/api/v1/notifications/users',
       '/api/v1/auth/directory',
-      '/api/v1/chat/directory',
-      '/api/v1/notifications/users'
+      '/api/v1/chat/directory'
     ]
-    const merged = new Map<string, DirectoryUser>()
+    const byFio = new Map<string, DirectoryUser>()
     for (const path of paths) {
       try {
         const data = await this.request<unknown>('GET', path, {
           params: search ? { search } : undefined
         })
         for (const user of parseDirectoryUsers(data)) {
-          const key = user.id || user.fio.toLowerCase()
-          if (!merged.has(key) || (!merged.get(key)?.id && user.id)) {
-            merged.set(key, user)
+          const key = user.fio.trim().toLowerCase()
+          if (!key) continue
+          const prev = byFio.get(key)
+          if (!prev) {
+            byFio.set(key, user)
+            continue
           }
+          const id = prev.id || user.id
+          byFio.set(key, {
+            ...prev,
+            ...user,
+            id,
+            position: prev.position || user.position,
+            department: prev.department || user.department,
+            avatarUrl:
+              prev.avatarUrl ||
+              user.avatarUrl ||
+              (id ? `/api/v1/auth/users/${id}/avatar` : null)
+          })
         }
-        if (merged.size) break
       } catch {
         /* try next directory source */
       }
     }
-    return [...merged.values()].sort((a, b) => a.fio.localeCompare(b.fio, 'ru'))
+    return [...byFio.values()].sort((a, b) => a.fio.localeCompare(b.fio, 'ru'))
   }
 
   async chatCommand(payload: Record<string, unknown>): Promise<string> {

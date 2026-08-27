@@ -6,7 +6,7 @@ import type { DirectoryUser } from '../api/types'
 interface FioSuggestProps {
   value: string
   onChange: (value: string) => void
-  onSelect?: (value: string) => void
+  onSelect?: (value: string, user: DirectoryUser) => void
   placeholder?: string
   inputClassName?: string
   variant?: 'light' | 'dark'
@@ -56,16 +56,30 @@ export function FioSuggest({
     let alive = true
     void Promise.all(
       items.map(async (user) => {
-        const url = await loadUserAvatar({ id: user.id, avatarUrl: user.avatarUrl })
+        let url = await loadUserAvatar({ id: user.id, avatarUrl: user.avatarUrl })
+        if (!url && user.fio) {
+          const matches = await api.listDirectoryUsers(user.fio)
+          const match =
+            matches.find((item) => item.fio.toLowerCase() === user.fio.toLowerCase() && item.id) ||
+            matches.find((item) => item.id)
+          if (match) {
+            url = await loadUserAvatar({
+              id: match.id,
+              avatarUrl: match.avatarUrl || `/api/v1/auth/users/${match.id}/avatar`
+            })
+          }
+        }
         return [userKey(user), url] as const
       })
     ).then((rows) => {
       if (!alive) return
-      const next: Record<string, string> = {}
-      for (const [key, url] of rows) {
-        if (url) next[key] = url
-      }
-      setAvatars(next)
+      setAvatars((prev) => {
+        const next = { ...prev }
+        for (const [key, url] of rows) {
+          if (url) next[key] = url
+        }
+        return next
+      })
     })
     return () => {
       alive = false
@@ -113,7 +127,7 @@ export function FioSuggest({
   function choose(user: DirectoryUser): void {
     onChange(user.fio)
     setOpen(false)
-    onSelect?.(user.fio)
+    onSelect?.(user.fio, user)
   }
 
   function onKeyDown(e: React.KeyboardEvent): void {

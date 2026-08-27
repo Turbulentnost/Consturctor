@@ -35,7 +35,8 @@ import type {
   RoleMatchResult,
   ScheduleDraft,
   UserProfile,
-  ChatThread
+  ChatThread,
+  DirectoryUser
 } from './api/types'
 import {
   clearComCredentials,
@@ -62,6 +63,24 @@ type View =
   | { kind: 'chat'; thread: ChatThread }
   | { kind: 'loading'; title: string; subtitle: string }
   | { kind: 'soon'; title: string; note: string }
+
+function fioKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function fioEquals(left: string, right: string): boolean {
+  const a = fioKey(left)
+  const b = fioKey(right)
+  return Boolean(a) && Boolean(b) && (a === b || a.startsWith(b) || b.startsWith(a))
+}
+
+function findExistingChat(threads: ChatThread[], name: string, peerId?: string): ChatThread | undefined {
+  if (peerId) {
+    const byPeer = threads.find((item) => item.kind !== 'support' && item.peerId === peerId)
+    if (byPeer) return byPeer
+  }
+  return threads.find((item) => item.kind !== 'support' && fioEquals(item.title, name))
+}
 
 export function App(): React.JSX.Element {
   const [booting, setBooting] = useState(true)
@@ -287,36 +306,48 @@ export function App(): React.JSX.Element {
     setChatRefreshAt(Date.now())
   }
 
-  async function openChatByFio(fio: string): Promise<void> {
-    const name = fio.trim()
+  async function openChatByFio(fio: string, picked?: DirectoryUser): Promise<void> {
+    const name = (picked?.fio || fio).trim()
     if (!name) return
+    const me = user
+    if (me && (picked?.id === me.id || name.toLowerCase() === me.fio.trim().toLowerCase())) {
+      return
+    }
     try {
       const threads = await api.listChatThreads()
-      const existing = threads.find((item) => item.title.toLowerCase() === name.toLowerCase())
+      const existing = findExistingChat(threads, name, picked?.id)
       if (existing) {
         openChat(existing)
         return
       }
-      const users = await api.listDirectoryUsers(name)
-      const match =
-        users.find((item) => item.fio.toLowerCase() === name.toLowerCase() && item.id) ||
-        users.find((item) => item.id)
+      let match = picked && picked.id ? picked : null
+      if (!match?.id) {
+        const users = await api.listDirectoryUsers(name)
+        match =
+          users.find((item) => fioEquals(item.fio, name) && item.id && item.id !== me?.id) ||
+          users.find((item) => item.id && item.id !== me?.id) ||
+          null
+      }
       if (!match?.id) {
         fail('Чат', new Error('Пользователь не найден'))
         return
       }
-      const known = threads.find((item) => item.peerId === match.id)
+      const known = findExistingChat(threads, match.fio, match.id)
       if (known) {
         openChat(known)
         return
       }
-      await api.openDirectChat(match.id)
+      try {
+        await api.openDirectChat(match.id)
+      } catch {
+        /* still open a local dialog */
+      }
       const next = (await api.listChatThreads()).find((item) => item.peerId === match.id)
       openChat(
         next || {
-          id: match.id,
+          id: `dm:${match.id}`,
           kind: 'dm',
-          title: match.fio,
+          title: match.fio || name,
           position: match.position,
           preview: '',
           lastMessageAt: '',
@@ -326,7 +357,7 @@ export function App(): React.JSX.Element {
           activityStatus: match.activityStatus,
           online: match.online,
           ticketStatus: '',
-          avatarUrl: null
+          avatarUrl: match.avatarUrl
         }
       )
     } catch (err) {
@@ -539,7 +570,18 @@ export function App(): React.JSX.Element {
     return <LoginPage onLoggedIn={onLoggedIn} />
   }
 
-  const activeKey: PageKey | null = view.kind === 'tab' ? view.key : view.kind === 'chat' ? null : 'create'
+  const activeKey: PageKey | null =
+    view.kind === 'tab'
+      ? view.key
+      : view.kind === 'chat'
+        ? null
+        : view.kind === 'history' ||
+            view.kind === 'agentrun' ||
+            view.kind === 'studio' ||
+            view.kind === 'schedule' ||
+            view.kind === 'kpi'
+          ? 'agents'
+          : 'create'
 
   function renderContent(): React.JSX.Element {
     if (view.kind === 'chat') {
@@ -812,9 +854,10 @@ export function App(): React.JSX.Element {
       <Sidebar
         active={activeKey}
         activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
+        currentUserId={user?.id || ''}
         onNavigate={(key) => setView({ kind: 'tab', key })}
         onOpenThread={openChat}
-        onOpenFio={(fio) => void openChatByFio(fio)}
+        onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
         refreshAt={chatRefreshAt}
       />
       <main className="content">

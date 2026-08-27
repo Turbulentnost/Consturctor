@@ -32,6 +32,8 @@ _SKIP_TOOLS = frozenset(
         "code.run_python",
     }
 )
+_OUTPUT_SKIP_DIRS = frozenset({"materials", "code", "tool_results", "__pycache__"})
+_OUTPUT_SKIP_NAMES = frozenset({"agents.md", "keepknowledgefile", "keep_knowledge_file"})
 _PATH_KEYS = ("path", "file", "absolute_path", "filepath", "dest")
 _FILE_IN_TEXT = re.compile(
     r"[A-Za-z0-9_.\-]+\.(?:xlsx|xls|xlsm|csv|docx|doc|pdf|pptx|txt|md)",
@@ -78,6 +80,36 @@ def workspace_for(workflow_id: str) -> Path | None:
     return AgentWorkspace(workspaces_root(), wid).directory
 
 
+def collect_workspace_output_files(workflow_id: str) -> list[Path]:
+    """Documents the agent wrote into the workspace, not inputs or tool dumps."""
+    root = workspace_for(workflow_id)
+    if root is None or not root.is_dir():
+        return []
+    found: list[Path] = []
+    seen: set[str] = set()
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            continue
+        if any(part.casefold() in _OUTPUT_SKIP_DIRS for part in rel.parts[:-1]):
+            continue
+        if path.name.casefold() in _OUTPUT_SKIP_NAMES:
+            continue
+        if path.suffix.lower() == ".py":
+            continue
+        if not is_document_path(path):
+            continue
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(path.resolve())
+    return found
+
+
 def extract_result_files(
     result: object,
     *,
@@ -85,7 +117,10 @@ def extract_result_files(
     workflow_id: str = "",
 ) -> list[Path]:
     """Локальные документы из ответа инструмента — только существующие файлы."""
-    if (tool or "").strip() in _SKIP_TOOLS:
+    folded = (tool or "").strip()
+    if folded == "code.run_python":
+        return collect_workspace_output_files(workflow_id)
+    if folded in _SKIP_TOOLS:
         return []
     if not isinstance(result, dict):
         return []
@@ -167,8 +202,14 @@ def publish_result_files(result: object, *, tool: str = "", workflow_id: str = "
     if not files:
         return
     remember_result_files(files, workflow_id=workflow_id)
-    from app.ui.widgets.result_file_card import offer_result_files
+    try:
+        from PySide6.QtWidgets import QApplication
 
+        if QApplication.instance() is None:
+            return
+        from app.ui.widgets.result_file_card import offer_result_files
+    except Exception:
+        return
     offer_result_files(files, workflow_id=workflow_id)
 
 

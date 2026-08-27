@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 AUTONOMY_LEVEL = 1
 HUMAN_REJECTED = "отклонено человеком"
 
-_NEVER_CONFIRM = frozenset({"notify.send", "notify"})
+_NEVER_CONFIRM = frozenset(
+    {"notify.send", "notify", "code.write_python", "code.run_python"}
+)
 
 _READ_EXACT = frozenset(
     {

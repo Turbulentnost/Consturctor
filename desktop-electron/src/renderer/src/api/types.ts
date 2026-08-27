@@ -158,6 +158,7 @@ export interface AgentRunHistoryItem {
   startedAt: string
   finishedAt: string
   summary: string
+  answer: string
 }
 
 export interface RegulationCreationMessage {

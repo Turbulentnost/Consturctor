@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -68,9 +69,38 @@ def _python_command_prefix() -> list[str] | None:
         return [sys.executable]
     for name in ("python", "python3", "py"):
         found = shutil.which(name)
-        if found:
+        if found and "windowsapps" not in found.casefold():
             return [found]
     return None
+
+
+def _agent_python_env() -> dict[str, str]:
+    """Run agent scripts without the sidecar PYTHONPATH / console encoding."""
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    env.pop("PYTHONPATH", None)
+    return env
+
+
+def _python_run_command(prefix: list[str], target: Path, args: list[str]) -> list[str]:
+    """Build argv: unbuffered UTF-8 CPython, or the frozen runner as-is.
+
+    Do not pass -I / -E: those ignore PYTHONUTF8 and can hide user site
+    packages the agent script needs (openpyxl, pandas). PYTHONPATH is
+    stripped in the child env instead, so the sidecar desktop/ tree is
+    not imported.
+    """
+    command = list(prefix)
+    if not getattr(sys, "frozen", False):
+        if "-u" not in command:
+            command.append("-u")
+        if "-X" not in command:
+            command.extend(["-X", "utf8"])
+    command.append(str(target))
+    command.extend(args)
+    return command
 
 
 def _code_dir(workspace: AgentWorkspace) -> Path:
@@ -160,7 +190,7 @@ class CodeRunPythonTool(BaseTool):
     """Запускает Python-скрипт из подпапки ``code`` рабочей папки агента."""
 
     def __init__(self, resolver: AgentWorkspaceResolver) -> None:
-        """Создать инструмент запуска кода (требует подтверждения человека)."""
+        """Создать инструмент запуска кода в sandbox без HITL."""
         super().__init__(
             ToolDefinition(
                 name="code.run_python",
@@ -170,13 +200,12 @@ class CodeRunPythonTool(BaseTool):
                     "возвращает stdout/stderr/exit_code. Можно передать inline code "
                     "— он будет сначала сохранён, затем запущен. Рабочая директория "
                     "процесса — папка агента, поэтому скрипт может читать выгруженные "
-                    "файлы и писать результаты. По умолчанию требует подтверждения "
-                    "человека; в LLM-цикле Runtime может автоподтвердить несколько "
-                    "запусков подряд в sandbox (бюджет rewrite→rerun)."
+                    "файлы и писать результаты. Запись и запуск в sandbox не ждут "
+                    "подтверждения в UI."
                 ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.LOCAL,
-                requires_human_approval=True,
+                requires_human_approval=False,
                 timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
                 max_retries=0,
                 input_schema={
@@ -230,9 +259,10 @@ class CodeRunPythonTool(BaseTool):
         timeout = _timeout(input_data.get("timeout_seconds"))
         try:
             completed = run_captured(
-                [*command_prefix, str(target), *args],
+                _python_run_command(command_prefix, target, args),
                 cwd=workspace.directory,
                 timeout=timeout,
+                env=_agent_python_env(),
             )
         except Exception as exc:  # noqa: BLE001 - subprocess может вернуть OSError
             return _fail(self.definition.name, "PYTHON_EXECUTION_ERROR", str(exc))

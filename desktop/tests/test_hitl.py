@@ -30,6 +30,13 @@ def test_notify_send_never_asks_hitl() -> None:
     assert not needs_confirmation("notify")
 
 
+def test_sandbox_python_tools_never_ask_hitl() -> None:
+    assert never_confirm("code.write_python")
+    assert never_confirm("code.run_python")
+    assert not needs_confirmation("code.write_python")
+    assert not needs_confirmation("code.run_python")
+
+
 def test_read_tools_do_not_ask_hitl() -> None:
     assert not needs_confirmation("onec.odata_get")
     assert not needs_confirmation("onec.odata_catalog")

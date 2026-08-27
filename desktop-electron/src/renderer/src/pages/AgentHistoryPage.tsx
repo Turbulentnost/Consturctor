@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
-import type { AgentRunHistoryItem } from '../api/types'
-import { AgentFeed, buildFeedItems, type FeedItem } from '../components/agentfeed'
+import type { AgentRunHistoryItem, WorkflowFileItem } from '../api/types'
+import { fileTypeIconSrc } from '../utils/fileTypeIcon'
+import { formatSize } from './filesGrouping'
 
 interface AgentHistoryPageProps {
   workflowId: string
@@ -28,7 +29,8 @@ const STATUS_LABELS: Record<string, string> = {
 export function AgentHistoryPage({ workflowId, title, onBack }: AgentHistoryPageProps): React.JSX.Element {
   const [runs, setRuns] = useState<AgentRunHistoryItem[]>([])
   const [selected, setSelected] = useState<string>('')
-  const [items, setItems] = useState<FeedItem[]>([])
+  const [answer, setAnswer] = useState('')
+  const [files, setFiles] = useState<WorkflowFileItem[]>([])
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
@@ -55,19 +57,29 @@ export function AgentHistoryPage({ workflowId, title, onBack }: AgentHistoryPage
 
   useEffect(() => {
     if (!selected) {
-      setItems([])
+      setAnswer('')
+      setFiles([])
       return
     }
     let alive = true
     setDetailLoading(true)
-    void api
-      .getAgentRunDetail(workflowId, selected)
-      .then((detail) => {
+    void Promise.all([
+      api.getAgentRunDetail(workflowId, selected),
+      api.listWorkflowFiles(workflowId, selected)
+    ])
+      .then(([detail, allFiles]) => {
         if (!alive) return
-        setItems(buildFeedItems(detail.events))
+        setAnswer((detail.item.answer || detail.item.summary || '').trim())
+        setFiles(
+          allFiles.filter(
+            (file) => file.source === 'agent' && (!file.runId || file.runId === selected)
+          )
+        )
       })
       .catch(() => {
-        if (alive) setItems([])
+        if (!alive) return
+        setAnswer('')
+        setFiles([])
       })
       .finally(() => {
         if (alive) setDetailLoading(false)
@@ -111,27 +123,53 @@ export function AgentHistoryPage({ workflowId, title, onBack }: AgentHistoryPage
               <div className="history-summary" style={{ fontSize: 12 }}>
                 {formatWhen(run.startedAt)}
               </div>
-              {run.summary && (
-                <div className="history-summary" style={{ marginTop: 4 }}>
-                  {run.summary.slice(0, 120)}
-                </div>
-              )}
             </button>
           ))}
         </div>
 
         <div className="agent-studio-main">
-          <AgentFeed
-            items={items}
-            status=""
-            running={detailLoading}
-            pendingQuestion={null}
-            pendingHitl={null}
-            emptyHint={detailLoading ? 'Загружаем ход выполнения…' : 'Выберите запуск, чтобы увидеть ход выполнения.'}
-            onAnswer={() => undefined}
-            onHitl={() => undefined}
-            onSkip={() => undefined}
-          />
+          {detailLoading ? (
+            <div className="wf-files-empty">Загружаем результат…</div>
+          ) : !selected ? (
+            <div className="wf-files-empty">Выберите запуск, чтобы увидеть результат.</div>
+          ) : (
+            <div className="history-result">
+              <section className="wf-result-card">
+                <div className="wf-result-title">Результат</div>
+                <p>{answer || 'Нет текста результата'}</p>
+              </section>
+              <section className="wf-file-section">
+                <h4>Файлы агента</h4>
+                {files.length === 0 ? (
+                  <div className="wf-files-empty">Агент не приложил файлы к этому запуску.</div>
+                ) : (
+                  <ul className="wf-files">
+                    {files.map((file) => (
+                      <li key={file.id || file.name}>
+                        <button
+                          className="wf-file-card history-file-btn"
+                          type="button"
+                          onClick={() => {
+                            if (file.downloadUrl) void api.download(file.downloadUrl, file.name)
+                          }}
+                        >
+                          <img className="files-type-icon" src={fileTypeIconSrc(file.name)} alt="" />
+                          <div className="wf-file-copy">
+                            <span className="wf-file-name" title={file.name}>
+                              {file.name}
+                            </span>
+                            {formatSize(file.sizeBytes) ? (
+                              <span className="wf-file-meta">{formatSize(file.sizeBytes)}</span>
+                            ) : null}
+                          </div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </div>
+          )}
         </div>
       </div>
     </div>

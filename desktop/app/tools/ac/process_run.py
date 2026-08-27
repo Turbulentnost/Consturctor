@@ -3,6 +3,10 @@
 Windows capture_output=True can block when the child fills the pipe buffer.
 This helper drains stdout/stderr on background threads and kills the process
 tree on timeout.
+
+The child must not inherit the parent stdin pipe: Electron sidecar talks JSON
+on stdin, and a script that reads stdin (or CPython waiting on the pipe) would
+sit until the tool timeout.
 """
 
 from __future__ import annotations
@@ -12,7 +16,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,24 +64,41 @@ def kill_process_tree(pid: int) -> None:
         return
 
 
+def _windows_run_kwargs() -> dict:
+    """Hide the console and detach from the parent stdin job on Windows."""
+    if sys.platform != "win32":
+        return {}
+    flags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) | int(
+        getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    )
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {"creationflags": flags, "startupinfo": startupinfo}
+
+
 def run_captured(
     command: Sequence[str],
     *,
     cwd: str | Path,
     timeout: int,
+    env: Mapping[str, str] | None = None,
 ) -> CapturedProcess:
     """Run command, drain pipes on threads, kill the tree on timeout."""
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []
     kwargs: dict = {
         "cwd": str(cwd),
+        "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        "encoding": "utf-8",
         "errors": "replace",
     }
-    if sys.platform == "win32":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    if env is not None:
+        kwargs["env"] = dict(env)
+    kwargs.update(_windows_run_kwargs())
     process = subprocess.Popen(list(command), **kwargs)
 
     def _drain(stream, bucket: list[str]) -> None:

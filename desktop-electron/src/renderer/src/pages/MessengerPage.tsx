@@ -72,6 +72,89 @@ function newClientId(): string {
   return crypto.randomUUID().replace(/-/g, '')
 }
 
+function mergeReceipt(current: string, incoming: string): string {
+  if (current === 'failed' && incoming === 'sending') return 'failed'
+  const order = ['sending', 'delivered', 'read']
+  const left = order.indexOf(current)
+  const right = order.indexOf(incoming)
+  if (right < 0) return current || incoming
+  if (left < 0) return incoming
+  return right >= left ? incoming : current
+}
+
+function ReceiptTicks({ status }: { status: string }): React.JSX.Element {
+  if (status === 'failed') {
+    return (
+      <span className="messenger-receipt failed" title="Не отправлено">
+        !
+      </span>
+    )
+  }
+  if (status === 'sending') {
+    return (
+      <span className="messenger-receipt sending" title="Отправляется">
+        <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden>
+          <circle cx="7" cy="7" r="5.15" fill="none" stroke="currentColor" strokeWidth="1.45" />
+          <path
+            d="M7 4.35 V7.15 L9.05 8.55"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.45"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
+    )
+  }
+  if (status === 'read') {
+    return (
+      <span className="messenger-receipt read" title="Прочитано">
+        <svg viewBox="0 0 22 14" width="16" height="11" aria-hidden>
+          <path
+            d="M1.4 7.2 5.9 11.45 9.35 7.75"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.85"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M7.45 7.2 11.95 11.45 20.55 2.5"
+            fill="none"
+            stroke="#d8efe6"
+            strokeWidth="3.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M7.45 7.2 11.95 11.45 20.55 2.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.85"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
+    )
+  }
+  return (
+    <span className="messenger-receipt delivered" title="Доставлено">
+      <svg viewBox="0 0 16 14" width="13" height="11" aria-hidden>
+        <path
+          d="M1.55 7.2 6.05 11.45 14.65 2.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.85"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </span>
+  )
+}
+
 export function MessengerPage({
   thread,
   me,
@@ -109,7 +192,7 @@ export function MessengerPage({
     void loadUserAvatar({ id: thread.peerId, avatarUrl: thread.avatarUrl }).then((url) => {
       if (alive) setAvatar(url)
     })
-    if (thread.id && thread.id !== 'support') {
+    if (thread.id && thread.id !== 'support' && !thread.id.startsWith('dm:')) {
       void api
         .listChatMessages(thread.id)
         .then((rows) => {
@@ -154,14 +237,38 @@ export function MessengerPage({
         setMessages((prev) => {
           if (prev.some((item) => item.id === incoming.id || (incoming.clientId && item.clientId === incoming.clientId))) {
             return prev.map((item) =>
-              item.clientId && item.clientId === incoming.clientId ? { ...incoming, agent: incoming.agent ?? item.agent } : item
+              item.id === incoming.id || (incoming.clientId && item.clientId === incoming.clientId)
+                ? {
+                    ...incoming,
+                    agent: incoming.agent ?? item.agent,
+                    attachments: incoming.attachments.length ? incoming.attachments : item.attachments,
+                    receipt: mergeReceipt(item.receipt, incoming.receipt || (incoming.mine ? 'delivered' : 'received'))
+                  }
+                : item
             )
           }
           return [...prev, incoming]
         })
+        if (!incoming.mine && eventThread && (eventThread === thread.id || thread.id === 'support')) {
+          void api.markChatRead(eventThread || thread.id)
+        }
         if (eventThread && thread.id === 'support') {
           onThreadChange({ ...thread, id: eventThread })
         }
+        return
+      }
+      if (kind === 'chat_receipt') {
+        const eventThread = String(payload.thread_id ?? '')
+        const readerId = String(payload.reader_id ?? '')
+        if (eventThread && eventThread !== thread.id && thread.id !== 'support') return
+        if (readerId && readerId === me.id) return
+        setMessages((prev) =>
+          prev.map((item) =>
+            item.mine && item.receipt !== 'failed' && item.receipt !== 'sending'
+              ? { ...item, receipt: 'read' }
+              : item
+          )
+        )
         return
       }
       if (kind === 'thread_opened') {
@@ -218,12 +325,12 @@ export function MessengerPage({
     if (!body && !pendingFiles.length && !agent) return
     setBusy(true)
     setError('')
+    const clientId = newClientId()
     try {
       const uploaded: ChatAttachment[] = []
       for (const path of pendingFiles) {
         uploaded.push(await api.uploadChatFile(path))
       }
-      const clientId = newClientId()
       const payloadText = agent ? encodeAgentMessage(agent, body) : body
       const optimistic: ChatMessage = {
         id: `local-${clientId}`,
@@ -250,9 +357,14 @@ export function MessengerPage({
         file_ids: uploaded.map((item) => item.id)
       })
       setMessages((prev) =>
-        prev.map((item) => (item.clientId === clientId ? { ...item, receipt: 'delivered' } : item))
+        prev.map((item) =>
+          item.clientId === clientId ? { ...item, receipt: mergeReceipt(item.receipt, 'delivered') } : item
+        )
       )
     } catch (err) {
+      setMessages((prev) =>
+        prev.map((item) => (item.clientId === clientId ? { ...item, receipt: 'failed' } : item))
+      )
       setError(err instanceof Error ? err.message : 'Не удалось отправить')
     } finally {
       setBusy(false)
@@ -368,7 +480,10 @@ export function MessengerPage({
                         <b>{file.filename}</b>
                       </button>
                     ))}
-                    <div className="messenger-bubble-time">{formatTime(message.createdAt)}</div>
+                    <div className="messenger-bubble-time">
+                      {formatTime(message.createdAt)}
+                      {message.mine && <ReceiptTicks status={message.receipt} />}
+                    </div>
                   </article>
                 </div>
               )

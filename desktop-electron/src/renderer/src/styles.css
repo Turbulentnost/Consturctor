@@ -237,12 +237,13 @@ input {
 .sidebar-peer {
   display: flex;
   align-items: center;
-  gap: 12px;
-  height: 44px;
+  gap: 10px;
+  min-height: 52px;
+  height: auto;
   width: 100%;
   border: none;
   background: transparent;
-  padding: 0 8px;
+  padding: 6px 8px;
   border-radius: 16px;
   color: var(--text-light);
   text-align: left;
@@ -264,7 +265,7 @@ input {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 .sidebar-peer-avatar {
   position: relative;
@@ -275,22 +276,12 @@ input {
   object-fit: cover;
   border-radius: 14px;
 }
-.sidebar-peer-unread {
-  position: absolute;
-  top: -4px;
-  right: -6px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  border-radius: 7px;
-  background: #ff8a80;
-  color: #3a1210;
-  font-size: 9px;
-  font-weight: 700;
+.sidebar-peer-meta {
+  flex: 1;
+  min-width: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  font-style: normal;
+  flex-direction: column;
+  gap: 2px;
 }
 .sidebar-peer-name {
   font-size: 13px;
@@ -299,12 +290,40 @@ input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.sidebar-peer-preview {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.25;
+  color: rgba(234, 247, 243, 0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-peer-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2f80ed;
+  box-shadow: 0 0 0 2px rgba(6, 72, 61, 0.35);
+  flex-shrink: 0;
+  margin-left: auto;
+  font-style: normal;
+}
 .sidebar.collapsed .sidebar-peer {
+  position: relative;
   justify-content: center;
   padding: 0;
+  min-height: 44px;
 }
+.sidebar.collapsed .sidebar-peer-meta,
 .sidebar.collapsed .sidebar-peer-name {
   display: none;
+}
+.sidebar.collapsed .sidebar-peer-dot {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  margin: 0;
 }
 .collapse-btn {
   position: absolute;
@@ -362,6 +381,21 @@ input {
   overflow: hidden;
   min-height: 0;
   height: 100%;
+}
+.content-inner:has(.wf-page) .app-page-header,
+.content-inner:has(.agent-studio) .app-page-header {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 48px;
+  margin: 0 0 8px;
+  flex-shrink: 0;
+}
+.content-inner:has(.wf-page) .user-menu,
+.content-inner:has(.agent-studio) .user-menu {
+  position: static;
+  top: auto;
+  right: auto;
 }
 .content:has(.files-page),
 .content:has(.wf-page) {
@@ -935,6 +969,28 @@ input {
 }
 .fio-popup.dark .fio-option {
   color: var(--text-light);
+}
+.fio-popup::-webkit-scrollbar {
+  width: 6px;
+}
+.fio-popup::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 4px 0;
+}
+.fio-popup::-webkit-scrollbar-thumb {
+  background: rgba(234, 247, 243, 0.28);
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+.fio-popup::-webkit-scrollbar-thumb:hover {
+  background: rgba(234, 247, 243, 0.48);
+}
+.fio-popup:not(.dark)::-webkit-scrollbar-thumb {
+  background: rgba(8, 116, 95, 0.28);
+}
+.fio-popup:not(.dark)::-webkit-scrollbar-thumb:hover {
+  background: rgba(8, 116, 95, 0.45);
 }
 .fio-popup.dark .fio-option.active {
   background: rgba(98, 224, 190, 0.18);
@@ -4612,6 +4668,30 @@ button.feed-tool-head:hover {
   font-size: 11px;
   color: #7b8883;
   text-align: right;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.messenger-receipt {
+  display: inline-flex;
+  align-items: center;
+  color: #08745f;
+  opacity: 0.7;
+  line-height: 0;
+}
+.messenger-receipt.read {
+  opacity: 1;
+}
+.messenger-receipt.sending {
+  opacity: 0.5;
+}
+.messenger-receipt.failed {
+  color: #c4483d;
+  opacity: 1;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
 }
 .messenger-agent-card,
 .messenger-file-card,
@@ -5810,6 +5890,20 @@ button.feed-tool-head:hover {
   color: var(--content-muted);
   text-align: center;
   padding: 20px 0;
+}
+.history-result {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 8px 4px 24px;
+}
+.history-file-btn {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+.history-file-btn:hover {
+  border-color: #08745f;
 }
 
 /* Tool card: error state */

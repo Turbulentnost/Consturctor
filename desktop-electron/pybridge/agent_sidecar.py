@@ -90,7 +90,9 @@ from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
 # We do NOT import that module because it pulls in PySide6/Qt at import time,
 # which is not needed (and not always available) for a headless sidecar.
 # Level-1 autonomy: read tools auto-run, write tools need confirmation.
-_NEVER_CONFIRM = frozenset({"notify.send", "notify"})
+_NEVER_CONFIRM = frozenset(
+    {"notify.send", "notify", "code.write_python", "code.run_python"}
+)
 _READ_EXACT = frozenset(
     {
         "web_search",
@@ -837,6 +839,18 @@ class ElectronBridge(CursorSdkBridge):
             ),
         }
 
+    def _after_tool_result(
+        self, tool: str, result: dict[str, Any], workflow_id: str
+    ) -> None:
+        _persist_run_outputs(
+            self._knowledge_api,
+            workflow_id or self._knowledge_workflow_id,
+            self._knowledge_cwd,
+            tool=tool,
+            result=result if isinstance(result, dict) else {},
+            run_id=self._knowledge_run_id,
+        )
+
 
 class HitlGate:
     """Correlates HITL/askQuestion prompts with Electron responses."""
@@ -1090,6 +1104,50 @@ def _upload_knowledge_files(
     except Exception as exc:  # noqa: BLE001
         log("knowledge upload failed: " + _ascii(repr(exc)))
         return False
+
+
+def _upload_run_outputs(
+    api: ApiClient,
+    workflow_id: str,
+    file_paths: list[str],
+    run_id: str = "",
+) -> bool:
+    """Upload documents the agent created so history and Files can show them."""
+    allowed = [str(path) for path in file_paths if Path(str(path)).is_file()]
+    if not (workflow_id.strip() and allowed):
+        return False
+    try:
+        api.register_workflow_run_files(workflow_id, (run_id or "").strip() or "local", allowed)
+        _emit_files_updated(workflow_id, run_id)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log("run output upload failed: " + _ascii(repr(exc)))
+        return False
+
+
+def _persist_run_outputs(
+    api: ApiClient | None,
+    workflow_id: str,
+    run_cwd: str,
+    tool: str = "",
+    result: dict[str, Any] | None = None,
+    run_id: str = "",
+) -> list[str]:
+    if api is None or not (workflow_id or "").strip():
+        return []
+    from app.tools.result_files import collect_workspace_output_files, extract_result_files
+
+    found: list[Path] = []
+    folded = (tool or "").strip()
+    if result is not None:
+        found.extend(extract_result_files(result, tool=folded, workflow_id=workflow_id))
+    if not found and not folded:
+        found.extend(collect_workspace_output_files(workflow_id))
+    paths = [str(path) for path in found if path.is_file()]
+    if not paths:
+        return []
+    _upload_run_outputs(api, workflow_id, paths, run_id=run_id)
+    return paths
 
 
 def _upload_run_attachments(
@@ -1662,9 +1720,22 @@ class Sidecar:
         if _is_meeting_workflow(record):
             _ensure_outlook_rule_in_brief(run_cwd)
         bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
+        # Trial run is still interactive: ask for a per-run sample if design
+        # skipped it, then for each declared run_input. Otherwise the model
+        # invents a substitute data source (for example another system).
+        self._ensure_run_input_sample_asked(active, workflow_id)
+        try:
+            record = self._api.get_workflow(workflow_id)
+        except ApiError:
+            pass
+        run_input_notes = self._ensure_run_inputs_provided(active, record, provided_count=0)
         events: list[dict[str, Any]] = []
+        prompt = build_demo_sdk_prompt(record, resume=bool(resume_agent_id))
+        for extra_note in run_input_notes:
+            if extra_note:
+                prompt = prompt + "\n\n" + extra_note
         result = bridge.run(
-            prompt=build_demo_sdk_prompt(record, resume=bool(resume_agent_id)),
+            prompt=prompt,
             workflow_id=workflow_id,
             cwd=run_cwd,
             resume_agent_id=resume_agent_id,
@@ -1728,12 +1799,13 @@ class Sidecar:
         if _is_meeting_workflow(workflow):
             _ensure_outlook_rule_in_brief(run_cwd)
             self._ensure_outlook_rule_in_playbook(workflow_id, record=workflow)
-        bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
+        output_run_id = str(run_ref or active.run_id).strip()
+        bridge.bind_knowledge(self._api, workflow_id, run_cwd, output_run_id)
         file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
         # Files attached to a run are inputs for THIS run only: store them as
         # temporary run_attachments, not in the permanent knowledge base.
         attachment_paths = _persist_run_attachment(
-            self._api, workflow_id, run_cwd, file_paths, run_id=active.run_id
+            self._api, workflow_id, run_cwd, file_paths, run_id=output_run_id
         )
         # Manual runs: hard-ask for each declared per-run input the user did not
         # already attach. Trigger/autonomous runs have no UI, so we skip them.
@@ -1799,6 +1871,15 @@ class Sidecar:
             workflow_id, run_ref, status=status, answer=answer,
             events=events, message=message,
         )
+        try:
+            _persist_run_outputs(
+                self._api,
+                workflow_id,
+                run_cwd,
+                run_id=str(run_ref or active.run_id).strip(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("run output sweep failed: " + repr(exc))
         try:
             _append_run_journal(
                 run_cwd,

@@ -130,17 +130,24 @@ def find_app_user_by_fio(fio: str) -> AppUser | None:
         return user
 
 
+_ALLOWED_AVATAR_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+
 def resolve_avatar_file(user_id: str) -> Path | None:
+    if not user_id:
+        return None
+    storage = settings.avatar_storage_dir
+    if storage.is_dir():
+        for path in storage.glob(f"{user_id}.*"):
+            if path.suffix.lower() in _ALLOWED_AVATAR_EXT and path.is_file():
+                return path
     user = get_app_user(user_id)
     if user is None or not user.avatar_path:
         return None
     path = Path(user.avatar_path)
     if not path.is_absolute():
-        path = settings.avatar_storage_dir / path
+        path = storage / path
     return path if path.is_file() else None
-
-
-_ALLOWED_AVATAR_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 
 class AvatarError(Exception):
