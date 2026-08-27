@@ -1,14 +1,20 @@
 import type { ReactNode } from 'react'
 
-const TABLE_ROW = /^\s*\|.+\|\s*$/
 const TABLE_SEP = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/
 const HEADING = /^(#{1,3})\s+(.+)$/
+const BOLD_HEAD = /^\*\*(.+?)\*\*$/
 const UL = /^[-*•]\s+(.+)$/
 const OL = /^(\d+)[.)]\s+(.+)$/
 const FENCE = /^```/
 
 function splitRow(line: string): string[] {
   return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim())
+}
+
+function isTableRow(line: string): boolean {
+  const trimmed = line.trim()
+  if (!trimmed || FENCE.test(trimmed) || TABLE_SEP.test(trimmed)) return false
+  return trimmed.includes('|') && splitRow(trimmed).length >= 2
 }
 
 function inline(text: string): ReactNode[] {
@@ -29,7 +35,10 @@ function inline(text: string): ReactNode[] {
 }
 
 function isTableStart(lines: string[], index: number): boolean {
-  return Boolean(lines[index + 1] && TABLE_ROW.test(lines[index]) && TABLE_SEP.test(lines[index + 1]))
+  if (!isTableRow(lines[index])) return false
+  const next = lines[index + 1] || ''
+  if (TABLE_SEP.test(next)) return true
+  return isTableRow(next)
 }
 
 export function MarkdownBody({ text }: { text: string }): React.JSX.Element {
@@ -61,8 +70,9 @@ export function MarkdownBody({ text }: { text: string }): React.JSX.Element {
     if (isTableStart(lines, i)) {
       const header = splitRow(lines[i])
       const rows: string[][] = []
-      i += 2
-      while (i < lines.length && TABLE_ROW.test(lines[i]) && !TABLE_SEP.test(lines[i])) {
+      i += 1
+      if (TABLE_SEP.test(lines[i] || '')) i += 1
+      while (i < lines.length && isTableRow(lines[i])) {
         rows.push(splitRow(lines[i]))
         i += 1
       }
@@ -97,9 +107,10 @@ export function MarkdownBody({ text }: { text: string }): React.JSX.Element {
       continue
     }
     const heading = HEADING.exec(stripped)
-    if (heading) {
-      const level = heading[1].length
-      const title = inline(heading[2])
+    const boldHead = !heading ? BOLD_HEAD.exec(stripped) : null
+    if (heading || boldHead) {
+      const level = heading ? heading[1].length : 3
+      const title = inline(heading ? heading[2] : boldHead![1])
       blocks.push(
         level === 1 ? (
           <h1 key={`h-${key}`} className="md-h md-h1">

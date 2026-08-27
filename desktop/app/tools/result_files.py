@@ -64,7 +64,12 @@ def _as_document(raw: object, *, workspace: Path | None = None) -> Path | None:
         try:
             path.relative_to(workspace.resolve())
         except ValueError:
-            return None
+            try:
+                from app.tools.ac.dispatch import workspaces_root
+
+                path.relative_to(workspaces_root().resolve())
+            except Exception:
+                return None
     if not path.is_file() or not is_document_path(path):
         return None
     return path
@@ -80,18 +85,18 @@ def workspace_for(workflow_id: str) -> Path | None:
     return AgentWorkspace(workspaces_root(), wid).directory
 
 
-def collect_workspace_output_files(workflow_id: str) -> list[Path]:
-    """Documents the agent wrote into the workspace, not inputs or tool dumps."""
-    root = workspace_for(workflow_id)
+def collect_output_files_from_dir(root: Path | None) -> list[Path]:
+    """Documents the agent wrote into a workspace, not inputs or tool dumps."""
     if root is None or not root.is_dir():
         return []
+    base = root.resolve()
     found: list[Path] = []
     seen: set[str] = set()
-    for path in root.rglob("*"):
+    for path in base.rglob("*"):
         if not path.is_file():
             continue
         try:
-            rel = path.relative_to(root)
+            rel = path.relative_to(base)
         except ValueError:
             continue
         if any(part.casefold() in _OUTPUT_SKIP_DIRS for part in rel.parts[:-1]):
@@ -108,6 +113,11 @@ def collect_workspace_output_files(workflow_id: str) -> list[Path]:
         seen.add(key)
         found.append(path.resolve())
     return found
+
+
+def collect_workspace_output_files(workflow_id: str) -> list[Path]:
+    """Documents the agent wrote into the workspace, not inputs or tool dumps."""
+    return collect_output_files_from_dir(workspace_for(workflow_id))
 
 
 def extract_result_files(

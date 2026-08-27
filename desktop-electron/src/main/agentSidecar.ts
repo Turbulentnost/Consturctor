@@ -30,6 +30,7 @@ export class AgentSidecar {
   private isReady = false
   private pending: AgentSidecarMessage[] = []
   private lastStart: AgentSidecarMessage | null = null
+  private readonly runMeta = new Map<string, { workflowId: string; kind: string }>()
 
   constructor(
     private readonly backendUrl: string,
@@ -175,16 +176,41 @@ export class AgentSidecar {
             console.log('[agent-sidecar]', mtype)
           }
         }
-        this.onEvent(message)
+        this.onEvent(this.stampRunMeta(message))
       }
       index = this.stdoutBuffer.indexOf('\n')
     }
+  }
+
+  private rememberRunMeta(command: AgentSidecarMessage): void {
+    const runId = String(command.id || '')
+    if (!runId) return
+    this.runMeta.set(runId, {
+      workflowId: String(command.workflowId || ''),
+      kind: String(command.type || '')
+    })
+  }
+
+  private stampRunMeta(message: AgentSidecarMessage): AgentSidecarMessage {
+    const runId = String(message.runId || message.id || '')
+    const meta = runId ? this.runMeta.get(runId) : undefined
+    if (!meta) return message
+    const next: AgentSidecarMessage = { ...message }
+    if (!next.workflowId && meta.workflowId) next.workflowId = meta.workflowId
+    if (!next.kind && meta.kind) {
+      next.kind = meta.kind === 'check_trigger' ? 'trigger' : meta.kind
+    }
+    if (next.type === 'result' || next.type === 'error') {
+      this.runMeta.delete(runId)
+    }
+    return next
   }
 
   send(command: AgentSidecarMessage): boolean {
     const type = String(command.type || '')
     if (isStartCommand(command)) {
       this.lastStart = command
+      this.rememberRunMeta(command)
     }
     if (type === 'cancel') {
       this.lastStart = null

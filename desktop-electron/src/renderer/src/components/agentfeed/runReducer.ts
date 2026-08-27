@@ -479,7 +479,8 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
         }
       }
     }
-    case 'result':
+    case 'result': {
+      const answer = String(event.answer || '').trim()
       return {
         state: {
           ...state,
@@ -487,7 +488,10 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
           status: '',
           pendingQuestion: null,
           pendingHitl: null,
-          activeRunId: null
+          activeRunId: null,
+          items: answer
+            ? [...state.items, { kind: 'result', id: nextId('res'), text: answer }]
+            : state.items
         },
         result: {
           kind: (event.kind as AgentResult['kind']) || 'run',
@@ -500,6 +504,7 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
           fired: event.fired
         }
       }
+    }
     case 'error': {
       const message = String(event.message || 'Ошибка агента')
       return {

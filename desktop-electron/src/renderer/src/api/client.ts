@@ -1439,8 +1439,18 @@ export class ApiClient {
         text: item.text != null ? String(item.text) : undefined,
         message: item.message != null ? String(item.message) : undefined,
         tool: item.tool != null ? String(item.tool) : undefined,
+        requestId:
+          item.requestId != null
+            ? String(item.requestId)
+            : item.request_id != null
+              ? String(item.request_id)
+              : undefined,
         arguments: (item.arguments as Record<string, unknown>) || undefined,
-        result: (item.result as Record<string, unknown>) || undefined
+        result: item.result,
+        ok: item.ok == null ? undefined : Boolean(item.ok),
+        skipped: item.skipped == null ? undefined : Boolean(item.skipped),
+        error: item.error != null ? String(item.error) : undefined,
+        status: item.status != null ? String(item.status) : undefined
       }))
     return {
       item: {
@@ -1455,6 +1465,22 @@ export class ApiClient {
       },
       events
     }
+  }
+
+  async finishLocalAgentRun(
+    workflowId: string,
+    runId: string,
+    opts: { status: string; answer?: string }
+  ): Promise<void> {
+    await this.request('POST', `/api/v1/workflows/${workflowId}/runs/${runId}/finish`, {
+      body: {
+        status: opts.status,
+        answer: opts.answer || '',
+        events: [],
+        message: ''
+      },
+      timeoutMs: 30_000
+    })
   }
 
   async streamWorkflow(

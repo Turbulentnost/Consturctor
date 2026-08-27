@@ -17,6 +17,7 @@ import { AgentStudioPage } from './pages/AgentStudioPage'
 import { RunBannerCarousel, type BannerEntry } from './components/RunBannerCarousel'
 import { useFormation } from './components/agentfeed'
 import { useRuns, deriveLatestOutput } from './store/runs'
+import { isInFlightRunStatus, isLiveRunState } from './store/liveRun'
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentKpiPreviewPage } from './pages/AgentKpiPreviewPage'
@@ -59,7 +60,7 @@ type View =
   | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean }
   | { kind: 'schedule'; workflowId: string; title: string }
   | { kind: 'kpi'; workflowId: string; title: string; draft: ScheduleDraft }
-  | { kind: 'history'; workflowId: string; title: string }
+  | { kind: 'history'; workflowId: string; title: string; runId?: string }
   | { kind: 'chat'; thread: ChatThread }
   | { kind: 'loading'; title: string; subtitle: string }
   | { kind: 'soon'; title: string; note: string }
@@ -205,6 +206,21 @@ export function App(): React.JSX.Element {
     })
     return () => unsubscribe?.()
   }, [])
+
+  useEffect(() => {
+    if (!user) return
+    void runs.hydrateLive()
+    const unsubscribe = window.api.onBoardUpdated?.(() => {
+      void runs.hydrateLive()
+    })
+    const timer = window.setInterval(() => {
+      void runs.hydrateLive()
+    }, 15000)
+    return () => {
+      unsubscribe?.()
+      window.clearInterval(timer)
+    }
+  }, [user?.id])
 
   // A clicked OS toast (incoming notification) opens the related agent.
   useEffect(() => {
@@ -437,11 +453,32 @@ export function App(): React.JSX.Element {
     } catch {
       /* fall back to a generic title */
     }
-    if (runId) {
-      setView({ kind: 'history', workflowId, title })
-    } else {
-      setView({ kind: 'agentrun', workflowId, title, autoStart })
+    const live = runs.entries[workflowId]
+    if (live && isLiveRunState(live.state)) {
+      setView({
+        kind: 'agentrun',
+        workflowId,
+        title: title || live.title,
+        autoStart: false
+      })
+      return
     }
+    if (runId) {
+      try {
+        const detail = await api.getAgentRunDetail(workflowId, runId)
+        if (isInFlightRunStatus(detail.item.status)) {
+          runs.noteRunning(workflowId, title, runId)
+          void runs.attachHistoryFeed(workflowId)
+          setView({ kind: 'agentrun', workflowId, title, autoStart: false })
+          return
+        }
+      } catch {
+        /* open history of this finished run */
+      }
+      setView({ kind: 'history', workflowId, title, runId })
+      return
+    }
+    setView({ kind: 'agentrun', workflowId, title, autoStart })
   }
 
   async function continueDraft(draftId: string): Promise<void> {
@@ -590,7 +627,7 @@ export function App(): React.JSX.Element {
           thread={view.thread}
           me={user!}
           onThreadChange={(thread) => setView({ kind: 'chat', thread })}
-          onOpenAgent={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
+          onOpenAgent={(workflowId) => void openAgentRun(workflowId, '')}
         />
       )
     }
@@ -758,7 +795,11 @@ export function App(): React.JSX.Element {
         <AgentHistoryPage
           workflowId={view.workflowId}
           title={view.title}
+          initialRunId={view.runId}
           onBack={() => setView({ kind: 'tab', key: 'agents' })}
+          onOpenLive={() =>
+            setView({ kind: 'agentrun', workflowId: view.workflowId, title: view.title })
+          }
         />
       )
     }
@@ -829,6 +870,7 @@ export function App(): React.JSX.Element {
       output: formation.latestOutput,
       running: formation.running,
       awaiting: formation.awaiting,
+      mode: 'formation',
       onOpen: () =>
         setView({ kind: 'studio', workflowId: formation.workflowId, title: formation.title })
     })
@@ -844,6 +886,7 @@ export function App(): React.JSX.Element {
       output: deriveLatestOutput(entry.state.items),
       running: entry.state.running,
       awaiting: Boolean(entry.state.pendingQuestion || entry.state.pendingHitl),
+      mode: 'run',
       onOpen: () =>
         setView({ kind: 'agentrun', workflowId: entry.workflowId, title: entry.title })
     })

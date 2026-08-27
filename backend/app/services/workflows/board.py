@@ -72,6 +72,8 @@ def _run_event_status(status: str) -> str:
         return "ok"
     if raw == "error":
         return "error"
+    if raw in {"canceled", "cancelled"}:
+        return "canceled"
     return "running"
 
 
@@ -135,10 +137,12 @@ def _pick_slot_run(candidates: list[AgentRun]) -> AgentRun:
     def rank(row: AgentRun) -> tuple[int, datetime]:
         raw = (row.status or "").strip().lower()
         if raw in {"started", "running"}:
-            tier = 3
+            tier = 4
         elif raw == "error":
-            tier = 2
+            tier = 3
         elif raw == "ok":
+            tier = 2
+        elif raw in {"canceled", "cancelled"}:
             tier = 1
         else:
             tier = 0

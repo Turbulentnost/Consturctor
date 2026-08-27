@@ -57,6 +57,8 @@ export const STATUS_STYLE: Record<string, StatusStyle> = {
   ok: { bg: '#F7FBF9', border: '#5B8F7E', label: 'Выполнен' },
   missed: { bg: '#F7F3EA', border: '#B0893A', label: 'Не запущен' },
   error: { bg: '#FDECEC', border: '#D64545', label: 'Ошибка' },
+  canceled: { bg: '#F3EEEA', border: '#8B6F64', label: 'Отменён' },
+  cancelled: { bg: '#F3EEEA', border: '#8B6F64', label: 'Отменён' },
   paused: { bg: '#F2F4F3', border: '#8A9692', label: 'Приостановлен' }
 }
 
@@ -240,6 +242,8 @@ export function groupSummary(events: CalendarEvent[]): { title: string; subtitle
   if (running) return { title, subtitle: `Выполняются ${running} из ${n}`, color: '#2F6FED' }
   if (events.every((item) => item.status === 'missed'))
     return { title, subtitle: 'Не запущены', color: '#B0893A' }
+  if (events.every((item) => item.status === 'canceled' || item.status === 'cancelled'))
+    return { title, subtitle: 'Отменены', color: '#8B6F64' }
   if (events.every((item) => item.status === 'scheduled'))
     return { title, subtitle: 'Запланировано', color: '#08745F' }
   if (sameAgent) return { title, subtitle: 'История', color: '#6B7773' }

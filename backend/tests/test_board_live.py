@@ -7,6 +7,7 @@ from app.db.base import Base
 from app.models.trigger import AgentTrigger
 from app.models.user import AppUser
 from app.models.workflow import Workflow
+from app.models.agent_run import AgentRun
 from app.services.agent_runs import finish_agent_run, start_agent_run
 from app.services.workflows.board_live import push_board_updated, relay_board_message
 from app.services.workflows.service import stop_auto_run
@@ -78,6 +79,19 @@ def test_start_and_finish_run_push_board(monkeypatch) -> None:
     assert "started" in statuses
     finish_agent_run(db, run_id=row.id, status="ok", answer="готово")
     assert "ok" in statuses
+
+
+def test_finish_agent_run_keeps_canceled_status(monkeypatch) -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    monkeypatch.setattr("app.services.workflows.board_live.hub.schedule_push", lambda *_a, **_k: True)
+    monkeypatch.setattr("app.services.workflows.board_live._publish_redis", lambda *_a, **_k: False)
+    row = start_agent_run(db, user_id=user_id, workflow_id=workflow_id, message="проверить")
+    finish_agent_run(db, run_id=row.id, status="cancelled", answer="Агент уже выполняется")
+    stored = db.get(AgentRun, row.id)
+    assert stored is not None
+    assert stored.status == "canceled"
+    assert "уже выполняется" in (stored.answer or "")
 
 
 def test_stop_auto_run_pushes_paused(monkeypatch) -> None:

@@ -17,6 +17,7 @@ from app.schemas.trigger import ScheduleDraftOut
 from app.schemas.workflow import (
     AgentKpiSchema,
     AgentRunCreate,
+    AgentRunCancelSlot,
     AgentRunEventsUpdate,
     AgentRunFinish,
     AgentRunOut,
@@ -36,6 +37,7 @@ from app.schemas.workflow import (
 )
 from app.services.agent_runs import (
     answer_from_result,
+    cancel_overlapping_slot,
     finish_agent_run,
     get_agent_run,
     list_agent_runs,
@@ -423,6 +425,32 @@ def read_agent_runs(
 ) -> list[AgentRunOut]:
     try:
         return list_agent_runs(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/runs/cancel-slot", response_model=AgentRunOut)
+def cancel_overlapping_run_slot(
+    workflow_id: str,
+    body: AgentRunCancelSlot,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AgentRunOut:
+    from app.services.triggers.service import TriggerError
+
+    try:
+        row = cancel_overlapping_slot(
+            db,
+            user_id=auth.user_id,
+            trigger_id=body.trigger_id,
+            answer=body.answer,
+        )
+        if row.workflow_id != workflow_id:
+            raise WorkflowError("Триггер принадлежит другому агенту", status_code=400)
+        return get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=row.id)
+    except TriggerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     except WorkflowError as exc:
         _raise(exc)
         raise

@@ -2273,6 +2273,23 @@ class ApiClient:
             timeout=30.0,
         )
 
+    def cancel_overlapping_slot(
+        self,
+        workflow_id: str,
+        trigger_id: str,
+        *,
+        answer: str = "",
+    ) -> AgentRunHistoryItem:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/runs/cancel-slot",
+            json={"trigger_id": trigger_id, "answer": answer or ""},
+            timeout=30.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Не удалось отменить слот расписания")
+        return _parse_agent_run(data, workflow_id)
+
     def finish_local_agent_run(
         self,
         workflow_id: str,

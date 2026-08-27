@@ -576,6 +576,55 @@ def test_paused_skips_active_stats_and_future_slots() -> None:
     assert trigger.enabled is True
 
 
+def test_board_shows_canceled_overlap_slot() -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    now = datetime.now(timezone.utc)
+    slot = now.replace(second=0, microsecond=0) - timedelta(minutes=16)
+    trigger.interval_seconds = 20 * 60
+    trigger.fire_at = slot + timedelta(minutes=20)
+    trigger.created_at = now - timedelta(hours=2)
+    db.add(
+        AgentRun(
+            id="run-canceled",
+            workflow_id=workflow_id,
+            user_id=user_id,
+            message="проверить",
+            status="canceled",
+            answer="Агент уже выполняется",
+            source="trigger",
+            trigger_id="tr-1",
+            trigger_kind="interval",
+            started_at=slot,
+            finished_at=now,
+        )
+    )
+    db.commit()
+    board = get_workflow_board(
+        db,
+        user_id=user_id,
+        window_from=(slot - timedelta(minutes=1)).isoformat(),
+        window_to=(slot + timedelta(hours=1)).isoformat(),
+    )
+    canceled = [
+        item
+        for item in board.events
+        if item.workflow_id == workflow_id
+        and abs(
+            (
+                datetime.fromisoformat(item.start_at.replace("Z", "+00:00")) - slot
+            ).total_seconds()
+        )
+        < 2
+    ]
+    assert len(canceled) == 1
+    assert canceled[0].status == "canceled"
+    assert canceled[0].run_id == "run-canceled"
+    assert all(item.status != "scheduled" or item.run_id != "run-canceled" for item in board.events)
+
+
 def test_stale_started_run_becomes_error_on_board() -> None:
     db = _session()
     user_id, workflow_id = _seed(db)

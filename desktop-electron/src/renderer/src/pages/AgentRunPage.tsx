@@ -120,6 +120,14 @@ export function AgentRunPage({
     void refreshFiles()
   }, [running, refreshFiles])
 
+  // Scheduled runs mark the agent "working" from the board before any sidecar
+  // events reach this page. Pull persisted steps so the feed is not empty.
+  useEffect(() => {
+    if (!running) return
+    if ((state?.items?.length ?? 0) > 0) return
+    void runs.attachHistoryFeed(workflowId)
+  }, [running, workflowId, state?.items?.length, runs])
+
   // The "Запустить" play button opens this page with autoStart, so the agent
   // starts immediately on its own playbook instead of waiting for a message.
   useEffect(() => {

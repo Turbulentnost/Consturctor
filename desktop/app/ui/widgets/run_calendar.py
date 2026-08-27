@@ -72,6 +72,8 @@ _STATUS_STYLE = {
     "ok": ("#F7FBF9", "#5B8F7E", "Выполнен"),
     "missed": ("#F7F3EA", "#B0893A", "Не запущен"),
     "error": ("#FDECEC", "#D64545", "Ошибка"),
+    "canceled": ("#F3EEEA", "#8B6F64", "Отменён"),
+    "cancelled": ("#F3EEEA", "#8B6F64", "Отменён"),
     "paused": ("#F2F4F3", "#8A9692", "Приостановлен"),
 }
 _SOURCE_LABEL = {
@@ -275,6 +277,8 @@ def group_summary(events: list[CalendarEvent]) -> tuple[str, str, str]:
         return title, f"Выполняются {running} из {n}", "#2F6FED"
     if all(item.status == "missed" for item in events):
         return title, "Не запущены", "#B0893A"
+    if all(item.status in {"canceled", "cancelled"} for item in events):
+        return title, "Отменены", "#8B6F64"
     if all(item.status == "scheduled" for item in events):
         return title, "Запланировано", "#08745F"
     if same_agent:
@@ -832,7 +836,7 @@ class RunCalendar(QFrame):
 
         legend = QHBoxLayout()
         legend.setSpacing(12)
-        for key in ("ok", "scheduled", "missed", "error", "paused"):
+        for key in ("ok", "scheduled", "missed", "error", "canceled", "paused"):
             _bg, border, label = _STATUS_STYLE[key]
             dot = QLabel("●  " + label)
             dot.setFont(app_font(11))
@@ -859,6 +863,8 @@ class RunCalendar(QFrame):
         self._agent_combo.addItem("Все агенты", "")
         self._status_combo.addItem("Все статусы", "")
         for key, meta in _STATUS_STYLE.items():
+            if key == "cancelled":
+                continue
             self._status_combo.addItem(meta[2], key)
         self._source_combo.addItem("Все типы", "")
         self._source_combo.addItem("По расписанию", "schedule")

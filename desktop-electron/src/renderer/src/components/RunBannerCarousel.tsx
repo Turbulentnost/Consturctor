@@ -7,6 +7,7 @@ export interface BannerEntry {
   output: string
   running: boolean
   awaiting: boolean
+  mode?: 'formation' | 'run'
   onOpen: () => void
 }
 
@@ -49,6 +50,7 @@ export function RunBannerCarousel({ entries }: { entries: BannerEntry[] }): Reac
         output={entry.output}
         running={entry.running}
         awaiting={entry.awaiting}
+        mode={entry.mode}
         onOpen={entry.onOpen}
       />
       {multi && (

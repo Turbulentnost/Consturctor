@@ -60,15 +60,41 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
+_CLOCK_IN_TEXT = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
+_MSK = timezone(timedelta(hours=3))
+
+
+def _clock_hint_from_message(message: str) -> tuple[int, int] | None:
+    matches = _CLOCK_IN_TEXT.findall(message or "")
+    if not matches:
+        return None
+    hour, minute = matches[-1]
+    return int(hour), int(minute)
+
+
+def _next_at_msk_clock(clock: tuple[int, int], now: datetime) -> datetime:
+    local_now = now.astimezone(_MSK)
+    hour, minute = clock
+    candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= local_now:
+        candidate = candidate + timedelta(days=1)
+    return candidate.astimezone(timezone.utc)
+
+
 def next_aligned_fire_at(
     fire_at: datetime | None,
     interval_seconds: int,
     *,
     now: datetime | None = None,
+    message: str = "",
 ) -> datetime:
     """Keep the original clock grid so a skipped 11:00 slot still exists as missed."""
     now = now or datetime.now(timezone.utc)
     interval = int(interval_seconds or 0)
+    if interval == 86400:
+        hinted = _clock_hint_from_message(message)
+        if hinted is not None:
+            return _next_at_msk_clock(hinted, now)
     origin = _as_utc(fire_at)
     if interval <= 0:
         return now
@@ -260,8 +286,6 @@ def due_commands(db: Session, *, user_id: str | None = None) -> list[AgentTrigge
     for trigger, workflow in db.execute(stmt).all():
         if workflow_is_inactive(workflow):
             continue
-        if workflow_has_started_run(db, workflow.id):
-            continue
         due.append(trigger)
     return due
 
@@ -335,7 +359,9 @@ def mark_fired(db: Session, *, user_id: str, trigger_id: str, evidence: str = ""
     if interval > 0:
         row.once = False
         row.enabled = True
-        row.fire_at = next_aligned_fire_at(row.fire_at, interval, now=now)
+        row.fire_at = next_aligned_fire_at(
+            row.fire_at, interval, now=now, message=row.message or ""
+        )
         row.cooldown_until = now + FIRE_COOLDOWN
     elif row.once:
         row.enabled = False
@@ -361,12 +387,15 @@ def mark_skipped(
     row.last_checked_at = now
     row.last_evidence = (evidence or "").strip()
     if retry_in_seconds is not None and retry_in_seconds > 0:
-        row.fire_at = now + timedelta(seconds=int(retry_in_seconds))
-        row.cooldown_until = now + timedelta(seconds=min(30, int(retry_in_seconds)))
+        # Keep the clock grid. Only delay the next claim so the calendar
+        # does not crawl (10:00 -> 11:04 -> 11:05) while the desktop reconnects.
+        row.cooldown_until = now + timedelta(seconds=int(retry_in_seconds))
     elif advance:
         interval = int(row.interval_seconds or 0)
         if interval > 0:
-            row.fire_at = next_aligned_fire_at(row.fire_at, interval, now=now)
+            row.fire_at = next_aligned_fire_at(
+                row.fire_at, interval, now=now, message=row.message or ""
+            )
             row.cooldown_until = now + FIRE_COOLDOWN
         else:
             row.cooldown_until = now + timedelta(minutes=30)

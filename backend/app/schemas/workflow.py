@@ -243,6 +243,11 @@ class AgentRunFinish(BaseModel):
     message: str = ""
 
 
+class AgentRunCancelSlot(BaseModel):
+    trigger_id: str
+    answer: str = ""
+
+
 class LocalDemoFinish(BaseModel):
     answer: str = ""
     events: list[dict[str, Any]] = Field(default_factory=list)

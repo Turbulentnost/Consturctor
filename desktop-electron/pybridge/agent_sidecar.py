@@ -143,6 +143,23 @@ def needs_confirmation(name: str) -> bool:
 _STDOUT_LOCK = threading.Lock()
 
 
+def _stamp_run_event(
+    message: dict[str, Any],
+    *,
+    workflow_id: str = "",
+    kind: str = "",
+) -> dict[str, Any]:
+    """Copy workflowId/kind onto a sidecar event so the UI can attach a live feed."""
+    out = dict(message)
+    wf = (workflow_id or "").strip()
+    if wf and not out.get("workflowId"):
+        out["workflowId"] = wf
+    folded = (kind or "").strip()
+    if folded == "run" and not out.get("kind"):
+        out["kind"] = "run"
+    return out
+
+
 def emit(message: dict[str, Any]) -> None:
     """Write one JSON line to stdout for the Electron main process."""
     line = json.dumps(message, ensure_ascii=False, default=_json_default)
@@ -857,11 +874,19 @@ class HitlGate:
 
     def __init__(self, run_id: str) -> None:
         self._run_id = run_id
+        self._workflow_id = ""
+        self._kind = ""
         self._hitl: dict[str, queue.Queue[bool]] = {}
         self._answers: dict[str, queue.Queue[dict[str, Any]]] = {}
         self._needs_file: dict[str, bool] = {}
         self.qa_history: list[dict[str, str]] = []
         self._lock = threading.Lock()
+
+    def bind(self, *, workflow_id: str = "", kind: str = "") -> None:
+        if workflow_id:
+            self._workflow_id = workflow_id
+        if kind:
+            self._kind = kind
 
     def request(self, tool: str, args: dict[str, Any]) -> bool:
         request_id = uuid.uuid4().hex
@@ -869,13 +894,17 @@ class HitlGate:
         with self._lock:
             self._hitl[request_id] = box
         emit(
-            {
-                "type": "hitl",
-                "runId": self._run_id,
-                "requestId": request_id,
-                "tool": tool,
-                "arguments": _safe_args(args),
-            }
+            _stamp_run_event(
+                {
+                    "type": "hitl",
+                    "runId": self._run_id,
+                    "requestId": request_id,
+                    "tool": tool,
+                    "arguments": _safe_args(args),
+                },
+                workflow_id=self._workflow_id,
+                kind=self._kind,
+            )
         )
         try:
             return box.get()
@@ -907,15 +936,19 @@ class HitlGate:
             self._answers[request_id] = box
             self._needs_file[request_id] = needs_file
         emit(
-            {
-                "type": "question",
-                "runId": self._run_id,
-                "requestId": request_id,
-                "question": question,
-                "options": options,
-                "needsFile": needs_file,
-                "accept": accept,
-            }
+            _stamp_run_event(
+                {
+                    "type": "question",
+                    "runId": self._run_id,
+                    "requestId": request_id,
+                    "question": question,
+                    "options": options,
+                    "needsFile": needs_file,
+                    "accept": accept,
+                },
+                workflow_id=self._workflow_id,
+                kind=self._kind,
+            )
         )
         reply: dict[str, Any] = {}
         try:
@@ -1135,14 +1168,27 @@ def _persist_run_outputs(
 ) -> list[str]:
     if api is None or not (workflow_id or "").strip():
         return []
-    from app.tools.result_files import collect_workspace_output_files, extract_result_files
+    from app.tools.result_files import (
+        collect_output_files_from_dir,
+        collect_workspace_output_files,
+        extract_result_files,
+    )
 
     found: list[Path] = []
     folded = (tool or "").strip()
     if result is not None:
         found.extend(extract_result_files(result, tool=folded, workflow_id=workflow_id))
-    if not found and not folded:
+    should_sweep = not folded
+    if (
+        not found
+        and isinstance(result, dict)
+        and any(result.get(key) for key in ("file", "path", "filename", "result_file", "files"))
+    ):
+        should_sweep = True
+    if should_sweep:
         found.extend(collect_workspace_output_files(workflow_id))
+        cwd = Path(run_cwd) if run_cwd else None
+        found.extend(collect_output_files_from_dir(cwd))
     paths = [str(path) for path in found if path.is_file()]
     if not paths:
         return []
@@ -1464,6 +1510,23 @@ def _journal_tools(events: list[dict[str, Any]]) -> list[str]:
     return tools
 
 
+def _is_trigger_command(command: dict[str, Any]) -> bool:
+    source = str(command.get("source") or "").strip().lower()
+    if source == "trigger":
+        return True
+    return bool(str(command.get("triggerId") or command.get("trigger_id") or "").strip())
+
+
+def _sdk_run_alive(active: "ActiveRun") -> bool:
+    thread = active.thread
+    if thread is None or not thread.is_alive():
+        return False
+    process = getattr(active.bridge, "_process", None)
+    if process is not None and process.poll() is not None:
+        return False
+    return True
+
+
 class Sidecar:
     def __init__(self) -> None:
         self._api = ApiClient()
@@ -1519,37 +1582,79 @@ class Sidecar:
     def start(self, kind: str, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or uuid.uuid4().hex)
         dedup_key = self._dedup_key(kind, command)
+        overlap_run_id = ""
+        skip_run_id = ""
         with self._lock:
             if dedup_key:
-                for existing in self._active.values():
-                    if existing.dedup_key == dedup_key:
+                for existing in list(self._active.values()):
+                    if existing.dedup_key != dedup_key:
+                        continue
+                    if _is_trigger_command(command) and _sdk_run_alive(existing):
                         log(
                             "skip duplicate run: "
                             + _ascii(f"{dedup_key} (active run {existing.run_id})")
                         )
-                        emit(
-                            {
-                                "type": "event",
-                                "runId": existing.run_id,
-                                "payload": {
-                                    "type": "status",
-                                    "text": "Продолжаю текущий запуск агента.",
-                                },
-                            }
+                        overlap_run_id = existing.run_id
+                        break
+                    if _is_trigger_command(command) and not _sdk_run_alive(existing):
+                        log(
+                            "replace dead run: "
+                            + _ascii(f"{dedup_key} (stale run {existing.run_id})")
                         )
-                        return
-            gate = HitlGate(run_id)
-            stop = threading.Event()
-            bridge = ElectronBridge(gate)
-            active = ActiveRun(run_id=run_id, gate=gate, stop=stop, bridge=bridge)
-            active.dedup_key = dedup_key
-            self._active[run_id] = active
+                        self._active.pop(existing.run_id, None)
+                        break
+                    log(
+                        "skip duplicate run: "
+                        + _ascii(f"{dedup_key} (active run {existing.run_id})")
+                    )
+                    skip_run_id = existing.run_id
+                    break
+            if not overlap_run_id and not skip_run_id:
+                gate = HitlGate(run_id)
+                stop = threading.Event()
+                bridge = ElectronBridge(gate)
+                active = ActiveRun(run_id=run_id, gate=gate, stop=stop, bridge=bridge)
+                active.dedup_key = dedup_key
+                active.kind = kind
+                active.workflow_id = str(command.get("workflowId") or "").strip()
+                if active.workflow_id:
+                    gate.bind(workflow_id=active.workflow_id, kind=kind)
+                self._active[run_id] = active
+        if overlap_run_id:
+            self._cancel_overlap_slot(command)
+            emit(
+                {
+                    "type": "event",
+                    "runId": overlap_run_id,
+                    "payload": {
+                        "type": "status",
+                        "text": "Продолжаю текущий запуск агента.",
+                    },
+                }
+            )
+            return
+        if skip_run_id:
+            emit(
+                {
+                    "type": "event",
+                    "runId": skip_run_id,
+                    "payload": {
+                        "type": "status",
+                        "text": "Продолжаю текущий запуск агента.",
+                    },
+                }
+            )
+            return
         emit(
-            {
-                "type": "event",
-                "runId": run_id,
-                "payload": {"type": "status", "text": f"Запускаю агента ({kind})."},
-            }
+            _stamp_run_event(
+                {
+                    "type": "event",
+                    "runId": run_id,
+                    "payload": {"type": "status", "text": f"Запускаю агента ({kind})."},
+                },
+                workflow_id=str(command.get("workflowId") or ""),
+                kind=kind,
+            )
         )
         worker = threading.Thread(
             target=self._run_safe,
@@ -1574,6 +1679,7 @@ class Sidecar:
             else:
                 emit({"type": "error", "runId": active.run_id, "message": f"unknown run kind: {kind}"})
         except CursorSdkUnavailable as exc:
+            self._finish_active_history(active, "Cursor SDK не отвечает")
             emit(
                 {
                     "type": "error",
@@ -1583,8 +1689,10 @@ class Sidecar:
                 }
             )
         except ApiError as exc:
+            self._finish_active_history(active, "Cursor SDK не отвечает")
             emit({"type": "error", "runId": active.run_id, "message": _ascii(exc.message)})
         except Exception as exc:  # noqa: BLE001
+            self._finish_active_history(active, "Cursor SDK не отвечает")
             log("run failed: " + repr(exc))
             log(traceback.format_exc())
             emit({"type": "error", "runId": active.run_id, "message": _ascii(str(exc))})
@@ -1595,7 +1703,10 @@ class Sidecar:
     def _forward_events(self, active: ActiveRun, events: list[dict[str, Any]]):
         """Build an on_event callback that streams raw runner events."""
 
+        last_flush = 0
+
         def on_event(payload: dict[str, Any]) -> None:
+            nonlocal last_flush
             if not isinstance(payload, dict):
                 return
             event_type = str(payload.get("type") or "")
@@ -1604,7 +1715,28 @@ class Sidecar:
             # Interactive question/tool_request are handled via HITL gate.
             if event_type in {"question", "tool_request"}:
                 return
-            emit({"type": "event", "runId": active.run_id, "payload": payload})
+            emit(
+                _stamp_run_event(
+                    {"type": "event", "runId": active.run_id, "payload": payload},
+                    workflow_id=active.workflow_id,
+                    kind=active.kind,
+                )
+            )
+            run_ref = (active.history_run_id or "").strip()
+            if (
+                run_ref
+                and active.workflow_id
+                and len(events) - last_flush >= 3
+            ):
+                last_flush = len(events)
+                try:
+                    self._api.update_local_agent_run_events(
+                        active.workflow_id,
+                        run_ref,
+                        events,
+                    )
+                except ApiError:
+                    pass
 
         return on_event
 
@@ -1770,6 +1902,9 @@ class Sidecar:
         workflow_id = str(command.get("workflowId") or "").strip()
         if not workflow_id:
             raise ValueError("run requires workflowId")
+        active.workflow_id = workflow_id
+        active.kind = "run"
+        active.gate.bind(workflow_id=workflow_id, kind="run")
         message = str(command.get("message") or "").strip()
         source = str(command.get("source") or "chat").strip() or "chat"
         # Trigger/scheduled runs are headless: there is no UI to approve writes,
@@ -1783,6 +1918,7 @@ class Sidecar:
         workflow = self._api.get_workflow(workflow_id)
         if not resume_agent_id:
             resume_agent_id = str((workflow.local_run or {}).get("sdk_agent_id") or "").strip()
+        self._fail_unbacked_started(workflow_id, except_run_id=active.run_id)
         run_record = self._api.start_local_agent_run(
             workflow_id,
             message=message,
@@ -1791,7 +1927,18 @@ class Sidecar:
             evidence=evidence,
         )
         run_ref = getattr(run_record, "id", "") or getattr(run_record, "run_id", "")
-        emit({"type": "event", "runId": active.run_id, "payload": {"type": "run", "run_id": run_ref}})
+        active.history_run_id = str(run_ref or "")
+        emit(
+            _stamp_run_event(
+                {
+                    "type": "event",
+                    "runId": active.run_id,
+                    "payload": {"type": "run", "run_id": run_ref},
+                },
+                workflow_id=workflow_id,
+                kind="run",
+            )
+        )
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
         active.workflow_id = workflow_id
@@ -1852,6 +1999,7 @@ class Sidecar:
                     workflow_id, run_ref, status="error", answer=answer,
                     events=events, message=message,
                 )
+                active.history_finished = True
             except ApiError:
                 pass
             try:
@@ -1871,6 +2019,7 @@ class Sidecar:
             workflow_id, run_ref, status=status, answer=answer,
             events=events, message=message,
         )
+        active.history_finished = True
         try:
             _persist_run_outputs(
                 self._api,
@@ -1918,6 +2067,9 @@ class Sidecar:
         workflow_id = str(
             command.get("workflowId") or check.get("workflow_id") or ""
         ).strip()
+        if workflow_id:
+            active.workflow_id = workflow_id
+            active.gate.bind(workflow_id=workflow_id)
         evidence = str(check.get("changed") or check.get("evidence") or "")
         emit(
             {
@@ -1955,6 +2107,69 @@ class Sidecar:
             },
             active,
         )
+
+    def _cancel_overlap_slot(self, command: dict[str, Any]) -> None:
+        workflow_id = str(command.get("workflowId") or "").strip()
+        trigger_id = str(command.get("triggerId") or command.get("trigger_id") or "").strip()
+        if not workflow_id or not trigger_id:
+            return
+        try:
+            self._api.cancel_overlapping_slot(
+                workflow_id,
+                trigger_id,
+                answer="Агент уже выполняется",
+            )
+        except ApiError as exc:
+            log("overlap cancel failed: " + _ascii(exc.message))
+
+    def _has_live_workflow(self, workflow_id: str, except_run_id: str = "") -> bool:
+        wid = (workflow_id or "").strip()
+        skip = (except_run_id or "").strip()
+        if not wid:
+            return False
+        with self._lock:
+            for active in self._active.values():
+                if active.run_id == skip:
+                    continue
+                if active.workflow_id != wid:
+                    continue
+                if _sdk_run_alive(active):
+                    return True
+        return False
+
+    def _fail_unbacked_started(self, workflow_id: str, *, except_run_id: str = "") -> None:
+        if self._has_live_workflow(workflow_id, except_run_id):
+            return
+        try:
+            items = self._api.list_agent_runs(workflow_id)
+        except ApiError:
+            return
+        for item in items:
+            if (item.status or "").strip().lower() != "started":
+                continue
+            try:
+                self._api.finish_local_agent_run(
+                    workflow_id,
+                    item.id,
+                    status="error",
+                    answer="Cursor SDK не отвечает",
+                )
+            except ApiError:
+                continue
+
+    def _finish_active_history(self, active: ActiveRun, answer: str) -> None:
+        if active.history_finished or not active.history_run_id or not active.workflow_id:
+            return
+        try:
+            self._api.finish_local_agent_run(
+                active.workflow_id,
+                active.history_run_id,
+                status="error",
+                answer=answer,
+            )
+            active.history_finished = True
+        except ApiError:
+            return
 
     def _store_agent_id(self, workflow_id: str, agent_id: str) -> None:
         if not agent_id:
@@ -2202,6 +2417,17 @@ class Sidecar:
             if not run_id or active.run_id == run_id:
                 active.stop.set()
 
+    def shutdown(self) -> None:
+        with self._lock:
+            actives = list(self._active.values())
+            self._active.clear()
+        workflows = {active.workflow_id for active in actives if active.workflow_id}
+        for active in actives:
+            active.stop.set()
+            self._finish_active_history(active, "Cursor SDK не отвечает")
+        for workflow_id in workflows:
+            self._fail_unbacked_started(workflow_id)
+
 
 class ActiveRun:
     def __init__(
@@ -2218,7 +2444,10 @@ class ActiveRun:
         self.thread: threading.Thread | None = None
         self.run_cwd: str = ""
         self.workflow_id: str = ""
+        self.kind: str = ""
         self.dedup_key: str = ""
+        self.history_run_id: str = ""
+        self.history_finished: bool = False
 
 
 def _ascii(text: str) -> str:
@@ -2299,6 +2528,7 @@ def main() -> None:
             elif ctype == "cancel":
                 sidecar.cancel(command)
             elif ctype == "shutdown":
+                sidecar.shutdown()
                 break
             else:
                 log("unknown command type: " + _ascii(ctype))

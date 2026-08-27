@@ -10,6 +10,35 @@ from app.tools.result_files import (
 )
 
 
+def test_as_document_accepts_path_under_workspaces_root(tmp_path: Path, monkeypatch) -> None:
+    from app.tools.result_files import extract_result_files
+
+    root = tmp_path / "agent_workspaces"
+    other = root / "other-wf"
+    other.mkdir(parents=True)
+    report = other / "report.md"
+    report.write_text("ok", encoding="utf-8")
+    monkeypatch.setattr("app.tools.result_files.workspace_for", lambda _wid: tmp_path / "missing")
+    monkeypatch.setattr("app.tools.ac.dispatch.workspaces_root", lambda: root)
+    files = extract_result_files(
+        {"file": str(report), "path": str(report)},
+        tool="report.export_document",
+        workflow_id="wf-1",
+    )
+    assert files == [report.resolve()]
+
+
+def test_collect_output_files_from_dir_picks_root_markdown(tmp_path: Path) -> None:
+    from app.tools.result_files import collect_output_files_from_dir
+
+    (tmp_path / "materials").mkdir()
+    (tmp_path / "materials" / "input.xlsx").write_bytes(b"xlsx")
+    report = tmp_path / "plan.md"
+    report.write_text("ok", encoding="utf-8")
+    names = {path.name for path in collect_output_files_from_dir(tmp_path)}
+    assert names == {"plan.md"}
+
+
 def test_collect_workspace_outputs_skips_inputs(tmp_path: Path, monkeypatch) -> None:
     from app.tools.result_files import collect_workspace_output_files
 

@@ -13,6 +13,7 @@ if str(PYBRIDGE) not in sys.path:
 
 from agent_sidecar import (  # noqa: E402
     _persist_run_outputs,
+    _stamp_run_event,
     needs_confirmation,
     OUTLOOK_MEETING_RULE,
     OUTLOOK_SERIES_MARKER,
@@ -340,6 +341,27 @@ def test_run_inputs_from_answer_parses_attachment_note() -> None:
     assert specs[0]["accept"] == ".xlsx"
 
 
+def test_stamp_run_event_adds_workflow_and_run_kind() -> None:
+    stamped = _stamp_run_event(
+        {"type": "event", "runId": "run-1", "payload": {"type": "run", "run_id": "abc"}},
+        workflow_id="wf-meet",
+        kind="run",
+    )
+    assert stamped["workflowId"] == "wf-meet"
+    assert stamped["kind"] == "run"
+    assert stamped["payload"]["run_id"] == "abc"
+
+
+def test_stamp_run_event_does_not_override_existing() -> None:
+    stamped = _stamp_run_event(
+        {"type": "result", "kind": "run", "workflowId": "kept"},
+        workflow_id="other",
+        kind="run",
+    )
+    assert stamped["workflowId"] == "kept"
+    assert stamped["kind"] == "run"
+
+
 def test_sandbox_python_tools_skip_sidecar_hitl() -> None:
     assert needs_confirmation("code.write_python") is False
     assert needs_confirmation("code.run_python") is False
@@ -371,6 +393,21 @@ def test_persist_run_outputs_uploads_created_document(tmp_path: Path, monkeypatc
         str(tmp_path),
         tool="report.export_document",
         result={"path": str(report), "file": str(report), "filename": report.name},
+        run_id="run-1",
+    )
+    assert uploaded == [str(report.resolve())]
+    assert api.run_outputs == [("wf-meet", "run-1", [str(report.resolve())])]
+
+
+def test_persist_run_outputs_sweeps_cwd_at_end(tmp_path: Path, monkeypatch) -> None:
+    report = tmp_path / "plan.md"
+    report.write_text("ok", encoding="utf-8")
+    monkeypatch.setattr("app.tools.result_files.workspace_for", lambda _wid: tmp_path / "missing")
+    api = _Api(tmp_path)
+    uploaded = _persist_run_outputs(
+        api,
+        "wf-meet",
+        str(tmp_path),
         run_id="run-1",
     )
     assert uploaded == [str(report.resolve())]

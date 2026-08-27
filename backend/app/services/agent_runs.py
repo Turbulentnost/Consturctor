@@ -9,6 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 STALE_STARTED = timedelta(minutes=25)
+OVERLAP_CANCEL_ANSWER = "Агент уже выполняется"
+SDK_DEAD_ANSWER = "Cursor SDK не отвечает"
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,105 @@ def fail_stale_started_runs(db: Session, *, user_id: str) -> int:
     return len(rows)
 
 
+def _normalize_run_status(status: str) -> str:
+    raw = (status or "").strip().lower()
+    if raw == "ok":
+        return "ok"
+    if raw in {"canceled", "cancelled"}:
+        return "canceled"
+    return "error"
+
+
+def list_started_runs(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRun]:
+    wid = (workflow_id or "").strip()
+    if not wid:
+        return []
+    return list(
+        db.execute(
+            select(AgentRun).where(
+                AgentRun.workflow_id == wid,
+                AgentRun.user_id == user_id,
+                AgentRun.status == "started",
+            )
+        ).scalars()
+    )
+
+
+def cancel_overlapping_slot(
+    db: Session,
+    *,
+    user_id: str,
+    trigger_id: str,
+    answer: str = "",
+) -> AgentRun:
+    """Record a canceled schedule slot and advance the trigger so it does not fire late."""
+    from app.services.triggers.service import (
+        FIRE_COOLDOWN,
+        _as_utc,
+        _notify_board,
+        get_trigger,
+        mark_skipped,
+    )
+
+    trigger = get_trigger(db, user_id=user_id, trigger_id=trigger_id)
+    slot = _as_utc(trigger.fire_at) or datetime.now(timezone.utc)
+    note = (answer or "").strip() or OVERLAP_CANCEL_ANSWER
+    existing = list(
+        db.execute(
+            select(AgentRun).where(
+                AgentRun.workflow_id == trigger.workflow_id,
+                AgentRun.user_id == user_id,
+                AgentRun.trigger_id == trigger.id,
+                AgentRun.status == "canceled",
+            )
+        ).scalars()
+    )
+    for row in existing:
+        started = row.started_at
+        if started is None:
+            continue
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if abs((started - slot).total_seconds()) <= 120:
+            return row
+    kind, reason = describe_trigger_reason(trigger, evidence=note)
+    row = AgentRun(
+        id=str(uuid.uuid4()),
+        workflow_id=trigger.workflow_id,
+        user_id=user_id,
+        message=(trigger.message or "").strip(),
+        status="canceled",
+        answer=note[:4000],
+        source="trigger",
+        trigger_id=trigger.id,
+        trigger_kind=kind,
+        trigger_reason=reason[:2000],
+        started_at=slot,
+        finished_at=datetime.now(timezone.utc),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    interval = int(trigger.interval_seconds or 0)
+    if interval > 0:
+        mark_skipped(db, user_id=user_id, trigger_id=trigger.id, evidence=note, advance=True)
+    elif trigger.once:
+        trigger.enabled = False
+        trigger.last_checked_at = datetime.now(timezone.utc)
+        trigger.last_evidence = note
+        db.add(trigger)
+        db.commit()
+        _notify_board(db, user_id=user_id, workflow_id=trigger.workflow_id, reason="canceled")
+    else:
+        trigger.cooldown_until = datetime.now(timezone.utc) + FIRE_COOLDOWN
+        trigger.last_checked_at = datetime.now(timezone.utc)
+        trigger.last_evidence = note
+        db.add(trigger)
+        db.commit()
+        _notify_board(db, user_id=user_id, workflow_id=trigger.workflow_id, reason="canceled")
+    return row
+
+
 def finish_agent_run(
     db: Session,
     *,
@@ -104,10 +205,14 @@ def finish_agent_run(
     row = db.get(AgentRun, run_id)
     if row is None:
         return
-    row.status = "ok" if status == "ok" else "error"
+    row.status = _normalize_run_status(status)
     row.answer = (answer or "").strip()[:4000]
     row.finished_at = datetime.now(timezone.utc)
-    stored = slim_run_events(events or [])
+    incoming = slim_run_events(events or [])
+    if incoming:
+        stored = incoming
+    else:
+        stored = slim_run_events(row.events_json if isinstance(row.events_json, list) else [])
     if message.strip() and not any(str(item.get("type") or "") == "user_message" for item in stored):
         stored.insert(0, {"type": "user_message", "text": message.strip()[:8000]})
     row.events_json = stored

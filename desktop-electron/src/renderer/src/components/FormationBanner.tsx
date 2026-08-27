@@ -5,6 +5,7 @@ interface FormationBannerProps {
   output: string
   running: boolean
   awaiting: boolean
+  mode?: 'formation' | 'run'
   onOpen: () => void
 }
 
@@ -22,13 +23,16 @@ export function FormationBanner({
   output,
   running,
   awaiting,
+  mode = 'formation',
   onOpen
 }: FormationBannerProps): React.JSX.Element {
   const preview = plainPreview(output)
   const statusLabel = awaiting
     ? 'Ждёт ваш ответ'
     : running
-      ? 'Формируется'
+      ? mode === 'run'
+        ? 'Выполняется'
+        : 'Формируется'
       : 'В работе'
   return (
     <div className="formation-banner">
@@ -39,7 +43,7 @@ export function FormationBanner({
           <span className="formation-banner-status">{statusLabel}</span>
         </div>
         <div className="formation-banner-text">
-          {preview || 'Агент формируется…'}
+          {preview || (mode === 'run' ? 'Агент выполняется…' : 'Агент формируется…')}
         </div>
       </div>
       <button className="formation-banner-open" onClick={onOpen}>

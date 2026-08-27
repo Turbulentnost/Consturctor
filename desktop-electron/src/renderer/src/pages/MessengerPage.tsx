@@ -181,7 +181,7 @@ export function MessengerPage({
     node.style.height = '0px'
     node.style.overflowY = 'hidden'
     const content = node.scrollHeight
-    node.style.height = `${Math.min(Math.max(content, 42), composerMaxPx)}px`
+    node.style.height = `${Math.min(Math.max(content, 44), composerMaxPx)}px`
     node.style.overflowY = content > composerMaxPx ? 'auto' : 'hidden'
   }
 
@@ -502,28 +502,66 @@ export function MessengerPage({
         )}
 
         <div className="messenger-composer">
-          <button type="button" className="messenger-icon-btn" title="Файл" onClick={() => void pickFiles()}>
-            +
-          </button>
-          <button type="button" className="messenger-icon-btn" title="Агент" onClick={() => void openAgentPicker()}>
-            А
-          </button>
-          <textarea
-            ref={composerRef}
-            value={text}
-            placeholder="Сообщение"
-            rows={1}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                void send()
-              }
-            }}
-          />
-          <button className="btn-primary messenger-send" disabled={busy} onClick={() => void send()}>
-            Отправить
-          </button>
+          <div className="messenger-composer-box">
+            <textarea
+              ref={composerRef}
+              value={text}
+              placeholder="Сообщение"
+              rows={1}
+              onChange={(event) => setText(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
+                  void send()
+                }
+              }}
+            />
+            <div className="messenger-composer-tools">
+              <button
+                type="button"
+                className="messenger-tool-btn"
+                title="Агент"
+                onClick={() => void openAgentPicker()}
+              >
+                А
+              </button>
+              <button
+                type="button"
+                className="messenger-tool-btn"
+                title="Файл"
+                onClick={() => void pickFiles()}
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden>
+                  <path
+                    d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="messenger-send-btn"
+                title="Отправить"
+                disabled={busy}
+                onClick={() => void send()}
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+                  <path
+                    d="M12 19V5M5 12l7-7 7 7"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 
