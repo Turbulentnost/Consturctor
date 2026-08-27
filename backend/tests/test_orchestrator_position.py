@@ -111,7 +111,7 @@ def test_get_seeds_ilchenko_and_never_needs_form() -> None:
     assert first.needs_form is False
     assert len(first.tiles) == 4
     assert first.summary == ILCHENKO_SUMMARY
-    assert first.needs_calc is True
+    assert first.needs_calc is False
     _workflow(db, user_id, "wf-2", "Новый агент")
     second = get_orchestrator(db, user_id=user_id, fio="Ильченко Екатерина Александровна")
     assert second.needs_form is False
@@ -184,7 +184,7 @@ def test_ensure_sets_forming_and_calc_lock() -> None:
     assert forming.status == "forming"
     save_formed(db, user_id=user_id, tiles=_sample_tiles(), fio="Иванов")
     calc = ensure_orchestrator(db, user_id=user_id, mode="calc", fio="Иванов")
-    assert calc.status == "calculating"
+    assert calc.status == "ready"
     assert calc.needs_calc is False
 
 

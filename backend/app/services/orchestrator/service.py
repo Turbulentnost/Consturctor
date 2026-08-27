@@ -20,6 +20,7 @@ from app.schemas.orchestrator import (
 )
 from app.schemas.workflow import KpiTileSchema
 from app.services import agent_kpi
+from app.services.orchestrator.facts import apply_run_facts
 from app.services.orchestrator.ilchenko import ilchenko_tiles, is_ilchenko, ILCHENKO_SUMMARY
 from app.services.orchestrator.prompts import build_calc_prompt, build_form_prompt
 from app.services.triggers.service import is_workflow_paused, workflow_is_deleted
@@ -196,6 +197,28 @@ def _needs_form(*, locked: bool, tiles: list[Any], stored_fp: str, current_fp: s
     return bool(current_fp) and current_fp != (stored_fp or "")
 
 
+def _refresh_facts(
+    db: Session,
+    row: UserOrchestrator | None,
+    *,
+    user_id: str,
+    now: datetime,
+    persist: bool,
+    force: bool = False,
+) -> None:
+    if row is None or not (row.tiles or []):
+        return
+    try:
+        apply_run_facts(db, row, user_id=user_id, now=now, force=force, persist=persist)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Orchestrator facts failed user=%s: %s", user_id, exc)
+        if persist:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
+
 def _needs_calc(*, tiles: list[Any], calculating_at: Any, now: datetime) -> bool:
     if not tiles:
         return False
@@ -289,6 +312,7 @@ def get_orchestrator(
         if is_ilchenko(user_id=user_id, fio=fio):
             ephemeral = _new_row(user_id, locked=True)
             _seed_ilchenko(ephemeral, [], now)
+            _refresh_facts(db, ephemeral, user_id=user_id, now=now, persist=False, force=True)
             return to_out(ephemeral, user_id=user_id, fio=fio, position=position, briefs=[], now=now)
         return to_out(None, user_id=user_id, fio=fio, position=position, briefs=[], now=now)
     if is_ilchenko(user_id=user_id, fio=fio) and (row is None or not (row.tiles or [])):
@@ -308,7 +332,9 @@ def get_orchestrator(
                 pass
             ephemeral = _new_row(user_id, locked=True)
             _seed_ilchenko(ephemeral, briefs, now)
+            _refresh_facts(db, ephemeral, user_id=user_id, now=now, persist=False, force=True)
             return to_out(ephemeral, user_id=user_id, fio=fio, position=position, briefs=briefs, now=now)
+    _refresh_facts(db, row, user_id=user_id, now=now, persist=True)
     return to_out(row, user_id=user_id, fio=fio, position=position, briefs=briefs, now=now)
 
 
@@ -337,8 +363,9 @@ def ensure_orchestrator(
         if not (row.tiles or []):
             _seed_ilchenko(row, briefs, now)
         if kind == "calc" and (row.tiles or []):
-            row.status = "calculating"
-            row.calculating_at = now
+            _refresh_facts(db, row, user_id=user_id, now=now, persist=False, force=True)
+            row.status = "ready"
+            row.calculating_at = None
         db.commit()
         db.refresh(row)
         return to_out(row, user_id=user_id, fio=fio, position=position, briefs=briefs, now=now)
@@ -360,8 +387,9 @@ def ensure_orchestrator(
         return to_out(row, user_id=user_id, fio=fio, position=position, briefs=briefs, now=now)
 
     if row.tiles:
-        row.status = "calculating"
-        row.calculating_at = now
+        _refresh_facts(db, row, user_id=user_id, now=now, persist=False, force=True)
+        row.status = "ready"
+        row.calculating_at = None
         db.commit()
         db.refresh(row)
     return to_out(row, user_id=user_id, fio=fio, position=position, briefs=briefs, now=now)
