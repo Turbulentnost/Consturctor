@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import traceback
@@ -236,8 +237,42 @@ def _is_keep_knowledge_file(name: str) -> bool:
     return folded in {"keepknowledgefile", "keep_knowledge_file"}
 
 
-def _with_sidecar_prompt(prompt: str) -> str:
+WHEN_TO_RUN_QUESTION = "Когда запускать этого агента?"
+WHEN_TO_RUN_OPTIONS = [
+    "только вручную из чата",
+    "каждый час",
+    "раз в день",
+    "при конкретном событии — напишу каком",
+]
+WHEN_TO_RUN_WHY = (
+    "Это расписание запуска агента, не расписание совещаний в Outlook. "
+    "Без ответа агент после публикации не стартует сам."
+)
+WHEN_TO_RUN_HINT = (
+    "Always ask via askQuestion: when to run THIS agent. "
+    "Options: only from chat; every hour; once a day; on an event I will name. "
+    "Outlook meeting cadence (weekly or monthly plannerka) is not the agent trigger. "
+    "Write the answer to when_to_run. Do not skip this question."
+)
+_WHEN_TO_RUN_HINTS = (
+    "когда запуска",
+    "как часто",
+    "по расписан",
+    "только вручн",
+    WHEN_TO_RUN_QUESTION.casefold(),
+)
+_AGENT_WHEN_LABELS = (
+    "когда запускать",
+    "расписание агента",
+    "запуск агента",
+    "триггер агента",
+)
+
+
+def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
     parts = [KEEP_FILE_HINT, OUTLOOK_MEETING_HINT]
+    if (mode or "").strip().casefold() == "design":
+        parts.append(WHEN_TO_RUN_HINT)
     text = (prompt or "").strip()
     if text:
         parts.append(text)
@@ -323,6 +358,83 @@ def _ensure_outlook_rule_in_brief(cwd: str) -> None:
     )
 
 
+def _is_when_to_run_question(question: str) -> bool:
+    folded = (question or "").casefold().replace("ё", "е")
+    return bool(folded) and any(hint in folded for hint in _WHEN_TO_RUN_HINTS)
+
+
+def _labeled_agent_when(text: str) -> str:
+    for line in (text or "").splitlines():
+        stripped = line.strip(" -\t")
+        if not stripped:
+            continue
+        folded = stripped.casefold().replace("ё", "е")
+        for label in _AGENT_WHEN_LABELS:
+            if not folded.startswith(label):
+                continue
+            parts = re.split(r"[:\-–]", stripped, maxsplit=1)
+            if len(parts) == 2 and parts[1].strip():
+                return parts[1].strip()
+    return ""
+
+
+def _when_to_run_from_local(local: dict[str, Any] | None) -> str:
+    data = local if isinstance(local, dict) else {}
+    for key in ("playbook", "playbook_draft"):
+        raw = data.get(key)
+        if isinstance(raw, dict):
+            value = str(raw.get("when_to_run") or "").strip()
+            if value:
+                return value
+    for item in data.get("design_answers") or []:
+        if not isinstance(item, dict):
+            continue
+        if _is_when_to_run_question(str(item.get("question") or "")):
+            answer = str(item.get("answer") or "").strip()
+            if answer:
+                return answer
+    return ""
+
+
+def _when_to_run_known(record: Any) -> bool:
+    if _when_to_run_from_local(getattr(record, "local_run", None)):
+        return True
+    blob = "\n".join(
+        part
+        for part in (
+            getattr(record, "notes", "") or "",
+            getattr(record, "document_text", "") or "",
+            getattr(record, "title", "") or "",
+        )
+        if str(part or "").strip()
+    )
+    return bool(_labeled_agent_when(blob))
+
+
+def _merge_when_to_run(local_run: dict[str, Any] | None, answer: str) -> dict[str, Any] | None:
+    text = (answer or "").strip()
+    if not text:
+        return None
+    local = dict(local_run or {})
+    if _when_to_run_from_local(local) == text:
+        return None
+    answers = [item for item in (local.get("design_answers") or []) if isinstance(item, dict)]
+    if not any(
+        _is_when_to_run_question(str(item.get("question") or "")) and str(item.get("answer") or "").strip()
+        for item in answers
+    ):
+        answers.append({"question": WHEN_TO_RUN_QUESTION, "answer": text})
+        local["design_answers"] = answers
+    for key in ("playbook_draft", "playbook"):
+        raw = local.get(key)
+        if key == "playbook" and not isinstance(raw, dict):
+            continue
+        updated = dict(raw) if isinstance(raw, dict) else {}
+        updated["when_to_run"] = text
+        local[key] = updated
+    return local
+
+
 class ElectronBridge(CursorSdkBridge):
     """CursorSdkBridge that routes HITL write approvals to Electron.
 
@@ -374,7 +486,7 @@ class ElectronBridge(CursorSdkBridge):
         if cwd:
             self._knowledge_cwd = cwd
         return super().run(
-            prompt=_with_sidecar_prompt(prompt),
+            prompt=_with_sidecar_prompt(prompt, mode=mode),
             workflow_id=workflow_id,
             model=model,
             cwd=cwd,
@@ -517,7 +629,11 @@ class HitlGate:
             except queue.Full:
                 pass
 
-    def ask_question(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def ask_question(
+        self,
+        payload: dict[str, Any],
+        should_stop: Any = None,
+    ) -> dict[str, Any]:
         request_id = str(payload.get("requestId") or uuid.uuid4().hex)
         # Runner emits a dedicated "question" event, then tool_request with
         # raw arguments. Parse both shapes the same way as desktop runner.
@@ -538,8 +654,16 @@ class HitlGate:
                 "accept": accept,
             }
         )
+        reply: dict[str, Any] = {}
         try:
-            reply = box.get()
+            while True:
+                if should_stop and should_stop():
+                    return {"ok": False, "answer": "", "text": ""}
+                try:
+                    reply = box.get(timeout=0.4)
+                    break
+                except queue.Empty:
+                    continue
         finally:
             with self._lock:
                 self._answers.pop(request_id, None)
@@ -1186,6 +1310,7 @@ class Sidecar:
             if exc.status_code not in {404, 405}:
                 raise
         self._ensure_outlook_rule_in_playbook(workflow_id)
+        self._ensure_when_to_run_asked(active, workflow_id)
         emit(
             {
                 "type": "result",
@@ -1459,6 +1584,42 @@ class Sidecar:
             self._api.update_workflow_local_run(workflow_id, local)
         except ApiError:
             pass
+
+    def _persist_when_to_run(self, workflow_id: str, answer: str) -> None:
+        wid = (workflow_id or "").strip()
+        text = (answer or "").strip()
+        if not wid or not text:
+            return
+        try:
+            record = self._api.get_workflow(wid)
+            merged = _merge_when_to_run(dict(getattr(record, "local_run", None) or {}), text)
+            if merged is None:
+                return
+            self._api.update_workflow_local_run(wid, merged)
+        except ApiError:
+            pass
+
+    def _ensure_when_to_run_asked(self, active: ActiveRun, workflow_id: str) -> None:
+        if active.stop.is_set():
+            return
+        try:
+            record = self._api.get_workflow(workflow_id)
+        except ApiError:
+            return
+        if _when_to_run_known(record):
+            return
+        reply = active.gate.ask_question(
+            {
+                "question": WHEN_TO_RUN_QUESTION,
+                "options": list(WHEN_TO_RUN_OPTIONS),
+                "why": WHEN_TO_RUN_WHY,
+            },
+            should_stop=active.stop.is_set,
+        )
+        answer = str(reply.get("answer") or "").strip()
+        if not answer or active.stop.is_set():
+            return
+        self._persist_when_to_run(workflow_id, answer)
 
     def _ensure_outlook_rule_in_playbook(
         self,

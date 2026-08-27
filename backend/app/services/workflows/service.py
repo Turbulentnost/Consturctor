@@ -1463,6 +1463,7 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
         }
     )
     row.local_run = local
+    flag_modified(row, "local_run")
     row.phase = "done"
     db.commit()
     db.refresh(row)
@@ -1523,6 +1524,7 @@ def generate_agent_kpi(
     kpi = agent_kpi.build_kpi_record(parsed, title=title, goal=goal, schedule=draft, status="draft")
     local["kpi"] = kpi
     row.local_run = local
+    flag_modified(row, "local_run")
     db.commit()
     db.refresh(row)
     return _to_schema(row)
@@ -1605,6 +1607,7 @@ def confirm_agent_kpi(db: Session, *, user_id: str, workflow_id: str) -> Workflo
     stored["status"] = "ready"
     local["kpi"] = stored
     row.local_run = local
+    flag_modified(row, "local_run")
     db.commit()
     return publish_workflow(db, user_id=user_id, workflow_id=workflow_id)
 

@@ -30,15 +30,31 @@ export function AgentKpiPreviewPage({
     if (kpiStartedRef.current) return
     kpiStartedRef.current = true
     let alive = true
-    void api
-      .streamGenerateWorkflowKpi(workflowId, (event) => {
-        if (!alive) return
-        const text = event.text || event.message || ''
-        if (text && (event.type === 'assistant' || event.type === 'thinking' || event.type === 'status')) {
-          setStatusText(text.slice(0, 120))
+    void (async () => {
+      try {
+        const existing = await api.getWorkflowKpi(workflowId)
+        if (alive && existing && existing.tiles.length > 0) {
+          setKpi(existing)
+          setLoadingKpi(false)
+          return
         }
-      })
-      .then(async (record) => {
+      } catch {
+        /* generate below */
+      }
+      try {
+        const record = await api.streamGenerateWorkflowKpi(workflowId, (event) => {
+          if (!alive) return
+          const text = event.text || event.message || ''
+          if (
+            text &&
+            (event.type === 'assistant' ||
+              event.type === 'thinking' ||
+              event.type === 'status' ||
+              event.type === 'decision')
+          ) {
+            setStatusText(text.slice(0, 120))
+          }
+        })
         if (!alive) return
         let parsed = kpiFromRecord(record)
         if (!parsed || parsed.tiles.length === 0) {
@@ -49,13 +65,12 @@ export function AgentKpiPreviewPage({
           }
         }
         if (alive) setKpi(parsed)
-      })
-      .catch(() => {
+      } catch {
         if (alive) setError('Не удалось сформировать KPI, можно опубликовать без него.')
-      })
-      .finally(() => {
+      } finally {
         if (alive) setLoadingKpi(false)
-      })
+      }
+    })()
     return () => {
       alive = false
     }
