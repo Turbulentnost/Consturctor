@@ -5,7 +5,8 @@ import { LoginPage } from './pages/LoginPage'
 import { CreatePage } from './pages/CreatePage'
 import { AgentsPage } from './pages/AgentsPage'
 import { FilesPage } from './pages/FilesPage'
-import { KpiPage, DashboardPage } from './pages/SimplePages'
+import { KpiPage } from './pages/SimplePages'
+import { OrchestratorPage } from './pages/OrchestratorPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { RegulationChatPage } from './pages/RegulationChatPage'
 import { RoleMatchPage } from './pages/RoleMatchPage'
@@ -13,8 +14,10 @@ import { ReadinessPage } from './pages/ReadinessPage'
 import { SuggestionsPage } from './pages/SuggestionsPage'
 import { PassportPage } from './pages/PassportPage'
 import { AgentStudioPage } from './pages/AgentStudioPage'
-import { FormationBanner } from './components/FormationBanner'
+import { RunBannerCarousel, type BannerEntry } from './components/RunBannerCarousel'
 import { useFormation } from './components/agentfeed'
+import { useRuns, deriveLatestOutput } from './store/runs'
+import { isInFlightRunStatus, isLiveRunState } from './store/liveRun'
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentKpiPreviewPage } from './pages/AgentKpiPreviewPage'
@@ -33,7 +36,8 @@ import type {
   RoleMatchResult,
   ScheduleDraft,
   UserProfile,
-  ChatThread
+  ChatThread,
+  DirectoryUser
 } from './api/types'
 import {
   clearComCredentials,
@@ -53,13 +57,31 @@ type View =
   | { kind: 'suggestions' }
   | { kind: 'passport' }
   | { kind: 'studio'; workflowId: string; title: string }
-  | { kind: 'agentrun'; workflowId: string; title: string }
+  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean }
   | { kind: 'schedule'; workflowId: string; title: string }
   | { kind: 'kpi'; workflowId: string; title: string; draft: ScheduleDraft }
-  | { kind: 'history'; workflowId: string; title: string }
+  | { kind: 'history'; workflowId: string; title: string; runId?: string }
   | { kind: 'chat'; thread: ChatThread }
   | { kind: 'loading'; title: string; subtitle: string }
   | { kind: 'soon'; title: string; note: string }
+
+function fioKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function fioEquals(left: string, right: string): boolean {
+  const a = fioKey(left)
+  const b = fioKey(right)
+  return Boolean(a) && Boolean(b) && (a === b || a.startsWith(b) || b.startsWith(a))
+}
+
+function findExistingChat(threads: ChatThread[], name: string, peerId?: string): ChatThread | undefined {
+  if (peerId) {
+    const byPeer = threads.find((item) => item.kind !== 'support' && item.peerId === peerId)
+    if (byPeer) return byPeer
+  }
+  return threads.find((item) => item.kind !== 'support' && fioEquals(item.title, name))
+}
 
 export function App(): React.JSX.Element {
   const [booting, setBooting] = useState(true)
@@ -77,8 +99,10 @@ export function App(): React.JSX.Element {
   const [passportError, setPassportError] = useState('')
   const [busy, setBusy] = useState(false)
   const kickedRef = useRef(false)
+  const seenHitlRef = useRef<Set<string>>(new Set())
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
   const formation = useFormation()
+  const runs = useRuns()
 
   useEffect(() => {
     let done = false
@@ -183,7 +207,67 @@ export function App(): React.JSX.Element {
     return () => unsubscribe?.()
   }, [])
 
+  useEffect(() => {
+    if (!user) return
+    void runs.hydrateLive()
+    const unsubscribe = window.api.onBoardUpdated?.(() => {
+      void runs.hydrateLive()
+    })
+    const timer = window.setInterval(() => {
+      void runs.hydrateLive()
+    }, 15000)
+    return () => {
+      unsubscribe?.()
+      window.clearInterval(timer)
+    }
+  }, [user?.id])
+
+  // A clicked OS toast (incoming notification) opens the related agent.
+  useEffect(() => {
+    const unsubscribe = window.api.onNotificationOpen?.((payload) => {
+      const workflowId = payload?.workflowId || ''
+      if (workflowId) void openAgentRun(workflowId, payload?.runId || '')
+    })
+    return () => unsubscribe?.()
+  }, [])
+
+  // The main process toasts incoming notifications; refresh the bell badge.
+  useEffect(() => {
+    if (!user) return
+    const unsubscribe = window.api.onInboxChanged?.(() => {
+      void api.unreadNotificationCount().then(setUnread).catch(() => undefined)
+    })
+    return () => unsubscribe?.()
+  }, [user])
+
+  // When a tool needs approval while you are not on that agent's page, raise an
+  // OS toast so the pending HITL card is not missed (mirrors the desktop app).
+  useEffect(() => {
+    const activeWorkflowId =
+      view.kind === 'agentrun' || view.kind === 'history' || view.kind === 'studio'
+        ? view.workflowId
+        : ''
+    for (const entry of Object.values(runs.entries)) {
+      const hitl = entry.state.pendingHitl
+      if (!hitl) continue
+      if (seenHitlRef.current.has(hitl.requestId)) continue
+      seenHitlRef.current.add(hitl.requestId)
+      const onThisAgent = activeWorkflowId === entry.workflowId
+      if (onThisAgent && document.hasFocus()) continue
+      void window.api.showNotification?.({
+        title: 'Агент ждёт подтверждения',
+        body: `${entry.title || 'ИИ-агент'}: ${hitl.title || hitl.tool}`,
+        workflowId: entry.workflowId
+      })
+    }
+  }, [runs.entries, view])
+
   function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
+    if (user && user.id !== result.user.id) {
+      formation.cancel()
+      formation.clear()
+      runs.clearAll()
+    }
     api.setToken(result.accessToken || null)
     setComCredentials(result.user.fio, password)
     if (remember && result.accessToken) {
@@ -200,12 +284,23 @@ export function App(): React.JSX.Element {
 
   async function resetToLogin(): Promise<void> {
     void window.api.stopNotifications?.()
+    formation.cancel()
+    formation.clear()
+    runs.clearAll()
     await api.terminateRegulationCreationSessions()
     clearSession(true)
     clearComCredentials()
     api.setToken(null)
     clearAvatarCache()
     setAvatarUrl(null)
+    setRegulation(null)
+    setRoleMatch(null)
+    setDraft(null)
+    setSuggestions([])
+    setSuggestion(null)
+    setPassport(null)
+    setPassportError('')
+    setView({ kind: 'tab', key: 'create' })
     setUser(null)
   }
 
@@ -227,36 +322,48 @@ export function App(): React.JSX.Element {
     setChatRefreshAt(Date.now())
   }
 
-  async function openChatByFio(fio: string): Promise<void> {
-    const name = fio.trim()
+  async function openChatByFio(fio: string, picked?: DirectoryUser): Promise<void> {
+    const name = (picked?.fio || fio).trim()
     if (!name) return
+    const me = user
+    if (me && (picked?.id === me.id || name.toLowerCase() === me.fio.trim().toLowerCase())) {
+      return
+    }
     try {
       const threads = await api.listChatThreads()
-      const existing = threads.find((item) => item.title.toLowerCase() === name.toLowerCase())
+      const existing = findExistingChat(threads, name, picked?.id)
       if (existing) {
         openChat(existing)
         return
       }
-      const users = await api.listDirectoryUsers(name)
-      const match =
-        users.find((item) => item.fio.toLowerCase() === name.toLowerCase() && item.id) ||
-        users.find((item) => item.id)
+      let match = picked && picked.id ? picked : null
+      if (!match?.id) {
+        const users = await api.listDirectoryUsers(name)
+        match =
+          users.find((item) => fioEquals(item.fio, name) && item.id && item.id !== me?.id) ||
+          users.find((item) => item.id && item.id !== me?.id) ||
+          null
+      }
       if (!match?.id) {
         fail('Чат', new Error('Пользователь не найден'))
         return
       }
-      const known = threads.find((item) => item.peerId === match.id)
+      const known = findExistingChat(threads, match.fio, match.id)
       if (known) {
         openChat(known)
         return
       }
-      await api.openDirectChat(match.id)
+      try {
+        await api.openDirectChat(match.id)
+      } catch {
+        /* still open a local dialog */
+      }
       const next = (await api.listChatThreads()).find((item) => item.peerId === match.id)
       openChat(
         next || {
-          id: match.id,
+          id: `dm:${match.id}`,
           kind: 'dm',
-          title: match.fio,
+          title: match.fio || name,
           position: match.position,
           preview: '',
           lastMessageAt: '',
@@ -266,7 +373,7 @@ export function App(): React.JSX.Element {
           activityStatus: match.activityStatus,
           online: match.online,
           ticketStatus: '',
-          avatarUrl: null
+          avatarUrl: match.avatarUrl
         }
       )
     } catch (err) {
@@ -323,7 +430,10 @@ export function App(): React.JSX.Element {
     })
     try {
       const created = await api.createAgentDraft(regulation.regulationId, roleMatch.runId)
-      setDraft(created)
+      const items = created.agentSuggestions.length
+        ? created.agentSuggestions
+        : suggestionsFromRoleMatch(roleMatch)
+      setDraft({ ...created, agentSuggestions: items })
       setBusy(false)
       setView({ kind: 'readiness' })
     } catch (err) {
@@ -331,7 +441,11 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function openAgentRun(workflowId: string, runId: string): Promise<void> {
+  async function openAgentRun(
+    workflowId: string,
+    runId: string,
+    autoStart = false
+  ): Promise<void> {
     let title = ''
     try {
       const record = await api.getWorkflow(workflowId)
@@ -339,11 +453,32 @@ export function App(): React.JSX.Element {
     } catch {
       /* fall back to a generic title */
     }
-    if (runId) {
-      setView({ kind: 'history', workflowId, title })
-    } else {
-      setView({ kind: 'agentrun', workflowId, title })
+    const live = runs.entries[workflowId]
+    if (live && isLiveRunState(live.state)) {
+      setView({
+        kind: 'agentrun',
+        workflowId,
+        title: title || live.title,
+        autoStart: false
+      })
+      return
     }
+    if (runId) {
+      try {
+        const detail = await api.getAgentRunDetail(workflowId, runId)
+        if (isInFlightRunStatus(detail.item.status)) {
+          runs.noteRunning(workflowId, title, runId)
+          void runs.attachHistoryFeed(workflowId)
+          setView({ kind: 'agentrun', workflowId, title, autoStart: false })
+          return
+        }
+      } catch {
+        /* open history of this finished run */
+      }
+      setView({ kind: 'history', workflowId, title, runId })
+      return
+    }
+    setView({ kind: 'agentrun', workflowId, title, autoStart })
   }
 
   async function continueDraft(draftId: string): Promise<void> {
@@ -357,7 +492,7 @@ export function App(): React.JSX.Element {
       setDraft(loaded)
       const items = loaded.agentSuggestions ?? []
       setSuggestions(items)
-      if (items.length) {
+      if (loaded.status === 'ready' && items.length) {
         setView({ kind: 'suggestions' })
       } else {
         setView({ kind: 'readiness' })
@@ -472,7 +607,18 @@ export function App(): React.JSX.Element {
     return <LoginPage onLoggedIn={onLoggedIn} />
   }
 
-  const activeKey: PageKey | null = view.kind === 'tab' ? view.key : view.kind === 'chat' ? null : 'create'
+  const activeKey: PageKey | null =
+    view.kind === 'tab'
+      ? view.key
+      : view.kind === 'chat'
+        ? null
+        : view.kind === 'history' ||
+            view.kind === 'agentrun' ||
+            view.kind === 'studio' ||
+            view.kind === 'schedule' ||
+            view.kind === 'kpi'
+          ? 'agents'
+          : 'create'
 
   function renderContent(): React.JSX.Element {
     if (view.kind === 'chat') {
@@ -481,7 +627,7 @@ export function App(): React.JSX.Element {
           thread={view.thread}
           me={user!}
           onThreadChange={(thread) => setView({ kind: 'chat', thread })}
-          onOpenAgent={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
+          onOpenAgent={(workflowId) => void openAgentRun(workflowId, '')}
         />
       )
     }
@@ -615,6 +761,7 @@ export function App(): React.JSX.Element {
         <AgentRunPage
           workflowId={view.workflowId}
           title={view.title}
+          autoStart={view.autoStart}
           onBack={() => setView({ kind: 'tab', key: 'agents' })}
           onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
         />
@@ -648,7 +795,11 @@ export function App(): React.JSX.Element {
         <AgentHistoryPage
           workflowId={view.workflowId}
           title={view.title}
+          initialRunId={view.runId}
           onBack={() => setView({ kind: 'tab', key: 'agents' })}
+          onOpenLive={() =>
+            setView({ kind: 'agentrun', workflowId: view.workflowId, title: view.title })
+          }
         />
       )
     }
@@ -678,7 +829,9 @@ export function App(): React.JSX.Element {
         return (
           <AgentsPage
             onCreateAgent={() => setView({ kind: 'tab', key: 'create' })}
-            onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+            onOpenRun={(workflowId, runId, autoStart) =>
+              void openAgentRun(workflowId, runId, autoStart)
+            }
             onFormDraftSuggestion={formDraftSuggestion}
             onContinueDraft={continueDraft}
           />
@@ -692,11 +845,44 @@ export function App(): React.JSX.Element {
         )
       case 'kpi':
         return <KpiPage />
-      case 'dashboard':
-        return <DashboardPage />
+      case 'orchestrator':
+        return <OrchestratorPage user={user!} />
       default:
         return <CreatePage onRegulationParsed={() => {}} onStartRegulationChat={startRegulationChat} />
     }
+  }
+
+  const bannerEntries: BannerEntry[] = []
+  if (
+    formation.inProgress &&
+    !(view.kind === 'studio' && view.workflowId === formation.workflowId)
+  ) {
+    bannerEntries.push({
+      id: `formation:${formation.workflowId}`,
+      title: formation.title,
+      output: formation.latestOutput,
+      running: formation.running,
+      awaiting: formation.awaiting,
+      mode: 'formation',
+      onOpen: () =>
+        setView({ kind: 'studio', workflowId: formation.workflowId, title: formation.title })
+    })
+  }
+  for (const entry of Object.values(runs.entries)) {
+    const active =
+      entry.state.running || Boolean(entry.state.pendingQuestion) || Boolean(entry.state.pendingHitl)
+    if (!active) continue
+    if (view.kind === 'agentrun' && view.workflowId === entry.workflowId) continue
+    bannerEntries.push({
+      id: `run:${entry.workflowId}`,
+      title: entry.title,
+      output: deriveLatestOutput(entry.state.items),
+      running: entry.state.running,
+      awaiting: Boolean(entry.state.pendingQuestion || entry.state.pendingHitl),
+      mode: 'run',
+      onOpen: () =>
+        setView({ kind: 'agentrun', workflowId: entry.workflowId, title: entry.title })
+    })
   }
 
   return (
@@ -704,9 +890,10 @@ export function App(): React.JSX.Element {
       <Sidebar
         active={activeKey}
         activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
+        currentUserId={user?.id || ''}
         onNavigate={(key) => setView({ kind: 'tab', key })}
         onOpenThread={openChat}
-        onOpenFio={(fio) => void openChatByFio(fio)}
+        onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
         refreshAt={chatRefreshAt}
       />
       <main className="content">
@@ -719,24 +906,10 @@ export function App(): React.JSX.Element {
               onUnreadChange={setUnread}
               onLogout={onLogout}
               showLogout={showLogout}
+              onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
             />
           </div>
-          {formation.inProgress &&
-            !(view.kind === 'studio' && view.workflowId === formation.workflowId) && (
-              <FormationBanner
-                title={formation.title}
-                output={formation.latestOutput}
-                running={formation.running}
-                awaiting={formation.awaiting}
-                onOpen={() =>
-                  setView({
-                    kind: 'studio',
-                    workflowId: formation.workflowId,
-                    title: formation.title
-                  })
-                }
-              />
-            )}
+          <RunBannerCarousel entries={bannerEntries} />
           {renderContent()}
         </div>
       </main>

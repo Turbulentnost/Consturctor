@@ -40,6 +40,7 @@ import {
   type TriggerKind,
   type IntervalUnit,
   type AgentKpi,
+  type PositionOrchestrator,
   type KpiTile,
   type KpiSide,
   type KpiMethod,
@@ -228,7 +229,8 @@ function parseInboxNotification(value: unknown): InboxNotification {
     unread: Boolean(data.unread),
     senderFio: String(data.senderFio ?? data.sender_fio ?? ''),
     createdAt: String(data.createdAt ?? data.created_at ?? ''),
-    workflowId: String(data.workflowId ?? data.workflow_id ?? '')
+    workflowId: String(data.workflowId ?? data.workflow_id ?? ''),
+    runId: String(data.runId ?? data.run_id ?? '')
   }
 }
 
@@ -311,7 +313,8 @@ function parseDirectoryUsers(data: unknown): DirectoryUser[] {
           department: '',
           activityStatus: 'online',
           online: false,
-          isSupport: false
+          isSupport: false,
+          avatarUrl: null
         })
       }
       continue
@@ -319,14 +322,19 @@ function parseDirectoryUsers(data: unknown): DirectoryUser[] {
     const row = asRecord(item)
     const fio = String(row.fio ?? row.name ?? '').trim()
     if (!fio) continue
+    const id = String(row.id ?? row.user_id ?? row.userId ?? '').trim()
     users.push({
-      id: String(row.id ?? '').trim(),
+      id,
       fio,
       position: String(row.position ?? ''),
       department: String(row.department ?? ''),
       activityStatus: String(row.activityStatus ?? row.activity_status ?? 'online'),
       online: Boolean(row.online),
-      isSupport: Boolean(row.isSupport ?? row.is_support)
+      isSupport: Boolean(row.isSupport ?? row.is_support),
+      avatarUrl:
+        optionalUrl(row.avatarUrl) ??
+        optionalUrl(row.avatar_url) ??
+        (id ? `/api/v1/auth/users/${id}/avatar` : null)
     })
   }
   return users
@@ -794,6 +802,48 @@ export function scheduleDraftFromRecord(
   return parseScheduleDraft(asRecord(raw))
 }
 
+export function parsePositionOrchestrator(raw: Record<string, unknown> | null | undefined): PositionOrchestrator {
+  const data = raw && typeof raw === 'object' ? raw : {}
+  const tiles = ((data.tiles as Record<string, unknown>[]) ?? [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => parseKpiTile(item))
+  const agents = ((data.agents as Record<string, unknown>[]) ?? [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      id: String(item.id ?? ''),
+      title: String(item.title ?? ''),
+      goal: String(item.goal ?? ''),
+      steps: Array.isArray(item.steps) ? (item.steps as Array<Record<string, unknown>>) : []
+    }))
+  const user = asRecord(data.user)
+  return {
+    status: String(data.status ?? 'empty'),
+    locked: Boolean(data.locked),
+    summary: String(data.summary ?? ''),
+    tiles,
+    sourceFingerprint: String(data.source_fingerprint ?? data.sourceFingerprint ?? ''),
+    currentFingerprint: String(data.current_fingerprint ?? data.currentFingerprint ?? ''),
+    sourceAgentIds: Array.isArray(data.source_agent_ids)
+      ? (data.source_agent_ids as unknown[]).map((item) => String(item))
+      : [],
+    needsForm: Boolean(data.needs_form ?? data.needsForm),
+    needsCalc: Boolean(data.needs_calc ?? data.needsCalc),
+    dueTileIds: Array.isArray(data.due_tile_ids)
+      ? (data.due_tile_ids as unknown[]).map((item) => String(item))
+      : [],
+    sdkAgentId: String(data.sdk_agent_id ?? data.sdkAgentId ?? ''),
+    formedAt: String(data.formed_at ?? data.formedAt ?? ''),
+    formPrompt: String(data.form_prompt ?? data.formPrompt ?? ''),
+    calcPrompt: String(data.calc_prompt ?? data.calcPrompt ?? ''),
+    agents,
+    user: {
+      id: String(user.id ?? ''),
+      fio: String(user.fio ?? ''),
+      position: String(user.position ?? '')
+    }
+  }
+}
+
 export function parseAgentKpi(raw: Record<string, unknown> | null | undefined): AgentKpi | null {
   if (!raw || typeof raw !== 'object') return null
   const tiles = ((raw.tiles as Record<string, unknown>[]) ?? [])
@@ -944,7 +994,7 @@ export class ApiClient {
       endpoint: '/api/v1/regulations/upload',
       filePath,
       token: this.token,
-      timeoutMs: 300_000
+      timeoutMs: 420_000
     })
     if (!res.ok) throw new ApiError(res.error || 'Ошибка распознавания', res.status)
     return parseRegulation(res.data ?? {})
@@ -1098,9 +1148,11 @@ export class ApiClient {
         runId: String(item.run_id ?? item.runId ?? item.id ?? ''),
         workflowId: String(item.workflow_id ?? item.workflowId ?? workflowId),
         status: String(item.status ?? ''),
+        source: String(item.source ?? ''),
         startedAt: String(item.started_at ?? item.startedAt ?? ''),
         finishedAt: String(item.finished_at ?? item.finishedAt ?? ''),
-        summary: String(item.summary ?? item.result ?? '')
+        summary: String(item.summary ?? item.answer ?? item.result ?? ''),
+        answer: String(item.answer ?? item.summary ?? item.result ?? '')
       }))
   }
 
@@ -1364,6 +1416,21 @@ export class ApiClient {
     return parseAgentKpi(data ?? {})
   }
 
+  async getOrchestrator(): Promise<PositionOrchestrator> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/orchestrator/me', {
+      timeoutMs: 60_000
+    })
+    return parsePositionOrchestrator(data ?? {})
+  }
+
+  async ensureOrchestrator(mode: 'form' | 'calc'): Promise<PositionOrchestrator> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/orchestrator/ensure', {
+      body: { mode },
+      timeoutMs: 60_000
+    })
+    return parsePositionOrchestrator(data ?? {})
+  }
+
   async createTriggerFromSpec(workflowId: string, spec: ScheduleTriggerSpec): Promise<void> {
     if (spec.kind === 'interval') {
       await this.createTrigger({
@@ -1430,20 +1497,48 @@ export class ApiClient {
         text: item.text != null ? String(item.text) : undefined,
         message: item.message != null ? String(item.message) : undefined,
         tool: item.tool != null ? String(item.tool) : undefined,
+        requestId:
+          item.requestId != null
+            ? String(item.requestId)
+            : item.request_id != null
+              ? String(item.request_id)
+              : undefined,
         arguments: (item.arguments as Record<string, unknown>) || undefined,
-        result: (item.result as Record<string, unknown>) || undefined
+        result: item.result,
+        ok: item.ok == null ? undefined : Boolean(item.ok),
+        skipped: item.skipped == null ? undefined : Boolean(item.skipped),
+        error: item.error != null ? String(item.error) : undefined,
+        status: item.status != null ? String(item.status) : undefined
       }))
     return {
       item: {
         runId: String(data.run_id ?? data.runId ?? data.id ?? runId),
         workflowId: String(data.workflow_id ?? data.workflowId ?? workflowId),
         status: String(data.status ?? ''),
+        source: String(data.source ?? ''),
         startedAt: String(data.started_at ?? data.startedAt ?? ''),
         finishedAt: String(data.finished_at ?? data.finishedAt ?? ''),
-        summary: String(data.summary ?? data.answer ?? data.result ?? '')
+        summary: String(data.summary ?? data.answer ?? data.result ?? ''),
+        answer: String(data.answer ?? data.summary ?? data.result ?? '')
       },
       events
     }
+  }
+
+  async finishLocalAgentRun(
+    workflowId: string,
+    runId: string,
+    opts: { status: string; answer?: string }
+  ): Promise<void> {
+    await this.request('POST', `/api/v1/workflows/${workflowId}/runs/${runId}/finish`, {
+      body: {
+        status: opts.status,
+        answer: opts.answer || '',
+        events: [],
+        message: ''
+      },
+      timeoutMs: 30_000
+    })
   }
 
   async streamWorkflow(
@@ -1497,6 +1592,20 @@ export class ApiClient {
     return raw.map(parsePlatformFile)
   }
 
+  async listWorkflowFiles(workflowId: string, runId = ''): Promise<WorkflowFileItem[]> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/workflows/${workflowId}/files`,
+      { timeoutMs: 20_000, params: runId ? { run_id: runId } : undefined }
+    )
+    const userFiles = (data.user_files as Record<string, unknown>[]) ?? []
+    const agentFiles = (data.agent_files as Record<string, unknown>[]) ?? []
+    const runAttachments = (data.run_attachments as Record<string, unknown>[]) ?? []
+    return [...userFiles, ...agentFiles, ...runAttachments].map((item) =>
+      parsePlatformFile({ ...item, workflow_id: workflowId })
+    )
+  }
+
   async uploadWorkflowFiles(workflowId: string, filePaths: string[]): Promise<WorkflowFileItem[]> {
     let latest: WorkflowFileItem[] = []
     for (const filePath of filePaths) {
@@ -1510,7 +1619,8 @@ export class ApiClient {
       if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить файл', res.status)
       const userFiles = (res.data?.user_files as Record<string, unknown>[]) ?? []
       const agentFiles = (res.data?.agent_files as Record<string, unknown>[]) ?? []
-      latest = [...userFiles, ...agentFiles].map((item) =>
+      const runAttachments = (res.data?.run_attachments as Record<string, unknown>[]) ?? []
+      latest = [...userFiles, ...agentFiles, ...runAttachments].map((item) =>
         parsePlatformFile({ ...item, workflow_id: workflowId })
       )
     }
@@ -1541,28 +1651,42 @@ export class ApiClient {
 
   async listDirectoryUsers(search = ''): Promise<DirectoryUser[]> {
     const paths = [
+      '/api/v1/notifications/users',
       '/api/v1/auth/directory',
-      '/api/v1/chat/directory',
-      '/api/v1/notifications/users'
+      '/api/v1/chat/directory'
     ]
-    const merged = new Map<string, DirectoryUser>()
+    const byFio = new Map<string, DirectoryUser>()
     for (const path of paths) {
       try {
         const data = await this.request<unknown>('GET', path, {
           params: search ? { search } : undefined
         })
         for (const user of parseDirectoryUsers(data)) {
-          const key = user.id || user.fio.toLowerCase()
-          if (!merged.has(key) || (!merged.get(key)?.id && user.id)) {
-            merged.set(key, user)
+          const key = user.fio.trim().toLowerCase()
+          if (!key) continue
+          const prev = byFio.get(key)
+          if (!prev) {
+            byFio.set(key, user)
+            continue
           }
+          const id = prev.id || user.id
+          byFio.set(key, {
+            ...prev,
+            ...user,
+            id,
+            position: prev.position || user.position,
+            department: prev.department || user.department,
+            avatarUrl:
+              prev.avatarUrl ||
+              user.avatarUrl ||
+              (id ? `/api/v1/auth/users/${id}/avatar` : null)
+          })
         }
-        if (merged.size) break
       } catch {
         /* try next directory source */
       }
     }
-    return [...merged.values()].sort((a, b) => a.fio.localeCompare(b.fio, 'ru'))
+    return [...byFio.values()].sort((a, b) => a.fio.localeCompare(b.fio, 'ru'))
   }
 
   async chatCommand(payload: Record<string, unknown>): Promise<string> {
@@ -1616,6 +1740,14 @@ export class ApiClient {
 
   async markAllNotificationsRead(): Promise<void> {
     await this.request('POST', '/api/v1/notifications/read-all', { timeoutMs: 15_000 })
+  }
+
+  async markNotificationRead(notificationId: string): Promise<void> {
+    await this.request(
+      'POST',
+      `/api/v1/notifications/${encodeURIComponent(notificationId)}/read`,
+      { timeoutMs: 15_000 }
+    )
   }
 
   async clearNotifications(): Promise<void> {

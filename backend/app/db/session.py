@@ -11,6 +11,10 @@ from app.db.base import Base
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
+    pool_size=20,
+    max_overflow=40,
+    pool_recycle=1800,
+    pool_timeout=10,
     future=True,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
@@ -20,6 +24,7 @@ def init_db() -> None:
     # Import models so metadata is populated.
     from app.models import agent_run as _agent_run  # noqa: F401
     from app.models import notification as _notification  # noqa: F401
+    from app.models import orchestrator as _orchestrator  # noqa: F401
     from app.models import regulation as _regulation  # noqa: F401
     from app.models import trigger as _trigger  # noqa: F401
     from app.models import user as _user  # noqa: F401

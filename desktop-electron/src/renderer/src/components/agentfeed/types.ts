@@ -45,6 +45,8 @@ export interface PendingQuestion {
   requestId: string
   question: string
   options: string[]
+  needsFile?: boolean
+  accept?: string[]
 }
 
 export interface PendingHitl {

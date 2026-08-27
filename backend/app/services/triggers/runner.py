@@ -11,11 +11,21 @@ from sqlalchemy.orm import Session
 from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.services.agent_runtime import AgentRuntimeError, run_agent_task
-from app.services.agent_runs import answer_from_result, finish_agent_run, save_run_events, start_agent_run
+from app.services.agent_runs import (
+    OVERLAP_CANCEL_ANSWER,
+    answer_from_result,
+    cancel_overlapping_slot,
+    finish_agent_run,
+    save_run_events,
+    start_agent_run,
+)
 from app.services.desktop_commands import push_desktop_command
+from app.services.notifications.hub import hub
 from app.services.notifications.service import NotificationError, create_notification
 from app.schemas.notification import NotificationCreate
 from app.services.sessions import (
+    RECONNECT_EVIDENCE,
+    RECONNECT_RETRY_SEC,
     SKIP_RUN_BODY,
     SKIP_RUN_TITLE,
     presence_status,
@@ -47,10 +57,33 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
     now = datetime.now(timezone.utc)
     if due is not None and due > now + timedelta(seconds=5):
         return {"ok": False, "reason": "not_due"}
-    if workflow_has_started_run(db, row.workflow_id):
-        logger.info("Scheduled trigger %s skipped: agent already running", trigger_id)
-        return {"ok": False, "reason": "already_running"}
     presence = presence_status(row.owner_user_id)
+    desktop_here = hub.is_online(row.owner_user_id)
+    if presence != "online" and desktop_here:
+        presence = "online"
+    if workflow_has_started_run(db, row.workflow_id):
+        if presence != "offline":
+            command = command_payload(row)
+            command["workflow_id"] = row.workflow_id
+            command["message"] = (row.message or "").strip()
+            command["trigger_id"] = row.id
+            command["evidence"] = row.last_evidence or ""
+            command["source"] = "trigger"
+            if push_desktop_command(row.owner_user_id, command):
+                logger.info(
+                    "Scheduled trigger %s dispatched while a run is started user=%s",
+                    trigger_id,
+                    row.owner_user_id,
+                )
+                return {"ok": True, "trigger_id": trigger_id, "dispatched": "desktop"}
+        cancel_overlapping_slot(
+            db,
+            user_id=row.owner_user_id,
+            trigger_id=trigger_id,
+            answer=OVERLAP_CANCEL_ANSWER,
+        )
+        logger.info("Scheduled trigger %s canceled: agent already running", trigger_id)
+        return {"ok": False, "reason": "already_running"}
     if presence == "offline":
         already = SKIP_RUN_BODY.casefold() in (row.last_evidence or "").casefold()
         if not already:
@@ -69,6 +102,17 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
         )
         logger.info("Scheduled trigger %s skipped: desktop offline user=%s", trigger_id, row.owner_user_id)
         return {"ok": False, "reason": "offline"}
+    if presence == "unknown" and not desktop_here:
+        mark_skipped(
+            db,
+            user_id=row.owner_user_id,
+            trigger_id=trigger_id,
+            evidence=RECONNECT_EVIDENCE,
+            retry_in_seconds=RECONNECT_RETRY_SEC,
+            advance=False,
+        )
+        logger.info("Scheduled trigger %s waiting for desktop user=%s", trigger_id, row.owner_user_id)
+        return {"ok": False, "reason": "reconnect"}
     if presence == "unknown":
         logger.warning("Scheduled trigger %s: desktop presence unknown, attempting run", trigger_id)
 
@@ -77,7 +121,15 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
     command["message"] = (row.message or "").strip()
     command["trigger_id"] = row.id
     command["evidence"] = row.last_evidence or ""
+    command["source"] = "trigger"
     if push_desktop_command(row.owner_user_id, command):
+        if not (row.condition_text or "").strip():
+            mark_fired(
+                db,
+                user_id=row.owner_user_id,
+                trigger_id=trigger_id,
+                evidence=row.last_evidence or "dispatched to desktop",
+            )
         logger.info("Scheduled trigger %s dispatched to desktop user=%s", trigger_id, row.owner_user_id)
         return {"ok": True, "trigger_id": trigger_id, "dispatched": "desktop"}
 

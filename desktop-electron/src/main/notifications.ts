@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, Notification } from 'electron'
 
 const PING_MS = 20_000
 const RECONNECT_MS = 4_000
@@ -9,6 +9,38 @@ function notifyWindows(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(channel, payload)
   }
+}
+
+export interface ToastPayload {
+  title: string
+  body?: string
+  workflowId?: string
+  runId?: string
+}
+
+/**
+ * Show a native OS toast and, on click, focus the app window and ask the
+ * renderer to open the related agent. Mirrors the desktop winotify behavior.
+ */
+export function showToast(payload: ToastPayload): void {
+  const title = (payload.title || '').trim() || 'Уведомление'
+  if (!Notification.isSupported()) {
+    notifyWindows('notification:open', payload)
+    return
+  }
+  const toast = new Notification({ title, body: (payload.body || '').trim() })
+  toast.on('click', () => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+    }
+    notifyWindows('notification:open', {
+      workflowId: payload.workflowId || '',
+      runId: payload.runId || ''
+    })
+  })
+  toast.show()
 }
 
 function websocketUrl(backendUrl: string, token: string): string {
@@ -29,6 +61,8 @@ export class NotificationGuard {
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  // Ids already toasted, so WS pushes and /pending polls do not double-notify.
+  private readonly shownIds = new Set<string>()
 
   constructor(
     private readonly backendUrl: string,
@@ -39,6 +73,7 @@ export class NotificationGuard {
     this.detach()
     this.token = token
     this.kicked = false
+    this.shownIds.clear()
     this.connect()
     void this.pollPending()
     this.pollTimer = setInterval(() => {
@@ -118,8 +153,21 @@ export class NotificationGuard {
       this.kick(String(payload.message || KICK_MESSAGE))
       return
     }
-    if (kind === 'evaluate_trigger' || kind === 'run_agent') {
+    if (
+      kind === 'evaluate_trigger' ||
+      kind === 'run_agent' ||
+      kind === 'form_orchestrator' ||
+      kind === 'calc_orchestrator'
+    ) {
       this.onCommand?.(payload)
+      return
+    }
+    if (kind === 'notification') {
+      this.handleNotification(payload)
+      return
+    }
+    if (kind === 'board_updated') {
+      notifyWindows('board:updated', payload)
       return
     }
     if (
@@ -130,6 +178,39 @@ export class NotificationGuard {
       kind === 'ticket_updated'
     ) {
       notifyWindows('chat:event', payload)
+    }
+  }
+
+  private handleNotification(payload: Record<string, unknown>): void {
+    const id = String(payload.id || '')
+    if (id && this.shownIds.has(id)) return
+    if (id) this.shownIds.add(id)
+    showToast({
+      title: String(payload.title || ''),
+      body: String(payload.body || ''),
+      workflowId: String(payload.workflow_id || payload.workflowId || ''),
+      runId: String(payload.run_id || payload.runId || '')
+    })
+    notifyWindows('inbox:changed', { id })
+    if (id) void this.ack(id)
+  }
+
+  private async ack(id: string): Promise<void> {
+    const token = this.token
+    if (!token || this.kicked) return
+    try {
+      await fetch(
+        `${this.backendUrl}/api/v1/notifications/${encodeURIComponent(id)}/ack`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json'
+          }
+        }
+      )
+    } catch {
+      /* the next poll re-delivers if ack did not land */
     }
   }
 
@@ -155,6 +236,16 @@ export class NotificationGuard {
       if (!this.isLive(generation) || this.token !== token) return
       if (response.status === 401) {
         this.kick(KICK_MESSAGE)
+        return
+      }
+      if (!response.ok) return
+      const items = (await response.json()) as unknown
+      if (!this.isLive(generation) || this.token !== token) return
+      if (!Array.isArray(items)) return
+      for (const item of items) {
+        if (item && typeof item === 'object') {
+          this.handleNotification(item as Record<string, unknown>)
+        }
       }
     } catch {
       /* network blips are retried on the next poll */

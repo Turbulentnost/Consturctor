@@ -41,10 +41,13 @@ class HeadlessRunner(QObject):
 
     def _start_run(self, payload: dict) -> None:
         with self._lock:
-            if self._run_busy:
-                logger.info("Skip agent run: already running")
-                return
-            self._run_busy = True
+            busy = self._run_busy
+            if not busy:
+                self._run_busy = True
+        if busy:
+            logger.info("Skip agent run: already running")
+            self._cancel_overlap_slot(payload)
+            return
         Thread(target=self._run, args=(payload,), daemon=True).start()
 
     def _check(self, payload: dict) -> None:
@@ -183,6 +186,20 @@ class HeadlessRunner(QObject):
         finally:
             with self._lock:
                 self._run_busy = False
+
+    def _cancel_overlap_slot(self, payload: dict) -> None:
+        workflow_id = str(payload.get("workflow_id") or "").strip()
+        trigger_id = str(payload.get("trigger_id") or payload.get("id") or "").strip()
+        if not workflow_id or not trigger_id:
+            return
+        try:
+            self._api.cancel_overlapping_slot(
+                workflow_id,
+                trigger_id,
+                answer="Агент уже выполняется",
+            )
+        except ApiError as exc:
+            logger.warning("Overlap cancel failed: %s", exc)
 
     def _toast(self, title: str, body: str, workflow_id: str) -> None:
         if not show_windows_toast(title, body, workflow_id):

@@ -1,33 +1,99 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { agentClient } from '../api/agent'
 import { api } from '../api/client'
-import {
-  AgentFeed,
-  useAgentSession,
-  type AgentResult
-} from '../components/agentfeed'
+import type { WorkflowFileItem } from '../api/types'
+import { AgentFeed } from '../components/agentfeed'
+import { useRuns } from '../store/runs'
+import { fileTypeIconSrc } from '../utils/fileTypeIcon'
+import { categoryOf, FILE_CATEGORY_LABELS, formatSize } from './filesGrouping'
 
 interface AgentRunPageProps {
   workflowId: string
   title: string
+  autoStart?: boolean
   onBack: () => void
   onOpenHistory?: (workflowId: string, title: string) => void
+}
+
+
+function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
+  const name = file.name || 'file'
+  const size = formatSize(file.sizeBytes)
+  return (
+    <li>
+      <button
+        className="wf-file-card history-file-btn"
+        type="button"
+        onClick={() => {
+          if (file.downloadUrl) void api.download(file.downloadUrl, name)
+        }}
+      >
+        <img className="files-type-icon" src={fileTypeIconSrc(name)} alt="" />
+        <div className="wf-file-copy">
+          <span className="wf-file-name" title={name}>
+            {name}
+          </span>
+          {size ? <span className="wf-file-meta">{size}</span> : null}
+        </div>
+      </button>
+    </li>
+  )
+}
+
+function FileSection({
+  title,
+  items
+}: {
+  title: string
+  items: WorkflowFileItem[]
+}): React.JSX.Element | null {
+  if (items.length === 0) return null
+  return (
+    <section className="wf-file-section">
+      <h4>{title}</h4>
+      <ul className="wf-files">
+        {items.map((file) => (
+          <RunFileCard key={file.id || file.name} file={file} />
+        ))}
+      </ul>
+    </section>
+  )
 }
 
 export function AgentRunPage({
   workflowId,
   title,
+  autoStart = false,
   onBack,
   onOpenHistory
 }: AgentRunPageProps): React.JSX.Element {
+  const runs = useRuns()
+  const entry = runs.entries[workflowId]
+  const state = entry?.state
+  const running = Boolean(state?.running)
+  const awaiting = Boolean(state?.pendingQuestion || state?.pendingHitl)
+
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<string[]>([])
-  const resumeAgentRef = useRef<string>('')
+  const [files, setFiles] = useState<WorkflowFileItem[]>([])
+  const resumeAgentRef = useRef<string>(entry?.resumeAgentId || '')
+  const autoStartedRef = useRef(false)
 
-  const onResult = useCallback((result: AgentResult) => {
-    if (result.agentId) resumeAgentRef.current = result.agentId
-  }, [])
+  const refreshFiles = useCallback(async () => {
+    try {
+      setFiles(await api.listWorkflowFiles(workflowId))
+    } catch {
+      setFiles([])
+    }
+  }, [workflowId])
 
-  const session = useAgentSession({ onResult })
+  useEffect(() => {
+    return agentClient.onEvent((event) => {
+      if (event.type !== 'files_updated') return
+      if (event.workflowId && event.workflowId !== workflowId) return
+      void refreshFiles()
+    })
+  }, [workflowId, refreshFiles])
 
   useEffect(() => {
     let cancelled = false
@@ -36,16 +102,47 @@ export function AgentRunPage({
         const workflow = await api.getWorkflow(workflowId)
         if (cancelled) return
         const agentId = String(workflow.localRun?.sdk_agent_id || workflow.localRun?.sdkAgentId || '')
-        if (agentId) resumeAgentRef.current = agentId
+        if (agentId && !resumeAgentRef.current) resumeAgentRef.current = agentId
       } catch {
         /* sidecar also falls back to workflow.local_run.sdk_agent_id */
       }
     }
     void loadResumeAgent()
+    void refreshFiles()
     return () => {
       cancelled = true
     }
-  }, [workflowId])
+  }, [workflowId, refreshFiles])
+
+  // Refresh the files panel whenever a run finishes.
+  useEffect(() => {
+    if (running) return
+    void refreshFiles()
+  }, [running, refreshFiles])
+
+  // Scheduled runs mark the agent "working" from the board before any sidecar
+  // events reach this page. Pull persisted steps so the feed is not empty.
+  useEffect(() => {
+    if (!running) return
+    if ((state?.items?.length ?? 0) > 0) return
+    void runs.attachHistoryFeed(workflowId)
+  }, [running, workflowId, state?.items?.length, runs])
+
+  // The "Запустить" play button opens this page with autoStart, so the agent
+  // starts immediately on its own playbook instead of waiting for a message.
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return
+    if (running || (state?.items?.length ?? 0) > 0) return
+    autoStartedRef.current = true
+    runs.startRun({
+      workflowId,
+      title,
+      message: '',
+      shownMessage: 'Запуск агента',
+      resumeAgentId: resumeAgentRef.current || undefined
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, workflowId])
 
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({
@@ -62,7 +159,7 @@ export function AgentRunPage({
 
   const submit = (): void => {
     const message = input.trim()
-    if ((!message && attachments.length === 0) || session.running) return
+    if ((!message && attachments.length === 0) || running) return
     const names = attachments.map((path) => path.split(/[\\/]/).pop()).filter(Boolean)
     const shownMessage = [message, names.length ? `Прикреплённые файлы: ${names.join(', ')}` : '']
       .filter(Boolean)
@@ -70,98 +167,154 @@ export function AgentRunPage({
     const filePaths = attachments
     setInput('')
     setAttachments([])
-    session.pushUserMessage(shownMessage || message)
-    session.start({
-      kind: 'run',
+    runs.startRun({
       workflowId,
+      title,
       message: message || shownMessage,
-      resumeAgentId: resumeAgentRef.current || undefined,
-      filePaths: filePaths.length ? filePaths : undefined
+      shownMessage: shownMessage || message,
+      filePaths: filePaths.length ? filePaths : undefined,
+      resumeAgentId: resumeAgentRef.current || undefined
     })
   }
 
+  const temporaryFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'temporary'),
+    [files]
+  )
+  const knowledgeFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'knowledge'),
+    [files]
+  )
+  const instructionFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'instructions'),
+    [files]
+  )
+  const generatedFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'agent'),
+    [files]
+  )
+
+  const statusText = running
+    ? state?.status || 'Агент работает…'
+    : awaiting
+      ? 'Агент ждёт ваш ответ'
+      : 'Готов к работе'
+
   return (
-    <div className="agent-studio">
-      <div className="agent-studio-head">
+    <div className="wf-page">
+      <div className="wf-topbar">
         <button className="btn-ghost" onClick={onBack}>
           Назад
         </button>
-        <div className="studio-titles">
-          <h2>{title || 'Запуск агента'}</h2>
-          <p>Локальный запуск агента на реальных инструментах этого компьютера</p>
+        <h1 className="wf-title">{title || 'Запуск агента'}</h1>
+        <div className="wf-topbar-spacer" />
+        {onOpenHistory && (
+          <button className="btn-ghost" onClick={() => onOpenHistory(workflowId, title)}>
+            История
+          </button>
+        )}
+      </div>
+
+      <div className="wf-body">
+        <div className="wf-left">
+          <div className="wf-left-head">Локальный запуск на реальных инструментах этого компьютера</div>
+          <div className="wf-feed-wrap">
+            <AgentFeed
+              items={state?.items ?? []}
+              status={state?.status ?? ''}
+              running={running}
+              pendingQuestion={state?.pendingQuestion ?? null}
+              pendingHitl={state?.pendingHitl ?? null}
+              emptyHint="Опишите задачу для агента и нажмите отправить. Записи требуют подтверждения."
+              allowQuestionFiles
+              onAnswer={(requestId, value, filePaths) => {
+                runs.answer(workflowId, requestId, value, filePaths)
+                if (filePaths && filePaths.length > 0) {
+                  window.setTimeout(() => {
+                    void refreshFiles()
+                  }, 400)
+                }
+              }}
+              onHitl={(requestId, approved) => runs.respondHitl(workflowId, requestId, approved)}
+              onSkip={() => runs.skip(workflowId)}
+            />
+          </div>
+          <div className="wf-dock">
+            {attachments.length > 0 && (
+              <div className="wf-attachments">
+                {attachments.map((path) => (
+                  <span key={path} className="wf-attachment">
+                    <span className="wf-attachment-name">{path.split(/[\\/]/).pop() || path}</span>
+                    <button
+                      className="wf-attachment-remove"
+                      onClick={() => removeAttachment(path)}
+                      title="Убрать файл"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="wf-composer">
+              <button
+                className="wf-clip"
+                title="Прикрепить файл"
+                disabled={running}
+                onClick={() => void pickFiles()}
+              >
+                📎
+              </button>
+              <textarea
+                className="wf-composer-input"
+                placeholder="Что должен сделать агент?"
+                value={input}
+                disabled={running}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    submit()
+                  }
+                }}
+              />
+              <button
+                className="wf-send"
+                disabled={(!input.trim() && attachments.length === 0) || running}
+                onClick={submit}
+                title="Отправить"
+              >
+                ↑
+              </button>
+            </div>
+          </div>
+          <div className="wf-status">
+            <span className={`wf-status-dot${running ? ' busy' : awaiting ? ' wait' : ''}`} />
+            <span className="wf-status-text">{statusText}</span>
+          </div>
         </div>
-        <div className="agent-toolbar">
-          {session.running && (
-            <button className="btn-ghost" onClick={session.cancel}>
+
+        <div className="wf-right">
+          <div className="wf-tabs">
+            <button className="wf-tab active">Файлы {files.length}</button>
+          </div>
+          <div className="wf-right-body">
+            {files.length === 0 ? (
+              <div className="wf-files-empty">Файлы не прикреплены</div>
+            ) : (
+              <div className="wf-file-groups">
+                <FileSection title={FILE_CATEGORY_LABELS.temporary} items={temporaryFiles} />
+                <FileSection title={FILE_CATEGORY_LABELS.knowledge} items={knowledgeFiles} />
+                <FileSection title={FILE_CATEGORY_LABELS.instructions} items={instructionFiles} />
+                <FileSection title={FILE_CATEGORY_LABELS.agent} items={generatedFiles} />
+              </div>
+            )}
+          </div>
+          {running && (
+            <button className="wf-stop" onClick={() => runs.cancel(workflowId)}>
               Остановить
             </button>
           )}
-          {onOpenHistory && (
-            <button className="btn-ghost" onClick={() => onOpenHistory(workflowId, title)}>
-              История
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="agent-studio-body">
-        <div className="agent-studio-main">
-          <AgentFeed
-            items={session.items}
-            status={session.status}
-            running={session.running}
-            pendingQuestion={session.pendingQuestion}
-            pendingHitl={session.pendingHitl}
-            emptyHint="Опишите задачу для агента и нажмите отправить. Записи требуют подтверждения."
-            allowQuestionFiles
-            onAnswer={session.answer}
-            onHitl={session.respondHitl}
-            onSkip={session.skip}
-          />
-          {attachments.length > 0 && (
-            <div className="wf-attachments">
-              {attachments.map((path) => (
-                <span key={path} className="wf-attachment">
-                  <span className="wf-attachment-name">{path.split(/[\\/]/).pop() || path}</span>
-                  <button
-                    className="wf-attachment-remove"
-                    onClick={() => removeAttachment(path)}
-                    title="Убрать файл"
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          <div className="agent-run-input">
-            <button
-              className="wf-clip"
-              title="Прикрепить файл"
-              disabled={session.running}
-              onClick={() => void pickFiles()}
-            >
-              📎
-            </button>
-            <textarea
-              placeholder="Что должен сделать агент?"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  submit()
-                }
-              }}
-            />
-            <button
-              className="btn-primary"
-              disabled={(!input.trim() && attachments.length === 0) || session.running}
-              onClick={submit}
-            >
-              Отправить
-            </button>
-          </div>
         </div>
       </div>
     </div>

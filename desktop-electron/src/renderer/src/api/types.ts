@@ -154,9 +154,11 @@ export interface AgentRunHistoryItem {
   runId: string
   workflowId: string
   status: string
+  source: string
   startedAt: string
   finishedAt: string
   summary: string
+  answer: string
 }
 
 export interface RegulationCreationMessage {
@@ -481,6 +483,32 @@ export interface AgentKpi {
   tiles: KpiTile[]
 }
 
+export interface OrchestratorAgentBrief {
+  id: string
+  title: string
+  goal: string
+  steps: Array<Record<string, unknown>>
+}
+
+export interface PositionOrchestrator {
+  status: string
+  locked: boolean
+  summary: string
+  tiles: KpiTile[]
+  sourceFingerprint: string
+  currentFingerprint: string
+  sourceAgentIds: string[]
+  needsForm: boolean
+  needsCalc: boolean
+  dueTileIds: string[]
+  sdkAgentId: string
+  formedAt: string
+  formPrompt: string
+  calcPrompt: string
+  agents: OrchestratorAgentBrief[]
+  user: { id: string; fio: string; position: string }
+}
+
 export interface StreamEvent {
   type: string
   text?: string
@@ -517,14 +545,17 @@ export interface AgentEvent {
     | 'error'
     | 'sidecar_exit'
     | 'log'
+    | 'files_updated'
   runId?: string
   requestId?: string
   payload?: AgentRunnerEvent
   question?: string
   options?: string[]
+  needsFile?: boolean
+  accept?: string[]
   tool?: string
   arguments?: Record<string, unknown>
-  kind?: 'design' | 'readiness' | 'demo' | 'run' | 'trigger'
+  kind?: 'design' | 'readiness' | 'demo' | 'run' | 'trigger' | 'form_orchestrator' | 'calc_orchestrator'
   workflowId?: string
   draftId?: string
   agentId?: string
@@ -595,6 +626,7 @@ export interface DirectoryUser {
   activityStatus: string
   online: boolean
   isSupport: boolean
+  avatarUrl: string | null
 }
 
 export interface InboxNotification {
@@ -605,6 +637,7 @@ export interface InboxNotification {
   senderFio: string
   createdAt: string
   workflowId: string
+  runId?: string
 }
 
 export class ApiError extends Error {

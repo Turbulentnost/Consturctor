@@ -1,17 +1,18 @@
 import { useEffect, useState } from 'react'
 import { FioSuggest } from './FioSuggest'
-import { api } from '../api/client'
+import { api, parseChatMessage } from '../api/client'
+import { previewText } from '../api/chatCodec'
 import { loadUserAvatar } from '../api/avatars'
-import type { ChatThread } from '../api/types'
+import type { ChatMessage, ChatThread, DirectoryUser } from '../api/types'
 import logoUrl from '../assets/logo.png'
 import iconCreate from '../assets/nav-create.png'
 import iconAgents from '../assets/nav-agents.png'
 import iconFiles from '../assets/nav-files.png'
 import iconKpi from '../assets/nav-kpi.png'
-import iconDashboard from '../assets/nav-dashboard.png'
+import iconOrchestrator from '../assets/nav-orchestrator.svg'
 import iconSearch from '../assets/search.png'
 
-export type PageKey = 'create' | 'agents' | 'files' | 'kpi' | 'dashboard'
+export type PageKey = 'create' | 'agents' | 'files' | 'kpi' | 'orchestrator'
 
 interface NavItem {
   key: PageKey
@@ -23,8 +24,8 @@ const ITEMS: NavItem[] = [
   { key: 'create', label: 'Создать', icon: iconCreate },
   { key: 'agents', label: 'Мои агенты', icon: iconAgents },
   { key: 'files', label: 'Файлы', icon: iconFiles },
-  { key: 'kpi', label: 'KPI', icon: iconKpi },
-  { key: 'dashboard', label: 'Мой дашборд', icon: iconDashboard }
+  { key: 'kpi', label: 'KPI агента', icon: iconKpi },
+  { key: 'orchestrator', label: 'Оркестратор', icon: iconOrchestrator }
 ]
 
 function initials(fio: string): string {
@@ -41,18 +42,42 @@ function shortFio(fio: string): string {
   return [parts[0], ...rest].join(' ')
 }
 
+function oneLine(text: string): string {
+  return (text || '').replace(/\s+/g, ' ').trim()
+}
+
+function lastMessagePreview(value: string | ChatMessage): string {
+  if (typeof value === 'string') return oneLine(previewText(value))
+  const text = oneLine(value.text)
+  if (text) return text
+  if (value.agent) return oneLine(`Агент: ${value.agent.title || 'ИИ-агент'}`)
+  const file = value.attachments[0]
+  return file ? oneLine(file.filename || 'Файл') : ''
+}
+
+function sameThread(peer: ChatThread, threadId: string, senderId = ''): boolean {
+  if (threadId && peer.id === threadId) return true
+  if (peer.kind === 'support' && (peer.id === 'support' || peer.id === threadId)) return true
+  if (peer.id.startsWith('dm:') && peer.peerId && (peer.peerId === senderId || peer.peerId === threadId)) {
+    return true
+  }
+  return false
+}
+
 interface SidebarProps {
   active: PageKey | null
   activeThreadId?: string
+  currentUserId?: string
   onNavigate: (key: PageKey) => void
   onOpenThread: (thread: ChatThread) => void
-  onOpenFio: (fio: string) => void
+  onOpenFio: (fio: string, user?: DirectoryUser) => void
   refreshAt?: number
 }
 
 export function Sidebar({
   active,
   activeThreadId = '',
+  currentUserId = '',
   onNavigate,
   onOpenThread,
   onOpenFio,
@@ -80,6 +105,50 @@ export function Sidebar({
   }, [refreshAt])
 
   useEffect(() => {
+    const unsubscribe = window.api.onChatEvent?.((payload) => {
+      const kind = String(payload.type || '')
+      if (kind === 'chat_receipt') {
+        const threadId = String(payload.thread_id ?? '')
+        const readerId = String(payload.reader_id ?? '')
+        if (!threadId || (currentUserId && readerId && readerId !== currentUserId)) return
+        setPeers((current) =>
+          current.map((peer) => (sameThread(peer, threadId) ? { ...peer, unread: 0 } : peer))
+        )
+        return
+      }
+      if (kind !== 'chat_message') return
+      const raw =
+        payload.message && typeof payload.message === 'object'
+          ? payload.message
+          : payload
+      const incoming = parseChatMessage({
+        ...(raw as Record<string, unknown>),
+        mine: String((raw as Record<string, unknown>).sender_id ?? '') === currentUserId
+      })
+      const threadId = String(payload.thread_id ?? incoming.threadId ?? '')
+      if (!threadId) return
+      const preview = lastMessagePreview(incoming)
+      const mine = incoming.mine || incoming.senderId === currentUserId
+      setPeers((current) => {
+        let found = false
+        const next = current.map((peer) => {
+          if (!sameThread(peer, threadId, incoming.senderId)) return peer
+          found = true
+          const open = Boolean(activeThreadId) && (peer.id === activeThreadId || peer.peerId === activeThreadId)
+          return {
+            ...peer,
+            preview,
+            lastMessageAt: incoming.createdAt || peer.lastMessageAt,
+            unread: mine || open ? 0 : peer.unread + 1
+          }
+        })
+        return found ? next : current
+      })
+    })
+    return () => unsubscribe?.()
+  }, [activeThreadId, currentUserId])
+
+  useEffect(() => {
     let alive = true
     void Promise.all(
       peers.map(async (peer) => {
@@ -100,7 +169,7 @@ export function Sidebar({
     return () => {
       alive = false
     }
-  }, [peers])
+  }, [peers.map((peer) => `${peer.id}:${peer.peerId}:${peer.avatarUrl || ''}`).join('|')])
 
   function expandForSearch(): void {
     if (collapsed) setCollapsed(false)
@@ -123,9 +192,9 @@ export function Sidebar({
           <FioSuggest
             value={fio}
             onChange={setFio}
-            onSelect={(value) => {
-              setFio(value)
-              onOpenFio(value)
+            onSelect={(value, user) => {
+              setFio('')
+              onOpenFio(value, user)
             }}
             placeholder="ФИО"
             inputClassName="sidebar-search-input"
@@ -160,14 +229,19 @@ export function Sidebar({
       <div className="sidebar-peers">
         {peers.map((peer) => {
           const isActive = peer.id === activeThreadId || (peer.peerId !== '' && peer.peerId === activeThreadId)
+          const preview = lastMessagePreview(peer.preview)
+          const unread = peer.unread > 0 && !isActive
           return (
             <button
               key={peer.id}
               className={isActive ? 'sidebar-peer active' : 'sidebar-peer'}
-              title={peer.title}
+              title={preview ? `${peer.title}\n${preview}` : peer.title}
               onClick={() => {
                 if (collapsed) setCollapsed(false)
-                onOpenThread(peer)
+                setPeers((current) =>
+                  current.map((item) => (item.id === peer.id ? { ...item, unread: 0 } : item))
+                )
+                onOpenThread({ ...peer, unread: 0 })
               }}
             >
               <span className="sidebar-peer-avatar">
@@ -176,9 +250,14 @@ export function Sidebar({
                 ) : (
                   initials(peer.title)
                 )}
-                {peer.unread > 0 && <i className="sidebar-peer-unread">{peer.unread > 9 ? '9+' : peer.unread}</i>}
               </span>
-              {!collapsed && <span className="sidebar-peer-name">{shortFio(peer.title)}</span>}
+              {!collapsed && (
+                <span className="sidebar-peer-meta">
+                  <span className="sidebar-peer-name">{shortFio(peer.title)}</span>
+                  <span className="sidebar-peer-preview">{preview}</span>
+                </span>
+              )}
+              {unread && <i className="sidebar-peer-dot" aria-hidden />}
             </button>
           )
         })}

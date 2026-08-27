@@ -111,7 +111,7 @@ export function AgentFeed({
         <ClarifyCard
           key={`${pendingQuestion.requestId}:${pendingQuestion.question}:${pendingQuestion.options.join('|')}`}
           question={pendingQuestion}
-          allowFiles={allowQuestionFiles}
+          allowFiles={allowQuestionFiles || Boolean(pendingQuestion.needsFile)}
           onAnswer={onAnswer}
         />
       )}

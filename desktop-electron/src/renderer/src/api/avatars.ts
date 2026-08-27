@@ -15,9 +15,8 @@ export async function loadUserAvatar(
   user: Pick<UserProfile, 'id' | 'avatarUrl'>
 ): Promise<string | null> {
   const cacheKey = user.id || user.avatarUrl || ''
-  if (cacheKey && cache.has(cacheKey)) {
-    return cache.get(cacheKey) ?? null
-  }
+  const cached = cacheKey ? cache.get(cacheKey) : undefined
+  if (cached) return cached
 
   const candidates: string[] = []
   if (user.avatarUrl) candidates.push(user.avatarUrl)
@@ -32,7 +31,7 @@ export async function loadUserAvatar(
     if (dataUrl) break
   }
 
-  if (cacheKey) cache.set(cacheKey, dataUrl)
+  if (cacheKey && dataUrl) cache.set(cacheKey, dataUrl)
   return dataUrl
 }
 

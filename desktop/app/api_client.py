@@ -2274,6 +2274,23 @@ class ApiClient:
             timeout=30.0,
         )
 
+    def cancel_overlapping_slot(
+        self,
+        workflow_id: str,
+        trigger_id: str,
+        *,
+        answer: str = "",
+    ) -> AgentRunHistoryItem:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/runs/cancel-slot",
+            json={"trigger_id": trigger_id, "answer": answer or ""},
+            timeout=30.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Не удалось отменить слот расписания")
+        return _parse_agent_run(data, workflow_id)
+
     def finish_local_agent_run(
         self,
         workflow_id: str,
@@ -2545,10 +2562,14 @@ class ApiClient:
         self,
         workflow_id: str,
         file_paths: list[str | Path],
+        *,
+        origin: str = "",
     ) -> WorkflowFiles:
+        data = {"origin": origin} if (origin or "").strip() else None
         return self._upload_workflow_files(
             f"/api/v1/workflows/{workflow_id}/files",
             file_paths,
+            data=data,
         )
 
     def register_workflow_run_files(
@@ -2563,7 +2584,26 @@ class ApiClient:
             file_paths,
         )
 
-    def _upload_workflow_files(self, path: str, file_paths: list[str | Path]) -> WorkflowFiles:
+    def register_run_attachments(
+        self,
+        workflow_id: str,
+        run_id: str,
+        file_paths: list[str | Path],
+    ) -> WorkflowFiles:
+        """Upload temporary per-run attachments (not permanent knowledge)."""
+        rid = (run_id or "").strip() or "local"
+        return self._upload_workflow_files(
+            f"/api/v1/workflows/{workflow_id}/runs/{rid}/attachments",
+            file_paths,
+        )
+
+    def _upload_workflow_files(
+        self,
+        path: str,
+        file_paths: list[str | Path],
+        *,
+        data: dict[str, str] | None = None,
+    ) -> WorkflowFiles:
         url = f"{self.base_url}{path}"
         files: list = []
         handles = []
@@ -2576,7 +2616,7 @@ class ApiClient:
                 handles.append(fh)
                 files.append(("files", (local.name, fh, "application/octet-stream")))
             with httpx.Client(timeout=max(self._timeout, 180.0)) as client:
-                response = client.post(url, headers=self._headers(), files=files)
+                response = client.post(url, headers=self._headers(), files=files, data=data or None)
         except httpx.ConnectError as exc:
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
         except httpx.TimeoutException as exc:
@@ -2662,6 +2702,32 @@ class ApiClient:
             timeout=180.0,
         )
         return self._parse_workflow(data)
+
+    def get_orchestrator(self) -> dict:
+        data = self._request("GET", "/api/v1/orchestrator", timeout=60.0)
+        return data if isinstance(data, dict) else {}
+
+    def ensure_orchestrator(self, mode: str = "form") -> dict:
+        data = self._request(
+            "POST",
+            "/api/v1/orchestrator/ensure",
+            json={"mode": mode},
+            timeout=60.0,
+        )
+        return data if isinstance(data, dict) else {}
+
+    def save_orchestrator(self, payload: dict) -> dict:
+        data = self._request("POST", "/api/v1/orchestrator", json=payload, timeout=60.0)
+        return data if isinstance(data, dict) else {}
+
+    def patch_orchestrator_tiles(self, payload: dict) -> dict:
+        data = self._request(
+            "PATCH",
+            "/api/v1/orchestrator/tiles",
+            json=payload,
+            timeout=60.0,
+        )
+        return data if isinstance(data, dict) else {}
 
     def _parse_workflow(self, data: dict) -> WorkflowRecord:
         plan_data = data.get("plan")

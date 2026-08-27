@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
+import { RunProvider } from './store/runs'
 import './styles.css'
 
 function preventWindowFileOpen(event: DragEvent): void {
@@ -12,6 +13,8 @@ window.addEventListener('drop', preventWindowFileOpen)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <RunProvider>
+      <App />
+    </RunProvider>
   </StrictMode>
 )

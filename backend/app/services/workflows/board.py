@@ -72,6 +72,8 @@ def _run_event_status(status: str) -> str:
         return "ok"
     if raw == "error":
         return "error"
+    if raw in {"canceled", "cancelled"}:
+        return "canceled"
     return "running"
 
 
@@ -135,10 +137,12 @@ def _pick_slot_run(candidates: list[AgentRun]) -> AgentRun:
     def rank(row: AgentRun) -> tuple[int, datetime]:
         raw = (row.status or "").strip().lower()
         if raw in {"started", "running"}:
-            tier = 3
+            tier = 4
         elif raw == "error":
-            tier = 2
+            tier = 3
         elif raw == "ok":
+            tier = 2
+        elif raw in {"canceled", "cancelled"}:
             tier = 1
         else:
             tier = 0
@@ -532,7 +536,9 @@ def get_workflow_board(
                 upcoming.append(stamp)
     upcoming.sort()
     stats = BoardStats(
-        active_agents=sum(1 for item in agents if item.kind == "workflow" and item.status == "active"),
+        active_agents=sum(
+            1 for item in agents if item.kind == "workflow" and not item.paused
+        ),
         runs_today=runs_today,
         errors_today=errors_today,
         needs_attention=sum(1 for item in agents if item.status == "needs_attention"),

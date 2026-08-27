@@ -426,6 +426,8 @@ def _status_label(status: str) -> str:
         return "ошибка"
     if status in {"started", "running"}:
         return "выполняется"
+    if status in {"canceled", "cancelled"}:
+        return "отменён"
     return status or "в работе"
 
 

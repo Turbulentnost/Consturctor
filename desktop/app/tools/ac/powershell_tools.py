@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 from app.tools.ac.tooling import (
@@ -22,9 +21,10 @@ from app.tools.ac.agent_workspace import (
     WorkspaceError,
 )
 from app.tools.ac.base import BaseTool
+from app.tools.ac.process_run import run_captured, wrap_powershell_command
 from app.tools.ac.registry import ToolRegistry
 
-DEFAULT_TIMEOUT_SECONDS = 30
+DEFAULT_TIMEOUT_SECONDS = 90
 MAX_TIMEOUT_SECONDS = 300
 MAX_OUTPUT_CHARS = 20_000
 SUMMARY_CHARS = 2_000
@@ -116,31 +116,22 @@ class WorkspacePowerShellRunTool(BaseTool):
             )
 
         timeout = self._timeout(input_data.get("timeout_seconds"))
+        wrapped = wrap_powershell_command(command)
+        argv = [
+            executable,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+        ]
+        if executable.lower().endswith("powershell.exe"):
+            argv.extend(["-WindowStyle", "Hidden"])
+        argv.extend(["-Command", wrapped])
         try:
-            completed = subprocess.run(
-                [
-                    executable,
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    command,
-                ],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                errors="replace",
-            )
-        except subprocess.TimeoutExpired as exc:
-            return self._result(
-                command=command,
+            completed = run_captured(
+                argv,
                 cwd=cwd,
-                exit_code=None,
-                stdout=self._coerce_output(exc.stdout),
-                stderr=self._coerce_output(exc.stderr),
-                timed_out=True,
+                timeout=timeout,
             )
         except Exception as exc:  # noqa: BLE001 - subprocess может вернуть OSError
             return self._fail("POWERSHELL_EXECUTION_ERROR", str(exc))
@@ -148,10 +139,10 @@ class WorkspacePowerShellRunTool(BaseTool):
         return self._result(
             command=command,
             cwd=cwd,
-            exit_code=completed.returncode,
+            exit_code=completed.exit_code,
             stdout=completed.stdout,
             stderr=completed.stderr,
-            timed_out=False,
+            timed_out=completed.timed_out,
         )
 
     def _resolve_cwd(self, workspace_dir: Path, working_subdir: object) -> Path:

@@ -86,3 +86,5 @@ def test_events_for_started_run_explains_in_progress() -> None:
     assert kinds[-1] == "system"
     assert _status_label("started") == "выполняется"
     assert _status_label("ok") == "готово"
+    assert _status_label("canceled") == "отменён"
+    assert _status_label("cancelled") == "отменён"

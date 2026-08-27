@@ -69,6 +69,14 @@ def seed_agent_brief(cwd: str, workflow: WorkflowRecord, *, extra: str = "") -> 
     extra_text = (extra or "").strip()
     if extra_text:
         parts.extend(["", "## Бриф проектирования", extra_text])
+    playbook = {}
+    if isinstance(workflow.local_run, dict):
+        raw_playbook = workflow.local_run.get("playbook")
+        if isinstance(raw_playbook, dict):
+            playbook = raw_playbook
+    instructions = str(playbook.get("instructions") or "").strip()
+    if instructions:
+        parts.extend(["", "## Инструкция запуска", instructions])
     from app.sdk_agent.prompt import known_design_facts
 
     facts = known_design_facts(workflow)
@@ -129,11 +137,11 @@ def seed_workflow_files(api: ApiClient, workflow_id: str, cwd: str) -> str:
     if not manifest:
         return (
             "Прочитай materials/manifest.json. База документов пустая. "
-            "Если нужен файл, спроси через askQuestion."
+            "Если нужен файл, спроси через askQuestion с needsFile=true."
         )
     return (
         "Прочитай materials/manifest.json, затем нужные файлы. "
-        "Если документа нет, спроси через askQuestion."
+        "Если документа нет, спроси через askQuestion с needsFile=true."
     )
 
 

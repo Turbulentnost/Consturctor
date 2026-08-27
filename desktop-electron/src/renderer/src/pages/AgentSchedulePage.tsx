@@ -1,12 +1,40 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { IntervalUnit, ScheduleDraft, ScheduleTriggerSpec, TriggerKind } from '../api/types'
+import type {
+  IntervalUnit,
+  ScheduleDraft,
+  ScheduleTriggerSpec,
+  TriggerKind,
+  WorkflowRecord
+} from '../api/types'
 
 interface AgentSchedulePageProps {
   workflowId: string
   title: string
   onBack: () => void
   onNext: (draft: ScheduleDraft) => void
+}
+
+/**
+ * Fallback description when the backend schedule draft returns an empty goal:
+ * reuse whatever the workflow already knows (plan goal, or the playbook's
+ * expected result / instructions). No hardcoded copy - only existing data.
+ */
+function goalFromWorkflow(record: WorkflowRecord): string {
+  const planGoal = (record.plan?.goal || '').trim()
+  if (planGoal) return planGoal
+  const local = record.localRun || {}
+  for (const key of ['playbook_draft', 'playbook']) {
+    const blob = local[key]
+    if (blob && typeof blob === 'object') {
+      const data = blob as Record<string, unknown>
+      const expected = String(data.expected_result ?? '').trim()
+      if (expected) return expected
+      const instructions = String(data.instructions ?? '').trim()
+      if (instructions) return instructions
+    }
+  }
+  return ''
 }
 
 function emptyTrigger(kind: TriggerKind): ScheduleTriggerSpec {
@@ -251,19 +279,28 @@ export function AgentSchedulePage({
     if (loadedRef.current) return
     loadedRef.current = true
     let alive = true
-    void api
-      .proposeScheduleDraft(workflowId)
-      .then((draft) => {
-        if (!alive) return
+    void (async () => {
+      const [draftResult, recordResult] = await Promise.allSettled([
+        api.proposeScheduleDraft(workflowId),
+        api.getWorkflow(workflowId)
+      ])
+      if (!alive) return
+      const draft = draftResult.status === 'fulfilled' ? draftResult.value : null
+      const record = recordResult.status === 'fulfilled' ? recordResult.value : null
+      const fallbackGoal = record ? goalFromWorkflow(record) : ''
+      if (draft) {
         const cleanName = (draft.name || '').trim()
         if (cleanName && !['notes', 'notes.txt'].includes(cleanName.toLowerCase())) {
           setName(cleanName)
         }
         if (draft.goal) setGoal(draft.goal)
+        else if (fallbackGoal) setGoal(fallbackGoal)
         if (draft.summary) setSuggestion(draft.summary)
         if (draft.triggers.length > 0) setTriggers(draft.triggers)
-      })
-      .catch(() => undefined)
+      } else if (fallbackGoal) {
+        setGoal(fallbackGoal)
+      }
+    })()
     return () => {
       alive = false
     }

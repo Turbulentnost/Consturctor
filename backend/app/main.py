@@ -84,6 +84,7 @@ async def lifespan(_app: FastAPI):
         init_db()
         logger.info("App Postgres schema ready")
         from app.api.v1.notifications import board_live_subscriber, notification_scheduler
+        from app.services.triggers.tick import tick_due_triggers
         from app.modules.chat.realtime import dispatch_event
 
         def _chat_outbound_loop() -> None:
@@ -97,9 +98,20 @@ async def lifespan(_app: FastAPI):
         import threading
 
         threading.Thread(target=_chat_outbound_loop, name="chat-outbound", daemon=True).start()
+
+        async def trigger_scheduler() -> None:
+            await asyncio.sleep(8)
+            while True:
+                try:
+                    await asyncio.to_thread(tick_due_triggers)
+                except Exception:
+                    logger.exception("Trigger scheduler tick failed")
+                await asyncio.sleep(20)
+
         scheduler_tasks = [
             asyncio.create_task(notification_scheduler()),
             asyncio.create_task(board_live_subscriber()),
+            asyncio.create_task(trigger_scheduler()),
         ]
     except Exception:
         logger.exception("Failed to initialize app Postgres")

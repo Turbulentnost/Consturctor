@@ -76,6 +76,7 @@ class WorkflowFileSchema(BaseModel):
 class WorkflowFilesResponse(BaseModel):
     user_files: list[WorkflowFileSchema] = Field(default_factory=list)
     agent_files: list[WorkflowFileSchema] = Field(default_factory=list)
+    run_attachments: list[WorkflowFileSchema] = Field(default_factory=list)
 
 
 class PlatformFileSchema(WorkflowFileSchema):
@@ -240,6 +241,11 @@ class AgentRunFinish(BaseModel):
     answer: str = ""
     events: list[dict[str, Any]] = Field(default_factory=list)
     message: str = ""
+
+
+class AgentRunCancelSlot(BaseModel):
+    trigger_id: str
+    answer: str = ""
 
 
 class LocalDemoFinish(BaseModel):

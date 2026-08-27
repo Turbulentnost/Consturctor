@@ -28,6 +28,32 @@ export function sessionKind(item: WorkflowFileItem): SessionKind {
   return 'formation'
 }
 
+export type FileCategory = 'temporary' | 'knowledge' | 'instructions' | 'agent'
+
+// Origins produced during agent design/formation: treated as instructions the
+// agent reads to understand itself, not as reusable knowledge documents.
+const INSTRUCTION_ORIGINS = new Set([
+  'initial_upload',
+  'clarify_upload',
+  'draft_readiness',
+  'user_upload'
+])
+
+export function categoryOf(item: WorkflowFileItem): FileCategory {
+  if ((item.source || '') === 'agent') return 'agent'
+  if ((item.scope || '') === 'run_attachment') return 'temporary'
+  if ((item.origin || '') === 'keep_knowledge') return 'knowledge'
+  if (INSTRUCTION_ORIGINS.has(item.origin || '')) return 'instructions'
+  return 'knowledge'
+}
+
+export const FILE_CATEGORY_LABELS: Record<FileCategory, string> = {
+  temporary: 'Временные (этот запуск)',
+  knowledge: 'База знаний',
+  instructions: 'Инструкции',
+  agent: 'Создано агентом'
+}
+
 export function formatFileWhen(raw?: string, now = new Date()): string {
   const stamp = parseFileDate(raw)
   if (!stamp) return ''

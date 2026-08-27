@@ -27,6 +27,10 @@ celery_app.conf.update(
             "task": "app.tasks.scheduled.enqueue_due_kpi",
             "schedule": 30.0,
         },
+        "enqueue-due-orchestrator-kpi": {
+            "task": "app.tasks.scheduled.enqueue_due_orchestrator_kpi",
+            "schedule": 30.0,
+        },
     },
 )
 celery_app.set_default()

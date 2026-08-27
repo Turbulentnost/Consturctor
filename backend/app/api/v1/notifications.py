@@ -161,16 +161,18 @@ async def notifications_ws(websocket: WebSocket, token: str = "") -> None:
     await websocket.accept()
     await hub.replace(auth.user_id, websocket, session_id=auth.session_id)
     mark_online(auth.user_id, auth.session_id)
-    db = SessionLocal()
-    try:
+    latest = None
+    with SessionLocal() as db:
         pending = list_pending(db, user_id=auth.user_id)
         older, latest = split_latest(pending)
         for item in older:
             mark_delivered(db, item.id)
-        if latest is not None:
-            sent = await hub.push(auth.user_id, payload_dict(latest))
-            if sent:
+    if latest is not None:
+        sent = await hub.push(auth.user_id, payload_dict(latest))
+        if sent:
+            with SessionLocal() as db:
                 mark_delivered(db, latest.id)
+    try:
         while True:
             await websocket.receive_text()
             if not is_current_session(auth.user_id, auth.session_id):
@@ -185,7 +187,6 @@ async def notifications_ws(websocket: WebSocket, token: str = "") -> None:
         hub.remove(auth.user_id, websocket)
         # Do not mark_offline on a WS blip: the desktop still polls /pending every 15s.
         # Clearing presence here made Celery skip a live app and drop the calendar slot.
-        db.close()
 
 
 async def _deliver_if_due(db: Session, item: NotificationOut) -> None:

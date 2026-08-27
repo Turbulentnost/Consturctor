@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { WorkflowFileItem, WorkflowRecord } from '../api/types'
 import { AgentFeed, StageStepper, type FormationController } from '../components/agentfeed'
@@ -6,7 +7,7 @@ import { ClarifyCard } from '../components/agentfeed/ClarifyCard'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
 import { presentAgentText } from '../components/agentfeed/formatAgentText'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
-import { formatSize } from './filesGrouping'
+import { categoryOf, FILE_CATEGORY_LABELS, formatSize } from './filesGrouping'
 
 interface AgentStudioPageProps {
   workflowId: string
@@ -18,10 +19,6 @@ interface AgentStudioPageProps {
 }
 
 type StudioTab = 'stages' | 'files'
-
-function isAgentFile(file: WorkflowFileItem): boolean {
-  return (file.source || '').toLowerCase() === 'agent'
-}
 
 function StudioFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
   const name = file.name || 'file'
@@ -116,8 +113,7 @@ export function AgentStudioPage({
 
   const refreshFiles = useCallback(async () => {
     try {
-      const list = await api.listPlatformFiles()
-      setFiles(list.filter((f) => !f.workflowId || f.workflowId === workflowId))
+      setFiles(await api.listWorkflowFiles(workflowId))
     } catch {
       setFiles([])
     }
@@ -171,13 +167,35 @@ export function AgentStudioPage({
 
   const canDemo = designDone && !busy && !awaiting
   const composerDisabled = busy || awaiting
-  const attachedFiles = useMemo(() => files.filter((file) => !isAgentFile(file)), [files])
-  const generatedFiles = useMemo(() => files.filter(isAgentFile), [files])
+  const temporaryFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'temporary'),
+    [files]
+  )
+  const knowledgeFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'knowledge'),
+    [files]
+  )
+  const instructionFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'instructions'),
+    [files]
+  )
+  const generatedFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'agent'),
+    [files]
+  )
 
   useEffect(() => {
     if (tab !== 'files') return
     void refreshFiles()
   }, [tab, refreshFiles])
+
+  useEffect(() => {
+    return agentClient.onEvent((event) => {
+      if (event.type !== 'files_updated') return
+      if (event.workflowId && event.workflowId !== workflowId) return
+      void refreshFiles()
+    })
+  }, [workflowId, refreshFiles])
 
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({
@@ -190,6 +208,19 @@ export function AgentStudioPage({
 
   const removeAttachment = (path: string): void => {
     setAttachments((prev) => prev.filter((item) => item !== path))
+  }
+
+  const answerWithRefresh = (
+    requestId: string,
+    value: string,
+    filePaths?: string[]
+  ): void => {
+    session.answer(requestId, value, filePaths)
+    if (filePaths && filePaths.length > 0) {
+      window.setTimeout(() => {
+        void refreshFiles()
+      }, 400)
+    }
   }
 
   const submit = (): void => {
@@ -228,7 +259,7 @@ export function AgentStudioPage({
               hideRunningStatus
               dockQuestion
               emptyHint="Проектировщик готовит черновик агента. Ответьте на уточняющие вопросы, если они появятся."
-              onAnswer={session.answer}
+              onAnswer={answerWithRefresh}
               onHitl={session.respondHitl}
               onSkip={session.skip}
             />
@@ -240,7 +271,7 @@ export function AgentStudioPage({
                   key={`${session.pendingQuestion.requestId}:${session.pendingQuestion.question}:${session.pendingQuestion.options.join('|')}`}
                   question={session.pendingQuestion}
                   allowFiles
-                  onAnswer={session.answer}
+                  onAnswer={answerWithRefresh}
                 />
               </div>
             )}
@@ -351,8 +382,10 @@ export function AgentStudioPage({
                 <div className="wf-files-empty">Файлы не прикреплены</div>
               ) : (
                 <div className="wf-file-groups">
-                  <FileSection title="Прикрепили мы" items={attachedFiles} />
-                  <FileSection title="Создано агентом" items={generatedFiles} />
+                  <FileSection title={FILE_CATEGORY_LABELS.temporary} items={temporaryFiles} />
+                  <FileSection title={FILE_CATEGORY_LABELS.knowledge} items={knowledgeFiles} />
+                  <FileSection title={FILE_CATEGORY_LABELS.instructions} items={instructionFiles} />
+                  <FileSection title={FILE_CATEGORY_LABELS.agent} items={generatedFiles} />
                 </div>
               )}
             </div>

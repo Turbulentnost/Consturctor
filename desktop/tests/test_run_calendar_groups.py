@@ -73,6 +73,28 @@ def test_same_agent_errors_keep_red_badge() -> None:
     assert color == "#D64545"
 
 
+def test_canceled_group_is_not_scheduled() -> None:
+    events = [
+        CalendarEvent(
+            id="1",
+            workflow_id="wf",
+            title="A",
+            start_at="2026-08-19T10:00:00+03:00",
+            status="canceled",
+        ),
+        CalendarEvent(
+            id="2",
+            workflow_id="wf",
+            title="A",
+            start_at="2026-08-19T10:20:00+03:00",
+            status="cancelled",
+        ),
+    ]
+    _title, subtitle, color = group_summary(events)
+    assert subtitle == "Отменены"
+    assert color == "#8B6F64"
+
+
 def test_missed_group_is_not_history() -> None:
     events = [
         CalendarEvent(

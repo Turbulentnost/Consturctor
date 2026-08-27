@@ -17,7 +17,9 @@ export function ReadinessPage({
   onComplete
 }: ReadinessPageProps): React.JSX.Element {
   const startedRef = useRef('')
+  const watchdogRef = useRef(0)
   const [uploading, setUploading] = useState(false)
+  const [blockCount, setBlockCount] = useState(draft.agentSuggestions.length)
 
   const handleResult = useCallback(
     async (result: AgentResult) => {
@@ -32,10 +34,42 @@ export function ReadinessPage({
   const { start } = session
 
   useEffect(() => {
+    let cancelled = false
+    if (!draft.draftId) return
+    void api.getAgentDraft(draft.draftId).then((fresh) => {
+      if (!cancelled) setBlockCount(fresh.agentSuggestions.length)
+    }).catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [draft.draftId])
+
+  useEffect(() => {
     if (!draft.draftId || startedRef.current === draft.draftId) return
     startedRef.current = draft.draftId
     start({ kind: 'readiness', draftId: draft.draftId })
   }, [draft.draftId, start])
+
+  const restartAgent = (): void => {
+    startedRef.current = draft.draftId
+    void api.getAgentDraft(draft.draftId).then((fresh) => {
+      setBlockCount(fresh.agentSuggestions.length)
+    }).catch(() => {})
+    start({ kind: 'readiness', draftId: draft.draftId })
+  }
+
+  useEffect(() => {
+    if (!session.running || session.pendingQuestion) return
+    const stuck =
+      session.items.length === 0 ||
+      session.items.every((item) => item.kind === 'system' && item.text.includes('завершился'))
+    if (!stuck || watchdogRef.current >= 2) return
+    const timer = window.setTimeout(() => {
+      watchdogRef.current += 1
+      restartAgent()
+    }, 5000)
+    return () => window.clearTimeout(timer)
+  }, [session.running, session.pendingQuestion, session.items, draft.draftId])
 
   const answer = async (requestId: string, value: string, filePaths: string[] = []): Promise<void> => {
     let finalValue = value
@@ -57,7 +91,7 @@ export function ReadinessPage({
     session.answer(requestId, finalValue)
   }
 
-  const totalBlocks = draft.agentSuggestions.length
+  const totalBlocks = blockCount
   const locked = Boolean(busy || uploading)
 
   return (
@@ -111,9 +145,13 @@ export function ReadinessPage({
               Локальный Cursor SDK проходит функциональные блоки по очереди. На вопрос можно выбрать вариант,
               написать свой ответ или прикрепить файл.
             </p>
-            {session.running && (
+            {session.running ? (
               <button className="btn-ghost" style={{ marginTop: 10 }} onClick={session.cancel}>
                 Остановить
+              </button>
+            ) : (
+              <button className="btn-ghost" style={{ marginTop: 10 }} onClick={restartAgent}>
+                Запустить агента
               </button>
             )}
           </div>

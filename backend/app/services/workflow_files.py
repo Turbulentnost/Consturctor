@@ -28,6 +28,11 @@ SOURCE_USER = "user"
 SOURCE_AGENT = "agent"
 SCOPE_KNOWLEDGE = "knowledge"
 SCOPE_RUN_OUTPUT = "run_output"
+# Temporary per-run inputs the user attaches on a given run. Kept out of the
+# permanent knowledge base and tied to a specific run_id.
+SCOPE_RUN_ATTACHMENT = "run_attachment"
+ORIGIN_KEEP_KNOWLEDGE = "keep_knowledge"
+ORIGIN_RUN_ATTACHMENT = "run_attachment"
 
 
 class WorkflowFileError(Exception):
@@ -64,6 +69,32 @@ def prepare_workflow_files(files: list[tuple[str, bytes]]) -> list[PreparedWorkf
     return [prepare_workflow_file(name, raw) for name, raw in files]
 
 
+def _find_existing_file(
+    db: Session,
+    *,
+    workflow_id: str,
+    scope: str,
+    sha256: str,
+    run_id: str,
+) -> WorkflowFile | None:
+    """Return a stored file with identical content in the same bucket, if any.
+
+    Dedup key is (workflow_id, scope, sha256) plus run_id for run-scoped files.
+    This stops the same document from being written to the DB again on every
+    run (for example when the agent calls keepKnowledgeFile repeatedly).
+    """
+    if not sha256:
+        return None
+    query = db.query(WorkflowFile).filter(
+        WorkflowFile.workflow_id == workflow_id,
+        WorkflowFile.scope == scope,
+        WorkflowFile.sha256 == sha256,
+    )
+    if (run_id or "").strip():
+        query = query.filter(WorkflowFile.run_id == (run_id or "").strip())
+    return query.first()
+
+
 def save_prepared_files(
     db: Session,
     *,
@@ -75,15 +106,29 @@ def save_prepared_files(
     origin: str = "",
 ) -> list[WorkflowFile]:
     rows: list[WorkflowFile] = []
+    scope_norm = (scope or SCOPE_KNOWLEDGE).strip() or SCOPE_KNOWLEDGE
+    run_norm = (run_id or "").strip()
     for item in prepared:
+        existing = _find_existing_file(
+            db,
+            workflow_id=workflow_id,
+            scope=scope_norm,
+            sha256=item.sha256,
+            run_id=run_norm,
+        )
+        if existing is not None:
+            # Identical content already stored in this bucket: reuse it instead
+            # of inserting a duplicate blob.
+            rows.append(existing)
+            continue
         loaded = dict(item.loaded)
         text = str(loaded.get("text") or "").strip()
         row = WorkflowFile(
             id=item.file_id,
             workflow_id=workflow_id,
-            run_id=(run_id or "").strip(),
+            run_id=run_norm,
             source=(source or SOURCE_USER).strip() or SOURCE_USER,
-            scope=(scope or SCOPE_KNOWLEDGE).strip() or SCOPE_KNOWLEDGE,
+            scope=scope_norm,
             origin=(origin or "").strip(),
             filename=str(loaded.get("name") or item.original_name or "file"),
             mime_type=str(loaded.get("mime_type") or _guess_mime(item.original_name)),
@@ -124,6 +169,31 @@ def add_user_files_to_workflow(
     db.flush()
     _refresh_workflow_document_from_files(db, row)
     return [str(item.loaded.get("name") or item.original_name) for item in prepared], prepared
+
+
+def register_run_attachments(
+    db: Session,
+    *,
+    row: Workflow,
+    files: list[tuple[str, bytes]],
+    run_id: str = "",
+    origin: str = ORIGIN_RUN_ATTACHMENT,
+) -> list[WorkflowFile]:
+    """Store temporary per-run user attachments (not permanent knowledge)."""
+    prepared = prepare_workflow_files(files)
+    if not prepared:
+        return []
+    rows = save_prepared_files(
+        db,
+        workflow_id=row.id,
+        prepared=prepared,
+        source=SOURCE_USER,
+        scope=SCOPE_RUN_ATTACHMENT,
+        run_id=run_id,
+        origin=origin,
+    )
+    db.flush()
+    return rows
 
 
 def register_agent_files(
@@ -219,15 +289,24 @@ def list_workflow_files(
     requested_run = (run_id or "").strip()
     user_files: list[WorkflowFileSchema] = []
     agent_files: list[WorkflowFileSchema] = []
+    run_attachments: list[WorkflowFileSchema] = []
     for item in rows:
         schema = _to_file_schema(item)
         if item.source == SOURCE_AGENT:
             if requested_run and item.run_id != requested_run:
                 continue
             agent_files.append(schema)
+        elif item.scope == SCOPE_RUN_ATTACHMENT:
+            if requested_run and item.run_id != requested_run:
+                continue
+            run_attachments.append(schema)
         elif item.scope == SCOPE_KNOWLEDGE:
             user_files.append(schema)
-    return WorkflowFilesResponse(user_files=user_files, agent_files=agent_files)
+    return WorkflowFilesResponse(
+        user_files=user_files,
+        agent_files=agent_files,
+        run_attachments=run_attachments,
+    )
 
 
 def get_workflow_file(

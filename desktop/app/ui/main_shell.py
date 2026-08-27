@@ -245,6 +245,8 @@ class MainShell(QWidget):
         self._page_history = AgentHistoryPage(self._api)
         self._page_group_runs = AgentGroupRunsPage()
         self._page_chat = ChatPage(self._api)
+        self._page_orchestrator = OrchestratorPage()
+        self._page_orchestrator.run_requested.connect(self._on_orchestrator_run)
         self._page_chat.open_agent_requested.connect(self._on_agent_history_requested)
         self._page_orchestrator = OrchestratorPage()
         self._page_chat.threads_changed.connect(self._sync_sidebar_dialogs)
@@ -1603,6 +1605,7 @@ class MainShell(QWidget):
             self._deleted_workflow_ids,
         )
         self._page_agents.set_board(board)
+        self._page_orchestrator.set_bound_agents(board.agents)
 
     def _show_drafts_result(self, result: object) -> None:
         if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[0], WorkflowBoard):
@@ -2150,6 +2153,19 @@ class MainShell(QWidget):
             attach_pending_for(wid)
             return
         self.navigate_to_agent_run(wid)
+
+    def _on_orchestrator_run(self, workflow_id: str) -> None:
+        from app.orchestrator.agents import is_local_workflow
+
+        wid = (workflow_id or "").strip()
+        if not wid or is_local_workflow(wid):
+            QMessageBox.information(
+                self,
+                "Оркестратор",
+                "Опубликованный агент для этого процесса ещё не найден.",
+            )
+            return
+        self.navigate_to_agent_run(wid, start_demo=True)
 
     def navigate_to_agent_run(
         self,

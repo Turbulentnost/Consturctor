@@ -323,6 +323,35 @@ def update_local_run(
     return _to_schema(row)
 
 
+def apply_operating_instruction(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    instruction: str,
+) -> WorkflowSchema:
+    """Append a lasting operating rule to notes and playbook instructions."""
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    text = (instruction or "").strip()
+    if not text:
+        return _to_schema(row)
+    notes = str(row.notes or "").strip()
+    if text not in notes:
+        row.notes = f"{notes}\n\n{text}".strip() if notes else text
+    local = dict(row.local_run or {})
+    playbook = dict(local.get("playbook") or {}) if isinstance(local.get("playbook"), dict) else {}
+    current = str(playbook.get("instructions") or "").strip()
+    if text not in current:
+        playbook["instructions"] = f"{current}\n\n{text}".strip() if current else text
+        local["playbook"] = playbook
+        row.local_run = local
+        flag_modified(row, "local_run")
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _to_schema(row)
+
+
 WorkflowEventCallback = Callable[..., None]
 
 
@@ -625,6 +654,27 @@ def _apply_design_answers_to_draft(
     return updated
 
 
+def _merge_preserved_run_inputs(
+    draft: dict[str, Any],
+    local: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Keep sidecar-persisted run_inputs when the designer JSON omitted them."""
+    updated = dict(draft or {})
+    current = updated.get("run_inputs")
+    if isinstance(current, list) and current:
+        return updated
+    data = local if isinstance(local, dict) else {}
+    for key in ("playbook_draft", "playbook"):
+        raw = data.get(key)
+        if not isinstance(raw, dict):
+            continue
+        existing = raw.get("run_inputs")
+        if isinstance(existing, list) and existing:
+            updated["run_inputs"] = existing
+            return updated
+    return updated
+
+
 def finish_local_design_workflow(
     db: Session,
     *,
@@ -638,9 +688,12 @@ def finish_local_design_workflow(
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     local = dict(row.local_run or {})
     qa = _qa_from_stored_design_answers(local.get("design_answers")) + _qa_from_design_events(events)
-    draft = _apply_design_answers_to_draft(
-        prompts.parse_playbook_draft(answer or ""),
-        qa,
+    draft = _merge_preserved_run_inputs(
+        _apply_design_answers_to_draft(
+            prompts.parse_playbook_draft(answer or ""),
+            qa,
+        ),
+        local,
     )
     if not draft.get("steps"):
         local = dict(row.local_run or {})
@@ -1434,6 +1487,7 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
         }
     )
     row.local_run = local
+    flag_modified(row, "local_run")
     row.phase = "done"
     db.commit()
     db.refresh(row)
@@ -1494,6 +1548,7 @@ def generate_agent_kpi(
     kpi = agent_kpi.build_kpi_record(parsed, title=title, goal=goal, schedule=draft, status="draft")
     local["kpi"] = kpi
     row.local_run = local
+    flag_modified(row, "local_run")
     db.commit()
     db.refresh(row)
     return _to_schema(row)
@@ -1576,6 +1631,7 @@ def confirm_agent_kpi(db: Session, *, user_id: str, workflow_id: str) -> Workflo
     stored["status"] = "ready"
     local["kpi"] = stored
     row.local_run = local
+    flag_modified(row, "local_run")
     db.commit()
     return publish_workflow(db, user_id=user_id, workflow_id=workflow_id)
 
@@ -1986,7 +2042,7 @@ def _demo_validation_report(phase: PhaseResult, draft: dict[str, Any]) -> dict[s
 
 
 def _playbook_from_draft(row: Workflow, draft: dict[str, Any]) -> dict[str, Any]:
-    return {
+    playbook = {
         "status": prompts.DRAFT_STATUS_DRAFT,
         "instructions": prompts.draft_summary_text(draft),
         "example_run": "",
@@ -1996,6 +2052,15 @@ def _playbook_from_draft(row: Workflow, draft: dict[str, Any]) -> dict[str, Any]
         "expected_result": str(draft.get("result") or ""),
         "triggers": [],
     }
+    # Carry over per-run inputs and the run trigger so they survive into the
+    # published playbook (the schedule draft and run-start prompts rely on them).
+    when_to_run = str(draft.get("when_to_run") or "").strip()
+    if when_to_run:
+        playbook["when_to_run"] = when_to_run
+    run_inputs = draft.get("run_inputs")
+    if isinstance(run_inputs, list) and run_inputs:
+        playbook["run_inputs"] = run_inputs
+    return playbook
 
 
 def _fail_demo_validation(

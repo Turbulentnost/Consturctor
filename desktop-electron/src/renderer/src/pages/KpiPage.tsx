@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
+import { KpiTileCard } from '../components/KpiTileCard'
 import type { AgentKpi, AgentRunHistoryItem, BoardAgent, KpiTile } from '../api/types'
 
 const iconCalendar = new URL('../../../temp/KPI/calendar.png', import.meta.url).href
@@ -44,6 +45,7 @@ interface AgentKpiView {
   lastCalculatedAt: string
   dailySuccess: number[]
   dailyScore: number[]
+  kpi: AgentKpi | null
 }
 
 interface KpiSnapshot {
@@ -269,17 +271,133 @@ function tilesHaveFacts(kpi: AgentKpi | null | undefined): boolean {
   )
 }
 
+function findTile(kpi: AgentKpi, id: string): KpiTile | undefined {
+  return kpi.tiles.find((tile) => tile.id === id || tile.measure?.kind === id)
+}
+
+function tileColorFromScore(score: number | null, greenMin = 90, yellowMin = 70): string {
+  if (score == null) return 'none'
+  if (score >= greenMin) return 'green'
+  if (score >= yellowMin) return 'yellow'
+  return 'red'
+}
+
+function startedTimes(runs: AgentRunHistoryItem[]): number[] {
+  return runs
+    .map((run) => runTime(run))
+    .filter((time) => time > 0)
+    .sort((a, b) => a - b)
+}
+
+function computeTileFact(
+  tile: KpiTile,
+  runs: AgentRunHistoryItem[]
+): { value: number; evidence: string } | null {
+  const kind = tile.measure?.kind || tile.id
+  const finished = runs.filter((run) => isSuccess(run.status) || isErrorStatus(run.status))
+  if (kind === 'runs_count') {
+    if (!runs.length) return null
+    return { value: runs.length, evidence: `прогонов: ${runs.length}` }
+  }
+  if (kind === 'fail_count') {
+    if (!finished.length) return null
+    const fails = finished.filter((run) => isErrorStatus(run.status)).length
+    return { value: fails, evidence: `ошибок: ${fails} из ${finished.length}` }
+  }
+  if (kind === 'success_rate') {
+    if (!finished.length) return null
+    const ok = finished.filter((run) => isSuccess(run.status)).length
+    return {
+      value: Math.round((1000 * ok) / finished.length) / 10,
+      evidence: `успешных: ${ok} из ${finished.length}`
+    }
+  }
+  if (kind === 'expected_interval') {
+    const times = startedTimes(runs)
+    if (times.length < 2) return null
+    const gaps = times.slice(1).map((time, index) => (time - times[index]) / 60000)
+    const avg = gaps.reduce((sum, value) => sum + value, 0) / gaps.length
+    return { value: Math.round(avg * 10) / 10, evidence: `интервалов: ${gaps.length}` }
+  }
+  if (kind === 'on_schedule_rate') {
+    const planMinutes = Number(tile.plan.value)
+    if (!Number.isFinite(planMinutes) || planMinutes <= 0) return null
+    const triggerRuns = runs.filter((run) => run.source === 'trigger')
+    const times = startedTimes(triggerRuns)
+    if (times.length < 2) return null
+    const window = Math.max(5, planMinutes * 0.2)
+    let onTime = 0
+    for (let index = 1; index < times.length; index += 1) {
+      const gap = Math.abs((times[index] - times[index - 1]) / 60000 - planMinutes)
+      if (gap <= window) onTime += 1
+    }
+    const total = times.length - 1
+    return {
+      value: Math.round((1000 * onTime) / total) / 10,
+      evidence: `вовремя: ${onTime} из ${total}`
+    }
+  }
+  return null
+}
+
+function scoreForFilledTile(tile: KpiTile, fact: number): number | null {
+  const kind = tile.measure?.kind || tile.id
+  const plan = Number(tile.plan.value)
+  if (kind === 'success_rate' || kind === 'on_schedule_rate') return Math.max(0, Math.min(100, fact))
+  if (kind === 'fail_count') {
+    if (fact <= 0) return 100
+    if (Number.isFinite(plan) && plan > 0) return Math.max(0, Math.round(100 - (fact / plan) * 100))
+    return Math.max(0, 100 - fact * 25)
+  }
+  if (kind === 'runs_count' && Number.isFinite(plan) && plan > 0) {
+    return Math.max(0, Math.min(100, Math.round((100 * fact) / plan)))
+  }
+  if (kind === 'expected_interval' && Number.isFinite(plan) && plan > 0 && fact > 0) {
+    return Math.round((Math.min(fact, plan) / Math.max(fact, plan)) * 100)
+  }
+  return tile.scorePercent
+}
+
+function fillKpiFactsFromRuns(kpi: AgentKpi | null | undefined, runs: AgentRunHistoryItem[]): AgentKpi | null {
+  if (!kpi) return null
+  const now = new Date().toISOString()
+  return {
+    ...kpi,
+    tiles: kpi.tiles.map((tile) => {
+      const computed = computeTileFact(tile, runs)
+      const keepFact = tileNumber(tile) != null
+      if (!computed && keepFact) return tile
+      if (!computed) return tile
+      const value = keepFact ? tileNumber(tile)! : computed.value
+      const score = tile.scorePercent != null ? tile.scorePercent : scoreForFilledTile(tile, value)
+      const green = tile.method?.greenMin ?? 90
+      const yellow = tile.method?.yellowMin ?? 70
+      return {
+        ...tile,
+        fact: {
+          ...tile.fact,
+          label: tile.fact.label || 'Факт',
+          value
+        },
+        scorePercent: score,
+        color: tile.color && tile.color !== 'none' && keepFact ? tile.color : tileColorFromScore(score, green, yellow),
+        updatedAt: keepFact ? tile.updatedAt : now,
+        evidence: tile.evidence || computed.evidence
+      }
+    })
+  }
+}
+
 function applyKpiTiles(
   metrics: ReturnType<typeof metricsFromRuns>,
   kpi: AgentKpi | null | undefined
 ): ReturnType<typeof metricsFromRuns> {
   if (!kpi) return metrics
-  const byId = new Map(kpi.tiles.map((tile) => [tile.id, tile]))
-  const success = tileNumber(byId.get('success_rate'))
-  const timely = tileNumber(byId.get('on_schedule_rate'))
-  const fails = tileNumber(byId.get('fail_count'))
-  const runs = tileNumber(byId.get('runs_count'))
-  const interval = tileNumber(byId.get('expected_interval'))
+  const success = tileNumber(findTile(kpi, 'success_rate'))
+  const timely = tileNumber(findTile(kpi, 'on_schedule_rate'))
+  const fails = tileNumber(findTile(kpi, 'fail_count'))
+  const runs = tileNumber(findTile(kpi, 'runs_count'))
+  const interval = tileNumber(findTile(kpi, 'expected_interval'))
   const scores = kpi.tiles.map((tile) => tile.scorePercent).filter((value): value is number => value != null)
   return {
     ...metrics,
@@ -296,7 +414,7 @@ function applyKpiTiles(
 
 function metricsFromRuns(runs: AgentRunHistoryItem[], dayCount: number): Omit<
   AgentKpiView,
-  'agent' | 'runs' | 'attention' | 'critical' | 'uncalculated' | 'lastCalculatedAt' | 'dailySuccess' | 'dailyScore'
+  'agent' | 'runs' | 'attention' | 'critical' | 'uncalculated' | 'lastCalculatedAt' | 'dailySuccess' | 'dailyScore' | 'kpi'
 > {
   const successful = runs.filter((run) => isSuccess(run.status)).length
   const errors = runs.filter((run) => isErrorStatus(run.status)).length
@@ -425,7 +543,7 @@ export function KpiPage(): React.JSX.Element {
       const allRuns = runsByAgent[agent.id] ?? []
       const runs = allRuns.filter((run) => inWindow(run, bounds.from, bounds.to))
       const runMetrics = metricsFromRuns(runs, bounds.days.length)
-      const kpi = kpiByAgent[agent.id]
+      const kpi = fillKpiFactsFromRuns(kpiByAgent[agent.id], allRuns)
       const metrics = applyKpiTiles(runMetrics, kpi)
       const dailySuccess: number[] = []
       const dailyScore: number[] = []
@@ -450,7 +568,8 @@ export function KpiPage(): React.JSX.Element {
         uncalculated,
         lastCalculatedAt: latestTileUpdate(kpi),
         dailySuccess,
-        dailyScore
+        dailyScore,
+        kpi
       } satisfies AgentKpiView
     })
   }, [agents, runsByAgent, kpiByAgent, bounds])
@@ -557,8 +676,9 @@ export function KpiPage(): React.JSX.Element {
     setRecalcNote('')
     setRecalcId(workflowId)
     try {
-      const kpi = await api.calculateWorkflowKpi(workflowId)
+      const rawKpi = await api.calculateWorkflowKpi(workflowId)
       const runs = await api.listAgentRuns(workflowId)
+      const kpi = fillKpiFactsFromRuns(rawKpi, runs) ?? rawKpi
       setKpiByAgent((prev) => ({ ...prev, [workflowId]: kpi }))
       setRunsByAgent((prev) => ({ ...prev, [workflowId]: runs }))
       const periodRuns = runs.filter((run) => inWindow(run, bounds.from, bounds.to))
@@ -582,6 +702,20 @@ export function KpiPage(): React.JSX.Element {
       }
       return true
     } catch (error) {
+      try {
+        const runs = await api.listAgentRuns(workflowId)
+        const current = kpiByAgent[workflowId] ?? (await api.getWorkflowKpi(workflowId).catch(() => null))
+        const fallback = fillKpiFactsFromRuns(current, runs)
+        if (fallback) setKpiByAgent((prev) => ({ ...prev, [workflowId]: fallback }))
+        setRunsByAgent((prev) => ({ ...prev, [workflowId]: runs }))
+        if (tilesHaveFacts(fallback)) {
+          setRecalcNote('Сервер не вернул факт, посчитали по истории запусков.')
+          setRecalcError('')
+          return true
+        }
+      } catch {
+        /* keep the original error */
+      }
       setRecalcError(error instanceof Error ? error.message : 'Не удалось пересчитать KPI')
       return false
     } finally {
@@ -1022,14 +1156,15 @@ function AgentsPane({
               <span className="grey">Нет расчёта</span>
             </div>
 
-            <div className="kpi-metric-grid">
-              <MetricCard title="Успешность" value={selected.total ? `${selected.successRate}%` : '—'} hint="Доля успешных запусков" spark={selected.dailySuccess} tone={selected.total ? rowTone(selected.successRate) : 'grey'} />
-              <MetricCard title="Своевременность" value={selected.total ? `${selected.timelinessRate}%` : '—'} hint="Запуски до 10 минут" spark={selected.dailyScore} tone={selected.total ? rowTone(selected.timelinessRate) : 'grey'} />
-              <MetricCard title="Ошибки" value={String(selected.errors)} hint="Запуски со статусом ошибки" spark={selected.dailyScore} tone={selected.errors ? 'red' : selected.total ? 'green' : 'grey'} />
-              <MetricCard title="Число запусков" value={String(selected.total)} hint="Все запуски за период" spark={selected.dailySuccess} tone={selected.total ? 'green' : 'grey'} />
-              <MetricCard title="Среднее время" value={formatAverage(selected.averageMinutes)} hint="Средняя длительность запуска" spark={selected.dailyScore} tone={selected.averageMinutes == null ? 'grey' : selected.averageMinutes > 10 ? 'orange' : 'green'} />
-              <MetricCard title="Полнота" value={`${selected.completeness}%`} hint="Дни периода с запусками" spark={selected.dailySuccess} tone={selected.total ? rowTone(selected.completeness) : 'grey'} />
-            </div>
+            {selected.kpi?.tiles.length ? (
+              <div className="kpi-preview-grid kpi-agent-tiles">
+                {selected.kpi.tiles.map((tile) => (
+                  <KpiTileCard key={tile.id || tile.name} tile={tile} />
+                ))}
+              </div>
+            ) : (
+              <div className="kpi-empty">Для этого агента KPI ещё не сформированы.</div>
+            )}
 
             <div className="kpi-agent-bottom">
               <section className="kpi-card">
@@ -1092,32 +1227,5 @@ function AgentsPane({
         )}
       </div>
     </div>
-  )
-}
-
-function MetricCard({
-  title,
-  value,
-  hint,
-  spark,
-  tone
-}: {
-  title: string
-  value: string
-  hint: string
-  spark: number[]
-  tone: 'green' | 'orange' | 'red' | 'grey'
-}): React.JSX.Element {
-  const label = tone === 'green' ? 'В норме' : tone === 'orange' ? 'Отклонение' : tone === 'red' ? 'Критично' : 'Нет расчёта'
-  return (
-    <article className={`kpi-metric-card ${tone}`}>
-      <div>
-        <span>{title}</span>
-        <strong>{value}</strong>
-        <em>{label}</em>
-        <p>{hint}</p>
-      </div>
-      <Sparkline values={spark.slice(-8)} tone={tone} />
-    </article>
   )
 }

@@ -7,6 +7,20 @@ export type AgentSidecarMessage = Record<string, unknown>
 
 type EventSink = (message: AgentSidecarMessage) => void
 
+const START_TYPES = new Set([
+  'design',
+  'readiness',
+  'demo',
+  'run',
+  'check_trigger',
+  'form_orchestrator',
+  'calc_orchestrator'
+])
+
+function isStartCommand(command: AgentSidecarMessage): boolean {
+  return START_TYPES.has(String(command.type || ''))
+}
+
 /**
  * Manages the Python agent sidecar process that drives the local Cursor SDK.
  * It reuses the existing desktop code and speaks newline-delimited JSON on
@@ -21,6 +35,10 @@ export class AgentSidecar {
   private lastToken: string | null = null
   private lastLogin = ''
   private lastPassword = ''
+  private isReady = false
+  private pending: AgentSidecarMessage[] = []
+  private lastStart: AgentSidecarMessage | null = null
+  private readonly runMeta = new Map<string, { workflowId: string; kind: string }>()
 
   constructor(
     private readonly backendUrl: string,
@@ -95,6 +113,7 @@ export class AgentSidecar {
       return
     }
     this.child = child
+    this.isReady = false
     this.stdoutBuffer = ''
     child.stdout.setEncoding('utf-8')
     child.stdout.on('data', (chunk: string) => this.onStdout(chunk))
@@ -111,7 +130,9 @@ export class AgentSidecar {
     })
     child.on('exit', (code) => {
       this.child = null
+      this.isReady = false
       if (this.stopping) return
+      this.pending = this.lastStart ? [this.lastStart] : []
       this.onEvent({
         type: 'sidecar_exit',
         code: code ?? -1
@@ -147,7 +168,11 @@ export class AgentSidecar {
         } catch {
           message = { type: 'log', text: line }
         }
-        if (message.type === 'ready') this.restarts = 0
+        if (message.type === 'ready') {
+          this.restarts = 0
+          this.isReady = true
+          this.flushPending()
+        }
         // Opt-in diagnostics (set AGENT_SIDECAR_DEBUG=1) to confirm that runner
         // events (thinking/tool_call/tool_result) actually reach the main process.
         if (process.env.AGENT_SIDECAR_DEBUG) {
@@ -159,22 +184,88 @@ export class AgentSidecar {
             console.log('[agent-sidecar]', mtype)
           }
         }
-        this.onEvent(message)
+        this.onEvent(this.stampRunMeta(message))
       }
       index = this.stdoutBuffer.indexOf('\n')
     }
   }
 
+  private rememberRunMeta(command: AgentSidecarMessage): void {
+    const runId = String(command.id || '')
+    if (!runId) return
+    this.runMeta.set(runId, {
+      workflowId: String(command.workflowId || ''),
+      kind: String(command.type || '')
+    })
+  }
+
+  private stampRunMeta(message: AgentSidecarMessage): AgentSidecarMessage {
+    const runId = String(message.runId || message.id || '')
+    const meta = runId ? this.runMeta.get(runId) : undefined
+    if (!meta) return message
+    const next: AgentSidecarMessage = { ...message }
+    if (!next.workflowId && meta.workflowId) next.workflowId = meta.workflowId
+    if (!next.kind && meta.kind) {
+      next.kind = meta.kind === 'check_trigger' ? 'trigger' : meta.kind
+    }
+    if (next.type === 'result' || next.type === 'error') {
+      this.runMeta.delete(runId)
+    }
+    return next
+  }
+
   send(command: AgentSidecarMessage): boolean {
+    const type = String(command.type || '')
+    if (isStartCommand(command)) {
+      this.lastStart = command
+      this.rememberRunMeta(command)
+    }
+    if (type === 'cancel') {
+      this.lastStart = null
+    }
     if (!this.child) {
       this.start()
     }
-    if (!this.child || !this.child.stdin.writable) return false
+    if (!this.isReady || !this.child || !this.child.stdin.writable) {
+      this.enqueue(command)
+      return true
+    }
+    return this.write(command)
+  }
+
+  private enqueue(command: AgentSidecarMessage): void {
+    const type = String(command.type || '')
+    if (type === 'configure') {
+      this.pending = this.pending.filter((item) => String(item.type || '') !== 'configure')
+      this.pending.unshift(command)
+      return
+    }
+    if (isStartCommand(command)) {
+      this.pending = this.pending.filter((item) => !isStartCommand(item))
+    }
+    this.pending.push(command)
+  }
+
+  private write(command: AgentSidecarMessage): boolean {
+    if (!this.child || !this.child.stdin.writable) {
+      this.enqueue(command)
+      return true
+    }
     try {
       this.child.stdin.write(JSON.stringify(command) + '\n')
+      console.log(`[agent-sidecar] sent ${String(command.type || '')}`)
       return true
     } catch {
+      this.enqueue(command)
       return false
+    }
+  }
+
+  private flushPending(): void {
+    const queued = this.pending
+    this.pending = []
+    for (const command of queued) {
+      this.write(command)
     }
   }
 

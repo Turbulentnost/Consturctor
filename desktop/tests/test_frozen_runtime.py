@@ -10,7 +10,11 @@ from app.frozen_runtime import (
     entry_mode,
     run_agent_python,
 )
-from app.tools.ac.code_execution_tools import _python_command_prefix
+from app.tools.ac.code_execution_tools import (
+    _agent_python_env,
+    _python_command_prefix,
+    _python_run_command,
+)
 from app.tools.ac.workers.subprocess_com_worker import _build_worker_command
 
 
@@ -82,6 +86,22 @@ def test_python_prefix_unfrozen() -> None:
     prefix = _python_command_prefix()
     assert prefix
     assert "--agent-python-runner" not in prefix
+
+
+def test_python_run_command_is_unbuffered_utf8(tmp_path: Path) -> None:
+    target = tmp_path / "build_slots.py"
+    command = _python_run_command(["python"], target, ["--out", "x.json"])
+    assert command[:4] == ["python", "-u", "-X", "utf8"]
+    assert "-I" not in command
+    assert command[-3:] == [str(target), "--out", "x.json"]
+
+
+def test_agent_python_env_drops_sidecar_pythonpath(monkeypatch) -> None:
+    monkeypatch.setenv("PYTHONPATH", r"C:\sidecar\desktop")
+    env = _agent_python_env()
+    assert "PYTHONPATH" not in env
+    assert env["PYTHONUNBUFFERED"] == "1"
+    assert env["PYTHONUTF8"] == "1"
 
 
 def test_run_agent_python_executes_script(tmp_path: Path, capsys) -> None:

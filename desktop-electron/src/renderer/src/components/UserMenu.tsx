@@ -11,6 +11,7 @@ interface UserMenuProps {
   onUnreadChange: (count: number) => void
   onLogout: () => void
   showLogout: boolean
+  onOpenAgent?: (workflowId: string, runId: string) => void
 }
 
 export function UserMenu({
@@ -19,7 +20,8 @@ export function UserMenu({
   unread,
   onUnreadChange,
   onLogout,
-  showLogout
+  showLogout,
+  onOpenAgent
 }: UserMenuProps): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false)
   const [inboxOpen, setInboxOpen] = useState(false)
@@ -70,6 +72,17 @@ export function UserMenu({
     }
   }
 
+  function openItem(item: InboxNotification): void {
+    setInboxOpen(false)
+    setItems((current) =>
+      current.map((entry) => (entry.id === item.id ? { ...entry, unread: false } : entry))
+    )
+    void api.markNotificationRead(item.id).catch(() => undefined)
+    if (item.workflowId && onOpenAgent) {
+      onOpenAgent(item.workflowId, item.runId || '')
+    }
+  }
+
   async function clearOne(id: string): Promise<void> {
     const previous = items
     setItems((current) => current.filter((item) => item.id !== id))
@@ -101,6 +114,7 @@ export function UserMenu({
             loading={loading}
             onClearAll={() => void clearAll()}
             onClearOne={(id) => void clearOne(id)}
+            onOpen={openItem}
           />
         )}
       </div>

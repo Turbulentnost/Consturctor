@@ -125,6 +125,12 @@ class CursorSdkBridge:
             self._skip_ids.discard(rid)
             self._active_tool_names.pop(rid, None)
 
+    def _after_tool_result(
+        self, tool: str, result: dict[str, Any], workflow_id: str
+    ) -> None:
+        """Hook after a local tool returns. Sidecar uploads created files here."""
+        return
+
     @staticmethod
     def _confirm_write_tool(tool: str, args: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         """Ask the user before a write tool runs. Returns (allowed, rejected_result).
@@ -449,6 +455,16 @@ class CursorSdkBridge:
                     if not allowed:
                         box["result"] = rejected
                         return
+                    args["human_approved"] = True
+                    runtime = args.get("runtime_context")
+                    if isinstance(runtime, dict):
+                        runtime["human_approved"] = True
+                    else:
+                        args["runtime_context"] = {
+                            "workflow_id": workflow_id,
+                            "agent_id": workflow_id,
+                            "human_approved": True,
+                        }
                     if self._is_skipped(request_id) or (
                         should_stop is not None and should_stop()
                     ):
@@ -464,6 +480,10 @@ class CursorSdkBridge:
                     from app.tools.result_files import publish_result_files
 
                     publish_result_files(result, tool=tool, workflow_id=workflow_id)
+                except Exception:
+                    pass
+                try:
+                    self._after_tool_result(tool, result, workflow_id)
                 except Exception:
                     pass
                 result = self._externalize_large_result(

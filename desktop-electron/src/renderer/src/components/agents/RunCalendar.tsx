@@ -151,7 +151,7 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
       </div>
 
       <div className="cal-legend">
-        {(['ok', 'scheduled', 'missed', 'error', 'paused'] as const).map((key) => (
+        {(['ok', 'scheduled', 'missed', 'error', 'canceled', 'paused'] as const).map((key) => (
           <span key={key} className="cal-legend-item" style={{ color: STATUS_STYLE[key].border }}>
             &#9679;&nbsp;&nbsp;{STATUS_STYLE[key].label}
           </span>
@@ -185,7 +185,9 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
           <label>Статус</label>
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
             <option value="">Все статусы</option>
-            {Object.entries(STATUS_STYLE).map(([key, meta]) => (
+            {Object.entries(STATUS_STYLE)
+              .filter(([key]) => key !== 'cancelled')
+              .map(([key, meta]) => (
               <option key={key} value={key}>
                 {meta.label}
               </option>

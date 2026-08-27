@@ -86,10 +86,9 @@ def latest_by_definition(instances: list[ProcessInstance]) -> dict[str, ProcessI
 
 
 def _seed_for(user_id: str) -> list[ProcessInstance]:
-    from app.chat.test_user import ILCHENKO_USER_ID
-    from app.orchestrator.kpi import seed_ilchenko_instances
+    from app.orchestrator.kpi import has_position_kpi, seed_ilchenko_instances
 
-    if user_id == ILCHENKO_USER_ID:
+    if has_position_kpi(user_id):
         return seed_ilchenko_instances()
     return _seed()
 

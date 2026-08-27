@@ -1,7 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } from 'electron'
 import { join, basename, extname } from 'node:path'
 import { readFileSync, existsSync, writeFileSync } from 'node:fs'
-import { NotificationGuard } from './notifications'
+import { NotificationGuard, showToast, type ToastPayload } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
 
 interface RequestOptions {
@@ -101,6 +101,20 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
       message,
       source: 'trigger',
       triggerId
+    })
+  } else if (kind === 'form_orchestrator') {
+    agentSidecar.send({
+      type: 'form_orchestrator',
+      id: `orch-form-${Date.now()}`
+    })
+  } else if (kind === 'calc_orchestrator') {
+    const tileIds = Array.isArray(command.tile_ids)
+      ? command.tile_ids.map((item) => String(item))
+      : []
+    agentSidecar.send({
+      type: 'calc_orchestrator',
+      id: `orch-calc-${Date.now()}`,
+      tileIds
     })
   }
 })
@@ -490,6 +504,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  console.log(`Constructor backend: ${CONFIG.backendUrl}`)
   ipcMain.handle('app:getConfig', () => ({
     backendUrl: CONFIG.backendUrl,
     testUser: CONFIG.testUser
@@ -531,6 +546,10 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('notifications:stop', () => {
     notifyGuard.stop()
+    return { ok: true }
+  })
+  ipcMain.handle('notify:show', (_evt, payload: ToastPayload) => {
+    showToast(payload || { title: '' })
     return { ok: true }
   })
   ipcMain.handle('dialog:openFile', async (_evt, options: Electron.OpenDialogOptions) => {

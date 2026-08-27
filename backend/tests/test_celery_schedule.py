@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
@@ -20,6 +20,7 @@ from app.services.triggers.service import (
     kpi_calc_task_id,
     next_aligned_fire_at,
 )
+from app.services.orchestrator.service import orch_calc_task_id
 
 
 def _session() -> Session:
@@ -93,12 +94,66 @@ def test_next_aligned_fire_at_keeps_clock_grid() -> None:
     assert nxt == origin + timedelta(minutes=20)
 
 
+def test_next_aligned_fire_at_recovers_daily_clock_from_message() -> None:
+    drifted = datetime(2026, 8, 27, 8, 15, 51, tzinfo=timezone.utc)
+    now = drifted + timedelta(seconds=20)
+    nxt = next_aligned_fire_at(
+        drifted,
+        86400,
+        now=now,
+        message="Проверить внеплановые совещания 10:00",
+    )
+    assert nxt == datetime(2026, 8, 28, 7, 0, tzinfo=timezone.utc)
+
+
+def test_mark_skipped_retry_keeps_clock_grid() -> None:
+    from app.services.triggers.service import mark_skipped
+
+    db = _session()
+    user_id, _workflow_id = _seed(db)
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    due = datetime(2026, 8, 27, 7, 0, tzinfo=timezone.utc)
+    trigger.fire_at = due
+    db.commit()
+    mark_skipped(
+        db,
+        user_id=user_id,
+        trigger_id="tr-1",
+        evidence="ожидание подключения десктопа",
+        retry_in_seconds=45,
+        advance=False,
+    )
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    got = trigger.fire_at if trigger.fire_at.tzinfo else trigger.fire_at.replace(tzinfo=timezone.utc)
+    assert got == due
+    assert trigger.cooldown_until is not None
+
+
 def test_kpi_calc_task_id_includes_tiles() -> None:
     now = datetime(2026, 8, 21, 8, 0, tzinfo=timezone.utc)
     left = kpi_calc_task_id("wf-1", ["b", "a"], now=now)
     right = kpi_calc_task_id("wf-1", ["a", "b"], now=now)
     assert left == right
     assert "a,b" in left
+
+
+def test_orch_calc_task_id_includes_tiles() -> None:
+    now = datetime(2026, 8, 21, 8, 0, tzinfo=timezone.utc)
+    left = orch_calc_task_id("user-1", ["b", "a"], now=now)
+    right = orch_calc_task_id("user-1", ["a", "b"], now=now)
+    assert left == right
+    assert left.startswith("orch-kpi:user-1:")
+    assert "a,b" in left
+
+
+def test_celery_beat_includes_orchestrator_kpi() -> None:
+    from app.celery_app import celery_app
+
+    assert "enqueue-due-orchestrator-kpi" in celery_app.conf.beat_schedule
+    item = celery_app.conf.beat_schedule["enqueue-due-orchestrator-kpi"]
+    assert item["task"] == "app.tasks.scheduled.enqueue_due_orchestrator_kpi"
 
 
 def test_execute_scheduled_skips_paused() -> None:
@@ -113,7 +168,7 @@ def test_execute_scheduled_skips_paused() -> None:
     assert result["reason"] == "paused"
 
 
-def test_due_commands_skip_while_agent_already_running() -> None:
+def test_due_commands_include_while_agent_already_running() -> None:
     db = _session()
     user_id, workflow_id = _seed(db)
     assert [row.id for row in due_commands(db, user_id=user_id)] == ["tr-1"]
@@ -130,13 +185,91 @@ def test_due_commands_skip_while_agent_already_running() -> None:
         )
     )
     db.commit()
-    assert due_commands(db, user_id=user_id) == []
+    assert [row.id for row in due_commands(db, user_id=user_id)] == ["tr-1"]
+
+
+def test_execute_scheduled_cancels_when_offline_and_already_running(monkeypatch) -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "offline")
+    monkeypatch.setattr(
+        "app.services.triggers.runner.run_agent_task",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    due_at = trigger.fire_at
+    interval = int(trigger.interval_seconds or 0)
+    db.add(
+        AgentRun(
+            id="run-live",
+            workflow_id=workflow_id,
+            user_id=user_id,
+            message="уже идёт",
+            status="started",
+            source="trigger",
+            trigger_id="tr-1",
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=17),
+        )
+    )
+    db.commit()
     result = execute_scheduled_agent_run(db, trigger_id="tr-1")
     assert result["ok"] is False
     assert result["reason"] == "already_running"
+    canceled = list(db.execute(select(AgentRun).where(AgentRun.status == "canceled")).scalars())
+    assert len(canceled) == 1
+    assert canceled[0].trigger_id == "tr-1"
+    assert "уже выполняется" in (canceled[0].answer or "")
     trigger = db.get(AgentTrigger, "tr-1")
     assert trigger is not None
     assert trigger.enabled is True
+    expected = next_aligned_fire_at(due_at, interval)
+    assert trigger.fire_at is not None
+    got = trigger.fire_at if trigger.fire_at.tzinfo else trigger.fire_at.replace(tzinfo=timezone.utc)
+    assert abs((got - expected).total_seconds()) < 2
+    second = execute_scheduled_agent_run(db, trigger_id="tr-1")
+    assert second["reason"] == "not_due"
+
+
+def test_execute_scheduled_dispatches_overlap_when_online(monkeypatch) -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    sent: list[tuple[str, dict]] = []
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "online")
+    monkeypatch.setattr(
+        "app.services.triggers.runner.push_desktop_command",
+        lambda uid, payload: sent.append((uid, dict(payload))) or True,
+    )
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    due_at = trigger.fire_at
+    db.add(
+        AgentRun(
+            id="run-live",
+            workflow_id=workflow_id,
+            user_id=user_id,
+            message="уже идёт",
+            status="started",
+            source="trigger",
+            trigger_id="tr-1",
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=17),
+        )
+    )
+    db.commit()
+    result = execute_scheduled_agent_run(db, trigger_id="tr-1")
+    assert result["ok"] is True
+    assert result["dispatched"] == "desktop"
+    assert sent[0][0] == user_id
+    assert sent[0][1]["workflow_id"] == workflow_id
+    assert sent[0][1]["source"] == "trigger"
+    assert sent[0][1]["trigger_id"] == "tr-1"
+    canceled = list(db.execute(select(AgentRun).where(AgentRun.status == "canceled")).scalars())
+    assert canceled == []
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    got = trigger.fire_at if trigger.fire_at.tzinfo else trigger.fire_at.replace(tzinfo=timezone.utc)
+    expected = due_at if due_at.tzinfo else due_at.replace(tzinfo=timezone.utc)
+    assert abs((got - expected).total_seconds()) < 2
 
 
 def test_execute_scheduled_skips_offline_and_notifies(monkeypatch) -> None:
@@ -233,18 +366,51 @@ def test_execute_scheduled_dispatches_to_desktop_when_online(monkeypatch) -> Non
         "app.services.triggers.runner.run_agent_task",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should run on desktop")),
     )
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    due_at = trigger.fire_at
+    interval = int(trigger.interval_seconds or 0)
     result = execute_scheduled_agent_run(db, trigger_id="tr-1")
     assert result["ok"] is True
     assert result["dispatched"] == "desktop"
     assert sent[0][0] == user_id
     assert sent[0][1]["workflow_id"] == workflow_id
     assert sent[0][1]["type"] == "run_agent"
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None and due_at is not None
+    expected = next_aligned_fire_at(due_at, interval)
+    got = trigger.fire_at if trigger.fire_at.tzinfo else trigger.fire_at.replace(tzinfo=timezone.utc)
+    assert abs((got - expected).total_seconds()) < 2
+
+
+def test_execute_scheduled_waits_when_presence_unknown_and_no_desktop(monkeypatch) -> None:
+    db = _session()
+    user_id, _workflow_id = _seed(db)
+    due = datetime(2026, 8, 27, 7, 0, tzinfo=timezone.utc)
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    trigger.fire_at = due
+    db.commit()
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "unknown")
+    monkeypatch.setattr("app.services.triggers.runner.hub.is_online", lambda _user_id: False)
+    monkeypatch.setattr(
+        "app.services.triggers.runner.run_agent_task",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+    result = execute_scheduled_agent_run(db, trigger_id="tr-1")
+    assert result["ok"] is False
+    assert result["reason"] == "reconnect"
+    trigger = db.get(AgentTrigger, "tr-1")
+    assert trigger is not None
+    got = trigger.fire_at if trigger.fire_at.tzinfo else trigger.fire_at.replace(tzinfo=timezone.utc)
+    assert got == due
 
 
 def test_execute_scheduled_runs_when_presence_unknown(monkeypatch) -> None:
     db = _session()
     _seed(db)
     monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "unknown")
+    monkeypatch.setattr("app.services.triggers.runner.hub.is_online", lambda _user_id: True)
     monkeypatch.setattr("app.services.triggers.runner.push_desktop_command", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         "app.services.triggers.runner.check_trigger_condition",

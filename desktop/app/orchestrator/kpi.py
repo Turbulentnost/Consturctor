@@ -7,6 +7,13 @@ from uuid import uuid4
 from app.chat.test_user import ILCHENKO_USER_ID, is_ilchenko_user
 from app.orchestrator.models import COMPLETED, ERROR, MEETING_ID, READY, REVISION_ID, WAITING_HUMAN, ProcessInstance
 
+ILCHENKO_USER_IDS = frozenset(
+    {
+        "A2DCC949FEDEC70D40318ABA83C618F4",
+        "E11C4E11K00000000000000000000001",
+        ILCHENKO_USER_ID,
+    }
+)
 _GREEN = "#08745F"
 _YELLOW = "#C9A227"
 _RED = "#C0392B"
@@ -40,7 +47,9 @@ ILCHENKO_KPI: tuple[KpiDefinition, ...] = (
 
 
 def has_position_kpi(user_id: str = "", fio: str = "") -> bool:
-    return user_id == ILCHENKO_USER_ID or is_ilchenko_user(user_id, fio)
+    if (user_id or "").strip() in ILCHENKO_USER_IDS:
+        return True
+    return is_ilchenko_user(user_id, fio) or "ильченко" in (fio or "").casefold()
 
 
 def _ratio(ok: int, total: int) -> float | None:

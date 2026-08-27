@@ -6,6 +6,7 @@ from app.api.v1 import (
     health,
     llm,
     notifications,
+    orchestrator,
     regulation_creation,
     regulations,
     tools,
@@ -25,4 +26,5 @@ api_router.include_router(workflows.router, prefix="/api/v1")
 api_router.include_router(tools.router, prefix="/api/v1")
 api_router.include_router(notifications.router, prefix="/api/v1")
 api_router.include_router(triggers.router, prefix="/api/v1")
+api_router.include_router(orchestrator.router, prefix="/api/v1")
 api_router.include_router(chat_router, prefix="/api/v1")

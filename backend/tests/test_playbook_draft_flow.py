@@ -22,6 +22,7 @@ from app.services.workflows.service import (
     WorkflowError,
     _blocked_before_demo_report,
     _demo_validation_report,
+    _merge_preserved_run_inputs,
     _needs_draft_repair,
     _require_verified_playbook,
     plan_workflow,
@@ -838,6 +839,43 @@ def test_publish_allows_verified_playbook() -> None:
     )
 
     _require_verified_playbook(row, {"status": "verified", "instructions": "x"})
+
+
+def test_parse_playbook_draft_keeps_run_inputs() -> None:
+    draft = prompts.parse_playbook_draft(
+        """
+        {
+          "goal": "собрать план",
+          "run_inputs": [
+            {"name": "grafik.xlsx", "description": "obrazec", "accept": ".xlsx"},
+            "grafik.xlsx"
+          ],
+          "steps": [{"id": "s1", "title": "Прочитать файл", "system": "desktop", "entity": "spreadsheet", "operation": "read"}]
+        }
+        """
+    )
+    assert [item["name"] for item in draft["run_inputs"]] == ["grafik.xlsx"]
+    assert draft["run_inputs"][0]["accept"] == ".xlsx"
+
+
+def test_merge_preserved_run_inputs_keeps_sidecar_list() -> None:
+    parsed = prompts.parse_playbook_draft('{"goal": "x", "steps": []}')
+    assert parsed["run_inputs"] == []
+    merged = _merge_preserved_run_inputs(
+        parsed,
+        {"playbook_draft": {"run_inputs": [{"name": "grafik.xlsx", "accept": ".xlsx"}]}},
+    )
+    assert merged["run_inputs"][0]["name"] == "grafik.xlsx"
+    already = _merge_preserved_run_inputs(
+        {"run_inputs": [{"name": "from-json.xlsx"}]},
+        {"playbook_draft": {"run_inputs": [{"name": "old.xlsx"}]}},
+    )
+    assert already["run_inputs"][0]["name"] == "from-json.xlsx"
+
+
+def test_draft_schema_includes_run_inputs() -> None:
+    prompt = prompts.build_playbook_draft_prompt(document_text="регламент", title="Агент")
+    assert "run_inputs" in prompt
 
 
 def test_draft_prompt_asks_for_json_only_without_transport_lecture() -> None:

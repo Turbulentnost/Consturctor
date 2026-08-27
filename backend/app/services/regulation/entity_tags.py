@@ -24,10 +24,16 @@ _ROLE_MARKERS = (
     "специалист",
     "менеджер",
     "директор",
+    "помощник",
+    "секретарь",
     "исполнитель",
     "координатор",
     "оператор",
     "аналитик",
+)
+_ROLE_WORD_RE = re.compile(
+    r"(?<![а-яёa-z])(?:" + "|".join(re.escape(marker) for marker in _ROLE_MARKERS) + r")(?![а-яёa-z])",
+    re.IGNORECASE,
 )
 _PROCESS_MARKERS = (
     "этап",
@@ -107,7 +113,7 @@ def annotate_entities(
             entities.append(current_process)
         tagged.append(fragment.model_copy(update={"entities": entities}))
 
-    legend = _legend_from_fragments(tagged)
+    legend = legend_from_fragments(tagged)
     return tagged, legend
 
 
@@ -139,10 +145,7 @@ def _heading_title(fragment: RegulationFragment) -> str:
 def _is_role_title(title: str) -> bool:
     numbered = _NUMBERED_TITLE_RE.match(title.strip())
     body = numbered.group("title") if numbered else title
-    lower = body.casefold()
-    if not numbered or "." not in (numbered.group("num") or ""):
-        return any(marker in lower for marker in _ROLE_MARKERS)
-    return any(marker in lower for marker in _ROLE_MARKERS)
+    return bool(_ROLE_WORD_RE.search(body))
 
 
 def _is_process_title(title: str) -> bool:
@@ -174,7 +177,7 @@ def _short_title(title: str, abbreviations: dict[str, str]) -> str:
     return body
 
 
-def _legend_from_fragments(fragments: list[RegulationFragment]) -> list[RegulationEntityLegendItem]:
+def legend_from_fragments(fragments: list[RegulationFragment]) -> list[RegulationEntityLegendItem]:
     items: OrderedDict[str, RegulationEntityLegendItem] = OrderedDict()
     for fragment in fragments:
         for entity in fragment.entities:
@@ -287,8 +290,12 @@ def _filter_runs(runs: list[dict], leftover: str) -> list[dict]:
     return [run for run in runs if str(run.get("text") or "") in leftover]
 
 
-def _normalize_key(value: str) -> str:
+def normalize_entity_key(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").casefold()).strip(" .;:-")
+
+
+def _normalize_key(value: str) -> str:
+    return normalize_entity_key(value)
 
 
 def _clean_spaces(value: str) -> str:
