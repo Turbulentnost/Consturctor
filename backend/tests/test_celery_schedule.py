@@ -20,6 +20,7 @@ from app.services.triggers.service import (
     kpi_calc_task_id,
     next_aligned_fire_at,
 )
+from app.services.orchestrator.service import orch_calc_task_id
 
 
 def _session() -> Session:
@@ -136,6 +137,23 @@ def test_kpi_calc_task_id_includes_tiles() -> None:
     right = kpi_calc_task_id("wf-1", ["a", "b"], now=now)
     assert left == right
     assert "a,b" in left
+
+
+def test_orch_calc_task_id_includes_tiles() -> None:
+    now = datetime(2026, 8, 21, 8, 0, tzinfo=timezone.utc)
+    left = orch_calc_task_id("user-1", ["b", "a"], now=now)
+    right = orch_calc_task_id("user-1", ["a", "b"], now=now)
+    assert left == right
+    assert left.startswith("orch-kpi:user-1:")
+    assert "a,b" in left
+
+
+def test_celery_beat_includes_orchestrator_kpi() -> None:
+    from app.celery_app import celery_app
+
+    assert "enqueue-due-orchestrator-kpi" in celery_app.conf.beat_schedule
+    item = celery_app.conf.beat_schedule["enqueue-due-orchestrator-kpi"]
+    assert item["task"] == "app.tasks.scheduled.enqueue_due_orchestrator_kpi"
 
 
 def test_execute_scheduled_skips_paused() -> None:

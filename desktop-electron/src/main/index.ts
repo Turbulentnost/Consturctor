@@ -102,6 +102,20 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
       source: 'trigger',
       triggerId
     })
+  } else if (kind === 'form_orchestrator') {
+    agentSidecar.send({
+      type: 'form_orchestrator',
+      id: `orch-form-${Date.now()}`
+    })
+  } else if (kind === 'calc_orchestrator') {
+    const tileIds = Array.isArray(command.tile_ids)
+      ? command.tile_ids.map((item) => String(item))
+      : []
+    agentSidecar.send({
+      type: 'calc_orchestrator',
+      id: `orch-calc-${Date.now()}`,
+      tileIds
+    })
   }
 })
 

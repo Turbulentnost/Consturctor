@@ -2702,6 +2702,32 @@ class ApiClient:
         )
         return self._parse_workflow(data)
 
+    def get_orchestrator(self) -> dict:
+        data = self._request("GET", "/api/v1/orchestrator", timeout=60.0)
+        return data if isinstance(data, dict) else {}
+
+    def ensure_orchestrator(self, mode: str = "form") -> dict:
+        data = self._request(
+            "POST",
+            "/api/v1/orchestrator/ensure",
+            json={"mode": mode},
+            timeout=60.0,
+        )
+        return data if isinstance(data, dict) else {}
+
+    def save_orchestrator(self, payload: dict) -> dict:
+        data = self._request("POST", "/api/v1/orchestrator", json=payload, timeout=60.0)
+        return data if isinstance(data, dict) else {}
+
+    def patch_orchestrator_tiles(self, payload: dict) -> dict:
+        data = self._request(
+            "PATCH",
+            "/api/v1/orchestrator/tiles",
+            json=payload,
+            timeout=60.0,
+        )
+        return data if isinstance(data, dict) else {}
+
     def _parse_workflow(self, data: dict) -> WorkflowRecord:
         plan_data = data.get("plan")
         plan = None

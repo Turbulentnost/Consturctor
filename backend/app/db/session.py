@@ -24,6 +24,7 @@ def init_db() -> None:
     # Import models so metadata is populated.
     from app.models import agent_run as _agent_run  # noqa: F401
     from app.models import notification as _notification  # noqa: F401
+    from app.models import orchestrator as _orchestrator  # noqa: F401
     from app.models import regulation as _regulation  # noqa: F401
     from app.models import trigger as _trigger  # noqa: F401
     from app.models import user as _user  # noqa: F401

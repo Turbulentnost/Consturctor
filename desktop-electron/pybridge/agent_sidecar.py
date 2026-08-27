@@ -18,6 +18,8 @@ Protocol: newline-delimited JSON.
        "source": str, "triggerId": str, "resumeAgentId": str,
        "filePaths": [str, ...]}
     {"type": "check_trigger", "id": str, "triggerId": str}
+    {"type": "form_orchestrator", "id": str}
+    {"type": "calc_orchestrator", "id": str, "tileIds": [str, ...]}
     {"type": "answer", "requestId": str, "ok": bool, "answer": str,
        "filePaths": [str, ...]}
     {"type": "hitl", "requestId": str, "approved": bool}
@@ -71,6 +73,7 @@ DESKTOP_ROOT = _bootstrap_desktop_path()
 
 # Importing app.config loads desktop/.env (CURSOR_API_KEY, BACKEND_URL, ...).
 from app.api_client import ApiClient, ApiError  # noqa: E402
+from app.orchestrator.json_blob import extract_json_object  # noqa: E402
 from app.sdk_agent.bridge import CursorSdkBridge, CursorSdkUnavailable  # noqa: E402
 from app.sdk_agent.files import (  # noqa: E402
     _safe_filename,
@@ -1577,6 +1580,8 @@ class Sidecar:
             or command.get("triggerId")
             or ""
         ).strip()
+        if kind in {"form_orchestrator", "calc_orchestrator"}:
+            return kind
         return f"{kind}:{target}" if target else ""
 
     def start(self, kind: str, command: dict[str, Any]) -> None:
@@ -1676,6 +1681,8 @@ class Sidecar:
                 self._run_agent(command, active)
             elif kind == "check_trigger":
                 self._run_trigger(command, active)
+            elif kind in {"form_orchestrator", "calc_orchestrator"}:
+                self._run_orchestrator(command, active, kind)
             else:
                 emit({"type": "error", "runId": active.run_id, "message": f"unknown run kind: {kind}"})
         except CursorSdkUnavailable as exc:
@@ -2051,6 +2058,79 @@ class Sidecar:
                 "agentId": agent_id,
                 "status": status,
                 "answer": answer,
+            }
+        )
+
+    def _run_orchestrator(self, command: dict[str, Any], active: ActiveRun, kind: str) -> None:
+        mode = "form" if kind == "form_orchestrator" else "calc"
+        active.kind = kind
+        workspace_id = "orchestrator"
+        active.workflow_id = workspace_id
+        active.gate.bind(workflow_id=workspace_id, kind=kind)
+        bridge = active.bridge
+        bridge.check_ready()
+        snap = self._api.ensure_orchestrator(mode)
+        needs_form = bool(snap.get("needs_form"))
+        needs_calc = bool(snap.get("needs_calc"))
+        if mode == "form" and not needs_form and not (snap.get("form_prompt") or "").strip():
+            emit({"type": "result", "runId": active.run_id, "kind": kind, "status": "ok", "orchestrator": snap})
+            return
+        if mode == "calc" and not (snap.get("tiles") or []):
+            emit({"type": "result", "runId": active.run_id, "kind": kind, "status": "ok", "orchestrator": snap})
+            return
+        prompt = str(snap.get("form_prompt") if mode == "form" else snap.get("calc_prompt") or "").strip()
+        if not prompt:
+            if mode == "form" and not needs_form:
+                emit({"type": "result", "runId": active.run_id, "kind": kind, "status": "ok", "orchestrator": snap})
+                return
+            if mode == "calc" and not needs_calc:
+                emit({"type": "result", "runId": active.run_id, "kind": kind, "status": "ok", "orchestrator": snap})
+                return
+            raise ValueError("orchestrator prompt is empty")
+        resume_agent_id = str(command.get("resumeAgentId") or snap.get("sdk_agent_id") or "").strip()
+        run_cwd = bridge.workspace_cwd(workspace_id)
+        active.run_cwd = run_cwd
+        events: list[dict[str, Any]] = []
+        result = bridge.run(
+            prompt=prompt,
+            workflow_id=workspace_id,
+            cwd=run_cwd,
+            resume_agent_id=resume_agent_id,
+            on_event=self._forward_events(active, events),
+            on_question=active.gate.ask_question,
+            should_stop=active.stop.is_set,
+            confirm_writes=False,
+        )
+        answer = str(result.get("answer") or "").strip()
+        agent_id = str(result.get("agent_id") or resume_agent_id).strip()
+        parsed = extract_json_object(answer) or {}
+        if mode == "form":
+            tiles = parsed.get("tiles") if isinstance(parsed.get("tiles"), list) else []
+            if not tiles:
+                raise ValueError("orchestrator form did not return tiles")
+            snap = self._api.save_orchestrator(
+                {
+                    "summary": str(parsed.get("summary") or ""),
+                    "tiles": tiles,
+                    "sdk_agent_id": agent_id,
+                }
+            )
+        else:
+            tiles = parsed.get("tiles") if isinstance(parsed.get("tiles"), list) else []
+            snap = self._api.patch_orchestrator_tiles(
+                {
+                    "tiles": tiles,
+                    "sdk_agent_id": agent_id,
+                }
+            )
+        emit(
+            {
+                "type": "result",
+                "runId": active.run_id,
+                "kind": kind,
+                "status": "ok",
+                "agentId": agent_id,
+                "orchestrator": snap,
             }
         )
 
@@ -2517,7 +2597,15 @@ def main() -> None:
                 sidecar.configure(command)
             elif ctype == "check_ready":
                 sidecar.check_ready()
-            elif ctype in {"design", "readiness", "demo", "run", "check_trigger"}:
+            elif ctype in {
+                "design",
+                "readiness",
+                "demo",
+                "run",
+                "check_trigger",
+                "form_orchestrator",
+                "calc_orchestrator",
+            }:
                 sidecar.start(ctype, command)
             elif ctype == "answer":
                 sidecar.answer(command)

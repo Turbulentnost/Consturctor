@@ -846,14 +846,7 @@ export function App(): React.JSX.Element {
       case 'kpi':
         return <KpiPage />
       case 'orchestrator':
-        return (
-          <OrchestratorPage
-            user={user!}
-            onRun={(workflowId, title) =>
-              setView({ kind: 'agentrun', workflowId, title, autoStart: true })
-            }
-          />
-        )
+        return <OrchestratorPage user={user!} />
       default:
         return <CreatePage onRegulationParsed={() => {}} onStartRegulationChat={startRegulationChat} />
     }

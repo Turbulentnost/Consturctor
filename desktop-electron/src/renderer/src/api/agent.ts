@@ -36,7 +36,25 @@ export interface CheckTriggerCommand {
   workflowId?: string
 }
 
-export type StartCommand = DesignCommand | ReadinessCommand | DemoCommand | RunCommand | CheckTriggerCommand
+export interface FormOrchestratorCommand {
+  kind: 'form_orchestrator'
+  id?: string
+}
+
+export interface CalcOrchestratorCommand {
+  kind: 'calc_orchestrator'
+  id?: string
+  tileIds?: string[]
+}
+
+export type StartCommand =
+  | DesignCommand
+  | ReadinessCommand
+  | DemoCommand
+  | RunCommand
+  | CheckTriggerCommand
+  | FormOrchestratorCommand
+  | CalcOrchestratorCommand
 
 function newRunId(): string {
   return `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`

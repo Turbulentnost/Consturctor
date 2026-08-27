@@ -153,7 +153,12 @@ export class NotificationGuard {
       this.kick(String(payload.message || KICK_MESSAGE))
       return
     }
-    if (kind === 'evaluate_trigger' || kind === 'run_agent') {
+    if (
+      kind === 'evaluate_trigger' ||
+      kind === 'run_agent' ||
+      kind === 'form_orchestrator' ||
+      kind === 'calc_orchestrator'
+    ) {
       this.onCommand?.(payload)
       return
     }

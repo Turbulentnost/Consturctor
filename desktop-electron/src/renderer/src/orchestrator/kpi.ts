@@ -1,3 +1,4 @@
+import type { KpiTile, PositionOrchestrator, UserProfile } from '../api/types'
 import {
   COMPLETED,
   ERROR,
@@ -32,6 +33,126 @@ const KPI = [
 export function hasPositionKpi(userId = '', fio = ''): boolean {
   if (ILCHENKO_USER_IDS.has((userId || '').trim())) return true
   return (fio || '').toLowerCase().includes('ильченко')
+}
+
+function lockedTile(args: {
+  id: string
+  name: string
+  target: number
+  weight: number
+  plan: string
+  fact: string
+  score: string
+  when: string
+  intervalSeconds: number
+  greenMin: number
+}): KpiTile {
+  const yellowMin = args.greenMin - 10
+  return {
+    id: args.id,
+    name: args.name,
+    plan: { label: 'План', value: args.target, unit: '%', description: args.plan },
+    fact: { label: 'Факт', value: null, unit: '%', description: args.fact },
+    measure: {
+      kind: args.id,
+      params: { weight: args.weight, window_days: 90 },
+      formula: 'факт уже в процентах'
+    },
+    scorePercent: null,
+    color: 'none',
+    updatedAt: '',
+    nextRunAt: '',
+    evidence: '',
+    method: {
+      how: args.fact,
+      when: args.when,
+      planUpdate: 'Норма должности фиксирована.',
+      factUpdate: args.when,
+      percentFormula: 'Факт уже в процентах — это и есть KPI.',
+      planExplanation: args.plan,
+      factExplanation: args.fact,
+      scoreExplanation: args.score,
+      system: args.fact,
+      greenMin: args.greenMin,
+      yellowMin,
+      schedule: { kind: 'interval', intervalSeconds: args.intervalSeconds, at: '' }
+    }
+  }
+}
+
+export function ilchenkoPositionTiles(): KpiTile[] {
+  return [
+    lockedTile({
+      id: 'package_on_time',
+      name: 'Своевременность пакета к заседаниям (СД + РК)',
+      target: 95,
+      weight: 25,
+      greenMin: 95,
+      intervalSeconds: 86400,
+      when: 'раз в сутки',
+      plan: 'Не менее 95% заседаний СД и РК с готовым пакетом за рабочий день до начала.',
+      fact: 'Доля прошедших заседаний, у которых комплект был готов не позже чем за 1 рабочий день до начала.',
+      score: 'Зелёный — не ниже 95%, жёлтый — не ниже 85%, иначе красный.'
+    }),
+    lockedTile({
+      id: 'protocol_on_time',
+      name: 'Своевременность протоколов (СД + РК)',
+      target: 95,
+      weight: 25,
+      greenMin: 95,
+      intervalSeconds: 86400,
+      when: 'раз в сутки',
+      plan: 'Не менее 95% протоколов СД и РК в течение 5 рабочих дней после заседания.',
+      fact: 'Доля заседаний, у которых протокол появился в течение 5 рабочих дней.',
+      score: 'Зелёный — не ниже 95%, жёлтый — не ниже 85%, иначе красный.'
+    }),
+    lockedTile({
+      id: 'instructions',
+      name: 'Реестр и контроль исполнения поручений (СД + РК)',
+      target: 95,
+      weight: 25,
+      greenMin: 95,
+      intervalSeconds: 21600,
+      when: 'каждые 6 часов',
+      plan: 'Не менее 95% поручений СД и РК закрыты в срок или ещё не просрочены.',
+      fact: 'Доля поручений СД/РК, которые закрыты в срок либо ещё не просрочены.',
+      score: 'Зелёный — не ниже 95%, жёлтый — не ниже 85%, иначе красный.'
+    }),
+    lockedTile({
+      id: 'quality',
+      name: 'Качество протокола и материалов (без возвратов по замечаниям)',
+      target: 98,
+      weight: 25,
+      greenMin: 98,
+      intervalSeconds: 86400,
+      when: 'раз в сутки',
+      plan: 'Не менее 98% сданных пакетов и протоколов без возврата на доработку.',
+      fact: 'Доля сданных пакетов и протоколов без статуса возврата или доработки.',
+      score: 'Зелёный — не ниже 98%, жёлтый — не ниже 88%, иначе красный.'
+    })
+  ]
+}
+
+export function ilchenkoOrchestratorFallback(user: UserProfile): PositionOrchestrator {
+  return {
+    status: 'ready',
+    locked: true,
+    summary:
+      'KPI должности помощника председателя совета директоров: своевременность пакета и протоколов СД/РК, контроль поручений и качество без возвратов.',
+    tiles: ilchenkoPositionTiles(),
+    sourceFingerprint: '',
+    currentFingerprint: '',
+    sourceAgentIds: [],
+    needsForm: false,
+    needsCalc: false,
+    dueTileIds: ['package_on_time', 'protocol_on_time', 'instructions', 'quality'],
+    sdkAgentId: '',
+    formedAt: '',
+    formPrompt: '',
+    calcPrompt: '',
+    agents: [],
+    user: { id: user.id, fio: user.fio, position: user.position }
+  }
 }
 
 function ratio(ok: number, total: number): number | null {

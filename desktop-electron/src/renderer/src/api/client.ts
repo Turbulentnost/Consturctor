@@ -40,6 +40,7 @@ import {
   type TriggerKind,
   type IntervalUnit,
   type AgentKpi,
+  type PositionOrchestrator,
   type KpiTile,
   type KpiSide,
   type KpiMethod,
@@ -801,6 +802,48 @@ export function scheduleDraftFromRecord(
   return parseScheduleDraft(asRecord(raw))
 }
 
+export function parsePositionOrchestrator(raw: Record<string, unknown> | null | undefined): PositionOrchestrator {
+  const data = raw && typeof raw === 'object' ? raw : {}
+  const tiles = ((data.tiles as Record<string, unknown>[]) ?? [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => parseKpiTile(item))
+  const agents = ((data.agents as Record<string, unknown>[]) ?? [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      id: String(item.id ?? ''),
+      title: String(item.title ?? ''),
+      goal: String(item.goal ?? ''),
+      steps: Array.isArray(item.steps) ? (item.steps as Array<Record<string, unknown>>) : []
+    }))
+  const user = asRecord(data.user)
+  return {
+    status: String(data.status ?? 'empty'),
+    locked: Boolean(data.locked),
+    summary: String(data.summary ?? ''),
+    tiles,
+    sourceFingerprint: String(data.source_fingerprint ?? data.sourceFingerprint ?? ''),
+    currentFingerprint: String(data.current_fingerprint ?? data.currentFingerprint ?? ''),
+    sourceAgentIds: Array.isArray(data.source_agent_ids)
+      ? (data.source_agent_ids as unknown[]).map((item) => String(item))
+      : [],
+    needsForm: Boolean(data.needs_form ?? data.needsForm),
+    needsCalc: Boolean(data.needs_calc ?? data.needsCalc),
+    dueTileIds: Array.isArray(data.due_tile_ids)
+      ? (data.due_tile_ids as unknown[]).map((item) => String(item))
+      : [],
+    sdkAgentId: String(data.sdk_agent_id ?? data.sdkAgentId ?? ''),
+    formedAt: String(data.formed_at ?? data.formedAt ?? ''),
+    formPrompt: String(data.form_prompt ?? data.formPrompt ?? ''),
+    calcPrompt: String(data.calc_prompt ?? data.calcPrompt ?? ''),
+    agents,
+    user: {
+      id: String(user.id ?? ''),
+      fio: String(user.fio ?? ''),
+      position: String(user.position ?? '')
+    }
+  }
+}
+
 export function parseAgentKpi(raw: Record<string, unknown> | null | undefined): AgentKpi | null {
   if (!raw || typeof raw !== 'object') return null
   const tiles = ((raw.tiles as Record<string, unknown>[]) ?? [])
@@ -1371,6 +1414,21 @@ export class ApiClient {
       { timeoutMs: 180_000 }
     )
     return parseAgentKpi(data ?? {})
+  }
+
+  async getOrchestrator(): Promise<PositionOrchestrator> {
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/orchestrator/me', {
+      timeoutMs: 60_000
+    })
+    return parsePositionOrchestrator(data ?? {})
+  }
+
+  async ensureOrchestrator(mode: 'form' | 'calc'): Promise<PositionOrchestrator> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/orchestrator/ensure', {
+      body: { mode },
+      timeoutMs: 60_000
+    })
+    return parsePositionOrchestrator(data ?? {})
   }
 
   async createTriggerFromSpec(workflowId: string, spec: ScheduleTriggerSpec): Promise<void> {

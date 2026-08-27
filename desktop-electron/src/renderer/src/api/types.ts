@@ -483,6 +483,32 @@ export interface AgentKpi {
   tiles: KpiTile[]
 }
 
+export interface OrchestratorAgentBrief {
+  id: string
+  title: string
+  goal: string
+  steps: Array<Record<string, unknown>>
+}
+
+export interface PositionOrchestrator {
+  status: string
+  locked: boolean
+  summary: string
+  tiles: KpiTile[]
+  sourceFingerprint: string
+  currentFingerprint: string
+  sourceAgentIds: string[]
+  needsForm: boolean
+  needsCalc: boolean
+  dueTileIds: string[]
+  sdkAgentId: string
+  formedAt: string
+  formPrompt: string
+  calcPrompt: string
+  agents: OrchestratorAgentBrief[]
+  user: { id: string; fio: string; position: string }
+}
+
 export interface StreamEvent {
   type: string
   text?: string
@@ -529,7 +555,7 @@ export interface AgentEvent {
   accept?: string[]
   tool?: string
   arguments?: Record<string, unknown>
-  kind?: 'design' | 'readiness' | 'demo' | 'run' | 'trigger'
+  kind?: 'design' | 'readiness' | 'demo' | 'run' | 'trigger' | 'form_orchestrator' | 'calc_orchestrator'
   workflowId?: string
   draftId?: string
   agentId?: string

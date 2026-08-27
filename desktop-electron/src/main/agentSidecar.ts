@@ -7,7 +7,15 @@ export type AgentSidecarMessage = Record<string, unknown>
 
 type EventSink = (message: AgentSidecarMessage) => void
 
-const START_TYPES = new Set(['design', 'readiness', 'demo', 'run', 'check_trigger'])
+const START_TYPES = new Set([
+  'design',
+  'readiness',
+  'demo',
+  'run',
+  'check_trigger',
+  'form_orchestrator',
+  'calc_orchestrator'
+])
 
 function isStartCommand(command: AgentSidecarMessage): boolean {
   return START_TYPES.has(String(command.type || ''))
