@@ -72,6 +72,7 @@ from app.services.workflows import (
 from app.services.workflows.board import get_workflow_board
 from app.services.workflows.schedule_draft import propose_schedule_draft
 from app.services.workflow_files import (
+    ORIGIN_KEEP_KNOWLEDGE,
     WorkflowFileError,
     add_user_files_to_workflow,
     delete_workflow_file,
@@ -80,6 +81,7 @@ from app.services.workflow_files import (
     list_user_platform_files,
     list_workflow_files,
     register_agent_files,
+    register_run_attachments,
 )
 
 logger = logging.getLogger(__name__)
@@ -523,6 +525,7 @@ async def read_workflow_files(
 async def upload_workflow_files(
     workflow_id: str,
     files: list[UploadFile] = File(default=[]),
+    origin: str = Form(default="user_upload"),
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WorkflowFilesResponse:
@@ -530,9 +533,12 @@ async def upload_workflow_files(
     for upload in files:
         raw = await upload.read()
         payloads.append((upload.filename or "file", raw))
+    keep_origin = (origin or "user_upload").strip() or "user_upload"
+    if keep_origin not in {"user_upload", ORIGIN_KEEP_KNOWLEDGE}:
+        keep_origin = "user_upload"
     try:
         row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
-        add_user_files_to_workflow(db, row=row, files=payloads, origin="user_upload")
+        add_user_files_to_workflow(db, row=row, files=payloads, origin=keep_origin)
         db.commit()
         db.refresh(row)
         return list_workflow_files(db, row=row)
@@ -557,6 +563,30 @@ async def upload_workflow_run_files(
     try:
         row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
         register_agent_files(db, row=row, files=payloads, run_id=run_id)
+        db.commit()
+        return list_workflow_files(db, row=row, run_id=run_id)
+    except WorkflowFileError as exc:
+        db.rollback()
+        _raise_file(exc)
+        raise
+
+
+@router.post("/{workflow_id}/runs/{run_id}/attachments", response_model=WorkflowFilesResponse)
+async def upload_workflow_run_attachments(
+    workflow_id: str,
+    run_id: str,
+    files: list[UploadFile] = File(default=[]),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowFilesResponse:
+    """Temporary per-run user attachments (not saved to the knowledge base)."""
+    payloads: list[tuple[str, bytes]] = []
+    for upload in files:
+        raw = await upload.read()
+        payloads.append((upload.filename or "file", raw))
+    try:
+        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
+        register_run_attachments(db, row=row, files=payloads, run_id=run_id)
         db.commit()
         return list_workflow_files(db, row=row, run_id=run_id)
     except WorkflowFileError as exc:

@@ -42,7 +42,9 @@ export function AgentKpiPreviewPage({
         /* generate below */
       }
       try {
-        const record = await api.streamGenerateWorkflowKpi(workflowId, (event) => {
+        // Never let a stalled stream trap the publish button: race the KPI
+        // generation against a timeout, then fall back to whatever KPI exists.
+        const streamPromise = api.streamGenerateWorkflowKpi(workflowId, (event) => {
           if (!alive) return
           const text = event.text || event.message || ''
           if (
@@ -55,8 +57,13 @@ export function AgentKpiPreviewPage({
             setStatusText(text.slice(0, 120))
           }
         })
+        const timeout = new Promise<'timeout'>((resolve) =>
+          window.setTimeout(() => resolve('timeout'), 60_000)
+        )
+        const outcome = await Promise.race([streamPromise, timeout])
         if (!alive) return
-        let parsed = kpiFromRecord(record)
+        let parsed =
+          outcome === 'timeout' ? null : kpiFromRecord(outcome as Awaited<typeof streamPromise>)
         if (!parsed || parsed.tiles.length === 0) {
           try {
             parsed = await api.getWorkflowKpi(workflowId)
@@ -150,7 +157,7 @@ export function AgentKpiPreviewPage({
           )}
 
           <div className="feed-clarify-actions" style={{ marginTop: 16 }}>
-            <button className="btn-primary" disabled={publishing || loadingKpi} onClick={publish}>
+            <button className="btn-primary" disabled={publishing} onClick={publish}>
               {publishing ? 'Публикуем…' : 'Опубликовать агента'}
             </button>
           </div>

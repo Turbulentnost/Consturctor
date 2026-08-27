@@ -45,7 +45,7 @@ function normalizeTitle(value: string): string {
 
 interface AgentsPageProps {
   onCreateAgent: () => void
-  onOpenRun: (workflowId: string, runId: string) => void
+  onOpenRun: (workflowId: string, runId: string, autoStart?: boolean) => void
   onFormDraftSuggestion: (draftId: string, agentId: string) => void
   onContinueDraft: (draftId: string) => void
 }
@@ -94,9 +94,29 @@ export function AgentsPage({
     }
   }
 
+  const reloadRef = useRef(reload)
+  reloadRef.current = reload
+
   useEffect(() => {
     void reload()
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // The backend pushes board_updated when a run starts/finishes; refresh the
+  // calendar live (debounced) so a manual run shows up with its status without
+  // leaving the tab.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const unsubscribe = window.api.onBoardUpdated?.(() => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        void reloadRef.current()
+      }, 500)
+    })
+    return () => {
+      if (timer) clearTimeout(timer)
+      unsubscribe?.()
+    }
   }, [])
 
   // Refresh relative stat wording every 30s.
@@ -378,7 +398,7 @@ export function AgentsPage({
                     agent={agent}
                     selected={agent.id === selectedAgentId}
                     onSelect={selectAgent}
-                    onRun={(id) => onOpenRun(id, '')}
+                    onRun={(id) => onOpenRun(id, '', true)}
                     onOpen={(id) => onOpenRun(id, '')}
                     onHistory={(id, title) => void onHistory(id, title)}
                     onSchedule={onSchedule}

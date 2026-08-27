@@ -2544,10 +2544,14 @@ class ApiClient:
         self,
         workflow_id: str,
         file_paths: list[str | Path],
+        *,
+        origin: str = "",
     ) -> WorkflowFiles:
+        data = {"origin": origin} if (origin or "").strip() else None
         return self._upload_workflow_files(
             f"/api/v1/workflows/{workflow_id}/files",
             file_paths,
+            data=data,
         )
 
     def register_workflow_run_files(
@@ -2562,7 +2566,26 @@ class ApiClient:
             file_paths,
         )
 
-    def _upload_workflow_files(self, path: str, file_paths: list[str | Path]) -> WorkflowFiles:
+    def register_run_attachments(
+        self,
+        workflow_id: str,
+        run_id: str,
+        file_paths: list[str | Path],
+    ) -> WorkflowFiles:
+        """Upload temporary per-run attachments (not permanent knowledge)."""
+        rid = (run_id or "").strip() or "local"
+        return self._upload_workflow_files(
+            f"/api/v1/workflows/{workflow_id}/runs/{rid}/attachments",
+            file_paths,
+        )
+
+    def _upload_workflow_files(
+        self,
+        path: str,
+        file_paths: list[str | Path],
+        *,
+        data: dict[str, str] | None = None,
+    ) -> WorkflowFiles:
         url = f"{self.base_url}{path}"
         files: list = []
         handles = []
@@ -2575,7 +2598,7 @@ class ApiClient:
                 handles.append(fh)
                 files.append(("files", (local.name, fh, "application/octet-stream")))
             with httpx.Client(timeout=max(self._timeout, 180.0)) as client:
-                response = client.post(url, headers=self._headers(), files=files)
+                response = client.post(url, headers=self._headers(), files=files, data=data or None)
         except httpx.ConnectError as exc:
             raise ApiError(f"Не удалось подключиться к backend ({self.base_url})") from exc
         except httpx.TimeoutException as exc:

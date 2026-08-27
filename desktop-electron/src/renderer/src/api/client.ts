@@ -228,7 +228,8 @@ function parseInboxNotification(value: unknown): InboxNotification {
     unread: Boolean(data.unread),
     senderFio: String(data.senderFio ?? data.sender_fio ?? ''),
     createdAt: String(data.createdAt ?? data.created_at ?? ''),
-    workflowId: String(data.workflowId ?? data.workflow_id ?? '')
+    workflowId: String(data.workflowId ?? data.workflow_id ?? ''),
+    runId: String(data.runId ?? data.run_id ?? '')
   }
 }
 
@@ -1507,7 +1508,8 @@ export class ApiClient {
     )
     const userFiles = (data.user_files as Record<string, unknown>[]) ?? []
     const agentFiles = (data.agent_files as Record<string, unknown>[]) ?? []
-    return [...userFiles, ...agentFiles].map((item) =>
+    const runAttachments = (data.run_attachments as Record<string, unknown>[]) ?? []
+    return [...userFiles, ...agentFiles, ...runAttachments].map((item) =>
       parsePlatformFile({ ...item, workflow_id: workflowId })
     )
   }
@@ -1525,7 +1527,8 @@ export class ApiClient {
       if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить файл', res.status)
       const userFiles = (res.data?.user_files as Record<string, unknown>[]) ?? []
       const agentFiles = (res.data?.agent_files as Record<string, unknown>[]) ?? []
-      latest = [...userFiles, ...agentFiles].map((item) =>
+      const runAttachments = (res.data?.run_attachments as Record<string, unknown>[]) ?? []
+      latest = [...userFiles, ...agentFiles, ...runAttachments].map((item) =>
         parsePlatformFile({ ...item, workflow_id: workflowId })
       )
     }
@@ -1631,6 +1634,14 @@ export class ApiClient {
 
   async markAllNotificationsRead(): Promise<void> {
     await this.request('POST', '/api/v1/notifications/read-all', { timeoutMs: 15_000 })
+  }
+
+  async markNotificationRead(notificationId: string): Promise<void> {
+    await this.request(
+      'POST',
+      `/api/v1/notifications/${encodeURIComponent(notificationId)}/read`,
+      { timeoutMs: 15_000 }
+    )
   }
 
   async clearNotifications(): Promise<void> {

@@ -76,6 +76,7 @@ class WorkflowFileSchema(BaseModel):
 class WorkflowFilesResponse(BaseModel):
     user_files: list[WorkflowFileSchema] = Field(default_factory=list)
     agent_files: list[WorkflowFileSchema] = Field(default_factory=list)
+    run_attachments: list[WorkflowFileSchema] = Field(default_factory=list)
 
 
 class PlatformFileSchema(WorkflowFileSchema):

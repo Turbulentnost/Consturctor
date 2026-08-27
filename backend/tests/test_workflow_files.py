@@ -6,12 +6,14 @@ from sqlalchemy.orm import sessionmaker
 from app.db.base import Base
 from app.models.user import AppUser
 from app.models.workflow import Workflow
+from app.models.workflow import WorkflowFile
 from app.services.workflow_files import (
     add_user_files_to_workflow,
     get_workflow_file,
     list_user_platform_files,
     list_workflow_files,
     register_agent_files,
+    register_run_attachments,
 )
 from app.services.workflows.service import apply_operating_instruction, create_workflow, get_workflow
 
@@ -68,6 +70,77 @@ def test_register_agent_file_is_current_run_output() -> None:
     assert files.agent_files[0].source == "agent"
     assert files.agent_files[0].scope == "run_output"
     assert files.agent_files[0].run_id == "run-1"
+
+
+def test_knowledge_files_dedup_identical_content() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    workflow = Workflow(id="wf-1", user_id="user-1", title="Агент", phase="tested")
+    db.add(workflow)
+    db.commit()
+
+    add_user_files_to_workflow(
+        db, row=workflow, files=[("catalog.txt", b"same content")], origin="user_upload"
+    )
+    db.commit()
+    add_user_files_to_workflow(
+        db, row=workflow, files=[("catalog.txt", b"same content")], origin="keep_knowledge"
+    )
+    db.commit()
+
+    stored = db.query(WorkflowFile).filter(WorkflowFile.workflow_id == "wf-1").all()
+    assert len(stored) == 1
+    files = list_workflow_files(db, row=workflow)
+    assert len(files.user_files) == 1
+
+
+def test_run_attachments_are_temporary_scope() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    workflow = Workflow(id="wf-1", user_id="user-1", title="Агент", phase="tested")
+    db.add(workflow)
+    db.commit()
+
+    register_run_attachments(
+        db, row=workflow, run_id="run-1", files=[("meetings.txt", b"meetings 2026")]
+    )
+    db.commit()
+
+    files = list_workflow_files(db, row=workflow, run_id="run-1")
+    assert files.user_files == []
+    assert files.agent_files == []
+    assert len(files.run_attachments) == 1
+    item = files.run_attachments[0]
+    assert item.scope == "run_attachment"
+    assert item.run_id == "run-1"
+    # A temporary attachment must not leak into the permanent knowledge listing.
+    other_run = list_workflow_files(db, row=workflow, run_id="run-2")
+    assert other_run.run_attachments == []
+
+
+def test_run_attachment_dedup_within_same_run() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    workflow = Workflow(id="wf-1", user_id="user-1", title="Агент", phase="tested")
+    db.add(workflow)
+    db.commit()
+
+    register_run_attachments(
+        db, row=workflow, run_id="run-1", files=[("meetings.txt", b"meetings")]
+    )
+    db.commit()
+    register_run_attachments(
+        db, row=workflow, run_id="run-1", files=[("meetings.txt", b"meetings")]
+    )
+    db.commit()
+    # Same content in a different run is kept separately.
+    register_run_attachments(
+        db, row=workflow, run_id="run-2", files=[("meetings.txt", b"meetings")]
+    )
+    db.commit()
+
+    stored = db.query(WorkflowFile).filter(WorkflowFile.workflow_id == "wf-1").all()
+    assert len(stored) == 2
 
 
 def test_add_user_file_refreshes_document_text_without_autoflush() -> None:

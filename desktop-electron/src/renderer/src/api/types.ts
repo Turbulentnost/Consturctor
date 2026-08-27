@@ -609,6 +609,7 @@ export interface InboxNotification {
   senderFio: string
   createdAt: string
   workflowId: string
+  runId?: string
 }
 
 export class ApiError extends Error {

@@ -74,6 +74,41 @@ const api = {
   startNotifications: (token: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('notifications:start', token),
   stopNotifications: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('notifications:stop'),
+  showNotification: (payload: {
+    title: string
+    body?: string
+    workflowId?: string
+    runId?: string
+  }): Promise<{ ok: boolean }> => ipcRenderer.invoke('notify:show', payload),
+  onNotificationOpen: (
+    callback: (payload: { workflowId: string; runId: string }) => void
+  ): (() => void) => {
+    const listener = (_event: unknown, payload: { workflowId: string; runId: string }): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('notification:open', listener)
+    return () => {
+      ipcRenderer.removeListener('notification:open', listener)
+    }
+  },
+  onInboxChanged: (callback: (payload: { id: string }) => void): (() => void) => {
+    const listener = (_event: unknown, payload: { id: string }): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('inbox:changed', listener)
+    return () => {
+      ipcRenderer.removeListener('inbox:changed', listener)
+    }
+  },
+  onBoardUpdated: (callback: (payload: Record<string, unknown>) => void): (() => void) => {
+    const listener = (_event: unknown, payload: Record<string, unknown>): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('board:updated', listener)
+    return () => {
+      ipcRenderer.removeListener('board:updated', listener)
+    }
+  },
   onSessionKicked: (callback: (payload: { message: string }) => void): (() => void) => {
     const listener = (_event: unknown, payload: { message: string }): void => {
       callback(payload)

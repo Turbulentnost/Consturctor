@@ -166,10 +166,12 @@ KEEP_KNOWLEDGE_FILE_NAME = "keepKnowledgeFile"
 KEEP_KNOWLEDGE_FILE_SPEC: dict[str, Any] = {
     "name": KEEP_KNOWLEDGE_FILE_NAME,
     "description": (
-        "Polozhit fayl iz workspace v dolgosrochnuyu bazu znaniy agenta. "
-        "Call only if the document is needed on every later run "
-        "(schedule, catalog, regulation table). "
-        "Do not call for a one-off example, screenshot, or one-time dump."
+        "Polozhit fayl iz workspace v dolgosrochnuyu (permanent) bazu znaniy agenta. "
+        "Call ONLY for a stable reusable document that is identical on every later run "
+        "(regulation table, fixed catalog, standing schedule). "
+        "Do NOT call for a per-run input the user attaches this run (for example a yearly "
+        "meetings file that changes each run), a one-off example, screenshot, or one-time dump. "
+        "Per-run inputs stay temporary automatically; keep only what should be reused as-is."
     ),
     "inputSchema": {
         "type": "object",
@@ -188,11 +190,12 @@ KEEP_KNOWLEDGE_FILE_SPEC: dict[str, Any] = {
 }
 
 KEEP_FILE_HINT = (
-    "Files in materials/attachments are one-off: read them now. "
-    "If a file is needed on every later run (schedule, catalog, regulation table), "
-    "call keepKnowledgeFile with the workspace path. "
-    "If the file is only needed to extract one fact (example, screenshot, one-time dump), "
-    "do not call keepKnowledgeFile."
+    "Files in materials/attachments are per-run inputs: read them now, they are already "
+    "stored as temporary for this run only. "
+    "Call keepKnowledgeFile ONLY for a stable document that is identical and reusable on "
+    "every later run (fixed catalog, regulation table, standing schedule). "
+    "Do not keep a per-run input that changes each run (for example a yearly meetings file "
+    "the user attaches each time), an example, screenshot, or one-time dump."
 )
 
 # Distinctive phrase so the rule is appended once to playbook / agent.md.
@@ -268,11 +271,22 @@ _AGENT_WHEN_LABELS = (
     "триггер агента",
 )
 
+RUN_INPUTS_HINT = (
+    "Identify files the user must attach on EVERY run (per-run inputs that change "
+    "each time, for example a yearly meetings file to schedule from). "
+    "Record each such input into playbook_draft.run_inputs as a JSON list of "
+    "{name, description, accept} (accept is an optional extension hint like '.xlsx,.csv'). "
+    "These are temporary per-run inputs: never call keepKnowledgeFile for them and never "
+    "store them in the permanent knowledge base. If no per-run input is required, leave "
+    "run_inputs empty."
+)
+
 
 def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
     parts = [KEEP_FILE_HINT, OUTLOOK_MEETING_HINT]
     if (mode or "").strip().casefold() == "design":
         parts.append(WHEN_TO_RUN_HINT)
+        parts.append(RUN_INPUTS_HINT)
     text = (prompt or "").strip()
     if text:
         parts.append(text)
@@ -411,6 +425,34 @@ def _when_to_run_known(record: Any) -> bool:
     return bool(_labeled_agent_when(blob))
 
 
+def _when_to_run_user_answered(record: Any) -> bool:
+    """True only if the trigger was genuinely answered or is in materials.
+
+    Unlike _when_to_run_known, an LLM-invented playbook_draft.when_to_run does
+    NOT count. Used to decide whether we still owe the user the explicit
+    trigger question, so a model that never called askQuestion cannot suppress
+    it.
+    """
+    local = getattr(record, "local_run", None) or {}
+    for item in local.get("design_answers") or []:
+        if (
+            isinstance(item, dict)
+            and _is_when_to_run_question(str(item.get("question") or ""))
+            and str(item.get("answer") or "").strip()
+        ):
+            return True
+    blob = "\n".join(
+        part
+        for part in (
+            getattr(record, "notes", "") or "",
+            getattr(record, "document_text", "") or "",
+            getattr(record, "title", "") or "",
+        )
+        if str(part or "").strip()
+    )
+    return bool(_labeled_agent_when(blob))
+
+
 def _merge_when_to_run(local_run: dict[str, Any] | None, answer: str) -> dict[str, Any] | None:
     text = (answer or "").strip()
     if not text:
@@ -433,6 +475,48 @@ def _merge_when_to_run(local_run: dict[str, Any] | None, answer: str) -> dict[st
         updated["when_to_run"] = text
         local[key] = updated
     return local
+
+
+def _normalize_run_input(item: Any) -> dict[str, str] | None:
+    """Normalize a single run_inputs entry into {name, description, accept}."""
+    if isinstance(item, str):
+        name = item.strip()
+        return {"name": name, "description": "", "accept": ""} if name else None
+    if not isinstance(item, dict):
+        return None
+    name = str(item.get("name") or item.get("title") or item.get("label") or "").strip()
+    if not name:
+        return None
+    return {
+        "name": name,
+        "description": str(item.get("description") or item.get("why") or "").strip(),
+        "accept": str(item.get("accept") or item.get("extensions") or "").strip(),
+    }
+
+
+def _run_inputs_from_local(local: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Return the declared per-run required inputs from playbook/playbook_draft."""
+    data = local if isinstance(local, dict) else {}
+    for key in ("playbook", "playbook_draft"):
+        raw = data.get(key)
+        if not isinstance(raw, dict):
+            continue
+        entries = raw.get("run_inputs")
+        if isinstance(entries, list) and entries:
+            result: list[dict[str, str]] = []
+            seen: set[str] = set()
+            for entry in entries:
+                normalized = _normalize_run_input(entry)
+                if normalized is None:
+                    continue
+                key_name = normalized["name"].casefold()
+                if key_name in seen:
+                    continue
+                seen.add(key_name)
+                result.append(normalized)
+            if result:
+                return result
+    return []
 
 
 class ElectronBridge(CursorSdkBridge):
@@ -557,6 +641,7 @@ class ElectronBridge(CursorSdkBridge):
             cwd or self._knowledge_cwd,
             [str(target)],
             run_id=self._knowledge_run_id,
+            origin="keep_knowledge",
         )
         if not ok:
             return {"ok": False, "error": "Failed to save file to knowledge base", "path": raw}
@@ -827,12 +912,13 @@ def _upload_knowledge_files(
     run_cwd: str,
     file_paths: list[str],
     run_id: str = "",
+    origin: str = "",
 ) -> bool:
     allowed = [str(path) for path in file_paths if Path(str(path)).is_file()]
     if not (workflow_id.strip() and allowed):
         return False
     try:
-        api.upload_workflow_files(workflow_id, allowed)
+        api.upload_workflow_files(workflow_id, allowed, origin=origin)
         if run_cwd.strip():
             seed_workflow_files(api, workflow_id, run_cwd)
         _emit_files_updated(workflow_id, run_id)
@@ -840,6 +926,44 @@ def _upload_knowledge_files(
     except Exception as exc:  # noqa: BLE001
         log("knowledge upload failed: " + _ascii(repr(exc)))
         return False
+
+
+def _upload_run_attachments(
+    api: ApiClient,
+    workflow_id: str,
+    file_paths: list[str],
+    run_id: str = "",
+) -> bool:
+    """Upload files as temporary per-run attachments (not permanent knowledge)."""
+    allowed = [str(path) for path in file_paths if Path(str(path)).is_file()]
+    if not (workflow_id.strip() and run_id.strip() and allowed):
+        return False
+    try:
+        api.register_run_attachments(workflow_id, run_id, allowed)
+        _emit_files_updated(workflow_id, run_id)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log("run attachment upload failed: " + _ascii(repr(exc)))
+        return False
+
+
+def _persist_run_attachment(
+    api: ApiClient,
+    workflow_id: str,
+    run_cwd: str,
+    file_paths: list[str],
+    run_id: str = "",
+) -> list[str]:
+    """Stage per-run files into the workspace and store them as temporary.
+
+    Files attached mid-run are inputs for THIS run only. They are copied into
+    materials/attachments so the SDK agent can read them and uploaded as
+    run_attachment (tied to run_id) - never to the permanent knowledge base.
+    Only the explicit keepKnowledgeFile tool writes permanent knowledge.
+    """
+    copied = _copy_attachments(run_cwd, file_paths)
+    _upload_run_attachments(api, workflow_id, file_paths, run_id=run_id)
+    return copied
 
 
 def _persist_knowledge_files(
@@ -1439,9 +1563,18 @@ class Sidecar:
             self._ensure_outlook_rule_in_playbook(workflow_id, record=workflow)
         bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
         file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
-        attachment_paths = _persist_knowledge_files(
-            self._api, workflow_id, run_cwd, file_paths, keep=False, run_id=active.run_id
+        # Files attached to a run are inputs for THIS run only: store them as
+        # temporary run_attachments, not in the permanent knowledge base.
+        attachment_paths = _persist_run_attachment(
+            self._api, workflow_id, run_cwd, file_paths, run_id=active.run_id
         )
+        # Manual runs: hard-ask for each declared per-run input the user did not
+        # already attach. Trigger/autonomous runs have no UI, so we skip them.
+        run_input_notes: list[str] = []
+        if not autonomous:
+            run_input_notes = self._ensure_run_inputs_provided(
+                active, workflow, provided_count=len(file_paths)
+            )
         events: list[dict[str, Any]] = []
         prompt = (
             build_followup_sdk_prompt(message)
@@ -1451,6 +1584,9 @@ class Sidecar:
         note = _attachments_note(attachment_paths)
         if note:
             prompt = prompt + "\n\n" + note
+        for extra_note in run_input_notes:
+            if extra_note:
+                prompt = prompt + "\n\n" + extra_note
         prompt = _with_run_journal_prompt(prompt, run_cwd)
         status = "ok"
         answer = ""
@@ -1606,7 +1742,7 @@ class Sidecar:
             record = self._api.get_workflow(workflow_id)
         except ApiError:
             return
-        if _when_to_run_known(record):
+        if _when_to_run_user_answered(record):
             return
         reply = active.gate.ask_question(
             {
@@ -1620,6 +1756,51 @@ class Sidecar:
         if not answer or active.stop.is_set():
             return
         self._persist_when_to_run(workflow_id, answer)
+
+    def _ensure_run_inputs_provided(
+        self,
+        active: ActiveRun,
+        workflow: Any,
+        provided_count: int,
+    ) -> list[str]:
+        """Ask the user to attach each declared per-run input at manual run start.
+
+        Files come back as temporary run_attachments (handled by answer()).
+        Returns note strings that describe the attached files for the SDK prompt.
+        Skipped for autonomous/trigger runs, which have no UI to attach files.
+        """
+        run_inputs = _run_inputs_from_local(dict(getattr(workflow, "local_run", None) or {}))
+        if not run_inputs:
+            return []
+        notes: list[str] = []
+        for idx, spec in enumerate(run_inputs):
+            if idx < provided_count:
+                continue
+            if active.stop.is_set():
+                break
+            name = spec.get("name") or "файл"
+            description = spec.get("description") or ""
+            accept = spec.get("accept") or ""
+            question = "Прикрепите файл для этого запуска: " + name
+            if description:
+                question = question + ". " + description
+            reply = active.gate.ask_question(
+                {
+                    "question": question,
+                    "options": [],
+                    "needsFile": True,
+                    "accept": accept,
+                    "why": (
+                        "Это временный файл только для текущего запуска, "
+                        "он не сохраняется в базу знаний."
+                    ),
+                },
+                should_stop=active.stop.is_set,
+            )
+            answer = str(reply.get("answer") or "").strip()
+            if answer:
+                notes.append(answer)
+        return notes
 
     def _ensure_outlook_rule_in_playbook(
         self,
@@ -1649,15 +1830,17 @@ class Sidecar:
         file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
         for active in list(self._active.values()):
             note = ""
-            keep = active.gate.consume_needs_file(request_id)
+            # A file attached in reply to a mid-run question is an input for
+            # THIS run only. Store it as a temporary run_attachment, never in the
+            # permanent knowledge base. keepKnowledgeFile is the only permanent path.
+            active.gate.consume_needs_file(request_id)
             if file_paths and active.run_cwd:
                 note = _attachments_note(
-                    _persist_knowledge_files(
+                    _persist_run_attachment(
                         self._api,
                         active.workflow_id,
                         active.run_cwd,
                         file_paths,
-                        keep=keep,
                         run_id=active.run_id,
                     )
                 )

@@ -136,8 +136,13 @@ export function ClarifyCard({
       {canAttach && (
         <div className="clarify-files">
           <button type="button" className="btn-ghost clarify-attach" onClick={() => void pickFiles()}>
-            {needsFile ? 'Загрузить Excel или Word' : 'Прикрепить файл'}
+            {needsFile ? 'Прикрепить файл для этого запуска' : 'Прикрепить файл'}
           </button>
+          {needsFile && (
+            <span className="clarify-file-hint">
+              Временный файл: используется только в этом запуске и не сохраняется в базу знаний.
+            </span>
+          )}
           {filePaths.map((path) => (
             <span key={path} className="clarify-file-name">
               {path.split(/[\\/]/).pop() || path}

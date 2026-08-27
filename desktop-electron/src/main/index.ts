@@ -1,7 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } from 'electron'
 import { join, basename, extname } from 'node:path'
 import { readFileSync, existsSync, writeFileSync } from 'node:fs'
-import { NotificationGuard } from './notifications'
+import { NotificationGuard, showToast, type ToastPayload } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
 
 interface RequestOptions {
@@ -532,6 +532,10 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('notifications:stop', () => {
     notifyGuard.stop()
+    return { ok: true }
+  })
+  ipcMain.handle('notify:show', (_evt, payload: ToastPayload) => {
+    showToast(payload || { title: '' })
     return { ok: true }
   })
   ipcMain.handle('dialog:openFile', async (_evt, options: Electron.OpenDialogOptions) => {

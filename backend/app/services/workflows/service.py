@@ -2018,7 +2018,7 @@ def _demo_validation_report(phase: PhaseResult, draft: dict[str, Any]) -> dict[s
 
 
 def _playbook_from_draft(row: Workflow, draft: dict[str, Any]) -> dict[str, Any]:
-    return {
+    playbook = {
         "status": prompts.DRAFT_STATUS_DRAFT,
         "instructions": prompts.draft_summary_text(draft),
         "example_run": "",
@@ -2028,6 +2028,15 @@ def _playbook_from_draft(row: Workflow, draft: dict[str, Any]) -> dict[str, Any]
         "expected_result": str(draft.get("result") or ""),
         "triggers": [],
     }
+    # Carry over per-run inputs and the run trigger so they survive into the
+    # published playbook (the schedule draft and run-start prompts rely on them).
+    when_to_run = str(draft.get("when_to_run") or "").strip()
+    if when_to_run:
+        playbook["when_to_run"] = when_to_run
+    run_inputs = draft.get("run_inputs")
+    if isinstance(run_inputs, list) and run_inputs:
+        playbook["run_inputs"] = run_inputs
+    return playbook
 
 
 def _fail_demo_validation(

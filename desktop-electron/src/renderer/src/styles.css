@@ -1048,6 +1048,15 @@ input {
   background: #eef3f1;
   color: #101817;
 }
+.notify-card-clickable .notify-card-main {
+  cursor: pointer;
+}
+.notify-card-clickable:hover {
+  background: #eef7f2;
+}
+.notify-card-unread {
+  border-left: 3px solid var(--accent, #1f9d6b);
+}
 .user-dropdown {
   position: absolute;
   top: 48px;
@@ -3568,6 +3577,11 @@ button.feed-tool-head:hover {
 }
 .clarify-file-name {
   font-size: 12px;
+  color: var(--content-muted);
+}
+.clarify-file-hint {
+  flex-basis: 100%;
+  font-size: 11px;
   color: var(--content-muted);
 }
 .clarify-actions {

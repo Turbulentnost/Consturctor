@@ -5,18 +5,16 @@ import type { WorkflowFileItem } from '../api/types'
 import { AgentFeed } from '../components/agentfeed'
 import { useRuns } from '../store/runs'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
-import { formatSize } from './filesGrouping'
+import { categoryOf, FILE_CATEGORY_LABELS, formatSize } from './filesGrouping'
 
 interface AgentRunPageProps {
   workflowId: string
   title: string
+  autoStart?: boolean
   onBack: () => void
   onOpenHistory?: (workflowId: string, title: string) => void
 }
 
-function isAgentFile(file: WorkflowFileItem): boolean {
-  return (file.source || '').toLowerCase() === 'agent'
-}
 
 function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
   const name = file.name || 'file'
@@ -57,6 +55,7 @@ function FileSection({
 export function AgentRunPage({
   workflowId,
   title,
+  autoStart = false,
   onBack,
   onOpenHistory
 }: AgentRunPageProps): React.JSX.Element {
@@ -70,6 +69,7 @@ export function AgentRunPage({
   const [attachments, setAttachments] = useState<string[]>([])
   const [files, setFiles] = useState<WorkflowFileItem[]>([])
   const resumeAgentRef = useRef<string>(entry?.resumeAgentId || '')
+  const autoStartedRef = useRef(false)
 
   const refreshFiles = useCallback(async () => {
     try {
@@ -112,6 +112,22 @@ export function AgentRunPage({
     void refreshFiles()
   }, [running, refreshFiles])
 
+  // The "Запустить" play button opens this page with autoStart, so the agent
+  // starts immediately on its own playbook instead of waiting for a message.
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return
+    if (running || (state?.items?.length ?? 0) > 0) return
+    autoStartedRef.current = true
+    runs.startRun({
+      workflowId,
+      title,
+      message: '',
+      shownMessage: 'Запуск агента',
+      resumeAgentId: resumeAgentRef.current || undefined
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, workflowId])
+
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({
       title: 'Прикрепить файл',
@@ -145,8 +161,22 @@ export function AgentRunPage({
     })
   }
 
-  const attachedFiles = useMemo(() => files.filter((file) => !isAgentFile(file)), [files])
-  const generatedFiles = useMemo(() => files.filter(isAgentFile), [files])
+  const temporaryFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'temporary'),
+    [files]
+  )
+  const knowledgeFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'knowledge'),
+    [files]
+  )
+  const instructionFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'instructions'),
+    [files]
+  )
+  const generatedFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'agent'),
+    [files]
+  )
 
   const statusText = running
     ? state?.status || 'Агент работает…'
@@ -257,8 +287,10 @@ export function AgentRunPage({
               <div className="wf-files-empty">Файлы не прикреплены</div>
             ) : (
               <div className="wf-file-groups">
-                <FileSection title="Прикрепили мы" items={attachedFiles} />
-                <FileSection title="Создано агентом" items={generatedFiles} />
+                <FileSection title={FILE_CATEGORY_LABELS.temporary} items={temporaryFiles} />
+                <FileSection title={FILE_CATEGORY_LABELS.knowledge} items={knowledgeFiles} />
+                <FileSection title={FILE_CATEGORY_LABELS.instructions} items={instructionFiles} />
+                <FileSection title={FILE_CATEGORY_LABELS.agent} items={generatedFiles} />
               </div>
             )}
           </div>

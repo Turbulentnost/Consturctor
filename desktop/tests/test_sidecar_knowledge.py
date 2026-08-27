@@ -14,6 +14,7 @@ if str(PYBRIDGE) not in sys.path:
 from agent_sidecar import (  # noqa: E402
     OUTLOOK_MEETING_RULE,
     OUTLOOK_SERIES_MARKER,
+    RUN_INPUTS_HINT,
     WHEN_TO_RUN_HINT,
     WHEN_TO_RUN_QUESTION,
     _file_request_from_payload,
@@ -21,7 +22,10 @@ from agent_sidecar import (  # noqa: E402
     _merge_outlook_rule_into_playbook,
     _merge_when_to_run,
     _persist_knowledge_files,
+    _persist_run_attachment,
+    _run_inputs_from_local,
     _when_to_run_known,
+    _when_to_run_user_answered,
     _with_sidecar_prompt,
 )
 
@@ -30,9 +34,21 @@ class _Api:
     def __init__(self, tmp_path: Path) -> None:
         self.tmp_path = tmp_path
         self.uploaded: list[tuple[str, list[str]]] = []
+        self.uploaded_origins: list[str] = []
+        self.run_attachments: list[tuple[str, str, list[str]]] = []
 
-    def upload_workflow_files(self, workflow_id: str, paths: list[str]) -> None:
+    def upload_workflow_files(
+        self, workflow_id: str, paths: list[str], *, origin: str = ""
+    ) -> None:
         self.uploaded.append((workflow_id, [str(item) for item in paths]))
+        self.uploaded_origins.append(origin)
+
+    def register_run_attachments(
+        self, workflow_id: str, run_id: str, paths: list[str]
+    ) -> None:
+        self.run_attachments.append(
+            (workflow_id, run_id, [str(item) for item in paths])
+        )
 
     def list_workflow_files(self, workflow_id: str) -> WorkflowFiles:
         assert workflow_id == "wf-meet"
@@ -150,3 +166,100 @@ def test_merge_when_to_run_writes_draft() -> None:
     assert merged["playbook_draft"]["when_to_run"] == "raz v den"
     assert merged["design_answers"][0]["question"] == WHEN_TO_RUN_QUESTION
     assert _merge_when_to_run(merged, "raz v den") is None
+
+
+def test_user_answered_ignores_llm_invented_draft() -> None:
+    # An LLM-written playbook_draft.when_to_run must NOT suppress the question:
+    # the user was never actually asked.
+    record = SimpleNamespace(
+        title="Agent",
+        notes="",
+        document_text="",
+        local_run={"playbook_draft": {"when_to_run": "raz v den"}},
+    )
+    assert _when_to_run_known(record) is True
+    assert _when_to_run_user_answered(record) is False
+
+
+def test_user_answered_true_from_design_answers() -> None:
+    record = SimpleNamespace(
+        title="Agent",
+        notes="",
+        document_text="",
+        local_run={"design_answers": [{"question": WHEN_TO_RUN_QUESTION, "answer": "raz v den"}]},
+    )
+    assert _when_to_run_user_answered(record) is True
+
+
+def test_user_answered_true_from_materials_label() -> None:
+    record = SimpleNamespace(
+        title="Agent",
+        notes="Триггер агента: ежедневно утром",
+        document_text="",
+        local_run={},
+    )
+    assert _when_to_run_user_answered(record) is True
+
+
+def test_persist_run_attachment_is_temporary(tmp_path: Path) -> None:
+    # A per-run attachment must go to the temporary run_attachment bucket, not
+    # to the permanent knowledge base.
+    source = tmp_path / "meetings-2026.xlsx"
+    source.write_bytes(b"XLSX")
+    cwd = tmp_path / "run"
+    cwd.mkdir()
+    api = _Api(tmp_path)
+
+    copied = _persist_run_attachment(api, "wf-meet", str(cwd), [str(source)], run_id="run-1")
+
+    assert copied
+    assert copied[0].startswith("materials/attachments/")
+    assert api.uploaded == []
+    assert api.run_attachments == [("wf-meet", "run-1", [str(source)])]
+
+
+def test_keep_knowledge_upload_uses_keep_origin(tmp_path: Path) -> None:
+    from agent_sidecar import _upload_knowledge_files
+
+    source = tmp_path / "catalog.xlsx"
+    source.write_bytes(b"XLSX")
+    cwd = tmp_path / "run"
+    cwd.mkdir()
+    api = _Api(tmp_path)
+
+    ok = _upload_knowledge_files(
+        api, "wf-meet", str(cwd), [str(source)], run_id="run-1", origin="keep_knowledge"
+    )
+
+    assert ok is True
+    assert api.uploaded == [("wf-meet", [str(source)])]
+    assert api.uploaded_origins == ["keep_knowledge"]
+
+
+def test_design_prompt_requires_run_inputs_hint() -> None:
+    text = _with_sidecar_prompt("Sproektiruy", mode="design")
+    assert RUN_INPUTS_HINT in text
+    assert "run_inputs" in text
+    run_text = _with_sidecar_prompt("Sdelai demo")
+    assert RUN_INPUTS_HINT not in run_text
+
+
+def test_run_inputs_from_local_normalizes_entries() -> None:
+    local = {
+        "playbook": {
+            "run_inputs": [
+                {"name": "Годовые совещания", "description": "Файл на год", "accept": ".xlsx"},
+                "Список участников",
+                {"title": "Годовые совещания"},
+            ]
+        }
+    }
+    inputs = _run_inputs_from_local(local)
+    assert [item["name"] for item in inputs] == ["Годовые совещания", "Список участников"]
+    assert inputs[0]["accept"] == ".xlsx"
+    assert inputs[1]["description"] == ""
+
+
+def test_run_inputs_from_local_empty() -> None:
+    assert _run_inputs_from_local({}) == []
+    assert _run_inputs_from_local({"playbook": {}}) == []

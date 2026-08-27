@@ -7,7 +7,7 @@ import { ClarifyCard } from '../components/agentfeed/ClarifyCard'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
 import { presentAgentText } from '../components/agentfeed/formatAgentText'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
-import { formatSize } from './filesGrouping'
+import { categoryOf, FILE_CATEGORY_LABELS, formatSize } from './filesGrouping'
 
 interface AgentStudioPageProps {
   workflowId: string
@@ -19,10 +19,6 @@ interface AgentStudioPageProps {
 }
 
 type StudioTab = 'stages' | 'files'
-
-function isAgentFile(file: WorkflowFileItem): boolean {
-  return (file.source || '').toLowerCase() === 'agent'
-}
 
 function StudioFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
   const name = file.name || 'file'
@@ -171,8 +167,22 @@ export function AgentStudioPage({
 
   const canDemo = designDone && !busy && !awaiting
   const composerDisabled = busy || awaiting
-  const attachedFiles = useMemo(() => files.filter((file) => !isAgentFile(file)), [files])
-  const generatedFiles = useMemo(() => files.filter(isAgentFile), [files])
+  const temporaryFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'temporary'),
+    [files]
+  )
+  const knowledgeFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'knowledge'),
+    [files]
+  )
+  const instructionFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'instructions'),
+    [files]
+  )
+  const generatedFiles = useMemo(
+    () => files.filter((file) => categoryOf(file) === 'agent'),
+    [files]
+  )
 
   useEffect(() => {
     if (tab !== 'files') return
@@ -372,8 +382,10 @@ export function AgentStudioPage({
                 <div className="wf-files-empty">Файлы не прикреплены</div>
               ) : (
                 <div className="wf-file-groups">
-                  <FileSection title="Прикрепили мы" items={attachedFiles} />
-                  <FileSection title="Создано агентом" items={generatedFiles} />
+                  <FileSection title={FILE_CATEGORY_LABELS.temporary} items={temporaryFiles} />
+                  <FileSection title={FILE_CATEGORY_LABELS.knowledge} items={knowledgeFiles} />
+                  <FileSection title={FILE_CATEGORY_LABELS.instructions} items={instructionFiles} />
+                  <FileSection title={FILE_CATEGORY_LABELS.agent} items={generatedFiles} />
                 </div>
               )}
             </div>

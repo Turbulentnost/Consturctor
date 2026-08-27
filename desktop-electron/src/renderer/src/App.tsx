@@ -54,7 +54,7 @@ type View =
   | { kind: 'suggestions' }
   | { kind: 'passport' }
   | { kind: 'studio'; workflowId: string; title: string }
-  | { kind: 'agentrun'; workflowId: string; title: string }
+  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean }
   | { kind: 'schedule'; workflowId: string; title: string }
   | { kind: 'kpi'; workflowId: string; title: string; draft: ScheduleDraft }
   | { kind: 'history'; workflowId: string; title: string }
@@ -78,6 +78,7 @@ export function App(): React.JSX.Element {
   const [passportError, setPassportError] = useState('')
   const [busy, setBusy] = useState(false)
   const kickedRef = useRef(false)
+  const seenHitlRef = useRef<Set<string>>(new Set())
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
   const formation = useFormation()
   const runs = useRuns()
@@ -184,6 +185,46 @@ export function App(): React.JSX.Element {
     })
     return () => unsubscribe?.()
   }, [])
+
+  // A clicked OS toast (incoming notification) opens the related agent.
+  useEffect(() => {
+    const unsubscribe = window.api.onNotificationOpen?.((payload) => {
+      const workflowId = payload?.workflowId || ''
+      if (workflowId) void openAgentRun(workflowId, payload?.runId || '')
+    })
+    return () => unsubscribe?.()
+  }, [])
+
+  // The main process toasts incoming notifications; refresh the bell badge.
+  useEffect(() => {
+    if (!user) return
+    const unsubscribe = window.api.onInboxChanged?.(() => {
+      void api.unreadNotificationCount().then(setUnread).catch(() => undefined)
+    })
+    return () => unsubscribe?.()
+  }, [user])
+
+  // When a tool needs approval while you are not on that agent's page, raise an
+  // OS toast so the pending HITL card is not missed (mirrors the desktop app).
+  useEffect(() => {
+    const activeWorkflowId =
+      view.kind === 'agentrun' || view.kind === 'history' || view.kind === 'studio'
+        ? view.workflowId
+        : ''
+    for (const entry of Object.values(runs.entries)) {
+      const hitl = entry.state.pendingHitl
+      if (!hitl) continue
+      if (seenHitlRef.current.has(hitl.requestId)) continue
+      seenHitlRef.current.add(hitl.requestId)
+      const onThisAgent = activeWorkflowId === entry.workflowId
+      if (onThisAgent && document.hasFocus()) continue
+      void window.api.showNotification?.({
+        title: 'Агент ждёт подтверждения',
+        body: `${entry.title || 'ИИ-агент'}: ${hitl.title || hitl.tool}`,
+        workflowId: entry.workflowId
+      })
+    }
+  }, [runs.entries, view])
 
   function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
     if (user && user.id !== result.user.id) {
@@ -352,7 +393,11 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function openAgentRun(workflowId: string, runId: string): Promise<void> {
+  async function openAgentRun(
+    workflowId: string,
+    runId: string,
+    autoStart = false
+  ): Promise<void> {
     let title = ''
     try {
       const record = await api.getWorkflow(workflowId)
@@ -363,7 +408,7 @@ export function App(): React.JSX.Element {
     if (runId) {
       setView({ kind: 'history', workflowId, title })
     } else {
-      setView({ kind: 'agentrun', workflowId, title })
+      setView({ kind: 'agentrun', workflowId, title, autoStart })
     }
   }
 
@@ -636,6 +681,7 @@ export function App(): React.JSX.Element {
         <AgentRunPage
           workflowId={view.workflowId}
           title={view.title}
+          autoStart={view.autoStart}
           onBack={() => setView({ kind: 'tab', key: 'agents' })}
           onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
         />
@@ -699,7 +745,9 @@ export function App(): React.JSX.Element {
         return (
           <AgentsPage
             onCreateAgent={() => setView({ kind: 'tab', key: 'create' })}
-            onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+            onOpenRun={(workflowId, runId, autoStart) =>
+              void openAgentRun(workflowId, runId, autoStart)
+            }
             onFormDraftSuggestion={formDraftSuggestion}
             onContinueDraft={continueDraft}
           />
@@ -771,6 +819,7 @@ export function App(): React.JSX.Element {
               onUnreadChange={setUnread}
               onLogout={onLogout}
               showLogout={showLogout}
+              onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
             />
           </div>
           <RunBannerCarousel entries={bannerEntries} />
