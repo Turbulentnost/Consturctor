@@ -1,27 +1,10 @@
 import { useState } from 'react'
 import { api } from '../api/client'
+import { isTestCredentials, testLoginResult } from '../api/testUsers'
 import { ApiError, type LoginResult } from '../api/types'
 import { rememberPreference, savedFio, setRememberPreference } from '../store/session'
 import { FioSuggest } from '../components/FioSuggest'
 import logoUrl from '../assets/logo.png'
-
-const TEST_USER_FIO = 'Анна Де Армас'
-
-function testLoginResult(): LoginResult {
-  return {
-    accessToken: '',
-    user: {
-      id: 'A11ADEA24A5000000000000000000001',
-      fio: TEST_USER_FIO,
-      department: 'Тест',
-      position: 'Тестовый пользователь',
-      avatarUrl: null,
-      canChangeDepartment: true,
-      activityStatus: 'online',
-      isSupport: false
-    }
-  }
-}
 
 interface LoginPageProps {
   onLoggedIn: (result: LoginResult, remember: boolean, password: string) => void
@@ -44,10 +27,12 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
     setBusy(true)
     try {
       let result: LoginResult
-      if (fio.trim().toLowerCase() === TEST_USER_FIO.toLowerCase()) {
-        result = testLoginResult()
-      } else {
+      try {
         result = await api.login(fio.trim(), password)
+      } catch (err) {
+        const fallback = isTestCredentials(fio, password) ? testLoginResult(fio) : null
+        if (!fallback) throw err
+        result = fallback
       }
       setRememberPreference(remember)
       onLoggedIn(result, remember, password)

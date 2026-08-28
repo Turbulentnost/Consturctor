@@ -63,7 +63,13 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
   useEffect(() => {
     const unsubscribe = agentClient.onEvent((event: AgentEvent) => {
       const runId = event.runId
-      const matches = activeRunRef.current !== null && (!runId || runId === activeRunRef.current)
+      const adoptId = event.type === 'event' ? String(event.payload?.activeRunId || '') : ''
+      const current = activeRunRef.current
+      const isAdoptForUs = Boolean(adoptId && current && runId === current)
+      if (isAdoptForUs && adoptId !== current) {
+        activeRunRef.current = adoptId
+      }
+      const matches = current !== null && (!runId || runId === current || isAdoptForUs)
       if (!matches) return
       const outcome = applyAgentEvent(stateRef.current, event)
       stateRef.current = outcome.state
@@ -93,6 +99,17 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
   }, [resendLast])
 
   const start = useCallback((command: StartCommand): string => {
+    const prev = lastCommandRef.current
+    const sameTarget =
+      Boolean(activeRunRef.current) &&
+      stateRef.current.running &&
+      prev &&
+      prev.kind === command.kind &&
+      (('draftId' in prev && 'draftId' in command && prev.draftId === command.draftId) ||
+        ('workflowId' in prev && 'workflowId' in command && prev.workflowId === command.workflowId))
+    if (sameTarget && activeRunRef.current) {
+      return activeRunRef.current
+    }
     const id = agentClient.start(command)
     lastCommandRef.current = { ...command, id }
     retriesRef.current = 0

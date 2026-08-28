@@ -62,10 +62,11 @@ def list_desktop_tools() -> list[dict[str, Any]]:
             }
         )
     from app.tools.ac.dispatch import get_registry
+    from app.tools.server_tools import SERVER_TOOL_NAMES
 
     for definition in get_registry().list_tools():
         name = str(definition.name)
-        if name in seen:
+        if name in seen or name in SERVER_TOOL_NAMES:
             continue
         seen.add(name)
         schema = definition.input_schema if isinstance(definition.input_schema, dict) else {
@@ -83,8 +84,8 @@ def list_desktop_tools() -> list[dict[str, Any]]:
         tools.append(item)
 
     # Server-executed tools (1C OData/SQL, IMAP, users, notify). They are proxied
-    # to the backend by host.invoke_tool. The local registry stays authoritative:
-    # a server tool is added only if no local tool already owns that name.
+    # to the backend by host.invoke_tool. Names in SERVER_TOOL_NAMES always win
+    # over a leftover local COM registration.
     from app.tools.server_tools import list_server_tools
 
     for item in list_server_tools():

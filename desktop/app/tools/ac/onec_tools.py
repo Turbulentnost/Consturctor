@@ -24,7 +24,6 @@ ONEC_COM32_TOOLS = frozenset(
         "onec.get_document_card",
         "onec.search_tasks",
         "onec.get_task_card",
-        "onec.meeting_service_notes",
     }
 )
 
@@ -206,7 +205,6 @@ def register_onec_readonly_tools(
         OneCGetDocumentCardTool(worker),
         OneCSearchTasksTool(worker),
         OneCGetTaskCardTool(worker),
-        OneCMeetingServiceNotesTool(worker),
     ]:
         if skip_existing and registry.has_tool(tool.definition.name):
             continue

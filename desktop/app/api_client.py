@@ -21,6 +21,16 @@ class ApiError(Exception):
         self.message = message
         self.status_code = status_code
 
+    @property
+    def is_auth(self) -> bool:
+        if self.status_code == 401:
+            return True
+        text = (self.message or "").casefold()
+        return any(
+            part in text
+            for part in ("авторизац", "недействительный токен", "сеанс завершён")
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class UserProfile:
@@ -951,6 +961,54 @@ class ApiClient:
     def set_token(self, token: str | None) -> None:
         self._token = token
 
+    def _allow_local_catalog(self, exc: ApiError | None = None, *, workflow_id: str = "") -> bool:
+        from app.chat.test_user import is_local_test_user
+        from app.orchestrator.agents import is_local_workflow
+
+        if workflow_id and is_local_workflow(workflow_id):
+            return True
+        if exc is not None and not exc.is_auth:
+            return False
+        return is_local_test_user(self._user_id)
+
+    def _local_agent_run(
+        self,
+        workflow_id: str,
+        *,
+        run_id: str = "",
+        message: str = "",
+        status: str = "running",
+        answer: str = "",
+    ) -> AgentRunHistoryItem:
+        from uuid import uuid4
+
+        return AgentRunHistoryItem(
+            id=run_id or f"local-run-{uuid4().hex[:12]}",
+            workflow_id=workflow_id,
+            message=message,
+            status=status,
+            answer=answer,
+            source="chat",
+        )
+
+    def _local_workflow_board(self):
+        from app.orchestrator.agents import local_board
+
+        return local_board()
+
+    def _local_workflow_items(self) -> list[WorkflowListItem]:
+        from app.orchestrator.agents import local_workflows
+
+        return [
+            WorkflowListItem(
+                id=item.id,
+                title=item.title,
+                phase=item.phase,
+                has_local_run=True,
+            )
+            for item in local_workflows()
+        ]
+
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": "application/json"}
         if self._token:
@@ -1378,7 +1436,12 @@ class ApiClient:
         return self._parse_agent_draft(data)
 
     def list_agent_drafts(self) -> list[AgentDraft]:
-        data = self._request("GET", "/api/v1/agents/drafts", timeout=max(self._timeout, 60.0))
+        try:
+            data = self._request("GET", "/api/v1/agents/drafts", timeout=max(self._timeout, 60.0))
+        except ApiError as exc:
+            if self._allow_local_catalog(exc):
+                return []
+            raise
         return [self._parse_agent_draft(item) for item in data.get("items") or [] if isinstance(item, dict)]
 
     def get_agent_draft(self, draft_id: str) -> AgentDraft:
@@ -1629,7 +1692,12 @@ class ApiClient:
         )
 
     def list_workflows(self) -> list[WorkflowListItem]:
-        data = self._request("GET", "/api/v1/workflows", timeout=60.0)
+        try:
+            data = self._request("GET", "/api/v1/workflows", timeout=60.0)
+        except ApiError as exc:
+            if self._allow_local_catalog(exc):
+                return self._local_workflow_items()
+            raise
         items = data if isinstance(data, list) else []
         return [
             WorkflowListItem(
@@ -1660,13 +1728,27 @@ class ApiClient:
             params["window_to"] = window_to
         if workflow_id:
             params["workflow_id"] = workflow_id
-        data = self._request("GET", "/api/v1/workflows/board", params=params or None, timeout=60.0)
+        try:
+            data = self._request("GET", "/api/v1/workflows/board", params=params or None, timeout=60.0)
+        except ApiError as exc:
+            if self._allow_local_catalog(exc):
+                return self._local_workflow_board()
+            raise
         if not isinstance(data, dict):
             return WorkflowBoard()
         return _parse_workflow_board(data)
 
     def get_workflow(self, workflow_id: str) -> WorkflowRecord:
-        data = self._request("GET", f"/api/v1/workflows/{workflow_id}", timeout=60.0)
+        try:
+            data = self._request("GET", f"/api/v1/workflows/{workflow_id}", timeout=60.0)
+        except ApiError as exc:
+            if self._allow_local_catalog(exc):
+                from app.orchestrator.agents import local_workflow
+
+                record = local_workflow(workflow_id)
+                if record is not None:
+                    return record
+            raise
         return self._parse_workflow(data)
 
     def create_workflow(self, *, notes: str, file_paths: list[str | Path]) -> WorkflowRecord:
@@ -2229,7 +2311,12 @@ class ApiClient:
         return []
 
     def list_agent_runs(self, workflow_id: str) -> list[AgentRunHistoryItem]:
-        data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs", timeout=60.0)
+        try:
+            data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs", timeout=60.0)
+        except ApiError as exc:
+            if self._allow_local_catalog(exc, workflow_id=workflow_id):
+                return []
+            raise
         items = data if isinstance(data, list) else []
         return [
             _parse_agent_run(item, workflow_id)
@@ -2246,17 +2333,22 @@ class ApiClient:
         trigger_id: str = "",
         evidence: str = "",
     ) -> AgentRunHistoryItem:
-        data = self._request(
-            "POST",
-            f"/api/v1/workflows/{workflow_id}/runs/local",
-            json={
-                "message": message,
-                "source": source or "chat",
-                "trigger_id": trigger_id or "",
-                "evidence": evidence or "",
-            },
-            timeout=30.0,
-        )
+        try:
+            data = self._request(
+                "POST",
+                f"/api/v1/workflows/{workflow_id}/runs/local",
+                json={
+                    "message": message,
+                    "source": source or "chat",
+                    "trigger_id": trigger_id or "",
+                    "evidence": evidence or "",
+                },
+                timeout=30.0,
+            )
+        except ApiError as exc:
+            if self._allow_local_catalog(exc, workflow_id=workflow_id):
+                return self._local_agent_run(workflow_id, message=message, status="running")
+            raise
         if not isinstance(data, dict):
             raise ApiError("Не удалось создать запуск агента")
         return _parse_agent_run(data, workflow_id)
@@ -2267,12 +2359,17 @@ class ApiClient:
         run_id: str,
         events: list[dict],
     ) -> None:
-        self._request(
-            "PATCH",
-            f"/api/v1/workflows/{workflow_id}/runs/{run_id}/events",
-            json={"events": events},
-            timeout=30.0,
-        )
+        try:
+            self._request(
+                "PATCH",
+                f"/api/v1/workflows/{workflow_id}/runs/{run_id}/events",
+                json={"events": events},
+                timeout=30.0,
+            )
+        except ApiError as exc:
+            if self._allow_local_catalog(exc, workflow_id=workflow_id):
+                return
+            raise
 
     def cancel_overlapping_slot(
         self,
@@ -2301,17 +2398,28 @@ class ApiClient:
         events: list[dict] | None = None,
         message: str = "",
     ) -> AgentRunHistoryItem:
-        data = self._request(
-            "POST",
-            f"/api/v1/workflows/{workflow_id}/runs/{run_id}/finish",
-            json={
-                "status": status,
-                "answer": answer,
-                "events": events or [],
-                "message": message,
-            },
-            timeout=30.0,
-        )
+        try:
+            data = self._request(
+                "POST",
+                f"/api/v1/workflows/{workflow_id}/runs/{run_id}/finish",
+                json={
+                    "status": status,
+                    "answer": answer,
+                    "events": events or [],
+                    "message": message,
+                },
+                timeout=30.0,
+            )
+        except ApiError as exc:
+            if self._allow_local_catalog(exc, workflow_id=workflow_id):
+                return self._local_agent_run(
+                    workflow_id,
+                    run_id=run_id,
+                    message=message,
+                    status=status,
+                    answer=answer,
+                )
+            raise
         if not isinstance(data, dict):
             raise ApiError("Не удалось завершить запуск агента")
         return _parse_agent_run(data, workflow_id)
@@ -2550,12 +2658,17 @@ class ApiClient:
 
     def list_workflow_files(self, workflow_id: str, *, run_id: str = "") -> WorkflowFiles:
         params = {"run_id": run_id} if run_id else None
-        data = self._request(
-            "GET",
-            f"/api/v1/workflows/{workflow_id}/files",
-            params=params,
-            timeout=60.0,
-        )
+        try:
+            data = self._request(
+                "GET",
+                f"/api/v1/workflows/{workflow_id}/files",
+                params=params,
+                timeout=60.0,
+            )
+        except ApiError as exc:
+            if self._allow_local_catalog(exc, workflow_id=workflow_id):
+                return WorkflowFiles()
+            raise
         return _parse_workflow_files(data if isinstance(data, dict) else {})
 
     def upload_workflow_files(

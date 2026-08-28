@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from threading import Thread
 
@@ -41,7 +42,9 @@ class AppWindow(QMainWindow):
         self._pending_start_demo = bool(start_demo)
         self._pending_open_live = False
         self._last_toast_run_id = ""
-        self.setWindowTitle("turbobot — Анна Де Армас" if auth_test_user() else "turbobot")
+        from app.chat.test_user import ZHALYBIN_FIO
+
+        self.setWindowTitle(f"turbobot — {ZHALYBIN_FIO}" if auth_test_user() else "turbobot")
         logo = Path(__file__).resolve().parent / "temp" / "logo.png"
         if logo.exists():
             self.setWindowIcon(QIcon(str(logo)))
@@ -137,9 +140,20 @@ class AppWindow(QMainWindow):
             self._pending_open_live = open_live
 
     def reveal(self) -> None:
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.show()
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        if sys.platform == "win32":
+            try:
+                import ctypes
+
+                hwnd = int(self.winId())
+                if hwnd:
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
 
     def _agent_title(self, workflow_id: str) -> str:
         wid = (workflow_id or "").strip()

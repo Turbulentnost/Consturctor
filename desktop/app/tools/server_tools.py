@@ -212,6 +212,22 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         ),
     ),
     (
+        "onec.meeting_service_notes",
+        (
+            "Служебные записки 1С с темой «организация совещаний» через OData на сервере, без COM. "
+            "Сущность Document_ТД_СлужебнаяЗаписка. date или date_from/date_to. "
+            "Не ищи такие СЗ через onec.search_documents."
+        ),
+        _schema(
+            {
+                "date": _prop("string", "Один день YYYY-MM-DD"),
+                "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
+                "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
+                "max_results": _prop("integer", "Максимум записок, не больше 200", default=50),
+            }
+        ),
+    ),
+    (
         "users.current",
         (
             "Текущий пользователь сессии Constructor: id, ФИО, должность, подразделение. "

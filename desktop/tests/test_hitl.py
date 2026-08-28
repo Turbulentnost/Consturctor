@@ -214,6 +214,13 @@ def test_show_always_notifies_even_with_visible_host() -> None:
     assert seen[0][1] == "excel.create_workbook"
 
 
+def test_confirm_card_is_not_a_window() -> None:
+    _ensure_app()
+    holder = QWidget()
+    card = HitlConfirmCard("outlook.send_mail", "{}", parent=holder)
+    assert not card.isWindow()
+
+
 def test_notification_opens_live_when_pending() -> None:
     _ensure_app()
     assert notification_opens_live("wf-pending") is False

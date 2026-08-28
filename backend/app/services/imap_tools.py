@@ -306,7 +306,14 @@ def _search(args: dict[str, Any]) -> dict[str, Any]:
     client = _connect()
     try:
         client.select_folder(settings.imap_mailbox)
-        uids = list(client.search(_search_criteria(user, query)))[-limit:]
+        criteria = _search_criteria(user, query)
+        needle = (user or query).strip()
+        charset = "UTF-8" if any(ord(ch) > 127 for ch in needle) else None
+        try:
+            uids = list(client.search(criteria, charset=charset))[-limit:]
+        except Exception:
+            # mail.turbo-don.ru принимает только US-ASCII в SEARCH.
+            uids = list(client.search(["ALL"]))[-limit:]
         return {
             "summary": f"found={len(uids)}",
             "query": query,

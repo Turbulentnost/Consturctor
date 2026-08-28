@@ -286,6 +286,7 @@ class ChatPage(QWidget):
         self._rendered_keys: list[str] = []
         self._rendered_day = ""
         self._pending_remote_thread = ""
+        self._standalone = False
         self._poll = QTimer(self)
         self._poll.setInterval(800)
         self._poll.timeout.connect(self._poll_shared)
@@ -552,7 +553,7 @@ class ChatPage(QWidget):
         self._left_wrap.setStyleSheet(_CHAT_PANE_QSS)
         self._left_wrap.setFixedWidth(280)
         self._left_wrap.setLayout(left)
-        self._left_wrap.hide()
+        self._sync_list_pane()
         right_wrap = QFrame()
         right_wrap.setObjectName("ChatPane")
         right_wrap.setStyleSheet(_CHAT_PANE_QSS)
@@ -757,6 +758,16 @@ class ChatPage(QWidget):
             peer = DirectoryUser(id="", fio=needle)
         self._start_dm(peer)
 
+    def set_standalone(self, standalone: bool) -> None:
+        self._standalone = bool(standalone)
+        self._sync_list_pane()
+        if self._left_wrap.isVisible():
+            self._fit_thread_items()
+
+    def _sync_list_pane(self) -> None:
+        support = bool(self._user and self._user.is_support)
+        self._left_wrap.setVisible(support)
+
     def set_user(self, user: UserProfile | None) -> None:
         previous = self._user.id if self._user is not None else ""
         self._user = user
@@ -764,7 +775,7 @@ class ChatPage(QWidget):
         self._support_box.setVisible(support)
         self._support_caption.setVisible(support)
         self._shelf.setVisible(support)
-        self._left_wrap.setVisible(support)
+        self._sync_list_pane()
         if user is not None and user.id != previous:
             self._local = load_history(user.id)
             self._local_threads = {item.id: item for item in load_dialogs(user.id)}
@@ -1393,6 +1404,13 @@ class ChatPage(QWidget):
         try:
             created = self._client.create_workflow(notes=notes, file_paths=[])
         except ApiError as exc:
+            if exc.is_auth:
+                from app.orchestrator.agents import local_workflows
+
+                local = next((item for item in local_workflows() if item.title == title), None)
+                if local is not None:
+                    self.open_agent_requested.emit(local.id, local.title or title)
+                    return
             QMessageBox.warning(self, "Агент", exc.message or "Не удалось добавить агента.")
             return
         QMessageBox.information(self, "Агент", f"«{created.title or title}» добавлен в ваши агенты.")
@@ -1524,19 +1542,32 @@ class ChatPage(QWidget):
                 return agents
         except ApiError:
             pass
-        items = self._client.list_workflows()
-        return [
-            BoardAgent(id=item.id, title=item.title, description="", phase=item.phase)
-            for item in items
-            if (item.phase or "") == "done"
-        ]
+        try:
+            items = self._client.list_workflows()
+            remote = [
+                BoardAgent(id=item.id, title=item.title, description="", phase=item.phase)
+                for item in items
+                if (item.phase or "") == "done"
+            ]
+            if remote:
+                return remote
+        except ApiError:
+            pass
+        from app.orchestrator.agents import local_board
+
+        return [item for item in local_board().agents if item.kind == "workflow"]
 
     def _pick_agent(self) -> None:
         try:
             agents = self._list_shareable_agents()
         except ApiError as exc:
-            QMessageBox.warning(self, "Агенты", exc.message or "Не удалось загрузить агентов")
-            return
+            if exc.is_auth:
+                from app.orchestrator.agents import local_board
+
+                agents = [item for item in local_board().agents if item.kind == "workflow"]
+            else:
+                QMessageBox.warning(self, "Агенты", exc.message or "Не удалось загрузить агентов")
+                return
         if not agents:
             QMessageBox.information(self, "Агенты", "Нет опубликованных агентов для отправки.")
             return

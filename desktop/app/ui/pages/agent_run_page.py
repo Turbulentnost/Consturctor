@@ -297,8 +297,21 @@ class AgentRunPage(QWidget):
                 bridge.check_ready()
                 has_token = bool(self._api.token)
                 if has_token:
-                    record = self._api.start_local_agent_run(workflow_id, message=message)
-                    run_id = record.id
+                    try:
+                        record = self._api.start_local_agent_run(workflow_id, message=message)
+                        run_id = record.id
+                    except ApiError as exc:
+                        from app.orchestrator.agents import is_local_workflow
+
+                        if exc.is_auth:
+                            self._api.set_token(None)
+                            has_token = False
+                            run_id = str(uuid4())
+                        elif is_local_workflow(workflow_id):
+                            has_token = False
+                            run_id = str(uuid4())
+                        else:
+                            raise
                 else:
                     run_id = str(uuid4())
                 self._event_ready.emit({"type": "run", "run_id": run_id})
@@ -323,23 +336,35 @@ class AgentRunPage(QWidget):
                     "work_result": {"text": answer},
                 }
                 if has_token:
-                    self._api.finish_local_agent_run(
-                        workflow_id,
-                        run_id,
-                        status="ok",
-                        answer=answer,
-                        events=events,
-                        message=message,
-                    )
+                    try:
+                        self._api.finish_local_agent_run(
+                            workflow_id,
+                            run_id,
+                            status="ok",
+                            answer=answer,
+                            events=events,
+                            message=message,
+                        )
+                    except ApiError as exc:
+                        if not exc.is_auth:
+                            raise
             except CursorSdkUnavailable as exc:
                 if not self._api.token:
                     self.failed.emit(str(exc) or "Локальный Cursor SDK недоступен.")
                     return
-                result = self._api.stream_workflow_agent_run(
-                    workflow_id,
-                    message,
-                    lambda payload: self._event_ready.emit(payload),
-                )
+                try:
+                    result = self._api.stream_workflow_agent_run(
+                        workflow_id,
+                        message,
+                        lambda payload: self._event_ready.emit(payload),
+                    )
+                except ApiError as stream_exc:
+                    if stream_exc.is_auth:
+                        self.failed.emit(
+                            str(exc) or "Локальный Cursor SDK недоступен."
+                        )
+                        return
+                    raise
             except ApiError as exc:
                 self.failed.emit(exc.message)
                 return

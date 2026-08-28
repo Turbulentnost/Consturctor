@@ -173,15 +173,24 @@ def _use_windows_impersonation() -> bool:
     return bool(settings.erp_sql_user.strip() and settings.erp_sql_password)
 
 
+def _legacy_sql_driver() -> bool:
+    return settings.erp_sql_driver.strip().casefold() in {"sql server", "sql server native client 11.0"}
+
+
 def _build_connection_string() -> str:
     parts = [
         f"DRIVER={{{settings.erp_sql_driver}}}",
         f"SERVER={settings.erp_sql_server}",
         f"DATABASE={settings.erp_sql_database}",
-        f"Encrypt={settings.erp_sql_encrypt}",
-        "TrustServerCertificate=yes",
-        "Connection Timeout=15",
     ]
+    if not _legacy_sql_driver():
+        parts.extend(
+            [
+                f"Encrypt={settings.erp_sql_encrypt}",
+                "TrustServerCertificate=yes",
+            ]
+        )
+    parts.append("Connection Timeout=15")
     if _use_windows_impersonation() or settings.erp_sql_trusted_connection:
         parts.append("Trusted_Connection=yes")
     else:

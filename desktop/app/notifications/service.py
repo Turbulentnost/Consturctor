@@ -270,7 +270,6 @@ def show_windows_toast(
                 msg=message,
                 icon=icon,
                 duration="long",
-                launch=launch,
             )
             if launch:
                 toast.add_actions(label="Открыть", launch=launch)
@@ -296,42 +295,23 @@ def _toast_icon() -> str:
 
 
 def _launch_command(workflow_id: str, run_id: str = "") -> str:
-    """URI для клика по тосту. Не командная строка: кавычки ломают XML winotify."""
+    """URI для клика по тосту. Только IPC — без нового QApplication."""
     if not workflow_id:
         return ""
     folder = Path(tempfile.gettempdir()) / "constructor-toasts"
     folder.mkdir(parents=True, exist_ok=True)
     safe = "".join(ch for ch in workflow_id if ch.isalnum())[:32] or "agent"
-    script = folder / f"open-{safe}.py"
     cmd_path = folder / f"open-{safe}.cmd"
     exe = Path(sys.executable).resolve()
     rid = (run_id or "").strip()
+    ipc = f"open-workflow:{workflow_id}"
+    if rid:
+        ipc = f"{ipc}|{rid}"
     if getattr(sys, "frozen", False):
-        payload = (
-            "import subprocess\n"
-            f"exe = {str(exe)!r}\n"
-            f"wid = {workflow_id!r}\n"
-            f"rid = {rid!r}\n"
-            "args = [exe, f'--open-workflow={wid}']\n"
-            "if rid:\n"
-            "    args.append(f'--open-run={rid}')\n"
-            "subprocess.Popen(args, close_fds=True)\n"
-        )
+        line = f'@echo off\r\n"{exe}" --ipc "{ipc}"\r\n'
     else:
         main = Path(__file__).resolve().parents[2] / "main.py"
-        payload = (
-            "import subprocess\n"
-            f"exe = {str(exe)!r}\n"
-            f"main = {str(main)!r}\n"
-            f"wid = {workflow_id!r}\n"
-            f"rid = {rid!r}\n"
-            "args = [exe, main, f'--open-workflow={wid}']\n"
-            "if rid:\n"
-            "    args.append(f'--open-run={rid}')\n"
-            "subprocess.Popen(args, close_fds=True)\n"
-        )
-    script.write_text(payload, encoding="utf-8")
-    line = f'@echo off\r\n"{exe}" "{script}"\r\n'
+        line = f'@echo off\r\n"{exe}" "{main}" --ipc "{ipc}"\r\n'
     try:
         cmd_path.write_text(line, encoding="ascii")
     except UnicodeEncodeError:

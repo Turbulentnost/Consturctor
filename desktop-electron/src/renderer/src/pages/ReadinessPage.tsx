@@ -17,7 +17,6 @@ export function ReadinessPage({
   onComplete
 }: ReadinessPageProps): React.JSX.Element {
   const startedRef = useRef('')
-  const watchdogRef = useRef(0)
   const [uploading, setUploading] = useState(false)
   const [blockCount, setBlockCount] = useState(draft.agentSuggestions.length)
 
@@ -57,19 +56,6 @@ export function ReadinessPage({
     }).catch(() => {})
     start({ kind: 'readiness', draftId: draft.draftId })
   }
-
-  useEffect(() => {
-    if (!session.running || session.pendingQuestion) return
-    const stuck =
-      session.items.length === 0 ||
-      session.items.every((item) => item.kind === 'system' && item.text.includes('завершился'))
-    if (!stuck || watchdogRef.current >= 2) return
-    const timer = window.setTimeout(() => {
-      watchdogRef.current += 1
-      restartAgent()
-    }, 5000)
-    return () => window.clearTimeout(timer)
-  }, [session.running, session.pendingQuestion, session.items, draft.draftId])
 
   const answer = async (requestId: string, value: string, filePaths: string[] = []): Promise<void> => {
     let finalValue = value

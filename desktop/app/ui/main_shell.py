@@ -609,9 +609,13 @@ class MainShell(QWidget):
     def set_user(self, user: UserProfile, *, reset_home: bool = True) -> None:
         self._apply_user(user)
         if reset_home:
-            from app.chat.test_user import is_ilchenko_user
+            from app.chat.test_user import is_ilchenko_user, is_zhalybin_user
 
-            start_key = "orchestrator" if is_ilchenko_user(user.id, user.fio) else "create"
+            start_key = (
+                "orchestrator"
+                if is_zhalybin_user(user.id, user.fio) or is_ilchenko_user(user.id, user.fio)
+                else "create"
+            )
             self.sidebar.set_active_key(start_key, animate=False)
             idx = self._page_index.get(start_key, 0)
             self._pages.setCurrentIndex(idx)
@@ -919,23 +923,8 @@ class MainShell(QWidget):
 
         def run() -> None:
             try:
-                if self._is_local_test_user() and not self._api.token:
-                    from app.local_auth import local_role_match
-
-                    result = local_role_match(self._current_regulation, position, department)
-                else:
-                    result = self._api.extract_regulation_functions(
-                        self._current_regulation.regulation_id,
-                        position=position,
-                        department=department,
-                    )
+                result = self._extract_role_match(position, department)
             except ApiError as exc:
-                if self._is_local_test_user():
-                    from app.local_auth import local_role_match
-
-                    result = local_role_match(self._current_regulation, position, department)
-                    self._role_match_ready.emit(result)
-                    return
                 self._role_match_failed.emit(exc.message)
                 return
             self._role_match_ready.emit(result)
@@ -965,7 +954,9 @@ class MainShell(QWidget):
             return False
         try:
             self._api.me()
-        except ApiError:
+        except ApiError as exc:
+            if self._is_local_test_user() and exc.status_code == 404:
+                return True
             self._api.set_token(None)
             return False
         return True
@@ -1014,9 +1005,53 @@ class MainShell(QWidget):
             stats=replace(board.stats, active_agents=board.stats.active_agents + len(extra)),
         )
 
+    def _extract_role_match(self, position: str, department: str) -> RoleMatchResult:
+        regulation = self._current_regulation
+        if regulation is None:
+            raise ApiError("Регламент не загружен", status_code=400)
+        if self._is_local_test_user() and not self._api.token:
+            from app.local_auth import local_role_match
+
+            return local_role_match(regulation, position, department)
+        try:
+            return self._api.extract_regulation_functions(
+                regulation.regulation_id,
+                position=position,
+                department=department,
+            )
+        except ApiError:
+            try:
+                return self._api.create_role_matches(
+                    regulation.regulation_id,
+                    position=position,
+                    department=department,
+                )
+            except ApiError as fallback:
+                if self._is_local_test_user():
+                    from app.local_auth import local_role_match
+
+                    return local_role_match(regulation, position, department)
+                raise fallback
+
+    def _persist_role_match_if_needed(self, result: RoleMatchResult) -> RoleMatchResult:
+        from app.local_auth import is_ephemeral_role_match_run
+
+        if not is_ephemeral_role_match_run(result.run_id):
+            return result
+        regulation = self._current_regulation
+        if regulation is None:
+            raise ApiError("Регламент не загружен", status_code=400)
+        position = (result.canonical_title or (self._user.position if self._user else "")).strip()
+        department = (result.department or (self._user.department if self._user else "")).strip()
+        persisted = self._api.create_role_matches(
+            regulation.regulation_id,
+            position=position,
+            department=department,
+        )
+        self._current_role_match = persisted
+        return persisted
+
     def _show_role_match_error(self, message: str) -> None:
-        if self._is_local_test_session():
-            return
         if self._pages.currentIndex() == self._page_index["loading"]:
             self._pages.setCurrentIndex(self._page_index["review"])
         QMessageBox.warning(self, "Поиск фрагментов по должности", message)
@@ -1035,9 +1070,10 @@ class MainShell(QWidget):
 
         def run() -> None:
             try:
+                role_match = self._persist_role_match_if_needed(self._current_role_match)
                 draft = self._api.create_agent_draft(
                     self._current_regulation.regulation_id,
-                    self._current_role_match.run_id,
+                    role_match.run_id,
                 )
                 draft = self._api.ensure_draft_readiness(draft.draft_id)
                 readiness = draft.readiness
@@ -1110,9 +1146,8 @@ class MainShell(QWidget):
         self._page_readiness.set_chat(result)
 
     def _show_readiness_error(self, message: str) -> None:
-        if self._is_local_test_session():
-            return
-        self._pages.setCurrentIndex(self._page_index["role_match"])
+        if self._pages.currentIndex() == self._page_index["loading"]:
+            self._pages.setCurrentIndex(self._page_index["role_match"])
         QMessageBox.warning(self, "Готовность регламента", message)
 
     def _on_readiness_answer(self, question_id: str, answer: str) -> None:
@@ -1478,6 +1513,8 @@ class MainShell(QWidget):
         self._float_windows[key] = window
         self._dock_layout = detach_key(self._dock_layout, key)
         self._apply_dock_layout()
+        if key == "chat":
+            self._page_chat.set_standalone(True)
         next_key = first_docked_key(self._dock_layout)
         if next_key and self.sidebar.active_key() == key:
             self.sidebar.mark_active(next_key)
@@ -1506,6 +1543,8 @@ class MainShell(QWidget):
             self._pages.removeWidget(placeholder)
             placeholder.deleteLater()
         page.show()
+        if key == "chat":
+            self._page_chat.set_standalone(False)
         self._dock_layout = move_key(self._dock_layout, key, side)
         self._apply_dock_layout()
         self._show_page(key)
@@ -1545,13 +1584,13 @@ class MainShell(QWidget):
             self.sidebar.highlight_dialog(current, self._page_chat.current_peer_id())
 
     def _on_sidebar_dialog(self, thread_id: str) -> None:
-        self._pages.setCurrentIndex(self._page_index["chat"])
+        self._show_page("chat")
         self._page_chat.open_existing_dialog(thread_id)
         current = self._page_chat.current_thread_id() or thread_id
         self.sidebar.highlight_dialog(current, self._page_chat.current_peer_id())
 
     def _on_sidebar_fio(self, fio: str) -> None:
-        self._pages.setCurrentIndex(self._page_index["chat"])
+        self._show_page("chat")
         self._page_chat.open_by_fio(fio)
         current = self._page_chat.current_thread_id()
         if current:

@@ -388,6 +388,25 @@ def _raw_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "onec.meeting_service_notes",
+            "description": (
+                "Служебные записки 1С с темой «организация совещаний» через OData на сервере, без COM. "
+                "Сущность Document_ТД_СлужебнаяЗаписка. date или date_from/date_to. "
+                "В ответе: тема СЗ, тема совещания, место, желаемые дата/время, участники. "
+                "Не ищи такие СЗ через onec.search_documents. Ничего не записывает в 1С."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date": _prop("string", "Один день YYYY-MM-DD"),
+                    "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
+                    "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
+                    "max_results": _prop("integer", "Максимум записок, не больше 200", default=50),
+                },
+            },
+        },
+        {
             "name": "turboproject",
             "description": (
                 "Compatibility-инструмент TurboProject. Проекты текущего пользователя - "
@@ -737,21 +756,6 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("onec.get_task_card", "Карточка задачи 1С на desktop.", {
             "task_ref": _prop("string", "Ссылка задачи из onec.search_tasks"),
         }),
-        (
-            "onec.meeting_service_notes",
-            "Только чтение COM через 32-bit V83.COMConnector (cscript), без py -3.12-32. "
-            "Служебные записки 1С с темой «организация совещаний». "
-            "В ответе: тема СЗ, тема совещания, место, желаемые дата/время/длительность, "
-            "руководитель, приоритет, периодичность, вид, ПСД. date или date_from/date_to. "
-            "Ничего не записывает и не меняет в 1С.",
-            {
-                "date": _prop("string", "Один день YYYY-MM-DD"),
-                "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
-                "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
-                "fio": _prop("string", "Кому направлены. Пусто — пользователь COM-сессии"),
-                "max_results": _prop("integer", "Максимум записок, не больше 200"),
-            },
-        ),
         ("excel.list_files", "Список файлов в рабочей папке агента.", {}),
         ("excel.read_workbook", "Чтение .xlsx из папки агента.", {
             "filename": _prop("string", "Имя файла в папке агента, например report.xlsx"),
@@ -1084,7 +1088,6 @@ _COM32_RUNTIME_TOOLS = frozenset(
         "onec.get_document_card",
         "onec.search_tasks",
         "onec.get_task_card",
-        "onec.meeting_service_notes",
     }
 )
 

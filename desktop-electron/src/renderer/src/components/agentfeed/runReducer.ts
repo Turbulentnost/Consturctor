@@ -410,6 +410,14 @@ export function applyRunnerEvent(state: RunState, payload: AgentRunnerEvent): Ru
       return { ...state, items: pushSystem(state.items, text) }
     case 'status':
       return { ...state, status: text || 'Агент работает…' }
+    case 'adopt': {
+      const nextId = String(payload.activeRunId || state.activeRunId || '')
+      return {
+        ...state,
+        status: text || 'Агент работает…',
+        activeRunId: nextId || state.activeRunId
+      }
+    }
     case 'final':
     case 'work_result':
       if (text) {

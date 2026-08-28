@@ -13,7 +13,7 @@ TEST_USER_POSITION = "Тестовый пользователь"
 ILCHENKO_USER_ID = "E11C4E11K00000000000000000000001"
 ILCHENKO_FIO = "Ильченко Екатерина Александровна"
 ILCHENKO_PASSWORD = "ilchenko"
-ILCHENKO_POSITION = "Корпоративный секретарь"
+ILCHENKO_POSITION = "Помощник Председателя совета директоров"
 
 ZHALYBIN_USER_ID = "M11ZHALYBIN00000000000000000001"
 ZHALYBIN_FIO = "Жалыбин Максим Дмитриевич"
@@ -33,6 +33,14 @@ class LocalTestUser:
 
 LOCAL_TEST_USERS: tuple[LocalTestUser, ...] = (
     LocalTestUser(
+        id=ZHALYBIN_USER_ID,
+        fio=ZHALYBIN_FIO,
+        password=ZHALYBIN_PASSWORD,
+        position=ZHALYBIN_POSITION,
+        department="Сектор по внедрению искусственного интеллекта",
+        any_password=True,
+    ),
+    LocalTestUser(
         id=TEST_USER_ID,
         fio=TEST_USER_FIO,
         password=TEST_USER_PASSWORD,
@@ -47,14 +55,6 @@ LOCAL_TEST_USERS: tuple[LocalTestUser, ...] = (
         position=ILCHENKO_POSITION,
         department="Корпоративное управление",
         any_password=False,
-    ),
-    LocalTestUser(
-        id=ZHALYBIN_USER_ID,
-        fio=ZHALYBIN_FIO,
-        password=ZHALYBIN_PASSWORD,
-        position=ZHALYBIN_POSITION,
-        department="Сектор по внедрению искусственного интеллекта",
-        any_password=True,
     ),
 )
 
@@ -161,19 +161,34 @@ def _profile(user: LocalTestUser) -> UserProfile:
     )
 
 
+def primary_test_user() -> LocalTestUser:
+    return next(user for user in LOCAL_TEST_USERS if user.id == ZHALYBIN_USER_ID)
+
+
+def default_test_fio() -> str:
+    return ZHALYBIN_FIO
+
+
+def preferred_login_fio(saved: str = "") -> str:
+    text = (saved or "").strip()
+    if not text or is_ilchenko_user(fio=text) or _fio_matches(text, TEST_USER_FIO):
+        return ZHALYBIN_FIO
+    return text
+
+
 def test_user_profile() -> UserProfile:
-    return _profile(LOCAL_TEST_USERS[0])
+    return _profile(primary_test_user())
 
 
 def test_login_result(fio: str = "") -> LoginResult:
-    user = find_test_user(fio) if fio else LOCAL_TEST_USERS[0]
+    user = find_test_user(fio) if fio else primary_test_user()
     if user is None:
-        user = LOCAL_TEST_USERS[0]
+        user = primary_test_user()
     return LoginResult(access_token="", user=_profile(user))
 
 
 def test_directory_user() -> DirectoryUser:
-    return _directory(LOCAL_TEST_USERS[0])
+    return _directory(primary_test_user())
 
 
 def test_directory_users() -> list[DirectoryUser]:

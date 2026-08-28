@@ -107,6 +107,10 @@ def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+def is_ephemeral_role_match_run(run_id: str) -> bool:
+    return str(run_id or "").startswith("local-run-")
+
+
 def local_role_match(
     regulation: RegulationParseResult,
     position: str,

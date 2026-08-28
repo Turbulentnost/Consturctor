@@ -899,6 +899,7 @@ def test_draft_prompt_interactive_asks_gaps_before_json() -> None:
 
     assert "askQuestion" in prompt
     assert "после закрытых пробелов" in prompt
+    assert "дополнительной информацией" in prompt
     assert "период, объём, получатель" not in prompt
     assert "единственная задача" not in prompt
 

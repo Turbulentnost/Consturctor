@@ -153,6 +153,12 @@ def test_zhalybin_credentials() -> None:
     assert result.user.position == "Промпт-инженер 2 категории"
     assert is_zhalybin_user(result.user.id, result.user.fio)
     assert is_local_test_user(result.user.id, result.user.fio)
+    from app.chat.test_user import preferred_login_fio
+
+    assert preferred_login_fio("") == ZHALYBIN_FIO
+    assert preferred_login_fio("Ильченко Екатерина Александровна") == ZHALYBIN_FIO
+    assert preferred_login_fio("Анна Де Армас") == ZHALYBIN_FIO
+    assert test_login_result().user.fio == ZHALYBIN_FIO
 
 
 def test_ilchenko_credentials() -> None:

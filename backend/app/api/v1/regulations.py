@@ -38,7 +38,7 @@ from app.services.role_matching import (
 )
 from app.services.regulation_functions import (
     RegulationFunctionExtractionError,
-    create_cursor_function_extraction,
+    extract_functions_or_fallback_match,
 )
 from app.services.readiness import (
     ReadinessError,
@@ -123,7 +123,7 @@ async def extract_function_blocks(
     position = (request.position or "").strip() or ((user.position if user else "") or "").strip()
     department = (request.department or "").strip() or ((user.department if user else "") or "").strip()
     try:
-        return create_cursor_function_extraction(
+        return extract_functions_or_fallback_match(
             db,
             user_id=auth.user_id,
             regulation_id=regulation_id,
@@ -131,6 +131,8 @@ async def extract_function_blocks(
             department=department,
         )
     except RegulationFunctionExtractionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except RoleMatchError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 

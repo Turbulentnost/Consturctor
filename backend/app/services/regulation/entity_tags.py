@@ -10,8 +10,13 @@ from app.schemas.regulation import (
 )
 
 _TOC_LINE_RE = re.compile(r"\.{4,}\s*\d+\s*$")
+# Жёсткие границы: старый вариант с {2,} и * на заглавной строке уходил в backtracking.
+_ABBR_MAX_LEN = 160
 _ABBR_RE = re.compile(
-    r"^[-\u2022\u2013]?\s*(?P<abbr>[A-ZА-ЯЁ]{2,}(?:\s*[A-ZА-ЯЁ0-9/]+)*)\s*[-—–]\s*(?P<title>.+?)\s*$"
+    r"^[-\u2022\u2013]?\s*"
+    r"(?P<abbr>[A-ZА-ЯЁ]{2,16}(?:[ \t]+[A-ZА-ЯЁ0-9/]{1,16}){0,8})"
+    r"[ \t]*[-—–][ \t]*"
+    r"(?P<title>.{1,200})$"
 )
 _NUMBERED_TITLE_RE = re.compile(r"^(?P<num>\d+(?:\.\d+)*)\s+(?P<title>.+)$")
 _ROLE_MARKERS = (
@@ -121,6 +126,8 @@ def _collect_abbreviations(fragments: list[RegulationFragment]) -> dict[str, str
     mapping: dict[str, str] = {}
     for fragment in fragments:
         text = (fragment.text or "").strip()
+        if not text or len(text) > _ABBR_MAX_LEN or "\n" in text:
+            continue
         match = _ABBR_RE.match(text)
         if not match:
             continue

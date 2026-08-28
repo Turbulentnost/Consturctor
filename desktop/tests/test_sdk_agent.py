@@ -115,6 +115,7 @@ def test_design_sdk_prompt_is_short_and_points_to_materials() -> None:
     assert "required_clarifications" in AGENTS_MD
     assert "Триггер не заменяет остальные вопросы" in AGENTS_MD
     assert "Задавай столько вопросов, сколько реальных пробелов" in AGENTS_MD
+    assert "Надо ли дополнить этот блок дополнительной информацией" in AGENTS_MD
     assert "не ищи его в MCP" in AGENTS_MD
     assert "Не пиши, что MCP не найден" in AGENTS_MD
     assert "расписания, периода, получателя или критерия успеха" not in prompt
@@ -824,8 +825,9 @@ def test_server_catalog_exposes_both_worlds() -> None:
 
     names = {str(t.get("name")) for t in sdk_tool_specs()}
     # Server-executed tools are offered to the local SDK agent.
-    assert {"onec.odata_get", "imap.list_unread", "users.current"} <= names
+    assert {"onec.odata_get", "imap.list_unread", "users.current", "onec.meeting_service_notes"} <= names
     # Local COM tools stay in the catalog too.
     assert "onec.search_documents" in names
     # Local COM 1C must not be routed to the server.
     assert "onec.search_documents" not in SERVER_TOOL_NAMES
+    assert "onec.meeting_service_notes" in SERVER_TOOL_NAMES

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { loadUserAvatar } from '../api/avatars'
 import { api } from '../api/client'
+import { LOCAL_TEST_USERS } from '../api/testUsers'
 import type { DirectoryUser } from '../api/types'
 
 interface FioSuggestProps {
@@ -86,7 +87,26 @@ export function FioSuggest({
     }
   }, [items])
 
+  function localMatches(search: string): DirectoryUser[] {
+    const needle = search.trim().toLowerCase()
+    return LOCAL_TEST_USERS.filter((user) => !needle || user.fio.toLowerCase().includes(needle)).map(
+      (user) => ({
+        id: user.id,
+        fio: user.fio,
+        position: user.position,
+        department: user.department,
+        activityStatus: 'online',
+        online: false,
+        isSupport: false,
+        avatarUrl: null
+      })
+    )
+  }
+
   function query(search: string): void {
+    const local = localMatches(search)
+    setItems(local.slice(0, 20))
+    setHighlight(-1)
     if (debounce.current) clearTimeout(debounce.current)
     debounce.current = setTimeout(async () => {
       let results: DirectoryUser[] = []
@@ -96,20 +116,28 @@ export function FioSuggest({
         results = []
       }
       if (!results.length) {
-        const names = await api.searchUsers(search)
-        results = names.map((fio) => ({
-          id: '',
-          fio,
-          position: '',
-          department: '',
-          activityStatus: 'online',
-          online: false,
-          isSupport: false,
-          avatarUrl: null
-        }))
+        try {
+          const names = await api.searchUsers(search)
+          results = names.map((fio) => ({
+            id: '',
+            fio,
+            position: '',
+            department: '',
+            activityStatus: 'online',
+            online: false,
+            isSupport: false,
+            avatarUrl: null
+          }))
+        } catch {
+          results = []
+        }
       }
-      setItems(results.slice(0, 20))
-      setHighlight(-1)
+      const seen = new Set(local.map((user) => user.fio.toLowerCase()))
+      const merged = [
+        ...local,
+        ...results.filter((user) => user.fio && !seen.has(user.fio.toLowerCase()))
+      ]
+      setItems(merged.slice(0, 20))
     }, 180)
   }
 

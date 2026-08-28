@@ -9,6 +9,14 @@ def test_mint_local_access_token_has_three_parts() -> None:
     assert token.startswith("eyJ")
 
 
+def test_ephemeral_role_match_run_id() -> None:
+    from app.local_auth import is_ephemeral_role_match_run
+
+    assert is_ephemeral_role_match_run("local-run-ab12cd34")
+    assert not is_ephemeral_role_match_run("role-run-abc123")
+    assert not is_ephemeral_role_match_run("")
+
+
 def test_local_role_match_uses_fragments(tmp_path: Path) -> None:
     from app.local_auth import local_role_match
 

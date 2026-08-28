@@ -52,7 +52,7 @@ def parse_upload(
     try:
         extracted = _extract(path, suffix=suffix, regulation_id=regulation_id)
         result = build_result(regulation_id=regulation_id, filename=filename, extracted=extracted)
-        result = _apply_cursor_entities(result, user_id=user_id)
+        # Cursor-разметка ролей — отдельный шаг function-extraction, не блокируем upload.
     except RegulationError:
         raise
     except RuntimeError as exc:

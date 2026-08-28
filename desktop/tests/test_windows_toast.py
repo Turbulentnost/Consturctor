@@ -1,7 +1,16 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from app.notifications.service import _launch_command, _toast_icon, _toast_text
+
+
+def _path_from_file_uri(uri: str) -> Path:
+    parsed = urlparse(uri)
+    path = unquote(parsed.path)
+    if path.startswith("/") and len(path) > 2 and path[2] == ":":
+        path = path[1:]
+    return Path(path)
 
 
 def _toast_xml(launch: str, icon: str = "") -> str:
@@ -36,13 +45,17 @@ def test_quoted_command_line_breaks_toast_xml() -> None:
 
 def test_launch_cmd_opens_workflow() -> None:
     launch = _launch_command("wf-live-1", "run-9")
-    path = Path.from_uri(launch)
+    path = _path_from_file_uri(launch)
     assert path.suffix == ".cmd"
     assert path.exists()
-    text = path.with_suffix(".py").read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
     assert "wf-live-1" in text
     assert "run-9" in text
-    assert "--open-workflow=" in text
+    assert "--ipc" in text
+    assert "open-workflow:wf-live-1|run-9" in text
+    assert "QApplication" not in text
+    assert "subprocess" not in text
+    assert "--open-workflow=" not in text
 
 
 def test_empty_workflow_has_no_launch() -> None:

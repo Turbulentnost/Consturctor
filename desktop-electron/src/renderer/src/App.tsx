@@ -111,7 +111,7 @@ export function App(): React.JSX.Element {
       done = true
       setBooting(false)
     }
-    const watchdog = window.setTimeout(finish, 10_000)
+    const watchdog = window.setTimeout(finish, 45_000)
     ;(async () => {
       try {
         const config = await window.api.getConfig()
@@ -120,7 +120,7 @@ export function App(): React.JSX.Element {
         if (stored?.accessToken) {
           api.setToken(stored.accessToken)
           try {
-            const profile = await api.me(8_000)
+            const profile = await api.me(30_000)
             setUser(profile)
           } catch {
             clearSession(true)
@@ -430,10 +430,11 @@ export function App(): React.JSX.Element {
     })
     try {
       const created = await api.createAgentDraft(regulation.regulationId, roleMatch.runId)
-      const items = created.agentSuggestions.length
-        ? created.agentSuggestions
+      const ready = await api.ensureDraftReadiness(created.draftId)
+      const items = ready.agentSuggestions.length
+        ? ready.agentSuggestions
         : suggestionsFromRoleMatch(roleMatch)
-      setDraft({ ...created, agentSuggestions: items })
+      setDraft({ ...ready, agentSuggestions: items })
       setBusy(false)
       setView({ kind: 'readiness' })
     } catch (err) {

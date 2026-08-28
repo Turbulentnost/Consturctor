@@ -531,6 +531,7 @@ export interface AgentRunnerEvent {
   status?: string
   agentId?: string
   run_id?: string
+  activeRunId?: string
 }
 
 /** Top-level messages emitted by the Python agent sidecar. */

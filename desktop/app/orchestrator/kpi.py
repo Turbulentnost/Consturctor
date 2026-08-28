@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from app.chat.test_user import ILCHENKO_USER_ID, is_ilchenko_user
+from app.chat.test_user import ILCHENKO_USER_ID, is_ilchenko_user, is_zhalybin_user
 from app.orchestrator.models import COMPLETED, ERROR, MEETING_ID, READY, REVISION_ID, WAITING_HUMAN, ProcessInstance
 
 ILCHENKO_USER_IDS = frozenset(
@@ -49,7 +49,11 @@ ILCHENKO_KPI: tuple[KpiDefinition, ...] = (
 def has_position_kpi(user_id: str = "", fio: str = "") -> bool:
     if (user_id or "").strip() in ILCHENKO_USER_IDS:
         return True
-    return is_ilchenko_user(user_id, fio) or "ильченко" in (fio or "").casefold()
+    return (
+        is_ilchenko_user(user_id, fio)
+        or is_zhalybin_user(user_id, fio)
+        or "ильченко" in (fio or "").casefold()
+    )
 
 
 def _ratio(ok: int, total: int) -> float | None:

@@ -54,6 +54,13 @@ def test_toc_line_detected() -> None:
     assert not is_toc_line("1 Назначение и область применения")
 
 
+def test_annotate_long_uppercase_line_does_not_hang() -> None:
+    text = ("АБВГДЕЖЗ " * 80).strip()
+    tagged, legend = annotate_entities([_frag(fragmentId="long", text=text)])
+    assert tagged[0].fragmentId == "long"
+    assert legend == []
+
+
 def test_annotate_skips_directors_genitive() -> None:
     fragments = [
         _frag(fragmentId="h", text="8.1. Заседания Совета директоров", blockType="heading"),

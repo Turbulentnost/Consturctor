@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 from typing import Any
 from uuid import uuid4
@@ -31,6 +32,9 @@ from app.services.regulation.full_text import compose_regulation_text
 from app.services.regulation.storage import get_document
 from app.services.role_matching.normalize import contains_phrase
 from app.services.role_matching.profile import all_candidate_terms, build_role_profile, verified_aliases
+from app.services.role_matching.service import create_role_match_run
+
+logger = logging.getLogger(__name__)
 
 
 class RegulationFunctionExtractionError(Exception):
@@ -38,6 +42,49 @@ class RegulationFunctionExtractionError(Exception):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+
+
+def _has_extractable_functions(result: RoleMatchResult) -> bool:
+    if result.functions:
+        return True
+    return any(getattr(item, "function", None) is not None for item in (result.matches or []))
+
+
+def extract_functions_or_fallback_match(
+    db: Session,
+    *,
+    user_id: str,
+    regulation_id: str,
+    position: str,
+    department: str,
+) -> RoleMatchResult:
+    """Cursor extraction first; persist a classic role-match run if Cursor is down or empty."""
+    try:
+        extracted = create_cursor_function_extraction(
+            db,
+            user_id=user_id,
+            regulation_id=regulation_id,
+            position=position,
+            department=department,
+        )
+        if _has_extractable_functions(extracted):
+            return extracted
+        logger.warning("Cursor extraction returned no functions, falling back to role match")
+    except RegulationFunctionExtractionError as exc:
+        if exc.status_code == 404:
+            raise
+        if exc.status_code == 400 and exc.message in {"Укажите должность", "Укажите подразделение"}:
+            raise
+        logger.warning("Cursor function extraction failed, falling back to role match: %s", exc.message)
+    except Exception:
+        logger.exception("Unexpected function extraction error, falling back to role match")
+    return create_role_match_run(
+        db,
+        user_id=user_id,
+        regulation_id=regulation_id,
+        position=position,
+        department=department,
+    )
 
 
 def create_cursor_function_extraction(
@@ -170,14 +217,21 @@ def _build_prompt(result: RegulationParseResult, *, position: str, department: s
         "  ]\n"
         "}\n\n"
         "Требования:\n"
-        f"- В functions.actor указывай только «{position}» или её явный алиас из документа.\n"
-        f"- Если фрагмент/заголовок явно про другую должность (не «{position}» и не её алиас), пропускай его.\n"
+        f"- Если в документе есть обязанности должности «{position}» (или её алиаса) — выделяй именно их.\n"
+        f"- Если этой должности в тексте нет, НЕ возвращай пустой список: выдели основные исполняемые "
+        "процессы самого регламента (то, из чего можно сделать ИИ-агента).\n"
         "- title — отдельное короткое название (например «Регистрация карточки инициативы»), "
         "без стрелок «→» и без списка ролей/получателей.\n"
         "- action — глагол/сказуемое; object — объект в нужном падеже; recipient — отдельно, не в title.\n"
         "- Выделяй только реальные процессы/функции этой должности, которые можно оптимизировать или автоматизировать.\n"
         "- Для связанных блоков ЭТОЙ ЖЕ должности заполняй relatedFunctionIds и sharedContext.\n"
-        "- Вопросы вторичны: максимум 2 на функцию, только если без ответа агент не сможет выполнить шаг.\n"
+        "- Вопросы — ключевая часть ответа: по КАЖДОЙ включённой функции сформируй набор вопросов, "
+        "который в полной мере описывает исполнимый процесс работы "
+        "(trigger, inputs, system, result, recipient, conditions, errors/escalation, approval, deadline — "
+        "где это релевантно и не закрыто однозначно текстом документа).\n"
+        "- Каждый вопрос должен быть конкретным: после ответа агент сможет выполнить шаг без догадок.\n"
+        "- В questions.context указывай связку фрагментов/связанных функций; quickAnswers — 2–4 коротких варианта.\n"
+        "- Вопросы формируй только по включённым функциям, не теряя контекст.\n"
         "- sourceRefs.fragmentId должен соответствовать fragmentId из документа.\n"
         "- Не возвращай functions: [] если в документе есть обязанности этой должности.\n\n"
         f"Распознанный документ:\n{document_text}"
@@ -267,6 +321,14 @@ def _map_agent_result(
             fragments=fragments,
         )
     ]
+    used_document_fallback = False
+    if not raw_functions and raw_all:
+        logger.info(
+            "Position filter dropped all %s Cursor functions, keeping document functions",
+            len(raw_all),
+        )
+        raw_functions = raw_all
+        used_document_fallback = True
     matches: list[FragmentRoleMatch] = []
     role_functions: list[RoleFunction] = []
     processes: list[DocumentProcess] = []
@@ -390,8 +452,9 @@ def _map_agent_result(
         "diagnostics": {
             "fragmentsTotal": len(regulation.fragments),
             "functionsFromCursor": len(raw_all),
-            "functionsKeptForPosition": len(role_functions),
-            "functionsFilteredOut": max(0, len(raw_all) - len(raw_functions)),
+            "functionsKeptForPosition": 0 if used_document_fallback else len(role_functions),
+            "functionsFilteredOut": len(raw_all) if used_document_fallback else max(0, len(raw_all) - len(raw_functions)),
+            "usedDocumentFallback": used_document_fallback,
             "questionsFromCursor": len(questions),
         },
     }
@@ -545,7 +608,11 @@ def _parse_agent_response(raw: str) -> dict[str, Any]:
                 return parsed if isinstance(parsed, dict) else {}
             except (SyntaxError, ValueError):
                 pass
-    raise RegulationFunctionExtractionError("Cursor Agent не вернул корректный JSON")
+    logger.warning("Cursor Agent returned unparseable JSON: %s", text[:500])
+    raise RegulationFunctionExtractionError(
+        "Cursor Agent не вернул корректный JSON",
+        status_code=502,
+    )
 
 
 def _source_fragment(

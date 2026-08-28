@@ -105,3 +105,41 @@ def test_local_desktop_login_issues_token(monkeypatch):
     mine = auth_service._login_via_local_desktop("Жалыбин Максим", "mdj")
     assert mine is not None
     assert mine.user.fio == "Жалыбин Максим Дмитриевич"
+    any_pw = auth_service._login_via_local_desktop("Жалыбин Максим Дмитриевич", "1c-password")
+    assert any_pw is not None
+    assert any_pw.user.id == "M11ZHALYBIN00000000000000000001"
+
+
+def test_local_desktop_profile_skips_erp(monkeypatch):
+    monkeypatch.setattr(auth_service, "find_user_by_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        auth_service.app_users,
+        "upsert_app_user",
+        lambda **kwargs: SimpleNamespace(
+            id=kwargs["user_id"],
+            fio=kwargs["fio"],
+            department=kwargs["department"],
+            position=kwargs["position"],
+            avatar_path=None,
+            updated_at=None,
+            department_changed_at=None,
+        ),
+    )
+    monkeypatch.setattr(
+        auth_service.app_users,
+        "to_user_out",
+        lambda user: auth_service.UserOut(
+            id=user.id,
+            fio=user.fio,
+            department=user.department,
+            position=user.position,
+        ),
+    )
+
+    import asyncio
+
+    profile = asyncio.run(
+        auth_service.get_current_user_profile("M11ZHALYBIN00000000000000000001")
+    )
+    assert profile.fio == "Жалыбин Максим Дмитриевич"
+    assert profile.position == "Промпт-инженер 2 категории"

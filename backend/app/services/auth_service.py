@@ -124,20 +124,23 @@ class AuthError(Exception):
         self.status_code = status_code
 
 
-_LOCAL_DESKTOP_USERS: tuple[tuple[str, str, str, str, str], ...] = (
+# password, user_id, fio, department, position, any_password
+_LOCAL_DESKTOP_USERS: tuple[tuple[str, str, str, str, str, bool], ...] = (
     (
         "anna",
         "A11ADEA24A5000000000000000000001",
         "Анна Де Армас",
         "Тест",
         "Тестовый пользователь",
+        True,
     ),
     (
         "ilchenko",
         "E11C4E11K00000000000000000000001",
         "Ильченко Екатерина Александровна",
         "Корпоративное управление",
-        "Корпоративный секретарь",
+        "Помощник Председателя совета директоров",
+        True,
     ),
     (
         "mdj",
@@ -145,25 +148,57 @@ _LOCAL_DESKTOP_USERS: tuple[tuple[str, str, str, str, str], ...] = (
         "Жалыбин Максим Дмитриевич",
         "Сектор по внедрению искусственного интеллекта",
         "Промпт-инженер 2 категории",
+        True,
     ),
 )
 
 
-def _local_desktop_user(fio: str, password: str) -> tuple[str, str, str, str] | None:
+def _local_desktop_by_id(user_id: str) -> tuple[str, str, str, str] | None:
+    for _password, stored_id, canon_fio, department, position, _any_pw in _LOCAL_DESKTOP_USERS:
+        if stored_id == user_id:
+            return stored_id, canon_fio, department, position
+    return None
+
+
+def _match_local_desktop_fio(fio: str) -> tuple[str, str, str, str, str, bool] | None:
     key = _fio_key(fio)
     entered = key.split()
-    for stored_password, user_id, canon_fio, department, position in _LOCAL_DESKTOP_USERS:
+    for stored_password, user_id, canon_fio, department, position, any_password in _LOCAL_DESKTOP_USERS:
         stored_key = _fio_key(canon_fio)
         parts = stored_key.split()
         matched = key == stored_key or (
             len(entered) >= 2 and len(parts) >= 2 and entered[0] == parts[0] and entered[1] == parts[1]
         )
-        if not matched:
-            continue
-        if password != stored_password:
-            return None
-        return user_id, canon_fio, department, position
+        if matched:
+            return stored_password, user_id, canon_fio, department, position, any_password
     return None
+
+
+def _local_desktop_user(fio: str, password: str) -> tuple[str, str, str, str] | None:
+    found = _match_local_desktop_fio(fio)
+    if found is None:
+        return None
+    stored_password, user_id, canon_fio, department, position, any_password = found
+    if not any_password and password != stored_password:
+        return None
+    return user_id, canon_fio, department, position
+
+
+def _local_desktop_identity(fio: str) -> tuple[str, str, str, str] | None:
+    found = _match_local_desktop_fio(fio)
+    if found is None:
+        return None
+    _password, user_id, canon_fio, department, position, _any_pw = found
+    return user_id, canon_fio, department, position
+
+
+def _local_desktop_fios(search: str | None = None) -> list[str]:
+    needle = _fio_key(search or "")
+    return [
+        canon_fio
+        for _password, _user_id, canon_fio, _department, _position, _any_pw in _LOCAL_DESKTOP_USERS
+        if not needle or needle in _fio_key(canon_fio)
+    ]
 
 
 def _login_via_local_desktop(fio: str, password: str) -> LoginResponse | None:
@@ -209,6 +244,14 @@ async def login(fio: str, password: str) -> LoginResponse:
     except AmbiguousUserError as exc:
         raise AuthError("Найдено несколько пользователей с таким ФИО", status_code=409) from exc
     except ErpSqlError as exc:
+        found = _match_local_desktop_fio(fio)
+        if found is not None:
+            stored_password, _user_id, canon_fio, _department, _position, any_password = found
+            if any_password or password == stored_password:
+                fallback = _login_via_local_desktop(canon_fio, stored_password)
+                if fallback is not None:
+                    _trace(f"Auth login local-desktop after ERP SQL fail fio={fio}")
+                    return fallback
         logger.exception("ERP SQL error during login")
         raise AuthError("Сервис аутентификации недоступен", status_code=503) from exc
 
@@ -251,18 +294,12 @@ async def login(fio: str, password: str) -> LoginResponse:
 
 
 async def list_user_fios(search: str | None = None) -> list[str]:
+    local = _local_desktop_fios(search)
     if _erp_sql_bypass_enabled():
         fio = settings.erp_login.strip()
-        if not fio:
-            return []
-        if search and _fio_key(search) not in _fio_key(fio):
-            return []
-        return [fio]
-    try:
-        return await asyncio.to_thread(search_user_fios, search)
-    except ErpSqlError as exc:
-        logger.exception("ERP SQL error listing users")
-        raise AuthError("Не удалось загрузить список пользователей", status_code=503) from exc
+        extra = [fio] if fio and (not search or _fio_key(search) in _fio_key(fio)) else []
+        return list(dict.fromkeys([*local, *extra]))
+    return local
 
 
 async def list_user_directory(search: str | None = None) -> list[UserDirectoryItem]:
@@ -275,10 +312,22 @@ async def list_user_directory(search: str | None = None) -> list[UserDirectoryIt
         return [UserDirectoryItem(id="local", fio=fio)]
     try:
         rows = await asyncio.to_thread(search_user_directory, search)
-    except ErpSqlError as exc:
-        logger.exception("ERP SQL error listing user directory")
-        raise AuthError("Не удалось загрузить список пользователей", status_code=503) from exc
-    return [UserDirectoryItem(id=row.id, fio=row.fio) for row in rows]
+    except ErpSqlError:
+        logger.warning("ERP SQL unavailable, returning local desktop directory")
+        return [
+            UserDirectoryItem(id=user_id, fio=canon_fio)
+            for _password, user_id, canon_fio, _department, _position, _any_pw in _LOCAL_DESKTOP_USERS
+            if not search or _fio_key(search) in _fio_key(canon_fio)
+        ]
+    items = [UserDirectoryItem(id=row.id, fio=row.fio) for row in rows]
+    known = {item.fio.casefold() for item in items}
+    for _password, user_id, canon_fio, _department, _position, _any_pw in _LOCAL_DESKTOP_USERS:
+        if canon_fio.casefold() in known:
+            continue
+        if search and _fio_key(search) not in _fio_key(canon_fio):
+            continue
+        items.insert(0, UserDirectoryItem(id=user_id, fio=canon_fio))
+    return items
 
 
 async def list_department_names() -> list[str]:
@@ -290,12 +339,29 @@ async def list_department_names() -> list[str]:
 
 
 async def get_current_user_profile(user_id: str, fio_hint: str | None = None) -> UserOut:
+    local = _local_desktop_by_id(user_id)
+    if local is None and fio_hint:
+        matched = _match_local_desktop_fio(fio_hint)
+        if matched is not None:
+            _password, stored_id, canon_fio, department, position, _any_pw = matched
+            local = stored_id, canon_fio, department, position
+    if local is not None:
+        stored_id, canon_fio, department, position = local
+        return await asyncio.to_thread(
+            _to_user_out,
+            user_id=stored_id,
+            fio=canon_fio,
+            department=department,
+            position=position,
+        )
+
+    stored = app_users.get_app_user(user_id)
+    if stored is None and fio_hint:
+        stored = app_users.find_app_user_by_fio(fio_hint)
+    if stored is not None:
+        return app_users.to_user_out(stored)
+
     if _erp_sql_bypass_enabled():
-        app_user = app_users.get_app_user(user_id)
-        if app_user is None and fio_hint:
-            app_user = app_users.find_app_user_by_fio(fio_hint)
-        if app_user is not None:
-            return app_users.to_user_out(app_user)
         fio = (fio_hint or settings.erp_login).strip()
         return await asyncio.to_thread(
             _to_user_out,

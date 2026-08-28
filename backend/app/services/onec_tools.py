@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -59,6 +60,9 @@ _SUBJECT_KEYS = (
     "Комментарий",
 )
 _ODATA_TYPE_PREFIX = "StandardODATA."
+_MEETING_NOTE_ENTITY = "Document_ТД_СлужебнаяЗаписка"
+_MEETING_NOTE_PARTICIPANTS = "Document_ТД_СлужебнаяЗаписка_СписокУчастников"
+_MEETING_THEME_CATALOG = "Catalog_ТД_ТемыСлужебныхЗаписок"
 _COLLECTION_HREF_RE = re.compile(r"<collection\b[^>]*\bhref=\"([^\"]+)\"", re.IGNORECASE)
 _KIND_ALIASES = {
     "document": "document",
@@ -101,6 +105,7 @@ ONEC_TOOLS = frozenset(
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
         "onec.docflow_tasks",
+        "onec.meeting_service_notes",
     }
 )
 ONEC_WRITE_TOOLS = frozenset(
@@ -659,6 +664,234 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _parse_note_day(value: object) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(text[:10], fmt).date()
+        except ValueError:
+            continue
+    if "T" in text:
+        try:
+            return datetime.fromisoformat(text.replace("Z", "")[:19]).date()
+        except ValueError:
+            return None
+    return None
+
+
+def _note_period(args: dict[str, Any]) -> tuple[date, date]:
+    one = _parse_note_day(args.get("date"))
+    start = _parse_note_day(args.get("date_from") or args.get("from"))
+    end = _parse_note_day(args.get("date_to") or args.get("to"))
+    if one and not start and not end:
+        return one, one
+    if start and not end:
+        return start, start
+    if end and not start:
+        return end, end
+    if start and end:
+        if end < start:
+            start, end = end, start
+        return start, end
+    today = date.today()
+    return today, today
+
+
+def _odata_datetime(day: date, *, end_of_day: bool = False) -> str:
+    stamp = "23:59:59" if end_of_day else "00:00:00"
+    return f"datetime'{day.isoformat()}T{stamp}'"
+
+
+def _is_meeting_service_theme(text: str) -> bool:
+    low = " ".join(str(text or "").split()).casefold()
+    if not low:
+        return False
+    if "организация совещаний" in low:
+        return True
+    return "совеща" in low and "организац" in low
+
+
+def _odata_creds(args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in args.items()
+        if key in {"username", "password", "erp_login", "erp_password", "user"}
+    }
+
+
+def _meeting_theme_keys(args: dict[str, Any]) -> list[str]:
+    try:
+        raw = _fetch_odata_list(
+            {
+                "entity": _MEETING_THEME_CATALOG,
+                "filter": "DeletionMark eq false",
+                "top": 80,
+                **_odata_creds(args),
+            }
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    keys: list[str] = []
+    for row in raw.get("value") or []:
+        if not isinstance(row, dict):
+            continue
+        desc = str(row.get("Description") or row.get("Наименование") or "")
+        if not _is_meeting_service_theme(desc):
+            continue
+        key = str(row.get("Ref_Key") or "").strip()
+        if key and _GUID_RE.match(key):
+            keys.append(key)
+    return keys
+
+
+def _note_participants(ref: str, args: dict[str, Any]) -> list[dict[str, Any]]:
+    if not ref or not _GUID_RE.match(ref):
+        return []
+    try:
+        raw = _fetch_odata_list(
+            {
+                "entity": _MEETING_NOTE_PARTICIPANTS,
+                "filter": f"Ref_Key eq guid'{ref}'",
+                "top": 50,
+                **_odata_creds(args),
+            }
+        )
+        rows = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
+        if rows:
+            return rows
+    except Exception:  # noqa: BLE001
+        pass
+    extra = _fetch_related_tabular_parts(_MEETING_NOTE_ENTITY, ref, args)
+    parts = extra.get(_MEETING_NOTE_PARTICIPANTS) or []
+    return [row for row in parts if isinstance(row, dict)]
+
+
+def _note_from_odata_row(row: dict[str, Any], participants: list[dict[str, Any]]) -> dict[str, Any]:
+    theme = str(row.get("ТемаСлужебнойЗаписки_Name") or row.get("Subject") or row.get("ТемаСлужебнойЗаписки") or "")
+    if _GUID_RE.match(theme.strip()):
+        theme = str(row.get("Subject") or "")
+    topic = str(row.get("ТемаСовещания_Name") or row.get("ТемаСовещания") or "")
+    if _GUID_RE.match(topic.strip()):
+        topic = ""
+    place = str(row.get("МестоПроведенияСовещания_Name") or row.get("МестоПроведенияСовещания") or "")
+    if _GUID_RE.match(place.strip()):
+        place = ""
+    people = []
+    for item in participants:
+        name = str(
+            item.get("Участник_Name")
+            or item.get("Участник")
+            or item.get("Description")
+            or ""
+        ).strip()
+        if name and not _GUID_RE.match(name):
+            people.append(name)
+    return {
+        "document_type": "Служебная записка",
+        "metadata_name": "ТД_СлужебнаяЗаписка",
+        "ref": str(row.get("Ref_Key") or ""),
+        "number": str(row.get("Number") or ""),
+        "date": str(row.get("Date") or ""),
+        "theme": theme,
+        "meeting_topic": topic,
+        "place": place,
+        "participants": people,
+        "meeting": {
+            "topic": topic,
+            "place": place,
+            "desired_date": str(row.get("ЖелаемаяДатаПроведенияСовещания") or ""),
+            "meeting_date": str(row.get("ДатаПроведенияСовещания") or ""),
+            "start_time": str(row.get("ВремяНачалаСовещания") or ""),
+            "end_time": str(row.get("ВремяОкончанияСовещания") or ""),
+        },
+    }
+
+
+def _list_meeting_service_notes_odata(args: dict[str, Any]) -> dict[str, Any]:
+    """Служебные записки на совещания через OData — без COM."""
+    start, end = _note_period(args)
+    limit = max(1, min(200, int(args.get("max_results") or args.get("limit") or 50)))
+    date_filter = (
+        f"DeletionMark eq false and Date ge {_odata_datetime(start)} "
+        f"and Date le {_odata_datetime(end, end_of_day=True)}"
+    )
+    theme_keys = _meeting_theme_keys(args)
+    if theme_keys:
+        theme_clause = " or ".join(f"ТемаСлужебнойЗаписки eq guid'{key}'" for key in theme_keys[:8])
+        date_filter = f"{date_filter} and ({theme_clause})"
+    try:
+        raw = _fetch_odata_list(
+            {
+                "entity": _MEETING_NOTE_ENTITY,
+                "filter": date_filter,
+                "top": min(100, max(limit, 20)),
+                **_odata_creds(args),
+            }
+        )
+    except OnecToolError as exc:
+        return {
+            "notes": [],
+            "count": 0,
+            "source": "odata",
+            "readonly": True,
+            "date_from": start.isoformat(),
+            "date_to": end.isoformat(),
+            "theme": "организация совещаний",
+            "entity": _MEETING_NOTE_ENTITY,
+            "method": "odata_meeting_service_notes",
+            "error": str(exc),
+            "hint": (
+                "OData не отдал Document_ТД_СлужебнаяЗаписка. "
+                "Проверьте права учётки OData на этот документ "
+                "или читайте его через onec.odata_get, если доступ появится."
+            ),
+        }
+    rows = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
+    notes: list[dict[str, Any]] = []
+    for row in rows:
+        theme = str(row.get("ТемаСлужебнойЗаписки_Name") or row.get("Subject") or "")
+        topic = str(row.get("ТемаСовещания_Name") or row.get("ТемаСовещания") or "")
+        if theme and not _is_meeting_service_theme(theme) and not _is_meeting_service_theme(topic):
+            if not row.get("ТемаСовещания") and not row.get("ЖелаемаяДатаПроведенияСовещания"):
+                continue
+        ref = str(row.get("Ref_Key") or "").strip()
+        parts = row.get("tabular_parts") if isinstance(row.get("tabular_parts"), dict) else {}
+        participants = parts.get(_MEETING_NOTE_PARTICIPANTS) or []
+        if not participants:
+            participants = _note_participants(ref, args)
+        notes.append(_note_from_odata_row(row, participants if isinstance(participants, list) else []))
+        if len(notes) >= limit:
+            break
+    return {
+        "notes": notes,
+        "count": len(notes),
+        "source": "odata",
+        "readonly": True,
+        "date_from": start.isoformat(),
+        "date_to": end.isoformat(),
+        "theme": "организация совещаний",
+        "entity": _MEETING_NOTE_ENTITY,
+        "path": raw.get("path"),
+        "method": "odata_meeting_service_notes",
+    }
+
+
+def _stub_meeting_service_notes(args: dict[str, Any]) -> dict[str, Any]:
+    start, end = _note_period(args)
+    return {
+        "notes": [],
+        "count": 0,
+        "source": "stub",
+        "readonly": True,
+        "date_from": start.isoformat(),
+        "date_to": end.isoformat(),
+        "theme": "организация совещаний",
+        "note": "OData 1С не настроена — живые служебные записки не прочитаны.",
+    }
+
+
 def _odata_get_dispatch(args: dict[str, Any]) -> dict[str, Any]:
     entity = _entity_from_args(args)
     path = str(args.get("path", ""))
@@ -1105,6 +1338,7 @@ STUB_HANDLERS = {
     "onec.erp_tasks_period": _stub_erp_tasks_period,
     "onec.erp_subordinate_tasks": _stub_erp_subordinate_tasks,
     "onec.docflow_tasks": _stub_docflow_tasks,
+    "onec.meeting_service_notes": _stub_meeting_service_notes,
 }
 
 REAL_HANDLERS = {
@@ -1118,4 +1352,5 @@ REAL_HANDLERS = {
     "onec.erp_tasks_period": _erp_tasks_period,
     "onec.erp_subordinate_tasks": _erp_subordinate_tasks,
     "onec.docflow_tasks": _docflow_tasks,
+    "onec.meeting_service_notes": _list_meeting_service_notes_odata,
 }

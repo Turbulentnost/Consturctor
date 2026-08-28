@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-from app.api_client import ApiClient, WorkflowFileItem, WorkflowRecord
+from app.api_client import ApiClient, ApiError, WorkflowFileItem, WorkflowFiles, WorkflowRecord
 
 AGENT_BRIEF_RELATIVE = "materials/agent.md"
 AGENTS_MD_RELATIVE = "AGENTS.md"
@@ -123,7 +123,12 @@ def seed_workflow_files(api: ApiClient, workflow_id: str, cwd: str) -> str:
     root = Path(cwd)
     materials = root / "materials"
     materials.mkdir(parents=True, exist_ok=True)
-    files = api.list_workflow_files(wid)
+    try:
+        files = api.list_workflow_files(wid)
+    except ApiError as exc:
+        if not exc.is_auth:
+            raise
+        files = WorkflowFiles()
     manifest: list[dict] = []
     for index, item in enumerate(files.user_files, start=1):
         entry = _materialize_file(api, wid, item, materials, index=index)

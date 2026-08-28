@@ -8,6 +8,7 @@ from app.tools.ac.workers.onec_meeting_notes import (
     build_incoming_search_query_latin,
     build_meeting_notes_query,
     build_meeting_notes_query_latin,
+    default_addressee,
     document_from_com32_row,
     meeting_params_from_row,
     parse_note_period,
@@ -51,8 +52,14 @@ def test_query_is_select_only() -> None:
 
 
 def test_person_needles_use_last_name() -> None:
-    needles = person_needles("Ильченко Екатерина Александровна")
-    assert "Ильченко" in needles
+    needles = person_needles("Жалыбин Максим Дмитриевич")
+    assert "Жалыбин" in needles
+    assert person_needles("")[0].startswith("Жалыбин")
+
+
+def test_default_addressee_is_zhalybin(monkeypatch) -> None:
+    monkeypatch.delenv("ERP_LOGIN", raising=False)
+    assert default_addressee() == "Жалыбин Максим Дмитриевич"
 
 
 def test_pick_preferred_document() -> None:
@@ -67,8 +74,11 @@ def test_pick_preferred_document() -> None:
 
 
 def test_tool_is_readonly_and_registered() -> None:
+    from app.tools.server_tools import SERVER_TOOL_NAMES
+
     assert "onec.meeting_service_notes" in ALLOWED_ONEC_TOOLS
-    assert "onec.meeting_service_notes" in ONEC_COM32_TOOLS
+    assert "onec.meeting_service_notes" not in ONEC_COM32_TOOLS
+    assert "onec.meeting_service_notes" in SERVER_TOOL_NAMES
     assert not needs_confirmation("onec.meeting_service_notes")
     stub = type("W", (), {"execute": lambda *_a, **_k: None})()
     tool = OneCMeetingServiceNotesTool(stub)

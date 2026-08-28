@@ -7,6 +7,8 @@ import re
 from datetime import date, datetime
 from typing import Any
 
+from app.chat.test_user import ZHALYBIN_FIO
+
 _PREFERRED_DOCS = ("ТД_СлужебнаяЗаписка", "СлужебнаяЗаписка")
 _THEME_HINTS = ("тема", "содерж", "назнач", "вид", "коммент", "описан", "текст")
 _PERSON_HINTS = (
@@ -25,7 +27,7 @@ _PERSON_HINTS = (
 _WRITE_MARKERS = re.compile(
     r"(^|[^0-9a-zа-яё_])(записать|удалить|провести|установить|изменить)([^0-9a-zа-яё_]|$)"
 )
-_DEFAULT_ADDRESSEE = "Ильченко Екатерина Александровна"
+_DEFAULT_ADDRESSEE = ZHALYBIN_FIO
 _EMPTY_1C = (
     "0001-01-01",
     "01.01.0001",

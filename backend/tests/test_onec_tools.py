@@ -188,3 +188,74 @@ def test_onec_unknown_tool() -> None:
         raise AssertionError("expected OnecToolError")
     except OnecToolError:
         pass
+
+
+def test_meeting_service_notes_stub_without_odata(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.onec_tools.odata_configured", lambda: False)
+    result = invoke_onec("onec.meeting_service_notes", {"date": "2026-08-19"})
+    assert result["source"] == "stub"
+    assert result["notes"] == []
+    assert result["theme"] == "организация совещаний"
+
+
+def test_meeting_service_notes_odata_handler(monkeypatch) -> None:
+    from app.services import onec_tools as module
+
+    theme_row = {
+        "Ref_Key": "11111111-1111-1111-1111-111111111111",
+        "Description": "организация совещаний",
+    }
+    note_row = {
+        "Ref_Key": "22222222-2222-2222-2222-222222222222",
+        "Number": "000013200",
+        "Date": "2026-08-19T09:00:00",
+        "ТемаСлужебнойЗаписки_Name": "организация совещаний",
+        "ТемаСовещания": "Планерка ПСД",
+        "МестоПроведенияСовещания_Name": "малый зал",
+        "ЖелаемаяДатаПроведенияСовещания": "2026-08-19T00:00:00",
+        "ДатаПроведенияСовещания": "2026-08-19T00:00:00",
+        "ВремяНачалаСовещания": "2026-08-19T10:00:00",
+        "ВремяОкончанияСовещания": "2026-08-19T11:00:00",
+    }
+    part_row = {"Участник_Name": "Жалыбин Максим Дмитриевич"}
+
+    def fake_fetch(args: dict) -> dict:
+        entity = str(args.get("entity") or "")
+        if entity == "Catalog_ТД_ТемыСлужебныхЗаписок":
+            return {"value": [theme_row], "path": entity}
+        if entity == "Document_ТД_СлужебнаяЗаписка":
+            return {"value": [note_row], "path": entity}
+        if entity == "Document_ТД_СлужебнаяЗаписка_СписокУчастников":
+            return {"value": [part_row], "path": entity}
+        return {"value": [], "path": entity}
+
+    monkeypatch.setattr(module, "_fetch_odata_list", fake_fetch)
+    result = module._list_meeting_service_notes_odata({"date": "2026-08-19"})
+    assert result["source"] == "odata"
+    assert result["count"] == 1
+    assert result["notes"][0]["number"] == "000013200"
+    assert result["notes"][0]["meeting_topic"] == "Планерка ПСД"
+    assert result["notes"][0]["participants"] == ["Жалыбин Максим Дмитриевич"]
+
+
+def test_meeting_service_notes_odata_acl_error(monkeypatch) -> None:
+    from app.services import onec_tools as module
+
+    def boom(_args: dict) -> dict:
+        raise OnecToolError("1C OData HTTP 401: Доступ запрещен")
+
+    monkeypatch.setattr(module, "_meeting_theme_keys", lambda _args: [])
+    monkeypatch.setattr(module, "_fetch_odata_list", boom)
+    result = module._list_meeting_service_notes_odata({"date": "2026-08-19"})
+    assert result["source"] == "odata"
+    assert result["notes"] == []
+    assert "401" in result["error"]
+    assert result["entity"] == "Document_ТД_СлужебнаяЗаписка"
+
+
+def test_meeting_theme_match() -> None:
+    from app.services.onec_tools import _is_meeting_service_theme
+
+    assert _is_meeting_service_theme("Организация совещаний")
+    assert _is_meeting_service_theme("организац. совещаний")
+    assert not _is_meeting_service_theme("командировка")

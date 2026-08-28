@@ -105,9 +105,9 @@ def test_tools_registered() -> None:
     names = {item["name"] for item in list_tools()}
     assert "onec.meeting_service_notes" in names
     meeting = next(item for item in list_tools() if item["name"] == "onec.meeting_service_notes")
-    assert meeting.get("execution") == "desktop"
+    assert meeting.get("execution") == "server"
     assert meeting.get("entity") == "service_note"
-    assert meeting.get("runtime") == "com32"
+    assert meeting.get("runtime") != "com32"
     search = next(item for item in list_tools() if item["name"] == "onec.search_documents")
     assert search.get("runtime") == "com32"
     assert "users.subordinates" in names
@@ -121,6 +121,7 @@ def test_tools_registered() -> None:
             "onec.erp_tasks_period",
             "onec.erp_subordinate_tasks",
             "onec.docflow_tasks",
+            "onec.meeting_service_notes",
         }:
             assert item.get("execution") == "server"
 

@@ -67,6 +67,7 @@ _host: "_ConfirmHost | None" = None
 _away_notify: Callable[[str, str, str], None] | None = None
 _inline_hosts: dict[int, tuple[QWidget, str]] = {}
 _pending: list["_PendingConfirm"] = []
+_card_holder: QWidget | None = None
 
 _CARD_QSS = """
 QFrame#HitlCard {
@@ -317,6 +318,16 @@ def page_is_in_view(host: QWidget) -> bool:
     return True
 
 
+def _hidden_card_parent() -> QWidget:
+    global _card_holder
+    if _card_holder is None:
+        _card_holder = QWidget()
+        _card_holder.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        _card_holder.setWindowFlags(Qt.WindowType.Widget)
+        _card_holder.hide()
+    return _card_holder
+
+
 def install_confirm_host(parent: QObject | None = None) -> None:
     global _host
     if _host is None:
@@ -428,6 +439,7 @@ class HitlConfirmCard(QFrame):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("HitlCard")
+        self.setWindowFlags(Qt.WindowType.Widget)
         self.setStyleSheet(_CARD_QSS)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._human_title, explanation = explain_tool(tool, arguments)
@@ -559,7 +571,8 @@ class _ConfirmHost(QObject):
         loop = QEventLoop(self)
         answered = False
         accepted = False
-        card = HitlConfirmCard(tool, preview, arguments=arguments)
+        card = HitlConfirmCard(tool, preview, parent=_hidden_card_parent(), arguments=arguments)
+        card.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
         item = _PendingConfirm(workflow_id=workflow_id, card=card, attached=False)
         _pending.append(item)
 
@@ -588,6 +601,7 @@ class _ConfirmHost(QObject):
             if callable(attach):
                 attach(card)
                 item.attached = True
+                card.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, False)
         _notify_away(workflow_id, tool, preview, arguments)
 
         while not answered:
