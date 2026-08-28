@@ -52,6 +52,7 @@ desktop/installer/payload/
 
 # Electron desktop (rebuild via npm run build)
 desktop-electron/node_modules/
+desktop-electron/.installer-runtime/
 desktop-electron/out/
 desktop-electron/release/
 desktop-electron/dist/

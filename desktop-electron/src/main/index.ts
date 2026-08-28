@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } from 'electron'
-import { join, basename, extname } from 'node:path'
-import { readFileSync, existsSync, writeFileSync } from 'node:fs'
+import { join, basename, dirname, extname } from 'node:path'
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { NotificationGuard, showToast, type ToastPayload } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
 
@@ -47,10 +47,25 @@ function parseEnvFile(path: string): Record<string, string> {
 }
 
 function loadConfig(): { backendUrl: string; testUser: boolean } {
+  const userEnv = join(app.getPath('userData'), '.env')
+  const resourceEnv = join(process.resourcesPath, 'desktop', '.env')
+  if (!existsSync(userEnv) && existsSync(resourceEnv)) {
+    try {
+      mkdirSync(dirname(userEnv), { recursive: true })
+      writeFileSync(userEnv, readFileSync(resourceEnv))
+    } catch {
+      /* Keep resource .env as fallback. */
+    }
+  }
   const candidates = [
+    userEnv,
+    join(dirname(app.getPath('exe')), '.env'),
+    resourceEnv,
     join(app.getAppPath(), '.env'),
     join(process.cwd(), '.env'),
-    join(app.getAppPath(), '..', '.env')
+    join(app.getAppPath(), '..', '.env'),
+    join(process.cwd(), '..', 'desktop', '.env'),
+    join(app.getAppPath(), '..', 'desktop', '.env')
   ]
   let env: Record<string, string> = {}
   for (const candidate of candidates) {

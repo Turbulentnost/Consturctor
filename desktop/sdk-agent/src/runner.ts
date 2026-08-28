@@ -436,6 +436,14 @@ function isDatabaseLockedError(error: unknown): boolean {
   );
 }
 
+function isAgentNotFoundError(error: unknown): boolean {
+  const message = safeError(error).toLowerCase();
+  return (
+    message.includes("agent") &&
+    (message.includes("not found") || message.includes("404") || message.includes("no such"))
+  );
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -504,15 +512,31 @@ async function runAgent(command: RunCommand): Promise<void> {
         settingSources: [],
       },
     };
-    agent = await withDbLockRetry(
-      () =>
-        command.resumeAgentId
-          ? Agent.resume(command.resumeAgentId as string, agentOptions as never)
-          : Agent.create(agentOptions as never),
-      command.resumeAgentId ? "resume" : "create",
-    );
-    const agentId = readAgentId(agent, command.resumeAgentId || "");
-    emit({ type: "agent", id, agentId, resumed: Boolean(command.resumeAgentId) });
+    let resumed = Boolean(command.resumeAgentId);
+    try {
+      agent = await withDbLockRetry(
+        () =>
+          command.resumeAgentId
+            ? Agent.resume(command.resumeAgentId as string, agentOptions as never)
+            : Agent.create(agentOptions as never),
+        command.resumeAgentId ? "resume" : "create",
+      );
+    } catch (error) {
+      if (!command.resumeAgentId || !isAgentNotFoundError(error)) {
+        throw error;
+      }
+      resumed = false;
+      emit({
+        type: "status",
+        text: "Previous Cursor SDK agent was not found. Starting a new local agent.",
+      });
+      agent = await withDbLockRetry(
+        () => Agent.create(agentOptions as never),
+        "create-after-missing-resume",
+      );
+    }
+    const agentId = readAgentId(agent, resumed ? command.resumeAgentId || "" : "");
+    emit({ type: "agent", id, agentId, resumed });
     const sendOptions = {
       local: {
         force: true,

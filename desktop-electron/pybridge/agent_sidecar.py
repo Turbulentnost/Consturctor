@@ -56,17 +56,30 @@ from typing import Any
 
 
 def _bootstrap_desktop_path() -> Path:
-    """Add the repo desktop/ folder to sys.path so app.* is importable."""
+    """Add the desktop/ folder to sys.path so app.* is importable."""
+    env_root = os.environ.get("CONSTRUCTOR_DESKTOP_ROOT", "").strip()
+    if env_root:
+        desktop_root = Path(env_root).resolve()
+        if not desktop_root.is_dir():
+            raise RuntimeError(f"desktop folder not found at {desktop_root}")
+        path_str = str(desktop_root)
+        if path_str not in sys.path:
+            sys.path.insert(0, path_str)
+        return desktop_root
+
     here = Path(__file__).resolve()
     # .../NewConstructor/desktop-electron/pybridge/agent_sidecar.py
-    repo_root = here.parents[2]
-    desktop_root = repo_root / "desktop"
-    if not desktop_root.is_dir():
-        raise RuntimeError(f"desktop folder not found at {desktop_root}")
-    path_str = str(desktop_root)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
-    return desktop_root
+    candidates = [
+        here.parents[1] / "desktop",
+        here.parents[2] / "desktop",
+    ]
+    for desktop_root in candidates:
+        if desktop_root.is_dir():
+            path_str = str(desktop_root)
+            if path_str not in sys.path:
+                sys.path.insert(0, path_str)
+            return desktop_root
+    raise RuntimeError(f"desktop folder not found near {here}")
 
 
 DESKTOP_ROOT = _bootstrap_desktop_path()
@@ -84,7 +97,6 @@ from app.tools.runtime_api import configure as configure_runtime_api  # noqa: E4
 from app.sdk_agent.prompt import (  # noqa: E402
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
-    build_followup_sdk_prompt,
     build_sdk_prompt,
 )
 from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
@@ -1969,11 +1981,10 @@ class Sidecar:
                 active, workflow, provided_count=len(file_paths)
             )
         events: list[dict[str, Any]] = []
-        prompt = (
-            build_followup_sdk_prompt(message)
-            if resume_agent_id and message
-            else build_sdk_prompt(workflow, message)
-        )
+        # Always include current workflow materials in the prompt. If a saved
+        # SDK agent id belongs to another machine/account and resume falls back
+        # to a fresh agent, the run still has the full playbook context.
+        prompt = build_sdk_prompt(workflow, message)
         note = _attachments_note(attachment_paths)
         if note:
             prompt = prompt + "\n\n" + note

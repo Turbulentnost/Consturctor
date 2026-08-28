@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { app } from 'electron'
 
@@ -50,6 +50,7 @@ export class AgentSidecar {
     const envDesktop = process.env.CONSTRUCTOR_DESKTOP_ROOT
     const appPath = app.getAppPath()
     const candidates = [
+      process.resourcesPath,
       appPath,
       resolve(appPath, '..'),
       resolve(__dirname, '..', '..'),
@@ -85,7 +86,33 @@ export class AgentSidecar {
   }
 
   private pythonCommand(): string {
-    return process.env.CONSTRUCTOR_PYTHON || 'python'
+    const bundled = join(process.resourcesPath, 'python', process.platform === 'win32' ? 'python.exe' : 'python')
+    return process.env.CONSTRUCTOR_PYTHON || (app.isPackaged && existsSync(bundled) ? bundled : 'python')
+  }
+
+  private nodeCommand(): string {
+    const bundled = join(process.resourcesPath, 'node', process.platform === 'win32' ? 'node.exe' : 'node')
+    return process.env.CONSTRUCTOR_NODE || (app.isPackaged && existsSync(bundled) ? bundled : 'node')
+  }
+
+  private runtimeEnv(sidecar: string, desktopRoot: string): NodeJS.ProcessEnv {
+    const node = this.nodeCommand()
+    const nodeDir = existsSync(node) ? dirname(node) : ''
+    const pathParts = [nodeDir, process.env.PATH || process.env.Path || ''].filter(Boolean)
+    const browsersPath = join(desktopRoot, 'ms-playwright')
+    return {
+      ...process.env,
+      PYTHONUNBUFFERED: '1',
+      PYTHONIOENCODING: 'utf-8',
+      CONSTRUCTOR_SIDECAR: sidecar,
+      CONSTRUCTOR_DESKTOP_ROOT: desktopRoot,
+      CONSTRUCTOR_PYTHON: this.pythonCommand(),
+      CONSTRUCTOR_NODE: node,
+      PLAYWRIGHT_BROWSERS_PATH:
+        process.env.PLAYWRIGHT_BROWSERS_PATH || (existsSync(browsersPath) ? browsersPath : ''),
+      PATH: pathParts.join(delimiter),
+      Path: pathParts.join(delimiter)
+    }
   }
 
   start(): void {
@@ -98,10 +125,10 @@ export class AgentSidecar {
       })
       return
     }
-    const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }
+    const env = this.runtimeEnv(sidecar, desktopRoot)
     let child: ChildProcessWithoutNullStreams
     try {
-      child = spawn(this.pythonCommand(), ['-u', sidecar], {
+      child = spawn(env.CONSTRUCTOR_PYTHON || this.pythonCommand(), ['-u', sidecar], {
         cwd: existsSync(desktopRoot) ? desktopRoot : undefined,
         env
       })

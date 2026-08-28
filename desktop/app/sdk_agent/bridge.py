@@ -44,7 +44,7 @@ SdkEventCallback = Callable[[dict[str, Any]], None]
 
 class CursorSdkBridge:
     def __init__(self, *, node: str = "node", runner: Path | None = None) -> None:
-        self._node = node
+        self._node = os.getenv("CONSTRUCTOR_NODE", "").strip() or node
         self._sdk_root = DESKTOP_ROOT / "sdk-agent"
         self._runner = runner or self._sdk_root / "src" / "runner.ts"
         self._skip_lock = threading.Lock()
