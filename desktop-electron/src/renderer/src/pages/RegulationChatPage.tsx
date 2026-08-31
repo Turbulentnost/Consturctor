@@ -23,6 +23,16 @@ const FORCE_CREATE_PROMPT =
   'Создай регламент принудительно по текущей информации. ' +
   'Если каких-то данных не хватает, используй разумные типовые формулировки и явно отметь, что это предположение.'
 const WORKING_STATUS = 'Готовлю ответ...'
+const COMPOSER_MIN_HEIGHT = 44
+const COMPOSER_MAX_HEIGHT = 129
+
+function fileCountLabel(count: number): string {
+  const mod10 = count % 10
+  const mod100 = count % 100
+  if (mod10 === 1 && mod100 !== 11) return 'файл'
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'файла'
+  return 'файлов'
+}
 
 function isProtocolChunk(text: string): boolean {
   const value = text.trim()
@@ -36,6 +46,14 @@ function quickAnswers(structured: Record<string, unknown>): string[] {
   const raw = structured.quickAnswers
   if (Array.isArray(raw)) return raw.map((x) => String(x)).filter(Boolean)
   return []
+}
+
+function resultFileName(session: RegulationCreationSession): string {
+  const fromPath = session.resultDocumentPath.split(/[\\/]/).pop() || ''
+  if (fromPath) return fromPath
+  const title = String(session.resultDocument?.title || '').trim()
+  if (title) return `${title}.docx`
+  return 'Регламент.docx'
 }
 
 function attachmentsOf(structured: Record<string, unknown>): string[] {
@@ -90,6 +108,7 @@ export function RegulationChatPage({
   const [thinking, setThinking] = useState('')
   const [status, setStatus] = useState('')
   const [thinkOpen, setThinkOpen] = useState(false)
+  const [filesOpen, setFilesOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -99,8 +118,27 @@ export function RegulationChatPage({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [session.messages.length, busy, thinking, status])
 
+  useEffect(() => {
+    const node = textareaRef.current
+    if (!node) return
+    node.style.height = '0px'
+    node.style.overflowY = 'hidden'
+    const content = node.scrollHeight
+    node.style.height = `${Math.min(Math.max(content, COMPOSER_MIN_HEIGHT), COMPOSER_MAX_HEIGHT)}px`
+    node.style.overflowY = content > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden'
+  }, [input])
+
   const ready = Boolean(session.resultRegulation || session.resultDocumentPath)
   const hasUserMessage = session.messages.some((m) => m.role === 'user')
+  const resultName = resultFileName(session)
+
+  async function downloadResult(): Promise<void> {
+    if (!ready) return
+    await api.download(
+      `/api/v1/regulation-creation/sessions/${session.draftId}/document`,
+      resultName
+    )
+  }
 
   function onScroll(): void {
     const el = scrollRef.current
@@ -135,6 +173,7 @@ export function RegulationChatPage({
     }
     onSessionChange(optimistic)
     setAttachments([])
+    setFilesOpen(false)
     try {
       const updated = await api.streamRegulationCreationMessage(
         session.draftId,
@@ -197,10 +236,15 @@ export function RegulationChatPage({
       }
       return next
     })
+    setFilesOpen(false)
   }
 
   function removeAttachment(path: string): void {
-    setAttachments((prev) => prev.filter((f) => f.path !== path))
+    setAttachments((prev) => {
+      const next = prev.filter((f) => f.path !== path)
+      if (next.length === 0) setFilesOpen(false)
+      return next
+    })
   }
 
   const visible = session.messages.filter((m) => m.role === 'assistant' || m.role === 'user')
@@ -228,187 +272,233 @@ export function RegulationChatPage({
         </div>
       </div>
 
-      <div className="regchat-feed-wrap">
+      <div className="regchat-stage">
         <div
-          className="regchat-feed-bg"
+          className="regchat-page-bg"
           style={{ backgroundImage: `url(${wallpaperUrl})` }}
           aria-hidden
         />
-        <div className="regchat-scroll" ref={scrollRef} onScroll={onScroll}>
-          {visible.length === 0 && !busy && (
-            <div className="regchat-hint">
-              ИИ задаст несколько вопросов, чтобы собрать регламент. Опишите процесс, который нужно
-              автоматизировать, или приложите файлы.
-            </div>
-          )}
-          {visible.map((m, index) => {
-            const isUser = m.role === 'user'
-            const names = attachmentsOf(m.structured)
-            const quicks = quickAnswers(m.structured)
-            return (
-              <div key={m.messageId || index} className={isUser ? 'regchat-row user' : 'regchat-row ai'}>
-                {!isUser && (
+        <div className="regchat-feed-wrap">
+            <div className="regchat-scroll" ref={scrollRef} onScroll={onScroll}>
+              <div className="regchat-column">
+              {visible.length === 0 && !busy && (
+                <div className="regchat-hint">
+                  ИИ задаст несколько вопросов, чтобы собрать регламент. Опишите процесс, который нужно
+                  автоматизировать, или приложите файлы.
+                </div>
+              )}
+              {visible.map((m, index) => {
+                const isUser = m.role === 'user'
+                const names = attachmentsOf(m.structured)
+                const quicks = quickAnswers(m.structured)
+                return (
+                  <div key={m.messageId || index} className={isUser ? 'regchat-row user' : 'regchat-row ai'}>
+                    {!isUser && (
+                      <div className="regchat-avatar">
+                        <img src={logoUrl} alt="" />
+                      </div>
+                    )}
+                    <div className="regchat-bubble-col">
+                      <div className={isUser ? 'regchat-bubble user' : 'regchat-bubble ai'}>
+                        {m.content && <div className="regchat-bubble-text">{m.content}</div>}
+                        {names.length > 0 && (
+                          <div className="regchat-attach-list">
+                            {names.map((n, i) => (
+                              <span key={i} className="regchat-file-row">
+                                <img className="regchat-file-icon" src={fileTypeIconSrc(n)} alt="" />
+                                <span className="regchat-file-name" title={n}>
+                                  {n}
+                                </span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      {!isUser && quicks.length > 0 && !busy && (
+                        <div className="regchat-quick-row">
+                          {quicks.map((qa) => (
+                            <button
+                              key={qa}
+                              className="regchat-quick-chip"
+                              onClick={() => handleQuick(qa, m.content)}
+                            >
+                              {qa}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+              {busy && (
+                <div className="regchat-row ai">
                   <div className="regchat-avatar">
                     <img src={logoUrl} alt="" />
                   </div>
-                )}
-                <div className="regchat-bubble-col">
-                  <div className={isUser ? 'regchat-bubble user' : 'regchat-bubble ai'}>
-                    {m.content && <div className="regchat-bubble-text">{m.content}</div>}
-                    {names.length > 0 && (
-                      <div className="regchat-attach-list">
-                        {names.map((n, i) => (
-                          <span key={i} className="regchat-file-chip">
-                            <img className="regchat-file-icon" src={fileTypeIconSrc(n)} alt="" />
-                            <span className="regchat-file-name">{n}</span>
+                  <div className="regchat-bubble-col">
+                    {thinking ? (
+                      <div className="regchat-think">
+                        <button
+                          className="regchat-think-head"
+                          onClick={() => setThinkOpen((v) => !v)}
+                        >
+                          <span>{thinkOpen ? '\u25BE' : '\u25B8'}</span>
+                          <span>Размышляет</span>
+                        </button>
+                        {thinkOpen && <div className="regchat-think-body">{thinking}</div>}
+                      </div>
+                    ) : null}
+                    {status ? (
+                      <div className="regchat-status">{status}</div>
+                    ) : (
+                      <div className="regchat-bubble ai">
+                        <div className="typing">
+                          <span></span>
+                          <span></span>
+                          <span></span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {ready && (
+                <div className="regchat-row ai">
+                  <div className="regchat-avatar">
+                    <img src={logoUrl} alt="" />
+                  </div>
+                  <div className="regchat-bubble-col">
+                    <div className="regchat-doc-card">
+                      <div className="regchat-file-row">
+                        <img className="regchat-file-icon" src={fileTypeIconSrc(resultName)} alt="" />
+                        <span className="regchat-file-name" title={resultName}>
+                          {resultName}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="regchat-doc-download"
+                        onClick={() => void downloadResult()}
+                      >
+                        Скачать
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              </div>
+            </div>
+          </div>
+
+          {error && (
+            <div className="status-line" style={{ color: 'var(--error)' }}>
+              {error}
+            </div>
+          )}
+
+          {ready && (
+            <div className="chat-ready">
+              <div>Регламент готов. Файл можно скачать в чате или перейти к проверке.</div>
+              <button
+                className="btn-primary"
+                style={{ maxWidth: 260 }}
+                onClick={() => onReady(session)}
+              >
+                Продолжить
+              </button>
+            </div>
+          )}
+
+          {!ready && (
+            <div className="regchat-composer">
+              <div className="regchat-composer-box">
+                {attachments.length > 0 && (
+                  <div className="regchat-files">
+                    <button
+                      type="button"
+                      className="regchat-files-toggle"
+                      onClick={() => setFilesOpen((open) => !open)}
+                    >
+                      <span>{filesOpen ? '\u25BE' : '\u25B8'}</span>
+                      <span>
+                        {attachments.length} {fileCountLabel(attachments.length)}
+                      </span>
+                    </button>
+                    {filesOpen && (
+                      <div className="regchat-pending">
+                        {attachments.map((f) => (
+                          <span key={f.path} className="regchat-file-row pending">
+                            <img className="regchat-file-icon" src={fileTypeIconSrc(f.name)} alt="" />
+                            <span className="regchat-file-name" title={f.name}>
+                              {f.name}
+                            </span>
+                            <button
+                              className="regchat-pending-remove"
+                              onClick={() => removeAttachment(f.path)}
+                              aria-label="Убрать файл"
+                            >
+                              {'\u00D7'}
+                            </button>
                           </span>
                         ))}
                       </div>
                     )}
                   </div>
-                  {!isUser && quicks.length > 0 && !busy && (
-                    <div className="regchat-quick-row">
-                      {quicks.map((qa) => (
-                        <button
-                          key={qa}
-                          className="regchat-quick-chip"
-                          onClick={() => handleQuick(qa, m.content)}
-                        >
-                          {qa}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-          {busy && (
-            <div className="regchat-row ai">
-              <div className="regchat-avatar">
-                <img src={logoUrl} alt="" />
-              </div>
-              <div className="regchat-bubble-col">
-                {thinking ? (
-                  <div className="regchat-think">
-                    <button
-                      className="regchat-think-head"
-                      onClick={() => setThinkOpen((v) => !v)}
-                    >
-                      <span>{thinkOpen ? '\u25BE' : '\u25B8'}</span>
-                      <span>Размышляет</span>
-                    </button>
-                    {thinkOpen && <div className="regchat-think-body">{thinking}</div>}
-                  </div>
-                ) : null}
-                {status ? (
-                  <div className="regchat-status">{status}</div>
-                ) : (
-                  <div className="regchat-bubble ai">
-                    <div className="typing">
-                      <span></span>
-                      <span></span>
-                      <span></span>
-                    </div>
-                  </div>
                 )}
+            <div className="regchat-composer-input">
+              <textarea
+                ref={textareaRef}
+                value={input}
+                placeholder={placeholder}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    void send(input, attachments)
+                  }
+                }}
+                disabled={busy}
+                rows={1}
+              />
+              <div className="regchat-composer-tools">
+                <button
+                  className="regchat-tool-btn"
+                  onClick={() => void pickFiles()}
+                  disabled={busy}
+                  title="Приложить файлы"
+                  aria-label="Приложить файлы"
+                  type="button"
+                >
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden>
+                    <path
+                      d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+                <button
+                  className="regchat-send-btn"
+                  onClick={() => void send(input, attachments)}
+                  disabled={busy || (!input.trim() && attachments.length === 0)}
+                  title="Отправить"
+                  aria-label="Отправить"
+                  type="button"
+                >
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+                    <path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </div>
+            </div>
               </div>
             </div>
           )}
-        </div>
       </div>
-
-      {error && (
-        <div className="status-line" style={{ color: 'var(--error)' }}>
-          {error}
-        </div>
-      )}
-
-      {ready && (
-        <div className="chat-ready">
-          <div>Регламент готов. Можно перейти к проверке и созданию агента.</div>
-          <button
-            className="btn-primary"
-            style={{ maxWidth: 260 }}
-            onClick={() => onReady(session)}
-          >
-            Продолжить
-          </button>
-        </div>
-      )}
-
-      {!ready && (
-        <div className="regchat-composer">
-          <div className="regchat-composer-box">
-            {attachments.length > 0 && (
-              <div className="regchat-pending">
-                {attachments.map((f) => (
-                  <span key={f.path} className="regchat-file-chip pending">
-                    <img className="regchat-file-icon" src={fileTypeIconSrc(f.name)} alt="" />
-                    <span className="regchat-file-name" title={f.name}>
-                      {f.name}
-                    </span>
-                    <button
-                      className="regchat-pending-remove"
-                      onClick={() => removeAttachment(f.path)}
-                      aria-label="Убрать файл"
-                    >
-                      {'\u00D7'}
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <textarea
-              ref={textareaRef}
-              value={input}
-              placeholder={placeholder}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  void send(input, attachments)
-                }
-              }}
-              disabled={busy}
-              rows={2}
-            />
-            <div className="regchat-composer-tools">
-              <button
-                className="regchat-tool-btn"
-                onClick={() => void pickFiles()}
-                disabled={busy}
-                title="Приложить файлы"
-                aria-label="Приложить файлы"
-                type="button"
-              >
-                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden>
-                  <path
-                    d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
-              <button
-                className="regchat-send-btn"
-                onClick={() => void send(input, attachments)}
-                disabled={busy || (!input.trim() && attachments.length === 0)}
-                title="Отправить"
-                aria-label="Отправить"
-                type="button"
-              >
-                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
-                  <path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -12,6 +12,7 @@ from app.db.session import get_db
 from app.schemas.regulation import RegulationCreationSendRequest, RegulationCreationSession
 from app.services.regulation_creation import (
     RegulationCreationError,
+    get_creation_document,
     get_creation_session,
     send_creation_message,
     start_creation_session,
@@ -51,6 +52,23 @@ async def create_regulation_creation_session(
         return start_creation_session(db, user_id=auth.user_id)
     except RegulationCreationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.get("/sessions/{draft_id}/document")
+async def download_regulation_creation_document(
+    draft_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    try:
+        path = get_creation_document(db, user_id=auth.user_id, draft_id=draft_id)
+    except RegulationCreationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return FileResponse(
+        str(path),
+        filename=path.name,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
 
 @router.get("/sessions/{draft_id}", response_model=RegulationCreationSession)

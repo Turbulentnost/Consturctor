@@ -174,6 +174,7 @@ export interface RegulationCreationSession {
   status: string
   messages: RegulationCreationMessage[]
   resultRegulation: RegulationParseResult | null
+  resultDocument: Record<string, unknown>
   resultDocumentPath: string
 }
 

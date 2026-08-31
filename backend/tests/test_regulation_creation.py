@@ -11,6 +11,7 @@ from app.models.user import AppUser
 from app.services.regulation_creation.interview import (
     append_user_turn,
     build_creation_prompt,
+    document_from_interview,
     merge_agent_payload,
     ready_blocker,
 )
@@ -126,3 +127,78 @@ def test_apply_agent_reply_rejects_ready_with_missing_inventory() -> None:
     assert draft.status == "interview"
     message = db.query(RegulationCreationDraft).filter(RegulationCreationDraft.id == "draft-1").one()
     assert message.result_regulation_id == ""
+
+
+def test_document_from_interview_builds_sections() -> None:
+    document = document_from_interview(
+        {
+            "functions": [
+                {
+                    "id": "f1",
+                    "title": "Сводка на неделю",
+                    "actor": "Помощник ПСД",
+                    "tool": "Excel",
+                    "periodicity": "Каждый понедельник",
+                    "triggerAction": "Наступил понедельник до 10:00",
+                    "userAction": "Обновляет сводный план",
+                }
+            ]
+        }
+    )
+
+    assert document["title"] == "Регламент"
+    assert document["sections"][0]["title"] == "Сводка на неделю"
+    assert any("Excel" in item for item in document["sections"][0]["items"])
+
+
+def test_force_create_finalizes_without_agent_document() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    draft = RegulationCreationDraft(
+        id="draft-force",
+        user_id="user-1",
+        status="interview",
+        interview_json={
+            "functions": [
+                {
+                    "id": "f1",
+                    "title": "Сводка на неделю",
+                    "actor": "Помощник ПСД",
+                    "tool": "Excel",
+                    "periodicity": "Каждый понедельник",
+                    "triggerAction": "Наступил понедельник до 10:00",
+                    "userAction": "Обновляет сводный план",
+                }
+            ]
+        },
+    )
+    db.add(draft)
+    db.commit()
+
+    class DummyResult:
+        regulationId = "reg-force"
+
+    from unittest.mock import patch
+
+    with patch(
+        "app.services.regulation_creation.service._finalize_document",
+        return_value=DummyResult(),
+    ) as finalize:
+        _apply_agent_reply(
+            db,
+            user_id="user-1",
+            draft=draft,
+            raw=json.dumps(
+                {
+                    "status": "need_more",
+                    "message": "Регламент сформирован по приложенным документам.",
+                }
+            ),
+            force_create=True,
+        )
+        db.commit()
+
+    db.refresh(draft)
+    assert finalize.called
+    assert draft.status == "finalized"
+    assert draft.result_regulation_id == "reg-force"

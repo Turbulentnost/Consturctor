@@ -120,6 +120,10 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
       resultRaw && typeof resultRaw === 'object'
         ? parseRegulation(resultRaw as Record<string, unknown>)
         : null,
+    resultDocument:
+      data.resultDocument && typeof data.resultDocument === 'object'
+        ? (data.resultDocument as Record<string, unknown>)
+        : {},
     resultDocumentPath: String(data.resultDocumentPath ?? '')
   }
 }

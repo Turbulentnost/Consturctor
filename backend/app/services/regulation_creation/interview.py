@@ -458,6 +458,65 @@ def _prompt_attachments(attachments: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
+def document_from_interview(state: Any, title: str = "") -> dict[str, Any]:
+    interview = normalize_interview_state(state)
+    sections: list[dict[str, Any]] = []
+    for index, func in enumerate(interview.get("functions") or [], start=1):
+        if not isinstance(func, dict):
+            continue
+        heading = _clean_str(func.get("title")) or f"Функция {index}"
+        paragraphs: list[str] = []
+        items: list[str] = []
+        actor = _clean_str(func.get("actor"))
+        if actor:
+            paragraphs.append(f"Исполнитель: {actor}")
+        for key, label in (
+            ("tool", "Инструмент"),
+            ("periodicity", "Периодичность"),
+            ("triggerAction", "Триггер"),
+            ("userAction", "Действие пользователя"),
+        ):
+            value = _clean_str(func.get(key))
+            if value:
+                items.append(f"{label}: {value}")
+        for ref in func.get("sourceRefs") or []:
+            if not isinstance(ref, dict):
+                continue
+            quote = _clean_str(ref.get("quote"))
+            source = _clean_str(ref.get("file"))
+            if quote:
+                items.append(f"Источник{f' ({source})' if source else ''}: {quote}")
+        if heading or paragraphs or items:
+            sections.append(
+                {
+                    "number": str(index),
+                    "title": heading,
+                    "paragraphs": paragraphs,
+                    "items": items,
+                }
+            )
+    return {
+        "title": _clean_str(title) or "Регламент",
+        "sections": sections,
+    }
+
+
+def document_has_body(document: Any) -> bool:
+    if not isinstance(document, dict):
+        return False
+    sections = document.get("sections") or []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        if (
+            _clean_str(section.get("title"))
+            or any(_clean_str(item) for item in section.get("paragraphs") or [])
+            or any(_clean_str(item) for item in section.get("items") or [])
+        ):
+            return True
+    return False
+
+
 def _clean_str(value: Any) -> str:
     if value is None:
         return ""

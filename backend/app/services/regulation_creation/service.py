@@ -34,6 +34,8 @@ from app.services.regulation.pdf_ocr import extract_pdf_scan
 from app.services.regulation_creation.interview import (
     append_user_turn,
     build_creation_prompt,
+    document_from_interview,
+    document_has_body,
     merge_agent_payload,
     new_interview_state,
     ready_blocker,
@@ -76,6 +78,14 @@ def start_creation_session(db: Session, *, user_id: str) -> RegulationCreationSe
 
 def get_creation_session(db: Session, *, user_id: str, draft_id: str) -> RegulationCreationSession:
     return _session(db, _get_draft(db, user_id=user_id, draft_id=draft_id))
+
+
+def get_creation_document(db: Session, *, user_id: str, draft_id: str) -> Path:
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    path = Path(draft.result_document_path or "")
+    if not path.is_file():
+        raise RegulationCreationError("Файл регламента ещё не создан", status_code=404)
+    return path
 
 
 def terminate_active_creation_sessions(db: Session, *, user_id: str) -> dict:
@@ -301,9 +311,13 @@ def _apply_agent_reply(
             draft.positions_json = [str(item) for item in positions if str(item).strip()]
         db.add(draft)
         return
-    if parsed.get("status") == "ready" and isinstance(parsed.get("document"), dict):
+    document = parsed.get("document") if isinstance(parsed.get("document"), dict) else None
+    if force_create and not document_has_body(document):
+        title = str((document or {}).get("title") or "").strip()
+        document = document_from_interview(draft.interview_json, title)
+    if (parsed.get("status") == "ready" or force_create) and document_has_body(document):
         try:
-            result = _finalize_document(db, user_id=user_id, draft=draft, document=parsed["document"])
+            result = _finalize_document(db, user_id=user_id, draft=draft, document=document or {})
         except RegulationError as exc:
             draft.status = "error"
             db.add(draft)
@@ -319,7 +333,7 @@ def _apply_agent_reply(
             draft=draft,
             role="assistant",
             content=parsed.get("message") or "Регламент сформирован. Проверьте документ перед созданием агента.",
-            structured={"resultRegulationId": result.regulationId, "document": parsed["document"]},
+            structured={"resultRegulationId": result.regulationId, "document": document},
         )
         draft.status = "finalized"
         draft.result_regulation_id = result.regulationId
