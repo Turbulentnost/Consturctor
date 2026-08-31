@@ -69,6 +69,8 @@ def test_interview_state_keeps_attachment_text_in_followup_prompt() -> None:
     assert "только новую или изменённую функцию" in prompt
     assert "самостоятельный регламент процесса" in prompt
     assert "релевантное содержание файлов пользователя" in prompt
+    assert "interview.functions - это рабочая инвентаризация фактов" in prompt
+    assert "одна функция = один раздел" in prompt
 
 
 def test_local_sdk_prompt_omits_attachment_bodies() -> None:
@@ -232,6 +234,60 @@ def test_document_full_text_rejects_field_dump() -> None:
             ],
         }
     )
+
+
+def _card_style_document() -> dict:
+    return {
+        "title": "Регламент действий помощника ПСД",
+        "sections": [
+            {
+                "title": "Передача маркетинговых планов директору",
+                "paragraphs": [
+                    (
+                        "Основание: СТО-34-003, таблица внутренних коммуникаций. "
+                        "Исполнители в тексте: руководители структурных подразделений и помощник ПСД."
+                    )
+                ],
+                "items": [
+                    "Получить маркетинговый план от руководителя структурного подразделения.",
+                    "Передать план директору организации в 1С ERP.",
+                    "Предположение: начинать работу при поступлении плана от руководителя.",
+                ],
+            },
+            {
+                "title": "Подготовка и проведение заседаний РК",
+                "paragraphs": [
+                    (
+                        "Основание: ПЛ-01-001. Ответственный за заседания - секретарь РК. "
+                        "Заседания проводятся не реже одного раза в неделю."
+                    )
+                ],
+                "items": [
+                    "Еженедельно до заседания сформировать повестку.",
+                    "Утвердить повестку у Руководителя РК.",
+                    "Предположение: вести повестку в 1С ERP или отдельным файлом.",
+                ],
+            },
+            {
+                "title": "Оформление протоколов заседаний РК",
+                "paragraphs": [
+                    (
+                        "Основание: ПЛ-01-001. По итогам совещания секретарь РК составляет "
+                        "протокол в 1С ERP по утвержденному шаблону."
+                    )
+                ],
+                "items": [
+                    "После окончания заседания РК создать протокол в 1С ERP.",
+                    "Зафиксировать решения, поручения, сроки и ответственных.",
+                    "Предположение: создать протокол в день заседания.",
+                ],
+            },
+        ],
+    }
+
+
+def test_document_full_text_rejects_card_style_sections() -> None:
+    assert not document_has_full_text(_card_style_document())
 
 
 def test_force_create_finalizes_without_agent_document() -> None:
@@ -398,6 +454,49 @@ def test_ready_without_document_does_not_finalize_from_interview() -> None:
             user_id="user-1",
             draft=draft,
             raw=json.dumps({"status": "ready", "message": "Регламент сформирован."}),
+        )
+        db.commit()
+
+    db.refresh(draft)
+    assert not finalize.called
+    assert draft.status == "interview"
+    assert draft.result_regulation_id == ""
+    assert draft.interview_json["document_write_required"] is True
+
+
+def test_ready_with_card_style_document_does_not_finalize() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    draft = RegulationCreationDraft(
+        id="draft-ready-card",
+        user_id="user-1",
+        status="interview",
+        interview_json={"functions": [_owned_function()]},
+    )
+    db.add(draft)
+    db.commit()
+
+    class DummyResult:
+        regulationId = "reg-card"
+
+    from unittest.mock import patch
+
+    with patch(
+        "app.services.regulation_creation.service._finalize_document",
+        return_value=DummyResult(),
+    ) as finalize:
+        _apply_agent_reply(
+            db,
+            user_id="user-1",
+            draft=draft,
+            raw=json.dumps(
+                {
+                    "status": "ready",
+                    "message": "Регламент сформирован.",
+                    "document": _card_style_document(),
+                },
+                ensure_ascii=False,
+            ),
         )
         db.commit()
 

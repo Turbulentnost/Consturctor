@@ -100,12 +100,18 @@ _CONCRETE_ACTION_MARKERS = [
 ]
 
 _DOCUMENT_FIELD_LABELS = (
+    "основание",
     "исполнитель",
     "инструмент",
     "периодичность",
     "триггер",
     "действие пользователя",
     "источник",
+)
+
+_DOCUMENT_SERVICE_PREFIXES = (
+    "основание",
+    "предположение",
 )
 
 
@@ -332,6 +338,12 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "и выходные артефакты, ограничения, исключения и подтверждённые формулировки. "
         "Документ должен читаться как нормальный деловой регламент, с абзацами и переходами между "
         "мыслями, а не как анкета или таблица фактов. "
+        "interview.functions - это рабочая инвентаризация фактов для интервью, а не структура "
+        "будущего документа. document.sections - только технический контейнер для DOCX, не шаблон "
+        "разделов. Не делай 'одна функция = один раздел' и не повторяй в каждом разделе схему "
+        "'Основание -> список действий -> Предположение'. Объединяй связанные факты в цельное "
+        "описание процесса; списки используй только для реального порядка действий, а не вместо "
+        "связного объяснения. "
         "Не используй фиксированный шаблон глав и не копируй лейблы вида 'Инструмент:', "
         "'Периодичность:', 'Триггер:', 'Действие пользователя:' как тело документа. "
         "Структуру разделов выбирай по фактическому процессу. Факты бери только из interview.json, "
@@ -411,7 +423,9 @@ def build_followup_creation_prompt(*, message: str, force_create: bool) -> str:
         "Иначе ответ строго JSON: status, message, quickAnswers и только изменённая функция. "
         "document оставляй пустым, пока status не ready. При status='ready' document обязателен: "
         "это должен быть полный деловой текст, а не список полей interview. Вынеси в него "
-        "релевантное содержание материалов пользователя, подтверждённое файлами или ответами."
+        "релевантное содержание материалов пользователя, подтверждённое файлами или ответами. "
+        "Не используй interview.functions как оглавление и не пиши одинаковые карточки функций "
+        "с повтором 'Основание' и 'Предположение' в каждом блоке."
     )
 
 
@@ -765,11 +779,17 @@ def document_has_body(document: Any) -> bool:
 def document_has_full_text(document: Any) -> bool:
     if not isinstance(document, dict):
         return False
+    sections = _walk_document_sections(document.get("sections") or [])
     body_lines = _document_body_lines(document)
     if not body_lines:
         return False
+    if _looks_like_card_document(sections):
+        return False
     labelled = sum(1 for line in body_lines if _looks_like_field_label(line))
     if labelled >= max(3, (len(body_lines) + 1) // 2):
+        return False
+    service_lines = sum(1 for line in body_lines if _looks_like_service_line(line))
+    if service_lines >= 3:
         return False
     prose_lines = [
         line
@@ -780,6 +800,31 @@ def document_has_full_text(document: Any) -> bool:
     if prose_total < 240:
         return False
     return len(prose_lines) >= 2 or prose_total >= 360
+
+
+def _looks_like_card_document(sections: list[dict[str, Any]]) -> bool:
+    section_stats: list[tuple[int, int, bool, int]] = []
+    for section in sections:
+        paragraphs = [_clean_str(item) for item in section.get("paragraphs") or []]
+        items = [
+            _clean_str(item.get("text") if isinstance(item, dict) else item)
+            for item in section.get("items") or []
+        ]
+        paragraphs = [item for item in paragraphs if item]
+        items = [item for item in items if item]
+        if not paragraphs and not items:
+            continue
+        lines = [*paragraphs, *items]
+        has_service_line = any(_looks_like_service_line(line) for line in lines)
+        word_count = sum(len(line.split()) for line in lines)
+        section_stats.append((len(paragraphs), len(items), has_service_line, word_count))
+    if len(section_stats) < 3:
+        return False
+    card_like = 0
+    for paragraph_count, item_count, has_service_line, word_count in section_stats:
+        if item_count > 0 and paragraph_count <= 2 and (has_service_line or word_count < 80):
+            card_like += 1
+    return card_like >= max(2, (len(section_stats) + 1) // 2)
 
 
 def _walk_document_sections(sections: Any) -> list[dict[str, Any]]:
@@ -811,10 +856,23 @@ def _document_body_lines(document: dict[str, Any]) -> list[str]:
 
 def _looks_like_field_label(text: str) -> bool:
     folded = _fold(text)
+    if _looks_like_service_line(text):
+        return True
     if ":" not in folded:
         return False
     left = folded.split(":", 1)[0].strip(" -•")
     return left in _DOCUMENT_FIELD_LABELS
+
+
+def _looks_like_service_line(text: str) -> bool:
+    folded = _fold(text).lstrip(" -•")
+    return any(
+        folded == prefix
+        or folded.startswith(f"{prefix}:")
+        or folded.startswith(f"{prefix} ")
+        or folded.startswith(f"{prefix}(")
+        for prefix in _DOCUMENT_SERVICE_PREFIXES
+    )
 
 
 def _apply_role_answer(state: dict[str, Any], message: str) -> None:
