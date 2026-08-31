@@ -199,8 +199,16 @@ input {
 .nav-item .nav-icon {
   width: 20px;
   text-align: center;
-  font-size: 16px;
+  font-size: 15px;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.nav-icon-svg {
+  width: 16px;
+  height: 16px;
+  display: block;
 }
 .nav-item:hover {
   background: rgba(112, 160, 220, 0.38);
@@ -210,6 +218,9 @@ input {
   background: var(--white);
   color: var(--main-text);
   font-weight: 600;
+}
+.nav-item.active .nav-icon {
+  color: #1565c0;
 }
 .sidebar.collapsed .nav-item {
   justify-content: center;
@@ -3755,6 +3766,7 @@ button.feed-tool-head:hover {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  padding-bottom: 120px;
 }
 .kpi-head,
 .kpi-card-head {
