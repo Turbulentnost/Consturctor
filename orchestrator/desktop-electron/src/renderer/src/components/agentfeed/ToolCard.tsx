@@ -1,0 +1,51 @@
+import { useState } from 'react'
+import type { ToolItem } from './types'
+
+interface ToolCardProps {
+  item: ToolItem
+}
+
+function pretty(value: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+export function ToolCard({ item }: ToolCardProps): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const hasResult = Boolean(item.result && Object.keys(item.result).length > 0)
+  const classes = ['feed-tool']
+  if (item.done) classes.push('done')
+  if (item.error) classes.push('error')
+  if (!item.done) classes.push('live')
+  const status = item.statusText || (item.done ? item.summary || 'Готово' : 'Выполняется…')
+
+  const Head = hasResult ? 'button' : 'div'
+  return (
+    <div className={classes.join(' ')}>
+      <Head
+        className="feed-tool-head"
+        {...(hasResult ? { onClick: () => setOpen((v) => !v) } : {})}
+      >
+        <span className={`feed-tool-dot${item.error ? ' error' : item.done ? ' done' : ' run'}`} />
+        <span className="feed-tool-copy">
+          <span className="feed-tool-title">{item.title}</span>
+          <span className={`feed-tool-status${item.done ? '' : ' live'}${item.error ? ' error' : ''}`}>
+            {status}
+          </span>
+        </span>
+        {hasResult && <span className="feed-tool-chevron">{open ? '\u25B2' : '\u25BC'}</span>}
+      </Head>
+      {open && hasResult && item.result && (
+        <div className="feed-tool-body">
+          <div className="feed-tool-block">
+            <div className="feed-tool-label">Результат</div>
+            <pre>{pretty(item.result)}</pre>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
