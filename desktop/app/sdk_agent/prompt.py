@@ -182,3 +182,7 @@ def build_demo_sdk_prompt(workflow: WorkflowRecord, *, resume: bool = False) -> 
 def build_followup_sdk_prompt(user_message: str) -> str:
     """Resume turn: the next user line only, no rules reprint."""
     return (user_message or "").strip()
+
+
+def build_regulation_sdk_prompt(prompt: str) -> str:
+    return (prompt or "").strip() or "Продолжи интервью. Ответ строго JSON."

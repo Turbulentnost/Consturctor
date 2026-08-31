@@ -11,14 +11,23 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models.regulation import RegulationCreationDraft, RegulationCreationMessage
+from app.models.regulation import (
+    RegulationCreationDraft,
+    RegulationCreationMessage,
+    RegulationDocument,
+)
+from app.models.user import AppUser
 from app.schemas.regulation import (
+    RegulationCreationApplyRequest,
     RegulationCreationMessage as CreationMessageSchema,
     RegulationCreationSendRequest,
     RegulationCreationSession,
+    RegulationCreationTurn,
+    RegulationFragment,
     RegulationParseResult,
 )
-from app.services.regulation import RegulationError, parse_upload
+from app.services.regulation import RegulationError
+from app.services.regulation.storage import new_regulation_id, save_upload
 from app.services.regulation_creation.cursor_agent import (
     CursorAgentError,
     archive_agent,
@@ -34,16 +43,23 @@ from app.services.regulation.pdf_ocr import extract_pdf_scan
 from app.services.regulation_creation.interview import (
     append_user_turn,
     build_creation_prompt,
+    build_followup_creation_prompt,
+    creation_system_rules,
     document_from_interview,
     document_has_body,
+    interview_sdk_agent_id,
+    interview_snapshot,
     merge_agent_payload,
     new_interview_state,
     ready_blocker,
+    set_interview_position,
+    set_sdk_agent_id,
 )
 from app.services.workflows.document import DocumentError, load_attachment_bytes
 
 _CREATION_ATTACH_SUFFIXES = {".doc", ".docx", ".pdf", ".md", ".txt"}
 _MAX_ATTACH_CHARS = 120_000
+_MESSAGE_CONTENT_LIMIT = 7900
 
 
 FIRST_QUESTION = (
@@ -61,12 +77,14 @@ def start_creation_session(db: Session, *, user_id: str) -> RegulationCreationSe
     # При каждом открытии — новый чат, старую историю закрываем.
     terminate_active_creation_sessions(db, user_id=user_id)
 
+    user = db.get(AppUser, user_id)
+    interview = set_interview_position(new_interview_state(), getattr(user, "position", "") or "")
     draft = RegulationCreationDraft(
         id=f"reg-create-{uuid4().hex[:12]}",
         user_id=user_id,
         status="collecting_positions",
         style_profile_json={},
-        interview_json=new_interview_state(),
+        interview_json=interview,
     )
     db.add(draft)
     db.flush()
@@ -83,9 +101,123 @@ def get_creation_session(db: Session, *, user_id: str, draft_id: str) -> Regulat
 def get_creation_document(db: Session, *, user_id: str, draft_id: str) -> Path:
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     path = Path(draft.result_document_path or "")
-    if not path.is_file():
-        raise RegulationCreationError("Файл регламента ещё не создан", status_code=404)
+    if path.is_file():
+        return path
+    if draft.result_regulation_id:
+        from app.services.regulation.storage import get_document
+
+        doc = get_document(db, regulation_id=draft.result_regulation_id, user_id=user_id)
+        stored = Path((doc.storage_path if doc is not None else "") or "")
+        if stored.is_file():
+            return stored
+    rebuilt = _rebuild_creation_docx(draft)
+    if rebuilt is not None and rebuilt.is_file():
+        draft.result_document_path = str(rebuilt)
+        db.add(draft)
+        db.commit()
+        return rebuilt
+    raise RegulationCreationError("Файл регламента ещё не создан", status_code=404)
+
+
+def _rebuild_creation_docx(draft: RegulationCreationDraft) -> Path | None:
+    document = draft.draft_document_json if isinstance(draft.draft_document_json, dict) else {}
+    if not document_has_body(document):
+        title = str((document or {}).get("title") or "").strip()
+        document = document_from_interview(draft.interview_json, title)
+    if not document_has_body(document):
+        return None
+    output_dir = settings.regulation_storage_dir / "created" / draft.id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / _safe_filename(str(document.get("title") or "created-regulation"))
+    path = path.with_suffix(".docx")
+    _write_docx(path, document)
     return path
+
+
+def persist_creation_turn(
+    db: Session,
+    *,
+    user_id: str,
+    draft_id: str,
+    request: RegulationCreationSendRequest,
+    files: list[tuple[str, bytes]] | None = None,
+) -> RegulationCreationTurn:
+    attachments = _load_creation_attachments(files or [])
+    message = request.message.strip()
+    if not message and not attachments:
+        raise RegulationCreationError("Введите сообщение или приложите файл")
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    if draft.status == "finalized":
+        return _turn_payload(db, draft, message="", force_create=False)
+    force_create = _is_force_create_message(message)
+    display_message = _display_user_message(message, attachments)
+    draft.interview_json = append_user_turn(draft.interview_json, message, attachments)
+    _add_message(
+        db,
+        draft=draft,
+        role="user",
+        content=display_message,
+        structured=_attachments_structured(attachments),
+    )
+    draft.status = "generating"
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return _turn_payload(db, draft, message=message, force_create=force_create)
+
+
+def apply_creation_reply(
+    db: Session,
+    *,
+    user_id: str,
+    draft_id: str,
+    request: RegulationCreationApplyRequest,
+) -> RegulationCreationSession:
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    if draft.status == "finalized":
+        return _session(db, draft)
+    if request.sdkAgentId.strip():
+        draft.interview_json = set_sdk_agent_id(draft.interview_json, request.sdkAgentId)
+    force_create = bool(request.forceCreate)
+    _apply_agent_reply(
+        db,
+        user_id=user_id,
+        draft=draft,
+        raw=request.answer,
+        force_create=force_create,
+    )
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return _session(db, draft)
+
+
+def _turn_payload(
+    db: Session,
+    draft: RegulationCreationDraft,
+    *,
+    message: str,
+    force_create: bool,
+) -> RegulationCreationTurn:
+    sdk_id = interview_sdk_agent_id(draft.interview_json)
+    prompt = (
+        build_followup_creation_prompt(message=message, force_create=force_create)
+        if sdk_id
+        else build_creation_prompt(
+            state=draft.interview_json,
+            message=message,
+            initial=True,
+            force_create=force_create,
+        )
+    )
+    return RegulationCreationTurn(
+        session=_session(db, draft),
+        interview=interview_snapshot(draft.interview_json),
+        sdkPrompt=prompt,
+        sdkRules=creation_system_rules(force_create=force_create),
+        sdkAgentId=sdk_id,
+        forceCreate=force_create,
+    )
 
 
 def terminate_active_creation_sessions(db: Session, *, user_id: str) -> dict:
@@ -312,10 +444,13 @@ def _apply_agent_reply(
         db.add(draft)
         return
     document = parsed.get("document") if isinstance(parsed.get("document"), dict) else None
-    if force_create and not document_has_body(document):
+    wants_document = parsed.get("status") == "ready" or force_create
+    if wants_document and not document_has_body(document):
         title = str((document or {}).get("title") or "").strip()
         document = document_from_interview(draft.interview_json, title)
-    if (parsed.get("status") == "ready" or force_create) and document_has_body(document):
+    if wants_document and force_create and not document_has_body(document):
+        document = _stub_document(parsed, title=str((document or {}).get("title") or "").strip())
+    if wants_document and document_has_body(document):
         try:
             result = _finalize_document(db, user_id=user_id, draft=draft, document=document or {})
         except RegulationError as exc:
@@ -360,19 +495,112 @@ def _finalize_document(
 ) -> RegulationParseResult:
     output_dir = settings.regulation_storage_dir / "created" / draft.id
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / _safe_filename(str(document.get("title") or "created-regulation")) 
+    path = output_dir / _safe_filename(str(document.get("title") or "created-regulation"))
     path = path.with_suffix(".docx")
     _write_docx(path, document)
-    result = parse_upload(
-        db,
-        user_id=user_id,
+    regulation_id = new_regulation_id()
+    stored = save_upload(regulation_id=regulation_id, filename=path.name, data=path.read_bytes())
+    result = _result_from_created_document(
+        regulation_id=regulation_id,
         filename=path.name,
-        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        data=path.read_bytes(),
+        document=document,
+    )
+    db.add(
+        RegulationDocument(
+            id=regulation_id,
+            user_id=user_id,
+            file_name=path.name,
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            storage_path=str(stored),
+            is_scan=False,
+            result_json=result.model_dump(mode="json"),
+        )
     )
     draft.result_document_path = str(path)
     draft.draft_document_json = document
     return result
+
+
+def _result_from_created_document(
+    *,
+    regulation_id: str,
+    filename: str,
+    document: dict,
+) -> RegulationParseResult:
+    title = str(document.get("title") or "Регламент").strip() or "Регламент"
+    fragments: list[RegulationFragment] = []
+    sections: list[str] = []
+    index = 0
+    for section in document.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        heading = str(section.get("title") or "").strip()
+        number = str(section.get("number") or "").strip()
+        section_title = f"{number} {heading}".strip() or heading or f"Раздел {index + 1}"
+        if section_title not in sections:
+            sections.append(section_title)
+        texts = [section_title]
+        for paragraph in section.get("paragraphs") or []:
+            value = str(paragraph or "").strip()
+            if value:
+                texts.append(value)
+        for item in section.get("items") or []:
+            value = str(item or "").strip()
+            if value:
+                texts.append(value)
+        for text in texts:
+            index += 1
+            fragments.append(
+                RegulationFragment(
+                    fragmentId=f"{regulation_id}-block-{index:02d}",
+                    page=1,
+                    section=section_title,
+                    sectionPath=[title, section_title],
+                    kind="text",
+                    blockType="heading" if text == section_title else "paragraph",
+                    text=text,
+                    isBold=text == section_title,
+                )
+            )
+    if not fragments:
+        fragments.append(
+            RegulationFragment(
+                fragmentId=f"{regulation_id}-block-01",
+                page=1,
+                section=title,
+                sectionPath=[title],
+                kind="text",
+                blockType="heading",
+                text=title,
+                isBold=True,
+            )
+        )
+        sections = [title]
+    return RegulationParseResult(
+        regulationId=regulation_id,
+        fileName=filename,
+        pageCount=1,
+        sectionCount=len(sections),
+        recognitionQuality=1.0,
+        isScan=False,
+        sections=sections,
+        fragments=fragments,
+    )
+
+
+def _stub_document(parsed: dict, *, title: str) -> dict:
+    message = str(parsed.get("message") or "").strip() or "Регламент сформирован по текущим данным."
+    return {
+        "title": title or "Регламент",
+        "sections": [
+            {
+                "number": "1",
+                "title": "Порядок",
+                "paragraphs": [message],
+                "items": [],
+            }
+        ],
+    }
 
 
 def _write_docx(path: Path, document: dict) -> None:
@@ -411,7 +639,7 @@ def _load_creation_attachments(files: list[tuple[str, bytes]]) -> list[dict]:
         if suffix not in _CREATION_ATTACH_SUFFIXES:
             raise RegulationCreationError(
                 f"Формат «{suffix or 'без расширения'}» не поддерживается. "
-                "Допустимо: doc, docx, pdf, md, txt."
+                "Допустимо: docx, pdf, md, txt."
             )
         try:
             item = _load_creation_attachment(name, raw)
@@ -569,7 +797,16 @@ def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationS
 
         doc = get_document(db, regulation_id=draft.result_regulation_id, user_id=draft.user_id)
         if doc is not None:
-            result = RegulationParseResult.model_validate(doc.result_json)
+            try:
+                result = RegulationParseResult.model_validate(doc.result_json)
+            except Exception:
+                result = None
+        if result is None and isinstance(draft.draft_document_json, dict) and draft.draft_document_json:
+            result = _result_from_created_document(
+                regulation_id=draft.result_regulation_id,
+                filename=Path(draft.result_document_path or "regulation.docx").name,
+                document=draft.draft_document_json,
+            )
     return RegulationCreationSession(
         draftId=draft.id,
         status=draft.status,
@@ -590,6 +827,7 @@ def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationS
         resultRegulation=result,
         resultDocument=draft.draft_document_json or {},
         resultDocumentPath=draft.result_document_path,
+        sdkAgentId=interview_sdk_agent_id(draft.interview_json),
         createdAt=draft.created_at,
         updatedAt=draft.updated_at,
     )
@@ -618,10 +856,17 @@ def _add_message(
             draft_id=draft.id,
             user_id=draft.user_id,
             role=role,
-            content=content,
+            content=_clip_message(content),
             structured_json=structured or {},
         )
     )
+
+
+def _clip_message(content: str, limit: int = _MESSAGE_CONTENT_LIMIT) -> str:
+    text = content or ""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 16] + "\n...[truncated]"
 
 
 def _get_draft(db: Session, *, user_id: str, draft_id: str) -> RegulationCreationDraft:

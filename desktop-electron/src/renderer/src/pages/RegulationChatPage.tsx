@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
+import { agentClient } from '../api/agent'
 import { api } from '../api/client'
-import { ApiError, type RegulationCreationSession } from '../api/types'
+import { ApiError, type AgentEvent, type RegulationCreationSession, type RegulationCreationTurn } from '../api/types'
 import wallpaperUrl from '../assets/chat/wallpaper.png'
-import logoUrl from '../assets/logo.png'
+import iconAttention from '@agent-icons/agent-attention-animated.svg'
+import iconCompleted from '@agent-icons/agent-completed-animated.svg'
+import iconWorking from '@agent-icons/agent-working-animated.svg'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
+
+type AgentPhase = 'working' | 'attention' | 'completed'
 
 interface RegulationChatPageProps {
   session: RegulationCreationSession
   onSessionChange: (session: RegulationCreationSession) => void
-  onReady: (session: RegulationCreationSession) => void
+  onReady: (session: RegulationCreationSession) => void | Promise<void>
   onBack: () => void
 }
 
@@ -22,7 +27,9 @@ const EDIT_PLACEHOLDER = 'Измените предложенный вариан
 const FORCE_CREATE_PROMPT =
   'Создай регламент принудительно по текущей информации. ' +
   'Если каких-то данных не хватает, используй разумные типовые формулировки и явно отметь, что это предположение.'
-const WORKING_STATUS = 'Готовлю ответ...'
+const WORKING_STATUS = 'Готовлю вопрос...'
+const PROTOCOL_KEY =
+  /"(status|interview|document|quickAnswers|positions|roleStatus|actor|sourceRefs|triggerAction|userAction|openGaps|periodicity|functions)"\s*:/
 const COMPOSER_MIN_HEIGHT = 44
 const COMPOSER_MAX_HEIGHT = 129
 
@@ -39,7 +46,39 @@ function isProtocolChunk(text: string): boolean {
   if (!value) return true
   if (/^[{}\[\]",:\s]+$/.test(value)) return true
   if (value.startsWith('{') || value.startsWith('[')) return true
-  return /"(status|interview|document|quickAnswers|positions)"\s*:/.test(value)
+  if (PROTOCOL_KEY.test(value)) return true
+  if (/"[^"]+"\s*:/.test(value) && /[{}\[\],]/.test(value)) return true
+  if (/:\s*"(belongs|foreign|unclear)/.test(value)) return true
+  return false
+}
+
+function visibleAssistantText(text: string): string {
+  const value = (text || '').trim()
+  if (!value) return ''
+  if (value.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(value) as { message?: unknown }
+      return String(parsed.message || '').trim()
+    } catch {
+      const match = value.match(/"message"\s*:\s*"((?:\\.|[^"\\])*)"/)
+      return match ? match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"') : ''
+    }
+  }
+  return isProtocolChunk(value) ? '' : value
+}
+
+function agentIcon(phase: AgentPhase): string {
+  if (phase === 'working') return iconWorking
+  if (phase === 'completed') return iconCompleted
+  return iconAttention
+}
+
+function AgentAvatar({ phase }: { phase: AgentPhase }): React.JSX.Element {
+  return (
+    <div className={`regchat-avatar ${phase}`}>
+      <img src={agentIcon(phase)} alt="" />
+    </div>
+  )
 }
 
 function quickAnswers(structured: Record<string, unknown>): string[] {
@@ -48,11 +87,16 @@ function quickAnswers(structured: Record<string, unknown>): string[] {
   return []
 }
 
+function safeDownloadName(name: string): string {
+  const cleaned = name.replace(/[<>:"/\\|?*]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return (cleaned || 'Регламент.docx').slice(0, 120)
+}
+
 function resultFileName(session: RegulationCreationSession): string {
   const fromPath = session.resultDocumentPath.split(/[\\/]/).pop() || ''
-  if (fromPath) return fromPath
+  if (fromPath) return safeDownloadName(fromPath)
   const title = String(session.resultDocument?.title || '').trim()
-  if (title) return `${title}.docx`
+  if (title) return safeDownloadName(`${title}.docx`)
   return 'Регламент.docx'
 }
 
@@ -69,6 +113,35 @@ function attachmentsOf(structured: Record<string, unknown>): string[] {
       return ''
     })
     .filter(Boolean)
+}
+
+function waitForRegulationSdk(
+  runId: string,
+  onEvent: (type: string, text: string) => void
+): Promise<{ answer: string; agentId: string }> {
+  return new Promise((resolve, reject) => {
+    const off = agentClient.onEvent((event: AgentEvent) => {
+      if (event.runId && event.runId !== runId) return
+      if (event.type === 'event' && event.payload) {
+        const payload = event.payload
+        const text = String(payload.text || payload.message || '')
+        const kind = String(payload.type || '')
+        if (text) onEvent(kind, text)
+      }
+      if (event.type === 'result') {
+        off()
+        resolve({
+          answer: String(event.answer || ''),
+          agentId: String(event.agentId || '')
+        })
+        return
+      }
+      if (event.type === 'error') {
+        off()
+        reject(new Error(event.message || 'Ошибка локального агента'))
+      }
+    })
+  })
 }
 
 function extractProposal(message: string): string {
@@ -104,10 +177,8 @@ export function RegulationChatPage({
   const [placeholder, setPlaceholder] = useState(DEFAULT_PLACEHOLDER)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [savedNote, setSavedNote] = useState('')
   const [attachments, setAttachments] = useState<PendingFile[]>([])
-  const [thinking, setThinking] = useState('')
-  const [status, setStatus] = useState('')
-  const [thinkOpen, setThinkOpen] = useState(false)
   const [filesOpen, setFilesOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
@@ -116,7 +187,7 @@ export function RegulationChatPage({
   useEffect(() => {
     if (!pinnedRef.current) return
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
-  }, [session.messages.length, busy, thinking, status])
+  }, [session.messages.length, busy])
 
   useEffect(() => {
     const node = textareaRef.current
@@ -131,13 +202,36 @@ export function RegulationChatPage({
   const ready = Boolean(session.resultRegulation || session.resultDocumentPath)
   const hasUserMessage = session.messages.some((m) => m.role === 'user')
   const resultName = resultFileName(session)
+  const phase: AgentPhase = ready ? 'completed' : busy ? 'working' : 'attention'
 
   async function downloadResult(): Promise<void> {
     if (!ready) return
-    await api.download(
-      `/api/v1/regulation-creation/sessions/${session.draftId}/document`,
-      resultName
-    )
+    setError('')
+    setSavedNote('')
+    try {
+      const res = await window.api.download({
+        url: `/api/v1/regulation-creation/sessions/${session.draftId}/document`,
+        defaultName: resultName,
+        token: api.getToken()
+      })
+      if (res.canceled) return
+      if (!res.ok) {
+        setError(res.error || 'Не удалось скачать файл регламента')
+        return
+      }
+      setSavedNote(res.path ? `Файл сохранён: ${res.path}` : 'Файл сохранён')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось скачать файл регламента')
+    }
+  }
+
+  async function continueReady(): Promise<void> {
+    setError('')
+    try {
+      await onReady(session)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Не удалось открыть регламент')
+    }
   }
 
   function onScroll(): void {
@@ -153,8 +247,6 @@ export function RegulationChatPage({
     setInput('')
     setPlaceholder(DEFAULT_PLACEHOLDER)
     setError('')
-    setThinking('')
-    setStatus('')
     setBusy(true)
     pinnedRef.current = true
     const optimistic: RegulationCreationSession = {
@@ -166,39 +258,82 @@ export function RegulationChatPage({
           messageId: 'local-pending',
           draftId: session.draftId,
           role: 'user',
-          content: message,
+          content: message || (files.length ? `Приложены файлы: ${files.map((f) => f.name).join(', ')}` : ''),
           structured: files.length ? { attachments: files.map((f) => ({ name: f.name })) } : {}
         }
       ]
     }
     onSessionChange(optimistic)
-    setAttachments([])
-    setFilesOpen(false)
+    let persisted = false
     try {
-      const updated = await api.streamRegulationCreationMessage(
-        session.draftId,
-        message,
-        files.map((f) => f.path),
-        (event) => {
-          if (event.type === 'thinking' && event.text) {
-            setThinking((prev) => prev + event.text)
-          } else if (event.type === 'assistant' && event.text) {
-            setStatus(isProtocolChunk(event.text) ? WORKING_STATUS : event.text)
-          } else if (event.type === 'status') {
-            setStatus(event.text || WORKING_STATUS)
-          } else if (event.type === 'error' && event.text) {
-            setError(event.text)
+      const filePaths = files.map((f) => f.path)
+      const onStreamEvent = (type: string, text: string): void => {
+        if (type === 'error' && text) setError(text)
+      }
+      if (window.agent?.start) {
+        let turn: RegulationCreationTurn
+        try {
+          turn = await api.persistRegulationCreationTurn(session.draftId, message, filePaths)
+        } catch (err) {
+          if (!(err instanceof ApiError) || (err.status !== 404 && err.status !== 405)) {
+            throw err
           }
+          const updated = await api.streamRegulationCreationMessage(
+            session.draftId,
+            message,
+            filePaths,
+            (event) => onStreamEvent(event.type, event.text || event.message || '')
+          )
+          persisted = true
+          setAttachments([])
+          setFilesOpen(false)
+          onSessionChange(updated)
+          return
         }
-      )
-      onSessionChange(updated)
+        persisted = true
+        setAttachments([])
+        setFilesOpen(false)
+        onSessionChange(turn.session)
+        const runId = agentClient.start({
+          kind: 'regulation_creation',
+          draftId: session.draftId,
+          prompt: turn.sdkPrompt,
+          rules: turn.sdkRules,
+          interview: turn.interview,
+          resumeAgentId: turn.sdkAgentId || session.sdkAgentId
+        })
+        const sdk = await waitForRegulationSdk(runId, onStreamEvent)
+        const updated = await api.applyRegulationCreationReply(session.draftId, sdk.answer, {
+          sdkAgentId: sdk.agentId || turn.sdkAgentId,
+          forceCreate: turn.forceCreate
+        })
+        onSessionChange(updated)
+      } else {
+        const updated = await api.streamRegulationCreationMessage(
+          session.draftId,
+          message,
+          filePaths,
+          (event) => onStreamEvent(event.type, event.text || event.message || '')
+        )
+        persisted = true
+        setAttachments([])
+        setFilesOpen(false)
+        onSessionChange(updated)
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Ошибка отправки сообщения')
-      onSessionChange({ ...session, status: 'idle' })
+      if (persisted) {
+        try {
+          const latest = await api.getRegulationCreationSession(session.draftId)
+          onSessionChange(latest)
+        } catch {
+          /* keep the last known session, including the user files */
+        }
+      } else {
+        onSessionChange({ ...session, status: 'idle' })
+      }
     } finally {
       setBusy(false)
-      setThinking('')
-      setStatus('')
     }
   }
 
@@ -223,7 +358,7 @@ export function RegulationChatPage({
     if (busy) return
     const paths = await window.api.openFile({
       title: 'Выберите файлы для регламента',
-      filters: [{ name: 'Документы', extensions: ['docx', 'doc', 'pdf', 'md', 'txt'] }],
+      filters: [{ name: 'Документы', extensions: ['docx', 'pdf', 'md', 'txt'] }],
       properties: ['openFile', 'multiSelections']
     })
     if (!paths.length) return
@@ -236,7 +371,7 @@ export function RegulationChatPage({
       }
       return next
     })
-    setFilesOpen(false)
+    setFilesOpen(true)
   }
 
   function removeAttachment(path: string): void {
@@ -293,14 +428,14 @@ export function RegulationChatPage({
                 const quicks = quickAnswers(m.structured)
                 return (
                   <div key={m.messageId || index} className={isUser ? 'regchat-row user' : 'regchat-row ai'}>
-                    {!isUser && (
-                      <div className="regchat-avatar">
-                        <img src={logoUrl} alt="" />
-                      </div>
-                    )}
+                    {!isUser && <AgentAvatar phase={phase} />}
                     <div className="regchat-bubble-col">
                       <div className={isUser ? 'regchat-bubble user' : 'regchat-bubble ai'}>
-                        {m.content && <div className="regchat-bubble-text">{m.content}</div>}
+                        {m.content && visibleAssistantText(m.content) ? (
+                          <div className="regchat-bubble-text">
+                            {isUser ? m.content : visibleAssistantText(m.content)}
+                          </div>
+                        ) : null}
                         {names.length > 0 && (
                           <div className="regchat-attach-list">
                             {names.map((n, i) => (
@@ -333,41 +468,20 @@ export function RegulationChatPage({
               })}
               {busy && (
                 <div className="regchat-row ai">
-                  <div className="regchat-avatar">
-                    <img src={logoUrl} alt="" />
-                  </div>
+                  <AgentAvatar phase="working" />
                   <div className="regchat-bubble-col">
-                    {thinking ? (
-                      <div className="regchat-think">
-                        <button
-                          className="regchat-think-head"
-                          onClick={() => setThinkOpen((v) => !v)}
-                        >
-                          <span>{thinkOpen ? '\u25BE' : '\u25B8'}</span>
-                          <span>Размышляет</span>
-                        </button>
-                        {thinkOpen && <div className="regchat-think-body">{thinking}</div>}
+                    <div className="regchat-think">
+                      <div className="regchat-think-head">
+                        <span>Готовит вопрос</span>
                       </div>
-                    ) : null}
-                    {status ? (
-                      <div className="regchat-status">{status}</div>
-                    ) : (
-                      <div className="regchat-bubble ai">
-                        <div className="typing">
-                          <span></span>
-                          <span></span>
-                          <span></span>
-                        </div>
-                      </div>
-                    )}
+                    </div>
+                    <div className="regchat-status">{WORKING_STATUS}</div>
                   </div>
                 </div>
               )}
               {ready && (
                 <div className="regchat-row ai">
-                  <div className="regchat-avatar">
-                    <img src={logoUrl} alt="" />
-                  </div>
+                  <AgentAvatar phase="completed" />
                   <div className="regchat-bubble-col">
                     <div className="regchat-doc-card">
                       <div className="regchat-file-row">
@@ -396,6 +510,9 @@ export function RegulationChatPage({
               {error}
             </div>
           )}
+          {savedNote && !error && (
+            <div className="status-line">{savedNote}</div>
+          )}
 
           {ready && (
             <div className="chat-ready">
@@ -403,7 +520,7 @@ export function RegulationChatPage({
               <button
                 className="btn-primary"
                 style={{ maxWidth: 260 }}
-                onClick={() => onReady(session)}
+                onClick={() => void continueReady()}
               >
                 Продолжить
               </button>
@@ -425,7 +542,7 @@ export function RegulationChatPage({
                         {attachments.length} {fileCountLabel(attachments.length)}
                       </span>
                     </button>
-                    {filesOpen && (
+                    {filesOpen ? (
                       <div className="regchat-pending">
                         {attachments.map((f) => (
                           <span key={f.path} className="regchat-file-row pending">
@@ -436,6 +553,7 @@ export function RegulationChatPage({
                             <button
                               className="regchat-pending-remove"
                               onClick={() => removeAttachment(f.path)}
+                              disabled={busy}
                               aria-label="Убрать файл"
                             >
                               {'\u00D7'}
@@ -443,7 +561,7 @@ export function RegulationChatPage({
                           </span>
                         ))}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 )}
             <div className="regchat-composer-input">

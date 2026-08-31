@@ -12,6 +12,16 @@ export interface ReadinessCommand {
   draftId: string
 }
 
+export interface RegulationCreationCommand {
+  kind: 'regulation_creation'
+  id?: string
+  draftId: string
+  prompt: string
+  rules?: string
+  interview?: Record<string, unknown>
+  resumeAgentId?: string
+}
+
 export interface DemoCommand {
   kind: 'demo'
   id?: string
@@ -50,6 +60,7 @@ export interface CalcOrchestratorCommand {
 export type StartCommand =
   | DesignCommand
   | ReadinessCommand
+  | RegulationCreationCommand
   | DemoCommand
   | RunCommand
   | CheckTriggerCommand

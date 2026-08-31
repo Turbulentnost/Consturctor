@@ -17,6 +17,8 @@ interface RequestOptions {
   params?: Record<string, string | number | boolean | undefined | null>
   token?: string | null
   timeoutMs?: number
+  filePaths?: string[]
+  extraFields?: Record<string, string>
 }
 
 interface UploadOptions {
@@ -168,6 +170,24 @@ const MIME_BY_EXT: Record<string, string> = {
   '.gif': 'image/gif'
 }
 
+function appendLocalFiles(form: FormData, filePaths: string[]): number {
+  let count = 0
+  for (const filePath of filePaths) {
+    if (!filePath || !existsSync(filePath)) continue
+    const buffer = readFileSync(filePath)
+    const name = basename(filePath)
+    const mime = MIME_BY_EXT[extname(filePath).toLowerCase()] || 'application/octet-stream'
+    const bytes = new Uint8Array(buffer)
+    if (typeof File === 'function') {
+      form.append('files', new File([bytes], name, { type: mime }))
+    } else {
+      form.append('files', new Blob([bytes], { type: mime }), name)
+    }
+    count += 1
+  }
+  return count
+}
+
 function buildUrl(path: string, params?: RequestOptions['params']): string {
   const base = `${CONFIG.backendUrl}${path}`
   if (!params) return base
@@ -200,8 +220,25 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? DEFAULT_TIMEOUT)
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
-  let bodyInit: string | undefined
-  if (opts.body !== undefined && opts.body !== null) {
+  let bodyInit: string | FormData | undefined
+  const filePaths = Array.isArray(opts.filePaths) ? opts.filePaths : []
+  if (filePaths.length > 0) {
+    const form = new FormData()
+    for (const [key, value] of Object.entries(opts.extraFields || {})) {
+      form.append(key, value)
+    }
+    if (opts.body && typeof opts.body === 'object' && !Array.isArray(opts.body)) {
+      for (const [key, value] of Object.entries(opts.body as Record<string, unknown>)) {
+        if (value != null) form.append(key, String(value))
+      }
+    }
+    const attached = appendLocalFiles(form, filePaths)
+    if (attached === 0) {
+      clearTimeout(timer)
+      return { ok: false, status: 0, error: 'Файлы не найдены на диске' }
+    }
+    bodyInit = form
+  } else if (opts.body !== undefined && opts.body !== null) {
     headers['Content-Type'] = 'application/json'
     bodyInit = JSON.stringify(opts.body)
   }
@@ -339,24 +376,61 @@ async function handleFetchDataUrl(
   }
 }
 
+function ensureDocxPath(filePath: string): string {
+  const dir = dirname(filePath)
+  let name = basename(filePath)
+    .replace(/[<>:"/\\|?*]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/g, '')
+  if (!name) name = 'Reglament'
+  if (extname(name).toLowerCase() !== '.docx') name = `${name}.docx`
+  return join(dir, name)
+}
+
 async function handleDownload(
-  _evt: unknown,
+  evt: IpcMainInvokeEvent,
   opts: { url: string; defaultName?: string; token?: string | null }
 ) {
-  const win = BrowserWindow.getFocusedWindow()
-  const result = await dialog.showSaveDialog(win!, { defaultPath: opts.defaultName || 'file' })
+  const win = BrowserWindow.fromWebContents(evt.sender) || BrowserWindow.getFocusedWindow()
+  const suggested = ensureDocxPath(join(app.getPath('downloads'), opts.defaultName || 'Reglament.docx'))
+  const result = await dialog.showSaveDialog(win ?? undefined, {
+    defaultPath: suggested,
+    filters: [{ name: 'Word', extensions: ['docx'] }]
+  })
   if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+  const target = ensureDocxPath(result.filePath)
   const url = resolveBackendUrl(opts.url)
   const headers: Record<string, string> = {}
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
   try {
     const response = await fetch(url, { headers })
-    if (!response.ok) return { ok: false, error: `Ошибка загрузки (${response.status})` }
-    const arrayBuffer = await response.arrayBuffer()
-    writeFileSync(result.filePath, Buffer.from(arrayBuffer))
-    return { ok: true, path: result.filePath }
-  } catch {
-    return { ok: false, error: 'Не удалось скачать файл' }
+    if (!response.ok) {
+      let detail = `Ошибка загрузки (${response.status})`
+      try {
+        const payload = JSON.parse(await response.text()) as { detail?: unknown }
+        if (typeof payload.detail === 'string' && payload.detail.trim()) {
+          detail = payload.detail
+        }
+      } catch {
+        /* keep status text */
+      }
+      return { ok: false, error: detail }
+    }
+    const buffer = Buffer.from(await response.arrayBuffer())
+    if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4b) {
+      return { ok: false, error: 'Сервер вернул не документ Word' }
+    }
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, buffer)
+    if (!existsSync(target)) {
+      return { ok: false, error: 'Файл не записался на диск' }
+    }
+    shell.showItemInFolder(target)
+    return { ok: true, path: target }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : 'Не удалось скачать файл'
+    return { ok: false, error: reason }
   }
 }
 
@@ -415,13 +489,8 @@ async function handleStream(
     for (const [key, value] of Object.entries(opts.extraFields || {})) {
       form.append(key, value)
     }
-    for (const filePath of opts.filePaths) {
-      if (!existsSync(filePath)) continue
-      const buffer = readFileSync(filePath)
-      const name = basename(filePath)
-      const mime = MIME_BY_EXT[extname(filePath).toLowerCase()] || 'application/octet-stream'
-      const blob = new Blob([new Uint8Array(buffer)], { type: mime })
-      form.append('files', blob, name)
+    if (appendLocalFiles(form, opts.filePaths) === 0) {
+      return { ok: false, status: 0, error: 'Файлы не найдены на диске' }
     }
     bodyInit = form
   } else if (opts.body !== undefined && opts.body !== null) {

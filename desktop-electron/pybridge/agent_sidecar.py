@@ -13,6 +13,8 @@ Protocol: newline-delimited JSON.
     {"type": "check_ready"}
     {"type": "design", "id": str, "workflowId": str}
     {"type": "readiness", "id": str, "draftId": str}
+    {"type": "regulation_creation", "id": str, "draftId": str, "prompt": str,
+       "rules": str, "interview": {}, "resumeAgentId": str}
     {"type": "demo", "id": str, "workflowId": str}
     {"type": "run", "id": str, "workflowId": str, "message": str,
        "source": str, "triggerId": str, "resumeAgentId": str,
@@ -97,6 +99,7 @@ from app.tools.runtime_api import configure as configure_runtime_api  # noqa: E4
 from app.sdk_agent.prompt import (  # noqa: E402
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
+    build_regulation_sdk_prompt,
     build_sdk_prompt,
 )
 from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
@@ -1687,6 +1690,8 @@ class Sidecar:
                 self._run_design(command, active)
             elif kind == "readiness":
                 self._run_readiness(command, active)
+            elif kind == "regulation_creation":
+                self._run_regulation_creation(command, active)
             elif kind == "demo":
                 self._run_demo(command, active)
             elif kind == "run":
@@ -1852,6 +1857,46 @@ class Sidecar:
                 "kind": "readiness",
                 "draftId": draft_id,
                 "status": updated.status,
+                "answer": answer,
+            }
+        )
+
+    def _run_regulation_creation(self, command: dict[str, Any], active: ActiveRun) -> None:
+        draft_id = str(command.get("draftId") or "").strip()
+        if not draft_id:
+            raise ValueError("regulation_creation requires draftId")
+        bridge = active.bridge
+        bridge.check_ready()
+        workspace_id = f"reg-create-{draft_id}"
+        run_cwd = Path(bridge.workspace_cwd(workspace_id))
+        active.run_cwd = str(run_cwd)
+        _prepare_regulation_workspace(
+            run_cwd,
+            rules=str(command.get("rules") or ""),
+            interview=command.get("interview") if isinstance(command.get("interview"), dict) else {},
+        )
+        events: list[dict[str, Any]] = []
+        result = CursorSdkBridge.run(
+            bridge,
+            prompt=build_regulation_sdk_prompt(str(command.get("prompt") or "")),
+            workflow_id=workspace_id,
+            cwd=str(run_cwd),
+            mode="design",
+            tools=[],
+            resume_agent_id=str(command.get("resumeAgentId") or "").strip(),
+            on_event=self._forward_events(active, events),
+            should_stop=active.stop.is_set,
+            confirm_writes=False,
+        )
+        answer = str(result.get("answer") or "").strip()
+        agent_id = str(result.get("agent_id") or command.get("resumeAgentId") or "").strip()
+        emit(
+            {
+                "type": "result",
+                "runId": active.run_id,
+                "kind": "regulation_creation",
+                "draftId": draft_id,
+                "agentId": agent_id,
                 "answer": answer,
             }
         )
@@ -2578,6 +2623,28 @@ def _copy_attachments(run_cwd: str, file_paths: list[str]) -> list[str]:
     return relative
 
 
+def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[str, Any]) -> None:
+    run_cwd.mkdir(parents=True, exist_ok=True)
+    agents = (rules or "").strip() or "Создай регламент по interview.json. Ответ строго JSON."
+    (run_cwd / "AGENTS.md").write_text(agents, encoding="utf-8")
+    (run_cwd / "interview.json").write_text(
+        json.dumps(interview, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    materials = run_cwd / "materials"
+    materials.mkdir(parents=True, exist_ok=True)
+    attachments = interview.get("attachments") if isinstance(interview.get("attachments"), list) else []
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("id") or "file.txt")
+        text = str(item.get("text") or "")
+        if not text:
+            continue
+        safe = Path(_safe_filename(name)).stem or "file"
+        (materials / f"{safe}.txt").write_text(text, encoding="utf-8")
+
+
 def _attachments_note(relative_paths: list[str]) -> str:
     if not relative_paths:
         return ""
@@ -2612,6 +2679,7 @@ def main() -> None:
             elif ctype in {
                 "design",
                 "readiness",
+                "regulation_creation",
                 "demo",
                 "run",
                 "check_trigger",

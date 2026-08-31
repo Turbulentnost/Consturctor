@@ -17,6 +17,8 @@ const api = {
     params?: Record<string, string | number | boolean | undefined | null>
     token?: string | null
     timeoutMs?: number
+    filePaths?: string[]
+    extraFields?: Record<string, string>
   }): Promise<ApiResponse<T>> => ipcRenderer.invoke('api:request', opts),
   upload: <T = unknown>(opts: {
     endpoint: string

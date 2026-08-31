@@ -21,7 +21,13 @@ export default defineConfig({
     root: resolve(__dirname, 'src/renderer'),
     resolve: {
       alias: {
-        '@': resolve(__dirname, 'src/renderer/src')
+        '@': resolve(__dirname, 'src/renderer/src'),
+        '@agent-icons': resolve(__dirname, 'src/temp/icons')
+      }
+    },
+    server: {
+      fs: {
+        allow: [resolve(__dirname, 'src')]
       }
     },
     build: {

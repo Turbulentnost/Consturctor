@@ -16,6 +16,7 @@ import {
   type QuestionChatSession,
   type RegulationCreationMessage,
   type RegulationCreationSession,
+  type RegulationCreationTurn,
   type FragmentEntityTag,
   type RegulationEntityLegendItem,
   type RegulationFragment,
@@ -124,7 +125,24 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
       data.resultDocument && typeof data.resultDocument === 'object'
         ? (data.resultDocument as Record<string, unknown>)
         : {},
-    resultDocumentPath: String(data.resultDocumentPath ?? '')
+    resultDocumentPath: String(data.resultDocumentPath ?? ''),
+    sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? '')
+  }
+}
+
+function parseCreationTurn(data: Record<string, unknown>): RegulationCreationTurn {
+  const sessionRaw =
+    data.session && typeof data.session === 'object' ? (data.session as Record<string, unknown>) : data
+  return {
+    session: parseCreationSession(sessionRaw),
+    interview:
+      data.interview && typeof data.interview === 'object'
+        ? (data.interview as Record<string, unknown>)
+        : {},
+    sdkPrompt: String(data.sdkPrompt ?? data.sdk_prompt ?? ''),
+    sdkRules: String(data.sdkRules ?? data.sdk_rules ?? ''),
+    sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? ''),
+    forceCreate: Boolean(data.forceCreate ?? data.force_create)
   }
 }
 
@@ -948,7 +966,13 @@ export class ApiClient {
   private async request<T = unknown>(
     method: string,
     path: string,
-    opts: { body?: unknown; params?: Params; timeoutMs?: number } = {}
+    opts: {
+      body?: unknown
+      params?: Params
+      timeoutMs?: number
+      filePaths?: string[]
+      extraFields?: Record<string, string>
+    } = {}
   ): Promise<T> {
     const res = await window.api.request<T>({
       method,
@@ -956,7 +980,9 @@ export class ApiClient {
       body: opts.body,
       params: opts.params,
       token: this.token,
-      timeoutMs: opts.timeoutMs
+      timeoutMs: opts.timeoutMs,
+      filePaths: opts.filePaths,
+      extraFields: opts.extraFields
     })
     if (!res.ok) {
       throw new ApiError(res.error || 'Ошибка backend', res.status)
@@ -1030,6 +1056,45 @@ export class ApiClient {
       'POST',
       `/api/v1/regulation-creation/sessions/${draftId}/messages`,
       { body: { message }, timeoutMs: 600_000 }
+    )
+    return parseCreationSession(data)
+  }
+
+  async persistRegulationCreationTurn(
+    draftId: string,
+    message: string,
+    filePaths: string[] = []
+  ): Promise<RegulationCreationTurn> {
+    const hasFiles = filePaths.length > 0
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulation-creation/sessions/${draftId}/turns`,
+      {
+        body: hasFiles ? undefined : { message },
+        filePaths: hasFiles ? filePaths : undefined,
+        extraFields: hasFiles ? { message } : undefined,
+        timeoutMs: 180_000
+      }
+    )
+    return parseCreationTurn(data)
+  }
+
+  async applyRegulationCreationReply(
+    draftId: string,
+    answer: string,
+    opts: { sdkAgentId?: string; forceCreate?: boolean } = {}
+  ): Promise<RegulationCreationSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulation-creation/sessions/${draftId}/apply`,
+      {
+        body: {
+          answer,
+          sdkAgentId: opts.sdkAgentId || '',
+          forceCreate: Boolean(opts.forceCreate)
+        },
+        timeoutMs: 180_000
+      }
     )
     return parseCreationSession(data)
   }

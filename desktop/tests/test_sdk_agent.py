@@ -17,6 +17,7 @@ from app.sdk_agent.prompt import (
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
     build_followup_sdk_prompt,
+    build_regulation_sdk_prompt,
     build_sdk_prompt,
     inferred_design_answers,
 )
@@ -240,6 +241,7 @@ def test_run_sdk_prompt_does_not_dump_tool_catalog() -> None:
     assert "web_search" not in prompt
     assert "- turboproject." not in prompt
     assert build_followup_sdk_prompt("ответ: ежедневно") == "ответ: ежедневно"
+    assert build_regulation_sdk_prompt("  JSON  ") == "JSON"
 
 
 def test_sdk_event_json_parses_structured_payload() -> None:

@@ -678,9 +678,25 @@ class RegulationCreationSession(BaseModel):
     resultRegulation: RegulationParseResult | None = None
     resultDocument: dict = Field(default_factory=dict)
     resultDocumentPath: str = ""
+    sdkAgentId: str = ""
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
 
 
 class RegulationCreationSendRequest(BaseModel):
     message: str
+
+
+class RegulationCreationApplyRequest(BaseModel):
+    answer: str
+    sdkAgentId: str = ""
+    forceCreate: bool = False
+
+
+class RegulationCreationTurn(BaseModel):
+    session: RegulationCreationSession
+    interview: dict = Field(default_factory=dict)
+    sdkPrompt: str = ""
+    sdkRules: str = ""
+    sdkAgentId: str = ""
+    forceCreate: bool = False

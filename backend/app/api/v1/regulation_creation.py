@@ -9,11 +9,18 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.db.session import get_db
-from app.schemas.regulation import RegulationCreationSendRequest, RegulationCreationSession
+from app.schemas.regulation import (
+    RegulationCreationApplyRequest,
+    RegulationCreationSendRequest,
+    RegulationCreationSession,
+    RegulationCreationTurn,
+)
 from app.services.regulation_creation import (
     RegulationCreationError,
+    apply_creation_reply,
     get_creation_document,
     get_creation_session,
+    persist_creation_turn,
     send_creation_message,
     start_creation_session,
     stream_creation_message,
@@ -29,13 +36,13 @@ async def _parse_send_payload(request: Request) -> tuple[RegulationCreationSendR
     if "multipart/form-data" in content_type:
         form = await request.form()
         message = str(form.get("message") or "")
-        uploads = form.getlist("files")
+        uploads = list(form.getlist("files")) + list(form.getlist("file"))
         for item in uploads:
-            filename = str(getattr(item, "filename", None) or "file")
             read = getattr(item, "read", None)
             if read is None:
                 continue
             data = await read()
+            filename = str(getattr(item, "filename", None) or "file")
             if data:
                 files.append((filename, bytes(data)))
         return RegulationCreationSendRequest(message=message), files
@@ -79,6 +86,44 @@ async def read_regulation_creation_session(
 ) -> RegulationCreationSession:
     try:
         return get_creation_session(db, user_id=auth.user_id, draft_id=draft_id)
+    except RegulationCreationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/sessions/{draft_id}/turns", response_model=RegulationCreationTurn)
+async def persist_regulation_creation_turn(
+    draft_id: str,
+    request: Request,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RegulationCreationTurn:
+    try:
+        payload, files = await _parse_send_payload(request)
+        return persist_creation_turn(
+            db,
+            user_id=auth.user_id,
+            draft_id=draft_id,
+            request=payload,
+            files=files,
+        )
+    except RegulationCreationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/sessions/{draft_id}/apply", response_model=RegulationCreationSession)
+async def apply_regulation_creation_reply(
+    draft_id: str,
+    request: RegulationCreationApplyRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RegulationCreationSession:
+    try:
+        return apply_creation_reply(
+            db,
+            user_id=auth.user_id,
+            draft_id=draft_id,
+            request=request,
+        )
     except RegulationCreationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 

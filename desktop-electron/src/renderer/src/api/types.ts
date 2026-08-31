@@ -176,6 +176,16 @@ export interface RegulationCreationSession {
   resultRegulation: RegulationParseResult | null
   resultDocument: Record<string, unknown>
   resultDocumentPath: string
+  sdkAgentId: string
+}
+
+export interface RegulationCreationTurn {
+  session: RegulationCreationSession
+  interview: Record<string, unknown>
+  sdkPrompt: string
+  sdkRules: string
+  sdkAgentId: string
+  forceCreate: boolean
 }
 
 export interface MatchEvidence {
@@ -556,7 +566,15 @@ export interface AgentEvent {
   accept?: string[]
   tool?: string
   arguments?: Record<string, unknown>
-  kind?: 'design' | 'readiness' | 'demo' | 'run' | 'trigger' | 'form_orchestrator' | 'calc_orchestrator'
+  kind?:
+    | 'design'
+    | 'readiness'
+    | 'regulation_creation'
+    | 'demo'
+    | 'run'
+    | 'trigger'
+    | 'form_orchestrator'
+    | 'calc_orchestrator'
   workflowId?: string
   draftId?: string
   agentId?: string

@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Задача выполнена</title>
+  <desc id="desc">Зелёная иконка агента с появляющейся галочкой и расходящейся волной успеха.</desc>
+
+  <defs>
+    <radialGradient id="body" cx="42%" cy="34%" r="72%">
+      <stop offset="0" stop-color="#5effc9"/>
+      <stop offset="0.34" stop-color="#18b98a"/>
+      <stop offset="0.72" stop-color="#08705a"/>
+      <stop offset="1" stop-color="#033a34"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="34" y1="30" x2="220" y2="224">
+      <stop stop-color="#b1ffe8"/>
+      <stop offset="0.46" stop-color="#29dca6"/>
+      <stop offset="1" stop-color="#075649"/>
+    </linearGradient>
+    <linearGradient id="check" x1="99" y1="153" x2="158" y2="153">
+      <stop stop-color="#c9fff0"/>
+      <stop offset="1" stop-color="#62ffd0"/>
+    </linearGradient>
+    <filter id="shadow" x="-35%" y="-35%" width="170%" height="180%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#001b17" flood-opacity=".52"/>
+    </filter>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <style>
+    .agent { transform-origin:128px 128px; animation:settle 3.2s cubic-bezier(.2,.8,.25,1) infinite; }
+    .wave.one,.wave.two { transform-origin:128px 128px; animation:wave 3.2s ease-out infinite; }
+    .wave.two { animation-delay:.16s; }
+    .check { stroke-dasharray:78; stroke-dashoffset:78; animation:drawCheck 3.2s cubic-bezier(.3,.8,.25,1) infinite; }
+    .check-glow { transform-origin:128px 156px; animation:checkGlow 3.2s ease-out infinite; }
+    .spark { transform-origin:128px 128px; animation:spark 3.2s ease-out infinite; }
+    .s2 { animation-delay:.05s; }
+    .s3 { animation-delay:.1s; }
+    .s4 { animation-delay:.15s; }
+    .arc { animation:arcSuccess 3.2s ease-in-out infinite; }
+    .arc.two { animation-delay:.1s; }
+    .arc.three { animation-delay:.2s; }
+
+    @keyframes settle {
+      0% { transform:scale(.94); }
+      15% { transform:scale(1.035); }
+      24%,82% { transform:scale(1); }
+      92% { transform:scale(.985); }
+      100% { transform:scale(.94); }
+    }
+    @keyframes wave {
+      0%,4% { opacity:.75; transform:scale(.72); }
+      34% { opacity:0; transform:scale(1.13); }
+      35%,100% { opacity:0; transform:scale(1.13); }
+    }
+    @keyframes drawCheck {
+      0%,8% { stroke-dashoffset:78; }
+      28%,82% { stroke-dashoffset:0; }
+      94%,100% { stroke-dashoffset:78; }
+    }
+    @keyframes checkGlow {
+      0%,8% { opacity:0; transform:scale(.65); }
+      25% { opacity:.9; transform:scale(1.12); }
+      38%,82% { opacity:.35; transform:scale(1); }
+      94%,100% { opacity:0; transform:scale(.7); }
+    }
+    @keyframes spark {
+      0%,12% { opacity:0; transform:scale(.4); }
+      24% { opacity:1; transform:scale(1.2); }
+      38%,100% { opacity:0; transform:scale(1.5); }
+    }
+    @keyframes arcSuccess {
+      0%,8% { opacity:.25; }
+      20%,82% { opacity:.9; }
+      94%,100% { opacity:.25; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation:none !important; }
+      .wave,.spark { opacity:0; }
+      .check { stroke-dashoffset:0; }
+      .check-glow { opacity:.35; }
+    }
+  </style>
+
+  <circle class="wave one" cx="128" cy="128" r="106" fill="none" stroke="#67ffd2" stroke-width="7" filter="url(#glow)"/>
+  <circle class="wave two" cx="128" cy="128" r="106" fill="none" stroke="#b7ffe9" stroke-width="4"/>
+
+  <g class="agent" filter="url(#shadow)">
+    <circle cx="128" cy="128" r="99" fill="url(#body)" stroke="#022c27" stroke-width="7"/>
+    <circle cx="128" cy="128" r="88" fill="none" stroke="url(#rim)" stroke-width="7"/>
+    <path d="M58 91 A78 78 0 0 1 198 91" fill="none" stroke="#c4ffee" stroke-width="5" stroke-linecap="round" opacity=".32"/>
+
+    <g fill="none" stroke="#a9ffe5" stroke-linecap="round">
+      <path class="arc one" d="M91 112 A44 44 0 0 1 165 112" stroke-width="7"/>
+      <path class="arc two" d="M103 119 A31 31 0 0 1 153 119" stroke-width="7"/>
+      <path class="arc three" d="M115 126 A17 17 0 0 1 141 126" stroke-width="7"/>
+    </g>
+
+    <rect x="78" y="126" width="100" height="61" rx="30.5" fill="#075046" stroke="#4be3b6" stroke-width="4"/>
+    <rect x="88" y="136" width="80" height="41" rx="20.5" fill="#032d2b"/>
+
+    <circle class="check-glow" cx="128" cy="156" r="28" fill="#4cffc5" opacity="0" filter="url(#glow)"/>
+    <path class="check" d="M101 156 L120 173 L157 137" fill="none" stroke="url(#check)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+  </g>
+
+  <g fill="#c9fff0" filter="url(#glow)">
+    <circle class="spark s1" cx="49" cy="91" r="4"/>
+    <circle class="spark s2" cx="201" cy="77" r="4"/>
+    <circle class="spark s3" cx="207" cy="165" r="3.5"/>
+    <circle class="spark s4" cx="62" cy="184" r="3.5"/>
+  </g>
+</svg>

@@ -698,11 +698,20 @@ export function App(): React.JSX.Element {
         <RegulationChatPage
           session={view.session}
           onSessionChange={(session) => setView({ kind: 'regchat', session })}
-          onReady={(session) => {
-            if (session.resultRegulation) {
-              setRegulation(session.resultRegulation)
-              setView({ kind: 'review', result: session.resultRegulation })
+          onReady={async (session) => {
+            let result = session.resultRegulation
+            if (!result?.regulationId) {
+              const latest = await api.getRegulationCreationSession(session.draftId)
+              result = latest.resultRegulation
             }
+            if (result?.regulationId) {
+              setRegulation(result)
+              setView({ kind: 'review', result })
+              return
+            }
+            throw new Error(
+              'Карточка регламента не собралась. Скачайте файл из чата или нажмите «Создать принудительно».'
+            )
           }}
           onBack={() => setView({ kind: 'tab', key: 'create' })}
         />
