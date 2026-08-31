@@ -73,9 +73,36 @@ class RegulationCreationError(Exception):
         self.status_code = status_code
 
 
-def start_creation_session(db: Session, *, user_id: str) -> RegulationCreationSession:
-    # При каждом открытии — новый чат, старую историю закрываем.
-    terminate_active_creation_sessions(db, user_id=user_id)
+OPEN_CREATION_STATUSES = ("collecting_positions", "interview", "generating", "error")
+
+
+def get_active_creation_session(db: Session, *, user_id: str) -> RegulationCreationSession | None:
+    draft = (
+        db.query(RegulationCreationDraft)
+        .filter(
+            RegulationCreationDraft.user_id == user_id,
+            RegulationCreationDraft.status.in_(list(OPEN_CREATION_STATUSES)),
+        )
+        .order_by(RegulationCreationDraft.updated_at.desc())
+        .first()
+    )
+    if draft is None:
+        return None
+    return _session(db, draft)
+
+
+def start_creation_session(
+    db: Session,
+    *,
+    user_id: str,
+    fresh: bool = False,
+) -> RegulationCreationSession:
+    if not fresh:
+        existing = get_active_creation_session(db, user_id=user_id)
+        if existing is not None:
+            return existing
+    else:
+        terminate_active_creation_sessions(db, user_id=user_id)
 
     user = db.get(AppUser, user_id)
     interview = set_interview_position(new_interview_state(), getattr(user, "position", "") or "")
@@ -96,6 +123,21 @@ def start_creation_session(db: Session, *, user_id: str) -> RegulationCreationSe
 
 def get_creation_session(db: Session, *, user_id: str, draft_id: str) -> RegulationCreationSession:
     return _session(db, _get_draft(db, user_id=user_id, draft_id=draft_id))
+
+
+def peek_creation_turn(db: Session, *, user_id: str, draft_id: str) -> RegulationCreationTurn:
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    last_user = ""
+    for item in reversed(_messages_for_draft(db, draft.id)):
+        if item.role == "user":
+            last_user = item.content or ""
+            break
+    return _turn_payload(
+        db,
+        draft,
+        message=last_user,
+        force_create=_is_force_create_message(last_user),
+    )
 
 
 def get_creation_document(db: Session, *, user_id: str, draft_id: str) -> Path:
@@ -225,7 +267,7 @@ def terminate_active_creation_sessions(db: Session, *, user_id: str) -> dict:
         db.query(RegulationCreationDraft)
         .filter(
             RegulationCreationDraft.user_id == user_id,
-            RegulationCreationDraft.status.in_(["collecting_positions", "interview", "generating", "error"]),
+            RegulationCreationDraft.status.in_(list(OPEN_CREATION_STATUSES)),
         )
         .all()
     )
@@ -739,10 +781,32 @@ def _short_attachment_name(name: str, keep: int = 6) -> str:
     return f"{stem[:keep]}...{suffix}"
 
 
+def _first_interview_object(raw: str) -> dict | None:
+    decoder = json.JSONDecoder()
+    text = raw or ""
+    index = 0
+    while index < len(text):
+        start = text.find("{", index)
+        if start < 0:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+        if isinstance(obj, dict) and str(obj.get("status") or "") in {"need_more", "ready"}:
+            return obj
+        index = end
+    return None
+
+
 def _parse_agent_response(raw: str) -> dict:
     text = raw.strip()
     text = re.sub(r"^```(?:json)?", "", text).strip()
     text = re.sub(r"```$", "", text).strip()
+    first = _first_interview_object(text)
+    if first is not None:
+        return first
     try:
         data = json.loads(text)
         return data if isinstance(data, dict) else {"status": "need_more", "message": raw}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -18,8 +18,10 @@ from app.schemas.regulation import (
 from app.services.regulation_creation import (
     RegulationCreationError,
     apply_creation_reply,
+    get_active_creation_session,
     get_creation_document,
     get_creation_session,
+    peek_creation_turn,
     persist_creation_turn,
     send_creation_message,
     start_creation_session,
@@ -52,11 +54,35 @@ async def _parse_send_payload(request: Request) -> tuple[RegulationCreationSendR
 
 @router.post("/sessions", response_model=RegulationCreationSession)
 async def create_regulation_creation_session(
+    fresh: bool = Query(False),
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> RegulationCreationSession:
     try:
-        return start_creation_session(db, user_id=auth.user_id)
+        return start_creation_session(db, user_id=auth.user_id, fresh=fresh)
+    except RegulationCreationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.get("/sessions/active", response_model=RegulationCreationSession)
+async def read_active_regulation_creation_session(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RegulationCreationSession:
+    session = get_active_creation_session(db, user_id=auth.user_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Нет активного черновика")
+    return session
+
+
+@router.get("/sessions/{draft_id}/turn", response_model=RegulationCreationTurn)
+async def peek_regulation_creation_turn(
+    draft_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RegulationCreationTurn:
+    try:
+        return peek_creation_turn(db, user_id=auth.user_id, draft_id=draft_id)
     except RegulationCreationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 

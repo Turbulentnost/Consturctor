@@ -23,7 +23,7 @@ type RunCommand = {
   prompt: string;
   model?: string;
   cwd?: string;
-  mode?: "design" | "run";
+  mode?: "design" | "run" | "interview";
   tools?: ToolSpec[];
   resumeAgentId?: string;
 };
@@ -322,6 +322,57 @@ function playbookDraftReady(text: string): boolean {
   }
 }
 
+function firstJsonObject(text: string): Record<string, unknown> | null {
+  const raw = text || "";
+  const start = raw.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (inStr) {
+      if (esc) {
+        esc = false;
+        continue;
+      }
+      if (ch === "\\") {
+        esc = true;
+        continue;
+      }
+      if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const data = JSON.parse(raw.slice(start, i + 1)) as unknown;
+          return data && typeof data === "object" && !Array.isArray(data)
+            ? (data as Record<string, unknown>)
+            : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function interviewDraftReady(text: string): boolean {
+  const data = firstJsonObject(text);
+  if (!data) return false;
+  const status = String(data.status || "");
+  const message = String(data.message || "").trim();
+  return (status === "need_more" || status === "ready") && Boolean(message || data.interview);
+}
+
 async function settleRun(run: {
   supports: (op: "cancel") => boolean;
   status: string;
@@ -492,6 +543,7 @@ async function runAgent(command: RunCommand): Promise<void> {
   emit({ type: "run", id });
   emit({ type: "status", text: "Запускаю локальный Cursor SDK агент..." });
   const design = command.mode === "design";
+  const interview = command.mode === "interview";
   const customTools = buildCustomTools(command.tools || []);
   const customNames = Object.keys(customTools);
   emit({
@@ -565,16 +617,22 @@ async function runAgent(command: RunCommand): Promise<void> {
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
     const finishIfReady = async (draft: string): Promise<boolean> => {
       const designReady = design && playbookDraftReady(draft);
-      const demoReady = !design && testsPassReady(draft);
-      if (!designReady && !demoReady) return false;
+      const interviewReady = interview && interviewDraftReady(draft);
+      const demoReady = !design && !interview && testsPassReady(draft);
+      if (!designReady && !interviewReady && !demoReady) return false;
+      const readyAnswer = interviewReady
+        ? JSON.stringify(firstJsonObject(draft) || {})
+        : draft;
       emit({
         type: "status",
-        text: designReady
-          ? "Черновик готов. Останавливаю этот ход и перехожу к пробному прогону."
-          : "Пробный прогон завершен (TESTS: PASS). Останавливаю этот ход.",
+        text: interviewReady
+          ? "Вопрос интервью готов. Останавливаю этот ход."
+          : designReady
+            ? "Черновик готов. Останавливаю этот ход и перехожу к пробному прогону."
+            : "Пробный прогон завершен (TESTS: PASS). Останавливаю этот ход.",
       });
-      emit({ type: "final", id, status: "ok", answer: draft });
-      emit({ type: "done", id, status: "ok", answer: draft });
+      emit({ type: "final", id, status: "ok", answer: readyAnswer });
+      emit({ type: "done", id, status: "ok", answer: readyAnswer });
       await settleRun(run);
       await (agent as NonNullable<typeof agent>).close();
       return true;

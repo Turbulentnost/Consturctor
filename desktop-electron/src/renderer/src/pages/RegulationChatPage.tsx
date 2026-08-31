@@ -3,10 +3,12 @@ import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import { ApiError, type AgentEvent, type RegulationCreationSession, type RegulationCreationTurn } from '../api/types'
 import wallpaperUrl from '../assets/chat/wallpaper.png'
-import iconAttention from '@agent-icons/agent-attention-animated.svg'
-import iconCompleted from '@agent-icons/agent-completed-animated.svg'
-import iconWorking from '@agent-icons/agent-working-animated.svg'
+import programIcon from '../assets/logo.png'
+import iconAttention from '@agent-icons/agent-attention-animated.svg?raw'
+import iconCompleted from '@agent-icons/agent-completed-animated.svg?raw'
+import iconWorking from '@agent-icons/agent-working-animated.svg?raw'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
+import { extractInterviewAnswer, visibleAssistantText } from '../utils/regulationChat'
 
 type AgentPhase = 'working' | 'attention' | 'completed'
 
@@ -15,6 +17,7 @@ interface RegulationChatPageProps {
   onSessionChange: (session: RegulationCreationSession) => void
   onReady: (session: RegulationCreationSession) => void | Promise<void>
   onBack: () => void
+  onBusyChange?: (busy: boolean) => void
 }
 
 interface PendingFile {
@@ -28,8 +31,6 @@ const FORCE_CREATE_PROMPT =
   'Создай регламент принудительно по текущей информации. ' +
   'Если каких-то данных не хватает, используй разумные типовые формулировки и явно отметь, что это предположение.'
 const WORKING_STATUS = 'Готовлю вопрос...'
-const PROTOCOL_KEY =
-  /"(status|interview|document|quickAnswers|positions|roleStatus|actor|sourceRefs|triggerAction|userAction|openGaps|periodicity|functions)"\s*:/
 const COMPOSER_MIN_HEIGHT = 44
 const COMPOSER_MAX_HEIGHT = 129
 
@@ -41,43 +42,45 @@ function fileCountLabel(count: number): string {
   return 'файлов'
 }
 
-function isProtocolChunk(text: string): boolean {
-  const value = text.trim()
-  if (!value) return true
-  if (/^[{}\[\]",:\s]+$/.test(value)) return true
-  if (value.startsWith('{') || value.startsWith('[')) return true
-  if (PROTOCOL_KEY.test(value)) return true
-  if (/"[^"]+"\s*:/.test(value) && /[{}\[\],]/.test(value)) return true
-  if (/:\s*"(belongs|foreign|unclear)/.test(value)) return true
-  return false
-}
-
-function visibleAssistantText(text: string): string {
-  const value = (text || '').trim()
-  if (!value) return ''
-  if (value.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(value) as { message?: unknown }
-      return String(parsed.message || '').trim()
-    } catch {
-      const match = value.match(/"message"\s*:\s*"((?:\\.|[^"\\])*)"/)
-      return match ? match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"') : ''
-    }
-  }
-  return isProtocolChunk(value) ? '' : value
-}
-
 function agentIcon(phase: AgentPhase): string {
   if (phase === 'working') return iconWorking
   if (phase === 'completed') return iconCompleted
   return iconAttention
 }
 
-function AgentAvatar({ phase }: { phase: AgentPhase }): React.JSX.Element {
+function prepareAgentSvg(svg: string, prefix: string): string {
+  const safe = prefix.replace(/[^a-zA-Z0-9_-]/g, '') || 'icon'
+  return svg
+    .replace(/\bid="([^"]+)"/g, `id="${safe}-$1"`)
+    .replace(/url\(#([^)]+)\)/g, `url(#${safe}-$1)`)
+    .replace(/\bhref="#([^"]+)"/g, `href="#${safe}-$1"`)
+    .replace(/transform-origin:\s*[\d.]+px\s+[\d.]+px/g, 'transform-origin:center')
+    .replace(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\n\s*\}/g, '')
+    .replace('<style>', '<style>\n    * { transform-box: fill-box; }\n')
+}
+
+function AgentAvatar({
+  phase,
+  uid,
+  frozen = false
+}: {
+  phase: AgentPhase
+  uid: string
+  frozen?: boolean
+}): React.JSX.Element {
+  if (frozen) {
+    return (
+      <div className="regchat-avatar program" aria-hidden>
+        <img src={programIcon} alt="" />
+      </div>
+    )
+  }
   return (
-    <div className={`regchat-avatar ${phase}`}>
-      <img src={agentIcon(phase)} alt="" />
-    </div>
+    <div
+      className={`regchat-avatar ${phase}`}
+      aria-hidden
+      dangerouslySetInnerHTML={{ __html: prepareAgentSvg(agentIcon(phase), uid) }}
+    />
   )
 }
 
@@ -137,7 +140,12 @@ function waitForRegulationSdk(
         return
       }
       if (event.type === 'error') {
+        const recovered = extractInterviewAnswer(event.message || '')
         off()
+        if (recovered) {
+          resolve({ answer: recovered, agentId: '' })
+          return
+        }
         reject(new Error(event.message || 'Ошибка локального агента'))
       }
     })
@@ -171,7 +179,8 @@ export function RegulationChatPage({
   session,
   onSessionChange,
   onReady,
-  onBack
+  onBack,
+  onBusyChange
 }: RegulationChatPageProps): React.JSX.Element {
   const [input, setInput] = useState('')
   const [placeholder, setPlaceholder] = useState(DEFAULT_PLACEHOLDER)
@@ -183,6 +192,20 @@ export function RegulationChatPage({
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const resumeKeyRef = useRef('')
+
+  useEffect(() => {
+    setError('')
+    setSavedNote('')
+    setAttachments([])
+    setFilesOpen(false)
+    setInput('')
+    setPlaceholder(DEFAULT_PLACEHOLDER)
+  }, [session.draftId])
+
+  useEffect(() => {
+    onBusyChange?.(busy)
+  }, [busy, onBusyChange])
 
   useEffect(() => {
     if (!pinnedRef.current) return
@@ -294,20 +317,7 @@ export function RegulationChatPage({
         setAttachments([])
         setFilesOpen(false)
         onSessionChange(turn.session)
-        const runId = agentClient.start({
-          kind: 'regulation_creation',
-          draftId: session.draftId,
-          prompt: turn.sdkPrompt,
-          rules: turn.sdkRules,
-          interview: turn.interview,
-          resumeAgentId: turn.sdkAgentId || session.sdkAgentId
-        })
-        const sdk = await waitForRegulationSdk(runId, onStreamEvent)
-        const updated = await api.applyRegulationCreationReply(session.draftId, sdk.answer, {
-          sdkAgentId: sdk.agentId || turn.sdkAgentId,
-          forceCreate: turn.forceCreate
-        })
-        onSessionChange(updated)
+        await runSdkAndApply(turn)
       } else {
         const updated = await api.streamRegulationCreationMessage(
           session.draftId,
@@ -383,6 +393,55 @@ export function RegulationChatPage({
   }
 
   const visible = session.messages.filter((m) => m.role === 'assistant' || m.role === 'user')
+  const lastAssistantId = [...visible].reverse().find((item) => item.role === 'assistant')?.messageId || ''
+  const lastVisible = visible[visible.length - 1]
+  const pendingUserId =
+    lastVisible?.role === 'user' && lastVisible.messageId !== 'local-pending'
+      ? lastVisible.messageId
+      : ''
+
+  async function runSdkAndApply(turn: RegulationCreationTurn): Promise<void> {
+    const runId = agentClient.start({
+      kind: 'regulation_creation',
+      draftId: session.draftId,
+      prompt: turn.sdkPrompt,
+      rules: turn.sdkRules,
+      interview: turn.interview,
+      resumeAgentId: turn.sdkAgentId || session.sdkAgentId
+    })
+    const sdk = await waitForRegulationSdk(runId, (type, text) => {
+      if (type === 'error' && text) setError(text)
+    })
+    const answer = extractInterviewAnswer(sdk.answer) || sdk.answer
+    const updated = await api.applyRegulationCreationReply(session.draftId, answer, {
+      sdkAgentId: sdk.agentId || turn.sdkAgentId,
+      forceCreate: turn.forceCreate
+    })
+    onSessionChange(updated)
+  }
+
+  async function continuePendingTurn(): Promise<void> {
+    if (busy || ready) return
+    setError('')
+    setBusy(true)
+    pinnedRef.current = true
+    try {
+      const turn = await api.peekRegulationCreationTurn(session.draftId)
+      await runSdkAndApply(turn)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось получить вопрос ИИ')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    if (busy || ready || !pendingUserId || !window.agent?.start) return
+    const key = `${session.draftId}:${pendingUserId}`
+    if (resumeKeyRef.current === key) return
+    resumeKeyRef.current = key
+    void continuePendingTurn()
+  }, [session.draftId, pendingUserId, busy, ready])
 
   return (
     <div className="regchat-page">
@@ -426,9 +485,21 @@ export function RegulationChatPage({
                 const isUser = m.role === 'user'
                 const names = attachmentsOf(m.structured)
                 const quicks = quickAnswers(m.structured)
+                const isCurrentStage =
+                  !isUser &&
+                  !busy &&
+                  !ready &&
+                  Boolean(lastAssistantId) &&
+                  m.messageId === lastAssistantId
                 return (
                   <div key={m.messageId || index} className={isUser ? 'regchat-row user' : 'regchat-row ai'}>
-                    {!isUser && <AgentAvatar phase={phase} />}
+                    {!isUser && (
+                      <AgentAvatar
+                        phase={phase}
+                        uid={`msg-${m.messageId || index}`}
+                        frozen={!isCurrentStage}
+                      />
+                    )}
                     <div className="regchat-bubble-col">
                       <div className={isUser ? 'regchat-bubble user' : 'regchat-bubble ai'}>
                         {m.content && visibleAssistantText(m.content) ? (
@@ -468,7 +539,7 @@ export function RegulationChatPage({
               })}
               {busy && (
                 <div className="regchat-row ai">
-                  <AgentAvatar phase="working" />
+                  <AgentAvatar phase="working" uid="working" />
                   <div className="regchat-bubble-col">
                     <div className="regchat-think">
                       <div className="regchat-think-head">
@@ -481,7 +552,7 @@ export function RegulationChatPage({
               )}
               {ready && (
                 <div className="regchat-row ai">
-                  <AgentAvatar phase="completed" />
+                  <AgentAvatar phase="completed" uid="completed" />
                   <div className="regchat-bubble-col">
                     <div className="regchat-doc-card">
                       <div className="regchat-file-row">

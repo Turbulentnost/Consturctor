@@ -89,7 +89,7 @@ DESKTOP_ROOT = _bootstrap_desktop_path()
 # Importing app.config loads desktop/.env (CURSOR_API_KEY, BACKEND_URL, ...).
 from app.api_client import ApiClient, ApiError  # noqa: E402
 from app.orchestrator.json_blob import extract_json_object  # noqa: E402
-from app.sdk_agent.bridge import CursorSdkBridge, CursorSdkUnavailable  # noqa: E402
+from app.sdk_agent.bridge import CursorSdkBridge, CursorSdkError, CursorSdkUnavailable  # noqa: E402
 from app.sdk_agent.files import (  # noqa: E402
     _safe_filename,
     prepare_sdk_workspace,
@@ -176,6 +176,26 @@ def _stamp_run_event(
     if folded == "run" and not out.get("kind"):
         out["kind"] = "run"
     return out
+
+
+def _interview_json_answer(raw: str) -> str:
+    decoder = json.JSONDecoder()
+    text = raw or ""
+    index = 0
+    while index < len(text):
+        start = text.find("{", index)
+        if start < 0:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+        status = str(obj.get("status") or "") if isinstance(obj, dict) else ""
+        if status in {"need_more", "ready"}:
+            return json.dumps(obj, ensure_ascii=False)
+        index = end
+    return ""
 
 
 def emit(message: dict[str, Any]) -> None:
@@ -1876,20 +1896,31 @@ class Sidecar:
             interview=command.get("interview") if isinstance(command.get("interview"), dict) else {},
         )
         events: list[dict[str, Any]] = []
-        result = CursorSdkBridge.run(
-            bridge,
-            prompt=build_regulation_sdk_prompt(str(command.get("prompt") or "")),
-            workflow_id=workspace_id,
-            cwd=str(run_cwd),
-            mode="design",
-            tools=[],
-            resume_agent_id=str(command.get("resumeAgentId") or "").strip(),
-            on_event=self._forward_events(active, events),
-            should_stop=active.stop.is_set,
-            confirm_writes=False,
-        )
-        answer = str(result.get("answer") or "").strip()
-        agent_id = str(result.get("agent_id") or command.get("resumeAgentId") or "").strip()
+        agent_id = str(command.get("resumeAgentId") or "").strip()
+        try:
+            result = CursorSdkBridge.run(
+                bridge,
+                prompt=build_regulation_sdk_prompt(str(command.get("prompt") or "")),
+                workflow_id=workspace_id,
+                cwd=str(run_cwd),
+                mode="interview",
+                tools=[],
+                resume_agent_id=agent_id,
+                on_event=self._forward_events(active, events),
+                should_stop=active.stop.is_set,
+                confirm_writes=False,
+            )
+            answer = str(result.get("answer") or "").strip()
+            agent_id = str(result.get("agent_id") or agent_id).strip()
+        except CursorSdkError as exc:
+            answer = _interview_json_answer(str(exc))
+            if not answer:
+                raise
+        recovered = _interview_json_answer(answer)
+        if recovered:
+            answer = recovered
+        if not answer:
+            raise CursorSdkError("regulation interview returned an empty answer")
         emit(
             {
                 "type": "result",

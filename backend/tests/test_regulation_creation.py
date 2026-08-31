@@ -20,8 +20,11 @@ from app.services.regulation_creation.interview import (
 from app.services.regulation_creation.service import (
     _apply_agent_reply,
     _finalize_document,
+    _parse_agent_response,
     _result_from_created_document,
+    get_active_creation_session,
     get_creation_document,
+    start_creation_session,
 )
 
 
@@ -409,3 +412,47 @@ def test_get_creation_document_rebuilds_missing_file(tmp_path, monkeypatch) -> N
     assert path.suffix == ".docx"
     db.refresh(draft)
     assert draft.result_document_path == str(path)
+
+
+def test_start_creation_resumes_open_draft() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест", position="Помощник"))
+    db.commit()
+
+    first = start_creation_session(db, user_id="user-1")
+    second = start_creation_session(db, user_id="user-1")
+    active = get_active_creation_session(db, user_id="user-1")
+
+    assert first.draftId == second.draftId
+    assert active is not None
+    assert active.draftId == first.draftId
+    assert any(item.role == "assistant" for item in second.messages)
+
+
+def test_start_creation_fresh_closes_previous_draft() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    db.commit()
+
+    first = start_creation_session(db, user_id="user-1")
+    second = start_creation_session(db, user_id="user-1", fresh=True)
+    old = db.get(RegulationCreationDraft, first.draftId)
+    active = get_active_creation_session(db, user_id="user-1")
+
+    assert first.draftId != second.draftId
+    assert old is not None
+    assert old.status == "closed"
+    assert active is not None
+    assert active.draftId == second.draftId
+
+
+def test_parse_agent_response_keeps_first_interview_json() -> None:
+    raw = (
+        '{"status":"need_more","message":"Вопрос один","interview":{"functions":[]}}'
+        '{"status":"need_more","message":"Вопрос два","interview":{"functions":[]}}'
+    )
+
+    parsed = _parse_agent_response(raw)
+
+    assert parsed["message"] == "Вопрос один"
+    assert parsed["status"] == "need_more"

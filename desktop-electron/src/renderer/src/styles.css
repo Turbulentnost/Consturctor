@@ -379,12 +379,12 @@ input {
 .content-inner:has(.files-page),
 .content-inner:has(.wf-page),
 .content-inner:has(.agent-studio),
-.content-inner:has(.regchat-page) {
+.content-inner:has(.regchat-host:not(.is-parked)) {
   overflow: hidden;
   min-height: 0;
   height: 100%;
 }
-.content-inner:has(.regchat-page) {
+.content-inner:has(.regchat-host:not(.is-parked)) {
   background: #fff;
 }
 .content-inner:has(.wf-page) .app-page-header,
@@ -405,7 +405,7 @@ input {
 .content:has(.files-page),
 .content:has(.wf-page),
 .content:has(.agent-studio),
-.content:has(.regchat-page) {
+.content:has(.regchat-host:not(.is-parked)) {
   overflow: hidden;
 }
 
@@ -1388,6 +1388,33 @@ input {
   height: 46px;
 }
 
+.regchat-host {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.regchat-host.is-parked {
+  display: none;
+}
+
+.create-ai-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin-top: auto;
+}
+.option-card p.create-ai-hint {
+  font-size: 12px;
+  color: var(--content-muted);
+  margin: 0 0 4px;
+  min-height: 0;
+}
+.create-ai-actions .btn-ghost-dark {
+  width: 100%;
+}
+
 /* ---------- Regulation AI chat ---------- */
 .regchat-page {
   position: relative;
@@ -1527,8 +1554,8 @@ input {
   align-self: flex-start;
 }
 .regchat-avatar {
-  width: 40px;
-  height: 40px;
+  width: 52px;
+  height: 52px;
   border-radius: 50%;
   overflow: visible;
   flex: 0 0 auto;
@@ -1538,10 +1565,45 @@ input {
   align-items: center;
   justify-content: center;
 }
-.regchat-avatar img {
-  width: 40px;
-  height: 40px;
-  object-fit: contain;
+.regchat-avatar.attention {
+  animation: regchat-avatar-glow 1.6s ease-in-out infinite;
+}
+.regchat-avatar.working {
+  animation: regchat-avatar-glow-work 1.4s ease-in-out infinite;
+}
+.regchat-avatar.program {
+  animation: none;
+  overflow: hidden;
+  background: #04352f;
+}
+.regchat-avatar img,
+.regchat-avatar svg {
+  width: 52px;
+  height: 52px;
+  display: block;
+  overflow: visible;
+}
+.regchat-avatar.program img {
+  object-fit: cover;
+  border-radius: 50%;
+}
+@keyframes regchat-avatar-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(232, 169, 40, 0));
+  }
+  50% {
+    filter: drop-shadow(0 0 8px rgba(232, 169, 40, 0.75));
+  }
+}
+@keyframes regchat-avatar-glow-work {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(53, 239, 184, 0));
+  }
+  50% {
+    filter: drop-shadow(0 0 8px rgba(53, 239, 184, 0.75));
+  }
 }
 .regchat-bubble-col {
   display: flex;

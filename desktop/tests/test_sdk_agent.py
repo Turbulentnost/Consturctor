@@ -365,6 +365,7 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert "force: true" in text
     assert "settleRun" in text
     assert "playbookDraftReady" in text
+    assert "interviewDraftReady" in text
     assert "testsPassReady" in text
     assert "thought +=" in text
     assert "finishIfReady" in text

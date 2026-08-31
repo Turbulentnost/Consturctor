@@ -9,6 +9,7 @@ import { KpiPage } from './pages/SimplePages'
 import { OrchestratorPage } from './pages/OrchestratorPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { RegulationChatPage } from './pages/RegulationChatPage'
+import { visibleAssistantText } from './utils/regulationChat'
 import { RoleMatchPage } from './pages/RoleMatchPage'
 import { ReadinessPage } from './pages/ReadinessPage'
 import { SuggestionsPage } from './pages/SuggestionsPage'
@@ -51,7 +52,7 @@ import {
 type View =
   | { kind: 'tab'; key: PageKey }
   | { kind: 'review'; result: RegulationParseResult }
-  | { kind: 'regchat'; session: RegulationCreationSession }
+  | { kind: 'regchat' }
   | { kind: 'rolematch' }
   | { kind: 'readiness' }
   | { kind: 'suggestions' }
@@ -83,6 +84,23 @@ function findExistingChat(threads: ChatThread[], name: string, peerId?: string):
   return threads.find((item) => item.kind !== 'support' && fioEquals(item.title, name))
 }
 
+function isOpenRegulationDraft(session: RegulationCreationSession | null): boolean {
+  if (!session?.draftId) return false
+  if (session.resultRegulation || session.resultDocumentPath) return false
+  return session.status !== 'finalized' && session.status !== 'closed'
+}
+
+function regulationDraftPreview(session: RegulationCreationSession | null): string {
+  if (!session) return ''
+  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+    const item = session.messages[i]
+    if (item.role !== 'assistant') continue
+    const text = visibleAssistantText(item.content)
+    if (text) return text
+  }
+  return ''
+}
+
 export function App(): React.JSX.Element {
   const [booting, setBooting] = useState(true)
   const [user, setUser] = useState<UserProfile | null>(null)
@@ -104,6 +122,8 @@ export function App(): React.JSX.Element {
     typeof document === 'undefined' ? true : document.hasFocus()
   )
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
+  const [regChat, setRegChat] = useState<RegulationCreationSession | null>(null)
+  const [regChatBusy, setRegChatBusy] = useState(false)
   const formation = useFormation()
   const runs = useRuns()
 
@@ -142,6 +162,21 @@ export function App(): React.JSX.Element {
       done = true
     }
   }, [])
+
+  useEffect(() => {
+    if (!user) return
+    let alive = true
+    void api
+      .getActiveRegulationCreation()
+      .then((session) => {
+        if (!alive || !session) return
+        setRegChat((prev) => prev ?? session)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [user])
 
   useEffect(() => {
     if (!user) {
@@ -295,6 +330,8 @@ export function App(): React.JSX.Element {
       formation.cancel()
       formation.clear()
       runs.clearAll()
+      setRegChat(null)
+      setRegChatBusy(false)
     }
     api.setToken(result.accessToken || null)
     setComCredentials(result.user.fio, password)
@@ -315,7 +352,8 @@ export function App(): React.JSX.Element {
     formation.cancel()
     formation.clear()
     runs.clearAll()
-    await api.terminateRegulationCreationSessions()
+    setRegChat(null)
+    setRegChatBusy(false)
     clearSession(true)
     clearComCredentials()
     api.setToken(null)
@@ -409,15 +447,30 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function startRegulationChat(): Promise<void> {
+  async function startRegulationChat(opts?: { fresh?: boolean }): Promise<void> {
     setView({
       kind: 'loading',
-      title: 'Создаём чат регламента',
-      subtitle: 'Готовим профиль стиля и первый вопрос.'
+      title: opts?.fresh ? 'Создаём чат регламента' : 'Открываем черновик регламента',
+      subtitle: opts?.fresh
+        ? 'Готовим профиль стиля и первый вопрос.'
+        : 'Загружаем сохранённые ответы и историю вопросов.'
     })
     try {
-      const session = await api.startRegulationCreation()
-      setView({ kind: 'regchat', session })
+      if (!opts?.fresh && regChat && isOpenRegulationDraft(regChat)) {
+        try {
+          const latest = await api.getRegulationCreationSession(regChat.draftId)
+          setRegChat(latest)
+        } catch {
+          /* keep the in-memory draft */
+        }
+        setView({ kind: 'regchat' })
+        return
+      }
+      const session = opts?.fresh
+        ? await api.startRegulationCreation({ fresh: true })
+        : (await api.getActiveRegulationCreation()) || (await api.startRegulationCreation())
+      setRegChat(session)
+      setView({ kind: 'regchat' })
     } catch (err) {
       fail('Не удалось начать', err)
     }
@@ -648,6 +701,22 @@ export function App(): React.JSX.Element {
           ? 'agents'
           : 'create'
 
+  function renderCreatePage(): React.JSX.Element {
+    return (
+      <CreatePage
+        onRegulationParsed={(result) => {
+          setRegulation(result)
+          setView({ kind: 'review', result })
+        }}
+        onStartRegulationChat={() => void startRegulationChat()}
+        hasRegulationDraft={isOpenRegulationDraft(regChat)}
+        regulationDraftBusy={regChatBusy}
+        onResumeRegulationDraft={() => void startRegulationChat()}
+        onRestartRegulationDraft={() => void startRegulationChat({ fresh: true })}
+      />
+    )
+  }
+
   function renderContent(): React.JSX.Element {
     if (view.kind === 'chat') {
       return (
@@ -690,30 +759,6 @@ export function App(): React.JSX.Element {
           onBack={() => setView({ kind: 'tab', key: 'create' })}
           onContinue={() => extractFunctions(view.result)}
           continueBusy={busy}
-        />
-      )
-    }
-    if (view.kind === 'regchat') {
-      return (
-        <RegulationChatPage
-          session={view.session}
-          onSessionChange={(session) => setView({ kind: 'regchat', session })}
-          onReady={async (session) => {
-            let result = session.resultRegulation
-            if (!result?.regulationId) {
-              const latest = await api.getRegulationCreationSession(session.draftId)
-              result = latest.resultRegulation
-            }
-            if (result?.regulationId) {
-              setRegulation(result)
-              setView({ kind: 'review', result })
-              return
-            }
-            throw new Error(
-              'Карточка регламента не собралась. Скачайте файл из чата или нажмите «Создать принудительно».'
-            )
-          }}
-          onBack={() => setView({ kind: 'tab', key: 'create' })}
         />
       )
     }
@@ -841,27 +886,11 @@ export function App(): React.JSX.Element {
       )
     }
     if (view.kind !== 'tab') {
-      return (
-        <CreatePage
-          onRegulationParsed={(result) => {
-            setRegulation(result)
-            setView({ kind: 'review', result })
-          }}
-          onStartRegulationChat={startRegulationChat}
-        />
-      )
+      return renderCreatePage()
     }
     switch (view.key) {
       case 'create':
-        return (
-          <CreatePage
-            onRegulationParsed={(result) => {
-              setRegulation(result)
-              setView({ kind: 'review', result })
-            }}
-            onStartRegulationChat={startRegulationChat}
-          />
-        )
+        return renderCreatePage()
       case 'agents':
         return (
           <AgentsPage
@@ -885,7 +914,7 @@ export function App(): React.JSX.Element {
       case 'orchestrator':
         return <OrchestratorPage user={user!} />
       default:
-        return <CreatePage onRegulationParsed={() => {}} onStartRegulationChat={startRegulationChat} />
+        return renderCreatePage()
     }
   }
 
@@ -921,6 +950,19 @@ export function App(): React.JSX.Element {
         setView({ kind: 'agentrun', workflowId: entry.workflowId, title: entry.title })
     })
   }
+  if (regChat && isOpenRegulationDraft(regChat) && view.kind !== 'regchat') {
+    bannerEntries.push({
+      id: `regchat:${regChat.draftId}`,
+      title: 'Создание регламента',
+      output: regChatBusy
+        ? 'Готовлю вопрос...'
+        : regulationDraftPreview(regChat) || 'Ответьте на вопрос ИИ',
+      running: regChatBusy,
+      awaiting: !regChatBusy,
+      mode: 'formation',
+      onOpen: () => setView({ kind: 'regchat' })
+    })
+  }
 
   return (
     <div className="app-root">
@@ -947,7 +989,36 @@ export function App(): React.JSX.Element {
             />
           </div>
           <RunBannerCarousel entries={bannerEntries} />
-          {renderContent()}
+          {regChat ? (
+            <div
+              className={view.kind === 'regchat' ? 'regchat-host' : 'regchat-host is-parked'}
+              hidden={view.kind !== 'regchat'}
+            >
+              <RegulationChatPage
+                session={regChat}
+                onSessionChange={setRegChat}
+                onBusyChange={setRegChatBusy}
+                onReady={async (session) => {
+                  let result = session.resultRegulation
+                  if (!result?.regulationId) {
+                    const latest = await api.getRegulationCreationSession(session.draftId)
+                    setRegChat(latest)
+                    result = latest.resultRegulation
+                  }
+                  if (result?.regulationId) {
+                    setRegulation(result)
+                    setView({ kind: 'review', result })
+                    return
+                  }
+                  throw new Error(
+                    'Карточка регламента не собралась. Скачайте файл из чата или нажмите «Создать принудительно».'
+                  )
+                }}
+                onBack={() => setView({ kind: 'tab', key: 'create' })}
+              />
+            </div>
+          ) : null}
+          {view.kind === 'regchat' ? null : renderContent()}
         </div>
       </main>
     </div>

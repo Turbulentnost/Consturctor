@@ -1030,13 +1030,27 @@ export class ApiClient {
     return parseRegulation(res.data ?? {})
   }
 
-  async startRegulationCreation(): Promise<RegulationCreationSession> {
+  async startRegulationCreation(opts?: { fresh?: boolean }): Promise<RegulationCreationSession> {
     const data = await this.request<Record<string, unknown>>(
       'POST',
       '/api/v1/regulation-creation/sessions',
-      { timeoutMs: 120_000 }
+      { timeoutMs: 120_000, params: opts?.fresh ? { fresh: true } : undefined }
     )
     return parseCreationSession(data)
+  }
+
+  async getActiveRegulationCreation(): Promise<RegulationCreationSession | null> {
+    try {
+      const data = await this.request<Record<string, unknown>>(
+        'GET',
+        '/api/v1/regulation-creation/sessions/active',
+        { timeoutMs: 60_000 }
+      )
+      return parseCreationSession(data)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null
+      throw err
+    }
   }
 
   async getRegulationCreationSession(draftId: string): Promise<RegulationCreationSession> {
@@ -1058,6 +1072,15 @@ export class ApiClient {
       { body: { message }, timeoutMs: 600_000 }
     )
     return parseCreationSession(data)
+  }
+
+  async peekRegulationCreationTurn(draftId: string): Promise<RegulationCreationTurn> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/regulation-creation/sessions/${draftId}/turn`,
+      { timeoutMs: 60_000 }
+    )
+    return parseCreationTurn(data)
   }
 
   async persistRegulationCreationTurn(

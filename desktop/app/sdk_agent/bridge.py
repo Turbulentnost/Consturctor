@@ -226,7 +226,7 @@ class CursorSdkBridge:
                     "prompt": prompt,
                     "model": model or os.getenv("CURSOR_SDK_MODEL", DEFAULT_SDK_MODEL),
                     "cwd": run_cwd,
-                    "mode": "design" if mode == "design" else "run",
+                    "mode": "interview" if mode == "interview" else "design" if mode == "design" else "run",
                     "tools": sdk_tool_specs() if tools is None else tools,
                     "resumeAgentId": agent_id or None,
                     "workflowId": workflow_id,
