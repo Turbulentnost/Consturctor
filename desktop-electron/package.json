@@ -12,7 +12,13 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "pack": "python scripts/build_installer.py --dir",
     "dist": "python scripts/build_installer.py",
-    "dist:electron": "electron-vite build && electron-builder"
+    "dist:electron": "electron-vite build && electron-builder --publish never",
+    "dist:publish": "python scripts/build_installer.py --publish",
+    "publish:github": "python scripts/build_installer.py --publish-only"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Turbulentnost/Consturctor.git"
   },
   "build": {
     "appId": "com.constructor.desktop",

@@ -101,6 +101,25 @@ function regulationDraftPreview(session: RegulationCreationSession | null): stri
   return ''
 }
 
+function lastRegulationQuestion(
+  session: RegulationCreationSession | null
+): { messageId: string; text: string } | null {
+  if (!session || !isOpenRegulationDraft(session)) return null
+  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+    const item = session.messages[i]
+    if (item.role !== 'assistant') continue
+    const text = visibleAssistantText(item.content).replace(/\s+/g, ' ').trim()
+    if (!text) return null
+    return { messageId: item.messageId || `assistant-${i}`, text }
+  }
+  return null
+}
+
+function clipToastBody(text: string, max = 180): string {
+  if (text.length <= max) return text
+  return `${text.slice(0, max - 1).trim()}...`
+}
+
 export function App(): React.JSX.Element {
   const [booting, setBooting] = useState(true)
   const [user, setUser] = useState<UserProfile | null>(null)
@@ -118,6 +137,7 @@ export function App(): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   const kickedRef = useRef(false)
   const seenHitlRef = useRef<Set<string>>(new Set())
+  const seenRegQuestionRef = useRef<Set<string>>(new Set())
   const [windowFocused, setWindowFocused] = useState(() =>
     typeof document === 'undefined' ? true : document.hasFocus()
   )
@@ -271,9 +291,14 @@ export function App(): React.JSX.Element {
     }
   }, [])
 
-  // A clicked OS toast (incoming notification) opens the related agent.
+  // A clicked OS toast (incoming notification) opens the related agent
+  // or the regulation-creation chat that asked the question.
   useEffect(() => {
     const unsubscribe = window.api.onNotificationOpen?.((payload) => {
+      if (payload?.draftId) {
+        setView({ kind: 'regchat' })
+        return
+      }
       const workflowId = payload?.workflowId || ''
       if (workflowId) void openAgentRun(workflowId, payload?.runId || '')
     })
@@ -324,6 +349,22 @@ export function App(): React.JSX.Element {
       })
     }
   }, [runs.entries, view, windowFocused])
+
+  // Each new interview question during regulation creation raises a Windows
+  // toast so the user knows the chat is waiting for an answer.
+  useEffect(() => {
+    if (!regChat || regChatBusy) return
+    const question = lastRegulationQuestion(regChat)
+    if (!question) return
+    const key = `${regChat.draftId}:${question.messageId}`
+    if (seenRegQuestionRef.current.has(key)) return
+    seenRegQuestionRef.current.add(key)
+    void window.api.showNotification?.({
+      title: 'Система ждёт вашего ответа на сообщение',
+      body: clipToastBody(question.text),
+      draftId: regChat.draftId
+    })
+  }, [regChat, regChatBusy])
 
   function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
     if (user && user.id !== result.user.id) {
@@ -988,7 +1029,7 @@ export function App(): React.JSX.Element {
               onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
             />
           </div>
-          <RunBannerCarousel entries={bannerEntries} />
+          {view.kind === 'regchat' ? null : <RunBannerCarousel entries={bannerEntries} />}
           {regChat ? (
             <div
               className={view.kind === 'regchat' ? 'regchat-host' : 'regchat-host is-parked'}
@@ -998,6 +1039,14 @@ export function App(): React.JSX.Element {
                 session={regChat}
                 onSessionChange={setRegChat}
                 onBusyChange={setRegChatBusy}
+                onStopped={() => {
+                  setRegChat(null)
+                  setRegChatBusy(false)
+                  setView({ kind: 'tab', key: 'create' })
+                }}
+                banner={
+                  view.kind === 'regchat' ? <RunBannerCarousel entries={bannerEntries} /> : undefined
+                }
                 onReady={async (session) => {
                   let result = session.resultRegulation
                   if (!result?.regulationId) {

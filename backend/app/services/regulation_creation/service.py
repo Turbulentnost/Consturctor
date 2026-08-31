@@ -47,8 +47,10 @@ from app.services.regulation_creation.interview import (
     creation_system_rules,
     document_from_interview,
     document_has_body,
+    document_has_full_text,
     interview_sdk_agent_id,
     interview_snapshot,
+    is_replacement_garbage,
     merge_agent_payload,
     new_interview_state,
     ready_blocker,
@@ -250,6 +252,7 @@ def _turn_payload(
             message=message,
             initial=True,
             force_create=force_create,
+            include_attachment_bodies=False,
         )
     )
     return RegulationCreationTurn(
@@ -464,6 +467,16 @@ def _apply_agent_reply(
 ) -> None:
     raw = raw.strip()
     parsed = _parse_agent_response(raw)
+    if is_replacement_garbage(parsed.get("message")) or is_replacement_garbage(raw):
+        parsed["message"] = (
+            "Ответ агента пришёл в нечитаемом виде. Нажмите отправку ещё раз "
+            "или коротко напишите должность и первую функцию."
+        )
+        parsed["quickAnswers"] = [
+            "Повторить разбор файлов",
+            "Опишу функции сообщением",
+        ]
+        parsed["status"] = "need_more"
     draft.interview_json = merge_agent_payload(draft.interview_json, parsed)
     blocker = None if force_create else ready_blocker(parsed, draft.interview_json)
     if blocker is not None:
@@ -487,12 +500,23 @@ def _apply_agent_reply(
         return
     document = parsed.get("document") if isinstance(parsed.get("document"), dict) else None
     wants_document = parsed.get("status") == "ready" or force_create
-    if wants_document and not document_has_body(document):
+    has_full_document = document_has_full_text(document)
+    if wants_document and not has_full_document and not force_create:
+        state = draft.interview_json if isinstance(draft.interview_json, dict) else {}
+        draft.interview_json = {**state, "document_write_required": True}
+        draft.status = "interview"
+        if positions := parsed.get("positions"):
+            draft.positions_json = [str(item) for item in positions if str(item).strip()]
+        db.add(draft)
+        return
+    if wants_document and force_create and not document_has_body(document):
         title = str((document or {}).get("title") or "").strip()
         document = document_from_interview(draft.interview_json, title)
     if wants_document and force_create and not document_has_body(document):
         document = _stub_document(parsed, title=str((document or {}).get("title") or "").strip())
-    if wants_document and document_has_body(document):
+    if wants_document and (has_full_document or (force_create and document_has_body(document))):
+        if isinstance(draft.interview_json, dict):
+            draft.interview_json.pop("document_write_required", None)
         try:
             result = _finalize_document(db, user_id=user_id, draft=draft, document=document or {})
         except RegulationError as exc:
@@ -573,21 +597,20 @@ def _result_from_created_document(
     fragments: list[RegulationFragment] = []
     sections: list[str] = []
     index = 0
-    for section in document.get("sections") or []:
-        if not isinstance(section, dict):
-            continue
-        heading = str(section.get("title") or "").strip()
-        number = str(section.get("number") or "").strip()
-        section_title = f"{number} {heading}".strip() or heading or f"Раздел {index + 1}"
+    for section, section_title, section_path, _level in _iter_document_sections(
+        document.get("sections") or [],
+        parent_path=[title],
+    ):
+        section_title = section_title or f"Раздел {index + 1}"
         if section_title not in sections:
             sections.append(section_title)
-        texts = [section_title]
+        texts = [section_title] if section_title else []
         for paragraph in section.get("paragraphs") or []:
             value = str(paragraph or "").strip()
             if value:
                 texts.append(value)
         for item in section.get("items") or []:
-            value = str(item or "").strip()
+            value = _document_item_text(item)
             if value:
                 texts.append(value)
         for text in texts:
@@ -597,7 +620,7 @@ def _result_from_created_document(
                     fragmentId=f"{regulation_id}-block-{index:02d}",
                     page=1,
                     section=section_title,
-                    sectionPath=[title, section_title],
+                    sectionPath=section_path or [title, section_title],
                     kind="text",
                     blockType="heading" if text == section_title else "paragraph",
                     text=text,
@@ -653,22 +676,65 @@ def _write_docx(path: Path, document: dict) -> None:
     doc = Document()
     title = str(document.get("title") or "Регламент")
     doc.add_heading(title, level=1)
-    for section in document.get("sections") or []:
-        if not isinstance(section, dict):
-            continue
-        heading = str(section.get("title") or "").strip()
-        number = str(section.get("number") or "").strip()
+    for section, heading, _section_path, level in _iter_document_sections(
+        document.get("sections") or [],
+        parent_path=[title],
+    ):
         if heading:
-            doc.add_heading(f"{number} {heading}".strip(), level=2)
+            doc.add_heading(heading, level=min(max(level, 2), 9))
         for paragraph in section.get("paragraphs") or []:
             text = str(paragraph or "").strip()
             if text:
                 doc.add_paragraph(text)
         for item in section.get("items") or []:
-            text = str(item or "").strip()
-            if text:
-                doc.add_paragraph(text, style="List Bullet")
+            _add_docx_item(doc, item, level=0)
     doc.save(str(path))
+
+
+def _iter_document_sections(
+    sections: object,
+    *,
+    parent_path: list[str],
+    level: int = 2,
+) -> Iterator[tuple[dict, str, list[str], int]]:
+    if not isinstance(sections, list):
+        return
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        heading = _document_section_heading(section)
+        section_path = [*parent_path, heading] if heading else parent_path
+        yield section, heading, section_path, level
+        for key in ("sections", "subsections", "children"):
+            yield from _iter_document_sections(
+                section.get(key),
+                parent_path=section_path,
+                level=level + 1,
+            )
+
+
+def _document_section_heading(section: dict) -> str:
+    heading = str(section.get("title") or "").strip()
+    number = str(section.get("number") or "").strip()
+    return f"{number} {heading}".strip() if heading else ""
+
+
+def _document_item_text(item: object) -> str:
+    if isinstance(item, dict):
+        return str(item.get("text") or item.get("title") or "").strip()
+    return str(item or "").strip()
+
+
+def _add_docx_item(doc: object, item: object, *, level: int) -> None:
+    text = _document_item_text(item)
+    if text:
+        style = "List Bullet" if level <= 0 else "List Bullet 2"
+        doc.add_paragraph(text, style=style)
+    if isinstance(item, dict):
+        children = item.get("items") or item.get("children") or []
+        if isinstance(children, list):
+            for child in children:
+                _add_docx_item(doc, child, level=level + 1)
 
 
 def _load_creation_attachments(files: list[tuple[str, bytes]]) -> list[dict]:

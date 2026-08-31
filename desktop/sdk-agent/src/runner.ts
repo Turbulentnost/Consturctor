@@ -17,11 +17,17 @@ type ToolSpec = {
   inputSchema?: Record<string, JsonValue>;
 };
 
+type ModelParam = {
+  id: string;
+  value: string;
+};
+
 type RunCommand = {
   type: "run";
   id: string;
   prompt: string;
   model?: string;
+  modelParams?: ModelParam[];
   cwd?: string;
   mode?: "design" | "run" | "interview";
   tools?: ToolSpec[];
@@ -53,6 +59,22 @@ const pendingTools = new Map<string, PendingTool>();
 
 function emit(payload: Record<string, unknown>): void {
   stdout.write(JSON.stringify(payload) + "\n");
+}
+
+const INTERVIEW_MODEL_PARAMS: ModelParam[] = [
+  { id: "effort", value: "xhigh" },
+  { id: "fast", value: "true" },
+];
+
+function modelParamsFor(command: RunCommand): ModelParam[] {
+  const incoming = Array.isArray(command.modelParams) ? command.modelParams : null;
+  const raw = incoming !== null ? incoming : command.mode === "interview" ? INTERVIEW_MODEL_PARAMS : [];
+  return raw
+    .map((item) => ({
+      id: typeof item?.id === "string" ? item.id.trim() : "",
+      value: typeof item?.value === "string" ? item.value : String(item?.value ?? ""),
+    }))
+    .filter((item) => item.id);
 }
 
 function safeError(error: unknown): string {
@@ -525,6 +547,7 @@ async function withDbLockRetry<T>(
 async function runAgent(command: RunCommand): Promise<void> {
   const id = command.id || randomUUID();
   const model = command.model || process.env.CURSOR_SDK_MODEL || "grok-4.6";
+  const modelParams = modelParamsFor(command);
   const cwd = command.cwd || process.cwd();
   const apiKey = process.env.CURSOR_API_KEY || "";
   if (!apiKey.trim()) {
@@ -541,7 +564,12 @@ async function runAgent(command: RunCommand): Promise<void> {
   let answer = "";
   let thought = "";
   emit({ type: "run", id });
-  emit({ type: "status", text: "Запускаю локальный Cursor SDK агент..." });
+  emit({
+    type: "status",
+    text: modelParams.length
+      ? `Запускаю локальный Cursor SDK агент (${model} ${modelParams.map((item) => `${item.id}=${item.value}`).join(" ")})...`
+      : "Запускаю локальный Cursor SDK агент...",
+  });
   const design = command.mode === "design";
   const interview = command.mode === "interview";
   const customTools = buildCustomTools(command.tools || []);
@@ -556,7 +584,7 @@ async function runAgent(command: RunCommand): Promise<void> {
   try {
     const agentOptions = {
       apiKey,
-      model: { id: model },
+      model: modelParams.length ? { id: model, params: modelParams } : { id: model },
       local: {
         cwd,
         customTools: customTools as never,

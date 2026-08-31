@@ -99,6 +99,15 @@ _CONCRETE_ACTION_MARKERS = [
     "наступ",
 ]
 
+_DOCUMENT_FIELD_LABELS = (
+    "исполнитель",
+    "инструмент",
+    "периодичность",
+    "триггер",
+    "действие пользователя",
+    "источник",
+)
+
 
 @dataclass(slots=True)
 class ReadyBlocker:
@@ -201,6 +210,19 @@ def interview_snapshot(state: Any) -> dict[str, Any]:
     return _prompt_state(normalize_interview_state(state))
 
 
+def is_replacement_garbage(value: Any) -> bool:
+    """True when Cyrillic was lost to ASCII '?' replacement."""
+    text = str(value or "").strip()
+    if len(text) < 8:
+        return False
+    qmarks = text.count("?")
+    if qmarks < 8:
+        return False
+    if re.search(r"[А-Яа-яЁё]", text):
+        return False
+    return qmarks >= max(8, len(text) // 3)
+
+
 def owned_functions(state: Any) -> list[dict[str, Any]]:
     interview = normalize_interview_state(state)
     out: list[dict[str, Any]] = []
@@ -215,6 +237,7 @@ def owned_functions(state: Any) -> list[dict[str, Any]]:
 
 def append_user_turn(state: Any, message: str, attachments: list[dict]) -> dict[str, Any]:
     out = normalize_interview_state(state)
+    out.pop("document_write_required", None)
     attachment_refs: list[str] = []
     for item in attachments:
         name = str(item.get("name") or "file")
@@ -259,6 +282,7 @@ def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
     for func in out["functions"]:
         func["roleStatus"] = _resolve_role_status(func, position)
         func["openGaps"] = _open_gaps(func, position=position)
+        func["sourceRefs"] = _clean_source_refs(func.get("sourceRefs"))
     return out
 
 
@@ -296,6 +320,24 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "Пока status='need_more', не пиши полный document и не повторяй весь список функций. "
         "В interview.functions верни только новую или изменённую функцию. "
         "Сначала сформулируй короткий вопрос в message, затем компактный JSON.\n"
+        "Когда все обязательные поля закрыты и можно вернуть status='ready', document обязателен. "
+        "Его должен написать Cursor SDK как самостоятельный регламент процесса: связный документ, "
+        "понятный без истории чата, без технического дампа полей interview. "
+        "В документе простым деловым языком объясни, для чего выполняется процесс, где его границы, "
+        "кто исполняет, какие входы используются, какое наблюдаемое событие или расписание запускает "
+        "работу, как пользователь выполняет процесс по шагам, какой результат создаётся, кому он "
+        "передаётся, какие исключения и эскалации подтверждены. "
+        "Не ограничивайся четырьмя полями interview: перечитай materials/* и вынеси в документ "
+        "релевантное содержание файлов пользователя - правила, условия, сроки, участников, входные "
+        "и выходные артефакты, ограничения, исключения и подтверждённые формулировки. "
+        "Документ должен читаться как нормальный деловой регламент, с абзацами и переходами между "
+        "мыслями, а не как анкета или таблица фактов. "
+        "Не используй фиксированный шаблон глав и не копируй лейблы вида 'Инструмент:', "
+        "'Периодичность:', 'Триггер:', 'Действие пользователя:' как тело документа. "
+        "Структуру разделов выбирай по фактическому процессу. Факты бери только из interview.json, "
+        "materials/* и ответов пользователя; неизвестное не выдумывай и не оформляй как факт. "
+        "Если в interview.json есть document_write_required=true, не задавай новый вопрос: "
+        "сразу верни status='ready' и перепиши document в полноценный самостоятельный текст.\n"
         f"{force}\n"
         "Ответ всегда строго JSON без markdown. Контракт:\n"
         "{\n"
@@ -324,13 +366,29 @@ def creation_system_rules(*, force_create: bool = False) -> str:
     )
 
 
-def build_creation_prompt(*, state: Any, message: str, initial: bool, force_create: bool) -> str:
+def build_creation_prompt(
+    *,
+    state: Any,
+    message: str,
+    initial: bool,
+    force_create: bool,
+    include_attachment_bodies: bool = True,
+) -> str:
     interview = normalize_interview_state(state)
     inventory = _prompt_state(interview)
+    if not include_attachment_bodies:
+        inventory["attachments"] = _prompt_attachment_refs(inventory.get("attachments") or [])
     action = "Начни" if initial else "Продолжай"
+    files_hint = (
+        "Тексты приложенных файлов уже лежат в рабочей папке: interview.json и materials/*.txt. "
+        "Прочитай их оттуда. Не выдумывай содержание документов.\n"
+        if not include_attachment_bodies
+        else ""
+    )
     return (
         f"{action} интервью.\n"
         f"{creation_system_rules(force_create=force_create)}\n"
+        f"{files_hint}"
         "Текущее постоянное состояние интервью:\n"
         f"{json.dumps(inventory, ensure_ascii=False, indent=2)}\n"
         f"Последний ответ пользователя: {message.strip()}"
@@ -348,8 +406,12 @@ def build_followup_creation_prompt(*, message: str, force_create: bool) -> str:
         "Прочитай обновлённый interview.json в рабочей папке.\n"
         f"{force}\n"
         f"Последний ответ пользователя: {message.strip()}\n"
-        "Ответ строго JSON: status, message, quickAnswers и только изменённая функция. "
-        "document оставляй пустым, пока status не ready."
+        "Если в interview.json есть document_write_required=true, не задавай новый вопрос: "
+        "верни status='ready' и полный document как самостоятельный связный регламент процесса. "
+        "Иначе ответ строго JSON: status, message, quickAnswers и только изменённая функция. "
+        "document оставляй пустым, пока status не ready. При status='ready' document обязателен: "
+        "это должен быть полный деловой текст, а не список полей interview. Вынеси в него "
+        "релевантное содержание материалов пользователя, подтверждённое файлами или ответами."
     )
 
 
@@ -409,7 +471,7 @@ def _normalize_function(raw: dict[str, Any], *, fallback_index: int) -> dict[str
         "id": func_id,
         "title": title or func_id,
         "actor": _clean_str(raw.get("actor") or raw.get("position")),
-        "sourceRefs": raw.get("sourceRefs") if isinstance(raw.get("sourceRefs"), list) else [],
+        "sourceRefs": _clean_source_refs(raw.get("sourceRefs")),
         "tool": _field_value(raw, "tool"),
         "periodicity": _field_value(raw, "periodicity"),
         "triggerAction": _field_value(raw, "triggerAction"),
@@ -455,9 +517,9 @@ def _merge_function(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
         existing["roleStatus"] = incoming_role
     elif incoming_role == ROLE_UNCLEAR and existing_role not in {ROLE_BELONGS, ROLE_FOREIGN}:
         existing["roleStatus"] = ROLE_UNCLEAR
-    refs = incoming.get("sourceRefs") if isinstance(incoming.get("sourceRefs"), list) else []
+    refs = _clean_source_refs(incoming.get("sourceRefs"))
     if refs:
-        current = existing.get("sourceRefs") if isinstance(existing.get("sourceRefs"), list) else []
+        current = _clean_source_refs(existing.get("sourceRefs"))
         existing["sourceRefs"] = current + [ref for ref in refs if ref not in current]
 
 
@@ -577,6 +639,43 @@ def _prompt_state(state: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _prompt_attachment_refs(attachments: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for raw in attachments:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or "file")
+        text = str(raw.get("text") or "")
+        out.append(
+            {
+                "id": raw.get("id"),
+                "name": name,
+                "kind": raw.get("kind") or "text",
+                "chars": len(text),
+                "path": f"materials/{Path(name).name}",
+            }
+        )
+    return out
+
+
+def _clean_source_refs(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for ref in value:
+        if not isinstance(ref, dict):
+            continue
+        file_name = _clean_str(ref.get("file"))
+        quote = _clean_str(ref.get("quote"))
+        if not file_name and not quote:
+            continue
+        item = dict(ref)
+        item["file"] = file_name
+        item["quote"] = quote
+        out.append(item)
+    return out
+
+
 def _prompt_attachments(attachments: list[Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     total = 0
@@ -651,8 +750,7 @@ def document_from_interview(state: Any, title: str = "") -> dict[str, Any]:
 def document_has_body(document: Any) -> bool:
     if not isinstance(document, dict):
         return False
-    sections = document.get("sections") or []
-    for section in sections:
+    for section in _walk_document_sections(document.get("sections") or []):
         if not isinstance(section, dict):
             continue
         if (
@@ -662,6 +760,61 @@ def document_has_body(document: Any) -> bool:
         ):
             return True
     return False
+
+
+def document_has_full_text(document: Any) -> bool:
+    if not isinstance(document, dict):
+        return False
+    body_lines = _document_body_lines(document)
+    if not body_lines:
+        return False
+    labelled = sum(1 for line in body_lines if _looks_like_field_label(line))
+    if labelled >= max(3, (len(body_lines) + 1) // 2):
+        return False
+    prose_lines = [
+        line
+        for line in body_lines
+        if not _looks_like_field_label(line) and len(line.split()) >= 10
+    ]
+    prose_total = sum(len(line) for line in prose_lines)
+    if prose_total < 240:
+        return False
+    return len(prose_lines) >= 2 or prose_total >= 360
+
+
+def _walk_document_sections(sections: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not isinstance(sections, list):
+        return out
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        out.append(section)
+        for key in ("sections", "subsections", "children"):
+            out.extend(_walk_document_sections(section.get(key)))
+    return out
+
+
+def _document_body_lines(document: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for section in _walk_document_sections(document.get("sections") or []):
+        for paragraph in section.get("paragraphs") or []:
+            text = _clean_str(paragraph)
+            if text:
+                out.append(text)
+        for item in section.get("items") or []:
+            text = _clean_str(item.get("text") if isinstance(item, dict) else item)
+            if text:
+                out.append(text)
+    return out
+
+
+def _looks_like_field_label(text: str) -> bool:
+    folded = _fold(text)
+    if ":" not in folded:
+        return False
+    left = folded.split(":", 1)[0].strip(" -•")
+    return left in _DOCUMENT_FIELD_LABELS
 
 
 def _apply_role_answer(state: dict[str, Any], message: str) -> None:
@@ -736,4 +889,7 @@ def _clean_str(value: Any) -> str:
         return ""
     if isinstance(value, (dict, tuple, set)):
         return ""
-    return str(value).strip()
+    text = str(value).strip()
+    if is_replacement_garbage(text):
+        return ""
+    return text

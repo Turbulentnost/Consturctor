@@ -1,6 +1,15 @@
 const PROTOCOL_KEY =
   /"(status|interview|document|quickAnswers|positions|roleStatus|actor|sourceRefs|triggerAction|userAction|openGaps|periodicity|functions)"\s*:/
 
+export function isReplacementGarbage(text: string): boolean {
+  const value = (text || '').trim()
+  if (value.length < 8) return false
+  const qmarks = (value.match(/\?/g) || []).length
+  if (qmarks < 8) return false
+  if (/[А-Яа-яЁё]/.test(value)) return false
+  return qmarks >= Math.max(8, Math.floor(value.length / 3))
+}
+
 function isProtocolChunk(text: string): boolean {
   const value = text.trim()
   if (!value) return true
@@ -58,9 +67,15 @@ export function extractInterviewAnswer(raw: string): string {
         if (depth === 0) {
           const blob = text.slice(start, i + 1)
           try {
-            const parsed = JSON.parse(blob) as { status?: unknown }
+            const parsed = JSON.parse(blob) as { status?: unknown; message?: unknown }
             const status = String(parsed.status || '')
-            if (status === 'need_more' || status === 'ready') return blob
+            if (status !== 'need_more' && status !== 'ready') {
+              break
+            }
+            if (isReplacementGarbage(String(parsed.message || '')) || isReplacementGarbage(blob)) {
+              return ''
+            }
+            return blob
           } catch {
             break
           }

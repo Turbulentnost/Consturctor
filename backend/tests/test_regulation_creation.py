@@ -13,6 +13,8 @@ from app.services.regulation_creation.interview import (
     append_user_turn,
     build_creation_prompt,
     document_from_interview,
+    document_has_full_text,
+    is_replacement_garbage,
     merge_agent_payload,
     ready_blocker,
     set_interview_position,
@@ -65,6 +67,35 @@ def test_interview_state_keeps_attachment_text_in_followup_prompt() -> None:
     assert "Пользователь ведет календарь совещаний." in prompt
     assert "tool, periodicity, triggerAction" in prompt
     assert "только новую или изменённую функцию" in prompt
+    assert "самостоятельный регламент процесса" in prompt
+    assert "релевантное содержание файлов пользователя" in prompt
+
+
+def test_local_sdk_prompt_omits_attachment_bodies() -> None:
+    state = append_user_turn(
+        {},
+        "Проанализируй обязанности",
+        [{"name": "duties.txt", "text": "Пользователь ведет календарь совещаний.", "kind": "text"}],
+    )
+    prompt = build_creation_prompt(
+        state=state,
+        message="Отвечаю на следующий вопрос",
+        initial=True,
+        force_create=False,
+        include_attachment_bodies=False,
+    )
+
+    assert "duties.txt" in prompt
+    assert "materials/" in prompt
+    assert "Пользователь ведет календарь совещаний." not in prompt
+
+
+def test_replacement_garbage_is_detected() -> None:
+    assert is_replacement_garbage(
+        "????? ?????? ??????????? ??????? ?? ????????? ?????????? ????????? ?????? ???????????"
+    )
+    assert not is_replacement_garbage("В какой системе вы готовите повестку?")
+    assert not is_replacement_garbage("1С ERP")
 
 
 def test_agent_payload_merges_function_answers() -> None:
@@ -160,6 +191,47 @@ def test_document_from_interview_builds_sections() -> None:
     assert document["title"] == "Регламент"
     assert document["sections"][0]["title"] == "Сводка на неделю"
     assert any("Excel" in item for item in document["sections"][0]["items"])
+
+
+def test_document_full_text_rejects_field_dump() -> None:
+    assert not document_has_full_text(
+        {
+            "title": "Регламент",
+            "sections": [
+                {
+                    "title": "Сводка",
+                    "items": [
+                        "Инструмент: Excel",
+                        "Периодичность: Каждый понедельник",
+                        "Триггер: Наступил понедельник до 10:00",
+                        "Действие пользователя: Обновляет сводный план",
+                    ],
+                }
+            ],
+        }
+    )
+    assert document_has_full_text(
+        {
+            "title": "Регламент подготовки сводки",
+            "sections": [
+                {
+                    "title": "Подготовка еженедельной сводки",
+                    "paragraphs": [
+                        (
+                            "Процесс нужен для того, чтобы к началу рабочей недели у руководителя "
+                            "была единая актуальная картина предстоящих совещаний, конфликтов "
+                            "помещений и задач, требующих решения."
+                        ),
+                        (
+                            "Работа начинается в понедельник до 10:00. Помощник открывает сводный "
+                            "план в Excel, проверяет обновления календаря и переносит подтвержденные "
+                            "совещания в итоговое письмо для руководителя."
+                        ),
+                    ],
+                }
+            ],
+        }
+    )
 
 
 def test_force_create_finalizes_without_agent_document() -> None:
@@ -300,7 +372,7 @@ def _owned_function() -> dict:
     }
 
 
-def test_ready_without_document_finalizes_from_interview() -> None:
+def test_ready_without_document_does_not_finalize_from_interview() -> None:
     db = _session()
     db.add(AppUser(id="user-1", fio="Тест"))
     draft = RegulationCreationDraft(
@@ -330,9 +402,74 @@ def test_ready_without_document_finalizes_from_interview() -> None:
         db.commit()
 
     db.refresh(draft)
-    assert finalize.called
+    assert not finalize.called
+    assert draft.status == "interview"
+    assert draft.result_regulation_id == ""
+    assert draft.interview_json["document_write_required"] is True
+
+
+def test_ready_with_full_document_finalizes() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    draft = RegulationCreationDraft(
+        id="draft-ready-full",
+        user_id="user-1",
+        status="interview",
+        interview_json={"functions": [_owned_function()]},
+    )
+    db.add(draft)
+    db.commit()
+
+    class DummyResult:
+        regulationId = "reg-ready-full"
+
+    full_document = {
+        "title": "Регламент подготовки сводки",
+        "sections": [
+            {
+                "number": "1",
+                "title": "Подготовка еженедельной сводки",
+                "paragraphs": [
+                    (
+                        "Процесс нужен для того, чтобы к началу рабочей недели у руководителя была "
+                        "единая актуальная картина предстоящих совещаний, конфликтов помещений и "
+                        "задач, требующих решения."
+                    ),
+                    (
+                        "Работа начинается в понедельник до 10:00. Помощник открывает сводный план "
+                        "в Excel, проверяет обновления календаря и переносит подтвержденные "
+                        "совещания в итоговое письмо для руководителя."
+                    ),
+                ],
+                "items": [],
+            }
+        ],
+    }
+
+    from unittest.mock import patch
+
+    with patch(
+        "app.services.regulation_creation.service._finalize_document",
+        return_value=DummyResult(),
+    ) as finalize:
+        _apply_agent_reply(
+            db,
+            user_id="user-1",
+            draft=draft,
+            raw=json.dumps(
+                {
+                    "status": "ready",
+                    "message": "Регламент сформирован.",
+                    "document": full_document,
+                }
+            ),
+        )
+        db.commit()
+
+    db.refresh(draft)
+    finalize.assert_called_once()
     assert draft.status == "finalized"
-    assert draft.result_regulation_id == "reg-ready"
+    assert draft.result_regulation_id == "reg-ready-full"
 
 
 def test_result_from_created_document_has_fragments() -> None:
@@ -444,6 +581,55 @@ def test_start_creation_fresh_closes_previous_draft() -> None:
     assert old.status == "closed"
     assert active is not None
     assert active.draftId == second.draftId
+
+
+def test_apply_agent_reply_replaces_ascii_question_marks() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    draft = RegulationCreationDraft(id="draft-garbage", user_id="user-1", status="interview")
+    db.add(draft)
+    db.commit()
+
+    raw = json.dumps(
+        {
+            "status": "need_more",
+            "message": "????? ?????? ??????????? ??????? ?? ????????? ?????????? ?????????",
+            "quickAnswers": ["????? ??????? ??? ??????????? ????????"],
+            "interview": {
+                "functions": [
+                    {
+                        "id": "f1",
+                        "title": "????? ?????????",
+                        "sourceRefs": [
+                            {
+                                "file": "?????????_????????.docx",
+                                "quote": "???????? ??? ???????? ??",
+                            }
+                        ],
+                    }
+                ]
+            },
+        },
+        ensure_ascii=False,
+    )
+    _apply_agent_reply(db, user_id="user-1", draft=draft, raw=raw)
+    db.commit()
+
+    from app.models.regulation import RegulationCreationMessage
+
+    messages = (
+        db.query(RegulationCreationMessage)
+        .filter(RegulationCreationMessage.draft_id == "draft-garbage")
+        .all()
+    )
+    assert messages
+    assert "нечитаемом виде" in messages[-1].content
+    assert "?" not in messages[-1].content[0:8]
+    interview = draft.interview_json if isinstance(draft.interview_json, dict) else {}
+    functions = interview.get("functions") or []
+    if functions:
+        refs = functions[0].get("sourceRefs") or []
+        assert refs == []
 
 
 def test_parse_agent_response_keeps_first_interview_json() -> None:

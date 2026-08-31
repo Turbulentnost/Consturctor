@@ -82,11 +82,15 @@ const api = {
     workflowId?: string
     runId?: string
     requestId?: string
+    draftId?: string
   }): Promise<{ ok: boolean }> => ipcRenderer.invoke('notify:show', payload),
   onNotificationOpen: (
-    callback: (payload: { workflowId: string; runId: string }) => void
+    callback: (payload: { workflowId: string; runId: string; draftId?: string }) => void
   ): (() => void) => {
-    const listener = (_event: unknown, payload: { workflowId: string; runId: string }): void => {
+    const listener = (
+      _event: unknown,
+      payload: { workflowId: string; runId: string; draftId?: string }
+    ): void => {
       callback(payload)
     }
     ipcRenderer.on('notification:open', listener)
@@ -147,6 +151,40 @@ const api = {
     ipcRenderer.on('chat:event', listener)
     return () => {
       ipcRenderer.removeListener('chat:event', listener)
+    }
+  },
+  getUpdateStatus: (): Promise<{
+    state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+    currentVersion: string
+    availableVersion: string
+    percent: number
+    error: string
+  }> => ipcRenderer.invoke('updater:getStatus'),
+  installUpdate: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('updater:install'),
+  onUpdateStatus: (
+    callback: (payload: {
+      state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+      currentVersion: string
+      availableVersion: string
+      percent: number
+      error: string
+    }) => void
+  ): (() => void) => {
+    const listener = (
+      _event: unknown,
+      payload: {
+        state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+        currentVersion: string
+        availableVersion: string
+        percent: number
+        error: string
+      }
+    ): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('updater:status', listener)
+    return () => {
+      ipcRenderer.removeListener('updater:status', listener)
     }
   }
 }

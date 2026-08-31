@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import socket
@@ -299,10 +300,110 @@ def prepare_playwright(skip: bool) -> None:
     print("playwright browser cache not found; packaged browser tools may need system browsers", flush=True)
 
 
+def read_package_version() -> str:
+    package_path = ELECTRON_ROOT / "package.json"
+    if not package_path.is_file():
+        raise RuntimeError(f"package.json not found: {package_path}")
+    data = json.loads(package_path.read_text(encoding="utf-8"))
+    version = str(data.get("version") or "").strip()
+    if not version:
+        raise RuntimeError("package.json does not contain a version")
+    return version
+
+
+def github_repo_slug() -> str:
+    override = os.environ.get("UPDATE_GITHUB_REPO", "").strip()
+    if "/" in override:
+        return override
+    owner = os.environ.get("UPDATE_GITHUB_OWNER", "").strip()
+    repo = override or os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if owner and repo and "/" not in repo:
+        return f"{owner}/{repo}"
+    if repo.count("/") == 1:
+        return repo
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        result = None
+    remote = (result.stdout if result else "").strip()
+    marker = "github.com"
+    if marker in remote.lower():
+        tail = remote.split(marker, 1)[1]
+        tail = tail.lstrip(":/")
+        if tail.endswith(".git"):
+            tail = tail[:-4]
+        parts = [item for item in tail.replace("\\", "/").split("/") if item]
+        if len(parts) >= 2:
+            return f"{parts[0]}/{parts[1]}"
+    return "Turbulentnost/Consturctor"
+
+
+def installer_artifacts() -> list[Path]:
+    release_dir = ELECTRON_ROOT / "release"
+    names = (
+        "Constructor-Setup.exe",
+        "latest.yml",
+        "Constructor-Setup.exe.blockmap",
+    )
+    found = [release_dir / name for name in names if (release_dir / name).is_file()]
+    setup = release_dir / "Constructor-Setup.exe"
+    if not setup.is_file():
+        raise RuntimeError(f"installer not found: {setup}")
+    return found
+
+
+def publish_github_release() -> None:
+    gh = tool("gh")
+    if not shutil.which(gh) and not shutil.which("gh.exe"):
+        raise RuntimeError("GitHub CLI (gh) is not on PATH")
+    version = read_package_version()
+    tag = f"v{version}"
+    repo = github_repo_slug()
+    files = installer_artifacts()
+    print(f"publishing {tag} to {repo}", flush=True)
+    env = build_env()
+    view = subprocess.run(
+        [gh, "release", "view", tag, "--repo", repo],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    paths = [str(path) for path in files]
+    if view.returncode == 0:
+        run([gh, "release", "upload", tag, *paths, "--repo", repo, "--clobber"], cwd=REPO_ROOT, env=env)
+        print(f"updated existing GitHub release {tag}", flush=True)
+        return
+    run(
+        [
+            gh,
+            "release",
+            "create",
+            tag,
+            *paths,
+            "--repo",
+            repo,
+            "--title",
+            f"Constructor {version}",
+            "--generate-notes",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+    )
+    print(f"created GitHub release {tag}", flush=True)
+
+
 def build_electron(dir_only: bool) -> None:
     env = build_env()
     run([tool("npm", env=env), "run", "build"], cwd=ELECTRON_ROOT, env=env)
-    cmd = [tool("npx", env=env), "electron-builder"]
+    cmd = [tool("npx", env=env), "electron-builder", "--publish", "never"]
     if dir_only:
         cmd.append("--dir")
     run(cmd, cwd=ELECTRON_ROOT, env=env)
@@ -317,7 +418,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--download-node", action="store_true", help="Use nodejs.org zip instead of local Node")
     parser.add_argument("--skip-sdk-install", action="store_true", help="Do not run npm install in desktop/sdk-agent")
     parser.add_argument("--skip-browsers", action="store_true", help="Do not copy Playwright browser cache")
+    parser.add_argument("--publish", action="store_true", help="Upload the built installer to GitHub Releases")
+    parser.add_argument(
+        "--publish-only",
+        action="store_true",
+        help="Publish an already built Constructor-Setup.exe without rebuilding",
+    )
     args = parser.parse_args(argv)
+
+    if args.publish_only:
+        publish_github_release()
+        return 0
 
     prepare_env(args.backend_url)
     prepare_sdk_agent(args.skip_sdk_install)
@@ -325,6 +436,10 @@ def main(argv: list[str] | None = None) -> int:
     prepare_python(args.skip_python)
     prepare_playwright(args.skip_browsers)
     build_electron(args.dir)
+    if args.publish:
+        if args.dir:
+            raise RuntimeError("refusing to publish a directory build; omit --dir")
+        publish_github_release()
     return 0
 
 

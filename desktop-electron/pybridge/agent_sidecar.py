@@ -89,7 +89,13 @@ DESKTOP_ROOT = _bootstrap_desktop_path()
 # Importing app.config loads desktop/.env (CURSOR_API_KEY, BACKEND_URL, ...).
 from app.api_client import ApiClient, ApiError  # noqa: E402
 from app.orchestrator.json_blob import extract_json_object  # noqa: E402
-from app.sdk_agent.bridge import CursorSdkBridge, CursorSdkError, CursorSdkUnavailable  # noqa: E402
+from app.sdk_agent.bridge import (  # noqa: E402
+    REGULATION_SDK_MODEL,
+    REGULATION_SDK_MODEL_PARAMS,
+    CursorSdkBridge,
+    CursorSdkError,
+    CursorSdkUnavailable,
+)
 from app.sdk_agent.files import (  # noqa: E402
     _safe_filename,
     prepare_sdk_workspace,
@@ -161,6 +167,21 @@ def needs_confirmation(name: str) -> bool:
 _STDOUT_LOCK = threading.Lock()
 
 
+def _configure_stdio() -> None:
+    """Keep the Electron JSON protocol on UTF-8 even on Windows consoles."""
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+
+_configure_stdio()
+
+
 def _stamp_run_event(
     message: dict[str, Any],
     *,
@@ -178,6 +199,18 @@ def _stamp_run_event(
     return out
 
 
+def _looks_like_replacement_garbage(text: str) -> bool:
+    value = (text or "").strip()
+    if len(value) < 8:
+        return False
+    qmarks = value.count("?")
+    if qmarks < 8:
+        return False
+    if re.search(r"[А-Яа-яЁё]", value):
+        return False
+    return qmarks >= max(8, len(value) // 3)
+
+
 def _interview_json_answer(raw: str) -> str:
     decoder = json.JSONDecoder()
     text = raw or ""
@@ -193,6 +226,10 @@ def _interview_json_answer(raw: str) -> str:
             continue
         status = str(obj.get("status") or "") if isinstance(obj, dict) else ""
         if status in {"need_more", "ready"}:
+            message = str(obj.get("message") or "") if isinstance(obj, dict) else ""
+            if _looks_like_replacement_garbage(message):
+                index = end
+                continue
             return json.dumps(obj, ensure_ascii=False)
         index = end
     return ""
@@ -200,9 +237,15 @@ def _interview_json_answer(raw: str) -> str:
 
 def emit(message: dict[str, Any]) -> None:
     """Write one JSON line to stdout for the Electron main process."""
-    line = json.dumps(message, ensure_ascii=False, default=_json_default)
+    line = json.dumps(message, ensure_ascii=False, default=_json_default) + "\n"
+    payload = line.encode("utf-8")
     with _STDOUT_LOCK:
-        sys.stdout.write(line + "\n")
+        buf = getattr(sys.stdout, "buffer", None)
+        if buf is not None:
+            buf.write(payload)
+            buf.flush()
+            return
+        sys.stdout.write(line)
         sys.stdout.flush()
 
 
@@ -211,6 +254,15 @@ def log(message: str) -> None:
     safe = message.encode("ascii", errors="replace").decode("ascii")
     sys.stderr.write(safe + "\n")
     sys.stderr.flush()
+
+
+def _stdin_lines():
+    buf = getattr(sys.stdin, "buffer", None)
+    if buf is None:
+        yield from sys.stdin
+        return
+    for raw in buf:
+        yield raw.decode("utf-8", errors="replace")
 
 
 def _json_default(value: Any) -> Any:
@@ -774,6 +826,7 @@ class ElectronBridge(CursorSdkBridge):
         prompt: str,
         workflow_id: str,
         model: str = "",
+        model_params: list[dict[str, str]] | None = None,
         cwd: str = "",
         mode: str = "run",
         tools: list[dict[str, Any]] | None = None,
@@ -794,6 +847,7 @@ class ElectronBridge(CursorSdkBridge):
             prompt=_with_sidecar_prompt(prompt, mode=mode),
             workflow_id=workflow_id,
             model=model,
+            model_params=model_params,
             cwd=cwd,
             mode=mode,
             tools=specs,
@@ -1729,17 +1783,42 @@ class Sidecar:
                     "type": "error",
                     "runId": active.run_id,
                     "code": "sdk_unavailable",
-                    "message": _ascii(str(exc)),
+                    "message": str(exc),
                 }
             )
         except ApiError as exc:
             self._finish_active_history(active, "Cursor SDK не отвечает")
-            emit({"type": "error", "runId": active.run_id, "message": _ascii(exc.message)})
+            emit({"type": "error", "runId": active.run_id, "message": str(exc.message)})
         except Exception as exc:  # noqa: BLE001
+            if kind == "regulation_creation" and active.stop.is_set():
+                emit(
+                    {
+                        "type": "error",
+                        "runId": active.run_id,
+                        "kind": "regulation_creation",
+                        "draftId": str(command.get("draftId") or ""),
+                        "code": "cancelled",
+                        "message": "cancelled",
+                    }
+                )
+                return
+            recovered = _interview_json_answer(str(exc)) if kind == "regulation_creation" else ""
+            if recovered:
+                emit(
+                    {
+                        "type": "result",
+                        "runId": active.run_id,
+                        "kind": "regulation_creation",
+                        "draftId": str(command.get("draftId") or ""),
+                        "agentId": "",
+                        "answer": recovered,
+                    }
+                )
+                return
             self._finish_active_history(active, "Cursor SDK не отвечает")
             log("run failed: " + repr(exc))
             log(traceback.format_exc())
-            emit({"type": "error", "runId": active.run_id, "message": _ascii(str(exc))})
+            emit({"type": "error", "runId": active.run_id, "message": str(exc)})
         finally:
             with self._lock:
                 self._active.pop(active.run_id, None)
@@ -1897,12 +1976,27 @@ class Sidecar:
         )
         events: list[dict[str, Any]] = []
         agent_id = str(command.get("resumeAgentId") or "").strip()
+
+        def emit_cancelled() -> None:
+            emit(
+                {
+                    "type": "error",
+                    "runId": active.run_id,
+                    "kind": "regulation_creation",
+                    "draftId": draft_id,
+                    "code": "cancelled",
+                    "message": "cancelled",
+                }
+            )
+
         try:
             result = CursorSdkBridge.run(
                 bridge,
                 prompt=build_regulation_sdk_prompt(str(command.get("prompt") or "")),
                 workflow_id=workspace_id,
                 cwd=str(run_cwd),
+                model=REGULATION_SDK_MODEL,
+                model_params=[dict(item) for item in REGULATION_SDK_MODEL_PARAMS],
                 mode="interview",
                 tools=[],
                 resume_agent_id=agent_id,
@@ -1910,12 +2004,21 @@ class Sidecar:
                 should_stop=active.stop.is_set,
                 confirm_writes=False,
             )
+            if active.stop.is_set():
+                emit_cancelled()
+                return
             answer = str(result.get("answer") or "").strip()
             agent_id = str(result.get("agent_id") or agent_id).strip()
-        except CursorSdkError as exc:
+        except Exception as exc:  # noqa: BLE001
+            if active.stop.is_set():
+                emit_cancelled()
+                return
             answer = _interview_json_answer(str(exc))
             if not answer:
                 raise
+        if active.stop.is_set():
+            emit_cancelled()
+            return
         recovered = _interview_json_answer(answer)
         if recovered:
             answer = recovered
@@ -2689,7 +2792,7 @@ def _attachments_note(relative_paths: list[str]) -> str:
 def main() -> None:
     sidecar = Sidecar()
     emit({"type": "ready"})
-    for raw in sys.stdin:
+    for raw in _stdin_lines():
         line = raw.strip()
         if not line:
             continue

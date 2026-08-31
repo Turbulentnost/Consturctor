@@ -9,6 +9,7 @@ import {
   type ToastPayload
 } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
+import { getUpdateStatus, installAvailableUpdate, startUpdater, stopUpdater } from './updater'
 
 interface RequestOptions {
   method?: string
@@ -54,7 +55,13 @@ function parseEnvFile(path: string): Record<string, string> {
   return out
 }
 
-function loadConfig(): { backendUrl: string; testUser: boolean } {
+function loadConfig(): {
+  backendUrl: string
+  testUser: boolean
+  updateOwner: string
+  updateRepo: string
+  updateToken: string
+} {
   const userEnv = join(app.getPath('userData'), '.env')
   const resourceEnv = join(process.resourcesPath, 'desktop', '.env')
   if (!existsSync(userEnv) && existsSync(resourceEnv)) {
@@ -90,7 +97,26 @@ function loadConfig(): { backendUrl: string; testUser: boolean } {
     .trim()
     .toLowerCase()
   const testUser = ['1', 'true', 'yes', 'on'].includes(flag)
-  return { backendUrl, testUser }
+  const updateOwner = (
+    process.env.UPDATE_GITHUB_OWNER ||
+    env.UPDATE_GITHUB_OWNER ||
+    'Turbulentnost'
+  ).trim()
+  const updateRepo = (
+    process.env.UPDATE_GITHUB_REPO ||
+    env.UPDATE_GITHUB_REPO ||
+    'Consturctor'
+  ).trim()
+  const updateToken = (
+    process.env.UPDATE_GITHUB_TOKEN ||
+    process.env.GH_TOKEN ||
+    process.env.GITHUB_TOKEN ||
+    env.UPDATE_GITHUB_TOKEN ||
+    env.GH_TOKEN ||
+    env.GITHUB_TOKEN ||
+    ''
+  ).trim()
+  return { backendUrl, testUser, updateOwner, updateRepo, updateToken }
 }
 
 const CONFIG = loadConfig()
@@ -662,6 +688,13 @@ app.whenReady().then(() => {
     const result = await dialog.showOpenDialog(win!, options)
     return result.canceled ? [] : result.filePaths
   })
+  ipcMain.handle('updater:getStatus', () => getUpdateStatus())
+  ipcMain.handle('updater:install', () => installAvailableUpdate())
+  startUpdater({
+    owner: CONFIG.updateOwner,
+    repo: CONFIG.updateRepo,
+    token: CONFIG.updateToken
+  })
 
   createWindow()
 
@@ -673,6 +706,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   notifyGuard.stop()
   agentSidecar.stop()
+  stopUpdater()
 })
 
 app.on('window-all-closed', () => {

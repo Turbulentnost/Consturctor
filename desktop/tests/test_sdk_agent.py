@@ -366,6 +366,8 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert "settleRun" in text
     assert "playbookDraftReady" in text
     assert "interviewDraftReady" in text
+    assert "modelParamsFor" in text
+    assert 'value: "xhigh"' in text
     assert "testsPassReady" in text
     assert "thought +=" in text
     assert "finishIfReady" in text
@@ -515,7 +517,12 @@ def test_node_version_parser() -> None:
 
 
 def test_default_sdk_model_is_grok_46() -> None:
+    from app.sdk_agent.bridge import REGULATION_SDK_MODEL, REGULATION_SDK_MODEL_PARAMS
+
     assert DEFAULT_SDK_MODEL == "grok-4.6"
+    assert REGULATION_SDK_MODEL == "grok-4.6"
+    assert {"id": "effort", "value": "xhigh"} in list(REGULATION_SDK_MODEL_PARAMS)
+    assert {"id": "fast", "value": "true"} in list(REGULATION_SDK_MODEL_PARAMS)
 
 
 def test_turboproject_empty_call_is_sampled_for_agent() -> None:

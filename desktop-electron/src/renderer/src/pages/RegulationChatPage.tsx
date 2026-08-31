@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import { ApiError, type AgentEvent, type RegulationCreationSession, type RegulationCreationTurn } from '../api/types'
@@ -8,7 +8,7 @@ import iconAttention from '@agent-icons/agent-attention-animated.svg?raw'
 import iconCompleted from '@agent-icons/agent-completed-animated.svg?raw'
 import iconWorking from '@agent-icons/agent-working-animated.svg?raw'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
-import { extractInterviewAnswer, visibleAssistantText } from '../utils/regulationChat'
+import { extractInterviewAnswer, isReplacementGarbage, visibleAssistantText } from '../utils/regulationChat'
 
 type AgentPhase = 'working' | 'attention' | 'completed'
 
@@ -17,7 +17,9 @@ interface RegulationChatPageProps {
   onSessionChange: (session: RegulationCreationSession) => void
   onReady: (session: RegulationCreationSession) => void | Promise<void>
   onBack: () => void
+  onStopped?: () => void
   onBusyChange?: (busy: boolean) => void
+  banner?: ReactNode
 }
 
 interface PendingFile {
@@ -118,11 +120,37 @@ function attachmentsOf(structured: Record<string, unknown>): string[] {
     .filter(Boolean)
 }
 
+class RegulationCancelledError extends Error {
+  constructor() {
+    super('cancelled')
+    this.name = 'RegulationCancelledError'
+  }
+}
+
+function isRegulationCancelled(err: unknown): boolean {
+  if (err instanceof RegulationCancelledError) return true
+  if (err instanceof Error && err.name === 'RegulationCancelledError') return true
+  return false
+}
+
 function waitForRegulationSdk(
   runId: string,
-  onEvent: (type: string, text: string) => void
+  onEvent: (type: string, text: string) => void,
+  signal?: AbortSignal
 ): Promise<{ answer: string; agentId: string }> {
   return new Promise((resolve, reject) => {
+    const finish = (action: () => void): void => {
+      off()
+      signal?.removeEventListener('abort', onAbort)
+      action()
+    }
+    const onAbort = (): void => {
+      finish(() => reject(new RegulationCancelledError()))
+    }
+    if (signal?.aborted) {
+      reject(new RegulationCancelledError())
+      return
+    }
     const off = agentClient.onEvent((event: AgentEvent) => {
       if (event.runId && event.runId !== runId) return
       if (event.type === 'event' && event.payload) {
@@ -132,23 +160,32 @@ function waitForRegulationSdk(
         if (text) onEvent(kind, text)
       }
       if (event.type === 'result') {
-        off()
-        resolve({
-          answer: String(event.answer || ''),
-          agentId: String(event.agentId || '')
-        })
+        if (signal?.aborted) {
+          finish(() => reject(new RegulationCancelledError()))
+          return
+        }
+        finish(() =>
+          resolve({
+            answer: String(event.answer || ''),
+            agentId: String(event.agentId || '')
+          })
+        )
         return
       }
       if (event.type === 'error') {
-        const recovered = extractInterviewAnswer(event.message || '')
-        off()
-        if (recovered) {
-          resolve({ answer: recovered, agentId: '' })
+        if (signal?.aborted || String(event.code || '') === 'cancelled') {
+          finish(() => reject(new RegulationCancelledError()))
           return
         }
-        reject(new Error(event.message || 'Ошибка локального агента'))
+        const recovered = extractInterviewAnswer(event.message || '')
+        if (recovered) {
+          finish(() => resolve({ answer: recovered, agentId: '' }))
+          return
+        }
+        finish(() => reject(new Error(event.message || 'Ошибка локального агента')))
       }
     })
+    signal?.addEventListener('abort', onAbort)
   })
 }
 
@@ -180,7 +217,9 @@ export function RegulationChatPage({
   onSessionChange,
   onReady,
   onBack,
-  onBusyChange
+  onStopped,
+  onBusyChange,
+  banner
 }: RegulationChatPageProps): React.JSX.Element {
   const [input, setInput] = useState('')
   const [placeholder, setPlaceholder] = useState(DEFAULT_PLACEHOLDER)
@@ -193,6 +232,9 @@ export function RegulationChatPage({
   const pinnedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const resumeKeyRef = useRef('')
+  const runIdRef = useRef('')
+  const abortRef = useRef<AbortController | null>(null)
+  const stoppedRef = useRef(false)
 
   useEffect(() => {
     setError('')
@@ -201,6 +243,9 @@ export function RegulationChatPage({
     setFilesOpen(false)
     setInput('')
     setPlaceholder(DEFAULT_PLACEHOLDER)
+    stoppedRef.current = false
+    abortRef.current = null
+    runIdRef.current = ''
   }, [session.draftId])
 
   useEffect(() => {
@@ -264,9 +309,24 @@ export function RegulationChatPage({
     pinnedRef.current = distance < 80
   }
 
+  async function stopGeneration(): Promise<void> {
+    if (!busy) return
+    stoppedRef.current = true
+    abortRef.current?.abort()
+    if (runIdRef.current) {
+      agentClient.cancel(runIdRef.current)
+      runIdRef.current = ''
+    }
+    setBusy(false)
+    setError('')
+    await api.terminateRegulationCreationSessions()
+    onStopped?.()
+  }
+
   async function send(text: string, files: PendingFile[]): Promise<void> {
     const message = text.trim()
     if ((!message && files.length === 0) || busy) return
+    stoppedRef.current = false
     setInput('')
     setPlaceholder(DEFAULT_PLACEHOLDER)
     setError('')
@@ -293,7 +353,7 @@ export function RegulationChatPage({
       const onStreamEvent = (type: string, text: string): void => {
         if (type === 'error' && text) setError(text)
       }
-      if (window.agent?.start) {
+      if (typeof window.agent.start === 'function') {
         let turn: RegulationCreationTurn
         try {
           turn = await api.persistRegulationCreationTurn(session.draftId, message, filePaths)
@@ -308,12 +368,14 @@ export function RegulationChatPage({
             (event) => onStreamEvent(event.type, event.text || event.message || '')
           )
           persisted = true
+          if (stoppedRef.current) throw new RegulationCancelledError()
           setAttachments([])
           setFilesOpen(false)
           onSessionChange(updated)
           return
         }
         persisted = true
+        if (stoppedRef.current) throw new RegulationCancelledError()
         setAttachments([])
         setFilesOpen(false)
         onSessionChange(turn.session)
@@ -326,11 +388,16 @@ export function RegulationChatPage({
           (event) => onStreamEvent(event.type, event.text || event.message || '')
         )
         persisted = true
+        if (stoppedRef.current) throw new RegulationCancelledError()
         setAttachments([])
         setFilesOpen(false)
         onSessionChange(updated)
       }
     } catch (err) {
+      if (isRegulationCancelled(err) || stoppedRef.current) {
+        if (!persisted) onSessionChange({ ...session, status: 'idle' })
+        return
+      }
       setError(err instanceof ApiError ? err.message : 'Ошибка отправки сообщения')
       if (persisted) {
         try {
@@ -401,6 +468,9 @@ export function RegulationChatPage({
       : ''
 
   async function runSdkAndApply(turn: RegulationCreationTurn): Promise<void> {
+    if (stoppedRef.current) throw new RegulationCancelledError()
+    const abort = new AbortController()
+    abortRef.current = abort
     const runId = agentClient.start({
       kind: 'regulation_creation',
       draftId: session.draftId,
@@ -409,26 +479,48 @@ export function RegulationChatPage({
       interview: turn.interview,
       resumeAgentId: turn.sdkAgentId || session.sdkAgentId
     })
-    const sdk = await waitForRegulationSdk(runId, (type, text) => {
-      if (type === 'error' && text) setError(text)
-    })
-    const answer = extractInterviewAnswer(sdk.answer) || sdk.answer
-    const updated = await api.applyRegulationCreationReply(session.draftId, answer, {
-      sdkAgentId: sdk.agentId || turn.sdkAgentId,
-      forceCreate: turn.forceCreate
-    })
-    onSessionChange(updated)
+    runIdRef.current = runId
+    try {
+      const sdk = await waitForRegulationSdk(
+        runId,
+        (type, text) => {
+          if (type === 'error' && text) setError(text)
+        },
+        abort.signal
+      )
+      if (abort.signal.aborted || stoppedRef.current) {
+        throw new RegulationCancelledError()
+      }
+      const answer = extractInterviewAnswer(sdk.answer) || sdk.answer
+      const visibleText = visibleAssistantText(answer) || answer
+      if (!answer || isReplacementGarbage(visibleText)) {
+        throw new Error('Агент вернул нечитаемый ответ. Попробуйте ещё раз.')
+      }
+      const updated = await api.applyRegulationCreationReply(session.draftId, answer, {
+        sdkAgentId: sdk.agentId || turn.sdkAgentId,
+        forceCreate: turn.forceCreate
+      })
+      if (abort.signal.aborted || stoppedRef.current) {
+        throw new RegulationCancelledError()
+      }
+      onSessionChange(updated)
+    } finally {
+      if (abortRef.current === abort) abortRef.current = null
+      if (runIdRef.current === runId) runIdRef.current = ''
+    }
   }
 
   async function continuePendingTurn(): Promise<void> {
-    if (busy || ready) return
+    if (busy || ready || stoppedRef.current) return
     setError('')
     setBusy(true)
     pinnedRef.current = true
     try {
       const turn = await api.peekRegulationCreationTurn(session.draftId)
+      if (stoppedRef.current) throw new RegulationCancelledError()
       await runSdkAndApply(turn)
     } catch (err) {
+      if (isRegulationCancelled(err) || stoppedRef.current) return
       setError(err instanceof ApiError ? err.message : 'Не удалось получить вопрос ИИ')
     } finally {
       setBusy(false)
@@ -436,7 +528,7 @@ export function RegulationChatPage({
   }
 
   useEffect(() => {
-    if (busy || ready || !pendingUserId || !window.agent?.start) return
+    if (busy || ready || stoppedRef.current || !pendingUserId || !window.agent?.start) return
     const key = `${session.draftId}:${pendingUserId}`
     if (resumeKeyRef.current === key) return
     resumeKeyRef.current = key
@@ -465,6 +557,7 @@ export function RegulationChatPage({
           Ответьте на вопросы, и ИИ подготовит регламент в стиле ваших документов
         </div>
       </div>
+      {banner ? <div className="regchat-banner">{banner}</div> : null}
 
       <div className="regchat-stage">
         <div
@@ -670,18 +763,30 @@ export function RegulationChatPage({
                     />
                   </svg>
                 </button>
-                <button
-                  className="regchat-send-btn"
-                  onClick={() => void send(input, attachments)}
-                  disabled={busy || (!input.trim() && attachments.length === 0)}
-                  title="Отправить"
-                  aria-label="Отправить"
-                  type="button"
-                >
-                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
-                    <path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </button>
+                {busy ? (
+                  <button
+                    className="regchat-send-btn stop"
+                    onClick={() => void stopGeneration()}
+                    title="Остановить"
+                    aria-label="Остановить"
+                    type="button"
+                  >
+                    <span className="regchat-stop-icon" />
+                  </button>
+                ) : (
+                  <button
+                    className="regchat-send-btn"
+                    onClick={() => void send(input, attachments)}
+                    disabled={!input.trim() && attachments.length === 0}
+                    title="Отправить"
+                    aria-label="Отправить"
+                    type="button"
+                  >
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+                      <path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                )}
               </div>
             </div>
               </div>

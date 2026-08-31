@@ -175,6 +175,7 @@ input {
   flex-direction: column;
   gap: 8px;
   width: 100%;
+  flex-shrink: 0;
 }
 .nav-item {
   display: flex;
@@ -217,6 +218,84 @@ input {
 .sidebar.collapsed .nav-label,
 .sidebar.collapsed .sidebar-title {
   display: none;
+}
+.sidebar-update {
+  width: 100%;
+  margin-top: 10px;
+  flex-shrink: 0;
+}
+.sidebar-update-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  width: 100%;
+  border: none;
+  border-radius: 16px;
+  padding: 0 18px;
+  background: rgba(98, 224, 190, 0.28);
+  color: var(--text-light);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  box-sizing: border-box;
+}
+.sidebar-update-btn:hover {
+  background: rgba(98, 224, 190, 0.42);
+}
+.sidebar-update-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--mint);
+  color: #04342c;
+  font-size: 14px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sidebar.collapsed .sidebar-update-btn {
+  padding: 0;
+}
+.sidebar-update-progress {
+  position: relative;
+  height: 44px;
+  width: 100%;
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(91, 160, 143, 0.28);
+}
+.sidebar-update-progress-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: rgba(98, 224, 190, 0.55);
+  font-style: normal;
+  transition: width 0.2s ease;
+}
+.sidebar-update-progress.indeterminate .sidebar-update-progress-bar {
+  width: 42%;
+  animation: sidebar-update-slide 1.2s ease-in-out infinite;
+}
+.sidebar-update-progress-label {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-light);
+  font-size: 13px;
+  font-weight: 600;
+}
+@keyframes sidebar-update-slide {
+  0% {
+    transform: translateX(-80%);
+  }
+  100% {
+    transform: translateX(240%);
+  }
 }
 .sidebar-divider {
   height: 1px;
@@ -1458,6 +1537,17 @@ input {
   font-size: 13px;
   padding-right: 240px;
 }
+.regchat-banner {
+  position: relative;
+  z-index: 2;
+  flex-shrink: 0;
+  background: #fff;
+  margin: 0 -36px;
+  padding: 0 36px 12px;
+}
+.regchat-banner .run-banner-carousel {
+  margin: 0;
+}
 .regchat-force {
   height: 36px;
   padding: 0 16px;
@@ -1919,6 +2009,20 @@ input {
 .regchat-send-btn:disabled {
   background: #a8c8bf;
   cursor: default;
+}
+.regchat-send-btn.stop {
+  background: #08745f;
+  cursor: pointer;
+}
+.regchat-send-btn.stop:hover {
+  background: #0a8670;
+}
+.regchat-stop-icon {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #fff;
+  display: block;
 }
 
 /* ---------- Formation banner (background agent formation) ---------- */

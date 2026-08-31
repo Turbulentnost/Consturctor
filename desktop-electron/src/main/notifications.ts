@@ -17,6 +17,7 @@ export interface ToastPayload {
   workflowId?: string
   runId?: string
   requestId?: string
+  draftId?: string
 }
 
 export interface HitlToastDecision {
@@ -51,7 +52,11 @@ function focusAppWindows(): void {
 
 function openFromToast(payload: ToastPayload): void {
   focusAppWindows()
-  const open = { workflowId: payload.workflowId || '', runId: payload.runId || '' }
+  const open = {
+    workflowId: payload.workflowId || '',
+    runId: payload.runId || '',
+    draftId: payload.draftId || ''
+  }
   toastHooks.onOpen?.(open)
   notifyWindows('notification:open', open)
 }

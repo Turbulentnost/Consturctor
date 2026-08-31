@@ -21,6 +21,11 @@ from app.sdk_agent.tool_adapter import (
 from app.tools import ToolHostError
 
 DEFAULT_SDK_MODEL = "grok-4.6"
+REGULATION_SDK_MODEL = "grok-4.6"
+REGULATION_SDK_MODEL_PARAMS = (
+    {"id": "effort", "value": "xhigh"},
+    {"id": "fast", "value": "true"},
+)
 LARGE_TOOL_RESULT_BYTES = 6_000
 ENVELOPE_LIST_MIN = 50
 EXTERNALIZED_NEXT_STEP = (
@@ -183,6 +188,7 @@ class CursorSdkBridge:
         prompt: str,
         workflow_id: str,
         model: str = "",
+        model_params: list[dict[str, str]] | None = None,
         cwd: str = "",
         mode: str = "run",
         tools: list[dict[str, Any]] | None = None,
@@ -218,15 +224,31 @@ class CursorSdkBridge:
         self._process = process
         try:
             final: dict[str, Any] | None = None
+            interview = mode == "interview"
+            run_model = (
+                model
+                or (
+                    os.getenv("CURSOR_REGULATION_SDK_MODEL", REGULATION_SDK_MODEL)
+                    if interview
+                    else os.getenv("CURSOR_SDK_MODEL", DEFAULT_SDK_MODEL)
+                )
+            )
+            if model_params is not None:
+                run_params = list(model_params)
+            elif interview:
+                run_params = [dict(item) for item in REGULATION_SDK_MODEL_PARAMS]
+            else:
+                run_params = []
             self._send(
                 process,
                 {
                     "type": "run",
                     "id": run_id,
                     "prompt": prompt,
-                    "model": model or os.getenv("CURSOR_SDK_MODEL", DEFAULT_SDK_MODEL),
+                    "model": run_model,
+                    "modelParams": run_params,
                     "cwd": run_cwd,
-                    "mode": "interview" if mode == "interview" else "design" if mode == "design" else "run",
+                    "mode": "interview" if interview else "design" if mode == "design" else "run",
                     "tools": sdk_tool_specs() if tools is None else tools,
                     "resumeAgentId": agent_id or None,
                     "workflowId": workflow_id,

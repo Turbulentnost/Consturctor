@@ -10,6 +10,7 @@ type EventSink = (message: AgentSidecarMessage) => void
 const START_TYPES = new Set([
   'design',
   'readiness',
+  'regulation_creation',
   'demo',
   'run',
   'check_trigger',

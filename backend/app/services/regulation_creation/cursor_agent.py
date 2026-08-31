@@ -25,10 +25,13 @@ __all__ = [
 def create_agent(prompt: str) -> tuple[str, str]:
     data = cursor_client.create_agent(
         prompt=prompt,
-        model_id=settings.cursor_regulation_model,
+        model_id=settings.cursor_regulation_creation_model,
         name="Создание регламента",
         mode="agent",
-        model_params=[{"id": "fast", "value": "true"}],
+        model_params=[
+            {"id": "effort", "value": settings.cursor_regulation_creation_effort},
+            {"id": "fast", "value": "true"},
+        ],
     )
     agent = data.get("agent") if isinstance(data.get("agent"), dict) else {}
     run = data.get("run") if isinstance(data.get("run"), dict) else {}
