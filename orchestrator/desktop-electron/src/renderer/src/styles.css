@@ -5541,11 +5541,13 @@ button.feed-tool-head:hover {
   gap: 18px;
 }
 .wf-left {
+  --wf-dock-space: 72px;
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
   background: #fff;
   border: 1px solid var(--card-border);
   border-radius: 18px;
@@ -5566,10 +5568,16 @@ button.feed-tool-head:hover {
 .wf-feed-wrap .agent-feed {
   padding-left: 0;
   padding-right: 6px;
+  padding-bottom: var(--wf-dock-space);
 }
 .wf-dock {
   width: min(640px, 100%);
-  align-self: center;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  right: auto;
+  bottom: 36px;
+  z-index: 3;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -5663,11 +5671,12 @@ button.feed-tool-head:hover {
   background: none;
   resize: none;
   min-height: 24px;
-  max-height: 120px;
+  max-height: 260px;
   font: inherit;
   color: var(--main-text);
   outline: none;
   padding: 6px 2px;
+  overflow-y: hidden;
 }
 .wf-composer-input:disabled {
   color: var(--content-muted);
@@ -5696,6 +5705,11 @@ button.feed-tool-head:hover {
   color: var(--content-muted);
   min-width: 0;
   flex-wrap: nowrap;
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 14px;
+  z-index: 4;
 }
 .wf-status-text {
   flex: 1;

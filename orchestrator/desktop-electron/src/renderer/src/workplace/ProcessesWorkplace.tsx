@@ -16,6 +16,7 @@ const STATUS_BADGE: Record<ProcessStatus, string> = {
   ERROR: 'Ошибка'
 }
 const STATUS_FILTER_ORDER: ProcessStatus[] = ['READY', 'ACTIVE', 'WAITING_HUMAN', 'PAUSED', 'ERROR']
+const DEFAULT_PLAN_PERCENT = 95
 
 const MONTHS_SHORT = ['янв.', 'февр.', 'мар.', 'апр.', 'мая', 'июн.', 'июл.', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.']
 
@@ -34,6 +35,7 @@ function runStatusLabel(status: string): string {
   const value = (status || '').toLowerCase()
   if (value === 'ok' || value === 'done' || value === 'completed') return 'Выполнен'
   if (value === 'running' || value === 'active') return 'В работе'
+  if (value === 'started') return 'Запущен'
   if (value === 'waiting_human' || value === 'hitl' || value === 'waiting') return 'Ждёт решения'
   if (value === 'canceled' || value === 'cancelled') return 'Отменён'
   if (value === 'error' || value === 'failed') return 'Ошибка'
@@ -170,7 +172,8 @@ function ProcessCard({
 }): React.JSX.Element {
   const board = agent.boardAgent
   const deadline = formatDeadline(board?.nextRunAt || '')
-  const score = kpiScore(kpi)
+  const factPercent = kpiScore(kpi)
+  const planFactLabel = `${DEFAULT_PLAN_PERCENT}% / ${factPercent != null ? `${factPercent}%` : '—'}`
   const auto = automationRate(events)
   const lastStart = parseIso(board?.lastRunAt || '')
   const nextStart = parseIso(board?.nextRunAt || '')
@@ -305,7 +308,7 @@ function ProcessCard({
         <footer className="proc-kpis">
           <div>
             <span>План / факт</span>
-            <strong>{score != null ? `${score}%` : '—'}</strong>
+            <strong>{planFactLabel}</strong>
           </div>
           <div>
             <span>Статус прогона</span>
@@ -359,9 +362,13 @@ export function ProcessesWorkplace({
 
   useEffect(() => {
     let alive = true
+    const workflowAgents = agents.filter((item) => !item.standalone)
     void Promise.all(
-      agents.map(async (item) => {
-        const kpi = await api.getWorkflowKpi(item.workflowId).catch(() => null)
+      workflowAgents.map(async (item) => {
+        let kpi = await api.getWorkflowKpi(item.workflowId).catch(() => null)
+        if (kpiScore(kpi) == null) {
+          kpi = await api.calculateWorkflowKpi(item.workflowId).catch(() => kpi)
+        }
         return [item.workflowId, kpi] as const
       })
     ).then((pairs) => {
@@ -386,7 +393,9 @@ export function ProcessesWorkplace({
     ).then((pairs) => {
       if (!alive) return
       const next: Record<string, AgentRunHistoryItem | null> = {}
-      for (const [id, run] of pairs) next[id] = run
+      for (const [id, run] of pairs) {
+        next[id] = run
+      }
       setLatestRunById(next)
     })
     return () => {

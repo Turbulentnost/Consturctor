@@ -18,6 +18,8 @@ interface AgentRunPageProps {
   onOpenHistory?: (workflowId: string, title: string) => void
 }
 
+const MAX_COMPOSER_LINES = 10
+
 
 function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
   const name = file.name || 'file'
@@ -80,6 +82,9 @@ export function AgentRunPage({
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<string[]>([])
   const [files, setFiles] = useState<WorkflowFileItem[]>([])
+  const leftRef = useRef<HTMLDivElement | null>(null)
+  const dockRef = useRef<HTMLDivElement | null>(null)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const resumeAgentRef = useRef<string>(entry?.resumeAgentId || '')
   const autoStartedRef = useRef(false)
 
@@ -207,6 +212,47 @@ export function AgentRunPage({
     })
   }
 
+  const resizeComposer = useCallback((): void => {
+    const textarea = inputRef.current
+    if (!textarea) return
+    textarea.style.height = 'auto'
+    const style = window.getComputedStyle(textarea)
+    const lineHeight = Number.parseFloat(style.lineHeight) || 20
+    const paddingTop = Number.parseFloat(style.paddingTop) || 0
+    const paddingBottom = Number.parseFloat(style.paddingBottom) || 0
+    const maxHeight = Math.round(lineHeight * MAX_COMPOSER_LINES + paddingTop + paddingBottom)
+    const target = Math.min(textarea.scrollHeight, maxHeight)
+    textarea.style.height = `${Math.max(target, Math.round(lineHeight + paddingTop + paddingBottom))}px`
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden'
+  }, [])
+
+  useEffect(() => {
+    resizeComposer()
+  }, [input, resizeComposer])
+
+  useEffect(() => {
+    const host = leftRef.current
+    const dock = dockRef.current
+    if (!host || !dock) return
+    const updateDockSpace = (): void => {
+      const dockHeight = Math.ceil(dock.getBoundingClientRect().height)
+      const reserved = Math.max(72, dockHeight + 20)
+      host.style.setProperty('--wf-dock-space', `${reserved}px`)
+    }
+    updateDockSpace()
+    let observer: ResizeObserver | null = null
+    if ('ResizeObserver' in window) {
+      observer = new ResizeObserver(() => updateDockSpace())
+      observer.observe(dock)
+    }
+    window.addEventListener('resize', updateDockSpace)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', updateDockSpace)
+      host.style.removeProperty('--wf-dock-space')
+    }
+  }, [])
+
   const temporaryFiles = useMemo(
     () => files.filter((file) => categoryOf(file) === 'temporary'),
     [files]
@@ -263,7 +309,7 @@ export function AgentRunPage({
       </div>
 
       <div className="wf-body">
-        <div className="wf-left">
+        <div className="wf-left" ref={leftRef}>
           <div className="wf-feed-wrap">
             <AgentFeed
               items={feedItems}
@@ -285,7 +331,7 @@ export function AgentRunPage({
               onSkip={() => runs.skip(workflowId)}
             />
           </div>
-          <div className="wf-dock">
+          <div className="wf-dock" ref={dockRef}>
             {attachments.length > 0 && (
               <div className="wf-attachments">
                 {attachments.map((path) => (
@@ -312,6 +358,7 @@ export function AgentRunPage({
                 📎
               </button>
               <textarea
+                ref={inputRef}
                 className="wf-composer-input"
                 placeholder="Что должен сделать агент?"
                 value={input}
