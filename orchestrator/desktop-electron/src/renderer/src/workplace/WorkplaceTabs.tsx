@@ -146,6 +146,9 @@ export function DecisionsTab({
 }: {
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
 }): React.JSX.Element {
+  // Nerd Fonts (GitHub ryanoasis/nerd-fonts, i_cod.sh):
+  // i_cod_eye = ""
+  const reviewIcon = ''
   const [query, setQuery] = useState('')
   const [agentFilter, setAgentFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'waiting' | 'done' | 'returned'>('all')
@@ -350,8 +353,8 @@ export function DecisionsTab({
           </div>
         </article>
         <article className="wp-decisions-kpi-card review">
-          <div className="wp-decisions-kpi-icon" aria-hidden>
-            ○
+          <div className="wp-decisions-kpi-icon nf-review" aria-hidden>
+            {reviewIcon}
           </div>
           <div>
             <p>На рассмотрении</p>

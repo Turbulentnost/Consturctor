@@ -320,6 +320,11 @@ function TaskTable({ tasks }: { tasks: DayTask[] }): React.JSX.Element {
   if (!tasks.length) {
     return <p className="wp-empty-plan">Плана на сегодня нет — карточку можно запустить вручную.</p>
   }
+  const sourceLabel = (source: DayTask['source']): string => {
+    if (source === 'agent') return 'Агент'
+    if (source === 'onec') return '1С'
+    return 'Человек'
+  }
   return (
     <table className="wp-task-table">
       <thead>
@@ -335,9 +340,15 @@ function TaskTable({ tasks }: { tasks: DayTask[] }): React.JSX.Element {
         {tasks.map((task) => (
           <tr key={task.id}>
             <td className="col-time">{task.time}</td>
-            <td className="col-task">{task.title}</td>
-            <td className="col-source">{TASK_SOURCE_LABEL[task.source]}</td>
-            <td className="col-due">{task.due}</td>
+            <td className="col-task" title={task.title}>
+              {task.title}
+            </td>
+            <td className="col-source" title={TASK_SOURCE_LABEL[task.source]}>
+              {sourceLabel(task.source)}
+            </td>
+            <td className="col-due" title={task.due}>
+              {task.due}
+            </td>
             <td className="col-status">
               <span className={`wp-pill wp-pill-${task.status}`}>{TASK_STATUS_LABEL[task.status]}</span>
             </td>

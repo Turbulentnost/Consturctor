@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { ClarifyCard } from './ClarifyCard'
 import { HitlCard } from './HitlCard'
 import { MarkdownBody } from './MarkdownBody'
+import { ToolCard } from './ToolCard'
 import { presentAgentText } from './formatAgentText'
 import type { FeedItem, PendingHitl, PendingQuestion } from './types'
 
@@ -51,7 +52,7 @@ function FeedRow({ item }: { item: FeedItem }): React.JSX.Element | null {
     case 'system':
       return <div className={`feed-system ${item.tone || 'info'}`}>{readableFeedText(item.text)}</div>
     case 'tool':
-      return null
+      return <ToolCard item={item} />
     case 'result':
       return (
         <div className="feed-result">

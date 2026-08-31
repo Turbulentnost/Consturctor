@@ -76,7 +76,8 @@ function emptyLiveEntry(
   workflowId: string,
   title: string,
   backendRunId = '',
-  runId: string | null = null
+  runId: string | null = null,
+  runningSinceMs: number | null = Date.now()
 ): RunEntry {
   return {
     workflowId,
@@ -87,6 +88,7 @@ function emptyLiveEntry(
       ...createRunState(),
       running: true,
       status: 'Агент работает…',
+      runningSinceMs,
       activeRunId: runId
     }
   }
@@ -134,6 +136,9 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         let state = outcome.state
         if (!state.activeRunId && event.type !== 'result' && event.type !== 'error') {
           state = { ...state, activeRunId: runId }
+        }
+        if (state.running && !state.runningSinceMs) {
+          state = { ...state, runningSinceMs: Date.now() }
         }
         const next: RunEntry = {
           ...entry,
@@ -188,6 +193,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         pendingHitl: null,
         running: true,
         status: forceRestart ? 'Перезапускаю агент…' : 'Агент запускается…',
+        runningSinceMs: Date.now(),
         activeRunId: runId
       }
       return {
@@ -234,7 +240,8 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
           state: {
             ...entry.state,
             pendingHitl: null,
-            status: approved ? 'Выполняю действие…' : 'Действие отклонено'
+            status: approved ? 'Выполняю действие…' : 'Действие отклонено',
+            runningSinceMs: approved ? entry.state.runningSinceMs || Date.now() : entry.state.runningSinceMs
           }
         }
       }
@@ -276,6 +283,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
           state: {
             ...current.state,
             running: false,
+            runningSinceMs: null,
             status: '',
             pendingQuestion: null,
             pendingHitl: null,
@@ -328,6 +336,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
                 state: {
                   ...entry.state,
                   running: false,
+                  runningSinceMs: null,
                   status: '',
                   items: pushSystem(entry.state.items, 'Локальный агент не запустил этот слот.', 'error')
                 }
@@ -341,6 +350,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       const historyItems = buildFeedItems(detail.events)
       const inFlight = isInFlightRunStatus(detail.item.status)
       const startedAt = Date.parse(detail.item.startedAt || '')
+      const startedMs = Number.isFinite(startedAt) ? startedAt : null
       const hung =
         inFlight &&
         !current?.state.activeRunId &&
@@ -382,6 +392,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
               ...entry.state,
               items: nextItems,
               running: inFlight && !hung,
+              runningSinceMs: inFlight && !hung ? startedMs || entry.state.runningSinceMs || Date.now() : null,
               status: inFlight && !hung ? entry.state.status || 'Агент работает…' : '',
               error: hung ? SDK_DEAD_ANSWER : entry.state.error
             }
@@ -421,6 +432,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             state: {
               ...existing.state,
               running: true,
+              runningSinceMs: existing.state.runningSinceMs || Date.now(),
               status: existing.state.status || 'Агент работает…'
             }
           }

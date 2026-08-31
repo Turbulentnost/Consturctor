@@ -117,8 +117,9 @@ input {
   width: 36px;
   height: 36px;
   border-radius: 18px;
-  background: var(--mint);
-  color: #0a2d5c;
+  background: #e8f1fb;
+  color: #1565c0;
+  border: 1px solid rgba(21, 101, 192, 0.28);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -257,7 +258,7 @@ input {
   width: 28px;
   height: 28px;
   border-radius: 14px;
-  background: rgba(98, 224, 190, 0.22);
+  background: rgba(88, 149, 232, 0.26);
   color: var(--text-light);
   font-size: 10px;
   font-weight: 600;
@@ -275,6 +276,15 @@ input {
   height: 100%;
   object-fit: cover;
   border-radius: 14px;
+}
+.sidebar-peer-avatar img,
+.fio-option-avatar img,
+.avatar-img,
+.messenger-head-avatar img,
+.messenger-side-avatar img,
+.regchat-avatar img,
+.sidebar-logo {
+  filter: grayscale(1) sepia(1) hue-rotate(175deg) saturate(3.2) brightness(1.06);
 }
 .sidebar-peer-meta {
   flex: 1;
@@ -944,7 +954,7 @@ input {
   width: 28px;
   height: 28px;
   border-radius: 14px;
-  background: rgba(98, 224, 190, 0.22);
+  background: rgba(88, 149, 232, 0.2);
   color: var(--text-light);
   font-size: 10px;
   font-weight: 700;
@@ -955,8 +965,8 @@ input {
   overflow: hidden;
 }
 .fio-popup:not(.dark) .fio-option-avatar {
-  background: #d8efe6;
-  color: #006b55;
+  background: #e8f1fb;
+  color: #1565c0;
 }
 .fio-option-avatar img {
   width: 100%;
@@ -3736,7 +3746,7 @@ button.feed-tool-head:hover {
   cursor: pointer;
 }
 .clarify-submit:disabled {
-  background: #c4d3cd;
+  background: #d7e6f8;
   cursor: default;
 }
 
@@ -4522,8 +4532,8 @@ button.feed-tool-head:hover {
   width: 44px;
   height: 44px;
   border-radius: 22px;
-  background: #d8efe6;
-  color: #006b55;
+  background: #e8f1fb;
+  color: #1565c0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5662,7 +5672,7 @@ button.feed-tool-head:hover {
   flex-shrink: 0;
 }
 .wf-send:disabled {
-  background: #c4d3cd;
+  background: #d7e6f8;
   opacity: 1;
   cursor: not-allowed;
 }
@@ -6749,6 +6759,12 @@ button.feed-tool-head:hover {
 .wp-decisions-kpi-card.review .wp-decisions-kpi-icon {
   color: #1a60d8;
 }
+.wp-decisions-kpi-card.review .wp-decisions-kpi-icon.nf-review {
+  font-family: 'Symbols Nerd Font Mono', 'Symbols Nerd Font', 'JetBrainsMono Nerd Font', monospace;
+  font-weight: 400;
+  font-size: 19px;
+  line-height: 1;
+}
 .wp-decisions-kpi-card.done .wp-decisions-kpi-icon {
   color: #0c8e53;
 }
@@ -7402,23 +7418,31 @@ button.feed-tool-head:hover {
   font-weight: 600;
 }
 .wp-task-table .col-time {
-  width: 78px;
+  width: 72px;
   white-space: nowrap;
 }
 .wp-task-table .col-task {
-  width: 40%;
+  width: auto;
+  min-width: 0;
 }
 .wp-task-table .col-source {
-  width: 170px;
+  width: 96px;
   white-space: nowrap;
 }
 .wp-task-table .col-due {
-  width: 140px;
+  width: 124px;
   white-space: nowrap;
 }
 .wp-task-table .col-status {
-  width: 110px;
+  width: 98px;
   white-space: nowrap;
+}
+.wp-task-table td.col-task,
+.wp-task-table td.col-source,
+.wp-task-table td.col-due {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .wp-empty-plan {
   margin: 12px 0 0;
@@ -7825,7 +7849,7 @@ button.feed-tool-head:hover {
 }
 .proc-kpis {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   border-top: 1px solid rgba(16, 20, 26, 0.06);
   padding: 12px 0 14px;

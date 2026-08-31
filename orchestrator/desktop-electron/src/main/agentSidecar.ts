@@ -184,6 +184,10 @@ export class AgentSidecar {
     const pathParts = [nodeDir, process.env.PATH || process.env.Path || ''].filter(Boolean)
     const browsersPath = join(desktopRoot, 'ms-playwright')
     const cursorEnv = cursorEnvFromDesktop(desktopRoot)
+    const localAppData = process.env.LOCALAPPDATA || process.env.APPDATA || ''
+    const orchestratorWorkspacesRoot = localAppData
+      ? join(localAppData, 'Orchestrator', 'agent_workspaces')
+      : ''
     if (!cursorEnv.CURSOR_API_KEY) {
       console.error('[agent-sidecar] CURSOR_API_KEY не найден в desktop/.env Constructor')
     } else {
@@ -196,6 +200,9 @@ export class AgentSidecar {
       PYTHONIOENCODING: 'utf-8',
       CONSTRUCTOR_SIDECAR: sidecar,
       CONSTRUCTOR_DESKTOP_ROOT: desktopRoot,
+      CONSTRUCTOR_INSTANCE: process.env.CONSTRUCTOR_INSTANCE || 'orchestrator',
+      CONSTRUCTOR_AGENT_WORKSPACES_ROOT:
+        process.env.CONSTRUCTOR_AGENT_WORKSPACES_ROOT || orchestratorWorkspacesRoot,
       CONSTRUCTOR_PYTHON: this.pythonCommand(),
       CONSTRUCTOR_NODE: node,
       PLAYWRIGHT_BROWSERS_PATH:

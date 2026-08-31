@@ -2087,18 +2087,35 @@ class Sidecar:
         answer = ""
         agent_id = resume_agent_id
         try:
-            result = bridge.run(
-                prompt=prompt,
-                # Personal base agent is intentionally detached from Constructor
-                # workflow entities, so tools must not receive workflow_id context.
-                workflow_id="",
-                cwd=run_cwd,
-                resume_agent_id=resume_agent_id,
-                on_event=self._forward_events(active, events),
-                on_question=active.gate.ask_question,
-                should_stop=active.stop.is_set,
-                confirm_writes=not autonomous,
-            )
+            try:
+                result = bridge.run(
+                    prompt=prompt,
+                    # Regular workflow runs must keep workflow context so tools,
+                    # workspace isolation and run history stay scoped correctly.
+                    workflow_id=workflow_id,
+                    cwd=run_cwd,
+                    resume_agent_id=resume_agent_id,
+                    on_event=self._forward_events(active, events),
+                    on_question=active.gate.ask_question,
+                    should_stop=active.stop.is_set,
+                    confirm_writes=not autonomous,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
+                    log(f"resume agent missing for {workflow_id}, retry fresh run")
+                    self._clear_stored_agent_id(workflow_id)
+                    result = bridge.run(
+                        prompt=prompt,
+                        workflow_id=workflow_id,
+                        cwd=run_cwd,
+                        resume_agent_id="",
+                        on_event=self._forward_events(active, events),
+                        on_question=active.gate.ask_question,
+                        should_stop=active.stop.is_set,
+                        confirm_writes=not autonomous,
+                    )
+                else:
+                    raise
             answer = str(result.get("answer") or "").strip()
             agent_id = str(result.get("agent_id") or resume_agent_id).strip()
             self._store_agent_id(workflow_id, agent_id)
@@ -2200,16 +2217,33 @@ class Sidecar:
         answer = ""
         agent_id = resume_agent_id
         try:
-            result = bridge.run(
-                prompt=prompt,
-                workflow_id=workflow_id,
-                cwd=run_cwd,
-                resume_agent_id=resume_agent_id,
-                on_event=self._forward_events(active, events),
-                on_question=active.gate.ask_question,
-                should_stop=active.stop.is_set,
-                confirm_writes=not autonomous,
-            )
+            try:
+                result = bridge.run(
+                    prompt=prompt,
+                    workflow_id=workflow_id,
+                    cwd=run_cwd,
+                    resume_agent_id=resume_agent_id,
+                    on_event=self._forward_events(active, events),
+                    on_question=active.gate.ask_question,
+                    should_stop=active.stop.is_set,
+                    confirm_writes=not autonomous,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
+                    log(f"personal resume agent missing for {workflow_id}, retry fresh run")
+                    self._personal_agent_ids.pop(workflow_id, None)
+                    result = bridge.run(
+                        prompt=prompt,
+                        workflow_id=workflow_id,
+                        cwd=run_cwd,
+                        resume_agent_id="",
+                        on_event=self._forward_events(active, events),
+                        on_question=active.gate.ask_question,
+                        should_stop=active.stop.is_set,
+                        confirm_writes=not autonomous,
+                    )
+                else:
+                    raise
             answer = str(result.get("answer") or "").strip()
             agent_id = str(result.get("agent_id") or resume_agent_id).strip()
             if agent_id:
@@ -2457,6 +2491,25 @@ class Sidecar:
                 return
             local["sdk_agent_id"] = agent_id
             self._api.update_workflow_local_run(workflow_id, local)
+        except ApiError:
+            pass
+
+    @staticmethod
+    def _is_missing_resume_agent_error(exc: Exception) -> bool:
+        text = str(exc or "").strip().lower()
+        return "agent " in text and " not found" in text
+
+    def _clear_stored_agent_id(self, workflow_id: str) -> None:
+        wid = (workflow_id or "").strip()
+        if not wid or _is_personal_agent(wid):
+            return
+        try:
+            record = self._api.get_workflow(wid)
+            local = dict(record.local_run or {})
+            if "sdk_agent_id" not in local:
+                return
+            local.pop("sdk_agent_id", None)
+            self._api.update_workflow_local_run(wid, local)
         except ApiError:
             pass
 

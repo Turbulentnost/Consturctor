@@ -8,6 +8,7 @@ import { useRuns } from '../store/runs'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { categoryOf, FILE_CATEGORY_LABELS, formatSize } from './filesGrouping'
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
+import { parseIso, sameDay } from '../utils/calendar'
 
 interface AgentRunPageProps {
   workflowId: string
@@ -82,17 +83,29 @@ export function AgentRunPage({
   const resumeAgentRef = useRef<string>(entry?.resumeAgentId || '')
   const autoStartedRef = useRef(false)
 
+  const isTodayFile = useCallback((item: WorkflowFileItem): boolean => {
+    const stamp = parseIso(item.createdAt)
+    if (!stamp) return false
+    return sameDay(stamp, new Date())
+  }, [])
+
   const refreshFiles = useCallback(async () => {
     if (personalAgent) {
       setFiles([])
       return
     }
     try {
-      setFiles(await api.listWorkflowFiles(workflowId))
+      const rows = await api.listWorkflowFiles(workflowId)
+      // Runtime panel keeps only today's files; older files stay available
+      // in run history and on the global files page.
+      const todayRows = rows
+        .filter((item) => isTodayFile(item))
+        .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
+      setFiles(todayRows)
     } catch {
       setFiles([])
     }
-  }, [workflowId, personalAgent])
+  }, [workflowId, personalAgent, isTodayFile])
 
   useEffect(() => {
     return agentClient.onEvent((event) => {
@@ -329,11 +342,11 @@ export function AgentRunPage({
 
         <div className="wf-right">
           <div className="wf-tabs">
-            <button className="wf-tab active">Файлы {files.length}</button>
+            <button className="wf-tab active">Файлы за сегодня {files.length}</button>
           </div>
           <div className="wf-right-body">
             {files.length === 0 ? (
-              <div className="wf-files-empty">Файлы не прикреплены</div>
+              <div className="wf-files-empty">Сегодня файлов пока нет</div>
             ) : (
               <div className="wf-file-groups">
                 <FileSection title={FILE_CATEGORY_LABELS.temporary} items={temporaryFiles} />

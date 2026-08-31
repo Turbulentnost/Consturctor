@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
-import type { AgentKpi, CalendarEvent } from '../api/types'
+import type { AgentKpi, AgentRunHistoryItem, CalendarEvent } from '../api/types'
 import { CardMenu } from '../components/agents/CardMenu'
-import { parseIso } from '../utils/calendar'
+import { humanWhen, parseIso } from '../utils/calendar'
 import { FilterBar } from './FilterBar'
 import { type ProcessStatus } from './labels'
 import { useWorkplaceData, type WorkplaceAgent } from './WorkplaceBoard'
@@ -20,6 +20,26 @@ const STATUS_FILTER_ORDER: ProcessStatus[] = ['READY', 'ACTIVE', 'WAITING_HUMAN'
 const MONTHS_SHORT = ['янв.', 'февр.', 'мар.', 'апр.', 'мая', 'июн.', 'июл.', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.']
 
 type SortKey = 'action' | 'name' | 'deadline'
+
+function latestRun(items: AgentRunHistoryItem[]): AgentRunHistoryItem | null {
+  if (!items.length) return null
+  return [...items].sort((left, right) => {
+    const leftAt = left.startedAt || left.finishedAt || ''
+    const rightAt = right.startedAt || right.finishedAt || ''
+    return rightAt.localeCompare(leftAt)
+  })[0]
+}
+
+function runStatusLabel(status: string): string {
+  const value = (status || '').toLowerCase()
+  if (value === 'ok' || value === 'done' || value === 'completed') return 'Выполнен'
+  if (value === 'running' || value === 'active') return 'В работе'
+  if (value === 'waiting_human' || value === 'hitl' || value === 'waiting') return 'Ждёт решения'
+  if (value === 'canceled' || value === 'cancelled') return 'Отменён'
+  if (value === 'error' || value === 'failed') return 'Ошибка'
+  if (!value) return 'Без статуса'
+  return status
+}
 
 function minutesLabel(ms: number): string {
   const minutes = Math.round(ms / 60_000)
@@ -50,12 +70,32 @@ function formatDeadline(iso: string): { when: string; left: string } | null {
   return { when, left: `через ${mins} мин.` }
 }
 
+function metricNumber(raw: unknown): number | null {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null
+  if (typeof raw !== 'string') return null
+  const cleaned = raw.replace(',', '.').replace(/[^\d.-]/g, '')
+  if (!cleaned) return null
+  const value = Number(cleaned)
+  return Number.isFinite(value) ? value : null
+}
+
 function kpiScore(kpi: AgentKpi | null): number | null {
   const scores = (kpi?.tiles || [])
     .map((tile) => tile.scorePercent)
     .filter((value): value is number => value != null)
-  if (!scores.length) return null
-  return Math.round(scores.reduce((acc, value) => acc + value, 0) / scores.length)
+  if (scores.length) return Math.round(scores.reduce((acc, value) => acc + value, 0) / scores.length)
+
+  // fallback: если scorePercent отсутствует, считаем план/факт по KPI-плиткам регламента
+  const ratios = (kpi?.tiles || [])
+    .map((tile) => {
+      const plan = metricNumber(tile.plan?.value)
+      const fact = metricNumber(tile.fact?.value)
+      if (plan == null || fact == null || plan <= 0) return null
+      return Math.round((fact / plan) * 100)
+    })
+    .filter((value): value is number => value != null)
+  if (!ratios.length) return null
+  return Math.round(ratios.reduce((acc, value) => acc + value, 0) / ratios.length)
 }
 
 function automationRate(events: CalendarEvent[]): number | null {
@@ -114,7 +154,8 @@ function ProcessCard({
   onHistory,
   onSchedule,
   onPause,
-  onResume
+  onResume,
+  latestRunInfo
 }: {
   agent: WorkplaceAgent
   kpi: AgentKpi | null
@@ -125,6 +166,7 @@ function ProcessCard({
   onSchedule: (workflowId: string, title: string) => void
   onPause: (workflowId: string) => void
   onResume: (workflowId: string) => void
+  latestRunInfo: AgentRunHistoryItem | null
 }): React.JSX.Element {
   const board = agent.boardAgent
   const deadline = formatDeadline(board?.nextRunAt || '')
@@ -134,12 +176,22 @@ function ProcessCard({
   const nextStart = parseIso(board?.nextRunAt || '')
   const lastEvent = [...events].sort((a, b) => (a.startAt > b.startAt ? -1 : 1))[0]
   const scheduled = parseIso(lastEvent?.startAt || '')
+  const agentDelayMs = lastStart && scheduled ? lastStart.getTime() - scheduled.getTime() : null
   const agentDelay =
-    lastStart && scheduled && lastStart.getTime() > scheduled.getTime()
-      ? minutesLabel(lastStart.getTime() - scheduled.getTime())
-      : null
-  const humanDelay =
-    agent.status === 'WAITING_HUMAN' && lastStart ? minutesLabel(Date.now() - lastStart.getTime()) : null
+    agentDelayMs != null
+      ? agentDelayMs > 0
+        ? minutesLabel(agentDelayMs)
+        : '0 мин'
+      : latestRunInfo
+        ? '0 мин'
+        : null
+  const humanDelayMs =
+    agent.status === 'WAITING_HUMAN' && lastStart
+      ? Date.now() - lastStart.getTime()
+      : nextStart && nextStart.getTime() < Date.now() && agent.status === 'READY'
+        ? Date.now() - nextStart.getTime()
+        : null
+  const humanDelay = humanDelayMs != null ? minutesLabel(Math.max(humanDelayMs, 0)) : latestRunInfo ? '0 мин' : null
   const mixed = agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR'
   const accent =
     agent.status === 'ERROR'
@@ -154,6 +206,10 @@ function ProcessCard({
   const progress = stageTotal ? Math.round((stageCurrent / stageTotal) * 100) : 0
   const version = (board?.phase || '').trim()
   const agentLive = board?.paused ? 'Пауза' : 'Активен'
+  const runStartedAt = parseIso(latestRunInfo?.startedAt || latestRunInfo?.finishedAt || '')
+  const runWhen = runStartedAt ? humanWhen(runStartedAt) : 'ещё не запускался'
+  const runStatus = runStatusLabel(latestRunInfo?.status || board?.lastRunStatus || '')
+  const runId = String(latestRunInfo?.runId || '').trim()
   const openChatLabel = `Перейти в чат ${agent.name}`
   const openChat = (): void => onOpen(agent.workflowId, agent.name)
   const stopCardClick: React.MouseEventHandler<HTMLElement> = (event): void => {
@@ -240,27 +296,35 @@ function ProcessCard({
             {version ? ` · ${version}` : ''}
           </strong>
           <small className={agent.paused ? '' : 'live'}>{agentLive}</small>
+          {!agent.standalone ? <small>Последний прогон: {runWhen}</small> : null}
+          {!agent.standalone ? <small>ID: {runId || 'нет'}</small> : null}
         </div>
       </div>
 
-      <footer className="proc-kpis">
-        <div>
-          <span>План / факт</span>
-          <strong>{score != null ? `${score}%` : '—'}</strong>
-        </div>
-        <div>
-          <span>Задержка агента</span>
-          <strong>{agentDelay || '—'}</strong>
-        </div>
-        <div>
-          <span>Задержка человека</span>
-          <strong>{humanDelay || (nextStart && nextStart.getTime() < Date.now() && agent.status === 'READY' ? minutesLabel(Date.now() - nextStart.getTime()) : '—')}</strong>
-        </div>
-        <div>
-          <span>Автоматизация</span>
-          <strong>{auto != null ? `${auto}%` : '—'}</strong>
-        </div>
-      </footer>
+      {!agent.standalone ? (
+        <footer className="proc-kpis">
+          <div>
+            <span>План / факт</span>
+            <strong>{score != null ? `${score}%` : '—'}</strong>
+          </div>
+          <div>
+            <span>Статус прогона</span>
+            <strong>{runStatus}</strong>
+          </div>
+          <div>
+            <span>Задержка агента</span>
+            <strong>{agentDelay || '—'}</strong>
+          </div>
+          <div>
+            <span>Задержка человека</span>
+            <strong>{humanDelay || '—'}</strong>
+          </div>
+          <div>
+            <span>Автоматизация</span>
+            <strong>{auto != null ? `${auto}%` : '—'}</strong>
+          </div>
+        </footer>
+      ) : null}
     </article>
   )
 }
@@ -290,6 +354,8 @@ export function ProcessesWorkplace({
   const [devOnly, setDevOnly] = useState(false)
   const [sort, setSort] = useState<SortKey>('action')
   const [kpiById, setKpiById] = useState<Record<string, AgentKpi | null>>({})
+  const [latestRunById, setLatestRunById] = useState<Record<string, AgentRunHistoryItem | null>>({})
+  const trackedAgentsCount = useMemo(() => agents.filter((item) => !item.standalone).length, [agents])
 
   useEffect(() => {
     let alive = true
@@ -303,6 +369,25 @@ export function ProcessesWorkplace({
       const next: Record<string, AgentKpi | null> = {}
       for (const [id, kpi] of pairs) next[id] = kpi
       setKpiById(next)
+    })
+    return () => {
+      alive = false
+    }
+  }, [agents])
+
+  useEffect(() => {
+    let alive = true
+    const workflowAgents = agents.filter((item) => !item.standalone)
+    void Promise.all(
+      workflowAgents.map(async (item) => {
+        const runs = await api.listAgentRuns(item.workflowId).catch(() => [] as AgentRunHistoryItem[])
+        return [item.workflowId, latestRun(runs)] as const
+      })
+    ).then((pairs) => {
+      if (!alive) return
+      const next: Record<string, AgentRunHistoryItem | null> = {}
+      for (const [id, run] of pairs) next[id] = run
+      setLatestRunById(next)
     })
     return () => {
       alive = false
@@ -345,7 +430,7 @@ export function ProcessesWorkplace({
           <h1 className="page-title">Процессы должности</h1>
           <div className="wp-sub">Полный перечень процессов и их текущее состояние</div>
         </div>
-        <span className="orch-badge">{loading ? 'загрузка' : `${agents.length} процессов`}</span>
+        <span className="orch-badge">{loading ? 'загрузка' : `${trackedAgentsCount} процессов`}</span>
       </div>
       {flash ? <div className="wp-toast">{flash}</div> : null}
       {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
@@ -413,6 +498,7 @@ export function ProcessesWorkplace({
             key={agent.id}
             agent={agent}
             kpi={kpiById[agent.workflowId] || null}
+            latestRunInfo={latestRunById[agent.workflowId] || null}
             events={board.events.filter((event) => event.workflowId === agent.workflowId)}
             onOpen={onOpen}
             onFiles={onFiles}

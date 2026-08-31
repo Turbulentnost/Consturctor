@@ -20,6 +20,7 @@ export interface RunState {
   items: FeedItem[]
   status: string
   running: boolean
+  runningSinceMs: number | null
   error: string
   pendingQuestion: PendingQuestion | null
   pendingHitl: PendingHitl | null
@@ -38,6 +39,7 @@ export function createRunState(): RunState {
     items: [],
     status: '',
     running: false,
+    runningSinceMs: null,
     error: '',
     pendingQuestion: null,
     pendingHitl: null,
@@ -515,6 +517,7 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
         state: {
           ...state,
           running: false,
+          runningSinceMs: null,
           status: '',
           pendingQuestion: null,
           pendingHitl: null,
@@ -548,6 +551,7 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
         state: {
           ...state,
           running: false,
+          runningSinceMs: null,
           status: '',
           error: finalMessage,
           pendingQuestion: null,
