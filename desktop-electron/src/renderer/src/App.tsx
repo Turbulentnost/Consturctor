@@ -100,6 +100,9 @@ export function App(): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   const kickedRef = useRef(false)
   const seenHitlRef = useRef<Set<string>>(new Set())
+  const [windowFocused, setWindowFocused] = useState(() =>
+    typeof document === 'undefined' ? true : document.hasFocus()
+  )
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
   const formation = useFormation()
   const runs = useRuns()
@@ -222,6 +225,17 @@ export function App(): React.JSX.Element {
     }
   }, [user?.id])
 
+  useEffect(() => {
+    const onFocus = (): void => setWindowFocused(true)
+    const onBlur = (): void => setWindowFocused(false)
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [])
+
   // A clicked OS toast (incoming notification) opens the related agent.
   useEffect(() => {
     const unsubscribe = window.api.onNotificationOpen?.((payload) => {
@@ -230,6 +244,17 @@ export function App(): React.JSX.Element {
     })
     return () => unsubscribe?.()
   }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.api.onNotificationHitl?.((payload) => {
+      const workflowId = payload?.workflowId || ''
+      const requestId = payload?.requestId || ''
+      if (!workflowId || !requestId) return
+      seenHitlRef.current.add(requestId)
+      runs.acknowledgeHitl(workflowId, requestId, Boolean(payload.approved))
+    })
+    return () => unsubscribe?.()
+  }, [runs])
 
   // The main process toasts incoming notifications; refresh the bell badge.
   useEffect(() => {
@@ -240,8 +265,9 @@ export function App(): React.JSX.Element {
     return () => unsubscribe?.()
   }, [user])
 
-  // When a tool needs approval while you are not on that agent's page, raise an
-  // OS toast so the pending HITL card is not missed (mirrors the desktop app).
+  // When a tool needs approval while you are not watching that agent, raise a
+  // Windows toast with Accept / Reject. Do not mark the request as shown while
+  // the user is still on the page, otherwise leaving the page silences it.
   useEffect(() => {
     const activeWorkflowId =
       view.kind === 'agentrun' || view.kind === 'history' || view.kind === 'studio'
@@ -249,18 +275,20 @@ export function App(): React.JSX.Element {
         : ''
     for (const entry of Object.values(runs.entries)) {
       const hitl = entry.state.pendingHitl
-      if (!hitl) continue
+      if (!hitl?.requestId) continue
       if (seenHitlRef.current.has(hitl.requestId)) continue
+      const watchingThisAgent = windowFocused && activeWorkflowId === entry.workflowId
+      if (watchingThisAgent) continue
       seenHitlRef.current.add(hitl.requestId)
-      const onThisAgent = activeWorkflowId === entry.workflowId
-      if (onThisAgent && document.hasFocus()) continue
       void window.api.showNotification?.({
         title: 'Агент ждёт подтверждения',
         body: `${entry.title || 'ИИ-агент'}: ${hitl.title || hitl.tool}`,
-        workflowId: entry.workflowId
+        workflowId: entry.workflowId,
+        runId: entry.state.activeRunId || entry.backendRunId || '',
+        requestId: hitl.requestId
       })
     }
-  }, [runs.entries, view])
+  }, [runs.entries, view, windowFocused])
 
   function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
     if (user && user.id !== result.user.id) {

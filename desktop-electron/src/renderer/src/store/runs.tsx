@@ -51,6 +51,8 @@ export interface RunStore {
   startRun: (opts: StartRunOptions) => string
   answer: (workflowId: string, requestId: string, value: string, filePaths?: string[], ok?: boolean) => void
   respondHitl: (workflowId: string, requestId: string, approved: boolean) => void
+  /** Apply a HITL decision that the main process already sent to the sidecar. */
+  acknowledgeHitl: (workflowId: string, requestId: string, approved: boolean) => void
   skip: (workflowId: string) => void
   cancel: (workflowId: string) => void
   clear: (workflowId: string) => void
@@ -210,8 +212,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     []
   )
 
-  const respondHitl = useCallback((workflowId: string, requestId: string, approved: boolean) => {
-    agentClient.hitl(requestId, approved)
+  const applyHitlDecision = useCallback((workflowId: string, approved: boolean) => {
     setEntries((prev) => {
       const entry = prev[workflowId]
       if (!entry) return prev
@@ -228,6 +229,17 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       }
     })
   }, [])
+
+  const respondHitl = useCallback((workflowId: string, requestId: string, approved: boolean) => {
+    agentClient.hitl(requestId, approved)
+    applyHitlDecision(workflowId, approved)
+  }, [applyHitlDecision])
+
+  const acknowledgeHitl = useCallback((workflowId: string, requestId: string, approved: boolean) => {
+    const pending = entriesRef.current[workflowId]?.state.pendingHitl
+    if (pending && pending.requestId && pending.requestId !== requestId) return
+    applyHitlDecision(workflowId, approved)
+  }, [applyHitlDecision])
 
   const skip = useCallback((workflowId: string) => {
     agentClient.skip('')
@@ -497,6 +509,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       startRun,
       answer,
       respondHitl,
+      acknowledgeHitl,
       skip,
       cancel,
       clear,
@@ -512,6 +525,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       startRun,
       answer,
       respondHitl,
+      acknowledgeHitl,
       skip,
       cancel,
       clear,

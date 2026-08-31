@@ -1926,8 +1926,9 @@ class Sidecar:
         active.gate.bind(workflow_id=workflow_id, kind="run")
         message = str(command.get("message") or "").strip()
         source = str(command.get("source") or "chat").strip() or "chat"
-        # Trigger/scheduled runs are headless: there is no UI to approve writes,
-        # so they run autonomously like the desktop HeadlessRunner.
+        # Trigger/scheduled runs have no file picker, but write tools still
+        # wait for a human. Electron shows a Windows toast with accept/reject
+        # when the user is not on the agent page.
         autonomous = source == "trigger"
         trigger_id = str(command.get("triggerId") or "").strip()
         evidence = str(command.get("evidence") or "").strip()
@@ -2004,7 +2005,7 @@ class Sidecar:
                 on_event=self._forward_events(active, events),
                 on_question=active.gate.ask_question,
                 should_stop=active.stop.is_set,
-                confirm_writes=not autonomous,
+                confirm_writes=True,
             )
             answer = str(result.get("answer") or "").strip()
             agent_id = str(result.get("agent_id") or resume_agent_id).strip()

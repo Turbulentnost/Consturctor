@@ -79,6 +79,7 @@ const api = {
     body?: string
     workflowId?: string
     runId?: string
+    requestId?: string
   }): Promise<{ ok: boolean }> => ipcRenderer.invoke('notify:show', payload),
   onNotificationOpen: (
     callback: (payload: { workflowId: string; runId: string }) => void
@@ -89,6 +90,25 @@ const api = {
     ipcRenderer.on('notification:open', listener)
     return () => {
       ipcRenderer.removeListener('notification:open', listener)
+    }
+  },
+  onNotificationHitl: (
+    callback: (payload: {
+      requestId: string
+      approved: boolean
+      workflowId: string
+      runId: string
+    }) => void
+  ): (() => void) => {
+    const listener = (
+      _event: unknown,
+      payload: { requestId: string; approved: boolean; workflowId: string; runId: string }
+    ): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('notification:hitl', listener)
+    return () => {
+      ipcRenderer.removeListener('notification:hitl', listener)
     }
   },
   onInboxChanged: (callback: (payload: { id: string }) => void): (() => void) => {

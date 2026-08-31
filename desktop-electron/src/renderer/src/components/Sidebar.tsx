@@ -25,7 +25,7 @@ const ITEMS: NavItem[] = [
   { key: 'agents', label: 'Мои агенты', icon: iconAgents },
   { key: 'files', label: 'Файлы', icon: iconFiles },
   { key: 'kpi', label: 'KPI агента', icon: iconKpi },
-  { key: 'orchestrator', label: 'Оркестратор', icon: iconOrchestrator }
+  { key: 'orchestrator', label: 'KPI сотрудника', icon: iconOrchestrator }
 ]
 
 function initials(fio: string): string {

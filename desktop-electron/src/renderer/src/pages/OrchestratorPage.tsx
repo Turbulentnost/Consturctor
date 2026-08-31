@@ -146,7 +146,7 @@ export function OrchestratorPage({ user }: OrchestratorPageProps): React.JSX.Ele
   return (
     <div className="orch-page">
       <div className="orch-head">
-        <h1 className="page-title">Оркестратор</h1>
+        <h1 className="page-title">KPI сотрудника</h1>
         <span className="orch-badge">{statusLabel(snap, busy)}</span>
       </div>
 

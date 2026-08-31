@@ -1,7 +1,13 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } from 'electron'
 import { join, basename, dirname, extname } from 'node:path'
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { NotificationGuard, showToast, type ToastPayload } from './notifications'
+import {
+  installToastActivation,
+  NotificationGuard,
+  setToastHooks,
+  showToast,
+  type ToastPayload
+} from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
 
 interface RequestOptions {
@@ -87,6 +93,10 @@ function loadConfig(): { backendUrl: string; testUser: boolean } {
 
 const CONFIG = loadConfig()
 
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.constructor.desktop')
+}
+
 function broadcastAgentEvent(message: AgentSidecarMessage): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('agent:event', message)
@@ -94,6 +104,16 @@ function broadcastAgentEvent(message: AgentSidecarMessage): void {
 }
 
 const agentSidecar = new AgentSidecar(CONFIG.backendUrl, broadcastAgentEvent)
+
+setToastHooks({
+  onHitl: (decision) => {
+    agentSidecar.send({
+      type: 'hitl',
+      requestId: decision.requestId,
+      approved: decision.approved
+    })
+  }
+})
 
 const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
   const kind = String(command.type || '')
@@ -519,6 +539,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  installToastActivation()
   console.log(`Constructor backend: ${CONFIG.backendUrl}`)
   ipcMain.handle('app:getConfig', () => ({
     backendUrl: CONFIG.backendUrl,

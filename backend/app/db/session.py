@@ -133,6 +133,23 @@ def _ensure_columns() -> None:
             conn.execute(
                 text("ALTER TABLE agent_runs ADD COLUMN trigger_reason TEXT NOT NULL DEFAULT ''")
             )
+        creation_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'regulation_creation_drafts'
+                """
+            )
+        ).fetchall()
+        creation_cols = {str(r[0]) for r in creation_rows}
+        if creation_cols and "interview_json" not in creation_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE regulation_creation_drafts "
+                    "ADD COLUMN interview_json JSON NOT NULL DEFAULT '{}'"
+                )
+            )
 
 
 def get_db() -> Generator[Session, None, None]:

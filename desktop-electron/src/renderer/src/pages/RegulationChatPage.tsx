@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { ApiError, type RegulationCreationSession } from '../api/types'
 import wallpaperUrl from '../assets/chat/wallpaper.png'
 import logoUrl from '../assets/logo.png'
+import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 
 interface RegulationChatPageProps {
   session: RegulationCreationSession
@@ -21,6 +22,15 @@ const EDIT_PLACEHOLDER = 'Измените предложенный вариан
 const FORCE_CREATE_PROMPT =
   'Создай регламент принудительно по текущей информации. ' +
   'Если каких-то данных не хватает, используй разумные типовые формулировки и явно отметь, что это предположение.'
+const WORKING_STATUS = 'Готовлю ответ...'
+
+function isProtocolChunk(text: string): boolean {
+  const value = text.trim()
+  if (!value) return true
+  if (/^[{}\[\]",:\s]+$/.test(value)) return true
+  if (value.startsWith('{') || value.startsWith('[')) return true
+  return /"(status|interview|document|quickAnswers|positions)"\s*:/.test(value)
+}
 
 function quickAnswers(structured: Record<string, unknown>): string[] {
   const raw = structured.quickAnswers
@@ -134,9 +144,9 @@ export function RegulationChatPage({
           if (event.type === 'thinking' && event.text) {
             setThinking((prev) => prev + event.text)
           } else if (event.type === 'assistant' && event.text) {
-            setStatus(event.text)
+            setStatus(isProtocolChunk(event.text) ? WORKING_STATUS : event.text)
           } else if (event.type === 'status') {
-            setStatus(event.text || 'Готовлю ответ...')
+            setStatus(event.text || WORKING_STATUS)
           } else if (event.type === 'error' && event.text) {
             setError(event.text)
           }
@@ -248,8 +258,9 @@ export function RegulationChatPage({
                     {names.length > 0 && (
                       <div className="regchat-attach-list">
                         {names.map((n, i) => (
-                          <span key={i} className="regchat-attach-chip">
-                            {'\uD83D\uDCCE'} {n}
+                          <span key={i} className="regchat-file-chip">
+                            <img className="regchat-file-icon" src={fileTypeIconSrc(n)} alt="" />
+                            <span className="regchat-file-name">{n}</span>
                           </span>
                         ))}
                       </div>
@@ -328,32 +339,26 @@ export function RegulationChatPage({
 
       {!ready && (
         <div className="regchat-composer">
-          {attachments.length > 0 && (
-            <div className="regchat-pending">
-              {attachments.map((f) => (
-                <span key={f.path} className="regchat-pending-chip">
-                  {'\uD83D\uDCCE'} {f.name}
-                  <button
-                    className="regchat-pending-remove"
-                    onClick={() => removeAttachment(f.path)}
-                    aria-label="Убрать файл"
-                  >
-                    {'\u00D7'}
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          <div className="regchat-input-row">
-            <button
-              className="regchat-attach-btn"
-              onClick={() => void pickFiles()}
-              disabled={busy}
-              title="Приложить файлы"
-              aria-label="Приложить файлы"
-            >
-              {'\uD83D\uDCCE'}
-            </button>
+          <div className="regchat-composer-box">
+            {attachments.length > 0 && (
+              <div className="regchat-pending">
+                {attachments.map((f) => (
+                  <span key={f.path} className="regchat-file-chip pending">
+                    <img className="regchat-file-icon" src={fileTypeIconSrc(f.name)} alt="" />
+                    <span className="regchat-file-name" title={f.name}>
+                      {f.name}
+                    </span>
+                    <button
+                      className="regchat-pending-remove"
+                      onClick={() => removeAttachment(f.path)}
+                      aria-label="Убрать файл"
+                    >
+                      {'\u00D7'}
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             <textarea
               ref={textareaRef}
               value={input}
@@ -368,14 +373,39 @@ export function RegulationChatPage({
               disabled={busy}
               rows={2}
             />
-            <button
-              className="btn-primary"
-              style={{ width: 120 }}
-              onClick={() => void send(input, attachments)}
-              disabled={busy}
-            >
-              Отправить
-            </button>
+            <div className="regchat-composer-tools">
+              <button
+                className="regchat-tool-btn"
+                onClick={() => void pickFiles()}
+                disabled={busy}
+                title="Приложить файлы"
+                aria-label="Приложить файлы"
+                type="button"
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden>
+                  <path
+                    d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              <button
+                className="regchat-send-btn"
+                onClick={() => void send(input, attachments)}
+                disabled={busy || (!input.trim() && attachments.length === 0)}
+                title="Отправить"
+                aria-label="Отправить"
+                type="button"
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+                  <path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       )}

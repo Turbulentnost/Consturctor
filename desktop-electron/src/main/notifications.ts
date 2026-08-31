@@ -16,29 +16,187 @@ export interface ToastPayload {
   body?: string
   workflowId?: string
   runId?: string
+  requestId?: string
+}
+
+export interface HitlToastDecision {
+  requestId: string
+  approved: boolean
+  workflowId: string
+  runId: string
+}
+
+export interface ToastHooks {
+  onOpen?: (payload: { workflowId: string; runId: string }) => void
+  onHitl?: (decision: HitlToastDecision) => void
+}
+
+let toastHooks: ToastHooks = {}
+const liveToasts = new Map<string, Notification>()
+const handledActivations = new Set<string>()
+let activationInstalled = false
+
+export function setToastHooks(hooks: ToastHooks): void {
+  toastHooks = hooks
+}
+
+function focusAppWindows(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  }
+}
+
+function openFromToast(payload: ToastPayload): void {
+  focusAppWindows()
+  const open = { workflowId: payload.workflowId || '', runId: payload.runId || '' }
+  toastHooks.onOpen?.(open)
+  notifyWindows('notification:open', open)
+}
+
+function decideHitl(payload: ToastPayload, approved: boolean): void {
+  const requestId = (payload.requestId || '').trim()
+  if (!requestId) {
+    openFromToast(payload)
+    return
+  }
+  const key = `${requestId}:${approved ? '1' : '0'}`
+  if (handledActivations.has(key)) return
+  handledActivations.add(key)
+  const toast = liveToasts.get(requestId)
+  if (toast) {
+    try {
+      toast.close()
+    } catch {
+      /* already dismissed */
+    }
+    liveToasts.delete(requestId)
+  }
+  const decision: HitlToastDecision = {
+    requestId,
+    approved,
+    workflowId: payload.workflowId || '',
+    runId: payload.runId || ''
+  }
+  toastHooks.onHitl?.(decision)
+  notifyWindows('notification:hitl', decision)
+  openFromToast(payload)
+}
+
+function escapeXml(value: string): string {
+  return (value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
+function parseHitlActivation(raw: string): { kind: 'open' | 'accept' | 'reject'; payload: ToastPayload } | null {
+  const text = (raw || '').trim()
+  if (!text.startsWith('constructor-hitl:')) return null
+  const rest = text.slice('constructor-hitl:'.length)
+  const q = rest.indexOf('?')
+  const kind = (q >= 0 ? rest.slice(0, q) : rest).trim()
+  const query = q >= 0 ? rest.slice(q + 1) : ''
+  const params = new URLSearchParams(query)
+  const payload: ToastPayload = {
+    title: '',
+    workflowId: params.get('wid') || '',
+    runId: params.get('rid') || '',
+    requestId: params.get('qid') || ''
+  }
+  if (kind === 'accept' || kind === 'reject' || kind === 'open') {
+    return { kind, payload }
+  }
+  return null
+}
+
+function hitlToastXml(title: string, body: string, payload: ToastPayload): string {
+  const qid = escapeXml(payload.requestId || '')
+  const wid = escapeXml(payload.workflowId || '')
+  const rid = escapeXml(payload.runId || '')
+  return (
+    `<toast launch="constructor-hitl:open?wid=${wid}&amp;rid=${rid}&amp;qid=${qid}" ` +
+    `activationType="foreground" duration="long" scenario="reminder">` +
+    `<visual><binding template="ToastGeneric">` +
+    `<text>${escapeXml(title)}</text>` +
+    `<text>${escapeXml(body)}</text>` +
+    `</binding></visual>` +
+    `<actions>` +
+    `<action content="Принять" arguments="constructor-hitl:accept?qid=${qid}&amp;wid=${wid}&amp;rid=${rid}" activationType="foreground"/>` +
+    `<action content="Отклонить" arguments="constructor-hitl:reject?qid=${qid}&amp;wid=${wid}&amp;rid=${rid}" activationType="foreground"/>` +
+    `</actions></toast>`
+  )
+}
+
+export function installToastActivation(): void {
+  if (activationInstalled) return
+  const handle = (
+    Notification as typeof Notification & {
+      handleActivation?: (callback: (details: {
+        type?: string
+        arguments?: string
+        actionIndex?: number
+      }) => void) => void
+    }
+  ).handleActivation
+  if (typeof handle !== 'function') return
+  activationInstalled = true
+  handle((details) => {
+    const parsed = parseHitlActivation(String(details?.arguments || ''))
+    if (!parsed) return
+    if (parsed.kind === 'accept') {
+      decideHitl(parsed.payload, true)
+      return
+    }
+    if (parsed.kind === 'reject') {
+      decideHitl(parsed.payload, false)
+      return
+    }
+    openFromToast(parsed.payload)
+  })
 }
 
 /**
  * Show a native OS toast and, on click, focus the app window and ask the
- * renderer to open the related agent. Mirrors the desktop winotify behavior.
+ * renderer to open the related agent. HITL toasts also get Accept / Reject.
  */
 export function showToast(payload: ToastPayload): void {
   const title = (payload.title || '').trim() || 'Уведомление'
+  const body = (payload.body || '').trim()
+  const requestId = (payload.requestId || '').trim()
   if (!Notification.isSupported()) {
     notifyWindows('notification:open', payload)
     return
   }
-  const toast = new Notification({ title, body: (payload.body || '').trim() })
-  toast.on('click', () => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (win.isMinimized()) win.restore()
-      win.show()
-      win.focus()
+  const options: Electron.NotificationConstructorOptions = {
+    title,
+    body,
+    timeoutType: requestId ? 'never' : 'default',
+    urgency: requestId ? 'critical' : 'normal'
+  }
+  if (requestId) {
+    options.id = requestId
+    options.actions = [
+      { type: 'button', text: 'Принять' },
+      { type: 'button', text: 'Отклонить' }
+    ]
+    if (process.platform === 'win32') {
+      options.toastXml = hitlToastXml(title, body, payload)
     }
-    notifyWindows('notification:open', {
-      workflowId: payload.workflowId || '',
-      runId: payload.runId || ''
-    })
+  }
+  const toast = new Notification(options)
+  if (requestId) liveToasts.set(requestId, toast)
+  toast.on('click', () => openFromToast(payload))
+  toast.on('action', (event: Electron.Event & { actionIndex?: number }, index?: number) => {
+    const actionIndex = typeof event?.actionIndex === 'number' ? event.actionIndex : (index ?? 0)
+    decideHitl(payload, actionIndex === 0)
+  })
+  toast.on('close', () => {
+    if (requestId) liveToasts.delete(requestId)
   })
   toast.show()
 }
