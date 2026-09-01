@@ -42,6 +42,22 @@ const WORKING_STATUS = 'Готовлю вопрос...'
 const COMPOSER_MIN_HEIGHT = 44
 const COMPOSER_MAX_HEIGHT = 129
 
+type BusyKind = 'reading' | 'question'
+
+function busyHeadLabel(kind: BusyKind, fileCount: number): string {
+  if (kind === 'reading') {
+    return fileCount > 1 ? 'Читаю документы' : 'Читаю документ'
+  }
+  return 'Готовит вопрос'
+}
+
+function busyStatusLabel(kind: BusyKind, fileCount: number): string {
+  if (kind === 'reading') {
+    return fileCount > 1 ? 'Читаю документы...' : 'Читаю документ...'
+  }
+  return WORKING_STATUS
+}
+
 function fileCountLabel(count: number): string {
   const mod10 = count % 10
   const mod100 = count % 100
@@ -230,6 +246,8 @@ export function RegulationChatPage({
   const [input, setInput] = useState('')
   const [placeholder, setPlaceholder] = useState(DEFAULT_PLACEHOLDER)
   const [busy, setBusy] = useState(false)
+  const [busyKind, setBusyKind] = useState<BusyKind>('question')
+  const [readingFileCount, setReadingFileCount] = useState(0)
   const [error, setError] = useState('')
   const [savedNote, setSavedNote] = useState('')
   const [attachments, setAttachments] = useState<PendingFile[]>([])
@@ -249,6 +267,8 @@ export function RegulationChatPage({
     setFilesOpen(false)
     setInput('')
     setPlaceholder(DEFAULT_PLACEHOLDER)
+    setBusyKind('question')
+    setReadingFileCount(0)
     stoppedRef.current = false
     abortRef.current = null
     runIdRef.current = ''
@@ -337,6 +357,8 @@ export function RegulationChatPage({
     setPlaceholder(DEFAULT_PLACEHOLDER)
     setError('')
     setBusy(true)
+    setBusyKind(files.length > 0 ? 'reading' : 'question')
+    setReadingFileCount(files.length)
     pinnedRef.current = true
     const optimistic: RegulationCreationSession = {
       ...session,
@@ -358,6 +380,9 @@ export function RegulationChatPage({
       const filePaths = files.map((f) => f.path)
       const onStreamEvent = (type: string, text: string): void => {
         if (type === 'error' && text) setError(text)
+        if (type === 'status' && text && text !== 'reading') {
+          setBusyKind('question')
+        }
       }
       if (typeof window.agent.start === 'function') {
         let turn: RegulationCreationTurn
@@ -384,6 +409,7 @@ export function RegulationChatPage({
         if (stoppedRef.current) throw new RegulationCancelledError()
         setAttachments([])
         setFilesOpen(false)
+        setBusyKind('question')
         onSessionChange(turn.session)
         await runSdkAndApply(turn)
       } else {
@@ -523,6 +549,7 @@ export function RegulationChatPage({
     if (busy || ready || stoppedRef.current) return
     setError('')
     setBusy(true)
+    setBusyKind('question')
     pinnedRef.current = true
     try {
       const turn = await api.peekRegulationCreationTurn(session.draftId)
@@ -647,10 +674,10 @@ export function RegulationChatPage({
                   <div className="regchat-bubble-col">
                     <div className="regchat-think">
                       <div className="regchat-think-head">
-                        <span>Готовит вопрос</span>
+                        <span>{busyHeadLabel(busyKind, readingFileCount)}</span>
                       </div>
                     </div>
-                    <div className="regchat-status">{WORKING_STATUS}</div>
+                    <div className="regchat-status">{busyStatusLabel(busyKind, readingFileCount)}</div>
                   </div>
                 </div>
               )}

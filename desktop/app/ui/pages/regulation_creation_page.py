@@ -519,6 +519,10 @@ class RegulationCreationPage(QWidget):
         self._pending_files.clear()
         self._sync_files_chips()
         self._resize_input()
+        if files:
+            self._live_status = "Читаю документы..." if len(files) > 1 else "Читаю документ..."
+        else:
+            self._live_status = "Задаю вопрос..."
         self.message_requested.emit(self._session.draft_id, text, files)
 
     def _pick_files(self) -> None:
