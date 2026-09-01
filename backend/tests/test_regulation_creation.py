@@ -19,15 +19,20 @@ from app.services.regulation_creation.interview import (
     ready_blocker,
     set_interview_position,
 )
+from app.services.workflows.document import DocumentError
 from app.services.regulation_creation.service import (
     _apply_agent_reply,
+    _display_user_message,
     _finalize_document,
+    _load_creation_attachments,
     _parse_agent_response,
     _result_from_created_document,
     get_active_creation_session,
     get_creation_document,
+    persist_creation_turn,
     start_creation_session,
 )
+from app.schemas.regulation import RegulationCreationSendRequest
 
 
 def _session():
@@ -731,6 +736,15 @@ def test_apply_agent_reply_replaces_ascii_question_marks() -> None:
         assert refs == []
 
 
+def test_display_user_message_keeps_only_typed_text() -> None:
+    files = [{"name": "a.pdf"}, {"name": "b.docx"}]
+    assert _display_user_message("", files) == ""
+    assert _display_user_message("  Привет  ", files) == "Привет"
+    assert _display_user_message("Привет", []) == "Привет"
+    assert "📎" not in _display_user_message("Привет", files)
+    assert "a.pdf" not in _display_user_message("Привет", files)
+
+
 def test_parse_agent_response_keeps_first_interview_json() -> None:
     raw = (
         '{"status":"need_more","message":"Вопрос один","interview":{"functions":[]}}'
@@ -741,3 +755,32 @@ def test_parse_agent_response_keeps_first_interview_json() -> None:
 
     assert parsed["message"] == "Вопрос один"
     assert parsed["status"] == "need_more"
+
+
+def test_unreadable_pdf_keeps_stub_and_does_not_abort_turn(monkeypatch) -> None:
+    def boom(name: str, raw: bytes) -> dict:
+        raise DocumentError("LM Studio OCR недоступен: connection refused")
+
+    monkeypatch.setattr(
+        "app.services.regulation_creation.service._load_creation_attachment",
+        boom,
+    )
+    loaded = _load_creation_attachments([("scan.pdf", b"%PDF-1.3")])
+    assert len(loaded) == 1
+    assert loaded[0]["name"] == "scan.pdf"
+    assert "не удалось прочитать" in loaded[0]["text"]
+    assert loaded[0]["read_error"]
+
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    db.commit()
+    session = start_creation_session(db, user_id="user-1")
+    turn = persist_creation_turn(
+        db,
+        user_id="user-1",
+        draft_id=session.draftId,
+        request=RegulationCreationSendRequest(message="Для помощника ПСД"),
+        files=[("scan.pdf", b"%PDF-1.3")],
+    )
+    assert turn.session.draftId == session.draftId
+    assert any(item.role == "user" for item in turn.session.messages)

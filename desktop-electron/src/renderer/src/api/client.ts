@@ -1096,7 +1096,7 @@ export class ApiClient {
         body: hasFiles ? undefined : { message },
         filePaths: hasFiles ? filePaths : undefined,
         extraFields: hasFiles ? { message } : undefined,
-        timeoutMs: 180_000
+        timeoutMs: 420_000
       }
     )
     return parseCreationTurn(data)

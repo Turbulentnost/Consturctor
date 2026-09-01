@@ -761,13 +761,24 @@ def _load_creation_attachments(files: list[tuple[str, bytes]]) -> list[dict]:
         try:
             item = _load_creation_attachment(name, raw)
         except DocumentError as exc:
+            file_name = Path(name).name or "file"
             logger.warning(
-                "reg_create attachment load failed name=%s suffix=%s detail=%s",
+                "reg_create attachment load failed name=%s suffix=%s detail=%s; keep stub",
                 safe_name,
                 suffix,
                 ascii(str(exc)),
             )
-            raise RegulationCreationError(str(exc)) from exc
+            loaded.append(
+                {
+                    "name": file_name,
+                    "text": f"Файл {file_name} не удалось прочитать: {exc}",
+                    "kind": "text",
+                    "mime_type": "application/octet-stream",
+                    "data_b64": "",
+                    "read_error": str(exc),
+                }
+            )
+            continue
         text = str(item.get("text") or "")
         logger.info(
             "reg_create attachment load ok name=%s kind=%s chars=%s",
@@ -885,11 +896,9 @@ def _load_creation_attachment(name: str, raw: bytes) -> dict:
 
 
 def _display_user_message(message: str, attachments: list[dict]) -> str:
-    names = [str(item.get("name") or "file") for item in attachments]
-    if not names:
-        return message
-    note = "📎 " + ", ".join(names)
-    return f"{message}\n\n{note}".strip() if message else note
+    # Files are rendered from structured.attachments, not from message text.
+    _ = attachments
+    return (message or "").strip()
 
 
 def _attachments_structured(attachments: list[dict]) -> dict:

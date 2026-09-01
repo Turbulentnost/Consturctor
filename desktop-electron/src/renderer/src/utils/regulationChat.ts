@@ -21,6 +21,52 @@ function isProtocolChunk(text: string): boolean {
   return false
 }
 
+function isAttachmentLine(line: string): boolean {
+  const value = line.trim()
+  if (!value) return false
+  if (value.startsWith('📎')) return true
+  if (/^приложены файлы\s*:/i.test(value)) return true
+  return false
+}
+
+export function visibleUserText(text: string): string {
+  const lines = (text || '').replace(/\r\n/g, '\n').split('\n')
+  const hadAttachmentNote = lines.some((line) => isAttachmentLine(line))
+  const noteNames = attachmentNamesFromContent(text)
+  const body = lines
+    .filter((line) => !isAttachmentLine(line))
+    .join('\n')
+    .trim()
+  if (!body) return ''
+  if (
+    hadAttachmentNote &&
+    noteNames.some((name) => name.toLowerCase() === body.toLowerCase())
+  ) {
+    return ''
+  }
+  return body
+}
+
+export function attachmentNamesFromContent(text: string): string[] {
+  const names: string[] = []
+  for (const line of (text || '').split(/\r?\n/)) {
+    const value = line.trim()
+    let rest = ''
+    if (value.startsWith('📎')) {
+      rest = value.replace(/^📎\s*/, '')
+    } else if (/^приложены файлы\s*:/i.test(value)) {
+      rest = value.replace(/^приложены файлы\s*:/i, '')
+    } else {
+      continue
+    }
+    for (const part of rest.split(',')) {
+      const name = part.trim()
+      if (name) names.push(name)
+    }
+  }
+  return names
+}
+
 export function visibleAssistantText(text: string): string {
   const value = (text || '').trim()
   if (!value) return ''

@@ -31,8 +31,9 @@ class Settings(BaseSettings):
     api_port: int = 7812
 
     llm_provider: str = "stub"
-    lm_studio_base_url: str = "http://192.168.1.157:1234"
+    lm_studio_base_url: str = "http://192.168.1.157:1239"
     lm_studio_model: str = "ministral-3-14b-instruct-2512"
+    lm_studio_ocr_model: str = "ministral-3-14b-instruct-2512"
     ocr_pages_per_batch: int = 3
     claude_api_key: str = ""
     claudehub_base_url: str = "https://api.claudehub.fun"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ import httpx
 
 from app.config import settings
 from app.services.regulation.types import ExtractedBlock, ExtractedTable
+
+logger = logging.getLogger(__name__)
 
 
 class VlmError(RuntimeError):
@@ -37,8 +40,9 @@ def recognize_pages(images: list[tuple[int, Path]]) -> list[ExtractedBlock]:
             }
         )
 
+    model = (settings.lm_studio_ocr_model or settings.lm_studio_model).strip()
     payload = {
-        "model": settings.lm_studio_model,
+        "model": model,
         "messages": [{"role": "user", "content": content}],
         "temperature": 0,
     }
@@ -46,19 +50,58 @@ def recognize_pages(images: list[tuple[int, Path]]) -> list[ExtractedBlock]:
     return _parse_blocks(response_text)
 
 
+def _ocr_url() -> str:
+    return f"{settings.lm_studio_base_url.rstrip('/')}/v1/chat/completions"
+
+
 def _post_with_retry(payload: dict[str, Any]) -> str:
-    url = f"{settings.lm_studio_base_url.rstrip('/')}/v1/chat/completions"
+    url = _ocr_url()
+    model = str(payload.get("model") or "")
     last_error: Exception | None = None
-    for _ in range(2):
+    for attempt in range(1, 3):
         try:
+            logger.info(
+                "lm studio ocr request url=%s model=%s pages=%s attempt=%s",
+                url,
+                model,
+                sum(1 for item in payload.get("messages", [{}])[0].get("content", []) if item.get("type") == "image_url"),
+                attempt,
+            )
             with httpx.Client(timeout=180.0) as client:
                 response = client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
-            return str(data["choices"][0]["message"]["content"])
+            choices = data.get("choices") if isinstance(data, dict) else None
+            message = choices[0].get("message") if isinstance(choices, list) and choices else {}
+            content = ""
+            if isinstance(message, dict):
+                content = message.get("content") or message.get("reasoning") or ""
+            if isinstance(content, list):
+                content = "".join(
+                    str(part.get("text") or "") if isinstance(part, dict) else str(part)
+                    for part in content
+                )
+            content = str(content or "")
+            logger.info(
+                "lm studio ocr response url=%s model=%s status=%s chars=%s",
+                url,
+                model,
+                response.status_code,
+                len(content),
+            )
+            if not content.strip():
+                raise VlmError("LM Studio returned empty OCR content")
+            return content
         except Exception as exc:  # noqa: BLE001 - converted to user-facing parse error.
             last_error = exc
-    raise VlmError(f"LM Studio OCR недоступен: {last_error}") from last_error
+            logger.warning(
+                "lm studio ocr request failed url=%s model=%s attempt=%s detail=%s",
+                url,
+                model,
+                attempt,
+                ascii(str(exc)),
+            )
+    raise VlmError(f"LM Studio OCR недоступен: {url} model={model}: {last_error}") from last_error
 
 
 def _parse_blocks(raw: str) -> list[ExtractedBlock]:

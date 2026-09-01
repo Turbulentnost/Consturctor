@@ -8,7 +8,13 @@ import iconAttention from '@agent-icons/agent-attention-animated.svg?raw'
 import iconCompleted from '@agent-icons/agent-completed-animated.svg?raw'
 import iconWorking from '@agent-icons/agent-working-animated.svg?raw'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
-import { extractInterviewAnswer, isReplacementGarbage, visibleAssistantText } from '../utils/regulationChat'
+import {
+  attachmentNamesFromContent,
+  extractInterviewAnswer,
+  isReplacementGarbage,
+  visibleAssistantText,
+  visibleUserText
+} from '../utils/regulationChat'
 
 type AgentPhase = 'working' | 'attention' | 'completed'
 
@@ -113,7 +119,7 @@ function attachmentsOf(structured: Record<string, unknown>): string[] {
       if (typeof item === 'string') return item
       if (item && typeof item === 'object') {
         const rec = item as Record<string, unknown>
-        return String(rec.shortName || rec.name || '')
+        return String(rec.name || rec.shortName || '')
       }
       return ''
     })
@@ -341,7 +347,7 @@ export function RegulationChatPage({
           messageId: 'local-pending',
           draftId: session.draftId,
           role: 'user',
-          content: message || (files.length ? `Приложены файлы: ${files.map((f) => f.name).join(', ')}` : ''),
+          content: message,
           structured: files.length ? { attachments: files.map((f) => ({ name: f.name })) } : {}
         }
       ]
@@ -398,16 +404,20 @@ export function RegulationChatPage({
         return
       }
       setError(err instanceof ApiError ? err.message : 'Ошибка отправки сообщения')
+      setInput(text)
+      setAttachments(files)
+      setFilesOpen(files.length > 0)
+      let next: RegulationCreationSession = { ...optimistic, status: 'idle' }
       if (persisted) {
         try {
           const latest = await api.getRegulationCreationSession(session.draftId)
-          onSessionChange(latest)
+          const hasUser = latest.messages.some((item) => item.role === 'user')
+          next = hasUser ? latest : { ...latest, messages: optimistic.messages, status: 'idle' }
         } catch {
-          /* keep the last known session, including the user files */
+          /* keep the optimistic session with the user text and files */
         }
-      } else {
-        onSessionChange({ ...optimistic, status: 'idle' })
       }
+      onSessionChange(next)
     } finally {
       setBusy(false)
     }
@@ -575,7 +585,13 @@ export function RegulationChatPage({
               )}
               {visible.map((m, index) => {
                 const isUser = m.role === 'user'
-                const names = attachmentsOf(m.structured)
+                const structuredNames = attachmentsOf(m.structured)
+                const names = structuredNames.length
+                  ? structuredNames
+                  : isUser
+                    ? attachmentNamesFromContent(m.content)
+                    : []
+                const text = isUser ? visibleUserText(m.content) : visibleAssistantText(m.content)
                 const quicks = quickAnswers(m.structured)
                 const isCurrentStage =
                   !isUser &&
@@ -594,11 +610,7 @@ export function RegulationChatPage({
                     )}
                     <div className="regchat-bubble-col">
                       <div className={isUser ? 'regchat-bubble user' : 'regchat-bubble ai'}>
-                        {m.content && visibleAssistantText(m.content) ? (
-                          <div className="regchat-bubble-text">
-                            {isUser ? m.content : visibleAssistantText(m.content)}
-                          </div>
-                        ) : null}
+                        {text ? <div className="regchat-bubble-text">{text}</div> : null}
                         {names.length > 0 && (
                           <div className="regchat-attach-list">
                             {names.map((n, i) => (

@@ -39,7 +39,11 @@ async def _parse_send_payload(request: Request) -> tuple[RegulationCreationSendR
     files: list[tuple[str, bytes]] = []
     if "multipart/form-data" in content_type:
         form = await request.form()
-        message = str(form.get("message") or "")
+        raw_message = form.get("message")
+        if raw_message is not None and hasattr(raw_message, "filename"):
+            message = ""
+        else:
+            message = str(raw_message or "")
         uploads = list(form.getlist("files")) + list(form.getlist("file"))
         for item in uploads:
             read = getattr(item, "read", None)
@@ -64,8 +68,7 @@ async def create_regulation_creation_session(
         return start_creation_session(db, user_id=auth.user_id, fresh=fresh)
     except RegulationCreationError as exc:
         logger.warning(
-            "reg_create turn failed draft_id=%s status=%s detail=%s",
-            draft_id,
+            "reg_create session start failed status=%s detail=%s",
             exc.status_code,
             ascii(exc.message),
         )
@@ -147,7 +150,16 @@ async def persist_regulation_creation_turn(
             files=files,
         )
     except RegulationCreationError as exc:
+        logger.warning(
+            "reg_create turn failed draft_id=%s status=%s detail=%s",
+            draft_id,
+            exc.status_code,
+            ascii(exc.message),
+        )
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except Exception:
+        logger.exception("reg_create turn crashed draft_id=%s", draft_id)
+        raise
 
 
 @router.post("/sessions/{draft_id}/apply", response_model=RegulationCreationSession)
