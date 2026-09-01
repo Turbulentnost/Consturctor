@@ -14,7 +14,6 @@ from app.services.regulation_creation.interview import (
     build_creation_prompt,
     document_from_interview,
     document_has_full_text,
-    followup_blocker,
     is_replacement_garbage,
     merge_agent_payload,
     ready_blocker,
@@ -79,6 +78,7 @@ def test_interview_state_keeps_attachment_text_in_followup_prompt() -> None:
     assert "interview.functions - это рабочая инвентаризация фактов" in prompt
     assert "interview.processes" in prompt
     assert "answerSufficiency" in prompt
+    assert "nextQuestion" in prompt
     assert "одна функция = один раздел" in prompt
 
 
@@ -170,7 +170,96 @@ def test_generic_system_name_does_not_close_work_location() -> None:
     assert state["functions"][0]["openGaps"] == ["tool"]
 
 
-def test_current_question_is_not_skipped_after_partial_answer() -> None:
+def test_outlook_calendar_closes_work_location() -> None:
+    payload = _ready_payload(
+        {
+            "id": "f1",
+            "title": "Организация заседаний Совета директоров",
+            "actor": "Помощник ПСД",
+            "roleStatus": "belongs",
+            "tool": "MS Outlook, вкладка Календарь: смотрит загруженность сотрудника",
+            "periodicity": "",
+            "triggerAction": "",
+            "userAction": "",
+        }
+    )
+    state = merge_agent_payload({}, payload)
+
+    blocker = ready_blocker(payload, state)
+
+    assert "tool" not in state["functions"][0]["openGaps"]
+    assert blocker is not None
+    assert blocker.field == "periodicity"
+
+
+def test_ready_with_critical_process_unknown_is_blocked() -> None:
+    payload = {
+        "status": "ready",
+        "message": "Готово",
+        "interview": {
+            "functions": [
+                {
+                    "id": "f1",
+                    "title": "Организация заседаний СД",
+                    "actor": "Помощник ПСД",
+                    "roleStatus": "belongs",
+                    "tool": "MS Outlook, вкладка Календарь: смотрит загруженность сотрудника",
+                    "periodicity": "Перед каждым заседанием",
+                    "triggerAction": "Согласована повестка заседания",
+                    "userAction": "Создает событие в календаре Outlook",
+                }
+            ],
+            "processes": [
+                {
+                    "id": "f1",
+                    "title": "Организация заседаний СД",
+                    "roleStatus": "belongs",
+                    "knownFacts": {
+                        "workLocation": "MS Outlook, вкладка Календарь",
+                        "frequency": "Перед каждым заседанием",
+                        "trigger": "Согласована повестка заседания",
+                        "steps": ["Создает событие в календаре Outlook"],
+                    },
+                    "unknowns": [
+                        {
+                            "field": "outputs",
+                            "reason": "Неясно, какой результат должен быть подтвержден после планирования.",
+                            "critical": True,
+                        }
+                    ],
+                }
+            ],
+        },
+        "document": {
+            "title": "Регламент",
+            "sections": [
+                {
+                    "title": "Организация заседаний",
+                    "paragraphs": [
+                        (
+                            "Процесс нужен для подготовки заседания Совета директоров и фиксации "
+                            "планируемого события в календаре организации."
+                        ),
+                        (
+                            "После согласования повестки пользователь открывает календарь Outlook "
+                            "и создает событие для дальнейшего согласования участников."
+                        ),
+                    ],
+                    "items": [],
+                }
+            ],
+        },
+    }
+    state = merge_agent_payload({}, payload)
+
+    blocker = ready_blocker(payload, state)
+
+    assert blocker is not None
+    assert blocker.field == "outputs"
+    assert "что пользователь делает" in blocker.message
+
+
+def test_partial_answer_records_sufficiency_without_backend_question() -> None:
     state = merge_agent_payload(
         {},
         {
@@ -217,15 +306,11 @@ def test_current_question_is_not_skipped_after_partial_answer() -> None:
     }
     state = merge_agent_payload(state, agent_payload)
 
-    blocker = followup_blocker(agent_payload, state)
-
-    assert blocker is not None
-    assert blocker.field == "tool"
-    assert "Где именно пользователь работает" in blocker.message
+    assert state["answerSufficiency"]["status"] == "partial"
     assert state["askedQuestions"][-1]["sufficiency"] == "partial"
 
 
-def test_apply_agent_reply_overrides_next_question_after_partial_answer() -> None:
+def test_apply_agent_reply_keeps_sdk_need_more_question() -> None:
     from app.models.regulation import RegulationCreationMessage
 
     db = _session()
@@ -268,7 +353,15 @@ def test_apply_agent_reply_overrides_next_question_after_partial_answer() -> Non
         raw=json.dumps(
             {
                 "status": "need_more",
-                "message": "Как часто вы формируете календарь заседаний?",
+                "message": "Кого пользователь добавляет в приглашение Outlook и какой результат должен получить?",
+                "nextQuestion": {
+                    "processId": "f1",
+                    "targetFact": "steps",
+                    "alreadyKnown": ["Место работы: 1С"],
+                    "missingFact": "кого добавляют в приглашение и какой результат создается",
+                    "whyThisQuestion": "Без этого нельзя описать действие пользователя.",
+                    "text": "Кого пользователь добавляет в приглашение и какой результат должен получить?",
+                },
                 "answerSufficiency": {
                     "status": "partial",
                     "processId": "f1",
@@ -300,17 +393,19 @@ def test_apply_agent_reply_overrides_next_question_after_partial_answer() -> Non
         .one()
     )
     assert draft.status == "interview"
-    assert "Где именно пользователь работает" in message.content
-    assert "Как часто" not in message.content
+    assert message.content == "Кого пользователь добавляет в приглашение и какой результат должен получить?"
+    assert not message.structured_json.get("blockedReady")
+    assert draft.interview_json["currentQuestion"]["field"] == "userAction"
 
 
-def test_repeated_question_is_saved_as_deeper_followup() -> None:
+def test_repeated_question_is_recorded_without_rewriting_sdk_text() -> None:
     question = "В какой системе вы проверяете комплектность материалов?"
     state, first = remember_assistant_question({}, message=question, function_id="f1", field="tool")
     state, second = remember_assistant_question(state, message=question, function_id="f1", field="tool")
 
     assert first == question
-    assert second.startswith("Уточните глубже тот же вопрос:")
+    assert second == question
+    assert state["askedQuestions"][-1]["duplicate"] is True
 
 
 def test_notify_two_hours_is_not_concrete_trigger() -> None:

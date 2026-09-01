@@ -439,14 +439,17 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "объекты/реестры/формы, триггер, периодичность, шаги пользователя, результаты, получателей, "
         "проверки, исключения и эскалации. Не заполняй ячейку только ради того, чтобы она была непустой.\n"
         "Каждый последний ответ пользователя оцени в answerSufficiency: closed, partial или not_answered. "
-        "Если ответ закрывает только общий контейнер (например систему, папку или канал), но не говорит, "
-        "с каким объектом, реестром, формой, файлом, статусом или действием работает пользователь, это partial. "
-        "Это правило общее для любых систем и каналов, не зависит от конкретного названия продукта.\n"
-        "Если answerSufficiency partial или not_answered, задай следующий вопрос по тому же процессу и "
-        "объясни, чего именно не хватило. Не переходи к периодичности, триггеру или другой функции, пока "
-        "предыдущий вопрос не закрыт.\n"
+        "Не путай место работы и действие. Если пользователь назвал систему/канал, конкретную область "
+        "интерфейса или хранилище и объяснил, что он там смотрит или делает, workLocation/tool закрыт. "
+        "Например, корпоративный Outlook + вкладка Календарь + просмотр загруженности закрывает место "
+        "работы; если неясно, что создаётся, кому отправляется или чем завершается планирование, это "
+        "уже gaps по userAction, outputs или recipients, а не повторный вопрос про tool.\n"
+        "Если answerSufficiency partial или not_answered, задай следующий вопрос от себя как Cursor SDK: "
+        "в nextQuestion укажи targetFact, alreadyKnown, missingFact и whyThisQuestion. В message поставь "
+        "только текст этого вопроса, без технических формулировок вида 'указан общий инструмент'.\n"
         "Не повторяй уже заданные вопросы из askedQuestions. Если прошлый вопрос был понят частично, "
-        "задай углубляющий вопрос с новым критерием достаточности, а не ту же формулировку.\n"
+        "задай углубляющий вопрос по другому missingFact или объясни конкретно, какой шаг алгоритма "
+        "невозможно написать без ответа.\n"
         "Триггер не может быть общей формулировкой. 'Сообщить за 2 часа до', 'уведомить заранее', "
         "'контролировать сроки', 'по мере необходимости' не закрывают триггер.\n"
         "Если не хватает данных, задай ровно один следующий вопрос по одной функции и одному полю. "
@@ -494,6 +497,14 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         '    "answerSummary": "что именно стало известно",\n'
         '    "missingFacts": ["чего не хватает для исполнимого алгоритма"],\n'
         '    "reason": "почему ответ достаточен или недостаточен"\n'
+        "  },\n"
+        '  "nextQuestion": {\n'
+        '    "processId": "f1",\n'
+        '    "targetFact": "workLocation|objects|frequency|trigger|steps|outputs|recipients|controls|exceptions",\n'
+        '    "alreadyKnown": ["что уже известно и не надо спрашивать снова"],\n'
+        '    "missingFact": "какой факт нужен сейчас",\n'
+        '    "whyThisQuestion": "почему без этого нельзя написать алгоритм",\n'
+        '    "text": "вопрос пользователю простым языком"\n'
         "  },\n"
         '  "interview": {\n'
         '    "processes": [\n'
@@ -582,14 +593,16 @@ def build_followup_creation_prompt(*, message: str, force_create: bool) -> str:
         "Прочитай обновлённый interview.json в рабочей папке.\n"
         f"{force}\n"
         f"Последний ответ пользователя: {message.strip()}\n"
-        "Сначала оцени последний ответ в answerSufficiency. Если он partial или not_answered, "
-        "не переходи к другому процессу и не закрывай текущий вопрос: задай углубляющее уточнение "
-        "по тому же currentQuestion. Общая система, папка или канал без объекта работы, реестра, "
-        "формы, файла, статуса или конкретного действия не является достаточным ответом.\n"
+        "Сначала оцени последний ответ в answerSufficiency. Не путай место работы и действие: если "
+        "пользователь назвал систему/канал, область интерфейса или хранилище и что он там смотрит "
+        "или делает, workLocation/tool закрыт. Недостающие результат, адресат, объект создания или "
+        "порядок действий переноси в targetFact outputs, recipients или steps, а не спрашивай снова "
+        "где именно он работает.\n"
         "Веди interview.processes как карту процесса: knownFacts, unknowns, askedQuestions, "
         "currentQuestion. interview.functions оставляй только как краткий совместимый срез.\n"
-        "Перед новым вопросом проверь askedQuestions: не повторяй то же самое, а уточняй недостающий "
-        "факт так, чтобы после ответа алгоритм процесса стал исполнимым.\n"
+        "Перед новым вопросом проверь askedQuestions: не повторяй то же самое. Верни nextQuestion "
+        "с targetFact, alreadyKnown, missingFact и whyThisQuestion; в message поставь только текст "
+        "этого вопроса простым языком.\n"
         "Если в interview.json есть document_write_required=true, не задавай новый вопрос: "
         "верни status='ready' и полный document как самостоятельный связный регламент процесса. "
         "Иначе ответ строго JSON: status, message, quickAnswers и только изменённая функция. "
@@ -610,11 +623,15 @@ def remember_assistant_question(
     field: str = "",
     process_id: str = "",
     intent: str = "",
+    already_known: list[str] | None = None,
+    missing_fact: str = "",
+    why_this_question: str = "",
 ) -> tuple[dict[str, Any], str]:
     out = normalize_interview_state(state)
-    text = _dedupe_question_text(out, message=message, function_id=function_id, field=field)
+    text = _clean_str(message)
     question_id = f"q{len(out['askedQuestions']) + 1}"
     canonical_field = _canonical_gap(field)
+    duplicate = _question_was_asked(out, message=text, function_id=function_id, field=canonical_field)
     question = {
         "id": question_id,
         "message": text,
@@ -623,9 +640,13 @@ def remember_assistant_question(
         "processId": _clean_str(process_id or function_id),
         "field": canonical_field,
         "intent": _clean_str(intent) or canonical_field,
+        "alreadyKnown": _clean_list(already_known or []),
+        "missingFact": _clean_str(missing_fact),
+        "whyThisQuestion": _clean_str(why_this_question),
         "answer": "",
         "sufficiency": "pending",
         "missingFacts": [],
+        "duplicate": duplicate,
     }
     out["currentQuestion"] = dict(question)
     out["askedQuestions"].append(dict(question))
@@ -1318,10 +1339,10 @@ def _function_field(field: Any) -> str:
     return _PROCESS_FIELD_TO_FUNCTION_FIELD.get(canonical, canonical)
 
 
-def _dedupe_question_text(state: dict[str, Any], *, message: str, function_id: str, field: str) -> str:
+def _question_was_asked(state: dict[str, Any], *, message: str, function_id: str, field: str) -> bool:
     text = _clean_str(message)
     if not text:
-        return text
+        return False
     current_field = _function_field(field)
     current_function = _clean_str(function_id)
     for item in reversed(state.get("askedQuestions") or []):
@@ -1330,8 +1351,8 @@ def _dedupe_question_text(state: dict[str, Any], *, message: str, function_id: s
         same_field = _function_field(item.get("field")) == current_field
         same_function = not current_function or _clean_str(item.get("functionId") or item.get("processId")) == current_function
         if same_field and same_function and _fold(_clean_str(item.get("message"))) == _fold(text):
-            return f"Уточните глубже тот же вопрос: {text}"
-    return text
+            return True
+    return False
 
 
 def _prompt_state(state: dict[str, Any]) -> dict[str, Any]:

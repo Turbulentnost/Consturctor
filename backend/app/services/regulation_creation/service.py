@@ -49,7 +49,6 @@ from app.services.regulation_creation.interview import (
     document_from_interview,
     document_has_body,
     document_has_full_text,
-    followup_blocker,
     interview_sdk_agent_id,
     interview_snapshot,
     is_replacement_garbage,
@@ -482,9 +481,7 @@ def _apply_agent_reply(
         ]
         parsed["status"] = "need_more"
     draft.interview_json = merge_agent_payload(draft.interview_json, parsed)
-    blocker = None if force_create else followup_blocker(parsed, draft.interview_json)
-    if blocker is None and not force_create:
-        blocker = ready_blocker(parsed, draft.interview_json)
+    blocker = None if force_create or parsed.get("status") != "ready" else ready_blocker(parsed, draft.interview_json)
     if blocker is not None:
         draft.interview_json, message = remember_assistant_question(
             draft.interview_json,
@@ -553,13 +550,16 @@ def _apply_agent_reply(
         draft.result_regulation_id = result.regulationId
     else:
         quick_answers = _quick_answers(parsed.get("quickAnswers"))
-        content = parsed.get("message") or raw or "Уточните, пожалуйста, детали процесса."
+        content = _message_content(parsed, raw)
         draft.interview_json, content = remember_assistant_question(
             draft.interview_json,
             message=content,
             quick_answers=quick_answers,
             function_id=_message_function_id(parsed, draft.interview_json),
             field=_message_field(parsed, draft.interview_json),
+            already_known=_message_already_known(parsed),
+            missing_fact=_message_missing_fact(parsed),
+            why_this_question=_message_why(parsed),
         )
         _add_message(
             db,
@@ -1011,9 +1011,22 @@ def _quick_answers(value: object) -> list[str]:
     ]
 
 
+def _message_content(parsed: dict, raw: str) -> str:
+    next_question = parsed.get("nextQuestion") if isinstance(parsed.get("nextQuestion"), dict) else {}
+    return (
+        str(next_question.get("text") or "").strip()
+        or str(parsed.get("message") or "").strip()
+        or raw
+        or "Уточните, пожалуйста, детали процесса."
+    )
+
+
 def _message_function_id(parsed: dict, state: object) -> str:
     answer = parsed.get("answerSufficiency") if isinstance(parsed.get("answerSufficiency"), dict) else {}
+    next_question = parsed.get("nextQuestion") if isinstance(parsed.get("nextQuestion"), dict) else {}
     for raw in (
+        next_question.get("functionId"),
+        next_question.get("processId"),
         answer.get("functionId"),
         answer.get("processId"),
         _first_payload_item_id(parsed, "functions"),
@@ -1034,6 +1047,10 @@ def _message_function_id(parsed: dict, state: object) -> str:
 
 
 def _message_field(parsed: dict, state: object) -> str:
+    next_question = parsed.get("nextQuestion") if isinstance(parsed.get("nextQuestion"), dict) else {}
+    text = str(next_question.get("field") or next_question.get("targetFact") or next_question.get("missingFact") or "").strip()
+    if text:
+        return text
     answer = parsed.get("answerSufficiency") if isinstance(parsed.get("answerSufficiency"), dict) else {}
     text = str(answer.get("field") or answer.get("intent") or "").strip()
     if text:
@@ -1060,6 +1077,25 @@ def _message_field(parsed: dict, state: object) -> str:
                 if current_field in gaps:
                     return current_field
     return ""
+
+
+def _message_already_known(parsed: dict) -> list[str]:
+    next_question = parsed.get("nextQuestion") if isinstance(parsed.get("nextQuestion"), dict) else {}
+    value = next_question.get("alreadyKnown")
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
+def _message_missing_fact(parsed: dict) -> str:
+    next_question = parsed.get("nextQuestion") if isinstance(parsed.get("nextQuestion"), dict) else {}
+    return str(next_question.get("missingFact") or "").strip()
+
+
+def _message_why(parsed: dict) -> str:
+    next_question = parsed.get("nextQuestion") if isinstance(parsed.get("nextQuestion"), dict) else {}
+    return str(next_question.get("whyThisQuestion") or "").strip()
 
 
 def _first_payload_item_id(parsed: dict, key: str) -> str:
