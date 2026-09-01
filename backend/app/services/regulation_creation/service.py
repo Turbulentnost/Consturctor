@@ -49,12 +49,14 @@ from app.services.regulation_creation.interview import (
     document_from_interview,
     document_has_body,
     document_has_full_text,
+    followup_blocker,
     interview_sdk_agent_id,
     interview_snapshot,
     is_replacement_garbage,
     merge_agent_payload,
     new_interview_state,
     ready_blocker,
+    remember_assistant_question,
     set_interview_position,
     set_sdk_agent_id,
 )
@@ -480,13 +482,22 @@ def _apply_agent_reply(
         ]
         parsed["status"] = "need_more"
     draft.interview_json = merge_agent_payload(draft.interview_json, parsed)
-    blocker = None if force_create else ready_blocker(parsed, draft.interview_json)
+    blocker = None if force_create else followup_blocker(parsed, draft.interview_json)
+    if blocker is None and not force_create:
+        blocker = ready_blocker(parsed, draft.interview_json)
     if blocker is not None:
+        draft.interview_json, message = remember_assistant_question(
+            draft.interview_json,
+            message=blocker.message,
+            quick_answers=blocker.quick_answers,
+            function_id=blocker.function_id,
+            field=blocker.field,
+        )
         _add_message(
             db,
             draft=draft,
             role="assistant",
-            content=blocker.message,
+            content=message,
             structured={
                 "quickAnswers": blocker.quick_answers,
                 "blockedReady": {
@@ -542,11 +553,19 @@ def _apply_agent_reply(
         draft.result_regulation_id = result.regulationId
     else:
         quick_answers = _quick_answers(parsed.get("quickAnswers"))
+        content = parsed.get("message") or raw or "Уточните, пожалуйста, детали процесса."
+        draft.interview_json, content = remember_assistant_question(
+            draft.interview_json,
+            message=content,
+            quick_answers=quick_answers,
+            function_id=_message_function_id(parsed, draft.interview_json),
+            field=_message_field(parsed, draft.interview_json),
+        )
         _add_message(
             db,
             draft=draft,
             role="assistant",
-            content=parsed.get("message") or raw or "Уточните, пожалуйста, детали процесса.",
+            content=content,
             structured={"quickAnswers": quick_answers},
         )
         draft.status = "interview"
@@ -990,6 +1009,65 @@ def _quick_answers(value: object) -> list[str]:
         "Это выполняется в 1C",
         "Это выполняется в Excel",
     ]
+
+
+def _message_function_id(parsed: dict, state: object) -> str:
+    answer = parsed.get("answerSufficiency") if isinstance(parsed.get("answerSufficiency"), dict) else {}
+    for raw in (
+        answer.get("functionId"),
+        answer.get("processId"),
+        _first_payload_item_id(parsed, "functions"),
+        _first_payload_item_id(parsed, "processes"),
+    ):
+        text = str(raw or "").strip()
+        if text:
+            return text
+    if isinstance(state, dict):
+        current = state.get("currentQuestion") if isinstance(state.get("currentQuestion"), dict) else {}
+        text = str(current.get("functionId") or current.get("processId") or "").strip()
+        if text:
+            return text
+        functions = state.get("functions") if isinstance(state.get("functions"), list) else []
+        if len(functions) == 1 and isinstance(functions[0], dict):
+            return str(functions[0].get("id") or "").strip()
+    return ""
+
+
+def _message_field(parsed: dict, state: object) -> str:
+    answer = parsed.get("answerSufficiency") if isinstance(parsed.get("answerSufficiency"), dict) else {}
+    text = str(answer.get("field") or answer.get("intent") or "").strip()
+    if text:
+        return text
+    if isinstance(state, dict):
+        function_id = _message_function_id(parsed, state)
+        for func in state.get("functions") or []:
+            if not isinstance(func, dict):
+                continue
+            if function_id and str(func.get("id") or "").strip() != function_id:
+                continue
+            gaps = func.get("openGaps") if isinstance(func.get("openGaps"), list) else []
+            if gaps:
+                return str(gaps[0] or "").strip()
+        current = state.get("currentQuestion") if isinstance(state.get("currentQuestion"), dict) else {}
+        current_field = str(current.get("field") or current.get("intent") or "").strip()
+        if current_field:
+            for func in state.get("functions") or []:
+                if not isinstance(func, dict):
+                    continue
+                if function_id and str(func.get("id") or "").strip() != function_id:
+                    continue
+                gaps = [str(gap) for gap in (func.get("openGaps") or [])]
+                if current_field in gaps:
+                    return current_field
+    return ""
+
+
+def _first_payload_item_id(parsed: dict, key: str) -> str:
+    interview = parsed.get("interview") if isinstance(parsed.get("interview"), dict) else {}
+    items = interview.get(key) if isinstance(interview.get(key), list) else []
+    if items and isinstance(items[0], dict):
+        return str(items[0].get("id") or items[0].get("processId") or items[0].get("functionId") or "").strip()
+    return ""
 
 
 def _is_force_create_message(message: str) -> bool:

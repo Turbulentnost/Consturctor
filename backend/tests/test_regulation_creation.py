@@ -14,9 +14,11 @@ from app.services.regulation_creation.interview import (
     build_creation_prompt,
     document_from_interview,
     document_has_full_text,
+    followup_blocker,
     is_replacement_garbage,
     merge_agent_payload,
     ready_blocker,
+    remember_assistant_question,
     set_interview_position,
 )
 from app.services.workflows.document import DocumentError
@@ -75,6 +77,8 @@ def test_interview_state_keeps_attachment_text_in_followup_prompt() -> None:
     assert "самостоятельный регламент процесса" in prompt
     assert "релевантное содержание файлов пользователя" in prompt
     assert "interview.functions - это рабочая инвентаризация фактов" in prompt
+    assert "interview.processes" in prompt
+    assert "answerSufficiency" in prompt
     assert "одна функция = один раздел" in prompt
 
 
@@ -114,7 +118,7 @@ def test_agent_payload_merges_function_answers() -> None:
                     {
                         "id": "f1",
                         "title": "Ведение календаря совещаний",
-                        "tool": "Excel",
+                        "tool": "Excel-файл сводного плана",
                     }
                 ]
             }
@@ -137,9 +141,176 @@ def test_agent_payload_merges_function_answers() -> None:
     )
 
     function = state["functions"][0]
-    assert function["tool"] == "Excel"
+    assert function["tool"] == "Excel-файл сводного плана"
     assert function["periodicity"] == "Каждый рабочий день"
     assert function["openGaps"] == []
+    assert state["processes"][0]["knownFacts"]["workLocation"] == "Excel-файл сводного плана"
+
+
+def test_generic_system_name_does_not_close_work_location() -> None:
+    payload = _ready_payload(
+        {
+            "id": "f1",
+            "title": "Календарь заседаний СД",
+            "actor": "Помощник ПСД",
+            "roleStatus": "belongs",
+            "tool": "1С",
+            "periodicity": "Ежегодно на год вперед",
+            "triggerAction": "Поручение председателя совета директоров",
+            "userAction": "Формирует календарь заседаний Совета директоров",
+        }
+    )
+    state = merge_agent_payload({}, payload)
+
+    blocker = ready_blocker(payload, state)
+
+    assert blocker is not None
+    assert blocker.field == "tool"
+    assert "общий инструмент" in blocker.message
+    assert state["functions"][0]["openGaps"] == ["tool"]
+
+
+def test_current_question_is_not_skipped_after_partial_answer() -> None:
+    state = merge_agent_payload(
+        {},
+        {
+            "interview": {
+                "functions": [
+                    {
+                        "id": "f1",
+                        "title": "Календарь заседаний СД",
+                        "actor": "Помощник ПСД",
+                        "roleStatus": "belongs",
+                    }
+                ]
+            }
+        },
+    )
+    state, _ = remember_assistant_question(
+        state,
+        message="В какой системе, файле или канале вы формируете календарь заседаний?",
+        function_id="f1",
+        field="tool",
+    )
+    state = append_user_turn(state, "1С", [])
+    agent_payload = {
+        "status": "need_more",
+        "message": "Как часто вы формируете календарь заседаний?",
+        "answerSufficiency": {
+            "status": "partial",
+            "processId": "f1",
+            "field": "tool",
+            "answerSummary": "Названа только система.",
+            "missingFacts": ["Не указан объект работы в системе."],
+        },
+        "interview": {
+            "functions": [
+                {
+                    "id": "f1",
+                    "title": "Календарь заседаний СД",
+                    "actor": "Помощник ПСД",
+                    "roleStatus": "belongs",
+                    "tool": "1С",
+                }
+            ]
+        },
+    }
+    state = merge_agent_payload(state, agent_payload)
+
+    blocker = followup_blocker(agent_payload, state)
+
+    assert blocker is not None
+    assert blocker.field == "tool"
+    assert "Где именно пользователь работает" in blocker.message
+    assert state["askedQuestions"][-1]["sufficiency"] == "partial"
+
+
+def test_apply_agent_reply_overrides_next_question_after_partial_answer() -> None:
+    from app.models.regulation import RegulationCreationMessage
+
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    state = merge_agent_payload(
+        {},
+        {
+            "interview": {
+                "functions": [
+                    {
+                        "id": "f1",
+                        "title": "Календарь заседаний СД",
+                        "actor": "Помощник ПСД",
+                        "roleStatus": "belongs",
+                    }
+                ]
+            }
+        },
+    )
+    state, _ = remember_assistant_question(
+        state,
+        message="В какой системе, файле или канале вы формируете календарь заседаний?",
+        function_id="f1",
+        field="tool",
+    )
+    state = append_user_turn(state, "1С", [])
+    draft = RegulationCreationDraft(
+        id="draft-partial-tool",
+        user_id="user-1",
+        status="generating",
+        interview_json=state,
+    )
+    db.add(draft)
+    db.commit()
+
+    _apply_agent_reply(
+        db,
+        user_id="user-1",
+        draft=draft,
+        raw=json.dumps(
+            {
+                "status": "need_more",
+                "message": "Как часто вы формируете календарь заседаний?",
+                "answerSufficiency": {
+                    "status": "partial",
+                    "processId": "f1",
+                    "field": "tool",
+                    "answerSummary": "Названа только система.",
+                    "missingFacts": ["Не указан объект работы в системе."],
+                },
+                "interview": {
+                    "functions": [
+                        {
+                            "id": "f1",
+                            "title": "Календарь заседаний СД",
+                            "actor": "Помощник ПСД",
+                            "roleStatus": "belongs",
+                            "tool": "1С",
+                        }
+                    ]
+                },
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db.commit()
+
+    db.refresh(draft)
+    message = (
+        db.query(RegulationCreationMessage)
+        .filter(RegulationCreationMessage.draft_id == "draft-partial-tool")
+        .one()
+    )
+    assert draft.status == "interview"
+    assert "Где именно пользователь работает" in message.content
+    assert "Как часто" not in message.content
+
+
+def test_repeated_question_is_saved_as_deeper_followup() -> None:
+    question = "В какой системе вы проверяете комплектность материалов?"
+    state, first = remember_assistant_question({}, message=question, function_id="f1", field="tool")
+    state, second = remember_assistant_question(state, message=question, function_id="f1", field="tool")
+
+    assert first == question
+    assert second.startswith("Уточните глубже тот же вопрос:")
 
 
 def test_notify_two_hours_is_not_concrete_trigger() -> None:
@@ -147,7 +318,7 @@ def test_notify_two_hours_is_not_concrete_trigger() -> None:
         {
             "id": "f1",
             "title": "Напоминание о совещании",
-            "tool": "Outlook",
+            "tool": "Outlook, карточка события календаря",
             "periodicity": "Перед каждым совещанием",
             "triggerAction": "Сообщить за 2 часа до совещания",
             "userAction": "Сообщает участникам",
@@ -186,7 +357,7 @@ def test_document_from_interview_builds_sections() -> None:
                     "id": "f1",
                     "title": "Сводка на неделю",
                     "actor": "Помощник ПСД",
-                    "tool": "Excel",
+                    "tool": "Excel-файл сводного плана",
                     "periodicity": "Каждый понедельник",
                     "triggerAction": "Наступил понедельник до 10:00",
                     "userAction": "Обновляет сводный план",
@@ -308,7 +479,7 @@ def test_force_create_finalizes_without_agent_document() -> None:
                     "id": "f1",
                     "title": "Сводка на неделю",
                     "actor": "Помощник ПСД",
-                    "tool": "Excel",
+                    "tool": "Excel-файл сводного плана",
                     "periodicity": "Каждый понедельник",
                     "triggerAction": "Наступил понедельник до 10:00",
                     "userAction": "Обновляет сводный план",
@@ -354,7 +525,7 @@ def test_unclear_role_blocks_ready() -> None:
             "id": "f1",
             "title": "Сводка инспекции",
             "actor": "Руководитель инспекционной группы",
-            "tool": "Excel",
+            "tool": "Excel-файл сводного плана",
             "periodicity": "Каждый понедельник",
             "triggerAction": "Наступил понедельник до 10:00",
             "userAction": "Обновляет сводный план",
@@ -385,7 +556,7 @@ def test_foreign_function_is_excluded_from_document() -> None:
                     "id": "f2",
                     "title": "Моя сводка",
                     "roleStatus": "belongs",
-                    "tool": "Excel",
+                    "tool": "Excel-файл сводного плана",
                     "userAction": "Обновляет план",
                 },
             ],
@@ -406,7 +577,7 @@ def test_matching_actor_becomes_belongs() -> None:
                         "id": "f1",
                         "title": "Подготовка сводки",
                         "actor": "Помощник Председателя совета директоров",
-                        "tool": "Excel",
+                        "tool": "Excel-файл сводного плана",
                         "periodicity": "Каждый понедельник",
                         "triggerAction": "Наступил понедельник до 10:00",
                         "userAction": "Обновляет сводный план",
@@ -426,7 +597,7 @@ def _owned_function() -> dict:
         "title": "Сводка на неделю",
         "actor": "Помощник ПСД",
         "roleStatus": "belongs",
-        "tool": "Excel",
+        "tool": "Excel-файл сводного плана",
         "periodicity": "Каждый понедельник",
         "triggerAction": "Наступил понедельник до 10:00",
         "userAction": "Обновляет сводный план",

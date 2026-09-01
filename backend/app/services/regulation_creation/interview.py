@@ -157,15 +157,99 @@ _ROLE_FOREIGN_MARKERS = (
     "чужая роль",
 )
 
+_ANSWER_SUFFICIENCY_STATUSES = {"closed", "partial", "not_answered"}
+
+_PROCESS_FACT_ALIASES = {
+    "inputs": ("inputs", "input", "sourceInputs", "входы", "исходные данные"),
+    "workLocation": (
+        "workLocation",
+        "tool",
+        "instrument",
+        "system",
+        "channel",
+        "place",
+        "location",
+        "где работает",
+        "место работы",
+        "система",
+    ),
+    "objects": ("objects", "records", "forms", "registers", "entities", "объекты", "реестры", "формы"),
+    "trigger": ("trigger", "triggerAction", "startEvent", "condition", "триггер", "условие запуска"),
+    "frequency": ("frequency", "periodicity", "cadence", "schedule", "периодичность"),
+    "steps": ("steps", "actions", "userAction", "procedure", "шаги", "действия"),
+    "outputs": ("outputs", "result", "artifacts", "результаты", "выходы"),
+    "recipients": ("recipients", "receivers", "toWhom", "получатели", "кому передается"),
+    "controls": ("controls", "checks", "criteria", "проверки", "контроль"),
+    "exceptions": ("exceptions", "escalations", "risks", "исключения", "эскалации"),
+}
+
+_PROCESS_FIELD_TO_FUNCTION_FIELD = {
+    "workLocation": "tool",
+    "objects": "tool",
+    "frequency": "periodicity",
+    "trigger": "triggerAction",
+    "steps": "userAction",
+}
+
+_WORK_LOCATION_OBJECT_MARKERS = (
+    "реестр",
+    "журнал",
+    "карточ",
+    "документ",
+    "форма",
+    "раздел",
+    "справочник",
+    "маршрут",
+    "задач",
+    "поруч",
+    "протокол",
+    "повест",
+    "материал",
+    "календар",
+    "таблиц",
+    "лист",
+    "файл",
+    "папк",
+    "канал",
+    "чат",
+    "статус",
+)
+
+_GENERIC_WORK_LOCATION_WORDS = {
+    "1с",
+    "1c",
+    "erp",
+    "microsoft",
+    "ms",
+    "office",
+    "outlook",
+    "excel",
+    "word",
+    "teams",
+    "telegram",
+    "почта",
+    "система",
+    "файл",
+    "файлы",
+    "реестр",
+    "реестры",
+    "канал",
+    "документы",
+}
+
 
 def new_interview_state() -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "position": "",
         "sdk_agent_id": "",
         "attachments": [],
         "turns": [],
         "functions": [],
+        "processes": [],
+        "askedQuestions": [],
+        "currentQuestion": {},
+        "answerSufficiency": {},
         "answers": [],
     }
 
@@ -174,12 +258,16 @@ def normalize_interview_state(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return new_interview_state()
     state = deepcopy(raw)
-    state.setdefault("version", 1)
+    state["version"] = max(2, int(state.get("version") or 1))
     state.setdefault("position", "")
     state.setdefault("sdk_agent_id", "")
     state.setdefault("attachments", [])
     state.setdefault("turns", [])
     state.setdefault("functions", [])
+    state.setdefault("processes", [])
+    state.setdefault("askedQuestions", [])
+    state.setdefault("currentQuestion", {})
+    state.setdefault("answerSufficiency", {})
     state.setdefault("answers", [])
     if not isinstance(state["position"], str):
         state["position"] = _clean_str(state.get("position"))
@@ -191,6 +279,14 @@ def normalize_interview_state(raw: Any) -> dict[str, Any]:
         state["turns"] = []
     if not isinstance(state["functions"], list):
         state["functions"] = []
+    if not isinstance(state["processes"], list):
+        state["processes"] = []
+    if not isinstance(state["askedQuestions"], list):
+        state["askedQuestions"] = []
+    if not isinstance(state["currentQuestion"], dict):
+        state["currentQuestion"] = {}
+    if not isinstance(state["answerSufficiency"], dict):
+        state["answerSufficiency"] = {}
     if not isinstance(state["answers"], list):
         state["answers"] = []
     return state
@@ -266,12 +362,16 @@ def append_user_turn(state: Any, message: str, attachments: list[dict]) -> dict[
         }
     )
     out["turns"] = out["turns"][-40:]
+    _attach_answer_to_current_question(out, message)
     _apply_role_answer(out, message)
     return out
 
 
 def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
     out = normalize_interview_state(state)
+    answer_sufficiency = _extract_answer_sufficiency(payload)
+    if answer_sufficiency:
+        _record_answer_sufficiency(out, answer_sufficiency)
     incoming = _extract_functions(payload)
     for raw in incoming:
         if not isinstance(raw, dict):
@@ -289,6 +389,19 @@ def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
         func["roleStatus"] = _resolve_role_status(func, position)
         func["openGaps"] = _open_gaps(func, position=position)
         func["sourceRefs"] = _clean_source_refs(func.get("sourceRefs"))
+        _merge_process(out, _process_from_function(func, fallback_index=len(out["processes"]) + 1))
+    for raw in _extract_processes(payload):
+        if not isinstance(raw, dict):
+            continue
+        process = _normalize_process(raw, fallback_index=len(out["processes"]) + 1)
+        if process:
+            _merge_process(out, process)
+    for process in out["processes"]:
+        if not isinstance(process, dict):
+            continue
+        process["roleStatus"] = _resolve_role_status(process, position)
+        process["sourceRefs"] = _clean_source_refs(process.get("sourceRefs"))
+        process["unknowns"] = _normalize_unknowns(process.get("unknowns"))
     return out
 
 
@@ -297,7 +410,10 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "Пользователь запросил принудительное создание. Можно вернуть status='ready' по текущим "
         "проверенным данным, но нельзя выдавать предположения как факты."
         if force_create
-        else "Не возвращай status='ready', пока у каждой функции должности нет закрытых обязательных полей."
+        else (
+            "Не возвращай status='ready', пока по каждому процессу должности нельзя написать "
+            "исполняемый алгоритм без критичных неизвестных."
+        )
     )
     return (
         "Ты помогаешь создать точный регламент действий пользователя. Продолжай интервью.\n"
@@ -317,6 +433,20 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "- periodicity: как часто или с какой периодичностью выполняется действие.\n"
         "- triggerAction: конкретное наблюдаемое событие или действие, после которого начинается работа.\n"
         "- userAction: что именно делает пользователь руками или в системе.\n"
+        "Но interview.functions - только совместимый краткий срез. Главная рабочая модель - "
+        "interview.processes: knownFacts, unknowns, askedQuestions и currentQuestion по каждому процессу.\n"
+        "Веди интервью как агент по процессу: сначала пойми границы процесса, затем входы, место работы, "
+        "объекты/реестры/формы, триггер, периодичность, шаги пользователя, результаты, получателей, "
+        "проверки, исключения и эскалации. Не заполняй ячейку только ради того, чтобы она была непустой.\n"
+        "Каждый последний ответ пользователя оцени в answerSufficiency: closed, partial или not_answered. "
+        "Если ответ закрывает только общий контейнер (например систему, папку или канал), но не говорит, "
+        "с каким объектом, реестром, формой, файлом, статусом или действием работает пользователь, это partial. "
+        "Это правило общее для любых систем и каналов, не зависит от конкретного названия продукта.\n"
+        "Если answerSufficiency partial или not_answered, задай следующий вопрос по тому же процессу и "
+        "объясни, чего именно не хватило. Не переходи к периодичности, триггеру или другой функции, пока "
+        "предыдущий вопрос не закрыт.\n"
+        "Не повторяй уже заданные вопросы из askedQuestions. Если прошлый вопрос был понят частично, "
+        "задай углубляющий вопрос с новым критерием достаточности, а не ту же формулировку.\n"
         "Триггер не может быть общей формулировкой. 'Сообщить за 2 часа до', 'уведомить заранее', "
         "'контролировать сроки', 'по мере необходимости' не закрывают триггер.\n"
         "Если не хватает данных, задай ровно один следующий вопрос по одной функции и одному полю. "
@@ -357,7 +487,38 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         '  "message": "один вопрос или сообщение о готовности",\n'
         '  "positions": ["..."],\n'
         '  "quickAnswers": ["вариант 1", "вариант 2"],\n'
+        '  "answerSufficiency": {\n'
+        '    "status": "closed|partial|not_answered",\n'
+        '    "processId": "f1",\n'
+        '    "field": "tool|periodicity|triggerAction|userAction|roleStatus",\n'
+        '    "answerSummary": "что именно стало известно",\n'
+        '    "missingFacts": ["чего не хватает для исполнимого алгоритма"],\n'
+        '    "reason": "почему ответ достаточен или недостаточен"\n'
+        "  },\n"
         '  "interview": {\n'
+        '    "processes": [\n'
+        "      {\n"
+        '        "id": "f1",\n'
+        '        "title": "короткое название процесса",\n'
+        '        "actor": "должность из документа",\n'
+        '        "roleStatus": "belongs|foreign|unclear",\n'
+        '        "sourceRefs": [{"file": "имя файла", "quote": "цитата"}],\n'
+        '        "knownFacts": {\n'
+        '          "inputs": ["входные документы или события"],\n'
+        '          "workLocation": "система, файл или канал с конкретным объектом работы",\n'
+        '          "objects": ["реестр, форма, карточка, папка, статус"],\n'
+        '          "trigger": "наблюдаемое событие запуска",\n'
+        '          "frequency": "как часто",\n'
+        '          "steps": ["что делает пользователь по шагам"],\n'
+        '          "outputs": ["что получается на выходе"],\n'
+        '          "recipients": ["кому передается результат"],\n'
+        '          "controls": ["что проверяется"],\n'
+        '          "exceptions": ["исключения и эскалации"]\n'
+        "        },\n"
+        '        "unknowns": [{"field": "workLocation", "reason": "что неясно", "critical": true}],\n'
+        '        "askedQuestions": [{"message": "что спрашивали", "answer": "ответ", "sufficiency": "partial"}]\n'
+        "      }\n"
+        "    ],\n"
         '    "functions": [\n'
         "      {\n"
         '        "id": "f1",\n'
@@ -411,13 +572,24 @@ def build_followup_creation_prompt(*, message: str, force_create: bool) -> str:
     force = (
         "Пользователь запросил принудительное создание. Можно вернуть status='ready' по текущим данным."
         if force_create
-        else "Не возвращай status='ready', пока есть unclear roleStatus или открытые поля belongs-функций."
+        else (
+            "Не возвращай status='ready', пока есть unclear roleStatus, открытые gaps или "
+            "критичные unknowns по процессам должности."
+        )
     )
     return (
         "Продолжи то же интервью. История диалога уже у тебя. "
         "Прочитай обновлённый interview.json в рабочей папке.\n"
         f"{force}\n"
         f"Последний ответ пользователя: {message.strip()}\n"
+        "Сначала оцени последний ответ в answerSufficiency. Если он partial или not_answered, "
+        "не переходи к другому процессу и не закрывай текущий вопрос: задай углубляющее уточнение "
+        "по тому же currentQuestion. Общая система, папка или канал без объекта работы, реестра, "
+        "формы, файла, статуса или конкретного действия не является достаточным ответом.\n"
+        "Веди interview.processes как карту процесса: knownFacts, unknowns, askedQuestions, "
+        "currentQuestion. interview.functions оставляй только как краткий совместимый срез.\n"
+        "Перед новым вопросом проверь askedQuestions: не повторяй то же самое, а уточняй недостающий "
+        "факт так, чтобы после ответа алгоритм процесса стал исполнимым.\n"
         "Если в interview.json есть document_write_required=true, не задавай новый вопрос: "
         "верни status='ready' и полный document как самостоятельный связный регламент процесса. "
         "Иначе ответ строго JSON: status, message, quickAnswers и только изменённая функция. "
@@ -427,6 +599,45 @@ def build_followup_creation_prompt(*, message: str, force_create: bool) -> str:
         "Не используй interview.functions как оглавление и не пиши одинаковые карточки функций "
         "с повтором 'Основание' и 'Предположение' в каждом блоке."
     )
+
+
+def remember_assistant_question(
+    state: Any,
+    *,
+    message: str,
+    quick_answers: list[str] | None = None,
+    function_id: str = "",
+    field: str = "",
+    process_id: str = "",
+    intent: str = "",
+) -> tuple[dict[str, Any], str]:
+    out = normalize_interview_state(state)
+    text = _dedupe_question_text(out, message=message, function_id=function_id, field=field)
+    question_id = f"q{len(out['askedQuestions']) + 1}"
+    canonical_field = _canonical_gap(field)
+    question = {
+        "id": question_id,
+        "message": text,
+        "quickAnswers": list(quick_answers or []),
+        "functionId": _clean_str(function_id),
+        "processId": _clean_str(process_id or function_id),
+        "field": canonical_field,
+        "intent": _clean_str(intent) or canonical_field,
+        "answer": "",
+        "sufficiency": "pending",
+        "missingFacts": [],
+    }
+    out["currentQuestion"] = dict(question)
+    out["askedQuestions"].append(dict(question))
+    out["askedQuestions"] = out["askedQuestions"][-40:]
+    return out, text
+
+
+def followup_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None:
+    insufficiency = _answer_sufficiency_blocker(payload, state)
+    if insufficiency is not None:
+        return insufficiency
+    return _current_question_blocker(state)
 
 
 def ready_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None:
@@ -454,6 +665,9 @@ def ready_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None:
         if gaps:
             field = gaps[0]
             return _question_for_gap(func, field, position=position)
+    process_blocker = _process_unknown_blocker(interview)
+    if process_blocker is not None:
+        return process_blocker
     return None
 
 
@@ -476,6 +690,25 @@ def _extract_functions(payload: dict[str, Any]) -> list[Any]:
     return []
 
 
+def _extract_processes(payload: dict[str, Any]) -> list[Any]:
+    interview = payload.get("interview") if isinstance(payload.get("interview"), dict) else {}
+    inventory = payload.get("inventory") if isinstance(payload.get("inventory"), dict) else {}
+    for source in (interview, inventory, payload):
+        items = source.get("processes") if isinstance(source, dict) else None
+        if isinstance(items, list):
+            return items
+    return []
+
+
+def _extract_answer_sufficiency(payload: dict[str, Any]) -> dict[str, Any]:
+    interview = payload.get("interview") if isinstance(payload.get("interview"), dict) else {}
+    for source in (payload, interview):
+        raw = source.get("answerSufficiency") if isinstance(source, dict) else None
+        if isinstance(raw, dict):
+            return _normalize_answer_sufficiency(raw)
+    return {}
+
+
 def _normalize_function(raw: dict[str, Any], *, fallback_index: int) -> dict[str, Any]:
     title = _clean_str(raw.get("title") or raw.get("name") or raw.get("description"))
     func_id = _clean_str(raw.get("id") or raw.get("functionId")) or f"f{fallback_index}"
@@ -495,6 +728,138 @@ def _normalize_function(raw: dict[str, Any], *, fallback_index: int) -> dict[str
     open_gaps = raw.get("openGaps")
     item["openGaps"] = [str(gap) for gap in open_gaps] if isinstance(open_gaps, list) else []
     return item
+
+
+def _normalize_process(raw: dict[str, Any], *, fallback_index: int) -> dict[str, Any]:
+    title = _clean_str(raw.get("title") or raw.get("name") or raw.get("description"))
+    process_id = _clean_str(raw.get("id") or raw.get("processId") or raw.get("functionId")) or f"p{fallback_index}"
+    if not title and not process_id:
+        return {}
+    known_facts = _normalize_known_facts(raw.get("knownFacts") if isinstance(raw.get("knownFacts"), dict) else raw)
+    return {
+        "id": process_id,
+        "title": title or process_id,
+        "actor": _clean_str(raw.get("actor") or raw.get("position")),
+        "roleStatus": _normalize_role_status(raw.get("roleStatus")),
+        "sourceRefs": _clean_source_refs(raw.get("sourceRefs")),
+        "knownFacts": known_facts,
+        "unknowns": _normalize_unknowns(raw.get("unknowns")),
+        "askedQuestions": _normalize_questions(raw.get("askedQuestions")),
+        "currentQuestion": raw.get("currentQuestion") if isinstance(raw.get("currentQuestion"), dict) else {},
+    }
+
+
+def _normalize_known_facts(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    facts: dict[str, Any] = {}
+    for field, aliases in _PROCESS_FACT_ALIASES.items():
+        value = _value_by_alias(raw, aliases)
+        if field in {"steps", "inputs", "outputs", "recipients", "controls", "exceptions", "objects"}:
+            normalized = _clean_list(value)
+            if normalized:
+                facts[field] = normalized
+        else:
+            text = _clean_str(value)
+            if text:
+                facts[field] = text
+    return facts
+
+
+def _value_by_alias(raw: dict[str, Any], aliases: tuple[str, ...]) -> Any:
+    for key in aliases:
+        if key in raw:
+            return raw.get(key)
+    return None
+
+
+def _clean_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [item for item in (_clean_str(raw) for raw in value) if item]
+    text = _clean_str(value)
+    return [text] if text else []
+
+
+def _normalize_unknowns(raw: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    items = raw if isinstance(raw, list) else []
+    for index, item in enumerate(items, start=1):
+        if isinstance(item, dict):
+            fact = _canonical_gap(item.get("field") or item.get("fact") or item.get("missingFact"))
+            question = _clean_str(item.get("question") or item.get("message"))
+            reason = _clean_str(item.get("reason") or item.get("why"))
+            critical = bool(item.get("critical") or item.get("blocking") or item.get("required"))
+            source = _clean_str(item.get("source"))
+        else:
+            fact = _canonical_gap(item)
+            question = ""
+            reason = _clean_str(item)
+            critical = False
+            source = ""
+        if not fact and not reason and not question:
+            continue
+        out.append(
+            {
+                "id": f"u{index}",
+                "field": fact,
+                "reason": reason,
+                "question": question,
+                "critical": critical,
+                "source": source,
+            }
+        )
+    return out
+
+
+def _normalize_questions(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        message = _clean_str(item.get("message") or item.get("question"))
+        if not message:
+            continue
+        out.append(
+            {
+                "id": _clean_str(item.get("id")) or f"q{len(out) + 1}",
+                "message": message,
+                "field": _canonical_gap(item.get("field") or item.get("missingFact")),
+                "intent": _clean_str(item.get("intent")),
+                "answer": _clean_str(item.get("answer")),
+                "sufficiency": _normalize_sufficiency_status(item.get("sufficiency")),
+                "missingFacts": _clean_list(item.get("missingFacts")),
+            }
+        )
+    return out
+
+
+def _normalize_answer_sufficiency(raw: dict[str, Any]) -> dict[str, Any]:
+    status = _normalize_sufficiency_status(raw.get("status") or raw.get("result") or raw.get("state"))
+    if not status:
+        return {}
+    return {
+        "status": status,
+        "processId": _clean_str(raw.get("processId") or raw.get("functionId")),
+        "functionId": _clean_str(raw.get("functionId") or raw.get("processId")),
+        "field": _canonical_gap(raw.get("field") or raw.get("missingFact") or raw.get("intent")),
+        "intent": _clean_str(raw.get("intent")),
+        "answerSummary": _clean_str(raw.get("answerSummary") or raw.get("summary")),
+        "missingFacts": _clean_list(raw.get("missingFacts") or raw.get("missing")),
+        "reason": _clean_str(raw.get("reason") or raw.get("why")),
+    }
+
+
+def _normalize_sufficiency_status(raw: Any) -> str:
+    text = _clean_str(raw).lower()
+    if text in {"closed", "complete", "ok", "закрыто", "достаточно"}:
+        return "closed"
+    if text in {"partial", "partially_closed", "частично", "неполно"}:
+        return "partial"
+    if text in {"not_answered", "unanswered", "no", "нет ответа", "не отвечает"}:
+        return "not_answered"
+    return text if text in _ANSWER_SUFFICIENCY_STATUSES else ""
 
 
 def _field_value(raw: dict[str, Any], field: str) -> str:
@@ -537,6 +902,134 @@ def _merge_function(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
         existing["sourceRefs"] = current + [ref for ref in refs if ref not in current]
 
 
+def _process_from_function(func: dict[str, Any], *, fallback_index: int) -> dict[str, Any]:
+    process_id = _clean_str(func.get("id")) or f"p{fallback_index}"
+    known_facts: dict[str, Any] = {}
+    tool = _clean_str(func.get("tool"))
+    periodicity = _clean_str(func.get("periodicity"))
+    trigger = _clean_str(func.get("triggerAction"))
+    action = _clean_str(func.get("userAction"))
+    if tool:
+        known_facts["workLocation"] = tool
+    if periodicity:
+        known_facts["frequency"] = periodicity
+    if trigger:
+        known_facts["trigger"] = trigger
+    if action:
+        known_facts["steps"] = [action]
+    return {
+        "id": process_id,
+        "title": _clean_str(func.get("title")) or process_id,
+        "actor": _clean_str(func.get("actor")),
+        "roleStatus": _normalize_role_status(func.get("roleStatus")),
+        "sourceRefs": _clean_source_refs(func.get("sourceRefs")),
+        "knownFacts": known_facts,
+        "unknowns": _unknowns_from_function(func),
+        "askedQuestions": [],
+        "currentQuestion": {},
+        "_fromFunction": True,
+    }
+
+
+def _merge_process(state: dict[str, Any], incoming: dict[str, Any]) -> None:
+    if not incoming:
+        return
+    from_function = bool(incoming.get("_fromFunction"))
+    clean_incoming = {key: value for key, value in incoming.items() if not key.startswith("_")}
+    existing = _find_process(state.get("processes") or [], incoming)
+    if existing is None:
+        state.setdefault("processes", []).append(clean_incoming)
+        return
+    for key in ("title", "actor"):
+        value = _clean_str(incoming.get(key))
+        if value:
+            existing[key] = value
+    incoming_role = _normalize_role_status(incoming.get("roleStatus"))
+    existing_role = _normalize_role_status(existing.get("roleStatus"))
+    if incoming_role in {ROLE_BELONGS, ROLE_FOREIGN}:
+        existing["roleStatus"] = incoming_role
+    elif incoming_role == ROLE_UNCLEAR and existing_role not in {ROLE_BELONGS, ROLE_FOREIGN}:
+        existing["roleStatus"] = ROLE_UNCLEAR
+    refs = _clean_source_refs(incoming.get("sourceRefs"))
+    if refs:
+        current = _clean_source_refs(existing.get("sourceRefs"))
+        existing["sourceRefs"] = current + [ref for ref in refs if ref not in current]
+    existing_facts = existing.setdefault("knownFacts", {})
+    for key, value in (incoming.get("knownFacts") or {}).items():
+        if isinstance(value, list):
+            current = _clean_list(existing_facts.get(key))
+            existing_facts[key] = current + [item for item in _clean_list(value) if item not in current]
+        else:
+            text = _clean_str(value)
+            if text:
+                existing_facts[key] = text
+    incoming_unknowns = _normalize_unknowns(incoming.get("unknowns"))
+    if from_function:
+        existing["unknowns"] = [
+            item
+            for item in _normalize_unknowns(existing.get("unknowns"))
+            if _clean_str(item.get("source")) != "functionGaps"
+        ]
+    if incoming_unknowns:
+        existing["unknowns"] = _merge_unknowns(existing.get("unknowns"), incoming_unknowns)
+    incoming_questions = _normalize_questions(incoming.get("askedQuestions"))
+    if incoming_questions:
+        existing["askedQuestions"] = _merge_questions(existing.get("askedQuestions"), incoming_questions)
+    if isinstance(incoming.get("currentQuestion"), dict) and incoming["currentQuestion"]:
+        existing["currentQuestion"] = incoming["currentQuestion"]
+
+
+def _find_process(processes: list[Any], incoming: dict[str, Any]) -> dict[str, Any] | None:
+    incoming_id = _clean_str(incoming.get("id"))
+    incoming_title = _clean_str(incoming.get("title")).lower()
+    for item in processes:
+        if not isinstance(item, dict):
+            continue
+        if incoming_id and _clean_str(item.get("id")) == incoming_id:
+            return item
+        if incoming_title and _clean_str(item.get("title")).lower() == incoming_title:
+            return item
+    return None
+
+
+def _merge_unknowns(current: Any, incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = _normalize_unknowns(current)
+    seen = {(_clean_str(item.get("field")), _fold(_clean_str(item.get("reason") or item.get("question")))) for item in out}
+    for item in incoming:
+        key = (_clean_str(item.get("field")), _fold(_clean_str(item.get("reason") or item.get("question"))))
+        if key not in seen:
+            out.append(item)
+            seen.add(key)
+    return out[-40:]
+
+
+def _merge_questions(current: Any, incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = _normalize_questions(current)
+    seen = {(_clean_str(item.get("field")), _fold(_clean_str(item.get("message")))) for item in out}
+    for item in incoming:
+        key = (_clean_str(item.get("field")), _fold(_clean_str(item.get("message"))))
+        if key not in seen:
+            out.append(item)
+            seen.add(key)
+    return out[-40:]
+
+
+def _unknowns_from_function(func: dict[str, Any]) -> list[dict[str, Any]]:
+    unknowns: list[dict[str, Any]] = []
+    for field in _open_gaps(func):
+        unknowns.append(
+            {
+                "id": f"u{len(unknowns) + 1}",
+                "field": _canonical_gap(field),
+                "reason": "Недостаточно данных для исполнимого описания процесса.",
+                "question": "",
+                "critical": True,
+                "source": "functionGaps",
+            }
+        )
+    return unknowns
+
+
 def _open_gaps(func: dict[str, Any], *, position: str = "") -> list[str]:
     if _role_status(func) == ROLE_FOREIGN:
         return []
@@ -548,15 +1041,50 @@ def _open_gaps(func: dict[str, Any], *, position: str = "") -> list[str]:
         if _is_missing(value):
             gaps.append(field)
             continue
-        if field == "triggerAction" and _is_vague_trigger(value):
+        if field == "tool" and _is_vague_work_location(value):
+            gaps.append(field)
+        elif field == "triggerAction" and _is_vague_trigger(value):
             gaps.append(field)
         elif field == "userAction" and _is_vague_user_action(value):
             gaps.append(field)
     return gaps
 
 
+def _canonical_gap(value: Any) -> str:
+    text = _clean_str(value).strip()
+    folded = _fold(text)
+    if folded in {"tool", "instrument", "system", "channel", "place", "location", "worklocation"}:
+        return "tool"
+    if folded in {"object", "objects", "records", "forms", "registers", "entity", "entities"}:
+        return "tool"
+    if folded in {"frequency", "periodicity", "cadence", "schedule"}:
+        return "periodicity"
+    if folded in {"trigger", "start event", "startevent", "condition"}:
+        return "triggerAction"
+    if folded in {"steps", "actions", "procedure", "useraction", "user action"}:
+        return "userAction"
+    if folded in {"role", "rolestatus", "role status"}:
+        return "roleStatus"
+    return text
+
+
 def _is_missing(value: str) -> bool:
     return value.strip().lower() in _UNKNOWN_VALUES
+
+
+def _is_vague_work_location(value: str) -> bool:
+    text = _fold(value)
+    if not text:
+        return True
+    if any(marker in text for marker in _WORK_LOCATION_OBJECT_MARKERS):
+        return False
+    words = re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9]+", text)
+    specific_words = [word for word in words if word not in _GENERIC_WORK_LOCATION_WORDS and len(word) > 2]
+    if len(specific_words) >= 2:
+        return False
+    if any(sep in value for sep in ("/", "\\", ":", ">", "->")) and len(words) >= 2:
+        return False
+    return True
 
 
 def _is_vague_trigger(value: str) -> bool:
@@ -595,9 +1123,24 @@ def _question_for_gap(func: dict[str, Any], field: str, *, position: str = "") -
             field=field,
         )
     if field == "tool":
+        value = _clean_str(func.get("tool"))
+        if value:
+            message = (
+                f"По функции «{title}» указан общий инструмент «{value}». "
+                "Где именно пользователь работает: какой документ, реестр, форма, раздел, карточка или канал?"
+            )
+        else:
+            message = f"По функции «{title}» не указан инструмент. Где пользователь выполняет это действие?"
         return ReadyBlocker(
-            message=f"По функции «{title}» не указан инструмент. Где пользователь выполняет это действие?",
-            quick_answers=["Outlook", "1C", "Excel-файл", "Корпоративная папка", "Рабочий чат", "Другое"],
+            message=message,
+            quick_answers=[
+                "Реестр или журнал в системе",
+                "Карточка документа",
+                "Конкретный файл или папка",
+                "Форма или раздел системы",
+                "Рабочий чат или канал",
+                "Уточню вручную",
+            ],
             function_id=_clean_str(func.get("id")),
             field=field,
         )
@@ -645,6 +1188,150 @@ def _question_for_gap(func: dict[str, Any], field: str, *, position: str = "") -
         function_id=_clean_str(func.get("id")),
         field=field,
     )
+
+
+def _attach_answer_to_current_question(state: dict[str, Any], message: str) -> None:
+    current = state.get("currentQuestion") if isinstance(state.get("currentQuestion"), dict) else {}
+    answer = _clean_str(message)
+    if not current or not answer:
+        return
+    current["answer"] = answer
+    current["sufficiency"] = "pending"
+    state["currentQuestion"] = current
+    question_id = _clean_str(current.get("id"))
+    for item in reversed(state.get("askedQuestions") or []):
+        if not isinstance(item, dict):
+            continue
+        if question_id and _clean_str(item.get("id")) != question_id:
+            continue
+        item["answer"] = answer
+        item["sufficiency"] = "pending"
+        break
+
+
+def _record_answer_sufficiency(state: dict[str, Any], answer_sufficiency: dict[str, Any]) -> None:
+    state["answerSufficiency"] = answer_sufficiency
+    state["answers"].append(answer_sufficiency)
+    state["answers"] = state["answers"][-40:]
+    current = state.get("currentQuestion") if isinstance(state.get("currentQuestion"), dict) else {}
+    question_id = _clean_str(current.get("id"))
+    for item in reversed(state.get("askedQuestions") or []):
+        if not isinstance(item, dict):
+            continue
+        if question_id and _clean_str(item.get("id")) != question_id:
+            continue
+        item["sufficiency"] = answer_sufficiency.get("status") or ""
+        item["answerSummary"] = answer_sufficiency.get("answerSummary") or ""
+        item["missingFacts"] = answer_sufficiency.get("missingFacts") or []
+        item["reason"] = answer_sufficiency.get("reason") or ""
+        break
+    if current:
+        current["sufficiency"] = answer_sufficiency.get("status") or ""
+        current["answerSummary"] = answer_sufficiency.get("answerSummary") or ""
+        current["missingFacts"] = answer_sufficiency.get("missingFacts") or []
+        current["reason"] = answer_sufficiency.get("reason") or ""
+        state["currentQuestion"] = {} if answer_sufficiency.get("status") == "closed" else current
+
+
+def _answer_sufficiency_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None:
+    answer_sufficiency = _extract_answer_sufficiency(payload)
+    if not answer_sufficiency or answer_sufficiency.get("status") == "closed":
+        return None
+    interview = normalize_interview_state(state)
+    field = _canonical_gap(
+        answer_sufficiency.get("field")
+        or (answer_sufficiency.get("missingFacts") or [""])[0]
+        or _current_question_field(interview)
+    )
+    func = _function_for_question(interview, answer_sufficiency.get("functionId") or answer_sufficiency.get("processId"))
+    if func is not None and field:
+        return _question_for_gap(func, _function_field(field), position=_clean_str(interview.get("position")))
+    current = interview.get("currentQuestion") if isinstance(interview.get("currentQuestion"), dict) else {}
+    message = _clean_str(current.get("message"))
+    if message:
+        return ReadyBlocker(
+            message=f"Ответ пока не закрывает вопрос. Уточните, пожалуйста: {message}",
+            quick_answers=["Уточню конкретно", "Опишу шагами", "Укажу источник и результат"],
+            function_id=_clean_str(current.get("functionId")),
+            field=_current_question_field(interview),
+        )
+    return None
+
+
+def _current_question_blocker(state: Any) -> ReadyBlocker | None:
+    interview = normalize_interview_state(state)
+    current = interview.get("currentQuestion") if isinstance(interview.get("currentQuestion"), dict) else {}
+    if not current:
+        return None
+    field = _function_field(current.get("field"))
+    if not field:
+        return None
+    func = _function_for_question(interview, current.get("functionId") or current.get("processId"))
+    if func is None:
+        return None
+    gaps = _open_gaps(func, position=_clean_str(interview.get("position")))
+    if field in gaps:
+        return _question_for_gap(func, field, position=_clean_str(interview.get("position")))
+    return None
+
+
+def _process_unknown_blocker(state: Any) -> ReadyBlocker | None:
+    interview = normalize_interview_state(state)
+    for process in interview.get("processes") or []:
+        if not isinstance(process, dict) or _role_status(process) == ROLE_FOREIGN:
+            continue
+        for unknown in _normalize_unknowns(process.get("unknowns")):
+            if not bool(unknown.get("critical")):
+                continue
+            field = _function_field(unknown.get("field"))
+            func = _function_for_question(interview, process.get("id"))
+            if func is not None and field:
+                return _question_for_gap(func, field, position=_clean_str(interview.get("position")))
+            message = _clean_str(unknown.get("question") or unknown.get("reason"))
+            if message:
+                return ReadyBlocker(
+                    message=message,
+                    quick_answers=["Уточню", "Опишу шагами", "Неизвестно"],
+                    function_id=_clean_str(process.get("id")),
+                    field=field,
+                )
+    return None
+
+
+def _function_for_question(state: dict[str, Any], raw_id: Any) -> dict[str, Any] | None:
+    target_id = _clean_str(raw_id)
+    functions = [item for item in state.get("functions") or [] if isinstance(item, dict)]
+    if target_id:
+        for func in functions:
+            if _clean_str(func.get("id")) == target_id:
+                return func
+    return functions[0] if len(functions) == 1 else None
+
+
+def _current_question_field(state: dict[str, Any]) -> str:
+    current = state.get("currentQuestion") if isinstance(state.get("currentQuestion"), dict) else {}
+    return _canonical_gap(current.get("field") or current.get("intent"))
+
+
+def _function_field(field: Any) -> str:
+    canonical = _canonical_gap(field)
+    return _PROCESS_FIELD_TO_FUNCTION_FIELD.get(canonical, canonical)
+
+
+def _dedupe_question_text(state: dict[str, Any], *, message: str, function_id: str, field: str) -> str:
+    text = _clean_str(message)
+    if not text:
+        return text
+    current_field = _function_field(field)
+    current_function = _clean_str(function_id)
+    for item in reversed(state.get("askedQuestions") or []):
+        if not isinstance(item, dict):
+            continue
+        same_field = _function_field(item.get("field")) == current_field
+        same_function = not current_function or _clean_str(item.get("functionId") or item.get("processId")) == current_function
+        if same_field and same_function and _fold(_clean_str(item.get("message"))) == _fold(text):
+            return f"Уточните глубже тот же вопрос: {text}"
+    return text
 
 
 def _prompt_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -718,6 +1405,19 @@ def document_from_interview(state: Any, title: str = "") -> dict[str, Any]:
     interview = normalize_interview_state(state)
     sections: list[dict[str, Any]] = []
     index = 0
+    processes = [
+        item
+        for item in interview.get("processes") or []
+        if isinstance(item, dict) and _role_status(item) != ROLE_FOREIGN
+    ]
+    if processes:
+        for process in processes:
+            index += 1
+            sections.append(_document_section_from_process(process, index=index))
+        return {
+            "title": _clean_str(title) or "Регламент",
+            "sections": sections,
+        }
     for func in interview.get("functions") or []:
         if not isinstance(func, dict):
             continue
@@ -758,6 +1458,47 @@ def document_from_interview(state: Any, title: str = "") -> dict[str, Any]:
     return {
         "title": _clean_str(title) or "Регламент",
         "sections": sections,
+    }
+
+
+def _document_section_from_process(process: dict[str, Any], *, index: int) -> dict[str, Any]:
+    heading = _clean_str(process.get("title")) or f"Процесс {index}"
+    paragraphs: list[str] = []
+    items: list[str] = []
+    actor = _clean_str(process.get("actor"))
+    if actor:
+        paragraphs.append(f"Исполнитель: {actor}")
+    facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+    for key, label in (
+        ("inputs", "Входы"),
+        ("workLocation", "Где выполняется"),
+        ("objects", "Объекты работы"),
+        ("frequency", "Периодичность"),
+        ("trigger", "Триггер"),
+        ("steps", "Действия"),
+        ("outputs", "Результаты"),
+        ("recipients", "Получатели"),
+        ("controls", "Проверки"),
+        ("exceptions", "Исключения"),
+    ):
+        value = facts.get(key)
+        if isinstance(value, list):
+            for item in _clean_list(value):
+                items.append(f"{label}: {item}")
+        elif _clean_str(value):
+            items.append(f"{label}: {_clean_str(value)}")
+    for ref in process.get("sourceRefs") or []:
+        if not isinstance(ref, dict):
+            continue
+        quote = _clean_str(ref.get("quote"))
+        source = _clean_str(ref.get("file"))
+        if quote:
+            items.append(f"Источник{f' ({source})' if source else ''}: {quote}")
+    return {
+        "number": str(index),
+        "title": heading,
+        "paragraphs": paragraphs,
+        "items": items,
     }
 
 
