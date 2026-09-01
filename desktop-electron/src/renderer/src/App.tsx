@@ -9,6 +9,7 @@ import { KpiPage } from './pages/SimplePages'
 import { OrchestratorPage } from './pages/OrchestratorPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { RegulationChatPage } from './pages/RegulationChatPage'
+import { RegulationCreationHistoryPage } from './pages/RegulationCreationHistoryPage'
 import { visibleAssistantText } from './utils/regulationChat'
 import { RoleMatchPage } from './pages/RoleMatchPage'
 import { ReadinessPage } from './pages/ReadinessPage'
@@ -53,6 +54,7 @@ type View =
   | { kind: 'tab'; key: PageKey }
   | { kind: 'review'; result: RegulationParseResult }
   | { kind: 'regchat' }
+  | { kind: 'reghistory' }
   | { kind: 'rolematch' }
   | { kind: 'readiness' }
   | { kind: 'suggestions' }
@@ -517,6 +519,21 @@ export function App(): React.JSX.Element {
     }
   }
 
+  async function continueRegulationHistoryDraft(draftId: string): Promise<void> {
+    setView({
+      kind: 'loading',
+      title: 'Открываем черновик регламента',
+      subtitle: 'Загружаем сохранённую историю и готовим продолжение.'
+    })
+    try {
+      const session = await api.resumeRegulationCreation(draftId)
+      setRegChat(session)
+      setView({ kind: 'regchat' })
+    } catch (err) {
+      fail('Не удалось открыть черновик', err)
+    }
+  }
+
   async function extractFunctions(result: RegulationParseResult): Promise<void> {
     let position = (user?.position || '').trim()
     let department = (user?.department || '').trim()
@@ -754,6 +771,7 @@ export function App(): React.JSX.Element {
         regulationDraftBusy={regChatBusy}
         onResumeRegulationDraft={() => void startRegulationChat()}
         onRestartRegulationDraft={() => void startRegulationChat({ fresh: true })}
+        onOpenRegulationHistory={() => setView({ kind: 'reghistory' })}
       />
     )
   }
@@ -800,6 +818,14 @@ export function App(): React.JSX.Element {
           onBack={() => setView({ kind: 'tab', key: 'create' })}
           onContinue={() => extractFunctions(view.result)}
           continueBusy={busy}
+        />
+      )
+    }
+    if (view.kind === 'reghistory') {
+      return (
+        <RegulationCreationHistoryPage
+          onBack={() => setView({ kind: 'tab', key: 'create' })}
+          onContinue={(draftId) => void continueRegulationHistoryDraft(draftId)}
         />
       )
     }

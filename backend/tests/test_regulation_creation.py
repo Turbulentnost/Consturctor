@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -30,7 +31,9 @@ from app.services.regulation_creation.service import (
     _result_from_created_document,
     get_active_creation_session,
     get_creation_document,
+    list_creation_sessions,
     persist_creation_turn,
+    resume_creation_session,
     start_creation_session,
 )
 from app.schemas.regulation import RegulationCreationSendRequest
@@ -951,6 +954,81 @@ def test_start_creation_fresh_closes_previous_draft() -> None:
     assert old.status == "closed"
     assert active is not None
     assert active.draftId == second.draftId
+
+
+def test_creation_history_is_sorted_by_updated_at() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    now = datetime.now(timezone.utc)
+    older = RegulationCreationDraft(
+        id="draft-old",
+        user_id="user-1",
+        status="closed",
+        interview_json={"functions": [{"id": "f1", "title": "Старый процесс"}]},
+        created_at=now - timedelta(days=2),
+        updated_at=now - timedelta(days=2),
+    )
+    newer = RegulationCreationDraft(
+        id="draft-new",
+        user_id="user-1",
+        status="interview",
+        draft_document_json={"title": "Новый регламент"},
+        created_at=now - timedelta(days=1),
+        updated_at=now,
+    )
+    db.add_all([older, newer])
+    db.commit()
+
+    history = list_creation_sessions(db, user_id="user-1")
+
+    assert [item.draftId for item in history.items] == ["draft-new", "draft-old"]
+    assert history.items[0].title == "Новый регламент"
+    assert history.items[1].title == "Старый процесс"
+    assert history.items[0].canContinue is True
+
+
+def test_creation_history_marks_finalized_as_not_continueable() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    draft = RegulationCreationDraft(
+        id="draft-final",
+        user_id="user-1",
+        status="finalized",
+        result_regulation_id="reg-1",
+        draft_document_json={"title": "Готовый регламент"},
+    )
+    db.add(draft)
+    db.commit()
+
+    history = list_creation_sessions(db, user_id="user-1")
+
+    assert history.items[0].draftId == "draft-final"
+    assert history.items[0].hasResult is True
+    assert history.items[0].canContinue is False
+
+
+def test_resume_closed_creation_session_clears_archived_sdk_agent() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    draft = RegulationCreationDraft(
+        id="draft-closed",
+        user_id="user-1",
+        status="closed",
+        cursor_agent_id="agent-archived",
+        latest_run_id="run-archived",
+        interview_json={"sdk_agent_id": "agent-archived", "functions": []},
+    )
+    db.add(draft)
+    db.commit()
+
+    session = resume_creation_session(db, user_id="user-1", draft_id="draft-closed")
+
+    db.refresh(draft)
+    assert session.draftId == "draft-closed"
+    assert session.status == "interview"
+    assert draft.cursor_agent_id == ""
+    assert draft.latest_run_id == ""
+    assert session.sdkAgentId == ""
 
 
 def test_apply_agent_reply_replaces_ascii_question_marks() -> None:

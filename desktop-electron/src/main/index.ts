@@ -420,10 +420,13 @@ async function handleDownload(
 ) {
   const win = BrowserWindow.fromWebContents(evt.sender) || BrowserWindow.getFocusedWindow()
   const suggested = ensureDocxPath(join(app.getPath('downloads'), opts.defaultName || 'Reglament.docx'))
-  const result = await dialog.showSaveDialog(win ?? undefined, {
+  const saveOptions = {
     defaultPath: suggested,
     filters: [{ name: 'Word', extensions: ['docx'] }]
-  })
+  }
+  const result = win
+    ? await dialog.showSaveDialog(win, saveOptions)
+    : await dialog.showSaveDialog(saveOptions)
   if (result.canceled || !result.filePath) return { ok: false, canceled: true }
   const target = ensureDocxPath(result.filePath)
   const url = resolveBackendUrl(opts.url)

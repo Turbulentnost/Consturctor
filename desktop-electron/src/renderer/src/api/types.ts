@@ -179,6 +179,18 @@ export interface RegulationCreationSession {
   sdkAgentId: string
 }
 
+export interface RegulationCreationHistoryItem {
+  draftId: string
+  status: string
+  title: string
+  preview: string
+  messageCount: number
+  hasResult: boolean
+  canContinue: boolean
+  createdAt: string
+  updatedAt: string
+}
+
 export interface RegulationCreationTurn {
   session: RegulationCreationSession
   interview: Record<string, unknown>

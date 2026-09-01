@@ -13,6 +13,7 @@ interface CreatePageProps {
   regulationDraftBusy?: boolean
   onResumeRegulationDraft?: () => void
   onRestartRegulationDraft?: () => void
+  onOpenRegulationHistory?: () => void
 }
 
 export function CreatePage({
@@ -21,7 +22,8 @@ export function CreatePage({
   hasRegulationDraft = false,
   regulationDraftBusy = false,
   onResumeRegulationDraft,
-  onRestartRegulationDraft
+  onRestartRegulationDraft,
+  onOpenRegulationHistory
 }: CreatePageProps): React.JSX.Element {
   const [hover, setHover] = useState(false)
   const [fileName, setFileName] = useState('')
@@ -129,6 +131,9 @@ export function CreatePage({
         <div className="option-card">
           <div className="option-badge-row">
             <div className="badge-pill">Нет регламента?</div>
+            <button className="history-link" type="button" onClick={onOpenRegulationHistory}>
+              История
+            </button>
           </div>
           <div className="option-icon">
             <img src={aiIcon} alt="" />

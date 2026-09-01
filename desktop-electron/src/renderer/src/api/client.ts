@@ -15,6 +15,7 @@ import {
   type PassportSession,
   type QuestionChatSession,
   type RegulationCreationMessage,
+  type RegulationCreationHistoryItem,
   type RegulationCreationSession,
   type RegulationCreationTurn,
   type FragmentEntityTag,
@@ -143,6 +144,20 @@ function parseCreationTurn(data: Record<string, unknown>): RegulationCreationTur
     sdkRules: String(data.sdkRules ?? data.sdk_rules ?? ''),
     sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? ''),
     forceCreate: Boolean(data.forceCreate ?? data.force_create)
+  }
+}
+
+function parseCreationHistoryItem(data: Record<string, unknown>): RegulationCreationHistoryItem {
+  return {
+    draftId: String(data.draftId ?? data.draft_id ?? ''),
+    status: String(data.status ?? ''),
+    title: String(data.title ?? ''),
+    preview: String(data.preview ?? ''),
+    messageCount: Number(data.messageCount ?? data.message_count ?? 0),
+    hasResult: Boolean(data.hasResult ?? data.has_result),
+    canContinue: Boolean(data.canContinue ?? data.can_continue),
+    createdAt: String(data.createdAt ?? data.created_at ?? ''),
+    updatedAt: String(data.updatedAt ?? data.updated_at ?? '')
   }
 }
 
@@ -1051,6 +1066,24 @@ export class ApiClient {
       if (err instanceof ApiError && err.status === 404) return null
       throw err
     }
+  }
+
+  async listRegulationCreationHistory(): Promise<RegulationCreationHistoryItem[]> {
+    const data = await this.request<{ items?: unknown[] }>(
+      'GET',
+      '/api/v1/regulation-creation/sessions/history',
+      { timeoutMs: 60_000 }
+    )
+    return (data.items ?? []).map((item) => parseCreationHistoryItem(asRecord(item)))
+  }
+
+  async resumeRegulationCreation(draftId: string): Promise<RegulationCreationSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulation-creation/sessions/${draftId}/resume`,
+      { timeoutMs: 60_000 }
+    )
+    return parseCreationSession(data)
   }
 
   async getRegulationCreationSession(draftId: string): Promise<RegulationCreationSession> {

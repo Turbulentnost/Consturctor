@@ -20,6 +20,8 @@ from app.models.regulation import (
 from app.models.user import AppUser
 from app.schemas.regulation import (
     RegulationCreationApplyRequest,
+    RegulationCreationHistoryItem,
+    RegulationCreationHistoryResult,
     RegulationCreationMessage as CreationMessageSchema,
     RegulationCreationSendRequest,
     RegulationCreationSession,
@@ -128,6 +130,34 @@ def start_creation_session(
 
 def get_creation_session(db: Session, *, user_id: str, draft_id: str) -> RegulationCreationSession:
     return _session(db, _get_draft(db, user_id=user_id, draft_id=draft_id))
+
+
+def list_creation_sessions(db: Session, *, user_id: str, limit: int = 50) -> RegulationCreationHistoryResult:
+    drafts = (
+        db.query(RegulationCreationDraft)
+        .filter(RegulationCreationDraft.user_id == user_id)
+        .order_by(RegulationCreationDraft.updated_at.desc())
+        .limit(max(1, min(limit, 200)))
+        .all()
+    )
+    return RegulationCreationHistoryResult(
+        items=[_history_item(db, draft) for draft in drafts]
+    )
+
+
+def resume_creation_session(db: Session, *, user_id: str, draft_id: str) -> RegulationCreationSession:
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    if draft.status == "finalized":
+        return _session(db, draft)
+    if draft.status == "closed":
+        draft.status = "interview"
+        draft.cursor_agent_id = ""
+        draft.latest_run_id = ""
+        draft.interview_json = set_sdk_agent_id(draft.interview_json, "")
+        db.add(draft)
+        db.commit()
+        db.refresh(draft)
+    return _session(db, draft)
 
 
 def peek_creation_turn(db: Session, *, user_id: str, draft_id: str) -> RegulationCreationTurn:
@@ -1109,6 +1139,61 @@ def _first_payload_item_id(parsed: dict, key: str) -> str:
 def _is_force_create_message(message: str) -> bool:
     text = message.strip().lower()
     return "принудительно" in text or "создай регламент" in text and "не хватает" in text
+
+
+def _history_item(db: Session, draft: RegulationCreationDraft) -> RegulationCreationHistoryItem:
+    messages = _messages_for_draft(db, draft.id)
+    return RegulationCreationHistoryItem(
+        draftId=draft.id,
+        status=draft.status,
+        title=_history_title(draft, messages),
+        preview=_history_preview(messages),
+        messageCount=len(messages),
+        hasResult=bool(draft.result_regulation_id or draft.result_document_path),
+        canContinue=draft.status != "finalized",
+        createdAt=draft.created_at,
+        updatedAt=draft.updated_at,
+    )
+
+
+def _history_title(draft: RegulationCreationDraft, messages: list[RegulationCreationMessage]) -> str:
+    document = draft.draft_document_json if isinstance(draft.draft_document_json, dict) else {}
+    title = str(document.get("title") or "").strip()
+    if title:
+        return title
+    interview = draft.interview_json if isinstance(draft.interview_json, dict) else {}
+    for container in ("processes", "functions"):
+        items = interview.get(container) if isinstance(interview.get(container), list) else []
+        for item in items:
+            if isinstance(item, dict):
+                title = str(item.get("title") or item.get("name") or "").strip()
+                if title:
+                    return title
+    attachments = interview.get("attachments") if isinstance(interview.get("attachments"), list) else []
+    for item in attachments:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if name:
+                return name
+    for message in messages:
+        if message.role == "user" and message.content.strip():
+            return _single_line(message.content, limit=80)
+    return "Черновик регламента"
+
+
+def _history_preview(messages: list[RegulationCreationMessage]) -> str:
+    for message in reversed(messages):
+        text = _single_line(message.content, limit=180)
+        if text:
+            return text
+    return ""
+
+
+def _single_line(value: str, *, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "..."
 
 
 def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationSession:
