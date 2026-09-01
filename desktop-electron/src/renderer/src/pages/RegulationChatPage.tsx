@@ -395,7 +395,6 @@ export function RegulationChatPage({
       }
     } catch (err) {
       if (isRegulationCancelled(err) || stoppedRef.current) {
-        if (!persisted) onSessionChange({ ...session, status: 'idle' })
         return
       }
       setError(err instanceof ApiError ? err.message : 'Ошибка отправки сообщения')
@@ -407,7 +406,7 @@ export function RegulationChatPage({
           /* keep the last known session, including the user files */
         }
       } else {
-        onSessionChange({ ...session, status: 'idle' })
+        onSessionChange({ ...optimistic, status: 'idle' })
       }
     } finally {
       setBusy(false)
@@ -613,7 +612,7 @@ export function RegulationChatPage({
                           </div>
                         )}
                       </div>
-                      {!isUser && quicks.length > 0 && !busy && (
+                      {!isUser && isCurrentStage && quicks.length > 0 && (
                         <div className="regchat-quick-row">
                           {quicks.map((qa) => (
                             <button

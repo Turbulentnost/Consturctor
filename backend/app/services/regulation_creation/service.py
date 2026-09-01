@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 import tempfile
 from pathlib import Path
@@ -62,6 +63,7 @@ from app.services.workflows.document import DocumentError, load_attachment_bytes
 _CREATION_ATTACH_SUFFIXES = {".doc", ".docx", ".pdf", ".md", ".txt"}
 _MAX_ATTACH_CHARS = 120_000
 _MESSAGE_CONTENT_LIMIT = 7900
+logger = logging.getLogger(__name__)
 
 
 FIRST_QUESTION = (
@@ -742,6 +744,13 @@ def _load_creation_attachments(files: list[tuple[str, bytes]]) -> list[dict]:
     total_chars = 0
     for name, raw in files:
         suffix = Path(name or "").suffix.lower()
+        safe_name = ascii(Path(name or "file").name)
+        logger.info(
+            "reg_create attachment load start name=%s suffix=%s bytes=%s",
+            safe_name,
+            suffix,
+            len(raw),
+        )
         if suffix == ".doc":
             raise RegulationCreationError("Формат DOC не поддерживается. Сохраните файл как DOCX.")
         if suffix not in _CREATION_ATTACH_SUFFIXES:
@@ -752,8 +761,20 @@ def _load_creation_attachments(files: list[tuple[str, bytes]]) -> list[dict]:
         try:
             item = _load_creation_attachment(name, raw)
         except DocumentError as exc:
+            logger.warning(
+                "reg_create attachment load failed name=%s suffix=%s detail=%s",
+                safe_name,
+                suffix,
+                ascii(str(exc)),
+            )
             raise RegulationCreationError(str(exc)) from exc
         text = str(item.get("text") or "")
+        logger.info(
+            "reg_create attachment load ok name=%s kind=%s chars=%s",
+            safe_name,
+            ascii(str(item.get("kind") or "")),
+            len(text),
+        )
         remain = max(0, _MAX_ATTACH_CHARS - total_chars)
         if len(text) > remain:
             item["text"] = text[:remain] + "\n...[текст файла обрезан]"
@@ -769,21 +790,66 @@ def _load_creation_attachment(name: str, raw: bytes) -> dict:
     suffix = Path(name or "").suffix.lower()
     if suffix != ".pdf":
         return load_attachment_bytes(name, raw)
+    safe_name = ascii(Path(name or "scan.pdf").name)
+    logger.info("reg_create pdf text extraction start name=%s bytes=%s", safe_name, len(raw))
     try:
-        return load_attachment_bytes(name, raw)
+        item = load_attachment_bytes(name, raw)
+        logger.info(
+            "reg_create pdf text extraction ok name=%s chars=%s",
+            safe_name,
+            len(str(item.get("text") or "")),
+        )
+        return item
     except DocumentError as exc:
         if "Документ пуст" not in str(exc):
+            logger.warning(
+                "reg_create pdf text extraction failed name=%s detail=%s",
+                safe_name,
+                ascii(str(exc)),
+            )
             raise
+        logger.info(
+            "reg_create pdf text empty; ocr fallback start name=%s detail=%s",
+            safe_name,
+            ascii(str(exc)),
+        )
     with tempfile.TemporaryDirectory(prefix="reg-create-ocr-") as tmp:
         path = Path(tmp) / (Path(name).name or "scan.pdf")
         path.write_bytes(raw)
-        is_scan, _page_count = is_scan_pdf(path)
+        try:
+            is_scan, _page_count = is_scan_pdf(path)
+        except RuntimeError as exc:
+            logger.warning(
+                "reg_create pdf scan detection failed name=%s detail=%s",
+                safe_name,
+                ascii(str(exc)),
+            )
+            raise DocumentError(str(exc)) from exc
+        logger.info(
+            "reg_create pdf scan detection ok name=%s is_scan=%s pages=%s",
+            safe_name,
+            is_scan,
+            _page_count,
+        )
         if not is_scan:
+            logger.warning("reg_create pdf has no text and is not scan name=%s", safe_name)
             raise DocumentError("Документ пуст или не удалось извлечь текст.")
         try:
+            logger.info("reg_create pdf ocr start name=%s pages=%s", safe_name, _page_count)
             extracted = extract_pdf_scan(path, work_dir=Path(tmp))
         except RuntimeError as exc:
+            logger.warning(
+                "reg_create pdf ocr failed name=%s detail=%s",
+                safe_name,
+                ascii(str(exc)),
+            )
             raise DocumentError(str(exc)) from exc
+        logger.info(
+            "reg_create pdf ocr ok name=%s pages=%s blocks=%s",
+            safe_name,
+            extracted.page_count,
+            len(extracted.blocks),
+        )
     text = compose_regulation_text(
         RegulationParseResult(
             regulationId="reg-create-attachment",
@@ -806,7 +872,9 @@ def _load_creation_attachment(name: str, raw: bytes) -> dict:
         )
     )
     if not text.strip():
+        logger.warning("reg_create pdf ocr produced empty text name=%s", safe_name)
         raise DocumentError("Документ пуст или не удалось извлечь текст.")
+    logger.info("reg_create pdf ocr text composed name=%s chars=%s", safe_name, len(text))
     return {
         "name": Path(name).name or "scan.pdf",
         "text": text,

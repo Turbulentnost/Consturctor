@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -30,6 +31,7 @@ from app.services.regulation_creation import (
 )
 
 router = APIRouter(prefix="/regulation-creation", tags=["regulation-creation"])
+logger = logging.getLogger(__name__)
 
 
 async def _parse_send_payload(request: Request) -> tuple[RegulationCreationSendRequest, list[tuple[str, bytes]]]:
@@ -61,6 +63,12 @@ async def create_regulation_creation_session(
     try:
         return start_creation_session(db, user_id=auth.user_id, fresh=fresh)
     except RegulationCreationError as exc:
+        logger.warning(
+            "reg_create turn failed draft_id=%s status=%s detail=%s",
+            draft_id,
+            exc.status_code,
+            ascii(exc.message),
+        )
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
@@ -84,6 +92,12 @@ async def peek_regulation_creation_turn(
     try:
         return peek_creation_turn(db, user_id=auth.user_id, draft_id=draft_id)
     except RegulationCreationError as exc:
+        logger.warning(
+            "reg_create message failed draft_id=%s status=%s detail=%s",
+            draft_id,
+            exc.status_code,
+            ascii(exc.message),
+        )
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
@@ -186,6 +200,7 @@ async def stream_regulation_creation_session_message(
     try:
         payload, files = await _parse_send_payload(request)
     except Exception as exc:  # noqa: BLE001
+        logger.exception("reg_create stream payload parse failed draft_id=%s detail=%s", draft_id, ascii(str(exc)))
         raise HTTPException(status_code=400, detail=f"Некорректный запрос: {exc}") from exc
 
     def generate():
@@ -200,10 +215,17 @@ async def stream_regulation_creation_session_message(
                 yield f"event: {item.get('type', 'message')}\n"
                 yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
         except RegulationCreationError as exc:
+            logger.warning(
+                "reg_create stream failed draft_id=%s status=%s detail=%s",
+                draft_id,
+                exc.status_code,
+                ascii(exc.message),
+            )
             payload_err = {"type": "error", "message": exc.message}
             yield "event: error\n"
             yield f"data: {json.dumps(payload_err, ensure_ascii=False)}\n\n"
         except Exception as exc:  # noqa: BLE001
+            logger.exception("reg_create stream unexpected failed draft_id=%s detail=%s", draft_id, ascii(str(exc)))
             payload_err = {"type": "error", "message": f"Ошибка создания регламента: {exc}"}
             yield "event: error\n"
             yield f"data: {json.dumps(payload_err, ensure_ascii=False)}\n\n"
