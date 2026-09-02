@@ -183,6 +183,15 @@ class CursorSdkBridge:
             ),
         }
 
+    @staticmethod
+    def _emit_event(on_event: SdkEventCallback | None, payload: dict[str, Any]) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(payload)
+        except Exception:
+            return
+
     def run(
         self,
         *,
@@ -283,11 +292,9 @@ class CursorSdkBridge:
                         answer_parts.append(text)
                 if event_type == "done":
                     final = payload
-                    if on_event is not None:
-                        on_event(payload)
+                    self._emit_event(on_event, payload)
                     break
-                if on_event is not None:
-                    on_event(payload)
+                self._emit_event(on_event, payload)
                 if should_stop is not None and should_stop():
                     try:
                         self._send(process, {"type": "cancel", "id": run_id})
