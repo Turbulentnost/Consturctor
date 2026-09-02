@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, parseChatMessage } from '../api/client'
+import { api, parseChatMessage, scheduleDraftFromRecord } from '../api/client'
 import { agentShareFromBoard, encodeAgentMessage } from '../api/chatCodec'
 import { loadUserAvatar } from '../api/avatars'
 import wallpaperUrl from '../assets/chat/wallpaper.png'
@@ -9,8 +9,11 @@ import type {
   ChatAttachment,
   ChatMessage,
   ChatThread,
-  UserProfile
+  UserProfile,
+  WorkflowRecord
 } from '../api/types'
+import { triggerChipLabel } from './AgentSchedulePage'
+import { localizeStatusText } from '../utils/statusText'
 
 interface MessengerPageProps {
   thread: ChatThread
@@ -70,6 +73,115 @@ function statusTone(thread: ChatThread): string {
 
 function newClientId(): string {
   return crypto.randomUUID().replace(/-/g, '')
+}
+
+function cleanAgentText(value: string): string {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  return compact.replace(/^(?:ии-агент\s*:\s*)+/i, '').trim()
+}
+
+function extractField(raw: string, label: string): string {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const rx = new RegExp(`${escaped}\\s*:\\s*([\\s\\S]*?)(?=\\s+[А-Яа-яA-Za-z][^:]{1,30}:|$)`, 'i')
+  const match = raw.match(rx)
+  return match ? match[1].trim() : ''
+}
+
+function parseNotes(rawNotes: string): {
+  description: string
+  goal: string
+  trigger: string
+  tools: string[]
+} {
+  const notes = rawNotes || ''
+  const goal = extractField(notes, 'Цель')
+  const trigger = extractField(notes, 'Триггер')
+  const toolsRaw = extractField(notes, 'Инструменты')
+  const tools = toolsRaw
+    ? toolsRaw
+        .split(/[,;\n]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : []
+  const descriptionPart = notes.split(/Цель\s*:/i)[0] || notes
+  return {
+    description: cleanAgentText(descriptionPart),
+    goal: cleanAgentText(goal),
+    trigger: cleanAgentText(trigger),
+    tools: Array.from(new Set(tools))
+  }
+}
+
+function compactTrigger(record: WorkflowRecord): string {
+  const draft = scheduleDraftFromRecord(record)
+  const triggers = draft?.triggers ?? []
+  if (triggers.length === 0) return 'Ручной запуск'
+  const labels = triggers.map((item) => triggerChipLabel(item)).filter(Boolean)
+  if (!labels.length) return 'Триггеры настроены'
+  if (labels.length <= 2) return labels.join(' · ')
+  return `${labels.slice(0, 2).join(' · ')} (+${labels.length - 2})`
+}
+
+function toolsFromRecord(record: WorkflowRecord): string[] {
+  const local = (record.localRun ?? {}) as Record<string, unknown>
+  const pick = (...keys: string[]): string[] => {
+    for (const key of keys) {
+      const value = local[key]
+      if (Array.isArray(value)) {
+        const arr = value.map((item) => String(item || '').trim()).filter(Boolean)
+        if (arr.length) return arr
+      }
+      if (typeof value === 'string' && value.trim()) {
+        return value
+          .split(/[,;\n]/)
+          .map((item) => item.trim())
+          .filter(Boolean)
+      }
+    }
+    return []
+  }
+  const fromLocal = pick(
+    'tools',
+    'tool_list',
+    'toolList',
+    'allowed_tools',
+    'allowedTools',
+    'tool_whitelist',
+    'toolWhitelist',
+    'required_tools',
+    'requiredTools'
+  )
+  if (fromLocal.length) return Array.from(new Set(fromLocal))
+  return []
+}
+
+async function buildSharePayload(agent: BoardAgent): Promise<AgentSharePayload> {
+  const base = agentShareFromBoard(agent)
+  try {
+    const record = await api.getWorkflow(agent.id)
+    const fromNotes = parseNotes(record.notes || '')
+    const goal = (record.plan?.goal || fromNotes.goal || '').trim()
+    const triggerSummary = compactTrigger(record)
+    const tools = toolsFromRecord(record)
+    const mergedTools = tools.length ? tools : fromNotes.tools
+    const mergedDescription = cleanAgentText(record.notes || '') || fromNotes.description || base.description
+    return {
+      ...base,
+      title: record.title || base.title,
+      description: mergedDescription,
+      goal,
+      triggerSummary:
+        triggerSummary === 'Ручной запуск'
+          ? fromNotes.trigger || base.triggerSummary || base.triggerKind || triggerSummary
+          : triggerSummary,
+      tools: mergedTools
+    }
+  } catch {
+    return {
+      ...base,
+      triggerSummary: base.triggerSummary || base.triggerKind || 'Ручной запуск'
+    }
+  }
 }
 
 function mergeReceipt(current: string, incoming: string): string {
@@ -385,7 +497,7 @@ export function MessengerPage({
       const board = await api.getWorkflowBoard()
       setAgents(board.agents.filter((item) => item.kind !== 'draft'))
     } catch {
-      setAgents([])
+      // Keep the last loaded list on transient backend failures.
     }
   }
 
@@ -459,7 +571,7 @@ export function MessengerPage({
                         <span className="messenger-agent-ico">{(message.agent.title[0] || 'А').toUpperCase()}</span>
                         <span>
                           <strong>{message.agent.title}</strong>
-                          <em>{message.agent.status || message.agent.phase || 'Агент'}</em>
+                          <em>{localizeStatusText(message.agent.status || message.agent.phase || '', 'Агент')}</em>
                         </span>
                       </button>
                     )}
@@ -612,7 +724,7 @@ export function MessengerPage({
               <span className="round">{(agent.title[0] || 'А').toUpperCase()}</span>
               <div>
                 <b>{agent.title}</b>
-                <i>{agent.status || agent.phase || 'Агент'}</i>
+                <i>{localizeStatusText(agent.status || agent.phase || '', 'Агент')}</i>
               </div>
             </button>
           ))}
@@ -631,15 +743,16 @@ export function MessengerPage({
                   key={agent.id}
                   type="button"
                   className="messenger-side-card"
-                  onClick={() => {
+                  onClick={async () => {
                     setPickerOpen(false)
-                    void send(agentShareFromBoard(agent))
+                    const payload = await buildSharePayload(agent)
+                    void send(payload)
                   }}
                 >
                   <span className="round">{(agent.title[0] || 'А').toUpperCase()}</span>
                   <div>
                     <b>{agent.title}</b>
-                    <i>{agent.status || agent.phase || 'Агент'}</i>
+                    <i>{localizeStatusText(agent.status || agent.phase || '', 'Агент')}</i>
                   </div>
                 </button>
               ))}

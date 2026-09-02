@@ -7,7 +7,17 @@ import { presentAgentText } from '../components/agentfeed/formatAgentText'
 import { useRuns } from '../store/runs'
 import { isInFlightRunStatus, isLiveRunState } from '../store/liveRun'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
+import { durationLabel } from '../workplace/runTiming'
 import { formatSize } from './filesGrouping'
+import {
+  eventsForHistoryRun,
+  filesForHistoryRun,
+  formatRunWhen,
+  historyResultText,
+  historySourceLabel,
+  historyStatusLabel,
+  historyStatusTone
+} from './historyDetail'
 
 interface AgentHistoryPageProps {
   workflowId: string
@@ -15,89 +25,6 @@ interface AgentHistoryPageProps {
   initialRunId?: string
   onBack: () => void
   onOpenLive?: () => void
-}
-
-function fileBaseName(raw: string): string {
-  return raw.replace(/\\/g, '/').split('/').pop()?.trim() || ''
-}
-
-function mentionedOutputNames(answer: string, events: AgentRunnerEvent[]): Set<string> {
-  const names = new Set<string>()
-  const add = (raw: string): void => {
-    const name = fileBaseName(raw)
-    if (name && /\.[A-Za-z0-9]{1,8}$/.test(name)) names.add(name.toLowerCase())
-  }
-  for (const match of answer.matchAll(/`([^`]+)`/g)) add(match[1])
-  for (const event of events) {
-    if (event.text) {
-      for (const match of event.text.matchAll(/`([^`]+)`/g)) add(match[1])
-    }
-    const result = event.result
-    if (result && typeof result === 'object') {
-      const row = result as Record<string, unknown>
-      for (const key of ['file', 'path', 'filename', 'result_file']) {
-        if (typeof row[key] === 'string') add(row[key])
-      }
-    }
-  }
-  return names
-}
-
-function isAgentOutput(file: WorkflowFileItem): boolean {
-  return file.source === 'agent' || file.scope === 'run_output'
-}
-
-function filesForHistoryRun(
-  files: WorkflowFileItem[],
-  runId: string,
-  answer: string,
-  events: AgentRunnerEvent[]
-): WorkflowFileItem[] {
-  const mentioned = mentionedOutputNames(answer, events)
-  return files.filter((file) => {
-    if (!isAgentOutput(file)) return false
-    const rid = (file.runId || '').trim()
-    if (!rid || rid === runId || rid === 'local') return true
-    return mentioned.has((file.name || '').toLowerCase())
-  })
-}
-
-function formatWhen(value: string): string {
-  if (!value) return ''
-  try {
-    return new Date(value).toLocaleString('ru-RU')
-  } catch {
-    return value
-  }
-}
-
-const STATUS_LABELS: Record<string, string> = {
-  ok: 'Успешно',
-  error: 'Ошибка',
-  running: 'Выполняется',
-  started: 'Выполняется',
-  canceled: 'Отменён',
-  cancelled: 'Отменён'
-}
-
-function isHistoryResult(text: string): boolean {
-  const value = text.trim().toLowerCase()
-  if (!value) return false
-  return ![
-    'остановлено пользователем',
-    'cursor sdk не отвечает',
-    'агент уже выполняется',
-    'запуск не завершился'
-  ].some((marker) => value.includes(marker))
-}
-
-function historyRunStatus(run: { status: string; answer?: string; summary?: string }): string {
-  const status = (run.status || '').trim().toLowerCase()
-  const result = (run.answer || run.summary || '').trim()
-  if (status === 'started' || status === 'running') return status
-  if (status === 'error' && isHistoryResult(result)) return 'error'
-  if (status === 'ok' && isHistoryResult(result)) return 'ok'
-  return 'canceled'
 }
 
 export function AgentHistoryPage({
@@ -154,16 +81,17 @@ export function AgentHistoryPage({
     let alive = true
     setDetailLoading(true)
     setPane('result')
-    void Promise.all([
-      api.getAgentRunDetail(workflowId, selected),
-      api.listWorkflowFiles(workflowId)
-    ])
+    void Promise.all([api.getAgentRunDetail(workflowId, selected), api.listWorkflowFiles(workflowId)])
       .then(([detail, allFiles]) => {
         if (!alive) return
-        const text = (detail.item.answer || detail.item.summary || '').trim()
+        const stored = (detail.item.answer || detail.item.summary || '').trim()
+        const text = historyResultText(stored, detail.events)
         setAnswer(text)
         setEvents(detail.events)
         setFiles(filesForHistoryRun(allFiles, selected, text, detail.events))
+        setRuns((current) =>
+          current.map((item) => (item.runId === detail.item.runId ? { ...item, ...detail.item } : item))
+        )
       })
       .catch(() => {
         if (!alive) return
@@ -180,7 +108,11 @@ export function AgentHistoryPage({
   }, [workflowId, selected])
 
   const selectedRun = runs.find((item) => item.runId === selected)
-  const feedItems = useMemo(() => buildFeedItems(events), [events])
+  const feedEvents = useMemo(
+    () => eventsForHistoryRun(events, selectedRun, answer),
+    [events, selectedRun, answer]
+  )
+  const feedItems = useMemo(() => buildFeedItems(feedEvents), [feedEvents])
   const showLiveFeed = Boolean(
     live &&
       isLiveRunState(live.state) &&
@@ -189,6 +121,9 @@ export function AgentHistoryPage({
         !live.backendRunId ||
         live.backendRunId === selected)
   )
+  const sourceLabel = selectedRun ? historySourceLabel(selectedRun) : ''
+  const agentTime = selectedRun ? durationLabel(selectedRun.agentWorkMs || 0) : ''
+  const humanTime = selectedRun ? durationLabel(selectedRun.humanWaitMs || 0) : ''
 
   return (
     <div className="agent-studio">
@@ -220,12 +155,16 @@ export function AgentHistoryPage({
               onClick={() => setSelected(run.runId)}
               style={{ textAlign: 'left', cursor: 'pointer', width: '100%' }}
             >
-              <div className="history-status">
-                {STATUS_LABELS[historyRunStatus(run)] || 'Отменён'}
+              <div className={`history-status is-${historyStatusTone(run.status)}`}>
+                {historyStatusLabel(run.status)}
               </div>
               <div className="history-summary" style={{ fontSize: 12 }}>
-                {formatWhen(run.startedAt)}
+                {formatRunWhen(run.startedAt)}
+                {run.source ? ` · ${historySourceLabel(run)}` : ''}
               </div>
+              {run.triggerReason ? (
+                <div className="history-run-reason">{run.triggerReason}</div>
+              ) : null}
             </button>
           ))}
         </div>
@@ -252,9 +191,7 @@ export function AgentHistoryPage({
                 onAnswer={(requestId, value, filePaths) =>
                   liveStore.answer(workflowId, requestId, value, filePaths)
                 }
-                onHitl={(requestId, approved) =>
-                  liveStore.respondHitl(workflowId, requestId, approved)
-                }
+                onHitl={(requestId, approved) => liveStore.respondHitl(workflowId, requestId, approved)}
                 onSkip={() => liveStore.skip(workflowId)}
               />
             </div>
@@ -264,18 +201,40 @@ export function AgentHistoryPage({
             <div className="wf-files-empty">Выберите запуск, чтобы увидеть результат.</div>
           ) : (
             <div className="history-result">
+              <div className="files-tabs history-result-tabs">
+                <button
+                  className={pane === 'result' ? 'active' : ''}
+                  type="button"
+                  onClick={() => setPane('result')}
+                >
+                  Результат
+                </button>
+                <button
+                  className={pane === 'events' ? 'active' : ''}
+                  type="button"
+                  onClick={() => setPane('events')}
+                >
+                  Ход работы
+                </button>
+              </div>
+              {selectedRun ? (
+                <div className="history-run-meta">
+                  <span>
+                    {historyStatusLabel(selectedRun.status)}
+                    {selectedRun.startedAt ? ` · ${formatRunWhen(selectedRun.startedAt)}` : ''}
+                  </span>
+                  <span>{sourceLabel}</span>
+                  {selectedRun.finishedAt ? <span>конец: {formatRunWhen(selectedRun.finishedAt)}</span> : null}
+                  {selectedRun.agentWorkMs > 0 || selectedRun.openSegment === 'agent' ? (
+                    <span>работа агента: {agentTime}</span>
+                  ) : null}
+                  {selectedRun.humanWaitMs > 0 || selectedRun.openSegment === 'human' ? (
+                    <span>ответ человека: {humanTime}</span>
+                  ) : null}
+                </div>
+              ) : null}
               {pane === 'events' ? (
                 <section className="wf-result-card">
-                  <div className="wf-result-head">
-                    <div className="wf-result-title">Ход работы</div>
-                    <button
-                      type="button"
-                      className="btn-ghost wf-result-action"
-                      onClick={() => setPane('result')}
-                    >
-                      К результату
-                    </button>
-                  </div>
                   <div className="wf-feed-wrap history-feed">
                     <AgentFeed
                       items={feedItems}
@@ -292,16 +251,6 @@ export function AgentHistoryPage({
                 </section>
               ) : (
                 <section className="wf-result-card">
-                  <div className="wf-result-head">
-                    <div className="wf-result-title">Результат</div>
-                    <button
-                      type="button"
-                      className="btn-ghost wf-result-action"
-                      onClick={() => setPane('events')}
-                    >
-                      Ход работы
-                    </button>
-                  </div>
                   {answer ? (
                     <MarkdownBody text={presentAgentText(answer)} />
                   ) : (

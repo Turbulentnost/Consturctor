@@ -30,7 +30,7 @@
       "target": [
         "nsis"
       ],
-      "artifactName": "Constructor-Setup.${ext}"
+      "artifactName": "Orchestrator-Setup.${ext}"
     },
     "extraResources": [
       {

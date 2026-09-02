@@ -18,6 +18,7 @@ import {
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
+import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
 import { ProcessesWorkplace } from './workplace/ProcessesWorkplace'
 import { FilesPage } from './pages/FilesPage'
 import { KpiPage } from './pages/KpiPage'
@@ -70,6 +71,7 @@ type View =
   | { kind: 'tickets' }
   | { kind: 'diagnostics' }
   | { kind: 'files'; workflowId?: string; title?: string }
+  | { kind: 'passport'; workflowId: string; title: string; tab?: PassportTab }
   | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean }
   | { kind: 'history'; workflowId: string; title: string; runId?: string }
   | { kind: 'schedule'; workflowId: string; title: string }
@@ -371,13 +373,14 @@ export function App(): React.JSX.Element {
   if (!user) {
     return <LoginPage onLoggedIn={onLoggedIn} />
   }
+  const activeUser = user
 
   const activeKey: PageKey | null =
     view.kind === 'tab'
       ? view.key
       : view.kind === 'chat'
         ? null
-        : view.kind === 'agentrun' || view.kind === 'history' || view.kind === 'schedule'
+        : view.kind === 'agentrun' || view.kind === 'history' || view.kind === 'schedule' || view.kind === 'passport'
           ? 'processes'
           : 'settings'
 
@@ -390,31 +393,34 @@ export function App(): React.JSX.Element {
       setView({ kind: 'agentrun', workflowId, title: title || 'Базовый агент', autoStart: false })
       return
     }
-    let nextTitle = title
-    try {
-      const record = await api.getWorkflow(workflowId)
-      nextTitle = record.title || nextTitle
-    } catch {
-      /* keep given title */
-    }
+    const nextTitle = title || 'ИИ-агент'
     const live = runs.entries[workflowId]
     if (live && isLiveRunState(live.state)) {
       setView({ kind: 'agentrun', workflowId, title: nextTitle || live.title, autoStart: false })
       return
     }
     if (runId) {
-      try {
-        const detail = await api.getAgentRunDetail(workflowId, runId)
-        if (isInFlightRunStatus(detail.item.status)) {
-          runs.noteRunning(workflowId, nextTitle, runId)
-          void runs.attachHistoryFeed(workflowId)
-          setView({ kind: 'agentrun', workflowId, title: nextTitle, autoStart: false })
-          return
-        }
-      } catch {
-        /* open history of this finished run */
-      }
+      // Открываем историю сразу, чтобы кнопка "Открыть прогон" реагировала
+      // мгновенно даже при медленном backend. Детали проверим в фоне.
       setView({ kind: 'history', workflowId, title: nextTitle, runId })
+      void (async () => {
+        try {
+          const [record, detail] = await Promise.all([
+            api.getWorkflow(workflowId).catch(() => null),
+            api.getAgentRunDetail(workflowId, runId)
+          ])
+          const resolvedTitle = record?.title || nextTitle
+          if (isInFlightRunStatus(detail.item.status)) {
+            runs.noteRunning(workflowId, resolvedTitle, runId)
+            void runs.attachHistoryFeed(workflowId)
+            setView({ kind: 'agentrun', workflowId, title: resolvedTitle, autoStart: false })
+          } else {
+            setView({ kind: 'history', workflowId, title: resolvedTitle, runId })
+          }
+        } catch {
+          /* keep already opened history page */
+        }
+      })()
       return
     }
     setView({ kind: 'agentrun', workflowId, title: nextTitle || 'ИИ-агент', autoStart })
@@ -469,6 +475,18 @@ export function App(): React.JSX.Element {
         />
       )
     }
+    if (view.kind === 'passport') {
+      return (
+        <AgentPassportPage
+          workflowId={view.workflowId}
+          title={view.title}
+          initialTab={view.tab || 'info'}
+          onBack={() => setView({ kind: 'tab', key: 'today' })}
+          onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
+          onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
+        />
+      )
+    }
     if (view.kind === 'history') {
       return (
         <AgentHistoryPage
@@ -496,9 +514,10 @@ export function App(): React.JSX.Element {
       case 'processes':
         return (
           <ProcessesWorkplace
-            userId={user.id || ''}
-            userFio={user.fio || ''}
-            onOpen={(workflowId, title, autoStart) => void openAgentRun(workflowId, '', Boolean(autoStart), title)}
+            userId={activeUser.id || ''}
+            userFio={activeUser.fio || ''}
+            onOpen={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab: tab || 'info' })}
+            onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
             onFiles={(workflowId, title) => openAgentFiles(workflowId, title)}
             onHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
             onSchedule={(workflowId, title) => setView({ kind: 'schedule', workflowId, title })}
@@ -521,7 +540,7 @@ export function App(): React.JSX.Element {
       case 'settings':
         return (
           <SettingsTab
-            user={user!}
+            user={activeUser}
             onDiagnostics={() => setView({ kind: 'diagnostics' })}
             onTickets={() => setView({ kind: 'tickets' })}
             onFiles={() => setView({ kind: 'files' })}
@@ -531,12 +550,11 @@ export function App(): React.JSX.Element {
       default:
         return (
           <TodayTab
-            user={user}
+            user={activeUser}
             onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })}
             onOpenMetrics={() => setView({ kind: 'tab', key: 'metrics' })}
-            onOpen={(workflowId, title) => void openAgentRun(workflowId, '', false, title)}
+            onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
             onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
-            onOpenFiles={(workflowId, title) => openAgentFiles(workflowId, title)}
           />
         )
     }

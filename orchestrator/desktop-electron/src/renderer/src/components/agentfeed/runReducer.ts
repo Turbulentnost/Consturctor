@@ -1,4 +1,11 @@
 import type { AgentEvent, AgentRunnerEvent } from '../../api/types'
+import {
+  beginAgentPhase,
+  beginHumanPhase,
+  closeTiming,
+  EMPTY_TIMING,
+  type LiveTiming
+} from '../../workplace/runTiming'
 import { isTaskTool, resolveToolName, toolArgHint, toolCardTitle, toolLabel } from './labels'
 import { isAskQuestion, parseQuestionArgs } from './questionArgs'
 import { appendThinkingText, streamDelta } from './thinkingText'
@@ -25,6 +32,7 @@ export interface RunState {
   pendingQuestion: PendingQuestion | null
   pendingHitl: PendingHitl | null
   activeRunId: string | null
+  timing: LiveTiming
 }
 
 /** Effects a single event can emit so callers can fire callbacks / navigate. */
@@ -43,7 +51,8 @@ export function createRunState(): RunState {
     error: '',
     pendingQuestion: null,
     pendingHitl: null,
-    activeRunId: null
+    activeRunId: null,
+    timing: { ...EMPTY_TIMING }
   }
 }
 
@@ -256,7 +265,8 @@ function handleToolCall(state: RunState, payload: AgentRunnerEvent): RunState {
         needsFile: parsed.needsFile || state.pendingQuestion?.needsFile,
         accept: parsed.accept.length ? parsed.accept : state.pendingQuestion?.accept
       },
-      status: 'Нужен ваш ответ'
+      status: 'Нужен ваш ответ',
+      timing: beginHumanPhase(state.timing || EMPTY_TIMING)
     }
   }
   const status = String(payload.status || '')
@@ -492,7 +502,8 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
                 ? event.accept
                 : state.pendingQuestion?.accept
           },
-          status: 'Нужен ваш ответ'
+          status: 'Нужен ваш ответ',
+          timing: beginHumanPhase(state.timing || EMPTY_TIMING)
         }
       }
     }
@@ -507,7 +518,8 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
             title: toolLabel(tool),
             arguments: (event.arguments as Record<string, unknown>) || {}
           },
-          status: 'Требуется подтверждение действия'
+          status: 'Требуется подтверждение действия',
+          timing: beginHumanPhase(state.timing || EMPTY_TIMING)
         }
       }
     }
@@ -522,6 +534,7 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
           pendingQuestion: null,
           pendingHitl: null,
           activeRunId: null,
+          timing: closeTiming(state.timing || EMPTY_TIMING),
           items: answer
             ? [...state.items, { kind: 'result', id: nextId('res'), text: answer }]
             : state.items
@@ -557,7 +570,8 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
           pendingQuestion: null,
           pendingHitl: null,
           items: pushSystem(state.items, finalMessage, 'error'),
-          activeRunId: null
+          activeRunId: null,
+          timing: closeTiming(state.timing || EMPTY_TIMING)
         },
         error: finalMessage
       }

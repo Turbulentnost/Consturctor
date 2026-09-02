@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-set "BACKEND_URL=http://127.0.0.1:7812"
+set "BACKEND_URL=http://192.168.1.157:7812"
 title Orchestrator
 echo Starting Orchestrator Electron...
 echo Backend: %BACKEND_URL%

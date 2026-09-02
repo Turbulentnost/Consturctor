@@ -12,6 +12,7 @@ import {
   pushUserMessage as reducerPushUser,
   type RunState
 } from '../components/agentfeed/runReducer'
+import { beginAgentPhase, closeTiming, EMPTY_TIMING } from '../workplace/runTiming'
 import { windowFor } from '../utils/calendar'
 import {
   eventBackendRunId,
@@ -89,7 +90,8 @@ function emptyLiveEntry(
       running: true,
       status: 'Агент работает…',
       runningSinceMs,
-      activeRunId: runId
+      activeRunId: runId,
+      timing: beginAgentPhase(EMPTY_TIMING, runningSinceMs || Date.now())
     }
   }
 }
@@ -99,6 +101,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
   const entriesRef = useRef(entries)
   entriesRef.current = entries
   const indexRef = useRef<Record<string, string>>({})
+  const cancelledRunIdsRef = useRef<Record<string, boolean>>({})
 
   const fillTitle = useCallback((workflowId: string) => {
     void api
@@ -121,6 +124,13 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       if (kind === 'design' || kind === 'demo' || kind === 'readiness') return
       const runId = event.runId
       if (!runId) return
+      if (cancelledRunIdsRef.current[runId]) {
+        if (event.type === 'result' || event.type === 'error') {
+          delete cancelledRunIdsRef.current[runId]
+          delete indexRef.current[runId]
+        }
+        return
+      }
       let workflowId = indexRef.current[runId]
       if (!workflowId) {
         workflowId = eventWorkflowId(event)
@@ -194,7 +204,8 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         running: true,
         status: forceRestart ? 'Перезапускаю агент…' : 'Агент запускается…',
         runningSinceMs: Date.now(),
-        activeRunId: runId
+        activeRunId: runId,
+        timing: beginAgentPhase(EMPTY_TIMING)
       }
       return {
         ...prev,
@@ -220,7 +231,12 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
           ...prev,
           [workflowId]: {
             ...entry,
-            state: { ...entry.state, pendingQuestion: null, status: 'Агент работает…' }
+            state: {
+              ...entry.state,
+              pendingQuestion: null,
+              status: 'Агент работает…',
+              timing: beginAgentPhase(entry.state.timing || EMPTY_TIMING)
+            }
           }
         }
       })
@@ -241,7 +257,8 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             ...entry.state,
             pendingHitl: null,
             status: approved ? 'Выполняю действие…' : 'Действие отклонено',
-            runningSinceMs: approved ? entry.state.runningSinceMs || Date.now() : entry.state.runningSinceMs
+            runningSinceMs: approved ? entry.state.runningSinceMs || Date.now() : entry.state.runningSinceMs,
+            timing: beginAgentPhase(entry.state.timing || EMPTY_TIMING)
           }
         }
       }
@@ -263,7 +280,13 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
   const cancel = useCallback((workflowId: string) => {
     const entry = entriesRef.current[workflowId]
     const runId = entry?.state.activeRunId
-    if (runId) agentClient.cancel(runId)
+    if (runId) {
+      cancelledRunIdsRef.current[runId] = true
+      delete indexRef.current[runId]
+      agentClient.cancel(runId, workflowId)
+    } else {
+      agentClient.cancel('', workflowId)
+    }
     const backendRunId = entry?.backendRunId || ''
     if (backendRunId) {
       void api
@@ -288,6 +311,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             pendingQuestion: null,
             pendingHitl: null,
             activeRunId: null,
+            timing: closeTiming(current.state.timing || EMPTY_TIMING),
             items: pushSystem(current.state.items, 'Запуск остановлен.', 'info')
           }
         }

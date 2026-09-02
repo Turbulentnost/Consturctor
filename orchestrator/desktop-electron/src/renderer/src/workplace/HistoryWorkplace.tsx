@@ -21,10 +21,8 @@ function statusLabel(status: string): string {
   return STATUS_STYLE[status]?.label || status || '—'
 }
 
-function clip(text: string, limit = 160): string {
-  const value = (text || '').replace(/\s+/g, ' ').trim()
-  if (value.length <= limit) return value
-  return `${value.slice(0, limit - 1)}…`
+function clip(text: string): string {
+  return (text || '').replace(/\s+/g, ' ').trim()
 }
 
 export function HistoryWorkplace({
@@ -124,11 +122,12 @@ export function HistoryWorkplace({
     <div className="wp-page wp-history">
       <div className="wp-head">
         <div>
-          <h1 className="page-title">История</h1>
+          <div className="wp-head-title-row">
+            <h1 className="page-title">История</h1>
+            <span className="orch-badge">{loading ? 'загрузка' : `${runs.length} прогонов`}</span>
+          </div>
           <div className="wp-sub">Календарь запусков и результаты последних прогонов</div>
         </div>
-        <span className="orch-badge">{loading ? 'загрузка' : `${runs.length} прогонов`}</span>
-        <span className="wp-count">{runs.length}</span>
       </div>
       {flash ? <div className="wp-toast">{flash}</div> : null}
       {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}

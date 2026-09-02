@@ -56,7 +56,7 @@ export function agentShareFromBoard(agent: {
     workflowId: agent.id,
     title: agent.title || 'ИИ-агент',
     description: agent.description || '',
-    goal: agent.description || '',
+    goal: '',
     triggerSummary: agent.triggerSummary || '',
     triggerKind: agent.triggerKind || '',
     status: agent.status || 'active',
