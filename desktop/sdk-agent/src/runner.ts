@@ -124,9 +124,8 @@ function toolNameFrom(value: unknown, fallback = ""): string {
 
 function emitSdkToolCall(event: Record<string, unknown>, extra: Record<string, unknown> = {}): void {
   const args = recordFrom(event.args || event.arguments);
-  const provider = stringFrom(args.providerIdentifier);
   const rawName = stringFrom(event.name) || stringFrom(event.type);
-  if (rawName.toLowerCase() === "mcp" && provider === "custom-user-tools") {
+  if (rawName.toLowerCase() === "mcp") {
     return;
   }
   emit({
@@ -244,7 +243,7 @@ async function executeAskQuestion(args: Record<string, JsonValue>): Promise<Json
     tool: "askQuestion",
     arguments: args || {},
   });
-  const payload = await waitForToolResult(requestId);
+  const payload = await waitForToolResult(requestId, 15 * 60 * 1000);
   const result = payload.result && typeof payload.result === "object" ? payload.result : {};
   const answer =
     stringFrom((result as Record<string, unknown>).answer) ||
@@ -299,7 +298,18 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
           tool: name,
           arguments: args || {},
         });
-        const payload = await waitForToolResult(requestId);
+        let payload: ToolResultCommand;
+        try {
+          payload = await waitForToolResult(requestId);
+        } catch (error) {
+          const message = safeError(error) || `Tool ${name} timed out`;
+          emit({ type: "tool_result", requestId, tool: name, ok: false, error: message });
+          return {
+            content: [{ type: "text", text: message }],
+            isError: true,
+            structuredContent: { error: message },
+          };
+        }
         if (!payload.ok) {
           const message = payload.error || `Tool ${name} failed`;
           emit({ type: "tool_result", requestId, tool: name, ok: false, error: message });
@@ -469,7 +479,7 @@ function modelView(result: JsonValue): JsonValue {
   };
 }
 
-function waitForToolResult(requestId: string, timeoutMs = 15 * 60 * 1000): Promise<ToolResultCommand> {
+function waitForToolResult(requestId: string, timeoutMs = 90 * 1000): Promise<ToolResultCommand> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingTools.delete(requestId);
@@ -589,6 +599,13 @@ async function runAgent(command: RunCommand): Promise<void> {
     const agentOptions = {
       apiKey,
       model: modelParams.length ? { id: model, params: modelParams } : { id: model },
+      // Ban the built-in mutating/exec tools so every write goes through a
+      // Constructor customTool with HITL. Read-only built-ins (read/grep/glob/
+      // ls) stay for navigation, "mcp" keeps our customTools, askQuestion stays.
+      // Not persisted across resume, so it is re-applied on every create/resume.
+      // Do not enable autoReview: it waits for the IDE classifier/UI we don't have,
+      // and the feed stays on «Выполняется» forever.
+      disallowedTools: ["shell", "edit", "delete", "applyAgentDiff"],
       local: {
         cwd,
         customTools: customTools as never,
