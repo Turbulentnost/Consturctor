@@ -156,7 +156,7 @@ export function HistoryWorkplace({
                 >
                   <div className="wp-showcase-meta">
                     <span className="wp-code">{titleOf(item.workflowId)}</span>
-                    <span className={`wp-pill wp-pill-${item.status === 'ok' ? 'done' : item.status === 'error' ? 'needs_decision' : 'running'}`}>
+                    <span className={`wp-pill wp-pill-${item.status === 'ok' ? 'done' : item.status === 'error' ? 'needs_decision' : item.status === 'canceled' || item.status === 'cancelled' ? 'paused' : 'running'}`}>
                       {statusLabel(item.status)}
                     </span>
                   </div>

@@ -11,6 +11,17 @@ from sqlalchemy.orm import Session
 STALE_STARTED = timedelta(minutes=25)
 OVERLAP_CANCEL_ANSWER = "Агент уже выполняется"
 SDK_DEAD_ANSWER = "Cursor SDK не отвечает"
+STALE_STARTED_ANSWER = "Запуск не завершился за отведённое время."
+USER_CANCEL_ANSWER = "Остановлено пользователем"
+
+_INCOMPLETE_ANSWERS = frozenset(
+    {
+        OVERLAP_CANCEL_ANSWER.casefold(),
+        SDK_DEAD_ANSWER.casefold(),
+        STALE_STARTED_ANSWER.casefold(),
+        USER_CANCEL_ANSWER.casefold(),
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +97,8 @@ def fail_stale_started_runs(db: Session, *, user_id: str) -> int:
         finish_agent_run(
             db,
             run_id=row.id,
-            status="error",
-            answer="Запуск не завершился за отведённое время.",
+            status="canceled",
+            answer=STALE_STARTED_ANSWER,
             events=row.events_json if isinstance(row.events_json, list) else [],
             message=row.message or "",
         )
@@ -100,7 +111,42 @@ def _normalize_run_status(status: str) -> str:
         return "ok"
     if raw in {"canceled", "cancelled"}:
         return "canceled"
+    if raw in {"started", "running"}:
+        return "started"
     return "error"
+
+
+def _is_incomplete_answer(answer: str) -> bool:
+    text = (answer or "").strip()
+    if not text:
+        return True
+    key = text.casefold()
+    if key in _INCOMPLETE_ANSWERS:
+        return True
+    return key.startswith(OVERLAP_CANCEL_ANSWER.casefold())
+
+
+def has_run_result(answer: str) -> bool:
+    return bool((answer or "").strip()) and not _is_incomplete_answer(answer)
+
+
+def effective_run_status(status: str, answer: str = "", *, in_flight: bool = False) -> str:
+    """Success only when the run produced a result. Incomplete or canceled -> canceled."""
+    raw = (status or "").strip().lower()
+    if raw in {"started", "running"} and in_flight:
+        return "started"
+    if raw in {"canceled", "cancelled"}:
+        return "canceled"
+    if raw == "error" and (answer or "").strip() and not _is_incomplete_answer(answer):
+        return "error"
+    if has_run_result(answer):
+        return "ok"
+    return "canceled"
+
+
+def _row_in_flight(row: AgentRun) -> bool:
+    raw = (row.status or "").strip().lower()
+    return raw in {"started", "running"} and row.finished_at is None
 
 
 def list_started_runs(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRun]:
@@ -205,8 +251,8 @@ def finish_agent_run(
     row = db.get(AgentRun, run_id)
     if row is None:
         return
-    row.status = _normalize_run_status(status)
     row.answer = (answer or "").strip()[:4000]
+    row.status = effective_run_status(_normalize_run_status(status), row.answer, in_flight=False)
     row.finished_at = datetime.now(timezone.utc)
     incoming = slim_run_events(events or [])
     if incoming:
@@ -337,7 +383,7 @@ def _to_out(row: AgentRun, *, include_events: bool = False) -> AgentRunOut:
         id=row.id,
         workflow_id=row.workflow_id,
         message=row.message or "",
-        status=row.status or "",
+        status=effective_run_status(row.status or "", row.answer or "", in_flight=_row_in_flight(row)),
         answer=row.answer or "",
         source=row.source or "chat",
         trigger_id=row.trigger_id or "",

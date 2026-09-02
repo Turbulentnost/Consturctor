@@ -625,7 +625,7 @@ def test_board_shows_canceled_overlap_slot() -> None:
     assert all(item.status != "scheduled" or item.run_id != "run-canceled" for item in board.events)
 
 
-def test_stale_started_run_becomes_error_on_board() -> None:
+def test_stale_started_run_becomes_canceled_on_board() -> None:
     db = _session()
     user_id, workflow_id = _seed(db)
     now = datetime.now(timezone.utc)
@@ -645,4 +645,4 @@ def test_stale_started_run_becomes_error_on_board() -> None:
     db.commit()
     board = get_workflow_board(db, user_id=user_id)
     stuck = next(item for item in board.events if item.run_id == "run-stuck")
-    assert stuck.status == "error"
+    assert stuck.status == "canceled"

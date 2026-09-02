@@ -13,7 +13,7 @@ from app.models.regulation import AgentDraft
 from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.schemas.workflow import BoardAgent, BoardStats, CalendarEvent, WorkflowBoard
-from app.services.agent_runs import fail_stale_started_runs
+from app.services.agent_runs import effective_run_status, fail_stale_started_runs
 from app.services.triggers.service import is_workflow_paused, workflow_is_deleted
 
 
@@ -204,7 +204,13 @@ def _event_from_run(
         title=workflow.title or "ИИ-агент",
         subtitle=subtitle,
         start_at=_stamp_iso(start_at),
-        status=_run_event_status(run.status),
+        status=_run_event_status(
+            effective_run_status(
+                run.status or "",
+                run.answer or "",
+                in_flight=(run.status or "") in {"started", "running"} and run.finished_at is None,
+            )
+        ),
         source=_run_source(run),
         is_future=is_future,
         run_id=run.id,
@@ -307,7 +313,15 @@ def get_workflow_board(
         if not paused and next_at is not None:
             next_candidates.append(next_at)
         last = last_run.get(row.id)
-        last_status = (last.status or "") if last is not None else ""
+        last_status = (
+            effective_run_status(
+                last.status or "",
+                last.answer or "",
+                in_flight=(last.status or "") in {"started", "running"} and last.finished_at is None,
+            )
+            if last is not None
+            else ""
+        )
         status = "paused" if paused else ("needs_attention" if last_status == "error" else "active")
         condition = (event_trigger.condition_text if event_trigger is not None else "") or ""
         label = _next_run_label(kind=kind, next_at=next_at, paused=paused, condition=condition)

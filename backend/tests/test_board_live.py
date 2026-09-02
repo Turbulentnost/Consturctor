@@ -94,6 +94,18 @@ def test_finish_agent_run_keeps_canceled_status(monkeypatch) -> None:
     assert "уже выполняется" in (stored.answer or "")
 
 
+def test_finish_agent_run_empty_ok_becomes_canceled(monkeypatch) -> None:
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    monkeypatch.setattr("app.services.workflows.board_live.hub.schedule_push", lambda *_uid, **_k: True)
+    monkeypatch.setattr("app.services.workflows.board_live._publish_redis", lambda *_a, **_k: False)
+    row = start_agent_run(db, user_id=user_id, workflow_id=workflow_id, message="проверить")
+    finish_agent_run(db, run_id=row.id, status="ok", answer="")
+    stored = db.get(AgentRun, row.id)
+    assert stored is not None
+    assert stored.status == "canceled"
+
+
 def test_stop_auto_run_pushes_paused(monkeypatch) -> None:
     db = _session()
     user_id, workflow_id = _seed(db)

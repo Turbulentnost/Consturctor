@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from app.services.agent_runtime import _playbook_plan_text
-from app.services.agent_runs import slim_run_events
+from app.services.agent_runs import SDK_DEAD_ANSWER, effective_run_status, slim_run_events
 from app.services.workflows.cursor_tools import (
     clear_tool_context,
     current_history_run_id,
@@ -116,3 +116,14 @@ def test_notify_send_writes_history_run_id(monkeypatch) -> None:
     assert captured["run_id"] == "run-hist"
     assert captured["workflow_id"] == "wf-1"
     assert captured["sender"] == "user-1"
+
+
+def test_effective_run_status_success_needs_result() -> None:
+    assert effective_run_status("ok", "сводка готова") == "ok"
+    assert effective_run_status("ok", "") == "canceled"
+    assert effective_run_status("ok", "Остановлено пользователем") == "canceled"
+    assert effective_run_status("canceled", "") == "canceled"
+    assert effective_run_status("started", "", in_flight=True) == "started"
+    assert effective_run_status("started", "", in_flight=False) == "canceled"
+    assert effective_run_status("error", SDK_DEAD_ANSWER) == "canceled"
+    assert effective_run_status("error", "инструмент вернул 500") == "error"

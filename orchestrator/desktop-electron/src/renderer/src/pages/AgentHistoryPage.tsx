@@ -80,6 +80,26 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: 'Отменён'
 }
 
+function isHistoryResult(text: string): boolean {
+  const value = text.trim().toLowerCase()
+  if (!value) return false
+  return ![
+    'остановлено пользователем',
+    'cursor sdk не отвечает',
+    'агент уже выполняется',
+    'запуск не завершился'
+  ].some((marker) => value.includes(marker))
+}
+
+function historyRunStatus(run: { status: string; answer?: string; summary?: string }): string {
+  const status = (run.status || '').trim().toLowerCase()
+  const result = (run.answer || run.summary || '').trim()
+  if (status === 'started' || status === 'running') return status
+  if (status === 'error' && isHistoryResult(result)) return 'error'
+  if (status === 'ok' && isHistoryResult(result)) return 'ok'
+  return 'canceled'
+}
+
 export function AgentHistoryPage({
   workflowId,
   title,
@@ -200,7 +220,9 @@ export function AgentHistoryPage({
               onClick={() => setSelected(run.runId)}
               style={{ textAlign: 'left', cursor: 'pointer', width: '100%' }}
             >
-              <div className="history-status">{STATUS_LABELS[run.status] || run.status || 'Запуск'}</div>
+              <div className="history-status">
+                {STATUS_LABELS[historyRunStatus(run)] || 'Отменён'}
+              </div>
               <div className="history-summary" style={{ fontSize: 12 }}>
                 {formatWhen(run.startedAt)}
               </div>

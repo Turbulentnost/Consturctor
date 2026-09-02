@@ -282,7 +282,7 @@ class AgentHistoryPage(QWidget):
         self._detail_title.setText(self._agent_title)
         when = _format_iso(payload.started_at) or "—"
         source = _source_label(payload)
-        status = _status_label(payload.status)
+        status = _status_label(payload.status, payload.answer)
         self._detail_subtitle.setText(f"{when}  ·  {source}  ·  {status}")
         finished = _format_iso(payload.finished_at)
         reason = (payload.trigger_reason or "").strip()
@@ -293,10 +293,12 @@ class AgentHistoryPage(QWidget):
             + (f"\nКонец: {finished}" if finished else "")
         )
         self._detail_status.setText(status.capitalize() if status != "готово" else "Готово")
-        if payload.status == "error":
+        if status == "ошибка":
             color = "#9B1C1C"
-        elif payload.status in {"started", "running"}:
+        elif status == "выполняется":
             color = "#2F6FED"
+        elif status == "отменён":
+            color = "#8B6F64"
         else:
             color = "#08745F"
         self._detail_status.setStyleSheet(f"color: {color}; background: transparent;")
@@ -339,7 +341,7 @@ class _HistoryRow(QFrame):
 
         when = _format_iso(item.started_at) or "—"
         source = _source_label(item)
-        status = _status_label(item.status)
+        status = _status_label(item.status, item.answer)
         meta = QLabel(f"{when}  ·  {source}  ·  {status}")
         meta.setFont(app_font(11, QFont.Weight.DemiBold))
         meta.setStyleSheet(f"color: {COLOR_CONTENT_MUTED.name()}; background: transparent;")
@@ -419,14 +421,16 @@ def _source_label(item: AgentRunHistoryItem) -> str:
     return "триггер"
 
 
-def _status_label(status: str) -> str:
-    if status == "ok":
-        return "готово"
-    if status == "error":
-        return "ошибка"
-    if status in {"started", "running"}:
+def _status_label(status: str, answer: str = "") -> str:
+    raw = (status or "").strip().lower()
+    result = (answer or "").strip()
+    if raw in {"started", "running"}:
         return "выполняется"
-    if status in {"canceled", "cancelled"}:
+    if raw == "error" and result:
+        return "ошибка"
+    if raw == "ok" and result:
+        return "готово"
+    if raw in {"canceled", "cancelled"} or not result:
         return "отменён"
     return status or "в работе"
 
