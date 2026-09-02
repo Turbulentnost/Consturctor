@@ -20,6 +20,7 @@ interface AgentCardProps {
   onPause: (id: string) => void
   onResume: (id: string) => void
   onDelete: (id: string) => void
+  canLaunch?: boolean
 }
 
 export function AgentCard({
@@ -32,7 +33,8 @@ export function AgentCard({
   onSchedule,
   onPause,
   onResume,
-  onDelete
+  onDelete,
+  canLaunch = true
 }: AgentCardProps): React.JSX.Element {
   const status = STATUS[agent.status] ?? STATUS.active
   const lastLine = runLine('Последний запуск', agent.lastRunAt)
@@ -67,16 +69,18 @@ export function AgentCard({
           {nextLine}
         </div>
       </div>
-      <button
-        className="agent-card-run"
-        onClick={(e) => {
-          e.stopPropagation()
-          onRun(agent.id)
-        }}
-        aria-label="Запустить"
-      >
-        &#9654;
-      </button>
+      {canLaunch ? (
+        <button
+          className="agent-card-run"
+          onClick={(e) => {
+            e.stopPropagation()
+            onRun(agent.id)
+          }}
+          aria-label="Запустить"
+        >
+          &#9654;
+        </button>
+      ) : null}
       <CardMenu items={menuItems} />
     </div>
   )

@@ -405,6 +405,7 @@ export function AgentsPage({
                     onPause={onPause}
                     onResume={onResume}
                     onDelete={onDelete}
+                    canLaunch={false}
                   />
                 )
               )
@@ -427,6 +428,7 @@ export function AgentsPage({
             if (items.length) onOpenRun(items[0].workflowId, items[0].runId || '')
           }}
           onScheduleRun={onScheduleRun}
+          canLaunch={false}
         />
       </div>
 

@@ -38,6 +38,7 @@ interface RunCalendarProps {
   onEventClick: (workflowId: string, runId: string) => void
   onOpenGroup: (events: CalendarEvent[]) => void
   onScheduleRun: (workflowId: string, iso: string) => void
+  canLaunch?: boolean
 }
 
 interface PopupState {
@@ -47,7 +48,7 @@ interface PopupState {
 }
 
 export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
-  const { view, anchor, agents, events, agentFilter } = props
+  const { view, anchor, agents, events, agentFilter, canLaunch = true } = props
   const [showFilters, setShowFilters] = useState(false)
   const [statusFilter, setStatusFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
@@ -99,6 +100,7 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
   }
 
   function openGroupPopup(group: CalendarEvent[], evt: React.MouseEvent): void {
+    if (!canLaunch) return
     if (group.length < 2) {
       if (group.length === 1) props.onEventClick(group[0].workflowId, group[0].runId || '')
       return
@@ -144,9 +146,11 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
           <button className="cal-btn" onClick={() => setShowFilters((v) => !v)}>
             Фильтры
           </button>
-          <button className="cal-btn primary" onClick={() => setScheduleOpen(true)}>
-            Запланировать запуск
-          </button>
+          {canLaunch ? (
+            <button className="cal-btn primary" onClick={() => setScheduleOpen(true)}>
+              Запланировать запуск
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -210,7 +214,7 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
         <MonthGrid
           anchor={anchor}
           events={visibleEvents}
-          onEventClick={props.onEventClick}
+          onEventClick={canLaunch ? props.onEventClick : () => undefined}
           onGroupClick={openGroupPopup}
         />
       ) : (
@@ -218,13 +222,13 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
           <WeekGrid
             days={days}
             events={visibleEvents}
-            onEventClick={props.onEventClick}
+            onEventClick={canLaunch ? props.onEventClick : () => undefined}
             onGroupClick={openGroupPopup}
           />
         </div>
       )}
 
-      {popup && (
+      {popup && canLaunch && (
         <GroupPopup
           state={popup}
           onClose={() => setPopup(null)}
@@ -239,7 +243,7 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
         />
       )}
 
-      {scheduleOpen && (
+      {scheduleOpen && canLaunch && (
         <ScheduleDialog
           agents={agents}
           defaultAgent={agentFilter}

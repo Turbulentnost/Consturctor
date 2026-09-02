@@ -50,6 +50,8 @@ import {
   setComCredentials
 } from './store/session'
 
+const CONSTRUCTOR_ORCHESTRATOR_TABS = false
+
 type View =
   | { kind: 'tab'; key: PageKey }
   | { kind: 'review'; result: RegulationParseResult }
@@ -1003,16 +1005,52 @@ export function App(): React.JSX.Element {
           />
         )
       case 'files':
+        if (CONSTRUCTOR_ORCHESTRATOR_TABS) {
+          return (
+            <FilesPage
+              ownerName={user?.fio || ''}
+              onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+            />
+          )
+        }
         return (
-          <FilesPage
-            ownerName={user?.fio || ''}
-            onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+          <AgentsPage
+            onCreateAgent={() => setView({ kind: 'tab', key: 'create' })}
+            onOpenRun={(workflowId, runId, autoStart) =>
+              void openAgentRun(workflowId, runId, autoStart)
+            }
+            onFormDraftSuggestion={formDraftSuggestion}
+            onContinueDraft={continueDraft}
           />
         )
       case 'kpi':
-        return <KpiPage />
+        if (CONSTRUCTOR_ORCHESTRATOR_TABS) {
+          return <KpiPage />
+        }
+        return (
+          <AgentsPage
+            onCreateAgent={() => setView({ kind: 'tab', key: 'create' })}
+            onOpenRun={(workflowId, runId, autoStart) =>
+              void openAgentRun(workflowId, runId, autoStart)
+            }
+            onFormDraftSuggestion={formDraftSuggestion}
+            onContinueDraft={continueDraft}
+          />
+        )
       case 'orchestrator':
-        return <OrchestratorPage user={user!} />
+        if (CONSTRUCTOR_ORCHESTRATOR_TABS) {
+          return <OrchestratorPage user={user!} />
+        }
+        return (
+          <AgentsPage
+            onCreateAgent={() => setView({ kind: 'tab', key: 'create' })}
+            onOpenRun={(workflowId, runId, autoStart) =>
+              void openAgentRun(workflowId, runId, autoStart)
+            }
+            onFormDraftSuggestion={formDraftSuggestion}
+            onContinueDraft={continueDraft}
+          />
+        )
       default:
         return renderCreatePage()
     }
@@ -1070,7 +1108,13 @@ export function App(): React.JSX.Element {
         active={activeKey}
         activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
         currentUserId={user?.id || ''}
-        onNavigate={(key) => setView({ kind: 'tab', key })}
+        onNavigate={(key) => {
+          if (key === 'files' || key === 'kpi' || key === 'orchestrator') {
+            setView({ kind: 'tab', key: 'agents' })
+            return
+          }
+          setView({ kind: 'tab', key })
+        }}
         onOpenThread={openChat}
         onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
         refreshAt={chatRefreshAt}

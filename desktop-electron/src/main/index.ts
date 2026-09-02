@@ -221,12 +221,20 @@ setToastHooks({
   }
 })
 
+// Scheduled agent start now belongs to Orchestrator. Keep the handlers, do not run them here.
+const SCHEDULED_AGENT_AUTOSTART = false
+const ORCHESTRATOR_DESKTOP_COMMANDS = false
+
 const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
   const kind = String(command.type || '')
   const triggerId = String(command.trigger_id || command.id || '')
   const workflowId = String(command.workflow_id || '')
   const message = String(command.message || '')
   if (kind === 'evaluate_trigger') {
+    if (!SCHEDULED_AGENT_AUTOSTART) {
+      console.log(`Constructor skips scheduled trigger ${triggerId}`)
+      return
+    }
     agentSidecar.send({
       type: 'check_trigger',
       id: `trg-${triggerId}-${Date.now()}`,
@@ -235,6 +243,10 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
       message
     })
   } else if (kind === 'run_agent') {
+    if (!SCHEDULED_AGENT_AUTOSTART) {
+      console.log(`Constructor skips scheduled agent run ${workflowId}`)
+      return
+    }
     agentSidecar.send({
       type: 'run',
       id: `run-${Date.now()}`,
@@ -244,11 +256,17 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
       triggerId
     })
   } else if (kind === 'form_orchestrator') {
+    if (!ORCHESTRATOR_DESKTOP_COMMANDS) {
+      return
+    }
     agentSidecar.send({
       type: 'form_orchestrator',
       id: `orch-form-${Date.now()}`
     })
   } else if (kind === 'calc_orchestrator') {
+    if (!ORCHESTRATOR_DESKTOP_COMMANDS) {
+      return
+    }
     const tileIds = Array.isArray(command.tile_ids)
       ? command.tile_ids.map((item) => String(item))
       : []

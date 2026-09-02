@@ -124,6 +124,7 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
   const triggerId = String(command.trigger_id || command.id || '')
   const workflowId = String(command.workflow_id || '')
   const message = String(command.message || '')
+  // Same scheduled-start path as Constructor: check_trigger, then run with source=trigger.
   if (kind === 'evaluate_trigger') {
     agentSidecar.send({
       type: 'check_trigger',

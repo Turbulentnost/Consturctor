@@ -112,8 +112,9 @@ def test_relay_board_message_pushes_hub(monkeypatch) -> None:
 
     sent: list[tuple[str, dict]] = []
 
-    async def fake_push(user_id: str, payload: dict) -> bool:
+    async def fake_push(user_id: str, payload: dict, client: str = "") -> bool:
         sent.append((user_id, payload))
+        _ = client
         return True
 
     monkeypatch.setattr("app.services.workflows.board_live.hub.push", fake_push)

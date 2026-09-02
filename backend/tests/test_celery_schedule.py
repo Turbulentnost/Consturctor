@@ -191,7 +191,7 @@ def test_due_commands_include_while_agent_already_running() -> None:
 def test_execute_scheduled_cancels_when_offline_and_already_running(monkeypatch) -> None:
     db = _session()
     user_id, workflow_id = _seed(db)
-    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "offline")
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda *_a, **_k: "offline")
     monkeypatch.setattr(
         "app.services.triggers.runner.run_agent_task",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
@@ -235,7 +235,7 @@ def test_execute_scheduled_dispatches_overlap_when_online(monkeypatch) -> None:
     db = _session()
     user_id, workflow_id = _seed(db)
     sent: list[tuple[str, dict]] = []
-    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "online")
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda *_a, **_k: "online")
     monkeypatch.setattr(
         "app.services.triggers.runner.push_desktop_command",
         lambda uid, payload: sent.append((uid, dict(payload))) or True,
@@ -277,7 +277,7 @@ def test_execute_scheduled_skips_offline_and_notifies(monkeypatch) -> None:
 
     db = _session()
     user_id, workflow_id = _seed(db)
-    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "offline")
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda *_a, **_k: "offline")
     monkeypatch.setattr("app.services.triggers.runner.run_agent_task", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")))
     trigger = db.get(AgentTrigger, "tr-1")
     assert trigger is not None
@@ -288,7 +288,7 @@ def test_execute_scheduled_skips_offline_and_notifies(monkeypatch) -> None:
     assert result["reason"] == "offline"
     items = list_inbox(db, user_id=user_id)
     assert items
-    assert "не запускал приложение" in items[0].body
+    assert "пропустила плановый запуск" in items[0].body
     assert items[0].workflow_id == workflow_id
     trigger = db.get(AgentTrigger, "tr-1")
     assert trigger is not None
@@ -297,7 +297,7 @@ def test_execute_scheduled_skips_offline_and_notifies(monkeypatch) -> None:
     assert trigger.fire_at is not None
     got = trigger.fire_at if trigger.fire_at.tzinfo else trigger.fire_at.replace(tzinfo=timezone.utc)
     assert abs((got - expected).total_seconds()) < 2
-    assert trigger.last_evidence and "не запускал приложение" in trigger.last_evidence
+    assert trigger.last_evidence and "пропустила плановый запуск" in trigger.last_evidence
     second = execute_scheduled_agent_run(db, trigger_id="tr-1")
     assert second["reason"] == "not_due"
     assert len(list_inbox(db, user_id=user_id)) == 1
@@ -308,7 +308,7 @@ def test_execute_scheduled_skips_offline_even_if_session_lingers(monkeypatch) ->
 
     db = _session()
     user_id, workflow_id = _seed(db)
-    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "offline")
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda *_a, **_k: "offline")
     monkeypatch.setattr("app.services.triggers.runner.run_agent_task", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")))
     trigger = db.get(AgentTrigger, "tr-1")
     assert trigger is not None
@@ -330,7 +330,7 @@ def test_execute_scheduled_skips_offline_even_if_session_lingers(monkeypatch) ->
 def test_execute_scheduled_runs_when_online(monkeypatch) -> None:
     db = _session()
     _seed(db)
-    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "online")
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda *_a, **_k: "online")
     monkeypatch.setattr("app.services.triggers.runner.push_desktop_command", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         "app.services.triggers.runner.check_trigger_condition",
@@ -357,7 +357,7 @@ def test_execute_scheduled_dispatches_to_desktop_when_online(monkeypatch) -> Non
     db = _session()
     user_id, workflow_id = _seed(db)
     sent: list[tuple[str, dict]] = []
-    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "online")
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda *_a, **_k: "online")
     monkeypatch.setattr(
         "app.services.triggers.runner.push_desktop_command",
         lambda uid, payload: sent.append((uid, dict(payload))) or True,
@@ -391,8 +391,8 @@ def test_execute_scheduled_waits_when_presence_unknown_and_no_desktop(monkeypatc
     assert trigger is not None
     trigger.fire_at = due
     db.commit()
-    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "unknown")
-    monkeypatch.setattr("app.services.triggers.runner.hub.is_online", lambda _user_id: False)
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda *_a, **_k: "unknown")
+    monkeypatch.setattr("app.services.triggers.runner.hub.is_online", lambda *_a, **_k: False)
     monkeypatch.setattr(
         "app.services.triggers.runner.run_agent_task",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
@@ -409,8 +409,8 @@ def test_execute_scheduled_waits_when_presence_unknown_and_no_desktop(monkeypatc
 def test_execute_scheduled_runs_when_presence_unknown(monkeypatch) -> None:
     db = _session()
     _seed(db)
-    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda _user_id: "unknown")
-    monkeypatch.setattr("app.services.triggers.runner.hub.is_online", lambda _user_id: True)
+    monkeypatch.setattr("app.services.triggers.runner.presence_status", lambda *_a, **_k: "unknown")
+    monkeypatch.setattr("app.services.triggers.runner.hub.is_online", lambda *_a, **_k: True)
     monkeypatch.setattr("app.services.triggers.runner.push_desktop_command", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         "app.services.triggers.runner.check_trigger_condition",

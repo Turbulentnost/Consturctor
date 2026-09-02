@@ -46,6 +46,10 @@ const ITEMS: NavItem[] = [
   { key: 'orchestrator', label: 'KPI сотрудника', icon: iconOrchestrator }
 ]
 
+// Files / KPI now live in Orchestrator. Keep the items, hide them here.
+const HIDDEN_NAV = new Set<PageKey>(['files', 'kpi', 'orchestrator'])
+const VISIBLE_ITEMS = ITEMS.filter((item) => !HIDDEN_NAV.has(item.key))
+
 function initials(fio: string): string {
   const parts = (fio || '').replace(/\./g, ' ').split(/\s+/).filter(Boolean)
   if (!parts.length) return '?'
@@ -237,7 +241,7 @@ export function Sidebar({
       </div>
 
       <nav className="nav">
-        {ITEMS.map((item) => {
+        {VISIBLE_ITEMS.map((item) => {
           const isActive = item.key === active
           return (
             <button

@@ -52,3 +52,21 @@ def test_replace_keeps_other_app_socket() -> None:
         assert orch in hub._sockets["u-1"]
 
     asyncio.run(run())
+
+
+def test_push_agent_command_only_orchestrator() -> None:
+    async def run() -> None:
+        hub = NotificationHub()
+        ctor = FakeWs()
+        orch = FakeWs()
+        hub.add("u-1", ctor, session_id="s-ctor", client="constructor")
+        hub.add("u-1", orch, session_id="s-orch", client="orchestrator")
+
+        sent = await hub.push("u-1", {"type": "run_agent"}, client="orchestrator")
+
+        assert sent is True
+        assert orch.sent
+        assert json.loads(orch.sent[0])["type"] == "run_agent"
+        assert ctor.sent == []
+
+    asyncio.run(run())

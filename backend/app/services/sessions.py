@@ -29,7 +29,7 @@ _client_failed = False
 SESSION_REPLACED = "session_replaced"
 SKIP_RUN_TITLE = "Пропущен плановый запуск"
 SKIP_RUN_BODY = (
-    "Пользователь не запускал приложение, поэтому система пропустила плановый запуск."
+    "Оркестратор не был запущен, поэтому система пропустила плановый запуск."
 )
 RECONNECT_EVIDENCE = "ожидание подключения десктопа"
 RECONNECT_RETRY_SEC = 45
@@ -184,16 +184,23 @@ def mark_offline(user_id: str, session_id: str = "", client: str = DEFAULT_CLIEN
         _reset_client()
 
 
-def presence_status(user_id: str) -> str:
+def presence_status(user_id: str, client: str = "") -> str:
     """online / offline / unknown. unknown means Redis is down, do not skip the slot.
 
-    Online if any desktop app of this user is present.
+    Without client: online if any desktop app of this user is present.
+    With client: online only if that desktop app is present.
     """
     redis_client = _redis()
     if redis_client is None:
         return "unknown"
     try:
-        keys = [_legacy_online_key(user_id), *(_online_key(user_id, item) for item in sorted(CLIENTS))]
+        wanted = normalize_client(client) if (client or "").strip() else ""
+        if wanted:
+            keys = [_online_key(user_id, wanted)]
+            if wanted == DEFAULT_CLIENT:
+                keys.append(_legacy_online_key(user_id))
+        else:
+            keys = [_legacy_online_key(user_id), *(_online_key(user_id, item) for item in sorted(CLIENTS))]
         if any(redis_client.get(key) for key in keys):
             return "online"
         return "offline"

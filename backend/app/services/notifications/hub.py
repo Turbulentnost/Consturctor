@@ -48,15 +48,15 @@ class NotificationHub:
         wanted = normalize_client(client)
         return [item for item in group if self._client_of(item) == wanted]
 
-    def schedule_push(self, user_id: str, payload: dict[str, Any]) -> bool:
+    def schedule_push(self, user_id: str, payload: dict[str, Any], client: str = "") -> bool:
         """Отправить с того же loop, где висит WebSocket. True — получатель онлайн, пуш поставлен в очередь."""
         import asyncio
 
-        if not self._sockets.get(user_id):
+        if not self._sockets_for(user_id, client):
             return False
 
         async def _send() -> bool:
-            return await self.push(user_id, payload)
+            return await self.push(user_id, payload, client=client)
 
         try:
             running = asyncio.get_running_loop()
@@ -81,8 +81,8 @@ class NotificationHub:
         if not group:
             self._sockets.pop(user_id, None)
 
-    def is_online(self, user_id: str) -> bool:
-        return bool(self._sockets.get(user_id))
+    def is_online(self, user_id: str, client: str = "") -> bool:
+        return bool(self._sockets_for(user_id, client))
 
     async def kick_user(
         self,
@@ -143,8 +143,8 @@ class NotificationHub:
                 self.remove(user_id, other)
         self.add(user_id, ws, session_id=session_id, client=client)
 
-    async def push(self, user_id: str, payload: dict[str, Any]) -> bool:
-        group = list(self._sockets.get(user_id) or ())
+    async def push(self, user_id: str, payload: dict[str, Any], client: str = "") -> bool:
+        group = self._sockets_for(user_id, client)
         if not group:
             return False
         text = json.dumps(payload, ensure_ascii=False, default=str)

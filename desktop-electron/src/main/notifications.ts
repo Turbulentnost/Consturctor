@@ -377,13 +377,11 @@ export class NotificationGuard {
       this.kick(String(payload.message || KICK_MESSAGE))
       return
     }
-    if (
-      kind === 'evaluate_trigger' ||
-      kind === 'run_agent' ||
-      kind === 'form_orchestrator' ||
-      kind === 'calc_orchestrator'
-    ) {
-      this.onCommand?.(payload)
+    if (kind === 'evaluate_trigger' || kind === 'run_agent') {
+      // Scheduled start is owned by Orchestrator. Constructor only shows the slot.
+      return
+    }
+    if (kind === 'form_orchestrator' || kind === 'calc_orchestrator') {
       return
     }
     if (kind === 'notification') {

@@ -57,8 +57,8 @@ def execute_scheduled_agent_run(db: Session, *, trigger_id: str) -> dict[str, An
     now = datetime.now(timezone.utc)
     if due is not None and due > now + timedelta(seconds=5):
         return {"ok": False, "reason": "not_due"}
-    presence = presence_status(row.owner_user_id)
-    desktop_here = hub.is_online(row.owner_user_id)
+    presence = presence_status(row.owner_user_id, client="orchestrator")
+    desktop_here = hub.is_online(row.owner_user_id, client="orchestrator")
     if presence != "online" and desktop_here:
         presence = "online"
     if workflow_has_started_run(db, row.workflow_id):
