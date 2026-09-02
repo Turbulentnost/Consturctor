@@ -1,4 +1,5 @@
 import { Agent } from "@cursor/sdk";
+import { writeSync } from "node:fs";
 import * as readline from "node:readline";
 import { stdin, stdout } from "node:process";
 import { randomUUID } from "node:crypto";
@@ -58,7 +59,10 @@ type PendingTool = {
 const pendingTools = new Map<string, PendingTool>();
 
 function emit(payload: Record<string, unknown>): void {
-  stdout.write(JSON.stringify(payload) + "\n");
+  // writeSync: stdout.write can keep the last line in the pipe buffer.
+  // execute() then waits for tool_result, Python never sees tool_request,
+  // and the UI stays on «Выполняется».
+  writeSync(stdout.fd, `${JSON.stringify(payload)}\n`);
 }
 
 const INTERVIEW_MODEL_PARAMS: ModelParam[] = [

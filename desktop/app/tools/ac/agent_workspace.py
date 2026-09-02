@@ -30,13 +30,53 @@ class AgentWorkspace:
         """Вернуть безопасный путь внутри папки агента."""
         if not filename or not str(filename).strip():
             raise WorkspaceError("Имя файла не должно быть пустым")
-        candidate = (self.directory / str(filename).strip()).resolve()
+        raw = str(filename).strip()
+        candidate = (self.directory / raw).resolve()
         base = self.directory.resolve()
         if base != candidate and base not in candidate.parents:
             raise WorkspaceError("Путь выходит за пределы рабочей папки агента")
-        if must_exist and not candidate.exists():
+        if candidate.is_file():
+            return candidate
+        if must_exist:
+            found = self._find_existing(raw)
+            if found is not None:
+                return found
             raise WorkspaceError(f"Файл не найден: {filename}")
         return candidate
+
+    def _find_existing(self, filename: str) -> Path | None:
+        """Найти файл по имени, в том числе в materials/attachments с префиксом 001_."""
+        name = Path(filename.replace("\\", "/")).name.strip()
+        if not name:
+            return None
+        root = self.directory.resolve()
+        matches: list[Path] = []
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if relative.startswith("code/") or relative.startswith("tool_results/"):
+                continue
+            if path.name == name or path.name.endswith(f"_{name}"):
+                matches.append(path)
+        if not matches:
+            return None
+
+        def rank(path: Path) -> tuple[int, int, str]:
+            relative = path.relative_to(root).as_posix()
+            if relative.startswith("materials/attachments/"):
+                bucket = 0
+            elif relative.startswith("materials/"):
+                bucket = 1
+            else:
+                bucket = 2
+            return (bucket, len(relative), relative)
+
+        matches.sort(key=rank)
+        return matches[0]
 
     def list_files(self) -> list[dict]:
         """Вернуть файлы в папке агента, включая materials/."""

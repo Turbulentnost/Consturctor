@@ -162,7 +162,8 @@ _TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
     ),
     "outlook.create_event": (
         "Встреча в Outlook",
-        "Создаёт событие в календаре Outlook. В теме и тексте будет пометка, что это ИИ-агент.",
+        "Создаёт событие в календаре Outlook. Можно указать участников и организатора. "
+        "В теме и тексте будет пометка, что это ИИ-агент.",
     ),
     "report.export_document": (
         "Отчёт в файл",
@@ -287,6 +288,12 @@ def explain_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
             extra.append(f"Тема: {subject}.")
         if start:
             extra.append(f"Начало: {start}.")
+        organizer = str(args.get("organizer") or args.get("organizer_fio") or "").strip()
+        if organizer:
+            extra.append(f"Организатор: {organizer}.")
+        attendees = args.get("attendees") or args.get("people") or args.get("required_attendees")
+        if attendees:
+            extra.append(f"Участники: {attendees}.")
     elif tool in {"outlook.send_mail", "email.send", "email.create_draft"}:
         to = args.get("to") or args.get("recipients") or args.get("email")
         subject = str(args.get("subject") or args.get("тема") or "").strip()

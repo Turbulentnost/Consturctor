@@ -207,6 +207,153 @@ def _safe_str(value: Any) -> str:
         return ""
 
 
+OL_MEETING = 1
+OL_RECIPIENT_REQUIRED = 1
+_PEOPLE_KEYS = (
+    "people",
+    "attendees",
+    "required_attendees",
+    "participants",
+    "fios",
+    "users",
+    "calendars",
+)
+_ORGANIZER_KEYS = ("organizer", "organizer_fio", "calendar_owner", "for_user")
+
+
+def _people_names(value: Any) -> list[str]:
+    """Разобрать ФИО/почту из строки, списка или словаря."""
+    names: list[str] = []
+    if value is None or value is False:
+        return names
+    if isinstance(value, str):
+        for part in re.split(r"[;\n,]+", value):
+            name = part.strip()
+            if name:
+                names.append(name)
+        return names
+    if isinstance(value, dict):
+        for key in ("fio", "name", "email", "display_name", "user"):
+            names.extend(_people_names(value.get(key)))
+        return names
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            names.extend(_people_names(item))
+        return names
+    text = _safe_str(value).strip()
+    if text:
+        names.append(text)
+    return names
+
+
+def _unique_people(names: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def _people_from_input(data: dict | None, extra_keys: tuple[str, ...] = ()) -> list[str]:
+    """Люди из полей people/attendees/… — для чтения чужих календарей и состава встречи."""
+    if not isinstance(data, dict):
+        return []
+    names: list[str] = []
+    for key in (*_PEOPLE_KEYS, *extra_keys):
+        if key in data:
+            names.extend(_people_names(data.get(key)))
+    return _unique_people(names)
+
+
+def _organizer_from_input(data: dict | None) -> str:
+    if not isinstance(data, dict):
+        return ""
+    for key in _ORGANIZER_KEYS:
+        name = _safe_str(data.get(key)).strip()
+        if name:
+            return name
+    return ""
+
+
+def _current_calendar_owner(namespace: Any) -> str:
+    try:
+        return _safe_str(namespace.CurrentUser.Name).strip()
+    except Exception:
+        return ""
+
+
+def _open_shared_calendar(namespace: Any, person: str) -> tuple[Any | None, str]:
+    """Календарь сотрудника через адресную книгу Outlook. None если нет прав или не найден."""
+    name = (person or "").strip()
+    if not name:
+        return None, "empty"
+    try:
+        recipient = namespace.CreateRecipient(name)
+        recipient.Resolve()
+    except Exception as exc:
+        return None, f"unresolved:{exc}"
+    try:
+        resolved = bool(recipient.Resolved)
+    except Exception:
+        resolved = False
+    if not resolved:
+        return None, "unresolved"
+    try:
+        folder = namespace.GetSharedDefaultFolder(recipient, CALENDAR_FOLDER_ID)
+    except Exception as exc:
+        return None, f"denied:{exc}"
+    if folder is None:
+        return None, "denied"
+    return folder, "shared"
+
+
+def _prepare_calendar_items(folder: Any) -> Any:
+    items = folder.Items
+    try:
+        items.IncludeRecurrences = True
+    except Exception:
+        pass
+    try:
+        items.Sort("[Start]")
+    except Exception:
+        pass
+    return items
+
+
+def _attach_attendees(appt: Any, names: list[str]) -> list[str]:
+    """Пометить встречу как совещание и внести обязательных участников."""
+    added: list[str] = []
+    if not names:
+        return added
+    try:
+        appt.MeetingStatus = OL_MEETING
+    except Exception:
+        _log_progress("step=meeting_status skipped")
+    recipients = getattr(appt, "Recipients", None)
+    if recipients is None:
+        return added
+    for name in names:
+        try:
+            recipient = recipients.Add(name)
+        except Exception as exc:
+            _log_progress(f"step=attendee_add_failed name={name}: {exc}")
+            continue
+        try:
+            recipient.Type = OL_RECIPIENT_REQUIRED
+        except Exception:
+            pass
+        added.append(name)
+    try:
+        recipients.ResolveAll()
+    except Exception:
+        _log_progress("step=attendees_resolve skipped")
+    return added
+
+
 def _matches_query(subject: str, body: str, query: str | None) -> bool:
     """Проверить, подходит ли письмо под простой query с поддержкой OR."""
     if query is None or not query.strip():
@@ -330,7 +477,7 @@ def search_mail(input_data: dict) -> dict:
 
 
 def read_calendar(input_data: dict) -> dict:
-    """Безопасно прочитать ближайшие события Outlook Calendar без изменений."""
+    """Прочитать встречи своего и чужих календарей Outlook (если есть доступ)."""
     _log_progress("step=load_pywin32 start")
     days_forward = _clamp_int(
         input_data.get("days_forward"),
@@ -351,6 +498,7 @@ def read_calendar(input_data: dict) -> dict:
         MAX_SCAN_ITEMS,
     )
     include_body = _truthy(input_data.get("include_body"))
+    people = _people_from_input(input_data)
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
@@ -359,38 +507,60 @@ def read_calendar(input_data: dict) -> dict:
         _log_progress("step=get_namespace start")
         namespace = outlook.GetNamespace("MAPI")
         _log_progress("step=get_namespace ok")
-        _log_progress("step=get_calendar start")
-        calendar = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
-        _log_progress("step=get_calendar ok")
-        _log_progress("step=get_items start")
-        items = calendar.Items
-        _log_progress("step=get_items ok")
-        _log_progress("step=include_recurrences start")
-        items.IncludeRecurrences = True
-        _log_progress("step=include_recurrences ok")
-        _log_progress("step=sort_items start")
-        items.Sort("[Start]")
-        _log_progress("step=sort_items ok")
-
         start_at, end_at = _resolve_date_range(
             input_data,
             default_days=days_forward,
             forward=True,
         )
-        events, checked_count = _collect_calendar_range(
-            items,
-            start_at,
-            end_at,
-            max_results=max_results,
-            max_scan_items=max_scan_items,
-            include_body=include_body,
-        )
+        own_name = _current_calendar_owner(namespace)
+        targets = people or [own_name or ""]
+        events: list[dict] = []
+        checked_count = 0
+        calendars: list[dict] = []
+        for person in targets:
+            remaining_results = max_results - len(events)
+            remaining_scan = max_scan_items - checked_count
+            if remaining_results <= 0 or remaining_scan <= 0:
+                break
+            folder = None
+            status = "own"
+            owner = person or own_name
+            if person and own_name and person.casefold() == own_name.casefold():
+                folder = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
+                status = "own"
+            elif person:
+                _log_progress(f"step=get_shared_calendar person={person}")
+                folder, status = _open_shared_calendar(namespace, person)
+            else:
+                folder = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
+                status = "own"
+            if folder is None:
+                calendars.append({"person": owner, "status": status, "count": 0})
+                continue
+            items = _prepare_calendar_items(folder)
+            chunk, scanned = _collect_calendar_range(
+                items,
+                start_at,
+                end_at,
+                max_results=remaining_results,
+                max_scan_items=remaining_scan,
+                include_body=include_body,
+                calendar_owner=owner,
+            )
+            checked_count += scanned
+            events.extend(chunk)
+            calendars.append({"person": owner, "status": status, "count": len(chunk)})
+            _log_progress(
+                f"step=calendar_ok person={owner} status={status} events={len(chunk)}"
+            )
 
+        events.sort(key=lambda item: str(item.get("start") or ""))
         _log_progress("step=done ok")
         return {
             "events": events,
             "count": len(events),
             "free_slots": _compute_free_slots(events, start_at, end_at),
+            "calendars": calendars,
             "scanned_count": checked_count,
             "source": "outlook_com",
             "folder": CALENDAR_FOLDER,
@@ -419,7 +589,7 @@ def stamp_ai_agent_meeting(subject: str, body: str = "") -> tuple[str, str]:
 
 
 def create_event(input_data: dict) -> dict:
-    """Создать одну или несколько встреч в календаре Outlook. Письма не отправляет."""
+    """Создать встречи Outlook. С attendees — совещание с участниками; organizer — чей календарь."""
     items = _meeting_specs(input_data)
     if not items:
         raise OutlookComError("Нужны subject и start или массив events")
@@ -428,15 +598,32 @@ def create_event(input_data: dict) -> dict:
         _log_progress("step=dispatch_outlook start")
         outlook = _dispatch_outlook(win32com_client)
         _log_progress("step=dispatch_outlook ok")
+        namespace = outlook.GetNamespace("MAPI")
+        own_name = _current_calendar_owner(namespace)
         created: list[dict] = []
         for spec in items:
-            appt = _new_appointment(outlook)
+            organizer = spec["organizer"]
+            attendees = spec["attendees"]
+            folder = None
+            organizer_status = "own"
+            if organizer and (not own_name or organizer.casefold() != own_name.casefold()):
+                folder, organizer_status = _open_shared_calendar(namespace, organizer)
+                if folder is None:
+                    _log_progress(
+                        f"step=organizer_fallback person={organizer} status={organizer_status}"
+                    )
+                    folder = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
+                    organizer_status = f"fallback_own:{organizer_status}"
+            else:
+                folder = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
+            appt = _new_appointment(outlook, folder)
             appt.Subject = spec["subject"]
             _set_appointment_times(appt, spec["start"], spec["end"])
             try:
                 appt.ReminderSet = False
             except Exception:
                 pass
+            added = _attach_attendees(appt, attendees)
             appt.Save()
             entry_id = _verify_saved_appointment(outlook, appt)
             if spec["body"]:
@@ -456,6 +643,14 @@ def create_event(input_data: dict) -> dict:
                 appt.Save()
             except Exception:
                 _log_progress("step=category skipped")
+            invites_sent = False
+            if added and spec["send_invites"]:
+                try:
+                    appt.Send()
+                    invites_sent = True
+                    _log_progress("step=send_invites ok")
+                except Exception as exc:
+                    _log_progress(f"step=send_invites failed: {exc}")
             created.append(
                 {
                     "entry_id": entry_id,
@@ -463,6 +658,10 @@ def create_event(input_data: dict) -> dict:
                     "start": spec["start"].isoformat(timespec="minutes"),
                     "end": spec["end"].isoformat(timespec="minutes"),
                     "location": spec["location"],
+                    "organizer": organizer or own_name,
+                    "organizer_status": organizer_status,
+                    "attendees": added,
+                    "invites_sent": invites_sent,
                     "ai_agent": True,
                 }
             )
@@ -516,17 +715,23 @@ def _verify_saved_appointment(outlook: Any, appt: Any) -> str:
     return entry_id
 
 
-def _new_appointment(outlook: Any) -> Any:
-    """Создать встречу в календаре профиля, не «висящий» CreateItem."""
-    try:
-        namespace = outlook.GetNamespace("MAPI")
-        calendar = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
+def _new_appointment(outlook: Any, folder: Any = None) -> Any:
+    """Создать встречу в указанном календаре, иначе в календаре профиля."""
+    calendar = folder
+    if calendar is None:
+        try:
+            calendar = outlook.GetNamespace("MAPI").GetDefaultFolder(CALENDAR_FOLDER_ID)
+        except Exception:
+            calendar = None
+    if calendar is not None:
         try:
             return calendar.Items.Add()
         except Exception:
-            return calendar.Items.Add(1)
-    except Exception:
-        return outlook.CreateItem(1)
+            try:
+                return calendar.Items.Add(1)
+            except Exception:
+                pass
+    return outlook.CreateItem(1)
 
 
 def _set_appointment_times(appt: Any, start: datetime, end: datetime) -> None:
@@ -583,6 +788,13 @@ def _meeting_specs(input_data: dict) -> list[dict]:
             end = start + timedelta(minutes=minutes)
         if end <= start:
             end = start + timedelta(minutes=DEFAULT_MEETING_MINUTES)
+        attendees = _people_from_input(row) or _people_from_input(input_data)
+        organizer = _organizer_from_input(row) or _organizer_from_input(input_data)
+        send_raw = row.get("send_invites", input_data.get("send_invites"))
+        if send_raw is None:
+            send_invites = bool(attendees)
+        else:
+            send_invites = _truthy(send_raw)
         specs.append(
             {
                 "subject": subject,
@@ -590,6 +802,9 @@ def _meeting_specs(input_data: dict) -> list[dict]:
                 "start": start,
                 "end": end,
                 "location": _safe_str(row.get("location") or "").strip(),
+                "attendees": attendees,
+                "organizer": organizer,
+                "send_invites": send_invites,
             }
         )
     return specs
@@ -850,6 +1065,7 @@ def _collect_calendar_range(
     max_results: int,
     max_scan_items: int,
     include_body: bool,
+    calendar_owner: str = "",
 ) -> tuple[list[dict], int]:
     """Прочитать календарь окнами по месяцу, без годового Restrict и без Count."""
     events: list[dict] = []
@@ -872,6 +1088,7 @@ def _collect_calendar_range(
                 remaining_results,
                 remaining_scan,
                 include_body=include_body,
+                calendar_owner=calendar_owner,
             )
             return chunk, scanned
         chunk, scanned = _collect_calendar_events(
@@ -881,6 +1098,7 @@ def _collect_calendar_range(
             remaining_results,
             remaining_scan,
             include_body=include_body,
+            calendar_owner=calendar_owner,
         )
         checked_count += scanned
         events.extend(chunk)
@@ -897,6 +1115,7 @@ def _collect_calendar_events(
     max_results: int,
     max_scan_items: int,
     include_body: bool = False,
+    calendar_owner: str = "",
 ) -> tuple[list[dict], int]:
     """Собрать события календаря из COM collection в указанном диапазоне."""
     events = []
@@ -923,6 +1142,7 @@ def _collect_calendar_events(
                 "start": _safe_str(event_start),
                 "end": _safe_str(event_end),
                 "location": _safe_str(getattr(event, "Location", "")),
+                "calendar_owner": calendar_owner,
                 "organizer": _read_guarded_property(event, PR_SENT_REPRESENTING_NAME_W),
                 "required_attendees": _read_guarded_property(event, PR_DISPLAY_TO_W),
                 "optional_attendees": _read_guarded_property(event, PR_DISPLAY_CC_W),

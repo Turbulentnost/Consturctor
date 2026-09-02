@@ -108,14 +108,24 @@ class ExcelReadWorkbookTool(_WorkspaceTool):
             ToolDefinition(
                 name="excel.read_workbook",
                 title="Чтение Excel",
-                description="Читает данные листа .xlsx (заголовки и строки).",
+                description=(
+                    "Читает данные листа .xlsx (заголовки и строки). "
+                    "filename — имя или путь из excel.list_files, "
+                    "включая materials/attachments/."
+                ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.LOCAL,
                 requires_human_approval=False,
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "filename": {"type": "string"},
+                        "filename": {
+                            "type": "string",
+                            "description": (
+                                "Имя или относительный путь из excel.list_files, "
+                                "например materials/attachments/002_report.xlsx"
+                            ),
+                        },
                         "sheet": {"type": "string"},
                         "max_rows": {"type": "integer"},
                     },
@@ -154,9 +164,7 @@ class ExcelReadWorkbookTool(_WorkspaceTool):
                 )
             worksheet = workbook[requested] if requested else workbook.active
             rows: list[list] = []
-            for index, row in enumerate(worksheet.iter_rows(values_only=True)):
-                if index >= max_rows:
-                    break
+            for row in worksheet.iter_rows(max_row=max(1, max_rows), values_only=True):
                 rows.append([_cell_value(cell) for cell in row])
         finally:
             workbook.close()

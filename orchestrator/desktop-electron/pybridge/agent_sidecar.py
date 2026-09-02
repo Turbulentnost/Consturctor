@@ -257,6 +257,8 @@ OUTLOOK_SERIES_MARKER = "самый ранний удобный свободны
 OUTLOOK_MEETING_HINT = (
     "If the task is to schedule planned meetings in Outlook, do not stop after reading. "
     "Call outlook.read_calendar (free_slots) first, then outlook.create_event. "
+    "Pass people[] to read those employees' calendars. "
+    "Pass attendees[] (who must attend) and organizer (whose calendar) to create_event. "
     "Writing the calendar is the result; a plan in chat is not. "
     "Weekly or monthly meeting without a date: pick the earliest convenient free weekday "
     "(prefer Monday if free). Keep that same weekday every week; for monthly keep the "
@@ -268,7 +270,9 @@ OUTLOOK_MEETING_HINT = (
 
 OUTLOOK_MEETING_RULE = (
     "Плановые совещания записывай в Outlook: сначала outlook.read_calendar "
-    "(свободные слоты), затем outlook.create_event. Не ограничивайся чтением календаря. "
+    "(свободные слоты; people[] — календари этих сотрудников), затем outlook.create_event "
+    "с attendees[] (кто должен прийти) и при необходимости organizer (чей календарь). "
+    "Не ограничивайся чтением календаря. "
     "Если совещание еженедельное или ежемесячное, а конкретная дата не задана: выбери "
     "самый ранний удобный свободный день (предпочтительно понедельник, если он свободен). "
     "Дальше всегда этот же день недели: каждую неделю в один и тот же день; каждый месяц "
