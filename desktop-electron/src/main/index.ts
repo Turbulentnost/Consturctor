@@ -154,6 +154,10 @@ function quoteArg(value: string): string {
 }
 
 function unpackagedAppEntry(): string {
+  const fromCwd = process.cwd()
+  if (existsSync(join(fromCwd, 'package.json'))) return fromCwd
+  const fromMain = join(__dirname, '../..')
+  if (existsSync(join(fromMain, 'package.json'))) return fromMain
   return __filename
 }
 
@@ -162,14 +166,42 @@ function relaunchCommandLine(): string {
   return `${quoteArg(process.execPath)} ${quoteArg(unpackagedAppEntry())}`
 }
 
+function registerProtocolCommand(command: string): void {
+  const script = [
+    `$key = 'HKCU:\\Software\\Classes\\${APP_PROTOCOL}'`,
+    'New-Item -Path $key -Force | Out-Null',
+    `Set-ItemProperty -Path $key -Name '(default)' -Value 'URL:${APP_PROTOCOL} Protocol'`,
+    "New-ItemProperty -Path $key -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null",
+    `$cmd = Join-Path $key 'shell\\open\\command'`,
+    'New-Item -Path $cmd -Force | Out-Null',
+    `Set-ItemProperty -Path $cmd -Name '(default)' -Value ${JSON.stringify(command)}`
+  ].join('; ')
+  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    windowsHide: true,
+    timeout: 8000
+  })
+}
+
 function registerWindowsLaunchers(): void {
   const entry = unpackagedAppEntry()
+  const protocolCommand = app.isPackaged
+    ? `${quoteArg(process.execPath)} "%1"`
+    : `${quoteArg(process.execPath)} ${quoteArg(entry)} "%1"`
   if (app.isPackaged) {
     app.setAsDefaultProtocolClient(APP_PROTOCOL)
   } else {
     app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, [entry])
   }
-  if (process.platform !== 'win32' || app.isPackaged) return
+  if (process.platform !== 'win32') return
+  try {
+    registerProtocolCommand(protocolCommand)
+    console.log(`Constructor protocol handler: ${protocolCommand}`)
+  } catch (err) {
+    console.error(
+      `Failed to write constructor protocol: ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+  if (app.isPackaged) return
   const programs = join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs')
   try {
     mkdirSync(programs, { recursive: true })
@@ -177,15 +209,17 @@ function registerWindowsLaunchers(): void {
     const wrote = shell.writeShortcutLink(shortcutPath, 'replace', {
       target: process.execPath,
       args: quoteArg(entry),
-      cwd: process.cwd(),
+      cwd: existsSync(join(entry, 'package.json')) ? entry : process.cwd(),
       appUserModelId: APP_USER_MODEL_ID,
       description: 'Constructor',
       icon: APP_ICON || process.execPath,
       iconIndex: 0
     })
-    if (!wrote) {
-      console.error('Failed to write Constructor Dev toast shortcut')
+    if (!wrote || !existsSync(shortcutPath)) {
+      console.error(`Failed to write Constructor Dev toast shortcut at ${shortcutPath}`)
+      return
     }
+    console.log(`Constructor toast shortcut: ${shortcutPath}`)
   } catch (err) {
     console.error(
       `Failed to register toast shortcut: ${err instanceof Error ? err.message : String(err)}`
