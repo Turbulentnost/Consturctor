@@ -151,7 +151,7 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
       </div>
 
       <div className="cal-legend">
-        {(['ok', 'scheduled', 'missed', 'error', 'canceled', 'paused', 'recommend_add', 'recommend_cancel'] as const).map((key) => (
+        {(['ok', 'scheduled', 'missed', 'error', 'canceled', 'paused'] as const).map((key) => (
           <span key={key} className="cal-legend-item" style={{ color: STATUS_STYLE[key].border }}>
             &#9679;&nbsp;&nbsp;{STATUS_STYLE[key].label}
           </span>

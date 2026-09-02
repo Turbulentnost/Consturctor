@@ -51,10 +51,25 @@ required_clarifications: только незакрытые пробелы.
 Если согласованный результат это сообщение, уведомление или ответ, файл не создавай, пиши итог в ответ в чат.
 Никогда не записывай размышления (thinking) или ход рассуждений в файлы. Размышления остаются в thinking.
 Не создавай файлы, которые пересказывают задание, план или твои намерения. Такой файл не является результатом.
-В конце укажи TESTS: PASS или TESTS: FAIL и короткий итог в ответе в чат.
+Ход работы, план и промежуточные комментарии (сначала прочту то-то, потом посчитаю) пиши только в размышления (thinking). В ответ в чат их не выводи.
+Ответ в чат должен начинаться строкой ## WORK_RESULT и содержать только финальный блок: WORK_RESULT, FILES, ACTIONS, NOTIFICATIONS, SCHEDULE и в конце TESTS: PASS или TESTS: FAIL. Ничего до строки ## WORK_RESULT не пиши.
 """
 
 RULES = AGENTS_MD  # backward-compatible alias for tests and callers
+
+_WORK_RESULT_RE = re.compile(r"^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\b.*$", re.I | re.M)
+
+
+def strip_to_work_result(text: str) -> str:
+    """Drop planning narration before the final ## WORK_RESULT block.
+
+    If no WORK_RESULT marker is present, return the text unchanged (stripped).
+    """
+    raw = text or ""
+    match = _WORK_RESULT_RE.search(raw)
+    if not match:
+        return raw.strip()
+    return raw[match.start():].strip()
 
 
 def format_tool_catalog(limit: int = 80) -> str:
@@ -166,8 +181,10 @@ def build_demo_sdk_prompt(workflow: WorkflowRecord, *, resume: bool = False) -> 
     task = (
         "Сделай пробный прогон этого агента на реальных доступных инструментах. "
         "Сначала вызови инструменты и получи данные, только потом пиши итог. "
+        "Ход работы и планы держи в размышлениях (thinking). "
+        "Ответ в чат начни строкой ## WORK_RESULT и выведи только финальный блок: "
         "WORK_RESULT, использованные инструменты, TESTS: PASS или TESTS: FAIL и короткий "
-        "playbook следующего прогона пиши в ответ в чат. "
+        "playbook следующего прогона. Ничего до ## WORK_RESULT в ответ не пиши. "
         "Файл создавай, только если согласованный итоговый результат это документ "
         "или пользователь просит файл: тогда сформируй его инструментами Constructor "
         "(excel.create_workbook / excel.edit_workbook / report.export_document) с реальными "

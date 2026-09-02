@@ -4164,6 +4164,157 @@ button.feed-tool-head:hover {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.feed-tool-head.static {
+  cursor: default;
+}
+
+/* Mini calendar (calendar.show_meetings result) */
+.mini-cal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+.mini-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mini-cal-headings {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mini-cal-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--content-strong, #10141a);
+}
+.mini-cal-summary {
+  font-size: 12px;
+  color: var(--content-muted, #5b7a99);
+}
+.mini-cal-expand {
+  flex: none;
+  border: 1px solid var(--card-border, #d7e2ee);
+  background: #fff;
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1565c0;
+  cursor: pointer;
+}
+.mini-cal-expand:hover {
+  background: #eef4fb;
+}
+.mini-cal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mini-cal-day {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mini-cal-day-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--content-muted, #5b7a99);
+}
+.mini-cal-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.mini-cal-time {
+  flex: none;
+  width: 92px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--content-strong, #10141a);
+  padding-top: 1px;
+}
+.mini-cal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.mini-cal-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.mini-cal-title {
+  font-size: 13px;
+  color: var(--content-strong, #10141a);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mini-cal-chip {
+  flex: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.mini-cal-reason {
+  font-size: 12px;
+  color: var(--content-muted, #5b7a99);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mini-cal-reason.full {
+  white-space: normal;
+}
+.mini-cal-modal {
+  width: 560px;
+  max-height: 80vh;
+}
+.mini-cal-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.mini-cal-close {
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--content-muted, #5b7a99);
+  cursor: pointer;
+}
+.mini-cal-modal-summary {
+  font-size: 12px;
+  color: var(--content-muted, #5b7a99);
+}
+.mini-cal-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 4px 2px;
+}
+.mini-cal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12px;
+  font-weight: 600;
+  padding-top: 6px;
+  border-top: 1px solid var(--card-border, #d7e2ee);
+}
 
 /* ===== Clarify (question) card - compact, like desktop ===== */
 .clarify {

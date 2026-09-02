@@ -28,7 +28,7 @@ function visibleAssistant(text: string): string {
     }
     cleaned = out.join('\n')
   }
-  return cleaned.trim()
+  return cleaned
 }
 
 function normalizeResult(raw: unknown): Record<string, unknown> | null {
@@ -104,7 +104,7 @@ export function buildFeedItems(events: AgentRunnerEvent[]): FeedItem[] {
       case 'assistant':
       case 'agent_message': {
         const clean = visibleAssistant(text)
-        if (!clean) break
+        if (!clean.trim()) break
         const last = items[items.length - 1]
         if (last && last.kind === 'message' && last.role === 'agent') {
           last.text = `${last.text}${clean}`

@@ -648,7 +648,8 @@ def test_stale_started_run_becomes_canceled_on_board() -> None:
     assert stuck.status == "canceled"
 
 
-def test_board_includes_calendar_overlay_marks() -> None:
+def test_board_excludes_calendar_overlay_meetings() -> None:
+    """calendar.show_meetings feeds the agent's own mini calendar, not the run board."""
     from app.services.calendar_overlay import upsert_overlay
 
     db = _session()
@@ -681,6 +682,4 @@ def test_board_includes_calendar_overlay_marks() -> None:
         window_to=(now + timedelta(days=1)).isoformat(),
     )
     meetings = [item for item in board.events if item.source == "meeting"]
-    marks = {item.title: item.status for item in meetings}
-    assert marks["Планерка"] == "recommend_cancel"
-    assert marks["Разбор срывов"] == "recommend_add"
+    assert meetings == []
