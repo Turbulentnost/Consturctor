@@ -2660,7 +2660,7 @@ def _stream_run(
                         assistant_parts.append(delta)
                         _emit(on_event, kind, delta)
                     if delta.strip():
-                        logger.info("Cursor %s [%s/%s]: %s", kind, agent_id[-8:], run_id[-8:], delta)
+                        logger.debug("Cursor %s [%s/%s]: %s", kind, agent_id[-8:], run_id[-8:], delta)
             elif event == "message":
                 _emit(on_event, "message", str(payload.get("text") or payload.get("message") or ""))
             elif event == "result":
@@ -2687,7 +2687,7 @@ def _stream_run(
                     result.error,
                 )
             elif event not in {"heartbeat", "ping", "message", "done"}:
-                logger.info(
+                logger.debug(
                     "Cursor stream event=%s agent=%s run=%s keys=%s",
                     event,
                     agent_id[-8:],

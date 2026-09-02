@@ -10,11 +10,8 @@ from app.db.session import SessionLocal
 from app.models.workflow import Workflow
 from app.services import agent_kpi
 from app.services.triggers.service import workflow_is_inactive
-from app.services.workflows import prompts
-from app.services.workflows.plan_models import WorkflowPlan
 
 logger = logging.getLogger(__name__)
-
 
 
 def list_due_workflows(db: Session, *, now: datetime | None = None) -> list[tuple[Workflow, list[str]]]:
@@ -37,55 +34,28 @@ def list_due_workflows(db: Session, *, now: datetime | None = None) -> list[tupl
 
 
 def calculate_workflow_kpi(db: Session, row: Workflow, tile_ids: list[str]) -> None:
+    """Fill KPI facts from stored runs. Do not call Cursor: that blocks the API process."""
     local = dict(row.local_run or {})
     kpi = dict(local.get("kpi") or {})
     tiles = [item for item in (kpi.get("tiles") or []) if isinstance(item, dict)]
-    due = [item for item in tiles if str(item.get("id") or "") in set(tile_ids)]
+    wanted = {item for item in tile_ids if str(item or "").strip()}
+    due = [item for item in tiles if str(item.get("id") or "") in wanted]
     if not due:
         return
-    kpi["calculating_at"] = datetime.now(timezone.utc).isoformat()
+    draft = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+    runs = agent_kpi.list_runs_for_kpi(db, user_id=row.user_id, workflow_id=row.id)
+    updates = agent_kpi.local_calc_updates(due, runs, draft)
+    kpi = agent_kpi.apply_calc_updates(kpi, updates, due_ids=wanted)
+    kpi["calculating_at"] = ""
     local["kpi"] = kpi
     row.local_run = local
     db.commit()
-
-    draft = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
-    plan = WorkflowPlan.from_dict(row.plan_json or {})
-    title = str(draft.get("name") or row.title or plan.title or "ИИ-агент")
-    goal = str(draft.get("goal") or plan.goal or "")
-    runs = agent_kpi.list_runs_for_kpi(db, user_id=row.user_id, workflow_id=row.id)
-    prompt = prompts.build_kpi_calc_prompt(
-        title=title,
-        goal=goal,
-        plan_text=prompts.plan_summary_text(plan),
-        schedule_draft=draft,
-        tiles=due,
-        runs=agent_kpi.runs_digest(runs),
+    logger.info(
+        "KPI calc done workflow=%s tiles=%s updates=%s source=local",
+        row.id,
+        list(wanted),
+        [item.get("id") for item in updates],
     )
-    updates: list[dict] = []
-    try:
-        from app.services.workflows.service import _create_exec_agent, _stream_run
-
-        agent_id, run_id = _create_exec_agent(f"KPI calc · {title}", prompt)
-        result = _stream_run(agent_id, run_id)
-        updates = agent_kpi.parse_calc_payload(result.text or "")
-        if result.error and not updates:
-            raise RuntimeError(result.error)
-        kpi = agent_kpi.apply_calc_updates(kpi, updates, due_ids=set(tile_ids))
-        logger.info(
-            "KPI calc done workflow=%s tiles=%s updates=%s",
-            row.id,
-            tile_ids,
-            [item.get("id") for item in updates],
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("KPI calc failed workflow=%s: %s", row.id, exc)
-        kpi = agent_kpi.apply_calc_updates(kpi, [], due_ids=set(tile_ids))
-    finally:
-        kpi["calculating_at"] = ""
-        local = dict(row.local_run or {})
-        local["kpi"] = kpi
-        row.local_run = local
-        db.commit()
 
 
 def run_due_kpi_calculations() -> int:
@@ -102,4 +72,3 @@ def run_due_kpi_calculations() -> int:
         return 0
     finally:
         db.close()
-

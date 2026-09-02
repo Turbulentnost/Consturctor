@@ -121,10 +121,10 @@ function toastLaunchUrl(
   if (payload.draftId) params.set('did', payload.draftId)
   if (payload.requestId) params.set('qid', payload.requestId)
   const query = params.toString()
-  if (action === 'accept' || action === 'reject') {
-    return `${APP_PROTOCOL}://hitl/${action}${query ? `?${query}` : ''}`
-  }
-  return `${APP_PROTOCOL}://open${query ? `?${query}` : ''}`
+  // In-process toast args. Do not use constructor:// here: Windows protocol
+  // activation starts electron.exe without the app path and shows the default
+  // Electron welcome page.
+  return `constructor-hitl:${action}${query ? `?${query}` : ''}`
 }
 
 function parseHitlActivation(raw: string): { kind: 'open' | 'accept' | 'reject'; payload: ToastPayload } | null {
@@ -156,7 +156,12 @@ function parseHitlActivation(raw: string): { kind: 'open' | 'accept' | 'reject';
 }
 
 export function findConstructorUrl(argv: string[]): string {
-  return (argv || []).find((item) => String(item || '').startsWith(`${APP_PROTOCOL}:`)) || ''
+  return (
+    (argv || []).find((item) => {
+      const text = String(item || '')
+      return text.startsWith(`${APP_PROTOCOL}:`) || text.startsWith('constructor-hitl:')
+    }) || ''
+  )
 }
 
 export function consumeToastActivation(raw: string): boolean {
@@ -178,30 +183,19 @@ export function consumeToastActivation(raw: string): boolean {
   return true
 }
 
-function openToastXml(title: string, body: string, payload: ToastPayload): string {
-  const launch = escapeXml(toastLaunchUrl(payload))
-  return (
-    `<toast launch="${launch}" activationType="protocol" duration="long">` +
-    `<visual><binding template="ToastGeneric">` +
-    `<text>${escapeXml(title)}</text>` +
-    (body ? `<text>${escapeXml(body)}</text>` : '') +
-    `</binding></visual></toast>`
-  )
-}
-
 function hitlToastXml(title: string, body: string, payload: ToastPayload): string {
   const launch = escapeXml(toastLaunchUrl(payload))
   const accept = escapeXml(toastLaunchUrl(payload, 'accept'))
   const reject = escapeXml(toastLaunchUrl(payload, 'reject'))
   return (
-    `<toast launch="${launch}" activationType="protocol" duration="long" scenario="reminder">` +
+    `<toast launch="${launch}" activationType="foreground" duration="long" scenario="reminder">` +
     `<visual><binding template="ToastGeneric">` +
     `<text>${escapeXml(title)}</text>` +
     `<text>${escapeXml(body)}</text>` +
     `</binding></visual>` +
     `<actions>` +
-    `<action content="Принять" arguments="${accept}" activationType="protocol"/>` +
-    `<action content="Отклонить" arguments="${reject}" activationType="protocol"/>` +
+    `<action content="Принять" arguments="${accept}" activationType="foreground"/>` +
+    `<action content="Отклонить" arguments="${reject}" activationType="foreground"/>` +
     `</actions></toast>`
   )
 }
@@ -249,10 +243,10 @@ export function showToast(payload: ToastPayload): void {
       { type: 'button', text: 'Отклонить' }
     ]
   }
-  if (process.platform === 'win32') {
-    options.toastXml = requestId
-      ? hitlToastXml(title, body, payload)
-      : openToastXml(title, body, payload)
+  // Open toasts stay on Electron's native Windows toast so a click activates
+  // this process. Custom protocol XML launches a bare electron.exe in dev.
+  if (process.platform === 'win32' && requestId) {
+    options.toastXml = hitlToastXml(title, body, payload)
   }
   const toast = new Notification(options)
   if (requestId) liveToasts.set(requestId, toast)
@@ -411,7 +405,8 @@ export class NotificationGuard {
       title: String(payload.title || ''),
       body: String(payload.body || ''),
       workflowId: String(payload.workflow_id || payload.workflowId || ''),
-      runId: String(payload.run_id || payload.runId || '')
+      runId: String(payload.run_id || payload.runId || ''),
+      draftId: String(payload.draft_id || payload.draftId || '')
     })
     notifyWindows('inbox:changed', { id })
     if (id) void this.ack(id)

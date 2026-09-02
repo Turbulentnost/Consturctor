@@ -365,10 +365,7 @@ export function ProcessesWorkplace({
     const workflowAgents = agents.filter((item) => !item.standalone)
     void Promise.all(
       workflowAgents.map(async (item) => {
-        let kpi = await api.getWorkflowKpi(item.workflowId).catch(() => null)
-        if (kpiScore(kpi) == null) {
-          kpi = await api.calculateWorkflowKpi(item.workflowId).catch(() => kpi)
-        }
+        const kpi = await api.getWorkflowKpi(item.workflowId).catch(() => null)
         return [item.workflowId, kpi] as const
       })
     ).then((pairs) => {

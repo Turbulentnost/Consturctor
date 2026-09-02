@@ -1,4 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } from 'electron'
+import { execFileSync } from 'node:child_process'
 import { join, basename, dirname, extname } from 'node:path'
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import {

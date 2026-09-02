@@ -1,14 +1,18 @@
 from datetime import datetime, timedelta, timezone
 
+from types import SimpleNamespace
+
 from app.services.agent_kpi import (
     MIN_INTERVAL_SECONDS,
     apply_calc_updates,
     build_kpi_record,
     interval_minutes,
     is_tile_due,
+    local_calc_updates,
     normalize_method,
     parse_calc_payload,
     parse_kpi_payload,
+    score_for_fact,
     tile_color,
     advance_next_run_at,
 )
@@ -244,3 +248,37 @@ def test_calc_prompt_includes_runs_and_method() -> None:
     assert "готово" in prompt
     assert "plan_explanation" in prompt
     assert "не используй" in prompt
+
+
+def test_score_for_fact_percent_and_counts() -> None:
+    assert score_for_fact("success_rate", 80.0, 100.0) == 80.0
+    assert score_for_fact("fail_count", 0.0, 1.0) == 100.0
+    assert score_for_fact("runs_count", 2.0, 4.0) == 50.0
+    assert score_for_fact("expected_interval", 20.0, 20.0) == 100.0
+    assert score_for_fact("success_rate", None, 100.0) is None
+
+
+def test_local_calc_updates_from_runs() -> None:
+    tiles = [
+        {
+            "id": "success_rate",
+            "measure": {"kind": "success_rate", "params": {}},
+            "plan": {"value": 100},
+            "fact": {"unit": "%"},
+        },
+        {
+            "id": "runs_count",
+            "measure": {"kind": "runs_count", "params": {}},
+            "plan": {"value": 4},
+            "fact": {"unit": "шт"},
+        },
+    ]
+    runs = [
+        SimpleNamespace(status="ok", source="chat", started_at=None, finished_at=None),
+        SimpleNamespace(status="error", source="chat", started_at=None, finished_at=None),
+    ]
+    updates = {item["id"]: item for item in local_calc_updates(tiles, runs, {})}
+    assert updates["success_rate"]["fact"]["value"] == 50.0
+    assert updates["success_rate"]["score_percent"] == 50.0
+    assert updates["runs_count"]["fact"]["value"] == 2.0
+    assert updates["runs_count"]["score_percent"] == 50.0

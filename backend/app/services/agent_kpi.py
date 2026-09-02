@@ -554,6 +554,57 @@ def compute_fact(
     return None, NO_RUNS_LABEL
 
 
+def score_for_fact(kind: str, fact: float | None, plan: float | None) -> float | None:
+    if fact is None:
+        return None
+    if kind in {"success_rate", "on_schedule_rate"}:
+        return max(0.0, min(100.0, float(fact)))
+    if kind == "fail_count":
+        if fact <= 0:
+            return 100.0
+        if plan is not None and plan > 0:
+            return max(0.0, min(100.0, 100.0 - (fact / plan) * 100.0))
+        return max(0.0, 100.0 - fact * 25.0)
+    if kind == "runs_count" and plan is not None and plan > 0:
+        return max(0.0, min(100.0, 100.0 * fact / plan))
+    if kind == "expected_interval" and plan is not None and plan > 0 and fact > 0:
+        return round((min(fact, plan) / max(fact, plan)) * 100.0, 1)
+    return None
+
+
+def local_calc_updates(
+    tiles: list[dict[str, Any]],
+    runs: list[Any],
+    schedule: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    updates: list[dict[str, Any]] = []
+    for raw in tiles:
+        if not isinstance(raw, dict):
+            continue
+        tid = str(raw.get("id") or "").strip()
+        if not tid:
+            continue
+        measure = raw.get("measure") if isinstance(raw.get("measure"), dict) else {}
+        kind = str(measure.get("kind") or tid).strip()
+        params = measure.get("params") if isinstance(measure.get("params"), dict) else {}
+        value, hint = compute_fact(kind, params, runs, schedule)
+        plan = _as_float((raw.get("plan") or {}).get("value") if isinstance(raw.get("plan"), dict) else None)
+        fact = raw.get("fact") if isinstance(raw.get("fact"), dict) else {}
+        updates.append(
+            {
+                "id": tid,
+                "fact": {
+                    "value": value,
+                    "unit": str(fact.get("unit") or ""),
+                    "description": hint,
+                },
+                "score_percent": score_for_fact(kind, value, plan),
+                "evidence": hint,
+            }
+        )
+    return updates
+
+
 def list_runs_for_kpi(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRun]:
     return list(
         db.execute(
