@@ -314,6 +314,8 @@ OUTLOOK_SERIES_MARKER = "самый ранний удобный свободны
 OUTLOOK_MEETING_HINT = (
     "If the task is to schedule planned meetings in Outlook, do not stop after reading. "
     "Call outlook.read_calendar (free_slots) first, then outlook.create_event. "
+    "Pass people[] to read those employees' calendars. "
+    "Pass attendees[] (who must attend) and organizer (whose calendar) to create_event. "
     "Writing the calendar is the result; a plan in chat is not. "
     "Weekly or monthly meeting without a date: pick the earliest convenient free weekday "
     "(prefer Monday if free). Keep that same weekday every week; for monthly keep the "
@@ -327,7 +329,9 @@ OUTLOOK_MEETING_HINT = (
 
 OUTLOOK_MEETING_RULE = (
     "Плановые совещания записывай в Outlook: сначала outlook.read_calendar "
-    "(свободные слоты), затем outlook.create_event. Не ограничивайся чтением календаря. "
+    "(свободные слоты; people[] — календари этих сотрудников), затем outlook.create_event "
+    "с attendees[] (кто должен прийти) и при необходимости organizer (чей календарь). "
+    "Не ограничивайся чтением календаря. "
     "Если совещание еженедельное или ежемесячное, а конкретная дата не задана: выбери "
     "самый ранний удобный свободный день (предпочтительно понедельник, если он свободен). "
     "Дальше всегда этот же день недели: каждую неделю в один и тот же день; каждый месяц "
@@ -1857,16 +1861,22 @@ class Sidecar:
                 and len(events) - last_flush >= 3
             ):
                 last_flush = len(events)
-                try:
-                    self._api.update_local_agent_run_events(
-                        active.workflow_id,
-                        run_ref,
-                        events,
-                    )
-                except ApiError:
-                    pass
+                snapshot = list(events)
+                threading.Thread(
+                    target=self._flush_history_events,
+                    args=(active.workflow_id, run_ref, snapshot),
+                    daemon=True,
+                ).start()
 
         return on_event
+
+    def _flush_history_events(
+        self, workflow_id: str, run_id: str, events: list[dict[str, Any]]
+    ) -> None:
+        try:
+            self._api.update_local_agent_run_events(workflow_id, run_id, events)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _run_design(self, command: dict[str, Any], active: ActiveRun) -> None:
         workflow_id = str(command.get("workflowId") or "").strip()

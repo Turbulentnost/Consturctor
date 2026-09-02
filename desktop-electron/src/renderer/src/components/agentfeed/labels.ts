@@ -115,6 +115,7 @@ export function toolArgHint(args: Record<string, unknown> | undefined): string {
     'description',
     'title',
     'name',
+    'filename',
     'subagent_type',
     'prompt'
   ]) {

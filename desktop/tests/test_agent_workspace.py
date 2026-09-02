@@ -19,3 +19,35 @@ def test_list_files_includes_materials(tmp_path: Path) -> None:
     assert "root.xlsx" in names
     assert "materials/plan.xlsx" in names
     assert "code/main.py" not in names
+
+
+def test_resolve_finds_attachment_by_original_name(tmp_path: Path) -> None:
+    resolver = AgentWorkspaceResolver(tmp_path)
+    workspace = resolver.for_agent("wf-attach")
+    folder = workspace.directory / "materials" / "attachments"
+    folder.mkdir(parents=True)
+    target = folder / "002_Отчет по количеству совещаний 2026 new.xlsx"
+    target.write_bytes(b"x")
+
+    found = workspace.resolve(
+        "Отчет по количеству совещаний 2026 new.xlsx", must_exist=True
+    )
+    assert found == target.resolve()
+
+    found_rel = workspace.resolve(
+        "materials/attachments/002_Отчет по количеству совещаний 2026 new.xlsx",
+        must_exist=True,
+    )
+    assert found_rel == target.resolve()
+
+
+def test_resolve_create_keeps_requested_path(tmp_path: Path) -> None:
+    resolver = AgentWorkspaceResolver(tmp_path)
+    workspace = resolver.for_agent("wf-create")
+    folder = workspace.directory / "materials" / "attachments"
+    folder.mkdir(parents=True)
+    (folder / "002_plan.xlsx").write_bytes(b"x")
+
+    planned = workspace.resolve("plan.xlsx")
+    assert planned == (workspace.directory / "plan.xlsx").resolve()
+    assert planned != (folder / "002_plan.xlsx").resolve()

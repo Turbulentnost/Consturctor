@@ -6,7 +6,12 @@ from app.tools.ac.com_backed_tools import (
 )
 
 from app.tools.ac.workers.outlook_com_actions import (
+    _attach_attendees,
     _compute_free_slots,
+    _meeting_specs,
+    _open_shared_calendar,
+    _people_from_input,
+    _people_names,
     stamp_ai_agent_meeting,
 )
 
@@ -45,6 +50,69 @@ def test_outlook_save_failure_is_retried() -> None:
         None,
     )
     assert _is_transient_com_error(err)
+
+
+def test_people_names_from_string_and_list() -> None:
+    assert _people_names("Иванов Иван; Петров П.П.") == ["Иванов Иван", "Петров П.П."]
+    assert _people_from_input(
+        {"attendees": [{"fio": "Сидоров"}, "a@turbo-don.ru"], "people": "Сидоров"}
+    ) == ["Сидоров", "a@turbo-don.ru"]
+
+
+def test_meeting_specs_keep_attendees_and_organizer() -> None:
+    specs = _meeting_specs(
+        {
+            "subject": "Планерка",
+            "start": "2026-09-07T10:00:00",
+            "duration_minutes": 45,
+            "attendees": ["Мангасарян Давид Каренович", "Уставицкий А. А."],
+            "organizer": "Ильченко Екатерина Александровна",
+        }
+    )
+    assert len(specs) == 1
+    assert specs[0]["attendees"] == [
+        "Мангасарян Давид Каренович",
+        "Уставицкий А. А.",
+    ]
+    assert specs[0]["organizer"] == "Ильченко Екатерина Александровна"
+    assert specs[0]["send_invites"] is True
+
+
+def test_attach_attendees_marks_meeting() -> None:
+    class _Recipients:
+        def __init__(self) -> None:
+            self.added: list[str] = []
+
+        def Add(self, name: str):
+            self.added.append(name)
+            return type("R", (), {"Type": 0})()
+
+        def ResolveAll(self) -> bool:
+            return True
+
+    appt = type("A", (), {})()
+    appt.MeetingStatus = 0
+    appt.Recipients = _Recipients()
+    added = _attach_attendees(appt, ["Иванов", "Петров"])
+    assert added == ["Иванов", "Петров"]
+    assert appt.MeetingStatus == 1
+    assert appt.Recipients.added == ["Иванов", "Петров"]
+
+
+def test_open_shared_calendar_unresolved() -> None:
+    class _Recipient:
+        Resolved = False
+
+        def Resolve(self) -> bool:
+            return False
+
+    class _Ns:
+        def CreateRecipient(self, _name: str):
+            return _Recipient()
+
+    folder, status = _open_shared_calendar(_Ns(), "Неизвестный")
+    assert folder is None
+    assert status == "unresolved"
 
 
 def test_stamp_ai_agent_meeting_adds_prefix_and_footer() -> None:

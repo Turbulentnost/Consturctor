@@ -104,8 +104,8 @@ class OutlookReadCalendarComTool(ComBackedTool):
                 title="Чтение календаря Outlook",
                 description=(
                     "Встречи Outlook за период. Без дат - год вперёд. "
-                    "Передавай date_from/date_to, если нужен короткий интервал. "
-                    "Тело встреч не читается. В ответе events и free_slots."
+                    "people[] — календари этих сотрудников (ФИО как в Outlook), если есть доступ. "
+                    "Без people — свой календарь. В ответе events, calendars и free_slots."
                 ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
@@ -138,6 +138,14 @@ class OutlookReadCalendarComTool(ComBackedTool):
                             "type": "boolean",
                             "description": "Включить body_preview. По умолчанию false",
                         },
+                        "people": {
+                            "type": "array",
+                            "description": (
+                                "ФИО или почта сотрудников, чьи календари прочитать "
+                                "(общий доступ Outlook). Пусто — только свой"
+                            ),
+                            "items": {"type": "string"},
+                        },
                     },
                 },
                 output_schema={"type": "object"},
@@ -156,7 +164,8 @@ class OutlookCreateEventComTool(ComBackedTool):
                 name="outlook.create_event",
                 title="Встреча в Outlook",
                 description=(
-                    "Создаёт встречи в календаре Outlook в указанных слотах. "
+                    "Создаёт встречи в Outlook. attendees[] — кто должен прийти, "
+                    "organizer — чей календарь (если есть право записи). "
                     "Тема и текст помечаются как ИИ-агент."
                 ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
@@ -175,9 +184,25 @@ class OutlookCreateEventComTool(ComBackedTool):
                         "duration_minutes": {"type": "integer", "description": "Длительность в минутах, если end нет"},
                         "body": {"type": "string", "description": "Текст встречи; в конец добавится подпись ИИ-агента"},
                         "location": {"type": "string", "description": "Место или ссылка"},
+                        "attendees": {
+                            "type": "array",
+                            "description": "Кто должен прийти: ФИО или почта, как в адресной книге Outlook",
+                            "items": {"type": "string"},
+                        },
+                        "organizer": {
+                            "type": "string",
+                            "description": "Чей календарь / от чьего имени. Пусто — текущий профиль Outlook",
+                        },
+                        "send_invites": {
+                            "type": "boolean",
+                            "description": "Отправить приглашения участникам. По умолчанию да, если есть attendees",
+                        },
                         "events": {
                             "type": "array",
-                            "description": "Несколько встреч за вызов: subject, start, end или duration_minutes",
+                            "description": (
+                                "Несколько встреч за вызов: subject, start, end или duration_minutes, "
+                                "attendees, organizer"
+                            ),
                             "items": {"type": "object"},
                         },
                     },

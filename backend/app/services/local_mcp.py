@@ -641,13 +641,14 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "query": _prop("string", "Подстрока в теме или отправителе, не список людей"),
             "max_results": _prop("integer", "Максимум писем"),
         }),
-        ("outlook.read_calendar", "Встречи Outlook за период. Без дат - год вперёд. Тело встреч не читается. В ответе events и free_slots.", {
+        ("outlook.read_calendar", "Встречи Outlook за период. Без дат - год вперёд. people[] — календари этих сотрудников. Без people — свой. В ответе events, calendars и free_slots.", {
             "date": _prop("string", "Один день YYYY-MM-DD"),
             "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
             "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
             "days_forward": _prop("integer", "Сколько дней вперёд от сегодня, если дат нет. По умолчанию 365"),
             "max_results": _prop("integer", "Максимум событий, до 500"),
             "include_body": _prop("boolean", "Включить body_preview. По умолчанию false"),
+            "people": _prop("array", "ФИО или почта сотрудников, чьи календари прочитать"),
         }),
         ("calendar.show_meetings", "Показать совещания на вкладке Календарь. mark=cancel/red - красным отменить, mark=add/green - зеленым поставить, mark=keep - уже стоит. В Outlook не пишет.", {
             "meetings": _prop("array", "Список: title, start, end, mark, reason"),
@@ -657,16 +658,19 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "mark": _prop("string", "keep, cancel/red или add/green"),
             "reason": _prop("string", "Почему отменить или поставить"),
         }),
-        ("outlook.create_event", "Создать встречи в свободных слотах календаря Outlook. Тема и текст помечаются как ИИ-агент. Нужно подтверждение человека.", {
+        ("outlook.create_event", "Создать встречи Outlook. attendees[] — кто идёт, organizer — чей календарь. Тема помечается как ИИ-агент. Нужно подтверждение человека.", {
             "subject": _prop("string", "Тема встречи без префикса ИИ-агент — его добавит инструмент"),
             "start": _prop("string", "Начало ISO datetime, слот должен быть свободным"),
             "end": _prop("string", "Конец ISO datetime"),
             "duration_minutes": _prop("integer", "Длительность в минутах, если end нет"),
             "body": _prop("string", "Текст встречи; в конец добавится подпись ИИ-агента"),
             "location": _prop("string", "Место или ссылка"),
+            "attendees": _prop("array", "Кто должен прийти: ФИО или почта"),
+            "organizer": _prop("string", "Чей календарь / от чьего имени. Пусто — текущий Outlook"),
+            "send_invites": _prop("boolean", "Отправить приглашения. По умолчанию да, если есть attendees"),
             "events": _prop(
                 "array",
-                "Несколько встреч за один вызов: subject, start, end или duration_minutes",
+                "Несколько встреч за один вызов: subject, start, end, attendees, organizer",
             ),
         }),
         ("browser.list_installed_browsers", "Список установленных браузеров на desktop.", {}),
@@ -761,8 +765,8 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             },
         ),
         ("excel.list_files", "Список файлов в рабочей папке агента.", {}),
-        ("excel.read_workbook", "Чтение .xlsx из папки агента.", {
-            "filename": _prop("string", "Имя файла в папке агента, например report.xlsx"),
+        ("excel.read_workbook", "Чтение .xlsx из папки агента, в том числе materials/attachments.", {
+            "filename": _prop("string", "Имя или путь из excel.list_files, например materials/attachments/002_report.xlsx"),
             "sheet": _prop("string", "Имя листа. Пусто — первый"),
             "max_rows": _prop("integer", "Максимум строк"),
         }),
