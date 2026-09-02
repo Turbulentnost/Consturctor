@@ -413,8 +413,8 @@ def publish_github_release() -> None:
                 f"Constructor {version} and Orchestrator {version}. "
                 "Constructor-Setup.exe installs both programs. "
                 "An update from either app installs both Constructor and Orchestrator. "
-                "Fixes Outlook calendar COM worker on packaged installs "
-                "(embedded Python could not import package app)."
+                "Includes calendar result UI from david, pause tool timeout, "
+                "run history, and Outlook COM worker fix for packaged installs."
             ),
         ],
         cwd=REPO_ROOT,
