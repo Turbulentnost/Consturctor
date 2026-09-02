@@ -119,6 +119,7 @@ _READ_EXACT = frozenset(
         "browser.get_page_html",
         "outlook.search_mail",
         "outlook.read_calendar",
+        "calendar.show_meetings",
         "excel.list_files",
         "excel.read_workbook",
         "onec.odata_catalog",
@@ -244,7 +245,9 @@ OUTLOOK_MEETING_HINT = (
     "same weekday pattern (for example the first Monday). "
     "outlook.create_event has no recurrence field: pass events[] with one item per "
     "occurrence (about 8 weeks weekly, 6 months monthly). "
-    "Wait for HITL approval. Done only after create_event returns ok."
+    "Wait for HITL approval. Done only after create_event returns ok. "
+    "To show the plan on the Calendar tab call calendar.show_meetings: "
+    "cancel/red to drop, add/green to add."
 )
 
 OUTLOOK_MEETING_RULE = (
@@ -256,7 +259,9 @@ OUTLOOK_MEETING_RULE = (
     "тот же день недели (например первый понедельник). "
     "Повторяемости в outlook.create_event нет: передай events[] — отдельную встречу "
     "на каждую дату серии (около 8 недель для еженедельных, 6 месяцев для ежемесячных). "
-    "Дождись подтверждения записи. Задача выполнена только после ok от create_event."
+    "Дождись подтверждения записи. Задача выполнена только после ok от create_event. "
+    "Чтобы показать план на вкладке Календарь, вызови calendar.show_meetings: "
+    "cancel/red - красным отменить, add/green - зеленым поставить."
 )
 
 _MEETING_TIPS = (

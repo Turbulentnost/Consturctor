@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     agents,
     auth,
+    calendar,
     health,
     llm,
     notifications,
@@ -25,6 +26,7 @@ api_router.include_router(regulation_creation.router, prefix="/api/v1")
 api_router.include_router(workflows.router, prefix="/api/v1")
 api_router.include_router(tools.router, prefix="/api/v1")
 api_router.include_router(notifications.router, prefix="/api/v1")
+api_router.include_router(calendar.router, prefix="/api/v1")
 api_router.include_router(triggers.router, prefix="/api/v1")
 api_router.include_router(orchestrator.router, prefix="/api/v1")
 api_router.include_router(chat_router, prefix="/api/v1")

@@ -167,19 +167,20 @@ function relaunchCommandLine(): string {
 }
 
 function registerProtocolCommand(command: string): void {
-  const script = [
-    `$key = 'HKCU:\\Software\\Classes\\${APP_PROTOCOL}'`,
-    'New-Item -Path $key -Force | Out-Null',
-    `Set-ItemProperty -Path $key -Name '(default)' -Value 'URL:${APP_PROTOCOL} Protocol'`,
-    "New-ItemProperty -Path $key -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null",
-    `$cmd = Join-Path $key 'shell\\open\\command'`,
-    'New-Item -Path $cmd -Force | Out-Null',
-    `Set-ItemProperty -Path $cmd -Name '(default)' -Value ${JSON.stringify(command)}`
-  ].join('; ')
-  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+  const root = `HKCU\\Software\\Classes\\${APP_PROTOCOL}`
+  execFileSync('reg.exe', ['add', root, '/ve', '/t', 'REG_SZ', '/d', `URL:${APP_PROTOCOL} Protocol`, '/f'], {
     windowsHide: true,
-    timeout: 8000
+    timeout: 5000
   })
+  execFileSync('reg.exe', ['add', root, '/v', 'URL Protocol', '/t', 'REG_SZ', '/d', '', '/f'], {
+    windowsHide: true,
+    timeout: 5000
+  })
+  execFileSync(
+    'reg.exe',
+    ['add', `${root}\\shell\\open\\command`, '/ve', '/t', 'REG_SZ', '/d', command, '/f'],
+    { windowsHide: true, timeout: 5000 }
+  )
 }
 
 function registerWindowsLaunchers(): void {
@@ -206,15 +207,24 @@ function registerWindowsLaunchers(): void {
   try {
     mkdirSync(programs, { recursive: true })
     const shortcutPath = join(programs, 'Constructor Dev.lnk')
-    const wrote = shell.writeShortcutLink(shortcutPath, 'replace', {
+    const icon = APP_ICON && /\.(ico|exe)$/i.test(APP_ICON) ? APP_ICON : process.execPath
+    const shortcut = {
       target: process.execPath,
       args: quoteArg(entry),
       cwd: existsSync(join(entry, 'package.json')) ? entry : process.cwd(),
       appUserModelId: APP_USER_MODEL_ID,
       description: 'Constructor',
-      icon: APP_ICON || process.execPath,
+      icon,
       iconIndex: 0
-    })
+    }
+    const operation = existsSync(shortcutPath) ? 'replace' : 'create'
+    let wrote = shell.writeShortcutLink(shortcutPath, operation, shortcut)
+    if (!wrote || !existsSync(shortcutPath)) {
+      wrote = shell.writeShortcutLink(shortcutPath, existsSync(shortcutPath) ? 'replace' : 'create', {
+        ...shortcut,
+        icon: process.execPath
+      })
+    }
     if (!wrote || !existsSync(shortcutPath)) {
       console.error(`Failed to write Constructor Dev toast shortcut at ${shortcutPath}`)
       return

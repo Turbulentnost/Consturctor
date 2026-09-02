@@ -1,15 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { AgentRunHistoryItem, BoardAgent, CalendarEvent, WorkflowBoard } from '../api/types'
-import { RunCalendar } from '../components/agents/RunCalendar'
+import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowBoard, WorkflowFileItem } from '../api/types'
+import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
+import { fileTypeIconSrc } from '../utils/fileTypeIcon'
+import { cleanRunResult } from '../utils/cleanRunResult'
 import {
-  humanWhen,
-  parseIso,
-  shiftAnchor,
-  STATUS_STYLE,
-  windowFor,
-  type CalendarView
-} from '../utils/calendar'
+  formatRunTime,
+  formatRunWhen,
+  groupRunsByDay,
+  HISTORY_STATUS_LABELS,
+  historyRunStatus,
+  statusPillClass
+} from '../utils/historyDisplay'
+import { filesForHistoryRun } from '../utils/historyFiles'
+import { formatSize } from '../pages/filesGrouping'
+import { FilterBar } from './FilterBar'
 
 const EMPTY_BOARD: WorkflowBoard = {
   stats: { activeAgents: 0, runsToday: 0, errorsToday: 0, needsAttention: 0, nextRunAt: '' },
@@ -17,15 +22,7 @@ const EMPTY_BOARD: WorkflowBoard = {
   events: []
 }
 
-function statusLabel(status: string): string {
-  return STATUS_STYLE[status]?.label || status || '—'
-}
-
-function clip(text: string, limit = 160): string {
-  const value = (text || '').replace(/\s+/g, ' ').trim()
-  if (value.length <= limit) return value
-  return `${value.slice(0, limit - 1)}…`
-}
+type StatusFilter = '' | 'ok' | 'error' | 'canceled' | 'started'
 
 export function HistoryWorkplace({
   onOpenRun
@@ -36,23 +33,28 @@ export function HistoryWorkplace({
   const [runs, setRuns] = useState<AgentRunHistoryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [flash, setFlash] = useState('')
-  const [view, setView] = useState<CalendarView>('week')
-  const [anchor, setAnchor] = useState<Date>(new Date())
-  const [selectedAgentId, setSelectedAgentId] = useState('')
-  const reloadRef = useRef<(nextView?: CalendarView, nextAnchor?: Date) => Promise<void>>(
-    async () => undefined
-  )
+  const [query, setQuery] = useState('')
+  const [agentId, setAgentId] = useState('')
+  const [status, setStatus] = useState<StatusFilter>('')
+  const [selected, setSelected] = useState('')
+  const [answer, setAnswer] = useState('')
+  const [events, setEvents] = useState<AgentRunnerEvent[]>([])
+  const [files, setFiles] = useState<WorkflowFileItem[]>([])
+  const [detailLoading, setDetailLoading] = useState(false)
+  const reloadRef = useRef<() => Promise<void>>(async () => undefined)
 
   const agents = useMemo(
     () => board.agents.filter((item) => item.kind === 'workflow'),
     [board.agents]
   )
 
-  async function reload(nextView = view, nextAnchor = anchor): Promise<void> {
-    const win = windowFor(nextView, nextAnchor)
+  function titleOf(workflowId: string): string {
+    return agents.find((item) => item.id === workflowId)?.title || 'ИИ-агент'
+  }
+
+  async function reload(): Promise<void> {
     try {
-      const nextBoard = await api.getWorkflowBoard({ window_from: win.from, window_to: win.to })
+      const nextBoard = await api.getWorkflowBoard()
       setBoard(nextBoard)
       const workflowAgents = nextBoard.agents.filter((item) => item.kind === 'workflow')
       const lists = await Promise.all(
@@ -78,117 +80,258 @@ export function HistoryWorkplace({
       void reloadRef.current()
     })
     return () => unsubscribe?.()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  function notice(text: string): void {
-    setFlash(text)
-    window.setTimeout(() => setFlash(''), 4000)
-  }
-
-  function changeView(nextView: CalendarView): void {
-    setView(nextView)
-    void reload(nextView, anchor)
-  }
-
-  function shift(step: number): void {
-    const next = shiftAnchor(view, anchor, step)
-    setAnchor(next)
-    void reload(view, next)
-  }
-
-  function goToday(): void {
-    const next = new Date()
-    setAnchor(next)
-    void reload(view, next)
-  }
-
-  function titleOf(workflowId: string): string {
-    return agents.find((item) => item.id === workflowId)?.title || 'ИИ-агент'
-  }
-
-  async function onScheduleRun(workflowId: string, iso: string): Promise<void> {
-    try {
-      await api.createTimedTrigger(workflowId, iso, 'Плановый запуск')
-      await reload()
-      notice('Запуск запланирован')
-    } catch (err) {
-      notice(err instanceof Error ? err.message : 'Не удалось запланировать запуск')
+  const agentOptions = useMemo(() => {
+    const seen = new Set<string>()
+    const options: { id: string; title: string }[] = []
+    for (const run of runs) {
+      if (seen.has(run.workflowId)) continue
+      seen.add(run.workflowId)
+      options.push({ id: run.workflowId, title: titleOf(run.workflowId) })
     }
-  }
+    return options.sort((left, right) => left.title.localeCompare(right.title, 'ru'))
+  }, [runs, agents])
 
-  const showcase = runs.slice(0, 8)
-  const selectedAgent: BoardAgent | undefined = agents.find((item) => item.id === selectedAgentId)
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return runs.filter((item) => {
+      if (agentId && item.workflowId !== agentId) return false
+      const key = historyRunStatus(item)
+      if (status === 'canceled' && key !== 'canceled' && key !== 'cancelled') return false
+      if (status === 'started' && key !== 'started' && key !== 'running') return false
+      if (status === 'ok' && key !== 'ok') return false
+      if (status === 'error' && key !== 'error') return false
+      if (!q) return true
+      const title = titleOf(item.workflowId).toLowerCase()
+      return title.includes(q)
+    })
+  }, [runs, query, agentId, status, agents])
+
+  const groups = useMemo(() => groupRunsByDay(visible), [visible])
+
+  useEffect(() => {
+    if (!visible.length) {
+      setSelected('')
+      return
+    }
+    if (!visible.some((item) => item.runId === selected)) {
+      setSelected(visible[0].runId)
+    }
+  }, [visible, selected])
+
+  useEffect(() => {
+    if (!selected) {
+      setAnswer('')
+      setEvents([])
+      setFiles([])
+      return
+    }
+    const run = runs.find((item) => item.runId === selected)
+    if (!run) {
+      setAnswer('')
+      setEvents([])
+      setFiles([])
+      return
+    }
+    let alive = true
+    setDetailLoading(true)
+    void Promise.all([api.getAgentRunDetail(run.workflowId, selected), api.listWorkflowFiles(run.workflowId)])
+      .then(([detail, allFiles]) => {
+        if (!alive) return
+        const text = (detail.item.answer || detail.item.summary || '').trim()
+        setAnswer(text)
+        setEvents(detail.events)
+        setFiles(filesForHistoryRun(allFiles, selected, text, detail.events))
+      })
+      .catch(() => {
+        if (!alive) return
+        setAnswer('')
+        setEvents([])
+        setFiles([])
+      })
+      .finally(() => {
+        if (alive) setDetailLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [selected, runs])
+
+  const selectedRun = runs.find((item) => item.runId === selected)
+  const selectedStatus = selectedRun ? historyRunStatus(selectedRun) : ''
+  const cleaned = useMemo(
+    () => cleanRunResult({ answer, events, status: selectedStatus }),
+    [answer, events, selectedStatus]
+  )
 
   return (
     <div className="wp-page wp-history">
       <div className="wp-head">
         <div>
           <h1 className="page-title">История</h1>
-          <div className="wp-sub">Календарь запусков и результаты последних прогонов</div>
+          <div className="wp-sub">
+            Запуски по дням. Справа только результат, без хода работы агента. Календарь — во вкладке
+            «Календарь».
+          </div>
         </div>
-        <span className="orch-badge">{loading ? 'загрузка' : `${runs.length} прогонов`}</span>
-        <span className="wp-count">{runs.length}</span>
+        <span className="orch-badge">{loading ? 'загрузка' : `${visible.length} прогонов`}</span>
+        <span className="wp-count">{visible.length}</span>
       </div>
-      {flash ? <div className="wp-toast">{flash}</div> : null}
       {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
 
-      <div className="wp-history-layout">
-        <section className="wp-card wp-showcase">
-          <div className="wp-showcase-head">
-            <div>
-              <h2>Результаты последних прогонов</h2>
-              <p>Готовый ответ агента, без календаря — его можно открыть целиком.</p>
-            </div>
-          </div>
-          {loading && !showcase.length ? <p>Загружаем прогоны с сервера…</p> : null}
-          {!loading && !showcase.length ? <p>Прогонов ещё не было.</p> : null}
-          <div className="wp-showcase-grid">
-            {showcase.map((item) => {
-              const started = parseIso(item.startedAt)
-              const text = clip(item.summary || item.answer || 'Текст результата ещё не пришёл.')
-              return (
-                <button
-                  key={item.runId}
-                  className="wp-showcase-card"
-                  type="button"
-                  onClick={() => onOpenRun(item.workflowId, titleOf(item.workflowId), item.runId)}
-                >
-                  <div className="wp-showcase-meta">
-                    <span className="wp-code">{titleOf(item.workflowId)}</span>
-                    <span className={`wp-pill wp-pill-${item.status === 'ok' ? 'done' : item.status === 'error' ? 'needs_decision' : item.status === 'canceled' || item.status === 'cancelled' ? 'paused' : 'running'}`}>
-                      {statusLabel(item.status)}
-                    </span>
-                  </div>
-                  <strong>{started ? humanWhen(started) : 'без даты'}</strong>
-                  <p>{text}</p>
-                </button>
-              )
-            })}
-          </div>
-        </section>
+      <FilterBar
+        query={query}
+        onQuery={setQuery}
+        queryPlaceholder="Найти агента"
+        chips={[
+          { id: 'q', label: query ? `поиск: ${query}` : '', onClear: () => setQuery('') },
+          {
+            id: 'a',
+            label: agentId ? `агент: ${titleOf(agentId)}` : '',
+            onClear: () => setAgentId('')
+          },
+          {
+            id: 's',
+            label: status ? `статус: ${HISTORY_STATUS_LABELS[status] || status}` : '',
+            onClear: () => setStatus('')
+          }
+        ]}
+        onReset={() => {
+          setQuery('')
+          setAgentId('')
+          setStatus('')
+        }}
+      >
+        <select className="wp-select" value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          <option value="">Агент: все</option>
+          {agentOptions.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.title}
+            </option>
+          ))}
+        </select>
+        <select
+          className="wp-select"
+          value={status}
+          onChange={(e) => setStatus(e.target.value as StatusFilter)}
+        >
+          <option value="">Статус: все</option>
+          <option value="ok">Успешно</option>
+          <option value="error">Ошибка</option>
+          <option value="canceled">Отменён</option>
+          <option value="started">Выполняется</option>
+        </select>
+      </FilterBar>
 
-        <div className="wp-history-cal">
-          <RunCalendar
-            view={view}
-            anchor={anchor}
-            agents={agents}
-            events={board.events as CalendarEvent[]}
-            agentFilter={selectedAgentId}
-            onView={changeView}
-            onShift={shift}
-            onToday={goToday}
-            onAgentFilter={setSelectedAgentId}
-            onEventClick={(workflowId, runId) => onOpenRun(workflowId, titleOf(workflowId), runId)}
-            onOpenGroup={(items) => {
-              if (items[0]) onOpenRun(items[0].workflowId, items[0].title, items[0].runId)
-            }}
-            onScheduleRun={(workflowId, iso) => void onScheduleRun(workflowId, iso)}
-          />
-          {selectedAgent ? (
-            <p className="wp-step-note">Фильтр календаря: {selectedAgent.title}. Сбросьте его в фильтрах календаря.</p>
-          ) : null}
-        </div>
+      <div className="wp-history-layout">
+        <aside className="wp-history-runs">
+          <div className="wp-history-runs-scroll">
+            {loading && !runs.length ? <p className="wp-history-empty">Загружаем прогоны с сервера…</p> : null}
+            {!loading && !visible.length ? (
+              <p className="wp-history-empty">
+                {runs.length ? 'Нет запусков по текущему фильтру.' : 'Прогонов ещё не было.'}
+              </p>
+            ) : null}
+            {groups.map((group) => (
+              <div key={group.key} className="wp-history-day">
+                <div className="wp-history-day-label">{group.label}</div>
+                {group.items.map((item) => {
+                  const key = historyRunStatus(item)
+                  return (
+                    <button
+                      key={item.runId}
+                      className={
+                        selected === item.runId ? 'wp-history-run active' : 'wp-history-run'
+                      }
+                      type="button"
+                      onClick={() => setSelected(item.runId)}
+                    >
+                      <div className="wp-history-run-top">
+                        <span className="wp-history-run-time">{formatRunTime(item.startedAt) || '—'}</span>
+                        <span className={`wp-pill ${statusPillClass(key)}`}>
+                          {HISTORY_STATUS_LABELS[key] || 'Отменён'}
+                        </span>
+                      </div>
+                      <span className="wp-history-run-title" title={titleOf(item.workflowId)}>
+                        {titleOf(item.workflowId)}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
+          </div>
+        </aside>
+
+        <section className="wp-history-result">
+          {!selected ? (
+            <div className="wp-history-result-empty">Выберите запуск слева, чтобы увидеть результат.</div>
+          ) : detailLoading ? (
+            <div className="wp-history-result-empty">Загружаем результат…</div>
+          ) : (
+            <>
+              <div className="wp-history-result-head">
+                <div>
+                  <div className="wp-history-result-kicker">Результат</div>
+                  <h2>{selectedRun ? titleOf(selectedRun.workflowId) : 'Результат'}</h2>
+                  <p>
+                    {selectedRun?.startedAt ? formatRunWhen(selectedRun.startedAt) : ''}
+                    {selectedStatus
+                      ? ` · ${HISTORY_STATUS_LABELS[selectedStatus] || selectedStatus}`
+                      : ''}
+                  </p>
+                </div>
+                {selectedRun ? (
+                  <button
+                    className="btn-ghost"
+                    type="button"
+                    onClick={() => onOpenRun(selectedRun.workflowId, titleOf(selectedRun.workflowId), selectedRun.runId)}
+                  >
+                    Открыть запуск
+                  </button>
+                ) : null}
+              </div>
+              <div className="wp-history-result-body">
+                {cleaned.text ? (
+                  <MarkdownBody text={cleaned.text} />
+                ) : (
+                  <p className="wp-history-empty">{files.length ? 'Текста результата нет.' : cleaned.emptyHint}</p>
+                )}
+                <section className="wf-file-section">
+                  <h4>Файлы агента</h4>
+                  {files.length === 0 ? (
+                    <div className="wf-files-empty">Агент не приложил файлы к этому запуску.</div>
+                  ) : (
+                    <ul className="wf-files">
+                      {files.map((file) => (
+                        <li key={file.id || file.name}>
+                          <button
+                            className="wf-file-card history-file-btn"
+                            type="button"
+                            onClick={() => {
+                              if (file.downloadUrl) void api.download(file.downloadUrl, file.name)
+                            }}
+                          >
+                            <img className="files-type-icon" src={fileTypeIconSrc(file.name)} alt="" />
+                            <div className="wf-file-copy">
+                              <span className="wf-file-name" title={file.name}>
+                                {file.name}
+                              </span>
+                              {formatSize(file.sizeBytes) ? (
+                                <span className="wf-file-meta">{formatSize(file.sizeBytes)}</span>
+                              ) : null}
+                            </div>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              </div>
+            </>
+          )}
+        </section>
       </div>
     </div>
   )

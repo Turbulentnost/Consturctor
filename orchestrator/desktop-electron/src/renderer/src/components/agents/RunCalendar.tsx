@@ -151,7 +151,7 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
       </div>
 
       <div className="cal-legend">
-        {(['ok', 'scheduled', 'missed', 'error', 'canceled', 'paused'] as const).map((key) => (
+        {(['ok', 'scheduled', 'missed', 'error', 'canceled', 'paused', 'recommend_add', 'recommend_cancel'] as const).map((key) => (
           <span key={key} className="cal-legend-item" style={{ color: STATUS_STYLE[key].border }}>
             &#9679;&nbsp;&nbsp;{STATUS_STYLE[key].label}
           </span>
@@ -402,8 +402,8 @@ interface GroupBlockProps {
 function GroupBlock({ events, style, onClick, compact }: GroupBlockProps): React.JSX.Element {
   const { title, subtitle, color } = groupSummary(events)
   const errors = events.some((item) => item.status === 'error')
-  const bg = errors ? '#FDECEC' : '#E8F6F1'
-  const border = errors ? '#D64545' : '#08745F'
+  const bg = errors ? '#E3EAF4' : '#E8F1FB'
+  const border = errors ? '#163A5F' : '#1565C0'
   return (
     <div
       className={compact ? 'cal-group compact' : 'cal-group'}
@@ -466,7 +466,7 @@ function MonthGrid({ anchor, events, onEventClick, onGroupClick }: MonthGridProp
             >
               <div
                 className="cal-month-day"
-                style={{ color: isToday ? '#08745F' : inMonth ? '#101817' : '#B4BDB9' }}
+                style={{ color: isToday ? '#1565C0' : inMonth ? '#10141A' : '#9BB4D0' }}
               >
                 {day.getDate()}
               </div>

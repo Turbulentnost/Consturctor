@@ -649,6 +649,14 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "max_results": _prop("integer", "Максимум событий, до 500"),
             "include_body": _prop("boolean", "Включить body_preview. По умолчанию false"),
         }),
+        ("calendar.show_meetings", "Показать совещания на вкладке Календарь. mark=cancel/red - красным отменить, mark=add/green - зеленым поставить, mark=keep - уже стоит. В Outlook не пишет.", {
+            "meetings": _prop("array", "Список: title, start, end, mark, reason"),
+            "title": _prop("string", "Тема, если одно совещание без meetings[]"),
+            "start": _prop("string", "Начало ISO datetime"),
+            "end": _prop("string", "Конец ISO datetime"),
+            "mark": _prop("string", "keep, cancel/red или add/green"),
+            "reason": _prop("string", "Почему отменить или поставить"),
+        }),
         ("outlook.create_event", "Создать встречи в свободных слотах календаря Outlook. Тема и текст помечаются как ИИ-агент. Нужно подтверждение человека.", {
             "subject": _prop("string", "Тема встречи без префикса ИИ-агент — его добавит инструмент"),
             "start": _prop("string", "Начало ISO datetime, слот должен быть свободным"),
@@ -1018,6 +1026,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     ),
     "outlook.search_mail": ("outlook", "mail_message", "search", [], ["messages"], "count"),
     "outlook.read_calendar": ("outlook", "calendar_event", "list", [], ["events"], "count"),
+    "calendar.show_meetings": (
+        "constructor",
+        "calendar_event",
+        "present",
+        ["meetings"],
+        ["shown"],
+        "count",
+    ),
     "outlook.create_event": (
         "outlook",
         "calendar_event",

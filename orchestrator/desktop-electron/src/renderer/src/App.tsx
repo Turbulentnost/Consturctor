@@ -18,6 +18,7 @@ import {
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
+import { AgentsPage } from './pages/AgentsPage'
 import { ProcessesWorkplace } from './workplace/ProcessesWorkplace'
 import { FilesPage } from './pages/FilesPage'
 import { KpiPage } from './pages/KpiPage'
@@ -97,6 +98,7 @@ export function App(): React.JSX.Element {
   const [user, setUser] = useState<UserProfile | null>(null)
   const [showLogout, setShowLogout] = useState(true)
   const [view, setView] = useState<View>({ kind: 'tab', key: 'today' })
+  const [lastTab, setLastTab] = useState<PageKey>('today')
   const [unread, setUnread] = useState(0)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [toast, setToast] = useState('')
@@ -373,13 +375,7 @@ export function App(): React.JSX.Element {
   }
 
   const activeKey: PageKey | null =
-    view.kind === 'tab'
-      ? view.key
-      : view.kind === 'chat'
-        ? null
-        : view.kind === 'agentrun' || view.kind === 'history' || view.kind === 'schedule'
-          ? 'processes'
-          : 'settings'
+    view.kind === 'tab' ? view.key : view.kind === 'chat' ? null : lastTab
 
   async function openAgentRun(workflowId: string, runId = '', autoStart = false, title = ''): Promise<void> {
     if (!workflowId) {
@@ -464,7 +460,7 @@ export function App(): React.JSX.Element {
           workflowId={view.workflowId}
           title={view.title}
           autoStart={view.autoStart}
-          onBack={() => setView({ kind: 'tab', key: 'processes' })}
+          onBack={() => setView({ kind: 'tab', key: lastTab })}
           onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
         />
       )
@@ -475,7 +471,7 @@ export function App(): React.JSX.Element {
           workflowId={view.workflowId}
           title={view.title}
           initialRunId={view.runId}
-          onBack={() => setView({ kind: 'tab', key: 'processes' })}
+          onBack={() => setView({ kind: 'tab', key: lastTab })}
           onOpenLive={() =>
             setView({ kind: 'agentrun', workflowId: view.workflowId, title: view.title })
           }
@@ -487,8 +483,8 @@ export function App(): React.JSX.Element {
         <AgentSchedulePage
           workflowId={view.workflowId}
           title={view.title}
-          onBack={() => setView({ kind: 'tab', key: 'processes' })}
-          onNext={() => setView({ kind: 'tab', key: 'processes' })}
+          onBack={() => setView({ kind: 'tab', key: lastTab })}
+          onNext={() => setView({ kind: 'tab', key: lastTab })}
         />
       )
     }
@@ -502,6 +498,17 @@ export function App(): React.JSX.Element {
             onFiles={(workflowId, title) => openAgentFiles(workflowId, title)}
             onHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
             onSchedule={(workflowId, title) => setView({ kind: 'schedule', workflowId, title })}
+          />
+        )
+      case 'calendar':
+        return (
+          <AgentsPage
+            variant="calendar"
+            onOpenRun={(workflowId, runId, autoStart) =>
+              void openAgentRun(workflowId, runId, Boolean(autoStart))
+            }
+            onOpenSchedule={(workflowId, title) => setView({ kind: 'schedule', workflowId, title })}
+            onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
           />
         )
       case 'decisions':
@@ -565,7 +572,10 @@ export function App(): React.JSX.Element {
         active={activeKey}
         activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
         currentUserId={user.id || ''}
-        onNavigate={(key) => setView({ kind: 'tab', key })}
+        onNavigate={(key) => {
+          setLastTab(key)
+          setView({ kind: 'tab', key })
+        }}
         onOpenThread={openChat}
         onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
         refreshAt={chatRefreshAt}

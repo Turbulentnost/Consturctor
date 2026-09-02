@@ -7,7 +7,14 @@ import type { ChatMessage, ChatThread, DirectoryUser } from '../api/types'
 import logoUrl from '../assets/logo.png'
 import iconSearch from '../assets/search.png'
 
-export type PageKey = 'today' | 'processes' | 'decisions' | 'metrics' | 'history' | 'settings'
+export type PageKey =
+  | 'today'
+  | 'processes'
+  | 'calendar'
+  | 'decisions'
+  | 'metrics'
+  | 'history'
+  | 'settings'
 
 interface NavItem {
   key: PageKey
@@ -17,6 +24,7 @@ interface NavItem {
 const ITEMS: NavItem[] = [
   { key: 'today', label: 'Сегодня' },
   { key: 'processes', label: 'Процессы' },
+  { key: 'calendar', label: 'Календарь' },
   { key: 'decisions', label: 'Решения' },
   { key: 'metrics', label: 'Показатели' },
   { key: 'history', label: 'История' },
@@ -53,6 +61,15 @@ function NavIcon({ page }: { page: PageKey }): React.JSX.Element {
       <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M5 19V9M12 19V5M19 19v-7" strokeLinecap="round" />
         <path d="M4 19.5h16" strokeLinecap="round" />
+      </svg>
+    )
+  }
+  if (page === 'calendar') {
+    return (
+      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="4" y="5" width="16" height="15" rx="3" />
+        <path d="M8 3v4M16 3v4M4 10h16" strokeLinecap="round" />
+        <path d="M8 14h2M12 14h2M16 14h2M8 17h2M12 17h2" strokeLinecap="round" />
       </svg>
     )
   }

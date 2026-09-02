@@ -46,26 +46,31 @@ function normalizeTitle(value: string): string {
 interface AgentsPageProps {
   onCreateAgent?: () => void
   runtimeOnly?: boolean
+  variant?: 'default' | 'calendar'
   onOpenRun: (workflowId: string, runId: string, autoStart?: boolean) => void
   onFormDraftSuggestion?: (draftId: string, agentId: string) => void
   onContinueDraft?: (draftId: string) => void
   onOpenSchedule?: (workflowId: string, title: string) => void
+  onOpenHistory?: (workflowId: string, title: string) => void
 }
 
 export function AgentsPage({
   onCreateAgent,
   runtimeOnly = false,
+  variant = 'default',
   onOpenRun,
   onFormDraftSuggestion,
   onContinueDraft,
-  onOpenSchedule
+  onOpenSchedule,
+  onOpenHistory
 }: AgentsPageProps): React.JSX.Element {
   const [board, setBoard] = useState<WorkflowBoard>(EMPTY_BOARD)
   const [drafts, setDrafts] = useState<AgentDraft[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [actionMsg, setActionMsg] = useState('')
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('active')
+  const calendarMode = variant === 'calendar'
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(calendarMode ? 'all' : 'active')
   const [search, setSearch] = useState('')
   const [selectedAgentId, setSelectedAgentId] = useState('')
   const [view, setView] = useState<CalendarView>('week')
@@ -280,11 +285,15 @@ export function AgentsPage({
     <div className={runtimeOnly ? 'agents-page agents-page-solo' : 'agents-page'}>
       <div className="agents-header">
         <div>
-          <h1 className="page-title">{runtimeOnly ? 'Процессы' : 'Мои агенты'}</h1>
+          <h1 className="page-title">
+            {calendarMode ? 'Календарь' : runtimeOnly ? 'Процессы' : 'Мои агенты'}
+          </h1>
           <p className="page-subtitle">
-            {runtimeOnly
-              ? 'Те же агенты Constructor: запуск, пауза и карточки. Календарь и результаты прогонов — во вкладке «История».'
-              : 'Управляйте агентами и контролируйте их запуски'}
+            {calendarMode
+              ? 'Все агенты пользователя: слева список и запуск, справа расписание'
+              : runtimeOnly
+                ? 'Те же агенты Constructor: запуск, пауза и карточки.'
+                : 'Управляйте агентами и контролируйте их запуски'}
           </p>
         </div>
         {onCreateAgent && !runtimeOnly ? (
@@ -367,7 +376,7 @@ export function AgentsPage({
 
           <div className="agents-tabs">
             {(
-              (runtimeOnly
+              (runtimeOnly || calendarMode
                 ? [
                     ['active', 'Активные'],
                     ['all', 'Все']
@@ -420,7 +429,9 @@ export function AgentsPage({
                     onSelect={selectAgent}
                     onRun={(id) => onOpenRun(id, '', true)}
                     onOpen={(id) => onOpenRun(id, '')}
-                    onHistory={(id, title) => void onHistory(id, title)}
+                    onHistory={(id, title) =>
+                      onOpenHistory ? onOpenHistory(id, title) : void onHistory(id, title)
+                    }
                     onSchedule={onSchedule}
                     onPause={onPause}
                     onResume={onResume}
@@ -432,7 +443,7 @@ export function AgentsPage({
           </div>
         </div>
 
-        {runtimeOnly ? null : (
+        {runtimeOnly && !calendarMode ? null : (
           <RunCalendar
             view={view}
             anchor={anchor}

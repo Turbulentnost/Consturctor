@@ -3,10 +3,10 @@ import { runLine } from '../../utils/calendar'
 import { CardMenu, type MenuItem } from './CardMenu'
 
 const STATUS: Record<string, { label: string; color: string }> = {
-  active: { label: 'Активен', color: '#08745F' },
-  paused: { label: 'Приостановлен', color: '#8A9692' },
-  needs_attention: { label: 'Требует внимания', color: '#D64545' },
-  draft: { label: 'Черновик', color: '#C47F17' }
+  active: { label: 'Активен', color: '#1565C0' },
+  paused: { label: 'Приостановлен', color: '#6B8AAB' },
+  needs_attention: { label: 'Требует внимания', color: '#0D3B73' },
+  draft: { label: 'Черновик', color: '#4A90D9' }
 }
 
 interface AgentCardProps {

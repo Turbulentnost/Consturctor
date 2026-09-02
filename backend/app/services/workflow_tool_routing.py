@@ -11,7 +11,12 @@ if TYPE_CHECKING:
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
-_OUTLOOK_TOOLS = ["outlook.read_calendar", "outlook.search_mail", "outlook.create_event"]
+_OUTLOOK_TOOLS = [
+    "outlook.read_calendar",
+    "outlook.search_mail",
+    "outlook.create_event",
+    "calendar.show_meetings",
+]
 _OUTLOOK_MAIL_TOOLS = ["imap.list_unread", "imap.search", "imap.fetch_message"]
 _ONEC_TOOLS = [
     "onec.meeting_service_notes",

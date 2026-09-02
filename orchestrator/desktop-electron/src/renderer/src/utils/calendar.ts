@@ -52,20 +52,24 @@ export interface StatusStyle {
 }
 
 export const STATUS_STYLE: Record<string, StatusStyle> = {
-  scheduled: { bg: '#E8F6F1', border: '#08745F', label: 'Запланирован' },
-  running: { bg: '#E8F1FB', border: '#2F6FED', label: 'Выполняется' },
-  ok: { bg: '#F7FBF9', border: '#5B8F7E', label: 'Выполнен' },
-  missed: { bg: '#F7F3EA', border: '#B0893A', label: 'Не запущен' },
-  error: { bg: '#FDECEC', border: '#D64545', label: 'Ошибка' },
-  canceled: { bg: '#F3EEEA', border: '#8B6F64', label: 'Отменён' },
-  cancelled: { bg: '#F3EEEA', border: '#8B6F64', label: 'Отменён' },
-  paused: { bg: '#F2F4F3', border: '#8A9692', label: 'Приостановлен' }
+  scheduled: { bg: '#E8F1FB', border: '#1565C0', label: 'Запланирован' },
+  running: { bg: '#D6E8FA', border: '#0D47A1', label: 'Выполняется' },
+  ok: { bg: '#F3F8FD', border: '#4A90D9', label: 'Выполнен' },
+  missed: { bg: '#EEF3F8', border: '#5B7A99', label: 'Не запущен' },
+  error: { bg: '#E3EAF4', border: '#163A5F', label: 'Ошибка' },
+  canceled: { bg: '#F0F4F8', border: '#6B8AAB', label: 'Отменён' },
+  cancelled: { bg: '#F0F4F8', border: '#6B8AAB', label: 'Отменён' },
+  paused: { bg: '#F4F7FA', border: '#8AA0B8', label: 'Приостановлен' },
+  meeting: { bg: '#E8F1FB', border: '#1565C0', label: 'Совещание' },
+  recommend_add: { bg: '#E8F6EE', border: '#1B7F4A', label: 'Поставить' },
+  recommend_cancel: { bg: '#FDECEC', border: '#D64545', label: 'Отменить' }
 }
 
 export const SOURCE_LABEL: Record<string, string> = {
   schedule: 'по расписанию',
   manual: 'вручную',
-  event: 'по событию'
+  event: 'по событию',
+  meeting: 'совещание'
 }
 
 /** Parse an ISO timestamp (UTC or offset) into a local Date, or null. */
@@ -238,19 +242,19 @@ export function groupSummary(events: CalendarEvent[]): { title: string; subtitle
   const errors = events.filter((item) => item.status === 'error').length
   const running = events.filter((item) => item.status === 'running').length
   const sameAgent = new Set(events.map((item) => item.workflowId)).size === 1
-  if (errors) return { title, subtitle: `${errors} ${errorsWord(errors)}`, color: '#D64545' }
-  if (running) return { title, subtitle: `Выполняются ${running} из ${n}`, color: '#2F6FED' }
+  if (errors) return { title, subtitle: `${errors} ${errorsWord(errors)}`, color: '#163A5F' }
+  if (running) return { title, subtitle: `Выполняются ${running} из ${n}`, color: '#0D47A1' }
   if (events.every((item) => item.status === 'missed'))
-    return { title, subtitle: 'Не запущены', color: '#B0893A' }
+    return { title, subtitle: 'Не запущены', color: '#5B7A99' }
   if (events.every((item) => item.status === 'canceled' || item.status === 'cancelled'))
-    return { title, subtitle: 'Отменены', color: '#8B6F64' }
+    return { title, subtitle: 'Отменены', color: '#6B8AAB' }
   if (events.every((item) => item.status === 'scheduled'))
-    return { title, subtitle: 'Запланировано', color: '#08745F' }
-  if (sameAgent) return { title, subtitle: 'История', color: '#6B7773' }
+    return { title, subtitle: 'Запланировано', color: '#1565C0' }
+  if (sameAgent) return { title, subtitle: 'История', color: '#5B7A99' }
   if (events.every((item) => item.status === 'ok'))
-    return { title, subtitle: 'Выполнено', color: '#5B8F7E' }
+    return { title, subtitle: 'Выполнено', color: '#4A90D9' }
   const fallback = STATUS_STYLE[events[0]?.status] ?? STATUS_STYLE.scheduled
-  return { title, subtitle: fallback.label, color: '#6B7773' }
+  return { title, subtitle: fallback.label, color: '#5B7A99' }
 }
 
 export function timeText(value: string): string {

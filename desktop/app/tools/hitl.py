@@ -42,6 +42,7 @@ _READ_EXACT = frozenset(
         "browser.get_page_html",
         "outlook.search_mail",
         "outlook.read_calendar",
+        "calendar.show_meetings",
         "excel.list_files",
         "excel.read_workbook",
         "onec.odata_catalog",

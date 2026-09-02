@@ -6,6 +6,7 @@ export const TOOL_LABELS: Record<string, string> = {
   'outlook.search_mail': 'Поиск писем Outlook',
   'outlook.read_calendar': 'Календарь Outlook',
   'outlook.create_event': 'Встреча в Outlook',
+  'calendar.show_meetings': 'Совещания на календаре',
   'browser.list_installed_browsers': 'Список браузеров',
   'browser.open_browser': 'Открытие браузера',
   'browser.search_web': 'Поиск в интернете',

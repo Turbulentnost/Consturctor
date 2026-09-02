@@ -646,3 +646,41 @@ def test_stale_started_run_becomes_canceled_on_board() -> None:
     board = get_workflow_board(db, user_id=user_id)
     stuck = next(item for item in board.events if item.run_id == "run-stuck")
     assert stuck.status == "canceled"
+
+
+def test_board_includes_calendar_overlay_marks() -> None:
+    from app.services.calendar_overlay import upsert_overlay
+
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    now = datetime.now(timezone.utc)
+    upsert_overlay(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        run_id="run-ok",
+        meetings=[
+            {
+                "title": "Планерка",
+                "start": (now + timedelta(hours=1)).isoformat(),
+                "mark": "cancel",
+                "reason": "пересекается",
+            },
+            {
+                "title": "Разбор срывов",
+                "start": (now + timedelta(hours=3)).isoformat(),
+                "mark": "add",
+                "reason": "нужен слот",
+            },
+        ],
+    )
+    board = get_workflow_board(
+        db,
+        user_id=user_id,
+        window_from=(now - timedelta(hours=1)).isoformat(),
+        window_to=(now + timedelta(days=1)).isoformat(),
+    )
+    meetings = [item for item in board.events if item.source == "meeting"]
+    marks = {item.title: item.status for item in meetings}
+    assert marks["Планерка"] == "recommend_cancel"
+    assert marks["Разбор срывов"] == "recommend_add"

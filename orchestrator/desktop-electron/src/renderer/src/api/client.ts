@@ -1498,8 +1498,14 @@ export class ApiClient {
       .filter((item) => item && typeof item === 'object')
       .map((item) => ({
         type: String(item.type ?? ''),
-        text: item.text != null ? String(item.text) : undefined,
+        text:
+          item.text != null
+            ? String(item.text)
+            : item.answer != null
+              ? String(item.answer)
+              : undefined,
         message: item.message != null ? String(item.message) : undefined,
+        answer: item.answer != null ? String(item.answer) : undefined,
         tool: item.tool != null ? String(item.tool) : undefined,
         requestId:
           item.requestId != null

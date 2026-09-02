@@ -2577,7 +2577,7 @@ input {
   align-items: flex-start;
 }
 .agent-card.selected {
-  background: #f3faf7;
+  background: #e8f1fb;
   border-color: #1565c0;
 }
 .agent-card-avatar {
@@ -2639,7 +2639,7 @@ input {
   justify-content: center;
 }
 .agent-card-run:disabled {
-  background: #c5ddd6;
+  background: #9bb4d0;
 }
 
 /* ---- Draft card ---- */
@@ -2797,7 +2797,7 @@ input {
   cursor: pointer;
 }
 .cal-btn:hover {
-  background: #f4f7f6;
+  background: #e8f1fb;
 }
 .cal-btn.active {
   background: #1565c0;
@@ -2815,7 +2815,7 @@ input {
   padding: 0 14px;
 }
 .cal-btn.primary:hover {
-  background: #0a8670;
+  background: #0d47a1;
 }
 .cal-legend {
   display: flex;
@@ -2873,7 +2873,7 @@ input {
 .cal-today-col {
   position: absolute;
   top: 0;
-  background: #f3faf7;
+  background: #e8f1fb;
 }
 .cal-col-sep {
   position: absolute;
@@ -2891,7 +2891,7 @@ input {
   left: 0;
   text-align: right;
   font-size: 10px;
-  color: #8a9692;
+  color: #6b8aab;
 }
 .cal-day-head {
   position: absolute;
@@ -2918,10 +2918,10 @@ input {
 }
 .cal-day-count {
   font-size: 9px;
-  color: #8a9692;
+  color: #6b8aab;
 }
 .cal-day-count.today {
-  color: #5b8f7e;
+  color: #1565c0;
 }
 .cal-now-line {
   position: absolute;
@@ -3033,7 +3033,7 @@ input {
   gap: 3px;
 }
 .cal-month-cell.today {
-  background: #f3faf7;
+  background: #e8f1fb;
   border-color: #1565c0;
 }
 .cal-month-day {
@@ -3182,6 +3182,17 @@ input {
 }
 .history-summary {
   color: #6b7380;
+}
+.history-day {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.history-day-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #6b7380;
+  padding: 2px 2px 0;
 }
 
 /* ===== Agent studio / run pages ===== */
@@ -5968,6 +5979,9 @@ button.feed-tool-head:hover {
 .wf-result-card .md-body {
   color: var(--main-text);
   font-size: 14px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .wf-result-card .md-body p,
 .wf-result-card p {
@@ -7198,14 +7212,145 @@ button.feed-tool-head:hover {
 .wp-history {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  height: 100%;
+  overflow: hidden;
+  padding-bottom: 72px;
+}
+.wp-history .wp-search {
+  min-width: 180px;
+  flex: 1;
+}
+.wp-history .wp-select {
+  min-width: 160px;
 }
 .wp-history-layout {
   display: grid;
-  grid-template-columns: minmax(260px, 25%) minmax(0, 1fr);
+  grid-template-columns: minmax(280px, 32%) minmax(0, 1fr);
   gap: 16px;
   align-items: stretch;
-  min-height: 420px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.wp-history-runs,
+.wp-history-result {
+  background: #fff;
+  border: 1px solid var(--card-border);
+  border-radius: 18px;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.wp-history-runs-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+}
+.wp-history-day {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.wp-history-day-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #6b7380;
+  padding: 4px 6px 0;
+}
+.wp-history-run {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: #f7fafd;
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+.wp-history-run:hover,
+.wp-history-run.active {
+  border-color: #1565c0;
+}
+.wp-history-run.active {
+  background: #eef5fc;
+}
+.wp-history-run-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+.wp-history-run-time {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--main-text);
+}
+.wp-history-run-title {
+  font-size: 13px;
+  color: #1565c0;
+  max-width: 100%;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+.wp-history-empty,
+.wp-history-result-empty {
+  margin: 0;
+  padding: 20px 16px;
+  color: var(--content-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.wp-history-result-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--card-border);
+  flex-shrink: 0;
+}
+.wp-history-result-kicker {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0d3b73;
+  margin-bottom: 4px;
+}
+.wp-history-result-head h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.wp-history-result-head p {
+  margin: 6px 0 0;
+  color: var(--content-muted);
+  font-size: 13px;
+}
+.wp-history-result-body {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 16px 18px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.wp-history-result-body .md-body {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .wp-showcase {
   margin: 0;
@@ -7236,26 +7381,50 @@ button.feed-tool-head:hover {
   border: 1px solid var(--card-border);
   border-radius: 14px;
   padding: 12px;
-  min-height: 140px;
+  min-height: 0;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .wp-showcase-card:hover {
   border-color: #1565c0;
 }
 .wp-showcase-card strong {
   font-size: 13px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .wp-showcase-card p {
   margin: 0;
   color: var(--content-muted);
   font-size: 13px;
   line-height: 1.4;
+  max-width: 100%;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .wp-showcase-meta {
   display: flex;
   justify-content: space-between;
   gap: 8px;
   width: 100%;
+  min-width: 0;
   align-items: center;
+}
+.wp-showcase-card .wp-code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wp-showcase-card .wp-pill {
+  flex-shrink: 0;
 }
 .wp-history-cal {
   flex: 1;
@@ -7267,14 +7436,12 @@ button.feed-tool-head:hover {
   flex: 1;
   min-height: 0;
 }
-@media (max-width: 1180px) {
+@media (max-width: 900px) {
   .wp-history-layout {
     grid-template-columns: 1fr;
   }
-  .wp-showcase-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    overflow: visible;
-    flex: 0 0 auto;
+  .wp-history-runs {
+    max-height: 40vh;
   }
 }
 .wp-section-title {
@@ -7485,6 +7652,10 @@ button.feed-tool-head:hover {
 .wp-pill-needs_decision {
   background: #fff3e6;
   color: #c47f17;
+}
+.wp-pill-paused {
+  background: #eef1f4;
+  color: #5b6b7c;
 }
 .wp-stepper-head {
   display: flex;

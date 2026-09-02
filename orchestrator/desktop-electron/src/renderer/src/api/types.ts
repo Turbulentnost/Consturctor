@@ -521,6 +521,7 @@ export interface AgentRunnerEvent {
   type: string
   text?: string
   message?: string
+  answer?: string
   tool?: string
   requestId?: string
   arguments?: Record<string, unknown>

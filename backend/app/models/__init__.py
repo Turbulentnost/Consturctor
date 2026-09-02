@@ -1,5 +1,6 @@
 from app.models.user import AppUser
 from app.models.agent_run import AgentRun
+from app.models.calendar_overlay import CalendarOverlay
 from app.models.notification import Notification
 from app.models.orchestrator import UserOrchestrator
 from app.models.regulation import RegulationDocument, RoleMatchRun
@@ -9,6 +10,7 @@ from app.models.workflow import Workflow, WorkflowFile
 __all__ = [
     "AppUser",
     "AgentRun",
+    "CalendarOverlay",
     "Notification",
     "UserOrchestrator",
     "RegulationDocument",
