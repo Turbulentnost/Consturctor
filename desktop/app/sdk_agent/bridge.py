@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import DESKTOP_ROOT
+from app.sdk_agent.prompt import strip_to_work_result
 from app.sdk_agent.tool_adapter import (
     invoke_sdk_tool,
     is_ask_question,
@@ -303,6 +304,8 @@ class CursorSdkBridge:
                         pass
                     process.kill()
                     collected = "\n\n".join(answer_parts).strip()
+                    if mode == "run":
+                        collected = strip_to_work_result(collected)
                     return {
                         "answer": collected,
                         "status": "ok",
@@ -315,6 +318,8 @@ class CursorSdkBridge:
                 process.kill()
             if final is None:
                 collected = "\n\n".join(answer_parts).strip()
+                if mode == "run":
+                    collected = strip_to_work_result(collected)
                 if collected:
                     return {
                         "answer": collected,
@@ -328,6 +333,8 @@ class CursorSdkBridge:
             answer = str(final.get("answer") or "") or "\n\n".join(answer_parts).strip()
             if status == "error":
                 raise CursorSdkError(answer or "Cursor SDK run failed")
+            if mode == "run":
+                answer = strip_to_work_result(answer)
             return {
                 "answer": answer,
                 "status": status or "ok",

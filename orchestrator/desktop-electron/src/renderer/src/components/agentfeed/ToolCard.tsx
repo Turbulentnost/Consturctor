@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { MiniCalendar, type MiniMeeting } from './MiniCalendar'
 import type { ToolItem } from './types'
 
 interface ToolCardProps {
@@ -13,8 +14,41 @@ function pretty(value: Record<string, unknown>): string {
   }
 }
 
+function meetingsFromResult(result: Record<string, unknown> | null): MiniMeeting[] {
+  const raw = result?.meetings
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    .map((item) => ({
+      title: String(item.title ?? ''),
+      start: String(item.start ?? ''),
+      end: String(item.end ?? ''),
+      mark: String(item.mark ?? 'keep'),
+      reason: String(item.reason ?? '')
+    }))
+    .filter((item) => item.title && item.start)
+}
+
 export function ToolCard({ item }: ToolCardProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
+  const meetings = item.tool === 'calendar.show_meetings' ? meetingsFromResult(item.result) : []
+  if (meetings.length > 0) {
+    const status = item.error ? item.summary || 'Ошибка' : ''
+    return (
+      <div className={['feed-tool', 'done', item.error ? 'error' : ''].filter(Boolean).join(' ')}>
+        <div className="feed-tool-head static">
+          <span className={`feed-tool-dot${item.error ? ' error' : ' done'}`} />
+          <span className="feed-tool-copy">
+            <span className="feed-tool-title">{item.title}</span>
+            {status && <span className="feed-tool-status error">{status}</span>}
+          </span>
+        </div>
+        <div className="feed-tool-body">
+          <MiniCalendar meetings={meetings} />
+        </div>
+      </div>
+    )
+  }
   const hasResult = Boolean(item.result && Object.keys(item.result).length > 0)
   const classes = ['feed-tool']
   if (item.done) classes.push('done')

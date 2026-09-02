@@ -650,7 +650,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "include_body": _prop("boolean", "Включить body_preview. По умолчанию false"),
             "people": _prop("array", "ФИО или почта сотрудников, чьи календари прочитать"),
         }),
-        ("calendar.show_meetings", "Показать совещания на вкладке Календарь. mark=cancel/red - красным отменить, mark=add/green - зеленым поставить, mark=keep - уже стоит. В Outlook не пишет.", {
+        ("calendar.show_meetings", "Показать итоговый план совещаний отдельной мини-формой календаря в ответе агента (не на общей вкладке Календарь запусков). mark=cancel/red - красным отменить, mark=add/green - зелёным поставить, mark=keep - уже стоит. Инструмент только визуализирует план и НИЧЕГО не двигает и не пишет в Outlook. Конфликты со встречами решает сам агент: сверь календари участников и их загрузку через outlook.read_calendar, реши, что перенести, и отрази это здесь mark. Перенос делается outlook.create_event, а не этим инструментом.", {
             "meetings": _prop("array", "Список: title, start, end, mark, reason"),
             "title": _prop("string", "Тема, если одно совещание без meetings[]"),
             "start": _prop("string", "Начало ISO datetime"),

@@ -168,13 +168,23 @@ export function MarkdownBody({ text }: { text: string }): React.JSX.Element {
       key += 1
       continue
     }
+    const para: string[] = [stripped]
+    i += 1
+    while (i < lines.length) {
+      const next = lines[i].trim()
+      if (!next || FENCE.test(next)) break
+      if (HEADING.test(next) || BOLD_HEAD.test(next)) break
+      if (UL.test(next) || OL.test(next)) break
+      if (isTableStart(lines, i)) break
+      para.push(next)
+      i += 1
+    }
     blocks.push(
       <p key={`p-${key}`} className="md-p">
-        {inline(stripped)}
+        {inline(para.join(' '))}
       </p>
     )
     key += 1
-    i += 1
   }
 
   return <div className="md-body">{blocks}</div>

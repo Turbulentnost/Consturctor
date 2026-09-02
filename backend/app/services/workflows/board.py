@@ -14,7 +14,6 @@ from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.schemas.workflow import BoardAgent, BoardStats, CalendarEvent, WorkflowBoard
 from app.services.agent_runs import effective_run_status, fail_stale_started_runs
-from app.services.calendar_overlay import list_overlays
 from app.services.triggers.service import is_workflow_paused, workflow_is_deleted
 
 
@@ -549,33 +548,10 @@ def get_workflow_board(
             stamp = _parse_dt(item.start_at)
             if stamp is not None:
                 upcoming.append(stamp)
-    for overlay in list_overlays(db, user_id=user_id, workflow_id=wanted):
-        if wanted and overlay.workflow_id and overlay.workflow_id != wanted:
-            continue
-        wf = wf_by_id.get(overlay.workflow_id)
-        meetings = overlay.meetings if isinstance(overlay.meetings, list) else []
-        for index, item in enumerate(meetings):
-            if not isinstance(item, dict):
-                continue
-            stamp = _parse_dt(str(item.get("start") or ""))
-            if stamp is None or stamp < start or stamp > end:
-                continue
-            mark = str(item.get("mark") or "meeting")
-            reason = _one_line(str(item.get("reason") or ""), 70)
-            events.append(
-                CalendarEvent(
-                    id=f"meet:{overlay.id}:{index}",
-                    workflow_id=overlay.workflow_id or (wf.id if wf else ""),
-                    title=str(item.get("title") or "Совещание"),
-                    subtitle=reason,
-                    start_at=_stamp_iso(stamp),
-                    status=mark,
-                    source="meeting",
-                    is_future=stamp >= now,
-                    run_id=overlay.run_id or "",
-                    trigger_id="",
-                )
-            )
+    # Meetings from calendar.show_meetings are NOT mixed into the run calendar.
+    # They belong to the agent's own answer as a mini calendar form (rendered in
+    # the run feed from the tool result), so the shared "Календарь запусков"
+    # stays a board of agent runs only.
 
     upcoming.sort()
     stats = BoardStats(
