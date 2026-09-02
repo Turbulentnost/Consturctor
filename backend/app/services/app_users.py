@@ -84,11 +84,10 @@ def upsert_app_user(
             logger.info("Created app user id=%s", user_id)
         else:
             user.fio = fio
-            # Keep app department as source of truth after first login.
+            # Keep app department and position as source of truth after first login.
             if not (user.department or "").strip() and department:
                 user.department = department
-            # Position always refreshes from ERP when available.
-            if position:
+            if not (user.position or "").strip() and position:
                 user.position = position
             logger.info("Updated app user id=%s", user_id)
         db.commit()

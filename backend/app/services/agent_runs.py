@@ -337,10 +337,18 @@ def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
         if kind in {"", "run", "done"}:
             continue
         item: dict[str, Any] = {"type": kind}
-        for key in ("text", "message", "tool", "title"):
+        for key in ("text", "message", "tool", "title", "request_id", "requestId", "error", "status"):
             value = raw.get(key)
             if isinstance(value, str) and value.strip():
                 item[key] = value.strip()[:8000]
+        if raw.get("ok") is not None:
+            item["ok"] = bool(raw.get("ok"))
+        if raw.get("skipped") is not None:
+            item["skipped"] = bool(raw.get("skipped"))
+        if raw.get("confirm_only") is not None:
+            item["confirm_only"] = bool(raw.get("confirm_only"))
+        elif raw.get("confirmOnly") is not None:
+            item["confirm_only"] = bool(raw.get("confirmOnly"))
         arguments = raw.get("arguments")
         if isinstance(arguments, dict):
             item["arguments"] = _clip_json(arguments)

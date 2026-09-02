@@ -523,11 +523,13 @@ export interface AgentRunnerEvent {
   message?: string
   answer?: string
   tool?: string
+  title?: string
   requestId?: string
   arguments?: Record<string, unknown>
   result?: unknown
   ok?: boolean
   skipped?: boolean
+  confirmOnly?: boolean
   error?: string
   status?: string
   agentId?: string

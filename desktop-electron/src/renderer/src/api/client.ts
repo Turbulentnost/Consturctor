@@ -86,8 +86,30 @@ function parsePlatformFile(item: Record<string, unknown>): WorkflowFileItem {
   }
 }
 
+function normalizeFioKey(value: string): string {
+  return (value || '').toLowerCase().replace(/[ьъ\u0301]/g, '')
+}
+
+const PROFILE_OVERRIDES: Array<{ needle: string; position: string; department: string }> = [
+  {
+    needle: 'мангасарян',
+    position: 'Помощник Председателя совета директоров',
+    department: 'Управление делами'
+  }
+]
+
+function applyProfileOverrides(user: UserProfile): UserProfile {
+  const key = normalizeFioKey(user.fio)
+  for (const item of PROFILE_OVERRIDES) {
+    if (key.includes(item.needle)) {
+      return { ...user, position: item.position, department: item.department || user.department }
+    }
+  }
+  return user
+}
+
 function parseUser(data: Record<string, unknown>): UserProfile {
-  return {
+  return applyProfileOverrides({
     id: String(data.id ?? ''),
     fio: String(data.fio ?? ''),
     department: String(data.department ?? ''),
@@ -98,7 +120,7 @@ function parseUser(data: Record<string, unknown>): UserProfile {
     activityStatus:
       (data.activityStatus as string) ?? (data.activity_status as string) ?? 'online',
     isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false
-  }
+  })
 }
 
 function parseCreationSession(data: Record<string, unknown>): RegulationCreationSession {

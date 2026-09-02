@@ -88,8 +88,30 @@ function parsePlatformFile(item: Record<string, unknown>): WorkflowFileItem {
   }
 }
 
+function normalizeFioKey(value: string): string {
+  return (value || '').toLowerCase().replace(/[ьъ\u0301]/g, '')
+}
+
+const PROFILE_OVERRIDES: Array<{ needle: string; position: string; department: string }> = [
+  {
+    needle: 'мангасарян',
+    position: 'Помощник Председателя совета директоров',
+    department: 'Управление делами'
+  }
+]
+
+function applyProfileOverrides(user: UserProfile): UserProfile {
+  const key = normalizeFioKey(user.fio)
+  for (const item of PROFILE_OVERRIDES) {
+    if (key.includes(item.needle)) {
+      return { ...user, position: item.position, department: item.department || user.department }
+    }
+  }
+  return user
+}
+
 function parseUser(data: Record<string, unknown>): UserProfile {
-  return {
+  return applyProfileOverrides({
     id: String(data.id ?? ''),
     fio: String(data.fio ?? ''),
     department: String(data.department ?? ''),
@@ -100,7 +122,7 @@ function parseUser(data: Record<string, unknown>): UserProfile {
     activityStatus:
       (data.activityStatus as string) ?? (data.activity_status as string) ?? 'online',
     isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false
-  }
+  })
 }
 
 function parseCreationSession(data: Record<string, unknown>): RegulationCreationSession {
@@ -1507,6 +1529,7 @@ export class ApiClient {
         message: item.message != null ? String(item.message) : undefined,
         answer: item.answer != null ? String(item.answer) : undefined,
         tool: item.tool != null ? String(item.tool) : undefined,
+        title: item.title != null ? String(item.title) : undefined,
         requestId:
           item.requestId != null
             ? String(item.requestId)
@@ -1517,6 +1540,10 @@ export class ApiClient {
         result: item.result,
         ok: item.ok == null ? undefined : Boolean(item.ok),
         skipped: item.skipped == null ? undefined : Boolean(item.skipped),
+        confirmOnly:
+          item.confirm_only == null && item.confirmOnly == null
+            ? undefined
+            : Boolean(item.confirm_only ?? item.confirmOnly),
         error: item.error != null ? String(item.error) : undefined,
         status: item.status != null ? String(item.status) : undefined
       }))

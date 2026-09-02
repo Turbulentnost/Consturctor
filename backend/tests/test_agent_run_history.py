@@ -37,6 +37,30 @@ def test_slim_run_events_keeps_tool_and_work_result() -> None:
     assert stored[1]["notifications"] == ["руководителю"]
 
 
+def test_slim_run_events_keeps_hitl_fields() -> None:
+    stored = slim_run_events(
+        [
+            {
+                "type": "tool_request",
+                "text": "Нужно подтверждение: outlook.send_mail",
+                "tool": "outlook.send_mail",
+                "title": "Письмо",
+                "request_id": "req-1",
+                "confirm_only": True,
+                "ok": True,
+                "skipped": False,
+                "status": "pending",
+            }
+        ]
+    )
+    assert stored[0]["request_id"] == "req-1"
+    assert stored[0]["confirm_only"] is True
+    assert stored[0]["ok"] is True
+    assert stored[0]["skipped"] is False
+    assert stored[0]["status"] == "pending"
+    assert stored[0]["title"] == "Письмо"
+
+
 def test_slim_run_events_keeps_decision_and_plan() -> None:
     stored = slim_run_events(
         [
