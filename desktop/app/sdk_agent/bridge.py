@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -464,6 +465,8 @@ class CursorSdkBridge:
 
         done = threading.Event()
         box: dict[str, Any] = {"result": None, "error": None}
+        tool_limit = 90.0
+        started_at = time.monotonic()
 
         def work() -> None:
             try:
@@ -530,6 +533,17 @@ class CursorSdkBridge:
                         "requestId": request_id,
                         "ok": True,
                         "result": self.skipped_tool_result(tool),
+                    }
+                )
+                self._clear_active(request_id)
+                return
+            if time.monotonic() - started_at >= tool_limit:
+                send_result(
+                    {
+                        "type": "tool_result",
+                        "requestId": request_id,
+                        "ok": False,
+                        "error": f"Инструмент {tool} не ответил за {int(tool_limit)} с",
                     }
                 )
                 self._clear_active(request_id)
