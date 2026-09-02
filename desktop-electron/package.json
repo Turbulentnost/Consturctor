@@ -1,6 +1,6 @@
 {
   "name": "constructor-desktop-electron",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "description": "Constructor desktop (Electron rewrite of the PySide6 client)",
   "author": "Constructor",
   "license": "UNLICENSED",
@@ -13,7 +13,7 @@
     "pack": "python scripts/build_installer.py --dir",
     "dist": "python scripts/build_installer.py",
     "dist:electron": "electron-vite build && electron-builder --publish never",
-    "dist:publish": "python scripts/build_installer.py --publish",
+    "dist:publish": "python scripts/build_installer.py --with-orchestrator --publish",
     "publish:github": "python scripts/build_installer.py --publish-only"
   },
   "repository": {
@@ -51,7 +51,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Constructor"
+      "shortcutName": "Constructor",
+      "include": "installer.nsh"
     },
     "protocols": [
       {

@@ -16,6 +16,7 @@ type ToolSpec = {
   name: string;
   description?: string;
   inputSchema?: Record<string, JsonValue>;
+  timeoutSeconds?: number;
 };
 
 type ModelParam = {
@@ -300,7 +301,7 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
         });
         let payload: ToolResultCommand;
         try {
-          payload = await waitForToolResult(requestId);
+          payload = await waitForToolResult(requestId, toolResultTimeoutMs({ ...spec, name }, args || {}));
         } catch (error) {
           const message = safeError(error) || `Tool ${name} timed out`;
           emit({ type: "tool_result", requestId, tool: name, ok: false, error: message });
@@ -479,7 +480,22 @@ function modelView(result: JsonValue): JsonValue {
   };
 }
 
-function waitForToolResult(requestId: string, timeoutMs = 90 * 1000): Promise<ToolResultCommand> {
+const DEFAULT_TOOL_TIMEOUT_MS = 90 * 1000;
+const TOOL_RESULT_BUFFER_MS = 20 * 1000;
+
+function toolResultTimeoutMs(spec: ToolSpec, args: Record<string, JsonValue>): number {
+  const fromSpec = Number(spec.timeoutSeconds);
+  let seconds = Number.isFinite(fromSpec) && fromSpec > 0 ? fromSpec : 90;
+  if (normalizeToolName(spec.name).toLowerCase() === "agent.wait") {
+    const requested = Number(args.seconds);
+    if (Number.isFinite(requested) && requested >= 0) {
+      seconds = Math.min(requested + 60, 3660);
+    }
+  }
+  return Math.max(DEFAULT_TOOL_TIMEOUT_MS, Math.round(seconds * 1000) + TOOL_RESULT_BUFFER_MS);
+}
+
+function waitForToolResult(requestId: string, timeoutMs = DEFAULT_TOOL_TIMEOUT_MS): Promise<ToolResultCommand> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingTools.delete(requestId);

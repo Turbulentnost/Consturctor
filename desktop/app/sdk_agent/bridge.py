@@ -18,6 +18,7 @@ from app.sdk_agent.tool_adapter import (
     invoke_sdk_tool,
     is_ask_question,
     sdk_tool_specs,
+    tool_timeout_seconds,
 )
 from app.tools import ToolHostError
 
@@ -472,7 +473,7 @@ class CursorSdkBridge:
 
         done = threading.Event()
         box: dict[str, Any] = {"result": None, "error": None}
-        tool_limit = 90.0
+        tool_limit = float(tool_timeout_seconds(tool, args))
         started_at = time.monotonic()
 
         def work() -> None:

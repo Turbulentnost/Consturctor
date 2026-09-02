@@ -251,7 +251,7 @@ def finish_agent_run(
     row = db.get(AgentRun, run_id)
     if row is None:
         return
-    row.answer = (answer or "").strip()[:4000]
+    row.answer = (answer or "").strip()[:32000]
     row.status = effective_run_status(_normalize_run_status(status), row.answer, in_flight=False)
     row.finished_at = datetime.now(timezone.utc)
     incoming = slim_run_events(events or [])

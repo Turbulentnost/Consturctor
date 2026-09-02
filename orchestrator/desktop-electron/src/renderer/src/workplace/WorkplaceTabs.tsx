@@ -236,6 +236,21 @@ export function SettingsTab({
         {error ? <p>{error}</p> : null}
       </section>
       <section className="wp-card">
+        <h2>Обновления</h2>
+        <p>Одно обновление ставит и Constructor, и Orchestrator.</p>
+        <div className="wp-actions">
+          <button
+            className="btn-primary"
+            type="button"
+            onClick={() => {
+              void window.api.installUpdate?.()
+            }}
+          >
+            Проверить и установить
+          </button>
+        </div>
+      </section>
+      <section className="wp-card">
         <h2>Файлы агентов</h2>
         <p>Файлы агентов, KPI и прогоны те же. Создать нового агента можно только в Constructor.</p>
         <div className="wp-actions">

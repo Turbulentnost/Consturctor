@@ -6,9 +6,14 @@ from app.tools import ToolHostError, invoke_tool
 from app.tools.catalog import list_desktop_tools
 
 ASK_QUESTION_NAME = "askQuestion"
+DEFAULT_TOOL_TIMEOUT_SECONDS = 90
+ASK_QUESTION_TIMEOUT_SECONDS = 15 * 60
+WAIT_TOOL_NAME = "agent.wait"
+WAIT_TIMEOUT_BUFFER_SECONDS = 60
 
 ASK_QUESTION_SPEC: dict[str, Any] = {
     "name": ASK_QUESTION_NAME,
+    "timeoutSeconds": ASK_QUESTION_TIMEOUT_SECONDS,
     "description": (
         "Задать пользователю один уточняющий вопрос про пробел в логике "
         "будущего агента и дождаться ответа. Спрашивай то, чего нет в материалах, "
@@ -68,14 +73,48 @@ def sdk_tool_specs() -> list[dict[str, Any]]:
         if not isinstance(schema, dict):
             schema = {"type": "object", "properties": {}}
         description = str(item.get("description") or name).strip()
-        specs.append(
-            {
-                "name": name,
-                "description": description,
-                "inputSchema": schema,
-            }
-        )
+        spec: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "inputSchema": schema,
+        }
+        try:
+            timeout = int(item.get("timeoutSeconds") or 0)
+        except (TypeError, ValueError):
+            timeout = 0
+        if timeout > 0:
+            spec["timeoutSeconds"] = timeout
+        specs.append(spec)
     return specs
+
+
+def tool_timeout_seconds(name: str, arguments: dict[str, Any] | None = None) -> int:
+    """How long the SDK bridge may wait for a desktop tool before aborting."""
+    folded = (name or "").strip()
+    if folded == WAIT_TOOL_NAME:
+        requested = 0.0
+        if isinstance(arguments, dict):
+            try:
+                requested = float(arguments.get("seconds") or 0)
+            except (TypeError, ValueError):
+                requested = 0.0
+        if requested < 0:
+            requested = 0.0
+        from app.tools.ac.wait_tool import MAX_WAIT_SECONDS
+
+        return int(min(requested + WAIT_TIMEOUT_BUFFER_SECONDS, MAX_WAIT_SECONDS + WAIT_TIMEOUT_BUFFER_SECONDS))
+    if is_ask_question(folded):
+        return ASK_QUESTION_TIMEOUT_SECONDS
+    limit = DEFAULT_TOOL_TIMEOUT_SECONDS
+    try:
+        from app.tools.ac.dispatch import get_registry
+
+        registry = get_registry()
+        if registry.has_tool(folded):
+            limit = max(limit, int(registry.get(folded).definition.timeout_seconds))
+    except Exception:
+        pass
+    return int(limit)
 
 
 def invoke_sdk_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:

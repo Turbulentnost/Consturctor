@@ -1222,16 +1222,21 @@ export class ApiClient {
 
   // ---------- Workflows / board ----------
   async listWorkflows(): Promise<WorkflowListItem[]> {
-    const data = await this.request<{ items?: Record<string, unknown>[] }>(
-      'GET',
-      '/api/v1/workflows'
-    )
-    return (data.items ?? []).map((item) => ({
-      id: String(item.id ?? ''),
-      title: String(item.title ?? ''),
-      phase: String(item.phase ?? ''),
-      updatedAt: (item.updatedAt as string) ?? (item.updated_at as string) ?? ''
-    }))
+    const data = await this.request<unknown>('GET', '/api/v1/workflows')
+    const rows = Array.isArray(data)
+      ? data
+      : data && typeof data === 'object' && Array.isArray((data as { items?: unknown[] }).items)
+        ? (data as { items: unknown[] }).items
+        : []
+    return rows
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({
+        id: String(item.id ?? ''),
+        title: String(item.title ?? ''),
+        phase: String(item.phase ?? ''),
+        updatedAt: String(item.updatedAt ?? item.updated_at ?? '')
+      }))
+      .filter((item) => item.id)
   }
 
   async getWorkflowBoard(params?: {

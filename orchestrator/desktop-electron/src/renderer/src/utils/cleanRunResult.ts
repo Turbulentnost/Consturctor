@@ -118,19 +118,33 @@ function stripJunkParagraphs(text: string): string {
   return kept.join('\n\n').trim()
 }
 
+function stripResultHeading(text: string): string {
+  return text.replace(/^\s*(?:#{1,3}\s*)?(?:RESULT|Результат|Итог)\s*:?\s*/i, '').trim()
+}
+
+function preferLongerResult(named: string, full: string): string {
+  const short = (named || '').trim()
+  const long = (full || '').trim()
+  if (!short) return long
+  if (!long) return short
+  if (short.length < 40 && long.length > short.length * 2) return long
+  if (long.includes(short) && long.length > short.length + 20) return long
+  return short
+}
+
 function cleanText(raw: string): string {
   const stripped = stripToolFences(raw)
   if (!stripped || isPlaceholderResult(stripped)) return ''
-  let body = ''
+  const full = stripResultHeading(stripJunkParagraphs(stripped))
+  let named = ''
   for (const heading of NAMED_HEADINGS) {
     const section = extractNamedSection(stripped, heading)
     if (section && !isPlaceholderResult(section) && !isMostlyJunk(section)) {
-      body = section
+      named = stripResultHeading(section)
       break
     }
   }
-  if (!body) body = stripJunkParagraphs(stripped)
-  body = body.replace(/^\s*(?:#{1,3}\s*)?(?:RESULT|Результат|Итог)\s*:?\s*/i, '').trim()
+  let body = preferLongerResult(named, full)
   if (!body || isPlaceholderResult(body)) return ''
   if (body.length < 8 && isMostlyJunk(stripped)) return ''
   return presentAgentText(body).trim()
@@ -202,7 +216,7 @@ export function cleanRunResult(input: {
   const rawAnswer = (input.answer || input.summary || '').trim()
   const fromEvent = fromEvents(events)
   const fromAnswer = cleanText(rawAnswer)
-  const text = fromEvent || fromAnswer
+  const text = preferLongerResult(fromEvent, fromAnswer) || fromEvent || fromAnswer
   if (!text) return { text: '', emptyHint: emptyHint(input.status || '', rawAnswer) }
   return { text, emptyHint: '' }
 }

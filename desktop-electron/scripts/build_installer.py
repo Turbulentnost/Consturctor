@@ -249,16 +249,25 @@ def filtered_requirements() -> Path:
 
 
 def enable_embedded_python_site(python_dir: Path) -> None:
+    desktop_entry = "../desktop"
     for pth in python_dir.glob("python*._pth"):
         text = pth.read_text(encoding="utf-8", errors="replace")
         text = text.replace("#import site", "import site")
-        pth.write_text(text, encoding="utf-8")
+        lines = [line.rstrip("\r") for line in text.splitlines()]
+        normalized = [line.strip().replace("\\", "/") for line in lines]
+        if desktop_entry not in normalized:
+            if "import site" in lines:
+                lines.insert(lines.index("import site"), desktop_entry)
+            else:
+                lines.append(desktop_entry)
+        pth.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def prepare_python(skip: bool) -> None:
     python_dir = RUNTIME_ROOT / "python"
     python_exe = python_dir / "python.exe"
     if skip and python_exe.is_file():
+        enable_embedded_python_site(python_dir)
         return
     version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     archive = CACHE_ROOT / f"python-{version}-embed-amd64.zip"
@@ -355,6 +364,13 @@ def installer_artifacts() -> list[Path]:
     setup = release_dir / "Constructor-Setup.exe"
     if not setup.is_file():
         raise RuntimeError(f"installer not found: {setup}")
+    for extra in (
+        ELECTRON_ROOT / "build" / "companion" / "Orchestrator-Setup.exe",
+        REPO_ROOT / "orchestrator" / "desktop-electron" / "release" / "Orchestrator-Setup.exe",
+    ):
+        if extra.is_file() and extra not in found:
+            found.append(extra)
+            break
     return found
 
 
@@ -391,8 +407,15 @@ def publish_github_release() -> None:
             "--repo",
             repo,
             "--title",
-            f"Constructor {version}",
-            "--generate-notes",
+            f"Constructor {version} + Orchestrator",
+            "--notes",
+            (
+                f"Constructor {version} and Orchestrator {version}. "
+                "Constructor-Setup.exe installs both programs. "
+                "An update from either app installs both Constructor and Orchestrator. "
+                "Fixes Outlook calendar COM worker on packaged installs "
+                "(embedded Python could not import package app)."
+            ),
         ],
         cwd=REPO_ROOT,
         env=env,
@@ -400,7 +423,57 @@ def publish_github_release() -> None:
     print(f"created GitHub release {tag}", flush=True)
 
 
+def build_orchestrator(args: argparse.Namespace) -> Path:
+    script = REPO_ROOT / "orchestrator" / "desktop-electron" / "scripts" / "build_installer.py"
+    if not script.is_file():
+        raise RuntimeError(f"orchestrator installer script not found: {script}")
+    cmd = [sys.executable, str(script)]
+    if args.backend_url:
+        cmd.extend(["--backend-url", args.backend_url])
+    if args.skip_python:
+        cmd.append("--skip-python")
+    if args.skip_node:
+        cmd.append("--skip-node")
+    if args.download_node:
+        cmd.append("--download-node")
+    if args.skip_sdk_install:
+        cmd.append("--skip-sdk-install")
+    if args.skip_browsers:
+        cmd.append("--skip-browsers")
+    run(cmd, cwd=script.parent, env=build_env())
+    setup = REPO_ROOT / "orchestrator" / "desktop-electron" / "release" / "Orchestrator-Setup.exe"
+    if not setup.is_file():
+        raise RuntimeError(f"orchestrator installer not found: {setup}")
+    dest_dir = ELECTRON_ROOT / "build" / "companion"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / "Orchestrator-Setup.exe"
+    shutil.copy2(setup, dest)
+    print(f"orchestrator companion: {dest}", flush=True)
+    return dest
+
+
+def write_installer_nsh(has_companion: bool) -> None:
+    path = ELECTRON_ROOT / "build" / "installer.nsh"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if has_companion:
+        text = (
+            "!macro customInstall\n"
+            "  InitPluginsDir\n"
+            '  File "/oname=$PLUGINSDIR\\Orchestrator-Setup.exe" '
+            '"${BUILD_RESOURCES_DIR}\\companion\\Orchestrator-Setup.exe"\n'
+            "  ClearErrors\n"
+            '  ExecWait \'"$PLUGINSDIR\\Orchestrator-Setup.exe" /S --updated --force-run\'\n'
+            "!macroend\n"
+        )
+    else:
+        text = "!macro customInstall\n!macroend\n"
+    path.write_text(text, encoding="ascii")
+    print(f"nsis include companion={has_companion}", flush=True)
+
+
 def build_electron(dir_only: bool) -> None:
+    companion = ELECTRON_ROOT / "build" / "companion" / "Orchestrator-Setup.exe"
+    write_installer_nsh(companion.is_file())
     env = build_env()
     run([tool("npm", env=env), "run", "build"], cwd=ELECTRON_ROOT, env=env)
     cmd = [tool("npx", env=env), "electron-builder", "--publish", "never"]
@@ -418,6 +491,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--download-node", action="store_true", help="Use nodejs.org zip instead of local Node")
     parser.add_argument("--skip-sdk-install", action="store_true", help="Do not run npm install in desktop/sdk-agent")
     parser.add_argument("--skip-browsers", action="store_true", help="Do not copy Playwright browser cache")
+    parser.add_argument(
+        "--with-orchestrator",
+        action="store_true",
+        help="Build Orchestrator first and bundle it into the Constructor installer",
+    )
     parser.add_argument("--publish", action="store_true", help="Upload the built installer to GitHub Releases")
     parser.add_argument(
         "--publish-only",
@@ -431,6 +509,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     prepare_env(args.backend_url)
+    if args.with_orchestrator:
+        build_orchestrator(args)
     prepare_sdk_agent(args.skip_sdk_install)
     prepare_node(args.skip_node, download_node=args.download_node)
     prepare_python(args.skip_python)

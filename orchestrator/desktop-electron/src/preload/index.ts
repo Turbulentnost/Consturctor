@@ -126,6 +126,40 @@ const api = {
     return () => {
       ipcRenderer.removeListener('chat:event', listener)
     }
+  },
+  getUpdateStatus: (): Promise<{
+    state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+    currentVersion: string
+    availableVersion: string
+    percent: number
+    error: string
+  }> => ipcRenderer.invoke('updater:getStatus'),
+  installUpdate: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('updater:install'),
+  onUpdateStatus: (
+    callback: (payload: {
+      state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+      currentVersion: string
+      availableVersion: string
+      percent: number
+      error: string
+    }) => void
+  ): (() => void) => {
+    const listener = (
+      _event: unknown,
+      payload: {
+        state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+        currentVersion: string
+        availableVersion: string
+        percent: number
+        error: string
+      }
+    ): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('updater:status', listener)
+    return () => {
+      ipcRenderer.removeListener('updater:status', listener)
+    }
   }
 }
 

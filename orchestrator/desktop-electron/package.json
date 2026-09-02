@@ -1,6 +1,6 @@
 {
   "name": "orchestrator-desktop-electron",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "Orchestrator desktop — slim Constructor workplace per TZ 1.3",
   "author": "Orchestrator",
   "license": "UNLICENSED",
@@ -30,7 +30,7 @@
       "target": [
         "nsis"
       ],
-      "artifactName": "Constructor-Setup.${ext}"
+      "artifactName": "Orchestrator-Setup.${ext}"
     },
     "extraResources": [
       {

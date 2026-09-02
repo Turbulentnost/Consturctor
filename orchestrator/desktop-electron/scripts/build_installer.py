@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 ELECTRON_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = ELECTRON_ROOT.parent
+REPO_ROOT = ELECTRON_ROOT.parents[1]
 DESKTOP_ROOT = REPO_ROOT / "desktop"
 RUNTIME_ROOT = ELECTRON_ROOT / ".installer-runtime"
 CACHE_ROOT = RUNTIME_ROOT / ".cache"
@@ -248,16 +248,25 @@ def filtered_requirements() -> Path:
 
 
 def enable_embedded_python_site(python_dir: Path) -> None:
+    desktop_entry = "../desktop"
     for pth in python_dir.glob("python*._pth"):
         text = pth.read_text(encoding="utf-8", errors="replace")
         text = text.replace("#import site", "import site")
-        pth.write_text(text, encoding="utf-8")
+        lines = [line.rstrip("\r") for line in text.splitlines()]
+        normalized = [line.strip().replace("\\", "/") for line in lines]
+        if desktop_entry not in normalized:
+            if "import site" in lines:
+                lines.insert(lines.index("import site"), desktop_entry)
+            else:
+                lines.append(desktop_entry)
+        pth.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def prepare_python(skip: bool) -> None:
     python_dir = RUNTIME_ROOT / "python"
     python_exe = python_dir / "python.exe"
     if skip and python_exe.is_file():
+        enable_embedded_python_site(python_dir)
         return
     version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     archive = CACHE_ROOT / f"python-{version}-embed-amd64.zip"

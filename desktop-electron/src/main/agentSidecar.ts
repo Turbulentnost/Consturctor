@@ -73,11 +73,14 @@ export class AgentSidecar {
     let desktopRoot = envDesktop || ''
     if (!desktopRoot) {
       for (const base of candidates) {
-        const guess = resolve(base, '..', 'desktop')
-        if (existsSync(join(guess, 'app', 'config.py'))) {
-          desktopRoot = guess
-          break
+        const guesses = [resolve(base, 'desktop'), resolve(base, '..', 'desktop')]
+        for (const guess of guesses) {
+          if (existsSync(join(guess, 'app', 'config.py'))) {
+            desktopRoot = guess
+            break
+          }
         }
+        if (desktopRoot) break
       }
     }
     if (!desktopRoot) {
@@ -101,10 +104,12 @@ export class AgentSidecar {
     const nodeDir = existsSync(node) ? dirname(node) : ''
     const pathParts = [nodeDir, process.env.PATH || process.env.Path || ''].filter(Boolean)
     const browsersPath = join(desktopRoot, 'ms-playwright')
+    const pythonPathParts = [desktopRoot, process.env.PYTHONPATH].filter(Boolean)
     return {
       ...process.env,
       PYTHONUNBUFFERED: '1',
       PYTHONIOENCODING: 'utf-8',
+      PYTHONPATH: pythonPathParts.join(delimiter),
       CONSTRUCTOR_SIDECAR: sidecar,
       CONSTRUCTOR_DESKTOP_ROOT: desktopRoot,
       CONSTRUCTOR_PYTHON: this.pythonCommand(),

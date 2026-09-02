@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowBoard, WorkflowFileItem } from '../api/types'
+import type {
+  AgentRunHistoryItem,
+  AgentRunnerEvent,
+  WorkflowBoard,
+  WorkflowFileItem
+} from '../api/types'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { cleanRunResult } from '../utils/cleanRunResult'
@@ -30,6 +35,7 @@ export function HistoryWorkplace({
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
 }): React.JSX.Element {
   const [board, setBoard] = useState<WorkflowBoard>(EMPTY_BOARD)
+  const [titles, setTitles] = useState<Record<string, string>>({})
   const [runs, setRuns] = useState<AgentRunHistoryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -49,16 +55,36 @@ export function HistoryWorkplace({
   )
 
   function titleOf(workflowId: string): string {
-    return agents.find((item) => item.id === workflowId)?.title || 'ИИ-агент'
+    return (
+      titles[workflowId] ||
+      agents.find((item) => item.id === workflowId)?.title ||
+      'ИИ-агент'
+    )
   }
 
   async function reload(): Promise<void> {
     try {
-      const nextBoard = await api.getWorkflowBoard()
+      const [nextBoard, workflows] = await Promise.all([
+        api.getWorkflowBoard(),
+        api.listWorkflows().catch(() => [])
+      ])
       setBoard(nextBoard)
-      const workflowAgents = nextBoard.agents.filter((item) => item.kind === 'workflow')
+      const nextTitles: Record<string, string> = {}
+      for (const agent of nextBoard.agents) {
+        if (agent.id && (agent.kind === 'workflow' || agent.kind === 'draft')) {
+          nextTitles[agent.id] = agent.title || 'ИИ-агент'
+        }
+      }
+      for (const item of workflows) {
+        if (!item.id) continue
+        if ((item.phase || '').toLowerCase() === 'deleted') continue
+        if (!nextTitles[item.id]) nextTitles[item.id] = item.title || 'ИИ-агент'
+      }
+      setTitles(nextTitles)
       const lists = await Promise.all(
-        workflowAgents.map((agent) => api.listAgentRuns(agent.id).catch(() => [] as AgentRunHistoryItem[]))
+        Object.keys(nextTitles).map((id) =>
+          api.listAgentRuns(id).catch(() => [] as AgentRunHistoryItem[])
+        )
       )
       const items = lists
         .flat()
@@ -91,7 +117,7 @@ export function HistoryWorkplace({
       options.push({ id: run.workflowId, title: titleOf(run.workflowId) })
     }
     return options.sort((left, right) => left.title.localeCompare(right.title, 'ru'))
-  }, [runs, agents])
+  }, [runs, agents, titles])
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -106,7 +132,7 @@ export function HistoryWorkplace({
       const title = titleOf(item.workflowId).toLowerCase()
       return title.includes(q)
     })
-  }, [runs, query, agentId, status, agents])
+  }, [runs, query, agentId, status, agents, titles])
 
   const groups = useMemo(() => groupRunsByDay(visible), [visible])
 

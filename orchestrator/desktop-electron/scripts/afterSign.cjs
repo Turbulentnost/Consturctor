@@ -2,7 +2,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const electronRoot = path.resolve(__dirname, '..')
-const repoRoot = path.resolve(electronRoot, '..')
+const repoRoot = path.resolve(electronRoot, '..', '..')
 const runtimeRoot = path.join(electronRoot, '.installer-runtime')
 
 function removeIfExists(target) {

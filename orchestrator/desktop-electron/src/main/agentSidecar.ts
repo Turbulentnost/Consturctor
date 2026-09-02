@@ -184,6 +184,7 @@ export class AgentSidecar {
     const pathParts = [nodeDir, process.env.PATH || process.env.Path || ''].filter(Boolean)
     const browsersPath = join(desktopRoot, 'ms-playwright')
     const cursorEnv = cursorEnvFromDesktop(desktopRoot)
+    const pythonPathParts = [desktopRoot, process.env.PYTHONPATH].filter(Boolean)
     const localAppData = process.env.LOCALAPPDATA || process.env.APPDATA || ''
     const orchestratorWorkspacesRoot = localAppData
       ? join(localAppData, 'Orchestrator', 'agent_workspaces')
@@ -198,6 +199,7 @@ export class AgentSidecar {
       ...cursorEnv,
       PYTHONUNBUFFERED: '1',
       PYTHONIOENCODING: 'utf-8',
+      PYTHONPATH: pythonPathParts.join(delimiter),
       CONSTRUCTOR_SIDECAR: sidecar,
       CONSTRUCTOR_DESKTOP_ROOT: desktopRoot,
       CONSTRUCTOR_INSTANCE: process.env.CONSTRUCTOR_INSTANCE || 'orchestrator',

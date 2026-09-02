@@ -38,7 +38,8 @@ interface FoundUpdate {
 
 const CHECK_INTERVAL_MS = 30 * 60 * 1000
 const FIRST_CHECK_MS = 4_000
-const USER_AGENT = 'ConstructorDesktop'
+const USER_AGENT = 'OrchestratorDesktop'
+const INSTALLER_ORDER = ['constructor-setup.exe', 'orchestrator-setup.exe']
 
 let options: UpdaterOptions = { owner: '', repo: '' }
 let timer: NodeJS.Timeout | null = null
@@ -110,8 +111,6 @@ function authHeaders(): Record<string, string> {
   if (options.token) headers.Authorization = `Bearer ${options.token}`
   return headers
 }
-
-const INSTALLER_ORDER = ['constructor-setup.exe', 'orchestrator-setup.exe']
 
 export function pickInstallers(assets: GithubAsset[]): GithubAsset[] {
   const exes = assets.filter((asset) => {

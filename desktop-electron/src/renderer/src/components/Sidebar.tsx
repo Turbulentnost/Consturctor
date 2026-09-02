@@ -296,12 +296,12 @@ export function Sidebar({
           ) : (
             <button
               className="sidebar-update-btn"
-              title={update.error || 'Установить обновление'}
+              title={update.error || 'Установить Constructor и Orchestrator'}
               onClick={() => {
                 void window.api.installUpdate?.()
               }}
             >
-              {!collapsed && <span>Установить обновление</span>}
+              {!collapsed && <span>Обновить обе программы</span>}
               {collapsed && <span className="sidebar-update-mark">!</span>}
             </button>
           )}

@@ -125,6 +125,24 @@ function sameThread(peer: ChatThread, threadId: string, senderId = ''): boolean 
   return false
 }
 
+type UpdateState = 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+
+interface UpdateStatus {
+  state: UpdateState
+  currentVersion: string
+  availableVersion: string
+  percent: number
+  error: string
+}
+
+const IDLE_UPDATE: UpdateStatus = {
+  state: 'idle',
+  currentVersion: '',
+  availableVersion: '',
+  percent: 0,
+  error: ''
+}
+
 interface SidebarProps {
   active: PageKey | null
   activeThreadId?: string
@@ -148,6 +166,21 @@ export function Sidebar({
   const [fio, setFio] = useState('')
   const [peers, setPeers] = useState<ChatThread[]>([])
   const [peerAvatars, setPeerAvatars] = useState<Record<string, string>>({})
+  const [update, setUpdate] = useState<UpdateStatus>(IDLE_UPDATE)
+
+  useEffect(() => {
+    let alive = true
+    void window.api.getUpdateStatus?.().then((payload) => {
+      if (alive && payload) setUpdate(payload)
+    })
+    const unsubscribe = window.api.onUpdateStatus?.((payload) => {
+      setUpdate(payload)
+    })
+    return () => {
+      alive = false
+      unsubscribe?.()
+    }
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -267,6 +300,51 @@ export function Sidebar({
           )
         })}
       </nav>
+
+      {(update.state === 'available' ||
+        update.state === 'downloading' ||
+        update.state === 'installing') && (
+        <div className="sidebar-update">
+          {update.state === 'downloading' || update.state === 'installing' ? (
+            <div
+              className={
+                update.percent > 0
+                  ? 'sidebar-update-progress'
+                  : 'sidebar-update-progress indeterminate'
+              }
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={update.percent}
+            >
+              <i
+                className="sidebar-update-progress-bar"
+                style={update.percent > 0 ? { width: `${update.percent}%` } : undefined}
+              />
+              {!collapsed && (
+                <span className="sidebar-update-progress-label">
+                  {update.state === 'installing'
+                    ? 'Установка...'
+                    : update.percent > 0
+                      ? `${update.percent}%`
+                      : 'Загрузка...'}
+                </span>
+              )}
+            </div>
+          ) : (
+            <button
+              className="sidebar-update-btn"
+              title={update.error || 'Установить обновление Constructor и Orchestrator'}
+              onClick={() => {
+                void window.api.installUpdate?.()
+              }}
+            >
+              {!collapsed && <span>Обновить обе программы</span>}
+              {collapsed && <span className="sidebar-update-mark">!</span>}
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="sidebar-divider" />
 

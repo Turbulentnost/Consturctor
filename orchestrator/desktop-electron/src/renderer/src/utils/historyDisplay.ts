@@ -17,10 +17,12 @@ export function isHistoryResult(text: string): boolean {
 
 export function historyRunStatus(run: { status: string; answer?: string; summary?: string }): string {
   const status = (run.status || '').trim().toLowerCase()
-  const result = (run.answer || run.summary || '').trim()
   if (status === 'started' || status === 'running') return status
-  if (status === 'error' && isHistoryResult(result)) return 'error'
-  if (status === 'ok' && isHistoryResult(result)) return 'ok'
+  if (status === 'ok') return 'ok'
+  if (status === 'error') return 'error'
+  if (status === 'canceled' || status === 'cancelled') return 'canceled'
+  const result = (run.answer || run.summary || '').trim()
+  if (isHistoryResult(result)) return 'ok'
   return 'canceled'
 }
 

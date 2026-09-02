@@ -56,4 +56,8 @@ desktop-electron/.installer-runtime/
 desktop-electron/out/
 desktop-electron/release/
 desktop-electron/dist/
+orchestrator/desktop-electron/.installer-runtime/
+orchestrator/desktop-electron/out/
+orchestrator/desktop-electron/release/
+orchestrator/desktop-electron/dist/
 *.tsbuildinfo

@@ -167,11 +167,12 @@ def _desktop_root() -> Path:
 
 def _worker_env() -> dict[str, str]:
     env = dict(os.environ)
-    if getattr(sys, "frozen", False):
-        return env
     desktop = str(_desktop_root())
+    env["CONSTRUCTOR_DESKTOP_ROOT"] = desktop
     current = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = desktop if not current else f"{desktop}{os.pathsep}{current}"
+    parts = [part for part in current.split(os.pathsep) if part]
+    if desktop not in parts:
+        env["PYTHONPATH"] = desktop if not current else f"{desktop}{os.pathsep}{current}"
     return env
 
 
@@ -193,6 +194,7 @@ def _build_worker_command(module_name: str) -> list[str]:
         sys.executable,
         module_name,
         frozen=bool(getattr(sys, "frozen", False)),
+        desktop=_desktop_root(),
     )
 
 
