@@ -37,11 +37,13 @@ const liveToasts = new Map<string, Notification>()
 const handledActivations = new Set<string>()
 let activationInstalled = false
 
+export const APP_PROTOCOL = 'constructor'
+
 export function setToastHooks(hooks: ToastHooks): void {
   toastHooks = hooks
 }
 
-function focusAppWindows(): void {
+export function focusAppWindows(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue
     if (win.isMinimized()) win.restore()
@@ -99,40 +101,107 @@ function escapeXml(value: string): string {
     .replace(/'/g, '&apos;')
 }
 
-function parseHitlActivation(raw: string): { kind: 'open' | 'accept' | 'reject'; payload: ToastPayload } | null {
-  const text = (raw || '').trim()
-  if (!text.startsWith('constructor-hitl:')) return null
-  const rest = text.slice('constructor-hitl:'.length)
-  const q = rest.indexOf('?')
-  const kind = (q >= 0 ? rest.slice(0, q) : rest).trim()
-  const query = q >= 0 ? rest.slice(q + 1) : ''
-  const params = new URLSearchParams(query)
-  const payload: ToastPayload = {
+function payloadFromParams(params: URLSearchParams): ToastPayload {
+  return {
     title: '',
     workflowId: params.get('wid') || '',
     runId: params.get('rid') || '',
+    draftId: params.get('did') || '',
     requestId: params.get('qid') || ''
   }
-  if (kind === 'accept' || kind === 'reject' || kind === 'open') {
-    return { kind, payload }
+}
+
+function toastLaunchUrl(
+  payload: ToastPayload,
+  action: 'open' | 'accept' | 'reject' = 'open'
+): string {
+  const params = new URLSearchParams()
+  if (payload.workflowId) params.set('wid', payload.workflowId)
+  if (payload.runId) params.set('rid', payload.runId)
+  if (payload.draftId) params.set('did', payload.draftId)
+  if (payload.requestId) params.set('qid', payload.requestId)
+  const query = params.toString()
+  if (action === 'accept' || action === 'reject') {
+    return `${APP_PROTOCOL}://hitl/${action}${query ? `?${query}` : ''}`
   }
-  return null
+  return `${APP_PROTOCOL}://open${query ? `?${query}` : ''}`
+}
+
+function parseHitlActivation(raw: string): { kind: 'open' | 'accept' | 'reject'; payload: ToastPayload } | null {
+  const text = (raw || '').trim()
+  if (text.startsWith('constructor-hitl:')) {
+    const rest = text.slice('constructor-hitl:'.length)
+    const q = rest.indexOf('?')
+    const kind = (q >= 0 ? rest.slice(0, q) : rest).trim()
+    const query = q >= 0 ? rest.slice(q + 1) : ''
+    const payload = payloadFromParams(new URLSearchParams(query))
+    if (kind === 'accept' || kind === 'reject' || kind === 'open') {
+      return { kind, payload }
+    }
+    return null
+  }
+  if (!text.startsWith(`${APP_PROTOCOL}:`)) return null
+  try {
+    const url = new URL(text)
+    const host = (url.hostname || '').toLowerCase()
+    const path = url.pathname.replace(/^\/+/, '').toLowerCase()
+    const payload = payloadFromParams(url.searchParams)
+    if (host === 'hitl' && (path === 'accept' || path === 'reject')) {
+      return { kind: path, payload }
+    }
+    return { kind: 'open', payload }
+  } catch {
+    return null
+  }
+}
+
+export function findConstructorUrl(argv: string[]): string {
+  return (argv || []).find((item) => String(item || '').startsWith(`${APP_PROTOCOL}:`)) || ''
+}
+
+export function consumeToastActivation(raw: string): boolean {
+  const parsed = parseHitlActivation(raw)
+  if (!parsed) {
+    if ((raw || '').trim()) return false
+    focusAppWindows()
+    return true
+  }
+  if (parsed.kind === 'accept') {
+    decideHitl(parsed.payload, true)
+    return true
+  }
+  if (parsed.kind === 'reject') {
+    decideHitl(parsed.payload, false)
+    return true
+  }
+  openFromToast(parsed.payload)
+  return true
+}
+
+function openToastXml(title: string, body: string, payload: ToastPayload): string {
+  const launch = escapeXml(toastLaunchUrl(payload))
+  return (
+    `<toast launch="${launch}" activationType="protocol" duration="long">` +
+    `<visual><binding template="ToastGeneric">` +
+    `<text>${escapeXml(title)}</text>` +
+    (body ? `<text>${escapeXml(body)}</text>` : '') +
+    `</binding></visual></toast>`
+  )
 }
 
 function hitlToastXml(title: string, body: string, payload: ToastPayload): string {
-  const qid = escapeXml(payload.requestId || '')
-  const wid = escapeXml(payload.workflowId || '')
-  const rid = escapeXml(payload.runId || '')
+  const launch = escapeXml(toastLaunchUrl(payload))
+  const accept = escapeXml(toastLaunchUrl(payload, 'accept'))
+  const reject = escapeXml(toastLaunchUrl(payload, 'reject'))
   return (
-    `<toast launch="constructor-hitl:open?wid=${wid}&amp;rid=${rid}&amp;qid=${qid}" ` +
-    `activationType="foreground" duration="long" scenario="reminder">` +
+    `<toast launch="${launch}" activationType="protocol" duration="long" scenario="reminder">` +
     `<visual><binding template="ToastGeneric">` +
     `<text>${escapeXml(title)}</text>` +
     `<text>${escapeXml(body)}</text>` +
     `</binding></visual>` +
     `<actions>` +
-    `<action content="Принять" arguments="constructor-hitl:accept?qid=${qid}&amp;wid=${wid}&amp;rid=${rid}" activationType="foreground"/>` +
-    `<action content="Отклонить" arguments="constructor-hitl:reject?qid=${qid}&amp;wid=${wid}&amp;rid=${rid}" activationType="foreground"/>` +
+    `<action content="Принять" arguments="${accept}" activationType="protocol"/>` +
+    `<action content="Отклонить" arguments="${reject}" activationType="protocol"/>` +
     `</actions></toast>`
   )
 }
@@ -151,17 +220,7 @@ export function installToastActivation(): void {
   if (typeof handle !== 'function') return
   activationInstalled = true
   handle((details) => {
-    const parsed = parseHitlActivation(String(details?.arguments || ''))
-    if (!parsed) return
-    if (parsed.kind === 'accept') {
-      decideHitl(parsed.payload, true)
-      return
-    }
-    if (parsed.kind === 'reject') {
-      decideHitl(parsed.payload, false)
-      return
-    }
-    openFromToast(parsed.payload)
+    consumeToastActivation(String(details?.arguments || ''))
   })
 }
 
@@ -189,9 +248,11 @@ export function showToast(payload: ToastPayload): void {
       { type: 'button', text: 'Принять' },
       { type: 'button', text: 'Отклонить' }
     ]
-    if (process.platform === 'win32') {
-      options.toastXml = hitlToastXml(title, body, payload)
-    }
+  }
+  if (process.platform === 'win32') {
+    options.toastXml = requestId
+      ? hitlToastXml(title, body, payload)
+      : openToastXml(title, body, payload)
   }
   const toast = new Notification(options)
   if (requestId) liveToasts.set(requestId, toast)

@@ -4,6 +4,9 @@ import { join, basename, dirname, extname } from 'node:path'
 const DESKTOP_APP_NAME = 'Orchestrator'
 app.setName(DESKTOP_APP_NAME)
 app.setPath('userData', join(app.getPath('appData'), DESKTOP_APP_NAME))
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.orchestrator.desktop')
+}
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { NotificationGuard, showToast, type ToastPayload } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
@@ -92,6 +95,21 @@ function loadConfig(): { backendUrl: string; testUser: boolean } {
 }
 
 const CONFIG = loadConfig()
+
+function resolveAppIcon(): string {
+  const candidates = [
+    join(process.resourcesPath, 'icon.ico'),
+    join(__dirname, '../../build/icon.ico'),
+    join(process.cwd(), 'build/icon.ico'),
+    join(process.cwd(), 'src/renderer/src/assets/logo.png')
+  ]
+  for (const item of candidates) {
+    if (existsSync(item)) return item
+  }
+  return ''
+}
+
+const APP_ICON = resolveAppIcon()
 
 function broadcastAgentEvent(message: AgentSidecarMessage): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -499,12 +517,21 @@ function createWindow(): void {
     autoHideMenuBar: true,
     backgroundColor: '#0D3B73',
     title: 'Orchestrator',
+    icon: APP_ICON || undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true
     }
   })
+
+  if (process.platform === 'win32' && APP_ICON) {
+    mainWindow.setAppDetails({
+      appId: 'com.orchestrator.desktop',
+      appIconPath: APP_ICON,
+      relaunchDisplayName: 'Orchestrator'
+    })
+  }
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
   mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {

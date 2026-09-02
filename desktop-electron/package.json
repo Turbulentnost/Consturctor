@@ -32,11 +32,18 @@
     ],
     "afterSign": "scripts/afterSign.cjs",
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis"
       ],
       "artifactName": "Constructor-Setup.${ext}"
     },
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
     "nsis": {
       "oneClick": false,
       "perMachine": false,
@@ -45,7 +52,13 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Constructor"
-    }
+    },
+    "protocols": [
+      {
+        "name": "Constructor",
+        "schemes": ["constructor"]
+      }
+    ]
   },
   "devDependencies": {
     "@types/node": "^26.3.0",

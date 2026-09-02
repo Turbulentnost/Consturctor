@@ -68,6 +68,35 @@ type View =
   | { kind: 'loading'; title: string; subtitle: string }
   | { kind: 'soon'; title: string; note: string }
 
+function decodeJwtPart(part: string): string {
+  const normalized = part.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
+  try {
+    return decodeURIComponent(
+      atob(padded)
+        .split('')
+        .map((ch) => `%${ch.charCodeAt(0).toString(16).padStart(2, '0')}`)
+        .join('')
+    )
+  } catch {
+    return ''
+  }
+}
+
+function isConstructorToken(token: string): boolean {
+  const parts = token.split('.')
+  if (parts.length < 2) return false
+  const payloadRaw = decodeJwtPart(parts[1] || '')
+  if (!payloadRaw) return false
+  try {
+    const payload = JSON.parse(payloadRaw) as Record<string, unknown>
+    const cid = String(payload.cid || payload.client || '').trim().toLowerCase()
+    return !cid || cid === 'constructor'
+  } catch {
+    return false
+  }
+}
+
 function fioKey(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ')
 }
@@ -163,13 +192,17 @@ export function App(): React.JSX.Element {
         setShowLogout(!config.testUser)
         const stored = loadSession()
         if (stored?.accessToken) {
-          api.setToken(stored.accessToken)
-          try {
-            const profile = await api.me(8_000)
-            setUser(profile)
-          } catch {
+          if (!isConstructorToken(stored.accessToken)) {
             clearSession(true)
-            api.setToken(null)
+          } else {
+            api.setToken(stored.accessToken)
+            try {
+              const profile = await api.me(8_000)
+              setUser(profile)
+            } catch {
+              clearSession(true)
+              api.setToken(null)
+            }
           }
         }
       } catch {

@@ -288,15 +288,6 @@ input {
   object-fit: cover;
   border-radius: 14px;
 }
-.sidebar-peer-avatar img,
-.fio-option-avatar img,
-.avatar-img,
-.messenger-head-avatar img,
-.messenger-side-avatar img,
-.regchat-avatar img,
-.sidebar-logo {
-  filter: grayscale(1) sepia(1) hue-rotate(175deg) saturate(3.2) brightness(1.06);
-}
 .sidebar-peer-meta {
   flex: 1;
   min-width: 0;

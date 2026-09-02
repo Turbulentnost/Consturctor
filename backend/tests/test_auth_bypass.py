@@ -56,6 +56,17 @@ def test_bypass_login_skips_erp_sql(monkeypatch):
     assert result.user.id == "USER-1"
     assert result.user.fio == "Ильченко Екатерина Александровна"
     assert result.access_token
+    from app.core.jwt import validate_token
+
+    auth = validate_token(result.access_token)
+    assert auth.client == "constructor"
+
+    orch = auth_service._login_via_bypass(
+        "Ильченко Екатерина Александровна",
+        "temp-pass",
+        "orchestrator",
+    )
+    assert validate_token(orch.access_token).client == "orchestrator"
 
 
 def test_bypass_login_rejects_other_user(monkeypatch):

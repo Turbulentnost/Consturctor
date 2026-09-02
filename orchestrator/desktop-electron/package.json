@@ -26,11 +26,18 @@
     ],
     "afterSign": "scripts/afterSign.cjs",
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis"
       ],
       "artifactName": "Constructor-Setup.${ext}"
     },
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
     "nsis": {
       "oneClick": false,
       "perMachine": false,

@@ -18,7 +18,7 @@ from app.config import settings
 from app.core.jwt import create_access_token
 from app.schemas.auth import LoginResponse, UserDirectoryItem, UserOut
 from app.services import app_users
-from app.services.sessions import new_session_id, replace_session
+from app.services.sessions import DEFAULT_CLIENT, new_session_id, normalize_client, replace_session
 from tools.onec.password import verify_password
 
 logger = logging.getLogger(__name__)
@@ -76,19 +76,21 @@ def _bypass_session_identity(fio: str) -> tuple[str, str, str, str]:
     return user_id, canon, "", ""
 
 
-def _login_via_bypass(fio: str, password: str) -> LoginResponse:
+def _login_via_bypass(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginResponse:
     if not _bypass_credentials_ok(fio, password):
         raise AuthError("Неверный логин или пароль", status_code=401)
     user_id, canon_fio, department, position = _bypass_session_identity(fio)
     position = _apply_position_override(canon_fio, position)
     session_id = new_session_id()
-    replace_session(user_id, session_id)
+    client = normalize_client(client)
+    replace_session(user_id, session_id, client)
     token = create_access_token(
         user_id=user_id,
         fio=canon_fio,
         department=department,
         position=position,
         session_id=session_id,
+        client=client,
     )
     user_out = _to_user_out(
         user_id=user_id,
@@ -124,14 +126,15 @@ class AuthError(Exception):
         self.status_code = status_code
 
 
-async def login(fio: str, password: str) -> LoginResponse:
+async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginResponse:
     fio = fio.strip()
     if not fio or not password:
         raise AuthError("Неверный логин или пароль", status_code=401)
+    client = normalize_client(client)
 
-    _trace(f"Auth login start fio={fio}")
+    _trace(f"Auth login start fio={fio} client={client}")
     if _erp_sql_bypass_enabled():
-        return await asyncio.to_thread(_login_via_bypass, fio, password)
+        return await asyncio.to_thread(_login_via_bypass, fio, password, client)
 
     try:
         erp_user = await asyncio.to_thread(find_user_by_fio, fio)
@@ -159,13 +162,14 @@ async def login(fio: str, password: str) -> LoginResponse:
     position = _apply_position_override(erp_user.fio, position)
 
     session_id = new_session_id()
-    replace_session(erp_user.id, session_id)
+    replace_session(erp_user.id, session_id, client)
     token = create_access_token(
         user_id=erp_user.id,
         fio=erp_user.fio,
         department=department or "",
         position=position or "",
         session_id=session_id,
+        client=client,
     )
     user_out = await asyncio.to_thread(
         _to_user_out,

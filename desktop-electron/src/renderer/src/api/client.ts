@@ -1008,7 +1008,7 @@ export class ApiClient {
   // ---------- Auth ----------
   async login(fio: string, password: string): Promise<LoginResult> {
     const data = await this.request<Record<string, unknown>>('POST', '/api/v1/auth/login', {
-      body: { fio, password }
+      body: { fio, password, client: 'constructor' }
     })
     const token = String(data.access_token ?? '')
     this.token = token

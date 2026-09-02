@@ -2,6 +2,10 @@ import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } f
 import { join, basename, dirname, extname } from 'node:path'
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import {
+  APP_PROTOCOL,
+  consumeToastActivation,
+  findConstructorUrl,
+  focusAppWindows,
   installToastActivation,
   NotificationGuard,
   setToastHooks,
@@ -121,8 +125,82 @@ function loadConfig(): {
 
 const CONFIG = loadConfig()
 
+function resolveAppIcon(): string {
+  const candidates = [
+    join(process.resourcesPath, 'icon.ico'),
+    join(__dirname, '../../build/icon.ico'),
+    join(process.cwd(), 'build/icon.ico'),
+    join(process.cwd(), 'src/renderer/src/assets/logo.png')
+  ]
+  for (const item of candidates) {
+    if (existsSync(item)) return item
+  }
+  return ''
+}
+
+const APP_ICON = resolveAppIcon()
+
+const APP_USER_MODEL_ID = 'com.constructor.desktop'
+
+app.setName('Constructor')
 if (process.platform === 'win32') {
-  app.setAppUserModelId('com.constructor.desktop')
+  app.setAppUserModelId(APP_USER_MODEL_ID)
+}
+
+function quoteArg(value: string): string {
+  if (!/[\s"]/.test(value)) return value
+  return `"${value.replace(/"/g, '\\"')}"`
+}
+
+function unpackagedAppEntry(): string {
+  return __filename
+}
+
+function relaunchCommandLine(): string {
+  if (app.isPackaged) return quoteArg(process.execPath)
+  return `${quoteArg(process.execPath)} ${quoteArg(unpackagedAppEntry())}`
+}
+
+function registerWindowsLaunchers(): void {
+  const entry = unpackagedAppEntry()
+  if (app.isPackaged) {
+    app.setAsDefaultProtocolClient(APP_PROTOCOL)
+  } else {
+    app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, [entry])
+  }
+  if (process.platform !== 'win32' || app.isPackaged) return
+  const programs = join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs')
+  try {
+    mkdirSync(programs, { recursive: true })
+    const shortcutPath = join(programs, 'Constructor Dev.lnk')
+    const wrote = shell.writeShortcutLink(shortcutPath, 'replace', {
+      target: process.execPath,
+      args: quoteArg(entry),
+      cwd: process.cwd(),
+      appUserModelId: APP_USER_MODEL_ID,
+      description: 'Constructor',
+      icon: APP_ICON || process.execPath,
+      iconIndex: 0
+    })
+    if (!wrote) {
+      console.error('Failed to write Constructor Dev toast shortcut')
+    }
+  } catch (err) {
+    console.error(
+      `Failed to register toast shortcut: ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+}
+
+const isPrimaryInstance = app.requestSingleInstanceLock()
+if (!isPrimaryInstance) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const url = findConstructorUrl(argv)
+    if (url) consumeToastActivation(url)
+    else focusAppWindows()
+  })
 }
 
 function broadcastAgentEvent(message: AgentSidecarMessage): void {
@@ -611,12 +689,22 @@ function createWindow(): void {
     autoHideMenuBar: true,
     backgroundColor: '#06483D',
     title: 'Constructor',
+    icon: APP_ICON || undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true
     }
   })
+
+  if (process.platform === 'win32') {
+    mainWindow.setAppDetails({
+      appId: APP_USER_MODEL_ID,
+      appIconPath: APP_ICON || undefined,
+      relaunchCommand: relaunchCommandLine(),
+      relaunchDisplayName: 'Constructor'
+    })
+  }
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
   mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
@@ -637,6 +725,8 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  if (!isPrimaryInstance) return
+  registerWindowsLaunchers()
   installToastActivation()
   console.log(`Constructor backend: ${CONFIG.backendUrl}`)
   ipcMain.handle('app:getConfig', () => ({
@@ -700,6 +790,8 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+  const launchUrl = findConstructorUrl(process.argv)
+  if (launchUrl) consumeToastActivation(launchUrl)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
