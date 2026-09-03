@@ -22,6 +22,9 @@ import { StatTile } from '../components/agents/StatTile'
 import { AgentCard } from '../components/agents/AgentCard'
 import { DraftCard } from '../components/agents/DraftCard'
 import { RunCalendar } from '../components/agents/RunCalendar'
+import { MeetingsCalendar } from '../components/agents/MeetingsCalendar'
+import { comCredentials, savedFio } from '../store/session'
+import { ensureOutlookMeetings, type MeetingEvent } from '../utils/outlookMeetings'
 import statAgents from '../assets/stat-agents.png'
 import statActive from '../assets/stat-active.png'
 import statRuns from '../assets/stat-runs.png'
@@ -75,6 +78,11 @@ export function AgentsPage({
   const [selectedAgentId, setSelectedAgentId] = useState('')
   const [view, setView] = useState<CalendarView>('week')
   const [anchor, setAnchor] = useState<Date>(new Date())
+  const [calTab, setCalTab] = useState<'runs' | 'meetings'>('runs')
+  const [meetings, setMeetings] = useState<MeetingEvent[]>([])
+  const [meetingsLoading, setMeetingsLoading] = useState(false)
+  const [meetingsError, setMeetingsError] = useState('')
+  const meetingsBusyRef = useRef(false)
   const [funnelOpen, setFunnelOpen] = useState(false)
   const [history, setHistory] = useState<{ title: string; items: AgentRunHistoryItem[] } | null>(null)
   const funnelRef = useRef<HTMLDivElement>(null)
@@ -162,6 +170,41 @@ export function AgentsPage({
     setAnchor(next)
     void reload(view, next)
   }
+
+  async function loadMeetings(force: boolean): Promise<void> {
+    if (meetingsBusyRef.current) return
+    meetingsBusyRef.current = true
+    setMeetingsLoading(true)
+    if (force) setMeetingsError('')
+    try {
+      const owner = (comCredentials().login || savedFio() || '').trim()
+      const res = await ensureOutlookMeetings(view, anchor, { force, owner })
+      setMeetings(res.meetings)
+      setMeetingsError(res.ok ? '' : res.error || 'Не удалось прочитать календарь Outlook')
+    } finally {
+      meetingsBusyRef.current = false
+      setMeetingsLoading(false)
+    }
+  }
+
+  const loadMeetingsRef = useRef(loadMeetings)
+  loadMeetingsRef.current = loadMeetings
+
+  // First calendar open of the day: proactively pull the current user's Outlook
+  // meetings once (result is cached per day), so the "Совещания" sub-tab is ready
+  // and later visits the same day do not touch Outlook COM again.
+  useEffect(() => {
+    if (!calendarMode) return
+    void loadMeetingsRef.current(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // While the meetings sub-tab is open, keep it in sync with the shown period.
+  useEffect(() => {
+    if (!calendarMode || calTab !== 'meetings') return
+    void loadMeetingsRef.current(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calTab, view, anchor])
 
   function suggestionsFor(agent: BoardAgent): AgentSuggestion[] {
     const draftId = (agent.draftId || agent.id || '').trim()
@@ -443,7 +486,55 @@ export function AgentsPage({
           </div>
         </div>
 
-        {runtimeOnly && !calendarMode ? null : (
+        {runtimeOnly && !calendarMode ? null : calendarMode ? (
+          <div className="cal-with-tabs">
+            <div className="cal-subtabs">
+              <button
+                className={calTab === 'runs' ? 'cal-subtab active' : 'cal-subtab'}
+                onClick={() => setCalTab('runs')}
+              >
+                Запуски
+              </button>
+              <button
+                className={calTab === 'meetings' ? 'cal-subtab active' : 'cal-subtab'}
+                onClick={() => setCalTab('meetings')}
+              >
+                Совещания
+              </button>
+            </div>
+            {calTab === 'runs' ? (
+              <RunCalendar
+                view={view}
+                anchor={anchor}
+                agents={workflowAgents}
+                events={board.events}
+                agentFilter={selectedAgentId}
+                onView={changeView}
+                onShift={shift}
+                onToday={goToday}
+                onAgentFilter={setSelectedAgentId}
+                onEventClick={onOpenRun}
+                onOpenGroup={(items) => {
+                  if (items.length) onOpenRun(items[0].workflowId, items[0].runId || '')
+                }}
+                onScheduleRun={onScheduleRun}
+              />
+            ) : (
+              <MeetingsCalendar
+                view={view}
+                anchor={anchor}
+                meetings={meetings}
+                loading={meetingsLoading}
+                error={meetingsError}
+                ownerName={(comCredentials().login || savedFio() || '').trim()}
+                onView={changeView}
+                onShift={shift}
+                onToday={goToday}
+                onRefresh={() => void loadMeetings(true)}
+              />
+            )}
+          </div>
+        ) : (
           <RunCalendar
             view={view}
             anchor={anchor}

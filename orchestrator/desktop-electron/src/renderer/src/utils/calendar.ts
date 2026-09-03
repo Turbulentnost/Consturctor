@@ -54,15 +54,28 @@ export interface StatusStyle {
 export const STATUS_STYLE: Record<string, StatusStyle> = {
   scheduled: { bg: '#E8F1FB', border: '#1565C0', label: 'Запланирован' },
   running: { bg: '#D6E8FA', border: '#0D47A1', label: 'Выполняется' },
-  ok: { bg: '#F3F8FD', border: '#4A90D9', label: 'Выполнен' },
+  ok: { bg: '#E8F6EE', border: '#1B7F4A', label: 'Выполнен' },
   missed: { bg: '#EEF3F8', border: '#5B7A99', label: 'Не запущен' },
-  error: { bg: '#E3EAF4', border: '#163A5F', label: 'Ошибка' },
-  canceled: { bg: '#F0F4F8', border: '#6B8AAB', label: 'Отменён' },
-  cancelled: { bg: '#F0F4F8', border: '#6B8AAB', label: 'Отменён' },
+  error: { bg: '#FDECEC', border: '#D64545', label: 'Ошибка' },
+  canceled: { bg: '#FFF6D8', border: '#C9A227', label: 'Отменён' },
+  cancelled: { bg: '#FFF6D8', border: '#C9A227', label: 'Отменён' },
   paused: { bg: '#F4F7FA', border: '#8AA0B8', label: 'Приостановлен' },
   meeting: { bg: '#E8F1FB', border: '#1565C0', label: 'Совещание' },
   recommend_add: { bg: '#E8F6EE', border: '#1B7F4A', label: 'Поставить' },
   recommend_cancel: { bg: '#FDECEC', border: '#D64545', label: 'Отменить' }
+}
+
+/** Color a stacked slot by the worst / dominant run status. */
+export function groupRunStyle(events: CalendarEvent[]): StatusStyle {
+  if (events.some((item) => item.status === 'error')) return STATUS_STYLE.error
+  if (events.some((item) => item.status === 'running')) return STATUS_STYLE.running
+  if (events.every((item) => item.status === 'canceled' || item.status === 'cancelled'))
+    return STATUS_STYLE.canceled
+  if (events.every((item) => item.status === 'ok')) return STATUS_STYLE.ok
+  if (events.every((item) => item.status === 'missed')) return STATUS_STYLE.missed
+  if (events.every((item) => item.status === 'paused')) return STATUS_STYLE.paused
+  if (events.every((item) => item.status === 'scheduled')) return STATUS_STYLE.scheduled
+  return STATUS_STYLE.scheduled
 }
 
 export const SOURCE_LABEL: Record<string, string> = {
@@ -242,19 +255,19 @@ export function groupSummary(events: CalendarEvent[]): { title: string; subtitle
   const errors = events.filter((item) => item.status === 'error').length
   const running = events.filter((item) => item.status === 'running').length
   const sameAgent = new Set(events.map((item) => item.workflowId)).size === 1
-  if (errors) return { title, subtitle: `${errors} ${errorsWord(errors)}`, color: '#163A5F' }
-  if (running) return { title, subtitle: `Выполняются ${running} из ${n}`, color: '#0D47A1' }
+  if (errors) return { title, subtitle: `${errors} ${errorsWord(errors)}`, color: STATUS_STYLE.error.border }
+  if (running) return { title, subtitle: `Выполняются ${running} из ${n}`, color: STATUS_STYLE.running.border }
   if (events.every((item) => item.status === 'missed'))
-    return { title, subtitle: 'Не запущены', color: '#5B7A99' }
+    return { title, subtitle: 'Не запущены', color: STATUS_STYLE.missed.border }
   if (events.every((item) => item.status === 'canceled' || item.status === 'cancelled'))
-    return { title, subtitle: 'Отменены', color: '#6B8AAB' }
+    return { title, subtitle: 'Отменены', color: STATUS_STYLE.canceled.border }
   if (events.every((item) => item.status === 'scheduled'))
-    return { title, subtitle: 'Запланировано', color: '#1565C0' }
-  if (sameAgent) return { title, subtitle: 'История', color: '#5B7A99' }
+    return { title, subtitle: 'Запланировано', color: STATUS_STYLE.scheduled.border }
   if (events.every((item) => item.status === 'ok'))
-    return { title, subtitle: 'Выполнено', color: '#4A90D9' }
+    return { title, subtitle: 'Выполнено', color: STATUS_STYLE.ok.border }
+  if (sameAgent) return { title, subtitle: 'История', color: STATUS_STYLE.missed.border }
   const fallback = STATUS_STYLE[events[0]?.status] ?? STATUS_STYLE.scheduled
-  return { title, subtitle: fallback.label, color: '#5B7A99' }
+  return { title, subtitle: fallback.label, color: fallback.border }
 }
 
 export function timeText(value: string): string {

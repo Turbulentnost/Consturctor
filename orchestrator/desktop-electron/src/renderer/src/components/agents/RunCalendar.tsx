@@ -16,6 +16,7 @@ import {
   sameDay,
   SOURCE_LABEL,
   STATUS_STYLE,
+  groupRunStyle,
   timeText,
   type CalendarView
 } from '../../utils/calendar'
@@ -401,9 +402,9 @@ interface GroupBlockProps {
 
 function GroupBlock({ events, style, onClick, compact }: GroupBlockProps): React.JSX.Element {
   const { title, subtitle, color } = groupSummary(events)
-  const errors = events.some((item) => item.status === 'error')
-  const bg = errors ? '#E3EAF4' : '#E8F1FB'
-  const border = errors ? '#163A5F' : '#1565C0'
+  const tone = groupRunStyle(events)
+  const bg = tone.bg
+  const border = tone.border
   return (
     <div
       className={compact ? 'cal-group compact' : 'cal-group'}

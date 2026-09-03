@@ -167,6 +167,14 @@ def _desktop_root() -> Path:
 
 def _worker_env() -> dict[str, str]:
     env = dict(os.environ)
+    from app.tools.ac.workers.com_availability import pywin32_dll_dirs
+
+    extras = pywin32_dll_dirs()
+    if extras:
+        current = env.get("PATH", "") or env.get("Path", "")
+        prefix = os.pathsep.join(extras)
+        env["PATH"] = prefix if not current else f"{prefix}{os.pathsep}{current}"
+        env["Path"] = env["PATH"]
     if getattr(sys, "frozen", False):
         return env
     desktop = str(_desktop_root())

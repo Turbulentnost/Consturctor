@@ -2751,6 +2751,63 @@ input {
 }
 
 /* ================= Run calendar ================= */
+.cal-with-tabs {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cal-with-tabs .run-calendar,
+.cal-with-tabs .meetings-calendar {
+  flex: 1;
+  min-height: 0;
+}
+.cal-subtabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: #eef3f8;
+  border: 1px solid rgba(16, 20, 26, 0.08);
+  border-radius: 12px;
+  align-self: flex-start;
+}
+.cal-subtab {
+  border: none;
+  background: transparent;
+  color: #4a5b6e;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 6px 16px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.cal-subtab:hover {
+  color: #10141a;
+}
+.cal-subtab.active {
+  background: #fff;
+  color: #1565c0;
+  box-shadow: 0 1px 3px rgba(16, 20, 26, 0.12);
+}
+.meetings-note {
+  color: #5b7a99;
+  font-size: 12px;
+}
+.meetings-error {
+  color: #d64545;
+  font-weight: 600;
+}
+.meeting-details .meeting-details-row {
+  margin: 6px 0;
+  font-size: 13px;
+  color: #24303d;
+  line-height: 1.4;
+}
+.meeting-details .meeting-details-row.muted {
+  color: #8aa0b8;
+}
 .run-calendar {
   flex: 1;
   min-width: 0;

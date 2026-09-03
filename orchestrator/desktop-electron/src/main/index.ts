@@ -587,6 +587,9 @@ app.whenReady().then(() => {
   ipcMain.handle('agent:cancel', (_evt, command: AgentSidecarMessage) => {
     return { ok: agentSidecar.send({ ...command, type: 'cancel' }) }
   })
+  ipcMain.handle('agent:read-calendar', (_evt, command: AgentSidecarMessage) => {
+    return { ok: agentSidecar.send({ ...command, type: 'read_calendar' }) }
+  })
   ipcMain.handle('notifications:start', (_evt, token: string) => {
     if (typeof token === 'string' && token.trim()) {
       notifyGuard.start(token.trim())
