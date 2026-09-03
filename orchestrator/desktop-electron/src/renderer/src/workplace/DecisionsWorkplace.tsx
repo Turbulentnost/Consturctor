@@ -4,6 +4,7 @@ import type { AgentRunHistoryItem, AgentRunnerEvent } from '../api/types'
 import { FilterBar } from './FilterBar'
 import { useWorkplaceData } from './WorkplaceBoard'
 import { humanWhen, parseIso } from '../utils/calendar'
+import { MiniCalendar, meetingsFromEvents, type MiniMeeting } from '../components/agentfeed/MiniCalendar'
 import { cleanRunResult } from '../utils/cleanRunResult'
 import { useRuns } from '../store/runs'
 import {
@@ -91,6 +92,7 @@ export function DecisionsTab({
       at: string
       text: string
       status: string
+      meetings: MiniMeeting[]
     }>
   >([])
   const { agents, loading, error } = useWorkplaceData()
@@ -112,6 +114,7 @@ export function DecisionsTab({
         at: string
         text: string
         status: string
+        meetings: MiniMeeting[]
       }> = []
       const jobs = agentsRef.current.slice(0, 40).map(async (agent) => {
         const history = await api.listAgentRuns(agent.workflowId).catch(() => [] as AgentRunHistoryItem[])
@@ -137,14 +140,16 @@ export function DecisionsTab({
             events,
             status: run.status
           })
-          if (cleaned.text) {
+          const meetings = meetingsFromEvents(events)
+          if (cleaned.text || meetings.length) {
             collectedResults.push({
               workflowId: agent.workflowId,
               agentName: agent.name,
               runId: run.runId,
               at,
               text: cleaned.text,
-              status: run.status
+              status: run.status,
+              meetings
             })
           }
         }
@@ -460,7 +465,14 @@ export function DecisionsTab({
                   </div>
                   <div className="wp-decision-block">
                     <strong>Результат</strong>
-                    <p className="wp-decisions-result wp-decision-summary">{item.text}</p>
+                    {item.meetings.length > 0 && (
+                      <div className="wf-result-calendar">
+                        <MiniCalendar meetings={item.meetings} />
+                      </div>
+                    )}
+                    {item.text ? (
+                      <p className="wp-decisions-result wp-decision-summary">{item.text}</p>
+                    ) : null}
                   </div>
                   <p className="wp-decision-time">{item.at ? humanWhen(parseIso(item.at) || new Date(item.at)) : ''}</p>
                   <div className="wp-actions wp-decision-actions">

@@ -7,6 +7,7 @@ import type {
   WorkflowFileItem
 } from '../api/types'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
+import { MiniCalendar, meetingsFromEvents } from '../components/agentfeed/MiniCalendar'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { cleanRunResult } from '../utils/cleanRunResult'
 import {
@@ -190,6 +191,7 @@ export function HistoryWorkplace({
     () => cleanRunResult({ answer, events, status: selectedStatus }),
     [answer, events, selectedStatus]
   )
+  const planMeetings = useMemo(() => meetingsFromEvents(events), [events])
 
   return (
     <div className="wp-page wp-history">
@@ -319,9 +321,14 @@ export function HistoryWorkplace({
                 ) : null}
               </div>
               <div className="wp-history-result-body">
+                {planMeetings.length > 0 && (
+                  <div className="wf-result-calendar">
+                    <MiniCalendar meetings={planMeetings} />
+                  </div>
+                )}
                 {cleaned.text ? (
                   <MarkdownBody text={cleaned.text} />
-                ) : (
+                ) : planMeetings.length > 0 ? null : (
                   <p className="wp-history-empty">{files.length ? 'Текста результата нет.' : cleaned.emptyHint}</p>
                 )}
                 <section className="wf-file-section">

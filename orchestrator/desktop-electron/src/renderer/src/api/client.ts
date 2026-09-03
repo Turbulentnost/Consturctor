@@ -1158,6 +1158,13 @@ export class ApiClient {
     await this.request('POST', `/api/v1/triggers/${triggerId}/cancel`, { timeoutMs: 30_000 })
   }
 
+  async skipTriggerSlot(triggerId: string, at: string): Promise<void> {
+    await this.request('POST', `/api/v1/triggers/${triggerId}/skip-slot`, {
+      body: { at },
+      timeoutMs: 30_000
+    })
+  }
+
   async deleteWorkflow(workflowId: string): Promise<void> {
     await this.request('DELETE', `/api/v1/workflows/${workflowId}`, { timeoutMs: 60_000 })
   }

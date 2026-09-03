@@ -3051,6 +3051,43 @@ input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.cal-slot-menu {
+  position: fixed;
+  z-index: 80;
+  background: #fff;
+  border: 1px solid #d5e2f0;
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(16, 20, 26, 0.16);
+  padding: 6px;
+  min-width: 200px;
+}
+.cal-slot-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.cal-slot-menu button:hover {
+  background: #eef4fb;
+}
+.cal-popup-row-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cal-popup-skip {
+  border: 0;
+  background: transparent;
+  color: #b42318;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 6px;
+}
 .cal-group {
   position: absolute;
   height: 46px;
@@ -3618,6 +3655,9 @@ input {
   border-radius: 14px;
   padding: 14px;
   font-size: 14px;
+}
+.feed-result-calendar {
+  margin-bottom: 12px;
 }
 .feed-tool {
   border: 1px solid var(--card-border);
@@ -6587,6 +6627,33 @@ button.feed-tool-head:hover {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 12px;
+}
+.passport-window-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.passport-weekdays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.passport-weekday {
+  border: 1px solid #d5e2f0;
+  background: #fff;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.passport-weekday.active {
+  background: #1565c0;
+  color: #fff;
+  border-color: #1565c0;
+}
+.passport-hint {
+  font-size: 12px;
+  color: #6b7380;
 }
 
 /* ============ KPI preview (plan / fact tiles) ============ */

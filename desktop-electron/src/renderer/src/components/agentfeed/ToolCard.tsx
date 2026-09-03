@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { MiniCalendar, meetingsFromResult } from './MiniCalendar'
+import { MiniCalendar, meetingsFromToolItem } from './MiniCalendar'
 import type { ToolItem } from './types'
 
 interface ToolCardProps {
   item: ToolItem
+  liftMeetings?: boolean
 }
 
 function pretty(value: Record<string, unknown>): string {
@@ -14,9 +15,23 @@ function pretty(value: Record<string, unknown>): string {
   }
 }
 
-export function ToolCard({ item }: ToolCardProps): React.JSX.Element {
+export function ToolCard({ item, liftMeetings = false }: ToolCardProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
-  const meetings = item.tool === 'calendar.show_meetings' ? meetingsFromResult(item.result) : []
+  const meetings = item.tool === 'calendar.show_meetings' ? meetingsFromToolItem(item) : []
+  if (meetings.length > 0 && liftMeetings) {
+    const status = item.error ? item.summary || 'Ошибка' : 'В результате'
+    return (
+      <div className={['feed-tool', 'done', item.error ? 'error' : ''].filter(Boolean).join(' ')}>
+        <div className="feed-tool-head static">
+          <span className={`feed-tool-dot${item.error ? ' error' : ' done'}`} />
+          <span className="feed-tool-copy">
+            <span className="feed-tool-title">{item.title}</span>
+            <span className={`feed-tool-status${item.error ? ' error' : ''}`}>{status}</span>
+          </span>
+        </div>
+      </div>
+    )
+  }
   if (meetings.length > 0) {
     const status = item.error ? item.summary || 'Ошибка' : ''
     return (

@@ -49,6 +49,10 @@ class TriggerFiredAck(BaseModel):
     evidence: str = ""
 
 
+class TriggerSkipSlot(BaseModel):
+    at: datetime
+
+
 class ScheduleTriggerSpec(BaseModel):
     kind: str = "event"
     message: str = ""

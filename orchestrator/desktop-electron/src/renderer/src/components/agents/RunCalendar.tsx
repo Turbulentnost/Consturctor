@@ -38,6 +38,7 @@ interface RunCalendarProps {
   onEventClick: (workflowId: string, runId: string) => void
   onOpenGroup: (events: CalendarEvent[]) => void
   onScheduleRun: (workflowId: string, iso: string) => void
+  onSkipSlot?: (event: CalendarEvent) => void
 }
 
 interface PopupState {
@@ -46,14 +47,27 @@ interface PopupState {
   y: number
 }
 
+interface SlotMenuState {
+  event: CalendarEvent
+  x: number
+  y: number
+}
+
+function canSkipEvent(event: CalendarEvent): boolean {
+  if (!event.triggerId) return false
+  return event.status === 'scheduled' || event.status === 'missed'
+}
+
 export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
   const { view, anchor, agents, events, agentFilter } = props
   const [showFilters, setShowFilters] = useState(false)
   const [statusFilter, setStatusFilter] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
   const [popup, setPopup] = useState<PopupState | null>(null)
+  const [slotMenu, setSlotMenu] = useState<SlotMenuState | null>(null)
   const [scheduleOpen, setScheduleOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const slotMenuRef = useRef<HTMLDivElement>(null)
 
   const visibleEvents = useMemo(() => {
     let items = [...events]
@@ -72,7 +86,23 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
 
   useEffect(() => {
     setPopup(null)
+    setSlotMenu(null)
   }, [view, anchor, agentFilter, statusFilter, sourceFilter])
+
+  useEffect(() => {
+    if (!slotMenu) return
+    function onDocClick(evt: MouseEvent): void {
+      if (slotMenuRef.current && !slotMenuRef.current.contains(evt.target as Node)) setSlotMenu(null)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [slotMenu])
+
+  function openSlotMenu(event: CalendarEvent, evt: React.MouseEvent): void {
+    if (!props.onSkipSlot || !canSkipEvent(event)) return
+    setPopup(null)
+    setSlotMenu({ event, x: evt.clientX, y: evt.clientY })
+  }
 
   const tags: { text: string; kind: 'agent' | 'status' | 'source' }[] = []
   if (agentFilter) {
@@ -212,6 +242,7 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
           events={visibleEvents}
           onEventClick={props.onEventClick}
           onGroupClick={openGroupPopup}
+          onEventContext={openSlotMenu}
         />
       ) : (
         <div className="cal-scroll" ref={scrollRef}>
@@ -220,6 +251,7 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
             events={visibleEvents}
             onEventClick={props.onEventClick}
             onGroupClick={openGroupPopup}
+            onEventContext={openSlotMenu}
           />
         </div>
       )}
@@ -236,7 +268,36 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
             setPopup(null)
             props.onOpenGroup(items)
           }}
+          onSkipSlot={
+            props.onSkipSlot
+              ? (event) => {
+                  setPopup(null)
+                  props.onSkipSlot?.(event)
+                }
+              : undefined
+          }
         />
+      )}
+
+      {slotMenu && props.onSkipSlot && (
+        <div
+          ref={slotMenuRef}
+          className="cal-slot-menu"
+          style={{
+            left: Math.min(slotMenu.x, window.innerWidth - 220),
+            top: Math.min(slotMenu.y, window.innerHeight - 80)
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              props.onSkipSlot?.(slotMenu.event)
+              setSlotMenu(null)
+            }}
+          >
+            Отменить этот запуск
+          </button>
+        </div>
       )}
 
       {scheduleOpen && (
@@ -259,9 +320,10 @@ interface GridProps {
   events: CalendarEvent[]
   onEventClick: (workflowId: string, runId: string) => void
   onGroupClick: (group: CalendarEvent[], evt: React.MouseEvent) => void
+  onEventContext?: (event: CalendarEvent, evt: React.MouseEvent) => void
 }
 
-function WeekGrid({ days, events, onEventClick, onGroupClick }: GridProps): React.JSX.Element {
+function WeekGrid({ days, events, onEventClick, onGroupClick, onEventContext }: GridProps): React.JSX.Element {
   const eventHours: number[] = []
   for (const item of events) {
     const stamp = parseIso(item.startAt)
@@ -346,7 +408,13 @@ function WeekGrid({ days, events, onEventClick, onGroupClick }: GridProps): Reac
         const style = { left: x, top: y, width: w } as React.CSSProperties
         if (group.length === 1) {
           return (
-            <EventBlock key={`ev-${gi}`} event={sample} style={style} onClick={onEventClick} />
+            <EventBlock
+              key={`ev-${gi}`}
+              event={sample}
+              style={style}
+              onClick={onEventClick}
+              onContextMenu={onEventContext}
+            />
           )
         }
         return (
@@ -361,10 +429,11 @@ interface EventBlockProps {
   event: CalendarEvent
   style: React.CSSProperties
   onClick: (workflowId: string, runId: string) => void
+  onContextMenu?: (event: CalendarEvent, evt: React.MouseEvent) => void
   compact?: boolean
 }
 
-function EventBlock({ event, style, onClick, compact }: EventBlockProps): React.JSX.Element {
+function EventBlock({ event, style, onClick, compact, onContextMenu }: EventBlockProps): React.JSX.Element {
   const meta = STATUS_STYLE[event.status] ?? STATUS_STYLE.scheduled
   const tip = [
     event.title,
@@ -382,6 +451,11 @@ function EventBlock({ event, style, onClick, compact }: EventBlockProps): React.
       onClick={(e) => {
         e.stopPropagation()
         onClick(event.workflowId, event.runId || '')
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        onContextMenu?.(event, e)
       }}
     >
       <div className="cal-event-title">
@@ -431,9 +505,16 @@ interface MonthGridProps {
   events: CalendarEvent[]
   onEventClick: (workflowId: string, runId: string) => void
   onGroupClick: (group: CalendarEvent[], evt: React.MouseEvent) => void
+  onEventContext?: (event: CalendarEvent, evt: React.MouseEvent) => void
 }
 
-function MonthGrid({ anchor, events, onEventClick, onGroupClick }: MonthGridProps): React.JSX.Element {
+function MonthGrid({
+  anchor,
+  events,
+  onEventClick,
+  onGroupClick,
+  onEventContext
+}: MonthGridProps): React.JSX.Element {
   const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1)
   const start = mondayOf(first)
   const today = new Date()
@@ -477,6 +558,7 @@ function MonthGrid({ anchor, events, onEventClick, onGroupClick }: MonthGridProp
                     event={group[0]}
                     style={{ position: 'relative' }}
                     onClick={onEventClick}
+                    onContextMenu={onEventContext}
                     compact
                   />
                 ) : (
@@ -503,9 +585,16 @@ interface GroupPopupProps {
   onClose: () => void
   onEventClick: (workflowId: string, runId: string) => void
   onOpenAll: (events: CalendarEvent[]) => void
+  onSkipSlot?: (event: CalendarEvent) => void
 }
 
-function GroupPopup({ state, onClose, onEventClick, onOpenAll }: GroupPopupProps): React.JSX.Element {
+function GroupPopup({
+  state,
+  onClose,
+  onEventClick,
+  onOpenAll,
+  onSkipSlot
+}: GroupPopupProps): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     function onDocClick(evt: MouseEvent): void {
@@ -524,21 +613,31 @@ function GroupPopup({ state, onClose, onEventClick, onOpenAll }: GroupPopupProps
       {state.events.map((item) => {
         const meta = STATUS_STYLE[item.status] ?? STATUS_STYLE.scheduled
         return (
-          <button
-            key={item.id}
-            className="cal-popup-row"
-            onClick={() => onEventClick(item.workflowId, item.runId || '')}
-          >
-            <span className="cal-popup-avatar">{(item.title || 'А').charAt(0).toUpperCase()}</span>
-            <span className="cal-popup-text">
-              <span className="cal-popup-name">
-                {timeText(item.startAt)}&nbsp;&nbsp;{item.title || 'ИИ-агент'}
+          <div key={item.id} className="cal-popup-row-wrap">
+            <button
+              className="cal-popup-row"
+              onClick={() => onEventClick(item.workflowId, item.runId || '')}
+            >
+              <span className="cal-popup-avatar">{(item.title || 'А').charAt(0).toUpperCase()}</span>
+              <span className="cal-popup-text">
+                <span className="cal-popup-name">
+                  {timeText(item.startAt)}&nbsp;&nbsp;{item.title || 'ИИ-агент'}
+                </span>
+                <span className="cal-popup-status" style={{ color: meta.border }}>
+                  &#9679;&nbsp;&nbsp;{meta.label}
+                </span>
               </span>
-              <span className="cal-popup-status" style={{ color: meta.border }}>
-                &#9679;&nbsp;&nbsp;{meta.label}
-              </span>
-            </span>
-          </button>
+            </button>
+            {onSkipSlot && canSkipEvent(item) ? (
+              <button
+                type="button"
+                className="cal-popup-skip"
+                onClick={() => onSkipSlot(item)}
+              >
+                Отменить
+              </button>
+            ) : null}
+          </div>
         )
       })}
       <button className="cal-popup-all" onClick={() => onOpenAll(state.events)}>

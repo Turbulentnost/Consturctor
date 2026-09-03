@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { BoardAgent } from '../../api/types'
 import { runLine } from '../../utils/calendar'
 import { CardMenu, type MenuItem } from './CardMenu'
@@ -20,6 +21,7 @@ interface AgentCardProps {
   onPause: (id: string) => void
   onResume: (id: string) => void
   onDelete: (id: string) => void
+  onCancelNext?: (id: string) => void
 }
 
 export function AgentCard({
@@ -32,17 +34,22 @@ export function AgentCard({
   onSchedule,
   onPause,
   onResume,
-  onDelete
+  onDelete,
+  onCancelNext
 }: AgentCardProps): React.JSX.Element {
   const status = STATUS[agent.status] ?? STATUS.active
   const lastLine = runLine('Последний запуск', agent.lastRunAt)
   const nextLine = agent.nextRunLabel || runLine('Следующий', agent.nextRunAt)
   const letter = (agent.title || 'А').charAt(0).toUpperCase()
+  const [menuTick, setMenuTick] = useState(0)
 
   const menuItems: MenuItem[] = [
     { label: 'Открыть агента', onClick: () => onOpen(agent.id, agent.title) },
     { label: 'Посмотреть историю', onClick: () => onHistory(agent.id, agent.title) },
     { label: 'Изменить расписание', onClick: () => onSchedule(agent.id) },
+    ...(onCancelNext
+      ? [{ label: 'Отменить ближайший запуск', onClick: () => onCancelNext(agent.id) }]
+      : []),
     agent.paused
       ? { label: 'Возобновить', onClick: () => onResume(agent.id) }
       : { label: 'Приостановить', onClick: () => onPause(agent.id) },
@@ -53,6 +60,11 @@ export function AgentCard({
     <div
       className={selected ? 'agent-card selected' : 'agent-card'}
       onClick={() => onSelect(agent.id)}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        setMenuTick((n) => n + 1)
+      }}
     >
       <div className="agent-card-avatar">{letter}</div>
       <div className="agent-card-body">
@@ -77,7 +89,7 @@ export function AgentCard({
       >
         &#9654;
       </button>
-      <CardMenu items={menuItems} />
+      <CardMenu items={menuItems} openSignal={menuTick} />
     </div>
   )
 }

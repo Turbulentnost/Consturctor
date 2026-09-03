@@ -18,6 +18,8 @@ from app.services.triggers.service import (
     has_window,
     is_workflow_paused,
     parse_active_days,
+    parse_skipped_slots,
+    slot_key,
     windowed_slots_between,
     workflow_is_deleted,
 )
@@ -138,8 +140,10 @@ def _expand_slot_times(
         steps = math.ceil((window_start - cursor).total_seconds() / interval)
         cursor = cursor + timedelta(seconds=steps * interval)
     times: list[datetime] = []
+    days = parse_active_days(active_days)
+    msk = timezone(timedelta(hours=3))
     while cursor <= window_end and len(times) < _MAX_SLOTS_PER_TRIGGER:
-        if cursor >= window_start:
+        if cursor >= window_start and (not days or cursor.astimezone(msk).weekday() in days):
             times.append(cursor)
         cursor = cursor + step
     return times
@@ -408,6 +412,9 @@ def get_workflow_board(
                     window_start_min=getattr(item, "window_start_min", None),
                     window_end_min=getattr(item, "window_end_min", None),
                 )
+                skipped = parse_skipped_slots(getattr(item, "skipped_slots", None))
+                if skipped:
+                    times = [stamp for stamp in times if slot_key(stamp) not in skipped]
                 grace = timedelta(seconds=min(120, interval if interval > 0 else 120))
                 for stamp in times:
                     hit = next(

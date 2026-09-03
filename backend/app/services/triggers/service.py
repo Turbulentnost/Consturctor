@@ -7,11 +7,12 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.agent_run import AgentRun
 from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
-from app.schemas.trigger import TriggerCreate, TriggerOut
+from app.schemas.trigger import ScheduleTriggerSpec, TriggerCreate, TriggerOut
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,63 @@ def windowed_slots_between(
     return out
 
 
+def slot_key(value: datetime | None) -> str:
+    """Stable UTC minute key used to cancel one calendar slot."""
+    stamp = _as_utc(value)
+    if stamp is None:
+        return ""
+    return stamp.replace(second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
+
+
+def parse_skipped_slots(value: object) -> set[str]:
+    keys: set[str] = set()
+    if not isinstance(value, list):
+        return keys
+    for item in value:
+        raw = str(item or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$", raw):
+                keys.add(raw)
+            continue
+        key = slot_key(parsed)
+        if key:
+            keys.add(key)
+    return keys
+
+
+def slot_is_skipped(row: AgentTrigger, when: datetime | None = None) -> bool:
+    target = when if when is not None else row.fire_at
+    skipped = parse_skipped_slots(getattr(row, "skipped_slots", None))
+    if not skipped:
+        return False
+    return bool(_slot_keys(target) & skipped)
+
+
+def _slot_keys(value: datetime | None) -> set[str]:
+    if value is None:
+        return set()
+    candidates = [value]
+    if value.tzinfo is None:
+        candidates = [value.replace(tzinfo=timezone.utc), value.replace(tzinfo=_MSK)]
+    keys: set[str] = set()
+    for item in candidates:
+        key = slot_key(item)
+        if key:
+            keys.add(key)
+        local = item.astimezone(_MSK).replace(second=0, microsecond=0)
+        keys.add(local.strftime("%Y-%m-%dT%H:%M"))
+        keys.add(item.astimezone(timezone.utc).replace(second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M"))
+    return keys
+
+
+def same_calendar_slot(left: datetime | None, right: datetime | None) -> bool:
+    return bool(_slot_keys(left) & _slot_keys(right))
+
+
 def next_aligned_fire_at(
     fire_at: datetime | None,
     interval_seconds: int,
@@ -209,13 +267,14 @@ def next_aligned_fire_at(
     """Keep the original clock grid so a skipped 11:00 slot still exists as missed."""
     now = now or datetime.now(timezone.utc)
     interval = int(interval_seconds or 0)
+    days = parse_active_days(active_days)
     if interval > 0 and has_window(window_start_min, window_end_min):
         slot = next_windowed_slot(
             now,
             interval_seconds=interval,
             window_start_min=int(window_start_min),
             window_end_min=int(window_end_min),
-            active_days=parse_active_days(active_days),
+            active_days=days,
         )
         if slot is not None:
             return slot
@@ -227,12 +286,39 @@ def next_aligned_fire_at(
     if interval <= 0:
         return now
     if origin is None:
-        return now + timedelta(seconds=interval)
-    if origin > now:
-        return origin
-    elapsed = (now - origin).total_seconds()
-    steps = int(elapsed // interval) + 1
-    return origin + timedelta(seconds=steps * interval)
+        result = now + timedelta(seconds=interval)
+    elif origin > now:
+        result = origin
+    else:
+        elapsed = (now - origin).total_seconds()
+        steps = int(elapsed // interval) + 1
+        result = origin + timedelta(seconds=steps * interval)
+    if days:
+        for _ in range(400):
+            if result.astimezone(_MSK).weekday() in days:
+                return result
+            result = result + timedelta(seconds=interval)
+    return result
+
+
+def _advance_past_skipped(row: AgentTrigger, *, now: datetime) -> None:
+    interval = int(row.interval_seconds or 0)
+    if interval <= 0:
+        if slot_is_skipped(row, row.fire_at):
+            row.enabled = False
+        return
+    guard = 0
+    while guard < 80 and slot_is_skipped(row, row.fire_at):
+        row.fire_at = next_aligned_fire_at(
+            row.fire_at,
+            interval,
+            now=_as_utc(row.fire_at) or now,
+            message=row.message or "",
+            active_days=getattr(row, "active_days", ""),
+            window_start_min=getattr(row, "window_start_min", None),
+            window_end_min=getattr(row, "window_end_min", None),
+        )
+        guard += 1
 
 
 def _to_out(row: AgentTrigger) -> TriggerOut:
@@ -304,7 +390,13 @@ def create_trigger(db: Session, *, owner_user_id: str, payload: TriggerCreate) -
             )
             fire_at = slot or now + timedelta(seconds=interval_seconds)
         else:
-            fire_at = now + timedelta(seconds=interval_seconds)
+            fire_at = next_aligned_fire_at(
+                None,
+                interval_seconds,
+                now=now,
+                message=(payload.message or "").strip(),
+                active_days=active_days,
+            )
     if fire_at is None and not condition and interval_seconds <= 0:
         raise TriggerError("Укажи at, after_seconds, interval_seconds или condition")
     if fire_at is None:
@@ -319,9 +411,10 @@ def create_trigger(db: Session, *, owner_user_id: str, payload: TriggerCreate) -
         condition_text=condition,
         fire_at=fire_at,
         interval_seconds=interval_seconds,
-        active_days=active_days if windowed else "",
+        active_days=active_days,
         window_start_min=window_start_min if windowed else None,
         window_end_min=window_end_min if windowed else None,
+        skipped_slots=[],
         once=once,
         enabled=True,
     )
@@ -356,6 +449,197 @@ def cancel_trigger(db: Session, *, user_id: str, trigger_id: str) -> TriggerOut:
     db.refresh(row)
     _notify_board(db, user_id=user_id, workflow_id=row.workflow_id, reason="cancelled")
     return _to_out(row)
+
+
+def skip_trigger_slot(
+    db: Session,
+    *,
+    user_id: str,
+    trigger_id: str,
+    at: datetime,
+) -> TriggerOut:
+    """Cancel one planned slot. The rest of the schedule stays."""
+    row = get_trigger(db, user_id=user_id, trigger_id=trigger_id)
+    target = _as_utc(at)
+    if target is None:
+        raise TriggerError("Нужно время слота")
+    key = slot_key(target)
+    if not key:
+        raise TriggerError("Нужно время слота")
+    slots = list(getattr(row, "skipped_slots", None) or [])
+    if key not in parse_skipped_slots(slots):
+        slots.append(key)
+    row.skipped_slots = slots
+    flag_modified(row, "skipped_slots")
+    now = datetime.now(timezone.utc)
+    current = _as_utc(row.fire_at)
+    same_slot = same_calendar_slot(row.fire_at, target)
+    if same_slot or (current is not None and abs((current - target).total_seconds()) < 60):
+        interval = int(row.interval_seconds or 0)
+        if interval > 0:
+            row.fire_at = next_aligned_fire_at(
+                row.fire_at,
+                interval,
+                now=current or now,
+                message=row.message or "",
+                active_days=getattr(row, "active_days", ""),
+                window_start_min=getattr(row, "window_start_min", None),
+                window_end_min=getattr(row, "window_end_min", None),
+            )
+        elif row.once:
+            row.enabled = False
+    _advance_past_skipped(row, now=now)
+    db.commit()
+    db.refresh(row)
+    _notify_board(db, user_id=user_id, workflow_id=row.workflow_id, reason="cancelled")
+    return _to_out(row)
+
+
+def consume_skipped_due(db: Session, row: AgentTrigger) -> bool:
+    """Advance a due trigger whose current slot was cancelled by the user."""
+    if not slot_is_skipped(row, row.fire_at):
+        return False
+    now = datetime.now(timezone.utc)
+    interval = int(row.interval_seconds or 0)
+    if interval > 0:
+        row.fire_at = next_aligned_fire_at(
+            row.fire_at,
+            interval,
+            now=_as_utc(row.fire_at) or now,
+            message=row.message or "",
+            active_days=getattr(row, "active_days", ""),
+            window_start_min=getattr(row, "window_start_min", None),
+            window_end_min=getattr(row, "window_end_min", None),
+        )
+    _advance_past_skipped(row, now=now)
+    db.commit()
+    _notify_board(db, user_id=row.owner_user_id, workflow_id=row.workflow_id, reason="cancelled")
+    return True
+
+
+def interval_seconds_from_spec(spec: ScheduleTriggerSpec) -> int:
+    value = float(spec.interval_value or 0)
+    unit = (spec.interval_unit or "hours").casefold()
+    if unit == "minutes":
+        return max(0, int(round(value * 60)))
+    if unit == "days":
+        return max(0, int(round(value * 86400)))
+    return max(0, int(round(value * 3600)))
+
+
+def _is_passport_trigger(row: AgentTrigger) -> bool:
+    if int(row.interval_seconds or 0) > 0:
+        return True
+    if (row.condition_text or "").strip():
+        return True
+    return not bool(row.once)
+
+
+def _fire_at_from_datetime_spec(spec: ScheduleTriggerSpec) -> datetime | None:
+    raw = (spec.at or "").strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"\s*\d{1,2}[:.]\d{2}\s*", raw):
+        minutes = parse_clock_to_min(raw)
+        if minutes is None:
+            return None
+        return _next_at_msk_clock((minutes // 60, minutes % 60), datetime.now(timezone.utc))
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _as_utc(parsed)
+
+
+def create_trigger_from_spec(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    spec: ScheduleTriggerSpec,
+) -> TriggerOut | None:
+    kind = (spec.kind or "").strip().casefold()
+    if kind == "interval":
+        seconds = interval_seconds_from_spec(spec)
+        if seconds <= 0:
+            return None
+        return create_trigger(
+            db,
+            owner_user_id=user_id,
+            payload=TriggerCreate(
+                workflow_id=workflow_id,
+                message=spec.message or "",
+                interval_seconds=seconds,
+                once=False,
+                active_days=list(spec.weekdays or []),
+                window_start=spec.window_start or "",
+                window_end=spec.window_end or "",
+            ),
+        )
+    if kind == "event":
+        condition = (spec.condition or "").strip()
+        if not condition:
+            return None
+        return create_trigger(
+            db,
+            owner_user_id=user_id,
+            payload=TriggerCreate(
+                workflow_id=workflow_id,
+                message=spec.message or "",
+                condition=condition,
+                once=bool(spec.once),
+            ),
+        )
+    fire_at = _fire_at_from_datetime_spec(spec)
+    if fire_at is None:
+        return None
+    return create_trigger(
+        db,
+        owner_user_id=user_id,
+        payload=TriggerCreate(
+            workflow_id=workflow_id,
+            message=spec.message or "",
+            at=fire_at,
+            once=bool(spec.once),
+        ),
+    )
+
+
+def sync_recurring_triggers_from_draft(
+    db: Session,
+    *,
+    user_id: str,
+    workflow: Workflow,
+) -> None:
+    """Replace passport triggers with the current schedule_draft. Keep one-shot slots."""
+    local = workflow.local_run if isinstance(workflow.local_run, dict) else {}
+    draft = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+    specs: list[ScheduleTriggerSpec] = []
+    for item in draft.get("triggers") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            specs.append(ScheduleTriggerSpec.model_validate(item))
+        except (TypeError, ValueError):
+            continue
+    rows = list(
+        db.execute(
+            select(AgentTrigger).where(
+                AgentTrigger.owner_user_id == user_id,
+                AgentTrigger.workflow_id == workflow.id,
+                AgentTrigger.enabled.is_(True),
+            )
+        ).scalars()
+    )
+    disabled = False
+    for row in rows:
+        if _is_passport_trigger(row):
+            row.enabled = False
+            disabled = True
+    if disabled:
+        db.commit()
+    for spec in specs:
+        create_trigger_from_spec(db, user_id=user_id, workflow_id=workflow.id, spec=spec)
 
 
 def cancel_triggers_for_workflow(
@@ -464,6 +748,8 @@ def claim_due_trigger(db: Session, trigger_id: str, *, now: datetime | None = No
 def claim_due_agent_jobs(db: Session, *, user_id: str | None = None) -> list[AgentTrigger]:
     claimed: list[AgentTrigger] = []
     for row in due_commands(db, user_id=user_id):
+        if consume_skipped_due(db, row):
+            continue
         if claim_due_trigger(db, row.id):
             claimed.append(row)
     return claimed
@@ -517,6 +803,7 @@ def mark_fired(db: Session, *, user_id: str, trigger_id: str, evidence: str = ""
             window_start_min=getattr(row, "window_start_min", None),
             window_end_min=getattr(row, "window_end_min", None),
         )
+        _advance_past_skipped(row, now=now)
         row.cooldown_until = now + FIRE_COOLDOWN
     elif row.once:
         row.enabled = False

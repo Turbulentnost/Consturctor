@@ -3,7 +3,7 @@ import { api } from '../api/client'
 import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowFileItem } from '../api/types'
 import { AgentFeed, buildFeedItems } from '../components/agentfeed'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
-import { MiniCalendar, meetingsFromResult, type MiniMeeting } from '../components/agentfeed/MiniCalendar'
+import { MiniCalendar, meetingsFromEvents } from '../components/agentfeed/MiniCalendar'
 import { useRuns } from '../store/runs'
 import { isInFlightRunStatus, isLiveRunState } from '../store/liveRun'
 import { cleanRunResult } from '../utils/cleanRunResult'
@@ -112,17 +112,7 @@ export function AgentHistoryPage({
     [answer, events, selectedRun]
   )
   const feedItems = useMemo(() => buildFeedItems(events), [events])
-  const planMeetings = useMemo<MiniMeeting[]>(() => {
-    let found: MiniMeeting[] = []
-    for (const ev of events) {
-      const type = String(ev.type || '').toLowerCase()
-      if (type !== 'tool_call' && type !== 'tool_result') continue
-      if (String((ev as { tool?: string }).tool || '') !== 'calendar.show_meetings') continue
-      const parsed = meetingsFromResult((ev as { result?: unknown }).result)
-      if (parsed.length) found = parsed
-    }
-    return found
-  }, [events])
+  const planMeetings = useMemo(() => meetingsFromEvents(events), [events])
   const showLiveFeed = Boolean(
     live &&
       isLiveRunState(live.state) &&

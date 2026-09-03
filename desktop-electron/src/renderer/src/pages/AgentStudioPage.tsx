@@ -5,6 +5,7 @@ import type { WorkflowFileItem, WorkflowRecord } from '../api/types'
 import { AgentFeed, StageStepper, type FormationController } from '../components/agentfeed'
 import { ClarifyCard } from '../components/agentfeed/ClarifyCard'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
+import { MiniCalendar, meetingsFromFeed } from '../components/agentfeed/MiniCalendar'
 import { presentAgentText } from '../components/agentfeed/formatAgentText'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { categoryOf, FILE_CATEGORY_LABELS, formatSize } from './filesGrouping'
@@ -100,6 +101,7 @@ export function AgentStudioPage({
   const { designDone, demoDone, designDraft, phase } = formation
   const busy = formation.running
   const awaiting = formation.awaiting
+  const planMeetings = useMemo(() => meetingsFromFeed(session.items), [session.items])
 
   const refreshRecord = useCallback(async () => {
     try {
@@ -369,10 +371,17 @@ export function AgentStudioPage({
                   <MarkdownBody text={presentAgentText(designDraft)} />
                 </div>
               )}
-              {record?.lastResult && (
+              {(record?.lastResult || planMeetings.length > 0) && (
                 <div className="wf-result-card">
                   <div className="wf-result-title">Результат пробного прогона</div>
-                  <MarkdownBody text={presentAgentText(record.lastResult)} />
+                  {planMeetings.length > 0 && (
+                    <div className="wf-result-calendar">
+                      <MiniCalendar meetings={planMeetings} />
+                    </div>
+                  )}
+                  {record?.lastResult ? (
+                    <MarkdownBody text={presentAgentText(record.lastResult)} />
+                  ) : null}
                 </div>
               )}
             </div>

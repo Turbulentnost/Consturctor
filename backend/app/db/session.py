@@ -107,6 +107,13 @@ def _ensure_columns() -> None:
             conn.execute(
                 text("ALTER TABLE agent_triggers ADD COLUMN window_end_min INTEGER NULL")
             )
+        if trigger_cols and "skipped_slots" not in trigger_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE agent_triggers "
+                    "ADD COLUMN skipped_slots JSON NOT NULL DEFAULT '[]'"
+                )
+            )
         notif_rows = conn.execute(
             text(
                 """

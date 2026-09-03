@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ClarifyCard } from './ClarifyCard'
 import { HitlCard } from './HitlCard'
 import { MarkdownBody } from './MarkdownBody'
+import { MiniCalendar, meetingsFromFeed } from './MiniCalendar'
 import { presentAgentText } from './formatAgentText'
 import { ToolCard } from './ToolCard'
 import type { FeedItem, PendingHitl, PendingQuestion } from './types'
@@ -35,7 +36,35 @@ interface AgentFeedProps {
   onSkip: () => void
 }
 
-function FeedRow({ item }: { item: FeedItem }): React.JSX.Element | null {
+function ResultBlock({
+  text,
+  meetings
+}: {
+  text?: string
+  meetings: ReturnType<typeof meetingsFromFeed>
+}): React.JSX.Element {
+  const body = (text || '').trim()
+  return (
+    <div className="feed-result">
+      {meetings.length > 0 && (
+        <div className="feed-result-calendar">
+          <MiniCalendar meetings={meetings} />
+        </div>
+      )}
+      {body ? <MarkdownBody text={presentAgentText(body)} /> : null}
+    </div>
+  )
+}
+
+function FeedRow({
+  item,
+  resultMeetings,
+  liftCalendar
+}: {
+  item: FeedItem
+  resultMeetings: ReturnType<typeof meetingsFromFeed>
+  liftCalendar: boolean
+}): React.JSX.Element | null {
   switch (item.kind) {
     case 'thinking':
       return <ThinkingRow text={item.text} />
@@ -55,13 +84,9 @@ function FeedRow({ item }: { item: FeedItem }): React.JSX.Element | null {
     case 'system':
       return <div className={`feed-system ${item.tone || 'info'}`}>{item.text}</div>
     case 'tool':
-      return <ToolCard item={item} />
+      return <ToolCard item={item} liftMeetings={liftCalendar} />
     case 'result':
-      return (
-        <div className="feed-result">
-          <MarkdownBody text={presentAgentText(item.text)} />
-        </div>
-      )
+      return <ResultBlock text={item.text} meetings={resultMeetings} />
     default:
       return null
   }
@@ -99,14 +124,23 @@ export function AgentFeed({
     if (el) el.scrollTop = el.scrollHeight
   }, [items, pendingQuestion, pendingHitl, status, running])
 
+  const resultMeetings = useMemo(() => meetingsFromFeed(items), [items])
+  const hasResultItem = items.some((item) => item.kind === 'result')
+  const liftCalendar = resultMeetings.length > 0
   const isEmpty = items.length === 0 && !pendingQuestion && !pendingHitl && !running
 
   return (
     <div className="agent-feed" ref={scrollRef} onScroll={handleScroll}>
       {isEmpty && emptyHint && <div className="agent-feed-empty">{emptyHint}</div>}
       {items.map((item) => (
-        <FeedRow key={item.id} item={item} />
+        <FeedRow
+          key={item.id}
+          item={item}
+          resultMeetings={resultMeetings}
+          liftCalendar={liftCalendar}
+        />
       ))}
+      {!hasResultItem && liftCalendar ? <ResultBlock meetings={resultMeetings} /> : null}
       {pendingQuestion && !dockQuestion && (
         <ClarifyCard
           key={`${pendingQuestion.requestId}:${pendingQuestion.question}:${pendingQuestion.options.join('|')}`}

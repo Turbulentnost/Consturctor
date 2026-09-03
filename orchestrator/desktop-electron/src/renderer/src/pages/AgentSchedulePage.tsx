@@ -37,6 +37,8 @@ function goalFromWorkflow(record: WorkflowRecord): string {
   return ''
 }
 
+const WEEKDAY_LABELS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+
 function emptyTrigger(kind: TriggerKind): ScheduleTriggerSpec {
   return {
     kind,
@@ -45,7 +47,10 @@ function emptyTrigger(kind: TriggerKind): ScheduleTriggerSpec {
     intervalUnit: 'hours',
     condition: '',
     at: '',
-    once: false
+    once: false,
+    weekdays: [],
+    windowStart: '',
+    windowEnd: ''
   }
 }
 
@@ -87,7 +92,13 @@ export function triggerChipLabel(spec: ScheduleTriggerSpec): string {
     const amount = Number.isInteger(value) ? value : Number(value.toFixed(1))
     if (unit === 'minutes') return amount === 1 ? 'каждую минуту' : `каждые ${amount} мин`
     if (unit === 'days') return amount === 1 ? 'ежедневно' : `каждые ${amount} дн.`
-    return amount === 1 ? 'каждый час' : `каждые ${amount} ч`
+    const base = amount === 1 ? 'каждый час' : `каждые ${amount} ч`
+    const extras: string[] = []
+    if (spec.windowStart && spec.windowEnd) extras.push(`${spec.windowStart}–${spec.windowEnd}`)
+    const days = [...(spec.weekdays || [])].sort((a, b) => a - b)
+    if (days.join(',') === '0,1,2,3,4') extras.push('будни')
+    else if (days.length > 0 && days.length < 7) extras.push(days.map((day) => WEEKDAY_LABELS[day]).join(', '))
+    return extras.length ? `${base}, ${extras.join(', ')}` : base
   }
   if (kind === 'datetime') {
     const clock = clockFromAt(spec.at)
@@ -149,6 +160,13 @@ function TriggerEditModal({
   const [dtLocal, setDtLocal] = useState(specToDateTimeLocal(initial))
   const [once, setOnce] = useState(initial.kind === 'datetime' ? Boolean(initial.once) : false)
   const [message, setMessage] = useState(initial.message || '')
+  const [windowStart, setWindowStart] = useState(initial.windowStart || '')
+  const [windowEnd, setWindowEnd] = useState(initial.windowEnd || '')
+  const [weekdays, setWeekdays] = useState<number[]>(initial.weekdays || [])
+
+  const toggleDay = (day: number): void => {
+    setWeekdays((prev) => (prev.includes(day) ? prev.filter((item) => item !== day) : [...prev, day].sort((a, b) => a - b)))
+  }
 
   const save = (): void => {
     let at = ''
@@ -167,7 +185,10 @@ function TriggerEditModal({
       intervalUnit,
       condition: condition.trim(),
       at,
-      once: kind === 'datetime' ? once : false
+      once: kind === 'datetime' ? once : false,
+      weekdays: kind === 'interval' ? weekdays : [],
+      windowStart: kind === 'interval' ? windowStart : '',
+      windowEnd: kind === 'interval' ? windowEnd : ''
     })
   }
 
@@ -189,27 +210,69 @@ function TriggerEditModal({
         </select>
 
         {kind === 'interval' && (
-          <div className="passport-row">
-            <input
-              type="number"
-              min={0.1}
-              step={0.1}
-              className="passport-input"
-              value={intervalValue}
-              onChange={(e) => setIntervalValue(Number(e.target.value) || 0)}
-            />
-            <select
-              className="passport-select"
-              value={intervalUnit}
-              onChange={(e) => setIntervalUnit(e.target.value as IntervalUnit)}
-            >
-              {UNIT_LABELS.map((u) => (
-                <option key={u.value} value={u.value}>
-                  {u.label}
-                </option>
+          <>
+            <div className="passport-row">
+              <input
+                type="number"
+                min={0.1}
+                step={0.1}
+                className="passport-input"
+                value={intervalValue}
+                onChange={(e) => setIntervalValue(Number(e.target.value) || 0)}
+              />
+              <select
+                className="passport-select"
+                value={intervalUnit}
+                onChange={(e) => setIntervalUnit(e.target.value as IntervalUnit)}
+              >
+                {UNIT_LABELS.map((u) => (
+                  <option key={u.value} value={u.value}>
+                    {u.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <label className="passport-field-label">Окно по Москве</label>
+            <div className="passport-window-row">
+              <input
+                type="time"
+                className="passport-input"
+                value={windowStart}
+                onChange={(e) => setWindowStart(e.target.value)}
+              />
+              <span className="passport-hint">до</span>
+              <input
+                type="time"
+                className="passport-input"
+                value={windowEnd}
+                onChange={(e) => setWindowEnd(e.target.value)}
+              />
+            </div>
+            <label className="passport-field-label">Дни недели</label>
+            <div className="passport-weekdays">
+              {WEEKDAY_LABELS.map((label, day) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={weekdays.includes(day) ? 'passport-weekday active' : 'passport-weekday'}
+                  onClick={() => toggleDay(day)}
+                >
+                  {label}
+                </button>
               ))}
-            </select>
-          </div>
+            </div>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => {
+                setWindowStart('08:00')
+                setWindowEnd('17:00')
+                setWeekdays([0, 1, 2, 3, 4])
+              }}
+            >
+              Будни 08:00–17:00
+            </button>
+          </>
         )}
 
         {kind === 'event' && (

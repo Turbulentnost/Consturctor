@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react'
+import type { AgentRunnerEvent } from '../../api/types'
 import { DAYS_SHORT, MONTHS_GEN, isoWeekday, parseIso, STATUS_STYLE } from '../../utils/calendar'
+import type { FeedItem } from './types'
 
 export interface MiniMeeting {
   title: string
@@ -26,20 +28,75 @@ function markKey(raw: string): string {
   return MARK_ALIAS[key] || 'meeting'
 }
 
-/** Extract meetings from a calendar.show_meetings tool result payload. */
-export function meetingsFromResult(result: unknown): MiniMeeting[] {
-  const raw = (result as Record<string, unknown> | null | undefined)?.meetings
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function normalizeMeetingList(raw: unknown): MiniMeeting[] {
   if (!Array.isArray(raw)) return []
   return raw
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
     .map((item) => ({
-      title: String(item.title ?? ''),
-      start: String(item.start ?? ''),
-      end: String(item.end ?? ''),
-      mark: String(item.mark ?? 'keep'),
-      reason: String(item.reason ?? '')
+      title: String(item.title ?? item.subject ?? item.name ?? ''),
+      start: String(item.start ?? item.start_at ?? item.at ?? ''),
+      end: String(item.end ?? item.end_at ?? ''),
+      mark: String(item.mark ?? item.color ?? item.kind ?? 'keep'),
+      reason: String(item.reason ?? item.note ?? item.subtitle ?? '')
     }))
     .filter((item) => item.title && item.start)
+}
+
+/** Extract meetings from a calendar.show_meetings payload (result or arguments). */
+export function meetingsFromResult(result: unknown): MiniMeeting[] {
+  const seen = new WeakSet<object>()
+  const walk = (value: unknown, depth: number): MiniMeeting[] => {
+    if (value == null || depth > 4) return []
+    if (Array.isArray(value)) return normalizeMeetingList(value)
+    const row = asRecord(value)
+    if (!row || seen.has(row)) return []
+    seen.add(row)
+    for (const key of ['meetings', 'items', 'events']) {
+      const found = normalizeMeetingList(row[key])
+      if (found.length) return found
+    }
+    if (row.title && (row.start || row.start_at || row.at)) return normalizeMeetingList([row])
+    for (const key of ['result', 'arguments', 'output', 'output_data', 'data']) {
+      const found = walk(row[key], depth + 1)
+      if (found.length) return found
+    }
+    return []
+  }
+  return walk(result, 0)
+}
+
+export function meetingsFromToolItem(item: { result?: unknown; arguments?: unknown }): MiniMeeting[] {
+  const fromResult = meetingsFromResult(item.result)
+  if (fromResult.length) return fromResult
+  return meetingsFromResult(item.arguments)
+}
+
+export function meetingsFromFeed(items: FeedItem[]): MiniMeeting[] {
+  let found: MiniMeeting[] = []
+  for (const item of items) {
+    if (item.kind !== 'tool' || item.tool !== 'calendar.show_meetings') continue
+    const parsed = meetingsFromToolItem(item)
+    if (parsed.length) found = parsed
+  }
+  return found
+}
+
+export function meetingsFromEvents(events: AgentRunnerEvent[]): MiniMeeting[] {
+  let found: MiniMeeting[] = []
+  for (const event of events) {
+    const type = String(event.type || '').toLowerCase()
+    if (type !== 'tool_call' && type !== 'tool_result') continue
+    if (String(event.tool || '') !== 'calendar.show_meetings') continue
+    const parsed = meetingsFromToolItem({ result: event.result, arguments: event.arguments })
+    if (parsed.length) found = parsed
+  }
+  return found
 }
 
 function pad2(n: number): string {

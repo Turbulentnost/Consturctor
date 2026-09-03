@@ -88,9 +88,6 @@ export function AgentKpiPreviewPage({
     setError('')
     try {
       await api.confirmWorkflowKpi(workflowId)
-      for (const spec of draft.triggers) {
-        await api.createTriggerFromSpec(workflowId, spec)
-      }
       onPublished(workflowId, draft.name || title)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось опубликовать агента')

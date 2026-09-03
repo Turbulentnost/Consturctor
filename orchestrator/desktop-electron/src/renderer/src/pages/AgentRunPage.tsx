@@ -155,24 +155,27 @@ export function AgentRunPage({
   }, [running, workflowId, state?.items?.length, runs])
 
   // On open, restore the latest known conversation for this exact agent.
+  // Play (autoStart) must start a new run, not reopen the last feed.
   useEffect(() => {
+    if (autoStart) return
     if ((state?.items?.length ?? 0) > 0) return
     void runs.attachHistoryFeed(workflowId)
-  }, [workflowId, runs, state?.items?.length])
+  }, [workflowId, runs, state?.items?.length, autoStart])
 
   // The "Запустить" play button opens this page with autoStart, so the agent
   // starts immediately on its own playbook instead of waiting for a message.
   useEffect(() => {
     if (personalAgent) return
     if (!autoStart || autoStartedRef.current) return
-    if (running || (state?.items?.length ?? 0) > 0) return
+    if (running) return
     autoStartedRef.current = true
     runs.startRun({
       workflowId,
       title,
       message: '',
       shownMessage: 'Запуск агента',
-      resumeAgentId: resumeAgentRef.current || undefined
+      resumeAgentId: resumeAgentRef.current || undefined,
+      forceRestart: true
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStart, workflowId])

@@ -5,6 +5,7 @@ import type {
   AgentRunHistoryItem,
   AgentSuggestion,
   BoardAgent,
+  CalendarEvent,
   WorkflowBoard
 } from '../api/types'
 import {
@@ -33,6 +34,19 @@ const EMPTY_BOARD: WorkflowBoard = {
   stats: { activeAgents: 0, runsToday: 0, errorsToday: 0, needsAttention: 0, nextRunAt: '' },
   agents: [],
   events: []
+}
+
+function nextCancellableEvent(workflowId: string, events: CalendarEvent[]): CalendarEvent | null {
+  const now = Date.now()
+  const items = events
+    .filter((item) => {
+      if (item.workflowId !== workflowId || !item.triggerId) return false
+      if (item.status !== 'scheduled' && item.status !== 'missed') return false
+      const stamp = parseIso(item.startAt)
+      return Boolean(stamp && stamp.getTime() >= now - 60_000)
+    })
+    .sort((left, right) => (parseIso(left.startAt)?.getTime() ?? 0) - (parseIso(right.startAt)?.getTime() ?? 0))
+  return items[0] || null
 }
 
 function normalizeTitle(value: string): string {
@@ -267,6 +281,23 @@ export function AgentsPage({
     )
   }
 
+  function onSkipSlot(event: CalendarEvent): void {
+    if (!event.triggerId || !event.startAt) {
+      flash('Этот запуск нельзя отменить')
+      return
+    }
+    void runAction(() => api.skipTriggerSlot(event.triggerId, event.startAt), 'Запуск отменён')
+  }
+
+  function onCancelNext(id: string): void {
+    const event = nextCancellableEvent(id, board.events)
+    if (!event) {
+      flash('Нет запланированного запуска, который можно отменить')
+      return
+    }
+    onSkipSlot(event)
+  }
+
   async function onHistory(id: string, title: string): Promise<void> {
     setHistory({ title, items: [] })
     try {
@@ -436,6 +467,7 @@ export function AgentsPage({
                     onPause={onPause}
                     onResume={onResume}
                     onDelete={onDelete}
+                    onCancelNext={onCancelNext}
                   />
                 )
               )
@@ -459,6 +491,7 @@ export function AgentsPage({
               if (items.length) onOpenRun(items[0].workflowId, items[0].runId || '')
             }}
             onScheduleRun={onScheduleRun}
+            onSkipSlot={onSkipSlot}
           />
         )}
       </div>

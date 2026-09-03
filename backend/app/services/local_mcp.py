@@ -1035,7 +1035,7 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         "calendar_event",
         "present",
         ["meetings"],
-        ["shown"],
+        ["shown", "meetings"],
         "count",
     ),
     "outlook.create_event": (

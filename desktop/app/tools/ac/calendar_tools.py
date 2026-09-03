@@ -93,7 +93,11 @@ class CalendarShowMeetingsTool(BaseTool):
                 },
                 output_schema={
                     "type": "object",
-                    "properties": {"shown": {"type": "integer"}, "ok": {"type": "boolean"}},
+                    "properties": {
+                        "shown": {"type": "integer"},
+                        "ok": {"type": "boolean"},
+                        "meetings": {"type": "array"},
+                    },
                 },
             )
         )
@@ -132,10 +136,15 @@ class CalendarShowMeetingsTool(BaseTool):
                 error_type="CALENDAR_SHOW_FAILED",
                 error_message=str(exc),
             )
+        shown = data.get("meetings") if isinstance(data, dict) else None
         return ToolCallResult(
             ok=True,
             tool_name=self.definition.name,
-            output_data=data if isinstance(data, dict) else {"ok": True},
+            output_data={
+                "ok": True,
+                "shown": len(meetings) if isinstance(meetings, list) else 0,
+                "meetings": shown if isinstance(shown, list) and shown else meetings,
+            },
         )
 
 

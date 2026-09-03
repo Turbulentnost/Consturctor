@@ -9,11 +9,16 @@ export interface MenuItem {
 
 interface CardMenuProps {
   items: MenuItem[]
+  openSignal?: number
 }
 
-export function CardMenu({ items }: CardMenuProps): React.JSX.Element {
+export function CardMenu({ items, openSignal = 0 }: CardMenuProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const hostRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (openSignal) setOpen(true)
+  }, [openSignal])
 
   useEffect(() => {
     if (!open) return
