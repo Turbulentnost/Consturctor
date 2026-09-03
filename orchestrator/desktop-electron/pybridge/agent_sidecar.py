@@ -50,7 +50,7 @@ import threading
 import traceback
 import uuid
 from dataclasses import asdict, is_dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -163,6 +163,18 @@ def needs_confirmation(name: str) -> bool:
 
 
 _STDOUT_LOCK = threading.Lock()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _with_at(payload: dict[str, Any]) -> dict[str, Any]:
+    if str(payload.get("at") or "").strip():
+        return payload
+    out = dict(payload)
+    out["at"] = _now_iso()
+    return out
 
 
 def _stamp_run_event(
@@ -920,12 +932,28 @@ class HitlGate:
         self._needs_file: dict[str, bool] = {}
         self.qa_history: list[dict[str, str]] = []
         self._lock = threading.Lock()
+        self._events: list[dict[str, Any]] | None = None
 
     def bind(self, *, workflow_id: str = "", kind: str = "") -> None:
         if workflow_id:
             self._workflow_id = workflow_id
         if kind:
             self._kind = kind
+
+    def bind_events(self, events: list[dict[str, Any]]) -> None:
+        self._events = events
+
+    def _record_timing(self, typ: str, wait: str, request_id: str) -> None:
+        if self._events is None:
+            return
+        self._events.append(
+            {
+                "type": typ,
+                "wait": wait,
+                "requestId": request_id,
+                "at": _now_iso(),
+            }
+        )
 
     def request(self, tool: str, args: dict[str, Any]) -> bool:
         request_id = uuid.uuid4().hex
@@ -945,6 +973,7 @@ class HitlGate:
                 kind=self._kind,
             )
         )
+        self._record_timing("human_wait", "hitl", request_id)
         try:
             return box.get()
         finally:
@@ -952,6 +981,7 @@ class HitlGate:
                 self._hitl.pop(request_id, None)
 
     def resolve_hitl(self, request_id: str, approved: bool) -> None:
+        self._record_timing("human_reply", "hitl", request_id)
         with self._lock:
             box = self._hitl.get(request_id)
         if box is not None:
@@ -989,6 +1019,7 @@ class HitlGate:
                 kind=self._kind,
             )
         )
+        self._record_timing("human_wait", "question", request_id)
         reply: dict[str, Any] = {}
         try:
             while True:
@@ -1013,6 +1044,7 @@ class HitlGate:
             return bool(self._needs_file.pop(request_id, False))
 
     def resolve_answer(self, request_id: str, reply: dict[str, Any]) -> None:
+        self._record_timing("human_reply", "question", request_id)
         with self._lock:
             box = self._answers.get(request_id)
         if box is not None:
@@ -1812,6 +1844,19 @@ class Sidecar:
             with self._lock:
                 self._active.pop(active.run_id, None)
 
+    def _flush_run_events(self, active: ActiveRun) -> None:
+        run_ref = (active.history_run_id or "").strip()
+        if not run_ref or not active.workflow_id:
+            return
+        try:
+            self._api.update_local_agent_run_events(
+                active.workflow_id,
+                run_ref,
+                list(active.events),
+            )
+        except ApiError:
+            pass
+
     def _forward_events(self, active: ActiveRun, events: list[dict[str, Any]]):
         """Build an on_event callback that streams raw runner events."""
 
@@ -1823,9 +1868,10 @@ class Sidecar:
                 return
             event_type = str(payload.get("type") or "")
             if event_type not in {"ready", "done"}:
-                events.append(payload)
+                events.append(_with_at(payload))
             # Interactive question/tool_request are handled via HITL gate.
             if event_type in {"question", "tool_request"}:
+                self._flush_run_events(active)
                 return
             emit(
                 _stamp_run_event(
@@ -1881,7 +1927,7 @@ class Sidecar:
         # Ask for a per-run file sample before the designer writes the draft,
         # so the SDK run can read it and ask follow-up questions.
         self._ensure_run_input_sample_asked(active, workflow_id)
-        events: list[dict[str, Any]] = []
+        events = active.events
         result = bridge.run(
             prompt=build_design_sdk_prompt(record, design_prompt),
             workflow_id=workflow_id,
@@ -1925,7 +1971,7 @@ class Sidecar:
         run_cwd = bridge.workspace_cwd(f"draft-{draft_id}")
         active.run_cwd = run_cwd
         _prepare_readiness_workspace(self._api, draft, run_cwd)
-        events: list[dict[str, Any]] = []
+        events = active.events
         result = bridge.run(
             prompt=_build_readiness_prompt(),
             workflow_id=f"draft-{draft_id}",
@@ -1976,7 +2022,7 @@ class Sidecar:
         except ApiError:
             pass
         run_input_notes = self._ensure_run_inputs_provided(active, record, provided_count=0)
-        events: list[dict[str, Any]] = []
+        events = active.events
         prompt = build_demo_sdk_prompt(record, resume=bool(resume_agent_id))
         for extra_note in run_input_notes:
             if extra_note:
@@ -2087,7 +2133,7 @@ class Sidecar:
             run_input_notes = self._ensure_run_inputs_provided(
                 active, workflow, provided_count=len(file_paths)
             )
-        events: list[dict[str, Any]] = []
+        events = active.events
         # Always include current workflow materials in the prompt. If a saved
         # SDK agent id belongs to another machine/account and resume falls back
         # to a fresh agent, the run still has the full playbook context.
@@ -2223,7 +2269,7 @@ class Sidecar:
         bridge.bind_knowledge(None, "", run_cwd, active.run_id)
         file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
         attachment_paths = _copy_attachments(run_cwd, file_paths)
-        events: list[dict[str, Any]] = []
+        events = active.events
         prompt = _build_personal_agent_prompt(message)
         note = _attachments_note(attachment_paths)
         if note:
@@ -2336,7 +2382,7 @@ class Sidecar:
         resume_agent_id = str(command.get("resumeAgentId") or snap.get("sdk_agent_id") or "").strip()
         run_cwd = bridge.workspace_cwd(workspace_id)
         active.run_cwd = run_cwd
-        events: list[dict[str, Any]] = []
+        events = active.events
         result = bridge.run(
             prompt=prompt,
             workflow_id=workspace_id,
@@ -2741,12 +2787,14 @@ class Sidecar:
                 "answer": answer_text + (("\n\n" + note) if note else ""),
             }
             active.gate.resolve_answer(request_id, reply)
+            self._flush_run_events(active)
 
     def hitl(self, command: dict[str, Any]) -> None:
         request_id = str(command.get("requestId") or "")
         approved = bool(command.get("approved"))
         for active in list(self._active.values()):
             active.gate.resolve_hitl(request_id, approved)
+            self._flush_run_events(active)
 
     def skip(self, command: dict[str, Any]) -> None:
         request_id = str(command.get("requestId") or "")
@@ -2758,8 +2806,16 @@ class Sidecar:
 
     def cancel(self, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or "")
+        workflow_id = str(command.get("workflowId") or "").strip()
         for active in list(self._active.values()):
-            if not run_id or active.run_id == run_id:
+            if run_id and active.run_id != run_id:
+                continue
+            if workflow_id and active.workflow_id != workflow_id:
+                continue
+            if not run_id and not workflow_id:
+                active.stop.set()
+                continue
+            if run_id or workflow_id:
                 active.stop.set()
 
     def shutdown(self) -> None:
@@ -2793,6 +2849,8 @@ class ActiveRun:
         self.dedup_key: str = ""
         self.history_run_id: str = ""
         self.history_finished: bool = False
+        self.events: list[dict[str, Any]] = []
+        gate.bind_events(self.events)
 
 
 def _ascii(text: str) -> str:

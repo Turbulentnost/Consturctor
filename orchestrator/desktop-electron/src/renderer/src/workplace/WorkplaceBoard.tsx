@@ -10,6 +10,7 @@ import type {
 } from '../api/types'
 import { humanWhen, parseIso, sameDay, windowFor } from '../utils/calendar'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
+import { CardMenu } from '../components/agents/CardMenu'
 import { personalAgentWorkflowId } from './personalAgent'
 import {
   STATUS_LABEL,
@@ -178,6 +179,26 @@ function buildPersonalAgent(seed: PersonalAgentSeed): WorkplaceAgent {
     live: false,
     standalone: true
   }
+}
+
+export function agentHasWorkToday(agent: WorkplaceAgent, today = new Date()): boolean {
+  if (agent.standalone) return false
+  if (agent.tasks.length > 0) return true
+  const last = parseIso(agent.boardAgent?.lastRunAt || '')
+  if (last && sameDay(last, today)) return true
+  const next = parseIso(agent.boardAgent?.nextRunAt || '')
+  if (next && sameDay(next, today)) return true
+  const lastStatus = (agent.boardAgent?.lastRunStatus || '').toLowerCase()
+  if (
+    lastStatus === 'running' ||
+    lastStatus === 'active' ||
+    lastStatus === 'waiting_human' ||
+    lastStatus === 'hitl' ||
+    lastStatus === 'waiting'
+  ) {
+    return true
+  }
+  return agent.status === 'ACTIVE' || agent.status === 'WAITING_HUMAN'
 }
 
 export function buildWorkplaceAgents(board: WorkflowBoard, personal?: PersonalAgentSeed | null): WorkplaceAgent[] {
@@ -366,6 +387,9 @@ export function AgentPlanCard({
   onOpen,
   onRun,
   onOpenFiles,
+  onHistory,
+  onSchedule,
+  onDelete,
   recentFiles,
   onPause,
   onResume
@@ -376,6 +400,9 @@ export function AgentPlanCard({
   onOpen: (workflowId: string, title: string) => void
   onRun: (workflowId: string, title: string) => void
   onOpenFiles: (workflowId: string, title: string) => void
+  onHistory: (workflowId: string, title: string) => void
+  onSchedule: (workflowId: string, title: string) => void
+  onDelete: (workflowId: string, title: string) => void
   recentFiles: WorkflowFileItem[]
   onPause: (workflowId: string) => void
   onResume: (workflowId: string) => void
@@ -440,6 +467,20 @@ export function AgentPlanCard({
                   Пауза
                 </button>
               ))}
+            {!agent.standalone ? (
+              <CardMenu
+                items={[
+                  { label: 'Открыть агента', onClick: () => onOpen(agent.workflowId, agent.name) },
+                  { label: 'Изменить', onClick: () => onOpen(agent.workflowId, agent.name) },
+                  { label: 'Посмотреть историю', onClick: () => onHistory(agent.workflowId, agent.name) },
+                  { label: 'Изменить расписание', onClick: () => onSchedule(agent.workflowId, agent.name) },
+                  agent.paused
+                    ? { label: 'Возобновить', onClick: () => onResume(agent.workflowId) }
+                    : { label: 'Приостановить', onClick: () => onPause(agent.workflowId) },
+                  { label: 'Удалить', onClick: () => onDelete(agent.workflowId, agent.name), danger: true, separatorBefore: true }
+                ]}
+              />
+            ) : null}
           </div>
         </div>
       </header>
@@ -685,34 +726,45 @@ export function TodayWorkplace({
   userFio,
   onOpenDecisions,
   onOpenMetrics,
-  onOpen,
-  onRun,
-  onOpenFiles
+  onOpenPassport,
+  onRun
 }: {
   userId: string
   userFio: string
   onOpenDecisions: () => void
   onOpenMetrics: () => void
-  onOpen: (workflowId: string, title: string) => void
+  onOpenPassport: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
   onRun: (workflowId: string, title: string) => void
-  onOpenFiles: (workflowId: string, title: string) => void
 }): React.JSX.Element {
-  const { board, orch, agents, loading, error, flash, pause, resume } = useWorkplaceData({
+  const { board, orch, agents, loading, error, flash, pause, resume, reload } = useWorkplaceData({
     userId,
     fio: userFio
   })
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<ProcessStatus | ''>('')
+  const [catalog, setCatalog] = useState<'today' | 'all'>('today')
   const [selectedId, setSelectedId] = useState('')
   const [recentFilesByWorkflow, setRecentFilesByWorkflow] = useState<Record<string, WorkflowFileItem[]>>({})
+  const personal = useMemo(
+    () => agents.find((item) => item.standalone) || buildPersonalAgent({ userId, fio: userFio }),
+    [agents, userId, userFio]
+  )
+  const catalogAgents = useMemo(() => {
+    const today = new Date()
+    return agents.filter((agent) => {
+      if (agent.standalone) return false
+      if (catalog === 'all') return true
+      return agentHasWorkToday(agent, today)
+    })
+  }, [agents, catalog])
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return agents.filter((agent) => {
+    return catalogAgents.filter((agent) => {
       if (status && agent.status !== status) return false
       if (q && !`${agent.name} ${agent.code} ${agent.workflowId}`.toLowerCase().includes(q)) return false
       return true
     })
-  }, [agents, query, status])
+  }, [catalogAgents, query, status])
   const selected = visible.find((item) => item.id === selectedId) || visible[0]
 
   const todayEvents = board.events.filter((event) => {
@@ -726,7 +778,9 @@ export function TodayWorkplace({
     agents.filter((item) => item.status === 'WAITING_HUMAN' || item.status === 'ERROR').length
   )
   const planFact = Math.round(scoreFromOrchestrator(orch) ?? 0)
-  const linked = agents.filter((item) => item.live).length
+  const linked = agents.filter((item) => item.live && !item.standalone).length
+  const emptyToday = catalog === 'today' && !loading && !visible.length && !query && !status
+  const emptyAll = catalog === 'all' && !loading && !catalogAgents.length
 
   useEffect(() => {
     const targets = agents
@@ -758,13 +812,40 @@ export function TodayWorkplace({
     }
   }, [agents])
 
+  const removeAgent = async (workflowId: string, title: string): Promise<void> => {
+    if (!workflowId || workflowId.startsWith('personal-agent:')) return
+    const agreed = window.confirm(`Удалить агента «${title}»?`)
+    if (!agreed) return
+    try {
+      await api.deleteWorkflow(workflowId)
+      await reload()
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Не удалось удалить агента')
+    }
+  }
+
   return (
     <div className="wp-page wp-today">
-      <div className="wp-head">
-        <div>
+      <div className="wp-head wp-today-head">
+        <div className="wp-today-head-title">
           <h1 className="page-title">Рабочее место сотрудника</h1>
         </div>
-        <span className="orch-badge">{loading ? 'загрузка' : `${linked} агентов`}</span>
+        <div className="wp-head-actions">
+          <button
+            className={catalog === 'all' ? 'btn-primary' : 'btn-ghost'}
+            type="button"
+            onClick={() => setCatalog((current) => (current === 'all' ? 'today' : 'all'))}
+          >
+            Все агенты
+          </button>
+          <span className="orch-badge">
+            {loading
+              ? 'загрузка'
+              : catalog === 'all'
+                ? `${linked} агентов`
+                : `${visible.length} сегодня`}
+          </span>
+        </div>
       </div>
 
       {flash ? <div className="wp-toast">{flash}</div> : null}
@@ -779,7 +860,7 @@ export function TodayWorkplace({
         onOpenMetrics={onOpenMetrics}
       />
 
-      <div className="wp-filters-row">
+      <div className="wp-filters-row wp-filters-row-today">
         <select className="wp-select" value={status} onChange={(e) => setStatus(e.target.value as ProcessStatus | '')}>
           <option value="">Все статусы</option>
           {Object.entries(STATUS_LABEL).map(([key, label]) => (
@@ -804,16 +885,35 @@ export function TodayWorkplace({
         >
           Сбросить
         </button>
+        <div className="wp-filters-actions">
+          <button
+            className="btn-primary wp-base-agent-btn"
+            type="button"
+            onClick={() => onRun(personal.workflowId, personal.name)}
+          >
+            Базовый агент
+          </button>
+        </div>
       </div>
 
-      <div className="wp-today-layout">
+      <div className="wp-today-layout wp-today-layout-single">
         <div className="wp-today-main">
-          <h2 className="wp-section-title">Агенты и план на сегодня</h2>
+          <h2 className="wp-section-title">
+            {catalog === 'all' ? 'Все агенты' : 'Работа агентов сегодня'}
+          </h2>
           {loading ? <div className="wp-card">Загружаем агентов с сервера…</div> : null}
-          {!loading && !visible.length ? (
+          {emptyAll ? (
             <div className="wp-card">
               На сервере нет опубликованных агентов. Создайте и опубликуйте их в Constructor — они появятся здесь.
             </div>
+          ) : null}
+          {emptyToday ? (
+            <div className="wp-card">
+              Сегодня нет запусков и запланированной работы агентов. Откройте «Все агенты», чтобы посмотреть полный список.
+            </div>
+          ) : null}
+          {!loading && !visible.length && !emptyToday && !emptyAll ? (
+            <div className="wp-card">Нет агентов по заданному фильтру.</div>
           ) : null}
           {visible.map((agent) => (
             <AgentPlanCard
@@ -821,19 +921,18 @@ export function TodayWorkplace({
               agent={agent}
               selected={selected?.id === agent.id}
               onSelect={setSelectedId}
-              onOpen={onOpen}
+              onOpen={(workflowId, title) => onOpenPassport(workflowId, title, 'info')}
               onRun={onRun}
-              onOpenFiles={onOpenFiles}
+              onOpenFiles={(workflowId, title) => onOpenPassport(workflowId, title, 'files')}
+              onHistory={(workflowId, title) => onOpenPassport(workflowId, title, 'results')}
+              onSchedule={(workflowId, title) => onOpenPassport(workflowId, title, 'info')}
+              onDelete={(workflowId, title) => void removeAgent(workflowId, title)}
               recentFiles={recentFilesByWorkflow[agent.workflowId] || []}
               onPause={(id) => void pause(id)}
               onResume={(id) => void resume(id)}
             />
           ))}
-          {selected ? <ProcessStepper agent={selected} /> : null}
         </div>
-        {selected ? (
-          <DetailRail agent={selected} />
-        ) : null}
       </div>
     </div>
   )

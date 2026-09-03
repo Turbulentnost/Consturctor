@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
-import type { AgentKpi, AgentRunHistoryItem, CalendarEvent } from '../api/types'
-import { CardMenu } from '../components/agents/CardMenu'
+import type { AgentKpi, AgentRunHistoryItem } from '../api/types'
+import { useRuns } from '../store/runs'
+import { isLiveRunState } from '../store/liveRun'
 import { humanWhen, parseIso } from '../utils/calendar'
+import { localizeStatusText } from '../utils/statusText'
 import { FilterBar } from './FilterBar'
 import { type ProcessStatus } from './labels'
+import { durationLabel, liveTotals } from './runTiming'
 import { useWorkplaceData, type WorkplaceAgent } from './WorkplaceBoard'
 
 const STATUS_BADGE: Record<ProcessStatus, string> = {
@@ -41,6 +44,34 @@ function runStatusLabel(status: string): string {
   if (value === 'error' || value === 'failed') return 'Ошибка'
   if (!value) return 'Без статуса'
   return status
+}
+
+function useTicking(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [active])
+  return now
+}
+
+function backendTotals(run: AgentRunHistoryItem | null, now: number): { agentMs: number; humanMs: number } {
+  if (!run) return { agentMs: 0, humanMs: 0 }
+  let agentMs = run.agentWorkMs || 0
+  let humanMs = run.humanWaitMs || 0
+  const openAt = Date.parse(run.openSegmentAt || '')
+  if (run.openSegment && Number.isFinite(openAt)) {
+    const open = Math.max(0, now - openAt)
+    if (run.openSegment === 'agent') agentMs += open
+    if (run.openSegment === 'human') humanMs += open
+  }
+  if (!agentMs && !humanMs) {
+    const start = Date.parse(run.startedAt || '')
+    const end = Date.parse(run.finishedAt || '') || ((run.status || '').toLowerCase() === 'started' ? now : NaN)
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) agentMs = end - start
+  }
+  return { agentMs, humanMs }
 }
 
 function minutesLabel(ms: number): string {
@@ -100,15 +131,6 @@ function kpiScore(kpi: AgentKpi | null): number | null {
   return Math.round(ratios.reduce((acc, value) => acc + value, 0) / ratios.length)
 }
 
-function automationRate(events: CalendarEvent[]): number | null {
-  if (!events.length) return null
-  const done = events.filter((event) => {
-    const status = (event.status || '').toLowerCase()
-    return status === 'ok' || status === 'done' || status === 'completed'
-  }).length
-  return Math.round((done / events.length) * 100)
-}
-
 function actionRank(status: ProcessStatus): number {
   if (status === 'ERROR' || status === 'WAITING_HUMAN') return 0
   if (status === 'PAUSED') return 1
@@ -150,22 +172,16 @@ function ProcessIcon({ status }: { status: ProcessStatus }): React.JSX.Element {
 function ProcessCard({
   agent,
   kpi,
-  events,
   onOpen,
-  onFiles,
-  onHistory,
-  onSchedule,
+  onOpenRun,
   onPause,
   onResume,
   latestRunInfo
 }: {
   agent: WorkplaceAgent
   kpi: AgentKpi | null
-  events: CalendarEvent[]
-  onOpen: (workflowId: string, title: string, autoStart?: boolean) => void
-  onFiles: (workflowId: string, title: string) => void
-  onHistory: (workflowId: string, title: string) => void
-  onSchedule: (workflowId: string, title: string) => void
+  onOpen: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
+  onOpenRun: (workflowId: string, title: string, runId?: string) => void
   onPause: (workflowId: string) => void
   onResume: (workflowId: string) => void
   latestRunInfo: AgentRunHistoryItem | null
@@ -174,27 +190,16 @@ function ProcessCard({
   const deadline = formatDeadline(board?.nextRunAt || '')
   const factPercent = kpiScore(kpi)
   const planFactLabel = `${DEFAULT_PLAN_PERCENT}% / ${factPercent != null ? `${factPercent}%` : '—'}`
-  const auto = automationRate(events)
-  const lastStart = parseIso(board?.lastRunAt || '')
-  const nextStart = parseIso(board?.nextRunAt || '')
-  const lastEvent = [...events].sort((a, b) => (a.startAt > b.startAt ? -1 : 1))[0]
-  const scheduled = parseIso(lastEvent?.startAt || '')
-  const agentDelayMs = lastStart && scheduled ? lastStart.getTime() - scheduled.getTime() : null
-  const agentDelay =
-    agentDelayMs != null
-      ? agentDelayMs > 0
-        ? minutesLabel(agentDelayMs)
-        : '0 мин'
-      : latestRunInfo
-        ? '0 мин'
-        : null
-  const humanDelayMs =
-    agent.status === 'WAITING_HUMAN' && lastStart
-      ? Date.now() - lastStart.getTime()
-      : nextStart && nextStart.getTime() < Date.now() && agent.status === 'READY'
-        ? Date.now() - nextStart.getTime()
-        : null
-  const humanDelay = humanDelayMs != null ? minutesLabel(Math.max(humanDelayMs, 0)) : latestRunInfo ? '0 мин' : null
+  const live = useRuns().entries[agent.workflowId]
+  const liveActive = Boolean(live && isLiveRunState(live.state))
+  const backendOpen = Boolean(latestRunInfo?.openSegment || (latestRunInfo?.status || '').toLowerCase() === 'started')
+  const now = useTicking(liveActive || backendOpen)
+  const totals =
+    liveActive && live?.state.timing
+      ? liveTotals(live.state.timing, now)
+      : backendTotals(latestRunInfo, now)
+  const agentDelay = totals.agentMs > 0 || liveActive || latestRunInfo ? durationLabel(totals.agentMs) : null
+  const humanDelay = totals.humanMs > 0 || liveActive || latestRunInfo ? durationLabel(totals.humanMs) : null
   const mixed = agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR'
   const accent =
     agent.status === 'ERROR'
@@ -207,21 +212,25 @@ function ProcessCard({
   const stageCurrent = Math.min(agent.stageIndex + 1, agent.stages.length)
   const stageTotal = agent.stages.length
   const progress = stageTotal ? Math.round((stageCurrent / stageTotal) * 100) : 0
-  const version = (board?.phase || '').trim()
+  const version = localizeStatusText((board?.phase || '').trim())
   const agentLive = board?.paused ? 'Пауза' : 'Активен'
   const runStartedAt = parseIso(latestRunInfo?.startedAt || latestRunInfo?.finishedAt || '')
   const runWhen = runStartedAt ? humanWhen(runStartedAt) : 'ещё не запускался'
   const runStatus = runStatusLabel(latestRunInfo?.status || board?.lastRunStatus || '')
-  const runId = String(latestRunInfo?.runId || '').trim()
-  const openChatLabel = `Перейти в чат ${agent.name}`
-  const openChat = (): void => onOpen(agent.workflowId, agent.name)
+  const openPassportLabel = `Перейти в паспорт ${agent.name}`
+  const openPassport = (): void => onOpen(agent.workflowId, agent.name, 'info')
+  const openPassportFiles = (): void => onOpen(agent.workflowId, agent.name, 'files')
+  const startRun = (): void => onOpenRun(agent.workflowId, agent.name)
+  const stopRun = (): void => onPause(agent.workflowId)
+  const deadlineText = agent.standalone ? 'По запросу пользователя' : deadline?.when || agent.due
+  const compactDeadline = deadlineText.trim().toLowerCase() === 'следующий запуск не запланирован'
   const stopCardClick: React.MouseEventHandler<HTMLElement> = (event): void => {
     event.stopPropagation()
   }
   const onCardKeyDown: React.KeyboardEventHandler<HTMLElement> = (event): void => {
     if (event.key !== 'Enter' && event.key !== ' ') return
     event.preventDefault()
-    openChat()
+    openPassport()
   }
 
   return (
@@ -229,9 +238,9 @@ function ProcessCard({
       className={`proc-card ${accent}`}
       role="button"
       tabIndex={0}
-      onClick={openChat}
+      onClick={openPassport}
       onKeyDown={onCardKeyDown}
-      aria-label={openChatLabel}
+      aria-label={openPassportLabel}
     >
       <header className="proc-card-head">
         <ProcessIcon status={agent.status} />
@@ -246,32 +255,9 @@ function ProcessCard({
             </span>
           </div>
         </div>
-        <div className="proc-card-tools" onClick={stopCardClick}>
-          {!agent.standalone && agent.paused ? (
-            <button
-              className="btn-primary"
-              type="button"
-              onClick={() => onResume(agent.workflowId)}
-            >
-              Возобновить
-            </button>
-          ) : null}
-          {!agent.standalone ? (
-            <CardMenu
-              items={[
-                agent.paused
-                  ? { label: 'Возобновить', onClick: () => onResume(agent.workflowId) }
-                  : { label: 'Приостановить', onClick: () => onPause(agent.workflowId) },
-                { label: 'Файлы агента', onClick: () => onFiles(agent.workflowId, agent.name) },
-                { label: 'История', onClick: () => onHistory(agent.workflowId, agent.name) },
-                { label: 'Расписание', onClick: () => onSchedule(agent.workflowId, agent.name) }
-              ]}
-            />
-          ) : null}
-        </div>
       </header>
       <div className="proc-chat-hint" aria-hidden>
-        {openChatLabel}
+        {openPassportLabel}
       </div>
 
       <div className="proc-card-grid">
@@ -287,7 +273,16 @@ function ProcessCard({
         </div>
         <div>
           <span className="proc-label">Ближайший дедлайн</span>
-          <strong>{agent.standalone ? 'По запросу пользователя' : deadline?.when || agent.due}</strong>
+          <strong className={`proc-deadline-value${compactDeadline ? ' proc-deadline-two-line' : ''}`}>
+            {compactDeadline ? (
+              <>
+                <span>Следующий запуск</span>
+                <span>не запланирован</span>
+              </>
+            ) : (
+              deadlineText
+            )}
+          </strong>
           {!agent.standalone && deadline ? (
             <small className={deadline.left.startsWith('просрочен') ? 'late' : ''}>{deadline.left}</small>
           ) : null}
@@ -300,7 +295,25 @@ function ProcessCard({
           </strong>
           <small className={agent.paused ? '' : 'live'}>{agentLive}</small>
           {!agent.standalone ? <small>Последний прогон: {runWhen}</small> : null}
-          {!agent.standalone ? <small>ID: {runId || 'нет'}</small> : null}
+        </div>
+        <div className="proc-card-tools proc-card-tools-grid" onClick={stopCardClick}>
+          {!agent.standalone ? (
+            <button className="btn-ghost proc-open-run-btn" type="button" onClick={openPassportFiles}>
+              Открыть
+            </button>
+          ) : null}
+          <button className="btn-primary proc-run-btn" type="button" onClick={startRun}>
+            Запустить
+          </button>
+          {!agent.standalone && agent.paused ? (
+            <button className="btn-primary proc-stop-btn" type="button" onClick={() => onResume(agent.workflowId)}>
+              Возобновить
+            </button>
+          ) : !agent.standalone ? (
+            <button className="btn-ghost proc-stop-btn" type="button" onClick={stopRun}>
+              Остановить
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -315,16 +328,12 @@ function ProcessCard({
             <strong>{runStatus}</strong>
           </div>
           <div>
-            <span>Задержка агента</span>
+            <span>Работа агента</span>
             <strong>{agentDelay || '—'}</strong>
           </div>
           <div>
-            <span>Задержка человека</span>
+            <span>Ответ человека</span>
             <strong>{humanDelay || '—'}</strong>
-          </div>
-          <div>
-            <span>Автоматизация</span>
-            <strong>{auto != null ? `${auto}%` : '—'}</strong>
           </div>
         </footer>
       ) : null}
@@ -336,13 +345,15 @@ export function ProcessesWorkplace({
   userId,
   userFio,
   onOpen,
-  onFiles,
-  onHistory,
-  onSchedule
+  onOpenRun,
+  onFiles: _onFiles,
+  onHistory: _onHistory,
+  onSchedule: _onSchedule
 }: {
   userId: string
   userFio: string
-  onOpen: (workflowId: string, title: string, autoStart?: boolean) => void
+  onOpen: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
+  onOpenRun: (workflowId: string, title: string, runId?: string) => void
   onFiles: (workflowId: string, title: string) => void
   onHistory: (workflowId: string, title: string) => void
   onSchedule: (workflowId: string, title: string) => void
@@ -382,21 +393,26 @@ export function ProcessesWorkplace({
   useEffect(() => {
     let alive = true
     const workflowAgents = agents.filter((item) => !item.standalone)
-    void Promise.all(
-      workflowAgents.map(async (item) => {
-        const runs = await api.listAgentRuns(item.workflowId).catch(() => [] as AgentRunHistoryItem[])
-        return [item.workflowId, latestRun(runs)] as const
+    const load = (): void => {
+      void Promise.all(
+        workflowAgents.map(async (item) => {
+          const runs = await api.listAgentRuns(item.workflowId).catch(() => [] as AgentRunHistoryItem[])
+          return [item.workflowId, latestRun(runs)] as const
+        })
+      ).then((pairs) => {
+        if (!alive) return
+        const next: Record<string, AgentRunHistoryItem | null> = {}
+        for (const [id, run] of pairs) {
+          next[id] = run
+        }
+        setLatestRunById(next)
       })
-    ).then((pairs) => {
-      if (!alive) return
-      const next: Record<string, AgentRunHistoryItem | null> = {}
-      for (const [id, run] of pairs) {
-        next[id] = run
-      }
-      setLatestRunById(next)
-    })
+    }
+    load()
+    const timer = window.setInterval(load, 4000)
     return () => {
       alive = false
+      window.clearInterval(timer)
     }
   }, [agents])
 
@@ -433,10 +449,12 @@ export function ProcessesWorkplace({
     <div className="wp-page proc-page">
       <div className="wp-head">
         <div>
-          <h1 className="page-title">Процессы должности</h1>
+          <div className="wp-head-title-row">
+            <h1 className="page-title">Процессы должности</h1>
+            <span className="orch-badge">{loading ? 'загрузка' : `${trackedAgentsCount} процессов`}</span>
+          </div>
           <div className="wp-sub">Полный перечень процессов и их текущее состояние</div>
         </div>
-        <span className="orch-badge">{loading ? 'загрузка' : `${trackedAgentsCount} процессов`}</span>
       </div>
       {flash ? <div className="wp-toast">{flash}</div> : null}
       {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
@@ -505,11 +523,8 @@ export function ProcessesWorkplace({
             agent={agent}
             kpi={kpiById[agent.workflowId] || null}
             latestRunInfo={latestRunById[agent.workflowId] || null}
-            events={board.events.filter((event) => event.workflowId === agent.workflowId)}
             onOpen={onOpen}
-            onFiles={onFiles}
-            onHistory={onHistory}
-            onSchedule={onSchedule}
+            onOpenRun={onOpenRun}
             onPause={(id) => void pause(id)}
             onResume={(id) => void resume(id)}
           />

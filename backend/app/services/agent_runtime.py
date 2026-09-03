@@ -607,9 +607,19 @@ def _compose_onec_desktop_answer(tool_result: dict[str, Any]) -> str:
     for item in documents[:10]:
         if not isinstance(item, dict):
             continue
-        title = str(item.get("title") or item.get("number") or "Документ")
-        status = str(item.get("status") or "")
-        lines.append(f"• {title}" + (f" — {status}" if status else ""))
+        number = str(item.get("number") or "").strip()
+        theme = str(item.get("meeting_topic") or item.get("theme") or "").strip()
+        title = str(item.get("title") or "").strip()
+        status = str(item.get("status") or "").strip()
+        if number:
+            label = f"№ {number}" + (f" · {theme}" if theme else "")
+        elif theme:
+            label = theme
+        elif title and "Выполни рабочую задачу" not in title:
+            label = title
+        else:
+            label = title or "Документ"
+        lines.append(f"• {label}" + (f" — {status}" if status else ""))
     return "\n".join(lines)
 
 
