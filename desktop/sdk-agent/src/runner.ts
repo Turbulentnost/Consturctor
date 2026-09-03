@@ -345,6 +345,24 @@ function testsPassReady(text: string): boolean {
   return upper.includes("TESTS: PASS") || upper.includes("TESTS:PASS");
 }
 
+// Matches the "## WORK_RESULT" header the run answer must start with.
+// Mirrors strip_to_work_result in desktop/app/sdk_agent/prompt.py.
+const WORK_RESULT_RE = /^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\b.*$/im;
+
+function hasWorkResult(text: string): boolean {
+  return WORK_RESULT_RE.test(text || "");
+}
+
+// Keep only the final "## WORK_RESULT" block; drop the reasoning narration
+// the model streamed before it. Returns the trimmed text unchanged when no
+// marker is present so we never lose a genuine answer.
+function stripToWorkResult(text: string): string {
+  const raw = text || "";
+  const match = raw.match(WORK_RESULT_RE);
+  if (!match || match.index === undefined) return raw.trim();
+  return raw.slice(match.index).trim();
+}
+
 function playbookDraftReady(text: string): boolean {
   const raw = (text || "").trim();
   if (!raw) return false;
@@ -686,11 +704,19 @@ async function runAgent(command: RunCommand): Promise<void> {
     const finishIfReady = async (draft: string): Promise<boolean> => {
       const designReady = design && playbookDraftReady(draft);
       const interviewReady = interview && interviewDraftReady(draft);
-      const demoReady = !design && !interview && testsPassReady(draft);
+      // Only finish a run when the model has actually produced the structured
+      // "## WORK_RESULT" block (ending in TESTS: PASS). A bare "TESTS: PASS"
+      // mentioned mid-reasoning must NOT stop the run: doing so cut the model
+      // off before it wrote the result / called visualization tools and dumped
+      // the whole reasoning monologue into the answer.
+      const demoReady =
+        !design && !interview && testsPassReady(draft) && hasWorkResult(draft);
       if (!designReady && !interviewReady && !demoReady) return false;
       const readyAnswer = interviewReady
         ? JSON.stringify(firstJsonObject(draft) || {})
-        : draft;
+        : demoReady
+          ? stripToWorkResult(draft)
+          : draft;
       emit({
         type: "status",
         text: interviewReady
@@ -745,10 +771,13 @@ async function runAgent(command: RunCommand): Promise<void> {
     const status = String(result.status || "").toLowerCase();
     const okStatus =
       status === "finished" || status === "success" ? "ok" : status || "ok";
-    // Prefer the last assistant segment (the actual answer) over the whole
-    // monologue; fall back only if the run produced no trailing text.
-    const finalAnswer =
-      lastAssistant.trim() || answer || String(result.result || "");
+    // Prefer the structured "## WORK_RESULT" block when the model produced one
+    // (it may sit after reasoning narration). Otherwise fall back to the last
+    // assistant segment (reset on every tool call) so intermediate narration
+    // between tools never leaks into the result.
+    const finalAnswer = hasWorkResult(answer)
+      ? stripToWorkResult(answer)
+      : lastAssistant.trim() || answer || String(result.result || "");
     emit({ type: "final", id, status: okStatus, answer: finalAnswer });
     emit({ type: "done", id, status: okStatus, answer: finalAnswer });
   } catch (error) {
