@@ -40,6 +40,11 @@ const JUNK_PHRASES = [
 const JUNK_LINE_START =
   /^(сначала |сейчас |далее |затем |потом )?(прочитаю|читаю|вызову|открою журнал|проверю журнал|проверю вложен)/i
 
+// First-person process narration ("Снимаю свежие карточки", "открываю календари")
+// belongs to «Ход работы», never to «Результат».
+const NARRATION_START =
+  /^(сначала |сейчас |далее |затем |потом |теперь |параллельно )*(снимаю|сниму|снял|открываю|открою|открыл|смотрю|посмотрю|читаю|прочитаю|проверяю|проверю|запрашиваю|запрошу|загружаю|загружу|беру|возьму|собираю|соберу|анализирую|сверяю|сверю|уточняю|уточню|планирую|формирую|составляю|начинаю|перехожу|вызываю)\b/i
+
 const NAMED_HEADINGS = ['RESULT', 'Результат', 'Итог']
 
 function fold(value: string): string {
@@ -84,6 +89,7 @@ function extractNamedSection(text: string, heading: string): string {
 
 function isJunkLine(line: string): boolean {
   const raw = (line || '').trim()
+  const stripped = raw.replace(/^[.\s—-]+/, '')
   const text = fold(raw)
   if (!text) return true
   if (text.startsWith('```')) return true
@@ -92,6 +98,7 @@ function isJunkLine(line: string): boolean {
   if (/^tests:\s*(pass|fail)/i.test(raw)) return true
   if (JUNK_PHRASES.some((marker) => text.includes(marker))) return true
   if (JUNK_LINE_START.test(raw)) return true
+  if (NARRATION_START.test(stripped)) return true
   if (/^[a-z][a-z0-9_.]{2,48}$/.test(text)) return true
   if (text.startsWith('{') && (text.includes('"tool"') || text.includes('constructor'))) return true
   if (text.includes('odata') && (text.includes('недоступ') || text.includes('ошиб') || text.includes('читаю'))) {
@@ -161,7 +168,7 @@ function eventText(event: AgentRunnerEvent): string {
   return ''
 }
 
-function fromEvents(events: AgentRunnerEvent[]): string {
+function fromEvents(events: AgentRunnerEvent[], allowAssistantFallback = true): string {
   const preferred = new Set(['work_result', 'final', 'result'])
   let last = ''
   for (const event of events) {
@@ -171,6 +178,7 @@ function fromEvents(events: AgentRunnerEvent[]): string {
     if (cleaned) last = cleaned
   }
   if (last) return last
+  if (!allowAssistantFallback) return ''
   for (const event of events) {
     const type = String(event.type || '').toLowerCase()
     if (type !== 'assistant' && type !== 'agent_message') continue
@@ -200,8 +208,15 @@ export function cleanRunResult(input: {
 }): { text: string; emptyHint: string } {
   const events = input.events || []
   const rawAnswer = (input.answer || input.summary || '').trim()
-  const fromEvent = fromEvents(events)
-  const fromAnswer = cleanText(rawAnswer)
+  const statusKey = (input.status || '').trim().toLowerCase()
+  const terminatedBad =
+    statusKey === 'canceled' ||
+    statusKey === 'cancelled' ||
+    statusKey === 'error' ||
+    statusKey === 'failed'
+  const fromEvent = fromEvents(events, !terminatedBad)
+  // For cancelled/errored runs the raw answer is usually partial narration, not a result.
+  const fromAnswer = terminatedBad ? '' : cleanText(rawAnswer)
   const text = fromEvent || fromAnswer
   if (!text) return { text: '', emptyHint: emptyHint(input.status || '', rawAnswer) }
   return { text, emptyHint: '' }

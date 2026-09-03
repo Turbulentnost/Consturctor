@@ -678,6 +678,12 @@ export function parseScheduleTrigger(raw: Record<string, unknown>): ScheduleTrig
   const unitRaw = String(raw.interval_unit ?? raw.intervalUnit ?? 'hours').toLowerCase()
   const intervalUnit: IntervalUnit =
     unitRaw === 'minutes' || unitRaw === 'days' ? (unitRaw as IntervalUnit) : 'hours'
+  const weekdaysRaw = raw.weekdays ?? raw.active_days
+  const weekdays = Array.isArray(weekdaysRaw)
+    ? weekdaysRaw
+        .map((day) => Number(day))
+        .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6)
+    : []
   return {
     kind,
     message: String(raw.message ?? ''),
@@ -685,7 +691,10 @@ export function parseScheduleTrigger(raw: Record<string, unknown>): ScheduleTrig
     intervalUnit,
     condition: String(raw.condition ?? ''),
     at: String(raw.at ?? ''),
-    once: Boolean(raw.once)
+    once: Boolean(raw.once),
+    weekdays,
+    windowStart: String(raw.window_start ?? raw.windowStart ?? ''),
+    windowEnd: String(raw.window_end ?? raw.windowEnd ?? '')
   }
 }
 
@@ -709,7 +718,10 @@ export function scheduleTriggerToApi(spec: ScheduleTriggerSpec): Record<string, 
     interval_unit: spec.intervalUnit,
     condition: spec.condition,
     at: spec.at,
-    once: spec.once
+    once: spec.once,
+    weekdays: spec.weekdays ?? [],
+    window_start: spec.windowStart ?? '',
+    window_end: spec.windowEnd ?? ''
   }
 }
 
@@ -1441,7 +1453,10 @@ export class ApiClient {
         workflowId,
         message: spec.message,
         intervalSeconds: intervalSecondsFromUnit(spec.intervalValue, spec.intervalUnit),
-        once: false
+        once: false,
+        activeDays: spec.weekdays ?? [],
+        windowStart: spec.windowStart ?? '',
+        windowEnd: spec.windowEnd ?? ''
       })
       return
     }
@@ -1469,6 +1484,9 @@ export class ApiClient {
     at?: string
     intervalSeconds?: number
     condition?: string
+    activeDays?: number[]
+    windowStart?: string
+    windowEnd?: string
   }): Promise<void> {
     const body: Record<string, unknown> = {
       workflow_id: spec.workflowId,
@@ -1481,6 +1499,9 @@ export class ApiClient {
       body.once = false
     }
     if (spec.condition) body.condition = spec.condition.trim()
+    if (spec.activeDays && spec.activeDays.length) body.active_days = spec.activeDays
+    if (spec.windowStart) body.window_start = spec.windowStart
+    if (spec.windowEnd) body.window_end = spec.windowEnd
     await this.request('POST', '/api/v1/triggers', { body, timeoutMs: 30_000 })
   }
 

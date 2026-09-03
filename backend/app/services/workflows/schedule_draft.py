@@ -47,8 +47,17 @@ def trigger_chip_label(spec: ScheduleTriggerSpec) -> str:
                 return "ежедневно"
             return f"каждые {amount} дн."
         if amount == 1:
-            return "каждый час"
-        return f"каждые {amount} ч"
+            base = "каждый час"
+        else:
+            base = f"каждые {amount} ч"
+        extras: list[str] = []
+        if spec.window_start and spec.window_end:
+            extras.append(f"{spec.window_start}–{spec.window_end}")
+        if sorted(spec.weekdays or []) == [0, 1, 2, 3, 4]:
+            extras.append("будни")
+        if extras:
+            return f"{base}, " + ", ".join(extras)
+        return base
     if kind == "datetime":
         clock = _time_from_at(spec.at)
         if not spec.once and clock:
@@ -283,12 +292,16 @@ def _parse_trigger_hint(text: str) -> ScheduleTriggerSpec | None:
     interval = _parse_interval(low)
     if interval is not None:
         value, unit = interval
+        window_start, window_end = _parse_time_window(low)
         return ScheduleTriggerSpec(
             kind="interval",
             message="",
             interval_value=value,
             interval_unit=unit,
             once=False,
+            weekdays=_parse_weekdays(low),
+            window_start=window_start,
+            window_end=window_end,
         )
     daily = re.search(r"(?:ежедневн|каждый день|раз в день).{0,20}(\d{1,2})[:.](\d{2})", low)
     if daily:
@@ -302,6 +315,51 @@ def _parse_trigger_hint(text: str) -> ScheduleTriggerSpec | None:
     if not condition:
         return None
     return ScheduleTriggerSpec(kind="event", message="", condition=condition, once=False)
+
+
+_WEEKDAY_HINTS = (
+    "будни",
+    "будн",
+    "рабочи",  # рабочие дни / по рабочим дням
+    "пн-пт",
+    "пн–пт",
+    "пн — пт",
+    "понедельник",  # понедельник-пятница
+)
+
+
+def _parse_weekdays(low: str) -> list[int]:
+    folded = (low or "").casefold().replace("ё", "е")
+    if any(hint in folded for hint in _WEEKDAY_HINTS):
+        return [0, 1, 2, 3, 4]
+    return []
+
+
+def _parse_time_window(low: str) -> tuple[str, str]:
+    """Extract 'с 8:00 до 17:00' / 'с 8 до 17' / '8:00-17:00' / '8-17'."""
+    folded = (low or "").casefold().replace("ё", "е")
+
+    def _clock(hour: str, minute: str | None) -> str:
+        h = int(hour)
+        m = int(minute) if minute else 0
+        if h > 23 or m > 59:
+            return ""
+        return f"{h:02d}:{m:02d}"
+
+    patterns = (
+        r"с\s*(\d{1,2})(?:[:.](\d{2}))?\s*(?:час[а-я]*\s*)?до\s*(\d{1,2})(?:[:.](\d{2}))?",
+        r"межд[уy]\s*(\d{1,2})(?:[:.](\d{2}))?\s*и\s*(\d{1,2})(?:[:.](\d{2}))?",
+        r"(\d{1,2})(?:[:.](\d{2}))?\s*[-–—]\s*(\d{1,2})(?:[:.](\d{2}))?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, folded)
+        if not match:
+            continue
+        start = _clock(match.group(1), match.group(2))
+        end = _clock(match.group(3), match.group(4))
+        if start and end and start != end:
+            return start, end
+    return "", ""
 
 
 def _parse_interval(low: str) -> tuple[float, str] | None:
@@ -504,6 +562,18 @@ def _normalize_spec(item: dict[str, Any]) -> ScheduleTriggerSpec | None:
     message = str(item.get("message") or "").strip()
     if kind == "event" and (message == condition or len(message) > 160):
         message = ""
+    weekdays_raw = item.get("weekdays")
+    weekdays: list[int] = []
+    if isinstance(weekdays_raw, (list, tuple)):
+        for day in weekdays_raw:
+            try:
+                num = int(day)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= num <= 6:
+                weekdays.append(num)
+    window_start = str(item.get("window_start") or "").strip()
+    window_end = str(item.get("window_end") or "").strip()
     return ScheduleTriggerSpec(
         kind=kind,
         message=message,
@@ -512,6 +582,9 @@ def _normalize_spec(item: dict[str, Any]) -> ScheduleTriggerSpec | None:
         condition=condition,
         at=at,
         once=bool(item.get("once", kind == "datetime")),
+        weekdays=sorted(set(weekdays)),
+        window_start=window_start if kind == "interval" else "",
+        window_end=window_end if kind == "interval" else "",
     )
 
 

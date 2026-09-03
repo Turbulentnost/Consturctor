@@ -440,6 +440,9 @@ export interface ScheduleTriggerSpec {
   condition: string
   at: string
   once: boolean
+  weekdays?: number[]
+  windowStart?: string
+  windowEnd?: string
 }
 
 export interface ScheduleDraft {

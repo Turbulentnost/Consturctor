@@ -3744,8 +3744,8 @@ button.feed-tool-head:hover {
   white-space: normal;
 }
 .mini-cal-modal {
-  width: 560px;
-  max-height: 80vh;
+  width: min(920px, 94vw);
+  max-height: 84vh;
 }
 .mini-cal-modal-head {
   display: flex;
@@ -3779,6 +3779,100 @@ button.feed-tool-head:hover {
   font-weight: 600;
   padding-top: 6px;
   border-top: 1px solid var(--card-border, #d7e2ee);
+}
+
+/* ===== Mini calendar grid (time-axis view) ===== */
+.mini-cal-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+.mini-cal-grid {
+  display: grid;
+  min-width: min-content;
+  border: 1px solid var(--card-border, #d7e2ee);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+.mini-cal-grid-corner {
+  border-bottom: 1px solid var(--card-border, #d7e2ee);
+  background: #f7fafc;
+}
+.mini-cal-grid-dayhead {
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--content-strong, #10141a);
+  text-align: center;
+  background: #f7fafc;
+  border-bottom: 1px solid var(--card-border, #d7e2ee);
+  border-left: 1px solid var(--card-border, #eef2f6);
+  white-space: nowrap;
+}
+.mini-cal-grid-axis {
+  position: relative;
+}
+.mini-cal-grid-hour {
+  box-sizing: border-box;
+  font-size: 10px;
+  color: var(--content-muted, #5b7a99);
+  text-align: right;
+  padding: 2px 6px 0 0;
+  border-top: 1px solid var(--card-border, #eef2f6);
+}
+.mini-cal-grid-hour:first-child {
+  border-top: none;
+}
+.mini-cal-grid-col {
+  position: relative;
+  border-left: 1px solid var(--card-border, #eef2f6);
+}
+.mini-cal-grid-cell {
+  box-sizing: border-box;
+  border-top: 1px solid var(--card-border, #eef2f6);
+}
+.mini-cal-grid-cell:first-child {
+  border-top: none;
+}
+.mini-cal-event {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 2px 6px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  cursor: default;
+}
+.mini-cal-event-time {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--content-muted, #46617d);
+  line-height: 1.1;
+}
+.mini-cal-event-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--content-strong, #10141a);
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.mini-cal-loose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wf-result-calendar {
+  margin-bottom: 14px;
 }
 
 /* ===== Clarify (question) card - compact, like desktop ===== */
