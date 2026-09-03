@@ -293,3 +293,89 @@ def test_free_slots_skip_busy_work_hours() -> None:
     assert slots[0]["start"].startswith("2026-08-20T09:00")
     assert any(item["start"].startswith("2026-08-20T11:00") for item in slots)
     assert all(not (item["start"] <= "2026-08-20T10:00" < item["end"]) for item in slots)
+
+
+def test_event_involves_person_by_organizer_and_attendees() -> None:
+    from app.tools.ac.workers.outlook_com_actions import event_involves_person
+
+    ilchenko = "Ильченко Екатерина Александровна"
+    assert event_involves_person(
+        {"organizer": "Ильченко Екатерина Александровна", "required_attendees": ""},
+        ilchenko,
+    )
+    assert event_involves_person(
+        {
+            "organizer": "Донцова Анна Егоровна",
+            "required_attendees": "Ильченко Е.А.; Мангасарян Д.К.",
+        },
+        ilchenko,
+    )
+    assert event_involves_person(
+        {"subject": "Планерка с Ильченко Екатериной", "organizer": "Донцова"},
+        ilchenko,
+    )
+    assert not event_involves_person(
+        {
+            "organizer": "Мангасарян Давид Каренович",
+            "required_attendees": "Уставицкий А. А.",
+            "subject": "Планерное совещание",
+        },
+        ilchenko,
+    )
+
+
+def test_same_calendar_person_matches_partial_fio() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _same_calendar_person
+
+    assert _same_calendar_person(
+        "Ильченко Екатерина Александровна",
+        "Ильченко Екатерина Александровна",
+    )
+    assert _same_calendar_person("Ильченко Екатерина Александровна", "Ильченко Е. А.")
+    assert not _same_calendar_person("Ильченко", "")
+
+
+def test_restrict_filters_put_russian_locale_first() -> None:
+    from app.tools.ac.workers.outlook_com_actions import restrict_filter_strings
+
+    filters = restrict_filter_strings(datetime(2026, 8, 31, 0, 0), datetime(2026, 9, 7, 0, 0))
+    assert filters[0] == "[Start] >= '31.08.2026 00:00' AND [Start] <= '07.09.2026 00:00'"
+    assert any("08/31/2026" in item for item in filters)
+
+
+def test_iso_com_datetime_normalizes_naive_and_text() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _iso_com_datetime
+
+    assert _iso_com_datetime(datetime(2026, 9, 3, 14, 0, 0)) == "2026-09-03T14:00:00"
+    assert _iso_com_datetime("2026-09-03 14:00:00") == "2026-09-03T14:00:00"
+
+
+def test_collect_range_retries_restrict_when_us_filter_is_empty() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _collect_calendar_range
+
+    class _Item:
+        def __init__(self) -> None:
+            self.EntryID = "e1"
+            self.Subject = "Планерка"
+            self.Start = datetime(2026, 9, 3, 10, 0, 0)
+            self.End = datetime(2026, 9, 3, 11, 0, 0)
+            self.Location = ""
+            self.PropertyAccessor = type("A", (), {"GetProperty": staticmethod(lambda _s: "")})()
+
+    class _Items:
+        def Restrict(self, restriction: str):
+            if "31.08.2026" in restriction:
+                return [_Item()]
+            return []
+
+    events, scanned = _collect_calendar_range(
+        _Items(),
+        datetime(2026, 8, 31),
+        datetime(2026, 9, 7),
+        max_results=20,
+        max_scan_items=50,
+        include_body=False,
+    )
+    assert scanned >= 1
+    assert events[0]["subject"] == "Планерка"
+    assert events[0]["start"] == "2026-09-03T10:00:00"

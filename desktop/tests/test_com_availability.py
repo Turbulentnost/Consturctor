@@ -125,3 +125,9 @@ def test_availability_does_not_probe_py32_launcher(monkeypatch) -> None:
     assert com_availability.is_onec_com_available() is False
     assert called == []
     _reset()
+
+
+def test_pywin32_dll_dirs_returns_list() -> None:
+    dirs = com_availability.pywin32_dll_dirs()
+    assert isinstance(dirs, list)
+    com_availability.ensure_pywin32_dll_path()

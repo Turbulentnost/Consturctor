@@ -104,6 +104,7 @@ def _load_pywin32_modules():
     if not com_availability.is_windows():
         raise ComUnavailableError("COM доступен только на Windows")
 
+    com_availability.ensure_pywin32_dll_path()
     try:
         pythoncom = importlib.import_module("pythoncom")
         win32com_client = importlib.import_module("win32com.client")
@@ -286,6 +287,182 @@ def _current_calendar_owner(namespace: Any) -> str:
         return ""
 
 
+def _same_calendar_person(left: str, right: str) -> bool:
+    """ФИО из 1С и Display Name Outlook часто не совпадают буква в букву."""
+    a = (left or "").strip().casefold()
+    b = (right or "").strip().casefold()
+    if not a or not b:
+        return False
+    if a == b or a in b or b in a:
+        return True
+    a_parts = a.replace(".", " ").split()
+    b_parts = b.replace(".", " ").split()
+    if not a_parts or not b_parts or a_parts[0] != b_parts[0] or len(a_parts[0]) < 4:
+        return False
+    if len(a_parts) > 1 and len(b_parts) > 1:
+        return a_parts[1][0] == b_parts[1][0]
+    return True
+
+
+OL_APPOINTMENT_ITEM = 1
+OL_NAVIGATION_MODULE_CALENDAR = 1
+
+
+def _folder_entry_id(folder: Any) -> str:
+    return _safe_str(getattr(folder, "EntryID", "")).strip()
+
+
+def _folder_label(folder: Any, fallback: str = "") -> str:
+    return _safe_str(getattr(folder, "Name", "")).strip() or fallback or "Календарь"
+
+
+def _is_appointment_folder(folder: Any) -> bool:
+    try:
+        return int(getattr(folder, "DefaultItemType", 0) or 0) == OL_APPOINTMENT_ITEM
+    except Exception:
+        return False
+
+
+def _iter_visible_calendar_folders(outlook: Any, namespace: Any) -> list[tuple[str, Any]]:
+    """Свой календарь + все календари из панели Outlook (в т.ч. «Совещания»)."""
+    found: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(folder: Any, label: str) -> None:
+        if folder is None:
+            return
+        key = _folder_entry_id(folder) or f"{label}:{id(folder)}"
+        if key in seen:
+            return
+        seen.add(key)
+        found.append((label, folder))
+
+    try:
+        add(_own_calendar_folder(namespace), "Календарь")
+    except OutlookAccessError:
+        pass
+
+    try:
+        explorer = outlook.ActiveExplorer()
+        module = explorer.NavigationPane.Modules.GetNavigationModule(OL_NAVIGATION_MODULE_CALENDAR)
+        for group in module.NavigationGroups:
+            group_name = _safe_str(getattr(group, "Name", "")).strip()
+            for nav in group.NavigationFolders:
+                try:
+                    folder = nav.Folder
+                except Exception:
+                    continue
+                add(folder, _folder_label(folder, group_name))
+    except Exception as exc:
+        _log_progress(f"step=nav_calendars skipped: {exc}")
+
+    try:
+        for store in namespace.Stores:
+            try:
+                add(store.GetDefaultFolder(CALENDAR_FOLDER_ID), _safe_str(store.DisplayName))
+            except Exception:
+                continue
+    except Exception as exc:
+        _log_progress(f"step=store_calendars skipped: {exc}")
+
+    extra: list[tuple[str, Any]] = []
+    for label, folder in found:
+        try:
+            for sub in folder.Folders:
+                if _is_appointment_folder(sub):
+                    extra.append((_folder_label(sub, label), sub))
+        except Exception:
+            continue
+    for label, folder in extra:
+        add(folder, label)
+    return found
+
+
+def person_match_needles(person: str) -> list[str]:
+    """Строки, по которым ищем участника в теме/организаторе/списке."""
+    raw = (person or "").strip()
+    if not raw:
+        return []
+    needles = [raw.casefold()]
+    parts = raw.replace(".", " ").split()
+    if parts:
+        needles.append(parts[0].casefold())
+        if len(parts) > 1:
+            needles.append(f"{parts[0]} {parts[1][0]}".casefold())
+            needles.append(parts[1].casefold())
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in needles:
+        if item and item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
+def event_involves_person(event: dict, person: str) -> bool:
+    """Встреча относится к пользователю системы: организатор или участник."""
+    name = (person or "").strip()
+    if not name:
+        return True
+    hay = " ".join(
+        [
+            str(event.get("organizer") or ""),
+            str(event.get("required_attendees") or ""),
+            str(event.get("optional_attendees") or ""),
+            str(event.get("subject") or ""),
+            str(event.get("calendar_owner") or ""),
+        ]
+    ).casefold()
+    if not hay.strip():
+        return False
+    parts = name.replace(".", " ").split()
+    last = parts[0].casefold() if parts else ""
+    if len(last) >= 4 and last not in hay:
+        return False
+    if len(parts) > 1:
+        first = parts[1].casefold()
+        if first in hay:
+            return True
+        if last and f"{last} {first[0]}" in hay:
+            return True
+        if len(first) >= 4 and first[:4] in hay:
+            return True
+        if last in hay:
+            return True
+        return False
+    return last in hay if last else False
+
+
+def _dedupe_calendar_events(events: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    out: list[dict] = []
+    for item in events:
+        key = "|".join(
+            [
+                str(item.get("entry_id") or ""),
+                str(item.get("start") or ""),
+                str(item.get("subject") or ""),
+            ]
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def _own_calendar_folder(namespace: Any) -> Any:
+    """Календарь профиля, который уже открыт в Outlook. MAPI_E_NOT_FOUND = нет профиля."""
+    try:
+        return namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
+    except Exception as exc:
+        raise OutlookAccessError(
+            "Календарь текущего профиля Outlook не найден (MAPI). "
+            "Откройте классический Outlook с почтовым профилем и повторите. "
+            f"({exc})"
+        ) from exc
+
+
 def _open_shared_calendar(namespace: Any, person: str) -> tuple[Any | None, str]:
     """Календарь сотрудника через адресную книгу Outlook. None если нет прав или не найден."""
     name = (person or "").strip()
@@ -422,7 +599,7 @@ def search_mail(input_data: dict) -> dict:
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
-        outlook = win32com_client.Dispatch("Outlook.Application")
+        outlook = _dispatch_outlook(win32com_client)
         _log_progress("step=dispatch_outlook ok")
         _log_progress("step=get_namespace start")
         namespace = outlook.GetNamespace("MAPI")
@@ -499,10 +676,14 @@ def read_calendar(input_data: dict) -> dict:
     )
     include_body = _truthy(input_data.get("include_body"))
     people = _people_from_input(input_data)
+    filter_user = (
+        _safe_str(input_data.get("for_user") or input_data.get("filter_user") or "").strip()
+    )
+    all_visible = _truthy(input_data.get("all_visible")) or bool(filter_user)
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
-        outlook = win32com_client.Dispatch("Outlook.Application")
+        outlook = _dispatch_outlook(win32com_client)
         _log_progress("step=dispatch_outlook ok")
         _log_progress("step=get_namespace start")
         namespace = outlook.GetNamespace("MAPI")
@@ -513,10 +694,61 @@ def read_calendar(input_data: dict) -> dict:
             forward=True,
         )
         own_name = _current_calendar_owner(namespace)
-        targets = people or [own_name or ""]
         events: list[dict] = []
         checked_count = 0
         calendars: list[dict] = []
+        if all_visible:
+            folders = _iter_visible_calendar_folders(outlook, namespace)
+            if not folders:
+                folders = [("Календарь", _own_calendar_folder(namespace))]
+            _log_progress(f"step=visible_calendars count={len(folders)}")
+            for label, folder in folders:
+                remaining_results = max_results - len(events)
+                remaining_scan = max_scan_items - checked_count
+                if remaining_results <= 0 or remaining_scan <= 0:
+                    break
+                try:
+                    items = _prepare_calendar_items(folder)
+                except Exception as exc:
+                    calendars.append({"person": label, "status": f"items:{exc}", "count": 0})
+                    continue
+                chunk, scanned = _collect_calendar_range(
+                    items,
+                    start_at,
+                    end_at,
+                    max_results=remaining_results,
+                    max_scan_items=remaining_scan,
+                    include_body=include_body,
+                    calendar_owner=label,
+                )
+                checked_count += scanned
+                events.extend(chunk)
+                calendars.append({"person": label, "status": "visible", "count": len(chunk)})
+                _log_progress(
+                    f"step=calendar_ok folder={label} events={len(chunk)} scanned={scanned}"
+                )
+            events = _dedupe_calendar_events(events)
+            if filter_user:
+                before = len(events)
+                events = [item for item in events if event_involves_person(item, filter_user)]
+                _log_progress(
+                    f"step=filter_user name={filter_user} before={before} after={len(events)}"
+                )
+            events.sort(key=lambda item: str(item.get("start") or ""))
+            _log_progress("step=done ok")
+            return {
+                "events": events,
+                "count": len(events),
+                "free_slots": _compute_free_slots(events, start_at, end_at),
+                "calendars": calendars,
+                "scanned_count": checked_count,
+                "source": "outlook_com",
+                "folder": "visible",
+                "filter_user": filter_user,
+                "range_start": start_at.isoformat(),
+                "range_end": end_at.isoformat(),
+            }
+        targets = people or [own_name or ""]
         for person in targets:
             remaining_results = max_results - len(events)
             remaining_scan = max_scan_items - checked_count
@@ -525,19 +757,33 @@ def read_calendar(input_data: dict) -> dict:
             folder = None
             status = "own"
             owner = person or own_name
-            if person and own_name and person.casefold() == own_name.casefold():
-                folder = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
+            if not person or _same_calendar_person(person, own_name):
+                folder = _own_calendar_folder(namespace)
                 status = "own"
-            elif person:
+            else:
                 _log_progress(f"step=get_shared_calendar person={person}")
                 folder, status = _open_shared_calendar(namespace, person)
-            else:
-                folder = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
-                status = "own"
+                if folder is None:
+                    _log_progress(
+                        f"step=shared_fallback_own person={person} status={status}"
+                    )
+                    folder = _own_calendar_folder(namespace)
+                    status = f"fallback_own:{status}"
             if folder is None:
                 calendars.append({"person": owner, "status": status, "count": 0})
                 continue
-            items = _prepare_calendar_items(folder)
+            try:
+                items = _prepare_calendar_items(folder)
+            except Exception as exc:
+                _log_progress(f"step=prepare_items_failed person={owner}: {exc}")
+                if status == "own" or str(status).startswith("fallback_own"):
+                    raise OutlookAccessError(
+                        "Не удалось открыть календарь текущего профиля Outlook. "
+                        "Нужен классический Outlook с загруженным почтовым профилем. "
+                        f"({exc})"
+                    ) from exc
+                calendars.append({"person": owner, "status": f"items:{exc}", "count": 0})
+                continue
             chunk, scanned = _collect_calendar_range(
                 items,
                 start_at,
@@ -1078,8 +1324,24 @@ def _collect_calendar_range(
         _log_progress(
             f"step=restrict_window start={win_start.date()} end={win_end.date()}"
         )
-        window_items, restricted = _restrict_calendar_items(items, win_start, win_end)
-        if not restricted:
+        chunk: list[dict] = []
+        scanned = 0
+        tried_restrict = False
+        for restriction, window_items in _iter_restricted_calendar_items(items, win_start, win_end):
+            tried_restrict = True
+            _log_progress(f"step=restrict_try filter={restriction}")
+            chunk, scanned = _collect_calendar_events(
+                window_items,
+                start_at,
+                end_at,
+                remaining_results,
+                remaining_scan,
+                include_body=include_body,
+                calendar_owner=calendar_owner,
+            )
+            if chunk:
+                break
+        if not tried_restrict:
             _log_progress("step=restrict_window fallback_getfirst")
             chunk, scanned = _collect_calendar_events(
                 items,
@@ -1091,15 +1353,6 @@ def _collect_calendar_range(
                 calendar_owner=calendar_owner,
             )
             return chunk, scanned
-        chunk, scanned = _collect_calendar_events(
-            window_items,
-            start_at,
-            end_at,
-            remaining_results,
-            remaining_scan,
-            include_body=include_body,
-            calendar_owner=calendar_owner,
-        )
         checked_count += scanned
         events.extend(chunk)
         _log_progress(
@@ -1139,8 +1392,8 @@ def _collect_calendar_events(
             {
                 "entry_id": _safe_str(getattr(event, "EntryID", "")),
                 "subject": _safe_str(getattr(event, "Subject", "")),
-                "start": _safe_str(event_start),
-                "end": _safe_str(event_end),
+                "start": _iso_com_datetime(event_start),
+                "end": _iso_com_datetime(event_end),
                 "location": _safe_str(getattr(event, "Location", "")),
                 "calendar_owner": calendar_owner,
                 "organizer": _read_guarded_property(event, PR_SENT_REPRESENTING_NAME_W),
@@ -1255,21 +1508,71 @@ def _datetime_sort_key(value: Any) -> str:
         return ""
 
 
+# Jet/Outlook Restrict is locale-sensitive. US `08/31/2026` is invalid on a
+# Russian profile (there is no 31st month) and often returns an empty set
+# without raising — so we try RU formats first, then US.
+_RESTRICT_DATE_FORMATS = (
+    "%d.%m.%Y %H:%M",
+    "%d/%m/%Y %H:%M",
+    "%m/%d/%Y %H:%M",
+    "%m/%d/%Y %I:%M %p",
+    "%Y-%m-%d %H:%M",
+)
+
+
+def restrict_filter_strings(start_at: datetime, end_at: datetime) -> list[str]:
+    """Date filters for Outlook Restrict, RU locale first."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for fmt in _RESTRICT_DATE_FORMATS:
+        restriction = (
+            "[Start] >= '"
+            + start_at.strftime(fmt)
+            + "' AND [Start] <= '"
+            + end_at.strftime(fmt)
+            + "'"
+        )
+        if restriction in seen:
+            continue
+        seen.add(restriction)
+        out.append(restriction)
+    return out
+
+
+def _iter_restricted_calendar_items(
+    items: Any, start_at: datetime, end_at: datetime
+):
+    """Yield (filter, restricted items) for each locale that Outlook accepts."""
+    for restriction in restrict_filter_strings(start_at, end_at):
+        try:
+            yield restriction, items.Restrict(restriction)
+        except Exception:
+            continue
+
+
 def _restrict_calendar_items(
     items: Any, start_at: datetime, end_at: datetime
 ) -> tuple[Any, bool]:
     """Ограничить календарь через Restrict. False = Restrict не сработал."""
-    restriction = (
-        "[Start] >= '"
-        + start_at.strftime("%m/%d/%Y %I:%M %p")
-        + "' AND [Start] <= '"
-        + end_at.strftime("%m/%d/%Y %I:%M %p")
-        + "'"
-    )
+    for _restriction, restricted in _iter_restricted_calendar_items(items, start_at, end_at):
+        return restricted, True
+    return items, False
+
+
+def _iso_com_datetime(value: Any) -> str:
+    """Normalize a COM/Outlook datetime to an ISO string the UI can parse."""
+    if value is None:
+        return ""
     try:
-        return items.Restrict(restriction), True
+        comparable = value.replace(tzinfo=None) if hasattr(value, "replace") else value
+        if hasattr(comparable, "isoformat"):
+            return comparable.isoformat(sep="T", timespec="seconds")
     except Exception:
-        return items, False
+        pass
+    text = _safe_str(value).strip()
+    if not text:
+        return ""
+    return text.replace(" ", "T", 1)
 
 
 def _truthy(value: Any) -> bool:

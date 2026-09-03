@@ -2804,6 +2804,80 @@ class Sidecar:
             except Exception:  # noqa: BLE001
                 pass
 
+    def read_calendar(self, command: dict[str, Any]) -> None:
+        """Read the current user's Outlook meetings and emit a calendar_result.
+
+        Runs in a background thread so the sidecar command loop keeps serving
+        agent runs while Outlook COM (which can be slow) is queried. Reuses the
+        exact tool the agent uses (outlook.read_calendar via SubprocessComWorker),
+        so COM stays isolated and the safe read path is shared.
+        """
+        request_id = str(command.get("requestId") or command.get("id") or "")
+        input_data: dict[str, Any] = {}
+        date_from = str(command.get("dateFrom") or "").strip()
+        date_to = str(command.get("dateTo") or "").strip()
+        if date_from:
+            input_data["date_from"] = date_from
+        if date_to:
+            input_data["date_to"] = date_to
+        people = command.get("people")
+        if isinstance(people, list):
+            names = [str(p).strip() for p in people if str(p).strip()]
+            if names:
+                input_data["people"] = names
+        for_user = str(command.get("forUser") or "").strip()
+        if for_user:
+            input_data["for_user"] = for_user
+        if command.get("allVisible"):
+            input_data["all_visible"] = True
+        days_forward = command.get("daysForward")
+        if isinstance(days_forward, int) and days_forward > 0:
+            input_data["days_forward"] = days_forward
+        if for_user or command.get("allVisible"):
+            input_data["max_scan_items"] = 2000
+
+        def _work() -> None:
+            try:
+                from app.tools.ac.dispatch import invoke_ac_tool
+
+                output = invoke_ac_tool("outlook.read_calendar", input_data)
+                events = output.get("events") or []
+                log(
+                    "read_calendar ok count="
+                    + str(len(events) if isinstance(events, list) else 0)
+                    + " from="
+                    + date_from
+                    + " to="
+                    + date_to
+                )
+                emit(
+                    {
+                        "type": "calendar_result",
+                        "requestId": request_id,
+                        "ok": True,
+                        "events": events if isinstance(events, list) else [],
+                        "calendars": output.get("calendars") or [],
+                        "rangeStart": output.get("range_start") or "",
+                        "rangeEnd": output.get("range_end") or "",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("read_calendar failed: " + repr(exc))
+                emit(
+                    {
+                        "type": "calendar_result",
+                        "requestId": request_id,
+                        "ok": False,
+                        "error": _exc_text(exc, "Не удалось прочитать календарь Outlook"),
+                    }
+                )
+
+        threading.Thread(
+            target=_work,
+            name=f"read_calendar-{request_id[:8]}",
+            daemon=True,
+        ).start()
+
     def cancel(self, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or "")
         workflow_id = str(command.get("workflowId") or "").strip()
@@ -2936,6 +3010,8 @@ def main() -> None:
                 sidecar.hitl(command)
             elif ctype == "skip":
                 sidecar.skip(command)
+            elif ctype == "read_calendar":
+                sidecar.read_calendar(command)
             elif ctype == "cancel":
                 sidecar.cancel(command)
             elif ctype == "shutdown":
