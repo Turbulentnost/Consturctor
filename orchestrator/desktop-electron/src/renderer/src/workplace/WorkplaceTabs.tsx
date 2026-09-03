@@ -226,13 +226,18 @@ export function DecisionsTab({
               ? 'done'
               : 'review'
       const needsHuman = bucket === 'waiting' || bucket === 'returned' || agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR'
-      const deadlineStamp =
-        parseIso(agent.boardAgent?.nextRunAt || '') ||
-        parseIso(run?.startedAt || run?.finishedAt || '')
-      const dateKey = deadlineStamp
-        ? `${deadlineStamp.getFullYear()}-${String(deadlineStamp.getMonth() + 1).padStart(2, '0')}-${String(deadlineStamp.getDate()).padStart(2, '0')}`
+      const nextStamp = parseIso(agent.boardAgent?.nextRunAt || '')
+      const runStamp = parseIso(run?.finishedAt || run?.startedAt || '')
+      // Sorting by "срок" still prefers the upcoming scheduled deadline.
+      const deadlineStamp = nextStamp || runStamp
+      // The day bucket (срок-фильтр и счётчик "сегодня") must reflect the day the
+      // run actually happened. Keying it on nextRunAt filed today's finished runs
+      // under the next scheduled day, so they vanished from "сегодня".
+      const dayStamp = runStamp || nextStamp
+      const dateKey = dayStamp
+        ? `${dayStamp.getFullYear()}-${String(dayStamp.getMonth() + 1).padStart(2, '0')}-${String(dayStamp.getDate()).padStart(2, '0')}`
         : ''
-      const doneToday = bucket === 'done' && Boolean(deadlineStamp && sameDay(deadlineStamp, todayStart))
+      const doneToday = bucket === 'done' && Boolean(runStamp && sameDay(runStamp, todayStart))
       return { agent, run, bucket, needsHuman, deadlineStamp, dateKey, doneToday }
     })
   }, [scopedAgents, runByAgent])
