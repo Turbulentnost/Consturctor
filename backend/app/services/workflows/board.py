@@ -14,7 +14,13 @@ from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.schemas.workflow import BoardAgent, BoardStats, CalendarEvent, WorkflowBoard
 from app.services.agent_runs import effective_run_status, fail_stale_started_runs
-from app.services.triggers.service import is_workflow_paused, workflow_is_deleted
+from app.services.triggers.service import (
+    has_window,
+    is_workflow_paused,
+    parse_active_days,
+    windowed_slots_between,
+    workflow_is_deleted,
+)
 
 
 def _stamp_iso(value: datetime | None) -> str:
@@ -100,11 +106,24 @@ def _expand_slot_times(
     interval_seconds: int,
     window_start: datetime,
     window_end: datetime,
+    active_days: object = "",
+    window_start_min: int | None = None,
+    window_end_min: int | None = None,
 ) -> list[datetime]:
     origin = _as_utc(fire_at)
     if origin is None:
         return []
     interval = max(0, int(interval_seconds or 0))
+    if interval > 0 and has_window(window_start_min, window_end_min):
+        return windowed_slots_between(
+            start=window_start,
+            end=window_end,
+            interval_seconds=interval,
+            window_start_min=int(window_start_min),
+            window_end_min=int(window_end_min),
+            active_days=parse_active_days(active_days),
+            max_slots=_MAX_SLOTS_PER_TRIGGER,
+        )
     if interval <= 0:
         if window_start <= origin <= window_end:
             return [origin]
@@ -385,6 +404,9 @@ def get_workflow_board(
                     interval_seconds=interval,
                     window_start=earliest,
                     window_end=end,
+                    active_days=getattr(item, "active_days", ""),
+                    window_start_min=getattr(item, "window_start_min", None),
+                    window_end_min=getattr(item, "window_end_min", None),
                 )
                 grace = timedelta(seconds=min(120, interval if interval > 0 else 120))
                 for stamp in times:

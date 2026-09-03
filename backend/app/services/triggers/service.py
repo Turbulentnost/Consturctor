@@ -81,16 +81,144 @@ def _next_at_msk_clock(clock: tuple[int, int], now: datetime) -> datetime:
     return candidate.astimezone(timezone.utc)
 
 
+def parse_active_days(value: object) -> set[int]:
+    """Accept a list[int] or a comma string like '0,1,2,3,4'. Returns weekday set."""
+    days: set[int] = set()
+    if isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = str(value or "").split(",")
+    for item in items:
+        try:
+            day = int(str(item).strip())
+        except (TypeError, ValueError):
+            continue
+        if 0 <= day <= 6:
+            days.add(day)
+    return days
+
+
+def format_active_days(days: object) -> str:
+    parsed = sorted(parse_active_days(days))
+    return ",".join(str(d) for d in parsed)
+
+
+def parse_clock_to_min(value: str) -> int | None:
+    """'HH:MM' -> minutes from midnight, or None."""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    match = re.match(r"^\s*([01]?\d|2[0-3])[:.]([0-5]\d)\s*$", raw)
+    if not match:
+        return None
+    return int(match.group(1)) * 60 + int(match.group(2))
+
+
+def format_min_to_clock(value: int | None) -> str:
+    if value is None:
+        return ""
+    value = int(value) % (24 * 60)
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+
+def has_window(window_start_min: int | None, window_end_min: int | None) -> bool:
+    return (
+        window_start_min is not None
+        and window_end_min is not None
+        and int(window_end_min) >= int(window_start_min)
+    )
+
+
+def next_windowed_slot(
+    after: datetime,
+    *,
+    interval_seconds: int,
+    window_start_min: int,
+    window_end_min: int,
+    active_days: set[int],
+    inclusive: bool = False,
+    max_days: int = 400,
+) -> datetime | None:
+    """First slot on the daily 08:00→17:00 style grid after `after` (MSK)."""
+    interval = int(interval_seconds or 0)
+    if interval <= 0:
+        return None
+    step_min = max(1, interval // 60)
+    ref = _as_utc(after) or datetime.now(timezone.utc)
+    day = ref.astimezone(_MSK).date()
+    for _ in range(max_days):
+        if not active_days or day.weekday() in active_days:
+            minute = int(window_start_min)
+            while minute <= int(window_end_min):
+                local = datetime(day.year, day.month, day.day, minute // 60, minute % 60, tzinfo=_MSK)
+                candidate = local.astimezone(timezone.utc)
+                if (candidate >= ref) if inclusive else (candidate > ref):
+                    return candidate
+                minute += step_min
+        day = day + timedelta(days=1)
+    return None
+
+
+def windowed_slots_between(
+    *,
+    start: datetime,
+    end: datetime,
+    interval_seconds: int,
+    window_start_min: int,
+    window_end_min: int,
+    active_days: set[int],
+    max_slots: int = 800,
+) -> list[datetime]:
+    """All grid slots within [start, end] for the daily window (MSK)."""
+    interval = int(interval_seconds or 0)
+    if interval <= 0:
+        return []
+    step_min = max(1, interval // 60)
+    start_utc = _as_utc(start)
+    end_utc = _as_utc(end)
+    if start_utc is None or end_utc is None or end_utc < start_utc:
+        return []
+    day = start_utc.astimezone(_MSK).date()
+    last_day = end_utc.astimezone(_MSK).date()
+    out: list[datetime] = []
+    guard = 0
+    while day <= last_day and guard < 500 and len(out) < max_slots:
+        guard += 1
+        if not active_days or day.weekday() in active_days:
+            minute = int(window_start_min)
+            while minute <= int(window_end_min) and len(out) < max_slots:
+                local = datetime(day.year, day.month, day.day, minute // 60, minute % 60, tzinfo=_MSK)
+                candidate = local.astimezone(timezone.utc)
+                if start_utc <= candidate <= end_utc:
+                    out.append(candidate)
+                minute += step_min
+        day = day + timedelta(days=1)
+    return out
+
+
 def next_aligned_fire_at(
     fire_at: datetime | None,
     interval_seconds: int,
     *,
     now: datetime | None = None,
     message: str = "",
+    active_days: object = None,
+    window_start_min: int | None = None,
+    window_end_min: int | None = None,
 ) -> datetime:
     """Keep the original clock grid so a skipped 11:00 slot still exists as missed."""
     now = now or datetime.now(timezone.utc)
     interval = int(interval_seconds or 0)
+    if interval > 0 and has_window(window_start_min, window_end_min):
+        slot = next_windowed_slot(
+            now,
+            interval_seconds=interval,
+            window_start_min=int(window_start_min),
+            window_end_min=int(window_end_min),
+            active_days=parse_active_days(active_days),
+        )
+        if slot is not None:
+            return slot
     if interval == 86400:
         hinted = _clock_hint_from_message(message)
         if hinted is not None:
@@ -124,6 +252,9 @@ def _to_out(row: AgentTrigger) -> TriggerOut:
         cooldown_until=row.cooldown_until,
         last_evidence=row.last_evidence or "",
         created_at=row.created_at,
+        active_days=sorted(parse_active_days(getattr(row, "active_days", ""))),
+        window_start=format_min_to_clock(getattr(row, "window_start_min", None)),
+        window_end=format_min_to_clock(getattr(row, "window_end_min", None)),
     )
 
 
@@ -157,8 +288,23 @@ def create_trigger(db: Session, *, owner_user_id: str, payload: TriggerCreate) -
         if seconds < 0:
             raise TriggerError("after_seconds не может быть отрицательным")
         fire_at = now + timedelta(seconds=seconds)
+    active_days = format_active_days(getattr(payload, "active_days", None))
+    window_start_min = parse_clock_to_min(getattr(payload, "window_start", "") or "")
+    window_end_min = parse_clock_to_min(getattr(payload, "window_end", "") or "")
+    windowed = interval_seconds > 0 and has_window(window_start_min, window_end_min)
     if interval_seconds > 0 and fire_at is None:
-        fire_at = now + timedelta(seconds=interval_seconds)
+        if windowed:
+            slot = next_windowed_slot(
+                now,
+                interval_seconds=interval_seconds,
+                window_start_min=int(window_start_min),
+                window_end_min=int(window_end_min),
+                active_days=parse_active_days(active_days),
+                inclusive=True,
+            )
+            fire_at = slot or now + timedelta(seconds=interval_seconds)
+        else:
+            fire_at = now + timedelta(seconds=interval_seconds)
     if fire_at is None and not condition and interval_seconds <= 0:
         raise TriggerError("Укажи at, after_seconds, interval_seconds или condition")
     if fire_at is None:
@@ -173,6 +319,9 @@ def create_trigger(db: Session, *, owner_user_id: str, payload: TriggerCreate) -
         condition_text=condition,
         fire_at=fire_at,
         interval_seconds=interval_seconds,
+        active_days=active_days if windowed else "",
+        window_start_min=window_start_min if windowed else None,
+        window_end_min=window_end_min if windowed else None,
         once=once,
         enabled=True,
     )
@@ -360,7 +509,13 @@ def mark_fired(db: Session, *, user_id: str, trigger_id: str, evidence: str = ""
         row.once = False
         row.enabled = True
         row.fire_at = next_aligned_fire_at(
-            row.fire_at, interval, now=now, message=row.message or ""
+            row.fire_at,
+            interval,
+            now=now,
+            message=row.message or "",
+            active_days=getattr(row, "active_days", ""),
+            window_start_min=getattr(row, "window_start_min", None),
+            window_end_min=getattr(row, "window_end_min", None),
         )
         row.cooldown_until = now + FIRE_COOLDOWN
     elif row.once:
@@ -394,7 +549,13 @@ def mark_skipped(
         interval = int(row.interval_seconds or 0)
         if interval > 0:
             row.fire_at = next_aligned_fire_at(
-                row.fire_at, interval, now=now, message=row.message or ""
+                row.fire_at,
+                interval,
+                now=now,
+                message=row.message or "",
+                active_days=getattr(row, "active_days", ""),
+                window_start_min=getattr(row, "window_start_min", None),
+                window_end_min=getattr(row, "window_end_min", None),
             )
             row.cooldown_until = now + FIRE_COOLDOWN
         else:

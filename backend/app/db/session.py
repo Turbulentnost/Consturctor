@@ -92,6 +92,21 @@ def _ensure_columns() -> None:
                     "ADD COLUMN interval_seconds INTEGER NOT NULL DEFAULT 0"
                 )
             )
+        if trigger_cols and "active_days" not in trigger_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE agent_triggers "
+                    "ADD COLUMN active_days VARCHAR(32) NOT NULL DEFAULT ''"
+                )
+            )
+        if trigger_cols and "window_start_min" not in trigger_cols:
+            conn.execute(
+                text("ALTER TABLE agent_triggers ADD COLUMN window_start_min INTEGER NULL")
+            )
+        if trigger_cols and "window_end_min" not in trigger_cols:
+            conn.execute(
+                text("ALTER TABLE agent_triggers ADD COLUMN window_end_min INTEGER NULL")
+            )
         notif_rows = conn.execute(
             text(
                 """

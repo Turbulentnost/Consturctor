@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { MiniCalendar, type MiniMeeting } from './MiniCalendar'
+import { MiniCalendar, meetingsFromResult } from './MiniCalendar'
 import type { ToolItem } from './types'
 
 interface ToolCardProps {
@@ -12,21 +12,6 @@ function pretty(value: Record<string, unknown>): string {
   } catch {
     return String(value)
   }
-}
-
-function meetingsFromResult(result: Record<string, unknown> | null): MiniMeeting[] {
-  const raw = result?.meetings
-  if (!Array.isArray(raw)) return []
-  return raw
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-    .map((item) => ({
-      title: String(item.title ?? ''),
-      start: String(item.start ?? ''),
-      end: String(item.end ?? ''),
-      mark: String(item.mark ?? 'keep'),
-      reason: String(item.reason ?? '')
-    }))
-    .filter((item) => item.title && item.start)
 }
 
 export function ToolCard({ item }: ToolCardProps): React.JSX.Element {

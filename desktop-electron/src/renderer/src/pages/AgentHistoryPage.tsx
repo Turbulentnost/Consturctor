@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowFileItem } from '../api/types'
 import { AgentFeed, buildFeedItems } from '../components/agentfeed'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
+import { MiniCalendar, meetingsFromResult, type MiniMeeting } from '../components/agentfeed/MiniCalendar'
 import { presentAgentText } from '../components/agentfeed/formatAgentText'
 import { useRuns } from '../store/runs'
 import { isInFlightRunStatus, isLiveRunState } from '../store/liveRun'
@@ -183,6 +184,17 @@ export function AgentHistoryPage({
 
   const selectedRun = runs.find((item) => item.runId === selected)
   const feedItems = useMemo(() => buildFeedItems(events), [events])
+  const planMeetings = useMemo<MiniMeeting[]>(() => {
+    let found: MiniMeeting[] = []
+    for (const ev of events) {
+      const type = String(ev.type || '').toLowerCase()
+      if (type !== 'tool_call' && type !== 'tool_result') continue
+      if (String((ev as { tool?: string }).tool || '') !== 'calendar.show_meetings') continue
+      const parsed = meetingsFromResult((ev as { result?: unknown }).result)
+      if (parsed.length) found = parsed
+    }
+    return found
+  }, [events])
   const showLiveFeed = Boolean(
     live &&
       isLiveRunState(live.state) &&
@@ -304,9 +316,14 @@ export function AgentHistoryPage({
                       Ход работы
                     </button>
                   </div>
+                  {planMeetings.length > 0 && (
+                    <div className="wf-result-calendar">
+                      <MiniCalendar meetings={planMeetings} />
+                    </div>
+                  )}
                   {answer ? (
                     <MarkdownBody text={presentAgentText(answer)} />
-                  ) : (
+                  ) : planMeetings.length > 0 ? null : (
                     <p>Нет текста результата</p>
                   )}
                 </section>

@@ -23,6 +23,10 @@ class AgentTrigger(Base):
     condition_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     fire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Recurrence window (MSK). active_days: comma-separated weekday ints 0=Mon..6=Sun, ""=every day.
+    active_days: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    window_start_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    window_end_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     once: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
