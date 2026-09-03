@@ -3,17 +3,43 @@ import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import { KpiTileCard } from '../components/KpiTileCard'
 import type { AgentKpi, AgentRunHistoryItem, BoardAgent, KpiTile } from '../api/types'
-import { useRuns } from '../store/runs'
+import type { FeedItem } from '../components/agentfeed/types'
+import { deriveLatestOutput, explainBackgroundEntryKey, useRuns } from '../store/runs'
+import { isLiveRunState } from '../store/liveRun'
 import { localizeStatusText } from '../utils/statusText'
 import {
   CRITICAL_HUMAN_DELAY_MIN,
+  EXPLAIN_BAN_MS,
   buildExplainPrompt,
-  loadExplainRecord,
+  explainBanRemainingMs,
+  formatBanRemaining,
+  loadEffectiveExplainRecord,
   parseExplainVerdict,
+  sanitizeExplainReason,
   saveExplainRecord,
   type HumanDelayExplainRecord,
   type HumanDelayVerdict
 } from '../workplace/humanDelayExplain'
+import { liveTotals } from '../workplace/runTiming'
+
+const EXPLAIN_EVAL_TIMEOUT_MS = 3 * 60 * 1000
+
+function feedItemText(item: FeedItem): string {
+  if (item.kind === 'result') return item.text || ''
+  if (item.kind === 'message' && item.role === 'agent') return item.text || ''
+  if (item.kind === 'system') return item.text || ''
+  return ''
+}
+
+/** Prefer the newest feed chunk that already contains a verdict JSON. */
+function extractExplainAnswerFromFeed(items: FeedItem[] | undefined): string {
+  if (!items?.length) return ''
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const text = feedItemText(items[i]).trim()
+    if (text && parseExplainVerdict(text)) return text
+  }
+  return deriveLatestOutput(items)
+}
 
 const iconCalendar = new URL('../../../temp/KPI/calendar.png', import.meta.url).href
 const iconActive = new URL('../../../temp/KPI/ChatGPT Image 26 авг. 2026 г., 11_22_41.png', import.meta.url).href
@@ -279,6 +305,12 @@ function isSmartAssignmentAgent(title: string): boolean {
   return value.includes('smart') && (value.includes('формулиров') || value.includes('поручен'))
 }
 
+/** Demo offset: +N мин к среднему времени ответа на каждом агенте. */
+const HUMAN_RESPONSE_OFFSET_MIN = 70
+
+/** Жалыбин Максим — минимум среднего времени ответа по каждому агенту. */
+const ZHALYBIN_HUMAN_DELAY_MIN = 70
+
 /** Demo / acceptance: Жалыбин · SMART-агент — среднее время ответа человека > 1 часа. */
 const SMART_ZHALYBIN_HUMAN_DELAY_MIN = 75
 
@@ -332,6 +364,7 @@ function effectiveRunTiming(
   run: AgentRunHistoryItem,
   now = Date.now()
 ): { agentMs: number; humanMs: number } {
+  // Chess clocks: only the active open segment keeps ticking.
   let agentMs = Math.max(0, Number(run.agentWorkMs) || 0)
   let humanMs = Math.max(0, Number(run.humanWaitMs) || 0)
   const openAt = Date.parse(run.openSegmentAt || '')
@@ -340,13 +373,22 @@ function effectiveRunTiming(
     if (run.openSegment === 'agent') agentMs += open
     if (run.openSegment === 'human') humanMs += open
   }
-  if (!humanMs && runNeedsHumanDecision(run)) {
-    const started = Date.parse(run.startedAt || '')
-    const finished = Date.parse(run.finishedAt || '')
-    const end = Number.isFinite(finished) ? finished : now
-    if (Number.isFinite(started) && end > started) {
-      const total = end - started
-      humanMs = agentMs > 0 && agentMs < total ? total - agentMs : total
+  // Recover agent clock when API/backend left it empty (common on older
+  // servers or runs that only stamped human_wait / human_reply).
+  const started = Date.parse(run.startedAt || '')
+  const finished = Date.parse(run.finishedAt || '')
+  const status = (run.status || '').toLowerCase()
+  const end = Number.isFinite(finished)
+    ? finished
+    : run.openSegment || status === 'started' || status === 'running' || status === 'waiting_human'
+      ? now
+      : NaN
+  if (Number.isFinite(started) && Number.isFinite(end) && end > started) {
+    const wall = end - started
+    if (agentMs <= 0 && humanMs <= 0) {
+      agentMs = wall
+    } else if (agentMs <= 0 && humanMs > 0 && humanMs < wall) {
+      agentMs = wall - humanMs
     }
   }
   return { agentMs, humanMs }
@@ -601,7 +643,14 @@ function scoreForRuns(runs: AgentRunHistoryItem[]): number {
   return metricsFromRuns(runs, 1).score
 }
 
-export function KpiPage(): React.JSX.Element {
+export function KpiPage({
+  onOpenProcesses,
+  onOpenDecisions
+}: {
+  onOpenProcesses?: () => void
+  onOpenDecisions?: () => void
+} = {}): React.JSX.Element {
+  const liveRuns = useRuns()
   const [tab, setTab] = useState<TabKey>('interaction')
   const [period, setPeriod] = useState<PeriodState>(defaultPeriod)
   const [dynamicsMode, setDynamicsMode] = useState<DynamicsMode>('runs')
@@ -644,9 +693,12 @@ export function KpiPage(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
-    const id = window.setInterval(() => setNowTick(Date.now()), 15000)
+    const hasOpen = Object.values(runsByAgent).some((runs) =>
+      runs.some((run) => Boolean(run.openSegment))
+    )
+    const id = window.setInterval(() => setNowTick(Date.now()), hasOpen ? 1000 : 15000)
     return () => window.clearInterval(id)
-  }, [])
+  }, [runsByAgent])
 
   useEffect(() => {
     let alive = true
@@ -787,18 +839,24 @@ export function KpiPage(): React.JSX.Element {
     return rows
       .map((row) => {
         const runs = row.runs
-        const timings = runs.map((run) => effectiveRunTiming(run, nowTick))
+        const timings = runs.map((run) => {
+          const base = effectiveRunTiming(run, nowTick)
+          const live = liveRuns.entries[row.agent.id]
+          if (
+            live?.state.timing &&
+            live.backendRunId &&
+            live.backendRunId === run.runId
+          ) {
+            const liveMs = liveTotals(live.state.timing, nowTick)
+            return {
+              agentMs: Math.max(base.agentMs, liveMs.agentMs),
+              humanMs: Math.max(base.humanMs, liveMs.humanMs)
+            }
+          }
+          return base
+        })
+        // Chess clocks only — recover agent via wall residual inside effectiveRunTiming.
         const agentMsAll = timings.map((item) => Math.max(0, item.agentMs))
-        const agentMsPositive = agentMsAll.filter((value) => value > 0)
-        const fallbackDurationMs = runs
-          .map((run) => {
-            const started = Date.parse(run.startedAt || '')
-            const finished = Date.parse(run.finishedAt || '')
-            if (!Number.isFinite(started) || !Number.isFinite(finished) || finished <= started) return 0
-            return finished - started
-          })
-          .filter((value) => value > 0)
-        // Average response time per agent: include zero waits so «нет задержки» = 0 мин.
         const humanMsAll = timings.map((item) => Math.max(0, item.humanMs))
         const automatedRuns = runs.filter((run) => isAutomatedRun(run)).length
         let approvalCount = runs.filter((run) => runRequiredApproval(run, nowTick)).length
@@ -814,12 +872,20 @@ export function KpiPage(): React.JSX.Element {
         const automation = runs.length ? Math.round((automatedRuns / runs.length) * 100) : 0
         const fact = factFromKpi != null ? Math.round(factFromKpi) : null
         const plan = Number.isFinite(planFromKpi) && planFromKpi > 0 ? Math.round(planFromKpi) : null
-        const agentDelayMinutes = averageResponseMinutes(
-          agentMsPositive.length ? agentMsPositive : fallbackDurationMs.length ? fallbackDurationMs : agentMsAll
-        )
-        let humanDelayMinutes = averageResponseMinutes(humanMsAll)
-        if (zhalybin && isSmartAssignmentAgent(row.agent.title)) {
-          humanDelayMinutes = Math.max(humanDelayMinutes, SMART_ZHALYBIN_HUMAN_DELAY_MIN)
+        const agentDelayMinutes = averageResponseMinutes(agentMsAll)
+        let humanDelayMinutes = averageResponseMinutes(humanMsAll) + HUMAN_RESPONSE_OFFSET_MIN
+        if (zhalybin) {
+          humanDelayMinutes = Math.max(humanDelayMinutes, ZHALYBIN_HUMAN_DELAY_MIN)
+          if (isSmartAssignmentAgent(row.agent.title)) {
+            humanDelayMinutes = Math.max(humanDelayMinutes, SMART_ZHALYBIN_HUMAN_DELAY_MIN)
+          }
+        }
+        // «Допустимо» — полное списание задержек ответа по всем агентам.
+        if (
+          explainRecord?.writtenOff ||
+          (explainRecord?.status === 'done' && explainRecord.verdict === 'acceptable')
+        ) {
+          humanDelayMinutes = 0
         }
         const trend = bounds.days.map((day) => runs.filter((run) => dayKey(runTime(run)) === day).length)
         return {
@@ -836,7 +902,7 @@ export function KpiPage(): React.JSX.Element {
         }
       })
       .sort((a, b) => (b.fact ?? -1) - (a.fact ?? -1) || a.humanDelayMinutes - b.humanDelayMinutes)
-  }, [rows, bounds.days, nowTick, userId, userFio])
+  }, [rows, bounds.days, nowTick, userId, userFio, explainRecord, liveRuns.entries])
 
   const periodKey = useMemo(() => {
     if (period.kind === 'range') return `range:${period.range}`
@@ -851,20 +917,18 @@ export function KpiPage(): React.JSX.Element {
   }, [period])
 
   useEffect(() => {
-    const loaded = loadExplainRecord(userId, periodKey)
-    if (loaded?.status === 'evaluating') {
-      const fixed = {
-        ...loaded,
-        status: 'error' as const,
-        verdict: null,
-        reason: 'Предыдущая фоновая оценка прервалась',
-        toast: ''
-      }
-      setExplainRecord(fixed)
-      saveExplainRecord(userId, periodKey, fixed)
+    const loaded = loadEffectiveExplainRecord(userId, periodKey)
+    if (!loaded) {
+      setExplainRecord(null)
       return
     }
-    setExplainRecord(loaded)
+    setExplainRecord({
+      ...loaded,
+      reason: sanitizeExplainReason(loaded.reason) || loaded.reason || '',
+      writtenOff:
+        Boolean(loaded.writtenOff) ||
+        (loaded.status === 'done' && loaded.verdict === 'acceptable')
+    })
   }, [userId, periodKey])
 
   useEffect(() => {
@@ -879,7 +943,7 @@ export function KpiPage(): React.JSX.Element {
     const agentDelay = averageNumber(interactionRows.map((row) => row.agentDelayMinutes))
     const humanDelay = averageNumber(interactionRows.map((row) => row.humanDelayMinutes))
     let attention = interactionRows.reduce((sum, row) => sum + row.approvalCount, 0)
-    if (explainRecord?.status === 'done' && explainRecord.verdict === 'escalate') {
+    if (explainRecord?.status === 'done' && explainRecord.verdict === 'rejected' && !explainRecord.writtenOff) {
       attention += 1
     }
     return { plan, fact, agentDelay, humanDelay, attention }
@@ -1100,17 +1164,28 @@ export function KpiPage(): React.JSX.Element {
           }}
           onExplainToast={setExplainToast}
           agents={agents}
+          onOpenAgentsTab={() => setTab('agents')}
+          onOpenProcesses={onOpenProcesses}
+          onOpenDecisions={onOpenDecisions}
         />
       )}
     </div>
   )
 }
 
-function humanDelayCardLabel(record: HumanDelayExplainRecord | null, delayMinutes: number): string {
+function humanDelayCardLabel(
+  record: HumanDelayExplainRecord | null,
+  delayMinutes: number,
+  banRemaining = 0
+): string {
   if (record?.status === 'evaluating') return 'Оцениваем…'
-  if (record?.status === 'error') return record.reason || 'Ошибка оценки'
-  if (record?.status === 'done' && record.verdict === 'acceptable') return 'Допустимо'
-  if (record?.status === 'done' && record.verdict === 'escalate') return 'Нужна проверка руководителя'
+  if (record?.writtenOff || (record?.status === 'done' && record.verdict === 'acceptable')) {
+    return 'Допустимо — все задержки списаны'
+  }
+  if (record?.status === 'done' && record.verdict === 'rejected') {
+    return banRemaining > 0 ? `Отказано · бан ${formatBanRemaining(banRemaining)}` : 'Отказано'
+  }
+  if (record?.status === 'error') return 'Ошибка оценки — нажмите, чтобы повторить'
   if (delayMinutes <= 20) return 'Норма'
   if (delayMinutes <= 40) return 'Внимание'
   if (delayMinutes > CRITICAL_HUMAN_DELAY_MIN) return 'Риск — нажмите для объяснительной'
@@ -1128,7 +1203,10 @@ function InteractionPane({
   explainToast,
   onExplainRecord,
   onExplainToast,
-  agents
+  agents,
+  onOpenAgentsTab,
+  onOpenProcesses,
+  onOpenDecisions
 }: {
   loading: boolean
   rows: Array<{
@@ -1158,12 +1236,17 @@ function InteractionPane({
   onExplainRecord: (record: HumanDelayExplainRecord) => void
   onExplainToast: (text: string) => void
   agents: BoardAgent[]
+  onOpenAgentsTab?: () => void
+  onOpenProcesses?: () => void
+  onOpenDecisions?: () => void
 }): React.JSX.Element {
   const runs = useRuns()
   const [modalOpen, setModalOpen] = useState(false)
   const [explanation, setExplanation] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const evalRunIdRef = useRef('')
+  const finishingExplainRef = useRef(false)
   const visualRows = rows.slice(0, 8)
   const criticalRows = rows.filter((row) => row.humanDelayMinutes > CRITICAL_HUMAN_DELAY_MIN)
   const delayMaxValue = Math.max(1, ...visualRows.map((row) => row.agentDelayMinutes + row.humanDelayMinutes))
@@ -1177,64 +1260,202 @@ function InteractionPane({
     return 'red'
   }
   const humanCritical = summary.humanDelay > CRITICAL_HUMAN_DELAY_MIN
+  const banRemaining = explainBanRemainingMs(explainRecord, nowMs)
+
+  useEffect(() => {
+    if (!explainRecord?.banUntil || banRemaining <= 0) return
+    const id = window.setInterval(() => setNowMs(Date.now()), 15000)
+    return () => window.clearInterval(id)
+  }, [explainRecord?.banUntil, banRemaining])
+
   const humanTone =
-    explainRecord?.status === 'done' && explainRecord.verdict === 'acceptable'
+    explainRecord?.writtenOff || (explainRecord?.status === 'done' && explainRecord.verdict === 'acceptable')
       ? 'green'
-      : explainRecord?.status === 'done' && explainRecord.verdict === 'escalate'
+      : explainRecord?.status === 'done' && explainRecord.verdict === 'rejected'
         ? 'red'
         : explainRecord?.status === 'evaluating'
           ? 'orange'
           : delayTone(summary.humanDelay)
 
-  useEffect(() => {
-    const runId = evalRunIdRef.current
-    if (!runId || explainRecord?.status !== 'evaluating') return
-    const unsubscribe = agentClient.onEvent((event) => {
-      if (event.runId !== runId) return
-      if (event.type === 'result') {
-        const parsed = parseExplainVerdict(String(event.answer || event.message || event.text || ''))
-        const verdict: HumanDelayVerdict = parsed?.verdict || 'escalate'
-        const reason = parsed?.reason || 'Не удалось разобрать ответ агента — требуется проверка.'
-        const next: HumanDelayExplainRecord = {
-          status: 'done',
-          verdict,
-          reason,
-          delayMinutes: summary.humanDelay,
-          explanation: explainRecord.explanation,
-          at: new Date().toISOString(),
-          workflowId: explainRecord.workflowId,
-          periodKey,
-          toast:
-            verdict === 'acceptable'
-              ? 'Опоздание признано допустимым'
-              : 'Требуется проверка вышестоящего руководителя'
-        }
-        evalRunIdRef.current = ''
-        onExplainRecord(next)
-        onExplainToast(next.toast || '')
-        return
+  function finishExplainEvaluation(
+    source: HumanDelayExplainRecord,
+    rawAnswer: string,
+    failedMessage?: string
+  ): void {
+    if (finishingExplainRef.current) return
+    if (source.status !== 'evaluating' && explainRecord?.status !== 'evaluating') return
+    finishingExplainRef.current = true
+    const stopRunId = evalRunIdRef.current || source.runId || ''
+    const parsed = parseExplainVerdict(rawAnswer)
+    if (!parsed && failedMessage) {
+      const next: HumanDelayExplainRecord = {
+        ...source,
+        status: 'error',
+        verdict: null,
+        reason: sanitizeExplainReason(failedMessage) || 'Фоновая оценка не завершилась',
+        at: new Date().toISOString(),
+        runId: undefined,
+        writtenOff: false,
+        banUntil: undefined,
+        toast: 'Не удалось оценить объяснительную'
       }
-      if (event.type === 'error') {
+      evalRunIdRef.current = ''
+      onExplainRecord(next)
+      onExplainToast(next.toast || '')
+      if (stopRunId) {
+        try {
+          runs.cancel(explainBackgroundEntryKey(source.workflowId))
+        } catch {
+          /* ignore */
+        }
+      }
+      return
+    }
+    const verdict: HumanDelayVerdict = parsed?.verdict || 'rejected'
+    const reason =
+      sanitizeExplainReason(parsed?.reason || '') ||
+      (verdict === 'acceptable' ? 'Опоздание признано допустимым' : 'Не удалось разобрать ответ агента — отказано.')
+    const next: HumanDelayExplainRecord = {
+      status: 'done',
+      verdict,
+      reason,
+      delayMinutes: summary.humanDelay,
+      explanation: source.explanation,
+      at: new Date().toISOString(),
+      workflowId: source.workflowId,
+      periodKey,
+      runId: undefined,
+      writtenOff: verdict === 'acceptable',
+      banUntil: verdict === 'rejected' ? new Date(Date.now() + EXPLAIN_BAN_MS).toISOString() : undefined,
+      toast:
+        verdict === 'acceptable'
+          ? 'Допустимо: все задержки ответа списаны'
+          : 'Отказано: объяснительную нельзя писать 1 час'
+    }
+    evalRunIdRef.current = ''
+    onExplainRecord(next)
+    onExplainToast(next.toast || '')
+    if (stopRunId) {
+      try {
+        runs.cancel(explainBackgroundEntryKey(source.workflowId))
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  // Poll background feed: verdict JSON often arrives as a message before `result`,
+  // and the run can stay "live" — don't wait forever on the top banner.
+  useEffect(() => {
+    if (explainRecord?.status !== 'evaluating') return
+    if (explainRecord.runId && !evalRunIdRef.current) {
+      evalRunIdRef.current = explainRecord.runId
+    }
+
+    const tryComplete = (): boolean => {
+      const bgKey = explainBackgroundEntryKey(explainRecord.workflowId)
+      const bg = runs.entries[bgKey]
+      const output = extractExplainAnswerFromFeed(bg?.state.items)
+      if (output && parseExplainVerdict(output)) {
+        finishExplainEvaluation(explainRecord, output)
+        return true
+      }
+      if (bg?.state.error) {
+        finishExplainEvaluation(explainRecord, '', bg.state.error)
+        return true
+      }
+      if (bg && !isLiveRunState(bg.state) && output) {
+        finishExplainEvaluation(explainRecord, output)
+        return true
+      }
+      const startedAt = Date.parse(explainRecord.at || '')
+      if (Number.isFinite(startedAt) && Date.now() - startedAt > EXPLAIN_EVAL_TIMEOUT_MS) {
+        if (output) {
+          finishExplainEvaluation(explainRecord, output)
+        } else {
+          finishExplainEvaluation(explainRecord, '', 'Оценка объяснительной превысила 3 мин')
+        }
+        return true
+      }
+      if (!bg && !evalRunIdRef.current && !explainRecord.runId) {
         const next: HumanDelayExplainRecord = {
           ...explainRecord,
           status: 'error',
           verdict: null,
-          reason: String(event.message || 'Фоновая оценка не завершилась'),
-          at: new Date().toISOString(),
-          toast: 'Не удалось оценить объяснительную'
+          reason: 'Предыдущая фоновая оценка прервалась',
+          toast: ''
         }
-        evalRunIdRef.current = ''
         onExplainRecord(next)
-        onExplainToast(next.toast || '')
+        return true
+      }
+      return false
+    }
+
+    if (tryComplete()) return
+    const id = window.setInterval(() => {
+      tryComplete()
+    }, 1000)
+    return () => window.clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [explainRecord, runs.entries, onExplainRecord, periodKey])
+
+  useEffect(() => {
+    const runId = evalRunIdRef.current || explainRecord?.runId || ''
+    if (!runId || explainRecord?.status !== 'evaluating') return
+    const unsubscribe = agentClient.onEvent((event) => {
+      if (event.runId !== runId) return
+      const payloadText = String(
+        event.answer ||
+          event.message ||
+          event.text ||
+          (event.payload && typeof event.payload === 'object'
+            ? (event.payload as { text?: string; message?: string; answer?: string }).text ||
+              (event.payload as { text?: string; message?: string; answer?: string }).message ||
+              (event.payload as { text?: string; message?: string; answer?: string }).answer ||
+              ''
+            : '') ||
+          ''
+      )
+      if (event.type === 'result') {
+        finishExplainEvaluation(explainRecord, payloadText)
+        return
+      }
+      if (event.type === 'error') {
+        finishExplainEvaluation(
+          explainRecord,
+          '',
+          String(event.message || 'Фоновая оценка не завершилась')
+        )
+        return
+      }
+      // Early finish when the agent already emitted verdict JSON mid-run.
+      if (payloadText && parseExplainVerdict(payloadText)) {
+        finishExplainEvaluation(explainRecord, payloadText)
       }
     })
     return unsubscribe
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [explainRecord, onExplainRecord, onExplainToast, periodKey, summary.humanDelay])
 
   function openExplainModal(): void {
-    if (!humanCritical) return
+    if (banRemaining > 0) {
+      onExplainToast(`Объяснительная заблокирована ещё ${formatBanRemaining(banRemaining)}`)
+      return
+    }
+    if (explainRecord?.writtenOff) {
+      onExplainToast('Просроченное время уже списано по допустимой объяснительной')
+      return
+    }
+    if (!humanCritical && summary.humanDelay <= CRITICAL_HUMAN_DELAY_MIN) {
+      onExplainToast('Объяснительная нужна при среднем времени ответа больше 60 мин')
+      return
+    }
     setExplanation(explainRecord?.explanation || '')
     setModalOpen(true)
+  }
+
+  function activateCard(action: () => void): void {
+    action()
   }
 
   function submitExplanation(): void {
@@ -1269,6 +1490,7 @@ function InteractionPane({
         background: true
       })
       evalRunIdRef.current = runId
+      finishingExplainRef.current = false
       const next: HumanDelayExplainRecord = {
         status: 'evaluating',
         verdict: null,
@@ -1278,6 +1500,7 @@ function InteractionPane({
         at: new Date().toISOString(),
         workflowId,
         periodKey,
+        runId,
         toast: 'Оцениваем объяснительную в фоне…'
       }
       onExplainRecord(next)
@@ -1289,18 +1512,105 @@ function InteractionPane({
     }
   }
 
+  const cleanReason = sanitizeExplainReason(explainRecord?.reason || '')
+  const evalElapsedSec = (() => {
+    if (explainRecord?.status !== 'evaluating') return 0
+    const started = Date.parse(explainRecord.at || '')
+    if (!Number.isFinite(started)) return 0
+    return Math.max(0, Math.floor((nowMs - started) / 1000))
+  })()
+  useEffect(() => {
+    if (explainRecord?.status !== 'evaluating') return
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [explainRecord?.status])
+
+  const explainBanner =
+    explainRecord?.status === 'evaluating' ? (
+      <div className="kpi-explain-banner is-running" role="status">
+        <span className="kpi-explain-banner-dot" aria-hidden />
+        <div className="kpi-explain-banner-copy">
+          <div className="kpi-explain-banner-title">
+            <strong>Оценка объяснительной</strong>
+          </div>
+          <p>Агент проверяет причину задержки ответа. Как только вердикт готов — задержки спишутся или останутся.</p>
+        </div>
+        <div className="kpi-explain-banner-aside">
+          <span className="kpi-explain-banner-badge">Выполняется</span>
+          <span className="kpi-explain-banner-elapsed">
+            {evalElapsedSec < 60 ? `${evalElapsedSec} с` : `${Math.floor(evalElapsedSec / 60)} мин`}
+          </span>
+        </div>
+      </div>
+    ) : explainRecord?.status === 'done' && (cleanReason || explainRecord.verdict) ? (
+      <div
+        className={`kpi-explain-banner ${explainRecord.verdict === 'acceptable' ? 'is-ok' : 'is-bad'}`}
+        role="status"
+      >
+        <span className="kpi-explain-banner-dot" aria-hidden />
+        <div className="kpi-explain-banner-copy">
+          <div className="kpi-explain-banner-title">
+            <strong>
+              {explainRecord.verdict === 'acceptable' ? 'Допустимо' : 'Отказано'}
+            </strong>
+          </div>
+          <p>
+            {cleanReason ||
+              (explainRecord.verdict === 'acceptable'
+                ? 'Опоздание признано допустимым'
+                : 'Объяснительная отклонена')}
+          </p>
+        </div>
+        <div className="kpi-explain-banner-aside">
+          <span className="kpi-explain-banner-badge">
+            {explainRecord.verdict === 'acceptable' ? 'Все задержки списаны' : 'Бан 1 ч'}
+          </span>
+        </div>
+      </div>
+    ) : explainToast ? (
+      <div className="kpi-explain-toast">{explainToast}</div>
+    ) : null
+
+  const humanDelayDisplay =
+    explainRecord?.writtenOff ||
+    (explainRecord?.status === 'done' && explainRecord.verdict === 'acceptable')
+      ? 0
+      : summary.humanDelay
+
   return (
     <div className="kpi-interaction">
-      {explainToast ? <div className="kpi-explain-toast">{explainToast}</div> : null}
+      {explainBanner}
       <div className="kpi-metric-grid kpi-interaction-summary">
-        <article className="kpi-metric-card green">
+        <article
+          className="kpi-metric-card green clickable"
+          role="button"
+          tabIndex={0}
+          onClick={() => activateCard(() => onOpenAgentsTab?.())}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              onOpenAgentsTab?.()
+            }
+          }}
+        >
           <div>
             <span>План / факт</span>
             <strong>{summary.fact != null ? `${summary.fact}%` : '—'}</strong>
             <em>{summary.plan != null ? `План ${summary.plan}%` : 'План не задан'}</em>
           </div>
         </article>
-        <article className={`kpi-metric-card ${delayTone(summary.agentDelay)}`}>
+        <article
+          className={`kpi-metric-card ${delayTone(summary.agentDelay)} clickable`}
+          role="button"
+          tabIndex={0}
+          onClick={() => activateCard(() => onOpenProcesses?.())}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              onOpenProcesses?.()
+            }
+          }}
+        >
           <div>
             <span>Задержка агента</span>
             <strong>{formatMinutes(summary.agentDelay)}</strong>
@@ -1308,12 +1618,11 @@ function InteractionPane({
           </div>
         </article>
         <article
-          className={`kpi-metric-card ${humanTone}${humanCritical ? ' clickable' : ''}`}
-          role={humanCritical ? 'button' : undefined}
-          tabIndex={humanCritical ? 0 : undefined}
+          className={`kpi-metric-card ${humanTone} clickable`}
+          role="button"
+          tabIndex={0}
           onClick={openExplainModal}
           onKeyDown={(event) => {
-            if (!humanCritical) return
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault()
               openExplainModal()
@@ -1322,14 +1631,22 @@ function InteractionPane({
         >
           <div>
             <span>Среднее время ответа</span>
-            <strong>{formatMinutes(summary.humanDelay)}</strong>
-            <em>{humanDelayCardLabel(explainRecord, summary.humanDelay)}</em>
-            {explainRecord?.status === 'done' && explainRecord.reason ? (
-              <p className="kpi-explain-reason">{explainRecord.reason}</p>
-            ) : null}
+            <strong>{formatMinutes(humanDelayDisplay)}</strong>
+            <em>{humanDelayCardLabel(explainRecord, humanDelayDisplay, banRemaining)}</em>
           </div>
         </article>
-        <article className={`kpi-metric-card ${summary.attention ? 'orange' : 'green'}`}>
+        <article
+          className={`kpi-metric-card ${summary.attention ? 'orange' : 'green'} clickable`}
+          role="button"
+          tabIndex={0}
+          onClick={() => activateCard(() => onOpenDecisions?.())}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              onOpenDecisions?.()
+            }
+          }}
+        >
           <div>
             <span>Требуют согласования</span>
             <strong>{summary.attention}</strong>

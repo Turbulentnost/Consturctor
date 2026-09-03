@@ -195,3 +195,49 @@ def test_compute_run_timing_holds_through_tool_request() -> None:
     )
     assert timing["human_wait_ms"] == 60_000
     assert timing["agent_work_ms"] == 120_000
+
+
+def test_compute_run_timing_chess_clock_multiple_switches() -> None:
+    from datetime import datetime, timezone
+
+    from app.services.agent_runs import compute_run_timing
+
+    started = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+    finished = datetime(2026, 9, 2, 8, 5, tzinfo=timezone.utc)
+    timing = compute_run_timing(
+        [
+            {"type": "thinking", "at": "2026-09-02T08:00:10Z"},
+            {"type": "question", "at": "2026-09-02T08:00:30Z"},
+            {"type": "human_reply", "at": "2026-09-02T08:01:30Z"},
+            {"type": "thinking", "at": "2026-09-02T08:01:40Z"},
+            {"type": "hitl", "at": "2026-09-02T08:02:00Z"},
+            {"type": "human_reply", "at": "2026-09-02T08:03:00Z"},
+            {"type": "thinking", "at": "2026-09-02T08:03:10Z"},
+        ],
+        started_at=started,
+        finished_at=finished,
+    )
+    # agent: 0→30s + 1:30→2:00 + 3:00→5:00 = 30 + 30 + 120 = 180s
+    # human: 0:30→1:30 + 2:00→3:00 = 60 + 60 = 120s
+    assert timing["agent_work_ms"] == 180_000
+    assert timing["human_wait_ms"] == 120_000
+    assert timing["open_segment"] == ""
+
+
+def test_compute_run_timing_keeps_agent_slice_before_human_wait() -> None:
+    from datetime import datetime, timezone
+
+    from app.services.agent_runs import compute_run_timing
+
+    started = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+    finished = datetime(2026, 9, 2, 8, 36, tzinfo=timezone.utc)
+    timing = compute_run_timing(
+        [
+            {"type": "human_wait", "at": "2026-09-02T08:05:26Z"},
+            {"type": "human_reply", "at": "2026-09-02T08:36:00Z"},
+        ],
+        started_at=started,
+        finished_at=finished,
+    )
+    assert timing["agent_work_ms"] == 5 * 60_000 + 26_000
+    assert timing["human_wait_ms"] == 30 * 60_000 + 34_000

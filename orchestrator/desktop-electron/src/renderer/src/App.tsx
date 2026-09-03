@@ -530,7 +530,7 @@ export function App(): React.JSX.Element {
           />
         )
       case 'metrics':
-        return <KpiPage />
+        return <KpiPage onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
       case 'history':
         return (
           <HistoryTab
@@ -562,6 +562,7 @@ export function App(): React.JSX.Element {
 
   const bannerEntries: BannerEntry[] = []
   for (const entry of Object.values(runs.entries)) {
+    if (entry.background) continue
     const active =
       entry.state.running || Boolean(entry.state.pendingQuestion) || Boolean(entry.state.pendingHitl)
     if (!active) continue

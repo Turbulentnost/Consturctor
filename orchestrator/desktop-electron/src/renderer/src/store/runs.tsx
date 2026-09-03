@@ -54,6 +54,10 @@ function backgroundEntryKey(workflowId: string): string {
   return `__bg_explain__${workflowId}`
 }
 
+export function explainBackgroundEntryKey(workflowId: string): string {
+  return backgroundEntryKey(workflowId)
+}
+
 export interface RunStore {
   entries: Record<string, RunEntry>
   getRun: (workflowId: string) => RunEntry | undefined

@@ -359,6 +359,14 @@ def compute_run_timing(
     in_flight: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    """Chess-clock split: only one side accrues time.
+
+    - Run starts on the agent clock.
+    - human_wait / question / hitl → stop agent, start human.
+    - human_reply → stop human, start agent again.
+    - Hold markers (tool_request, …) do not switch the clock.
+    Open in-flight segment is returned so the UI can keep ticking the active side.
+    """
     start = _parse_event_at(started_at)
     end = _parse_event_at(finished_at)
     empty = {
@@ -396,12 +404,18 @@ def compute_run_timing(
         if at is None:
             continue
         if kind in _WAIT_START:
+            # Agent asked human — human clock starts (chess switch).
             if mode != "human":
                 close_until(at, "human")
         elif kind in _WAIT_END:
+            # Human answered — agent clock starts immediately.
             if mode == "human":
                 close_until(at, "agent")
-        elif mode == "human" and kind not in _WAIT_HOLD:
+        elif kind in _WAIT_HOLD:
+            continue
+        elif mode == "human":
+            # Without human_reply marker, first post-wait agent activity
+            # resumes the agent clock (legacy runs).
             close_until(at, "agent")
 
     open_segment = ""
@@ -414,8 +428,14 @@ def compute_run_timing(
     elif agent_ms == 0 and human_ms == 0:
         close_until(now or datetime.now(timezone.utc), "")
 
-    if agent_ms == 0 and human_ms == 0 and end is not None:
-        agent_ms = max(0, int((end - start).total_seconds() * 1000))
+    # No HITL at all → whole span is agent clock.
+    # If only human was stamped, residual wall time belongs to the agent.
+    if end is not None:
+        wall_ms = max(0, int((end - start).total_seconds() * 1000))
+        if agent_ms == 0 and human_ms == 0:
+            agent_ms = wall_ms
+        elif agent_ms == 0 and 0 < human_ms < wall_ms:
+            agent_ms = wall_ms - human_ms
 
     return {
         "agent_work_ms": agent_ms,

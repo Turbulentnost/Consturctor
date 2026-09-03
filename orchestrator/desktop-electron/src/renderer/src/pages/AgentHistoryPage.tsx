@@ -122,8 +122,25 @@ export function AgentHistoryPage({
         live.backendRunId === selected)
   )
   const sourceLabel = selectedRun ? historySourceLabel(selectedRun) : ''
-  const agentTime = selectedRun ? durationLabel(selectedRun.agentWorkMs || 0) : ''
-  const humanTime = selectedRun ? durationLabel(selectedRun.humanWaitMs || 0) : ''
+  const openTick = Boolean(selectedRun?.openSegment)
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  useEffect(() => {
+    if (!openTick) return
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [openTick, selectedRun?.runId])
+  const { agentTime, humanTime } = useMemo(() => {
+    if (!selectedRun) return { agentTime: '', humanTime: '' }
+    let agentMs = Math.max(0, selectedRun.agentWorkMs || 0)
+    let humanMs = Math.max(0, selectedRun.humanWaitMs || 0)
+    const openAt = Date.parse(selectedRun.openSegmentAt || '')
+    if (selectedRun.openSegment && Number.isFinite(openAt)) {
+      const open = Math.max(0, nowTick - openAt)
+      if (selectedRun.openSegment === 'agent') agentMs += open
+      if (selectedRun.openSegment === 'human') humanMs += open
+    }
+    return { agentTime: durationLabel(agentMs), humanTime: durationLabel(humanMs) }
+  }, [selectedRun, nowTick])
 
   return (
     <div className="agent-studio">

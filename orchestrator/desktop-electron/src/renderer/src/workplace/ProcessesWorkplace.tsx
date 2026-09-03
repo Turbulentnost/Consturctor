@@ -66,10 +66,21 @@ function backendTotals(run: AgentRunHistoryItem | null, now: number): { agentMs:
     if (run.openSegment === 'agent') agentMs += open
     if (run.openSegment === 'human') humanMs += open
   }
-  if (!agentMs && !humanMs) {
-    const start = Date.parse(run.startedAt || '')
-    const end = Date.parse(run.finishedAt || '') || ((run.status || '').toLowerCase() === 'started' ? now : NaN)
-    if (Number.isFinite(start) && Number.isFinite(end) && end > start) agentMs = end - start
+  const start = Date.parse(run.startedAt || '')
+  const finished = Date.parse(run.finishedAt || '')
+  const status = (run.status || '').toLowerCase()
+  const end = Number.isFinite(finished)
+    ? finished
+    : run.openSegment || status === 'started' || status === 'running' || status === 'waiting_human'
+      ? now
+      : NaN
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+    const wall = end - start
+    if (!agentMs && !humanMs) {
+      agentMs = wall
+    } else if (!agentMs && humanMs > 0 && humanMs < wall) {
+      agentMs = wall - humanMs
+    }
   }
   return { agentMs, humanMs }
 }
