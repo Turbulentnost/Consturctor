@@ -576,6 +576,9 @@ async function runAgent(command: RunCommand): Promise<void> {
   }
 
   let answer = "";
+  // Cursor-style result: only the LAST assistant segment. Reset on every tool
+  // call so intermediate narration between tools never leaks into the result.
+  let lastAssistant = "";
   let thought = "";
   emit({ type: "run", id });
   emit({
@@ -691,6 +694,7 @@ async function runAgent(command: RunCommand): Promise<void> {
         for (const block of event.message.content) {
           if (block.type === "text" && block.text) {
             answer += block.text;
+            lastAssistant += block.text;
             emit({ type: "assistant", text: block.text });
             if (await finishIfReady(answer)) return;
           }
@@ -700,6 +704,8 @@ async function runAgent(command: RunCommand): Promise<void> {
         emit({ type: "thinking", text: event.text });
         if ((await finishIfReady(thought)) || (await finishIfReady(answer))) return;
       } else if (event.type === "tool_call") {
+        // Model went back to work: everything said so far was intermediate.
+        lastAssistant = "";
         emitSdkToolCall(event as unknown as Record<string, unknown>);
       } else if (event.type === "task") {
         const rec = event as { status?: string; text?: string };
@@ -721,18 +727,14 @@ async function runAgent(command: RunCommand): Promise<void> {
     }
     const result = await run.wait();
     const status = String(result.status || "").toLowerCase();
-    emit({
-      type: "final",
-      id,
-      status: status === "finished" || status === "success" ? "ok" : status || "ok",
-      answer: answer || String(result.result || ""),
-    });
-    emit({
-      type: "done",
-      id,
-      status: status === "finished" || status === "success" ? "ok" : status || "ok",
-      answer: answer || String(result.result || ""),
-    });
+    const okStatus =
+      status === "finished" || status === "success" ? "ok" : status || "ok";
+    // Prefer the last assistant segment (the actual answer) over the whole
+    // monologue; fall back only if the run produced no trailing text.
+    const finalAnswer =
+      lastAssistant.trim() || answer || String(result.result || "");
+    emit({ type: "final", id, status: okStatus, answer: finalAnswer });
+    emit({ type: "done", id, status: okStatus, answer: finalAnswer });
   } catch (error) {
     const message = safeError(error);
     emit({ type: "error", id, message });

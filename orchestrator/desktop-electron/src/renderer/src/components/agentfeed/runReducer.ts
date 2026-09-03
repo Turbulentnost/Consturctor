@@ -237,6 +237,26 @@ export function pushUserMessage(items: FeedItem[], text: string): FeedItem[] {
   return [...items, { kind: 'message', id: nextId('user'), role: 'user', text: value }]
 }
 
+/**
+ * Add the final result. If the trailing agent message only repeats it (the last
+ * assistant segment already streamed live), drop that message so the answer is
+ * shown once, as a crisp result — the way Cursor keeps the last block separate.
+ */
+function pushResult(items: FeedItem[], text: string): FeedItem[] {
+  const value = (text || '').trim()
+  if (!value) return items
+  const last = items[items.length - 1]
+  if (
+    last &&
+    last.kind === 'message' &&
+    last.role === 'agent' &&
+    visibleAssistant(last.text).trim() === visibleAssistant(value).trim()
+  ) {
+    return [...items.slice(0, -1), { kind: 'result', id: nextId('res'), text: value }]
+  }
+  return [...items, { kind: 'result', id: nextId('res'), text: value }]
+}
+
 function handleToolCall(state: RunState, payload: AgentRunnerEvent): RunState {
   const rawTool = String(payload.tool || '')
   const requestId = String(payload.requestId || '')
@@ -442,7 +462,7 @@ export function applyRunnerEvent(state: RunState, payload: AgentRunnerEvent): Ru
     case 'final':
     case 'work_result':
       if (text) {
-        return { ...state, items: [...state.items, { kind: 'result', id: nextId('res'), text }] }
+        return { ...state, items: pushResult(state.items, text) }
       }
       return state
     case 'error': {
@@ -522,9 +542,7 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
           pendingQuestion: null,
           pendingHitl: null,
           activeRunId: null,
-          items: answer
-            ? [...state.items, { kind: 'result', id: nextId('res'), text: answer }]
-            : state.items
+          items: pushResult(state.items, answer)
         },
         result: {
           kind: (event.kind as AgentResult['kind']) || 'run',
