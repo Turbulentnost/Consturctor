@@ -11,10 +11,25 @@ interface FormationBannerProps {
 
 /** Strip markdown/formatting to a compact single-ish line for the banner. */
 function plainPreview(text: string): string {
-  const cleaned = presentAgentText(text || '')
+  let cleaned = presentAgentText(text || '')
     .replace(/[`*_>#]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
+  // Never dump raw verdict JSON into the top run banner.
+  const jsonMatch = cleaned.match(/\{[\s\S]*"verdict"[\s\S]*\}/i)
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]) as { verdict?: string; reason?: string }
+      const verdict = String(parsed.verdict || '').toLowerCase()
+      const reason = String(parsed.reason || '').trim()
+      if (verdict === 'acceptable') return reason ? `Допустимо: ${reason}` : 'Допустимо'
+      if (verdict === 'rejected' || verdict === 'escalate' || verdict === 'denied') {
+        return reason ? `Отказано: ${reason}` : 'Отказано'
+      }
+    } catch {
+      /* keep cleaned */
+    }
+  }
   return cleaned
 }
 
