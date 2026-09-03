@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowBoard, WorkflowFileItem } from '../api/types'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
+import { MiniCalendar, meetingsFromResult, type MiniMeeting } from '../components/agentfeed/MiniCalendar'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { cleanRunResult } from '../utils/cleanRunResult'
 import {
@@ -164,6 +165,17 @@ export function HistoryWorkplace({
     () => cleanRunResult({ answer, events, status: selectedStatus }),
     [answer, events, selectedStatus]
   )
+  const planMeetings = useMemo<MiniMeeting[]>(() => {
+    let found: MiniMeeting[] = []
+    for (const ev of events) {
+      const type = String(ev.type || '').toLowerCase()
+      if (type !== 'tool_call' && type !== 'tool_result') continue
+      if (String((ev as { tool?: string }).tool || '') !== 'calendar.show_meetings') continue
+      const parsed = meetingsFromResult((ev as { result?: unknown }).result)
+      if (parsed.length) found = parsed
+    }
+    return found
+  }, [events])
 
   return (
     <div className="wp-page wp-history">
@@ -293,9 +305,14 @@ export function HistoryWorkplace({
                 ) : null}
               </div>
               <div className="wp-history-result-body">
+                {planMeetings.length > 0 && (
+                  <div className="wf-result-calendar">
+                    <MiniCalendar meetings={planMeetings} />
+                  </div>
+                )}
                 {cleaned.text ? (
                   <MarkdownBody text={cleaned.text} />
-                ) : (
+                ) : planMeetings.length > 0 ? null : (
                   <p className="wp-history-empty">{files.length ? 'Текста результата нет.' : cleaned.emptyHint}</p>
                 )}
                 <section className="wf-file-section">

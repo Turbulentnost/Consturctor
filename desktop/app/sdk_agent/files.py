@@ -27,6 +27,36 @@ def _clear_dir_contents(path: Path) -> None:
         pass
 
 
+# Office-document outputs the agent creates at the workspace root
+# (excel.create_workbook, report.export_document, ...). They are the deliverables
+# of a single run and are persisted to the DB when relevant, so leftovers from a
+# previous run must not linger in the working dir — otherwise list_files() and
+# the "attach a file" flow surface stale files that "shouldn't be there".
+_STALE_OUTPUT_SUFFIXES = frozenset(
+    {".xlsx", ".xls", ".xlsm", ".csv", ".docx", ".doc", ".pdf", ".pptx", ".ppt", ".odt", ".rtf"}
+)
+# Never delete these root files even if the suffix matches (re-seeded/knowledge).
+_KEEP_ROOT_NAMES = frozenset({"agents.md", "keepknowledgefile", "keep_knowledge_file"})
+
+
+def _clear_stale_outputs(base: Path) -> None:
+    try:
+        if not base.is_dir():
+            return
+        for entry in base.iterdir():
+            try:
+                if not entry.is_file():
+                    continue
+                if entry.name.lower() in _KEEP_ROOT_NAMES:
+                    continue
+                if entry.suffix.lower() in _STALE_OUTPUT_SUFFIXES:
+                    entry.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def reset_run_scratch(cwd: str, *, clear_attachments: bool = True) -> None:
     """Delete leftover per-run temp files so they don't accumulate between runs.
 
@@ -34,16 +64,21 @@ def reset_run_scratch(cwd: str, *, clear_attachments: bool = True) -> None:
     would otherwise pile up and leak into the next run (stale attachments make the
     agent see files that "shouldn't be there").
 
-    Always clears ``tool_results/`` (large tool-result dumps). Also clears
-    ``materials/attachments/`` when ``clear_attachments`` is True — the caller
-    keeps it False on a resume/follow-up so a file attached in an earlier turn
-    of the same conversation survives. Permanent knowledge in ``materials/`` and
-    the run journal are left untouched (they are re-seeded from the DB anyway).
+    Always clears ``tool_results/`` (large tool-result dumps). When
+    ``clear_attachments`` is True it also clears ``materials/attachments/`` and
+    removes leftover output documents (xlsx/docx/pdf/...) from the workspace
+    root left by previous runs. The caller keeps it False on a resume/follow-up
+    so a file attached or produced in an earlier turn of the same conversation
+    survives. Permanent knowledge in ``materials/`` and the run journal are left
+    untouched (they are re-seeded from the DB anyway).
     """
     base = Path((cwd or "").strip() or ".")
     _clear_dir_contents(base / "tool_results")
     if clear_attachments:
         _clear_dir_contents(base / "materials" / "attachments")
+        # Independent run: also drop leftover output documents from prior runs
+        # so they don't accumulate at the workspace root or confuse file lookup.
+        _clear_stale_outputs(base)
 
 
 def write_workspace_note(cwd: str, relative: str, text: str) -> str:
