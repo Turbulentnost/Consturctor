@@ -82,6 +82,21 @@ export function visibleAssistantText(text: string): string {
   return isProtocolChunk(value) ? '' : value
 }
 
+export function formatRegulationMessageTime(value: string): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const time = date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  const now = new Date()
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  if (sameDay) return time
+  const day = date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
+  return `${day} ${time}`
+}
+
 export function extractInterviewAnswer(raw: string): string {
   const text = raw || ''
   let start = text.indexOf('{')

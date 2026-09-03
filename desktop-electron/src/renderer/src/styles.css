@@ -1934,6 +1934,16 @@ input {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.regchat-time {
+  margin-top: -2px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #7b8883;
+  align-self: flex-start;
+}
+.regchat-time.user {
+  align-self: flex-end;
+}
 .regchat-attach-list {
   display: flex;
   flex-direction: column;

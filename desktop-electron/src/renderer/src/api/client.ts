@@ -133,7 +133,8 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
     structured:
       item.structured && typeof item.structured === 'object'
         ? (item.structured as Record<string, unknown>)
-        : {}
+        : {},
+    createdAt: String(item.createdAt ?? item.created_at ?? '')
   }))
   const resultRaw = data.resultRegulation
   return {

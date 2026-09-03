@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { ApiError, type RegulationCreationHistoryItem, type RegulationCreationSession } from '../api/types'
+import { formatRegulationMessageTime } from '../utils/regulationChat'
 
 interface RegulationCreationHistoryPageProps {
   onBack: () => void
@@ -168,12 +169,18 @@ export function RegulationCreationHistoryPage({
                 {messages.length === 0 ? (
                   <div className="reg-history-empty">Сообщений пока нет</div>
                 ) : (
-                  messages.map((message) => (
-                    <div key={message.messageId} className={`reg-history-message ${message.role}`}>
-                      <div className="reg-history-message-role">{roleLabel(message.role)}</div>
-                      <div className="reg-history-message-text">{message.content || 'Файл без текста'}</div>
-                    </div>
-                  ))
+                  messages.map((message) => {
+                    const timeLabel = formatRegulationMessageTime(message.createdAt)
+                    return (
+                      <div key={message.messageId} className={`reg-history-message ${message.role}`}>
+                        <div className="reg-history-message-role">
+                          {roleLabel(message.role)}
+                          {timeLabel ? ` · ${timeLabel}` : ''}
+                        </div>
+                        <div className="reg-history-message-text">{message.content || 'Файл без текста'}</div>
+                      </div>
+                    )
+                  })
                 )}
               </div>
             </>

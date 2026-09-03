@@ -43,6 +43,21 @@ function attachmentsOf(structured: Record<string, unknown>): string[] {
     .filter(Boolean)
 }
 
+function formatRegulationMessageTime(value: string): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const time = date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  const now = new Date()
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  if (sameDay) return time
+  const day = date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
+  return `${day} ${time}`
+}
+
 function extractProposal(message: string): string {
   const text = (message || '').trim()
   if (!text) return ''
@@ -119,7 +134,8 @@ export function RegulationChatPage({
           draftId: session.draftId,
           role: 'user',
           content: message,
-          structured: files.length ? { attachments: files.map((f) => ({ name: f.name })) } : {}
+          structured: files.length ? { attachments: files.map((f) => ({ name: f.name })) } : {},
+          createdAt: new Date().toISOString()
         }
       ]
     }
@@ -235,6 +251,7 @@ export function RegulationChatPage({
             const isUser = m.role === 'user'
             const names = attachmentsOf(m.structured)
             const quicks = quickAnswers(m.structured)
+            const timeLabel = formatRegulationMessageTime(m.createdAt)
             return (
               <div key={m.messageId || index} className={isUser ? 'regchat-row user' : 'regchat-row ai'}>
                 {!isUser && (
@@ -255,6 +272,9 @@ export function RegulationChatPage({
                       </div>
                     )}
                   </div>
+                  {timeLabel ? (
+                    <div className={isUser ? 'regchat-time user' : 'regchat-time'}>{timeLabel}</div>
+                  ) : null}
                   {!isUser && quicks.length > 0 && !busy && (
                     <div className="regchat-quick-row">
                       {quicks.map((qa) => (

@@ -167,6 +167,7 @@ export interface RegulationCreationMessage {
   role: string
   content: string
   structured: Record<string, unknown>
+  createdAt: string
 }
 
 export interface RegulationCreationSession {

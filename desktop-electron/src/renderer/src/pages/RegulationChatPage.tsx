@@ -11,6 +11,7 @@ import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import {
   attachmentNamesFromContent,
   extractInterviewAnswer,
+  formatRegulationMessageTime,
   isReplacementGarbage,
   visibleAssistantText,
   visibleUserText
@@ -370,7 +371,8 @@ export function RegulationChatPage({
           draftId: session.draftId,
           role: 'user',
           content: message,
-          structured: files.length ? { attachments: files.map((f) => ({ name: f.name })) } : {}
+          structured: files.length ? { attachments: files.map((f) => ({ name: f.name })) } : {},
+          createdAt: new Date().toISOString()
         }
       ]
     }
@@ -619,6 +621,7 @@ export function RegulationChatPage({
                     ? attachmentNamesFromContent(m.content)
                     : []
                 const text = isUser ? visibleUserText(m.content) : visibleAssistantText(m.content)
+                const timeLabel = formatRegulationMessageTime(m.createdAt)
                 const quicks = quickAnswers(m.structured)
                 const isCurrentStage =
                   !isUser &&
@@ -651,6 +654,9 @@ export function RegulationChatPage({
                           </div>
                         )}
                       </div>
+                      {timeLabel ? (
+                        <div className={isUser ? 'regchat-time user' : 'regchat-time'}>{timeLabel}</div>
+                      ) : null}
                       {!isUser && isCurrentStage && quicks.length > 0 && (
                         <div className="regchat-quick-row">
                           {quicks.map((qa) => (
