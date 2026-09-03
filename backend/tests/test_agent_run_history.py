@@ -151,3 +151,71 @@ def test_effective_run_status_success_needs_result() -> None:
     assert effective_run_status("started", "", in_flight=False) == "canceled"
     assert effective_run_status("error", SDK_DEAD_ANSWER) == "canceled"
     assert effective_run_status("error", "инструмент вернул 500") == "error"
+
+
+def test_slim_run_events_keeps_timing_markers() -> None:
+    stored = slim_run_events(
+        [
+            {"type": "thinking", "text": "думаю", "at": "2026-09-02T08:00:00Z"},
+            {
+                "type": "human_wait",
+                "wait": "question",
+                "requestId": "q1",
+                "at": "2026-09-02T08:00:10Z",
+            },
+            {
+                "type": "human_reply",
+                "wait": "question",
+                "requestId": "q1",
+                "at": "2026-09-02T08:01:10Z",
+            },
+        ]
+    )
+    assert [item["type"] for item in stored] == ["thinking", "human_wait", "human_reply"]
+    assert stored[1]["requestId"] == "q1"
+    assert stored[1]["at"] == "2026-09-02T08:00:10Z"
+
+
+def test_compute_run_timing_splits_agent_and_human() -> None:
+    from datetime import datetime, timezone
+
+    from app.services.agent_runs import compute_run_timing
+
+    started = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+    finished = datetime(2026, 9, 2, 8, 3, tzinfo=timezone.utc)
+    timing = compute_run_timing(
+        [
+            {"type": "thinking", "at": "2026-09-02T08:00:05Z"},
+            {"type": "question", "at": "2026-09-02T08:00:20Z"},
+            {"type": "human_reply", "at": "2026-09-02T08:01:20Z"},
+            {"type": "thinking", "at": "2026-09-02T08:01:21Z"},
+        ],
+        started_at=started,
+        finished_at=finished,
+    )
+    assert timing["agent_work_ms"] == 120_000
+    assert timing["human_wait_ms"] == 60_000
+    assert timing["open_segment"] == ""
+
+
+def test_compute_run_timing_holds_through_tool_request() -> None:
+    from datetime import datetime, timezone
+
+    from app.services.agent_runs import compute_run_timing
+
+    started = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+    finished = datetime(2026, 9, 2, 8, 3, tzinfo=timezone.utc)
+    timing = compute_run_timing(
+        [
+            {"type": "thinking", "at": "2026-09-02T08:00:05Z"},
+            {"type": "question", "at": "2026-09-02T08:00:20Z"},
+            {"type": "tool_request", "at": "2026-09-02T08:00:21Z"},
+            {"type": "human_wait", "wait": "question", "at": "2026-09-02T08:00:21Z"},
+            {"type": "human_reply", "wait": "question", "at": "2026-09-02T08:01:20Z"},
+            {"type": "thinking", "at": "2026-09-02T08:01:21Z"},
+        ],
+        started_at=started,
+        finished_at=finished,
+    )
+    assert timing["human_wait_ms"] == 60_000
+    assert timing["agent_work_ms"] == 120_000

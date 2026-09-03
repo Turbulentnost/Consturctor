@@ -69,10 +69,12 @@ function Head({
   return (
     <div className="wp-head">
       <div>
-        <h1 className="page-title">{title}</h1>
+        <div className="wp-head-title-row">
+          <h1 className="page-title">{title}</h1>
+          {badge ? <span className="orch-badge">{badge}</span> : null}
+          {count != null && <span className="wp-count">{count}</span>}
+        </div>
       </div>
-      {badge ? <span className="orch-badge">{badge}</span> : null}
-      {count != null && <span className="wp-count">{count}</span>}
     </div>
   )
 }
@@ -99,16 +101,14 @@ export function TodayTab({
   user,
   onOpenDecisions,
   onOpenMetrics,
-  onOpen,
-  onRun,
-  onOpenFiles
+  onOpenPassport,
+  onRun
 }: {
   user: UserProfile
   onOpenDecisions: () => void
   onOpenMetrics: () => void
-  onOpen: (workflowId: string, title: string) => void
+  onOpenPassport: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
   onRun: (workflowId: string, title: string) => void
-  onOpenFiles: (workflowId: string, title: string) => void
 }): React.JSX.Element {
   return (
     <TodayWorkplace
@@ -116,15 +116,13 @@ export function TodayTab({
       userFio={user.fio || ''}
       onOpenDecisions={onOpenDecisions}
       onOpenMetrics={onOpenMetrics}
-      onOpen={onOpen}
+      onOpenPassport={onOpenPassport}
       onRun={onRun}
-      onOpenFiles={onOpenFiles}
     />
   )
 }
 
 export { DecisionsTab } from './DecisionsWorkplace'
-
 
 export function HistoryTab({
   onOpenRun

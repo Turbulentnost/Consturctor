@@ -750,6 +750,26 @@ export function parseScheduleDraft(raw: Record<string, unknown>): ScheduleDraft 
   }
 }
 
+function parseAgentRunItem(item: Record<string, unknown>, workflowId: string): AgentRunHistoryItem {
+  return {
+    runId: String(item.run_id ?? item.runId ?? item.id ?? ''),
+    workflowId: String(item.workflow_id ?? item.workflowId ?? workflowId),
+    status: String(item.status ?? ''),
+    source: String(item.source ?? ''),
+    message: String(item.message ?? ''),
+    triggerKind: String(item.trigger_kind ?? item.triggerKind ?? ''),
+    triggerReason: String(item.trigger_reason ?? item.triggerReason ?? ''),
+    startedAt: String(item.started_at ?? item.startedAt ?? ''),
+    finishedAt: String(item.finished_at ?? item.finishedAt ?? ''),
+    summary: String(item.summary ?? item.answer ?? item.result ?? ''),
+    answer: String(item.answer ?? item.summary ?? item.result ?? ''),
+    agentWorkMs: Math.max(0, Number(item.agent_work_ms ?? item.agentWorkMs ?? 0) || 0),
+    humanWaitMs: Math.max(0, Number(item.human_wait_ms ?? item.humanWaitMs ?? 0) || 0),
+    openSegment: String(item.open_segment ?? item.openSegment ?? ''),
+    openSegmentAt: String(item.open_segment_at ?? item.openSegmentAt ?? '')
+  }
+}
+
 export function scheduleTriggerToApi(spec: ScheduleTriggerSpec): Record<string, unknown> {
   return {
     kind: spec.kind,
@@ -1142,7 +1162,7 @@ export class ApiClient {
   }): Promise<WorkflowBoard> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/workflows/board', {
       params,
-      timeoutMs: 60_000
+      timeoutMs: 15_000
     })
     return parseBoard(data)
   }
@@ -1199,16 +1219,7 @@ export class ApiClient {
     const items = Array.isArray(data) ? data : (data.items ?? [])
     return (items as Record<string, unknown>[])
       .filter((item) => item && typeof item === 'object')
-      .map((item) => ({
-        runId: String(item.run_id ?? item.runId ?? item.id ?? ''),
-        workflowId: String(item.workflow_id ?? item.workflowId ?? workflowId),
-        status: String(item.status ?? ''),
-        source: String(item.source ?? ''),
-        startedAt: String(item.started_at ?? item.startedAt ?? ''),
-        finishedAt: String(item.finished_at ?? item.finishedAt ?? ''),
-        summary: String(item.summary ?? item.answer ?? item.result ?? ''),
-        answer: String(item.answer ?? item.summary ?? item.result ?? '')
-      }))
+      .map((item) => parseAgentRunItem(item, workflowId))
   }
 
   async listAgentDrafts(): Promise<AgentDraft[]> {
@@ -1586,16 +1597,7 @@ export class ApiClient {
         status: item.status != null ? String(item.status) : undefined
       }))
     return {
-      item: {
-        runId: String(data.run_id ?? data.runId ?? data.id ?? runId),
-        workflowId: String(data.workflow_id ?? data.workflowId ?? workflowId),
-        status: String(data.status ?? ''),
-        source: String(data.source ?? ''),
-        startedAt: String(data.started_at ?? data.startedAt ?? ''),
-        finishedAt: String(data.finished_at ?? data.finishedAt ?? ''),
-        summary: String(data.summary ?? data.answer ?? data.result ?? ''),
-        answer: String(data.answer ?? data.summary ?? data.result ?? '')
-      },
+      item: parseAgentRunItem({ ...data, id: data.run_id ?? data.runId ?? data.id ?? runId }, workflowId),
       events
     }
   }

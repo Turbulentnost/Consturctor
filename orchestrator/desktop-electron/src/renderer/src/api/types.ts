@@ -155,10 +155,17 @@ export interface AgentRunHistoryItem {
   workflowId: string
   status: string
   source: string
+  message: string
+  triggerKind: string
+  triggerReason: string
   startedAt: string
   finishedAt: string
   summary: string
   answer: string
+  agentWorkMs: number
+  humanWaitMs: number
+  openSegment: string
+  openSegmentAt: string
 }
 
 export interface RegulationCreationMessage {

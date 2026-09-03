@@ -5,6 +5,14 @@ const electronRoot = path.resolve(__dirname, '..')
 const repoRoot = path.resolve(electronRoot, '..', '..')
 const runtimeRoot = path.join(electronRoot, '.installer-runtime')
 
+function resolveRepoResource(name) {
+  const local = path.join(repoRoot, name)
+  if (fs.existsSync(local)) return local
+  const parent = path.resolve(repoRoot, '..', name)
+  if (fs.existsSync(parent)) return parent
+  return local
+}
+
 function removeIfExists(target) {
   fs.rmSync(target, { recursive: true, force: true })
 }
@@ -49,8 +57,8 @@ exports.default = async function afterSign(context) {
   fs.mkdirSync(resources, { recursive: true })
 
   copyTree(path.join(electronRoot, 'pybridge'), path.join(resources, 'pybridge'), skipCommon)
-  copyTree(path.join(repoRoot, 'desktop'), path.join(resources, 'desktop'), skipCommon)
-  copyTree(path.join(repoRoot, 'tools'), path.join(resources, 'tools'), skipTools)
+  copyTree(resolveRepoResource('desktop'), path.join(resources, 'desktop'), skipCommon)
+  copyTree(resolveRepoResource('tools'), path.join(resources, 'tools'), skipTools)
   copyTree(path.join(runtimeRoot, 'python'), path.join(resources, 'python'))
   copyTree(path.join(runtimeRoot, 'node'), path.join(resources, 'node'))
 

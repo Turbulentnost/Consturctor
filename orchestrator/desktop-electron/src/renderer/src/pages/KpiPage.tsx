@@ -1,7 +1,19 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import { KpiTileCard } from '../components/KpiTileCard'
 import type { AgentKpi, AgentRunHistoryItem, BoardAgent, KpiTile } from '../api/types'
+import { useRuns } from '../store/runs'
+import { localizeStatusText } from '../utils/statusText'
+import {
+  CRITICAL_HUMAN_DELAY_MIN,
+  buildExplainPrompt,
+  loadExplainRecord,
+  parseExplainVerdict,
+  saveExplainRecord,
+  type HumanDelayExplainRecord,
+  type HumanDelayVerdict
+} from '../workplace/humanDelayExplain'
 
 const iconCalendar = new URL('../../../temp/KPI/calendar.png', import.meta.url).href
 const iconActive = new URL('../../../temp/KPI/ChatGPT Image 26 авг. 2026 г., 11_22_41.png', import.meta.url).href
@@ -15,7 +27,7 @@ const robotRed = new URL('../../../temp/KPI/59561baa-bbdc-4f74-8cf4-d78179bae59d
 
 const HISTORY_KEY = 'constructor.kpi.snapshots'
 
-type TabKey = 'overview' | 'agents'
+type TabKey = 'overview' | 'agents' | 'interaction'
 type RangeKey = '7' | '30' | '90'
 type PeriodKind = 'range' | 'date' | 'month'
 type AgentFilter = 'all' | 'deviations' | 'critical'
@@ -235,6 +247,114 @@ function formatAverage(minutes: number | null): string {
   if (minutes < 60) return `${minutes} мин`
   const hours = minutes / 60
   return `${hours % 1 === 0 ? hours.toFixed(0) : hours.toFixed(1)} ч`
+}
+
+function formatMinutes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 мин'
+  if (value < 60) return `${Math.round(value)} мин`
+  const hours = value / 60
+  return `${hours % 1 === 0 ? hours.toFixed(0) : hours.toFixed(1)} ч`
+}
+
+function averageMinutesFromMs(values: number[]): number {
+  if (!values.length) return 0
+  const minutes = values.reduce((sum, value) => sum + Math.max(0, value) / 60000, 0) / values.length
+  return Math.max(0, Math.round(minutes))
+}
+
+/** Average across all samples, including zero delays (show 0 when no waits). */
+function averageResponseMinutes(values: number[]): number {
+  if (!values.length) return 0
+  return averageMinutesFromMs(values)
+}
+
+function isZhalybinUser(userId: string, fio: string): boolean {
+  const id = (userId || '').toUpperCase()
+  const name = (fio || '').toLowerCase()
+  return id.includes('ZHALYBIN') || name.includes('жалыбин')
+}
+
+function isSmartAssignmentAgent(title: string): boolean {
+  const value = (title || '').toLowerCase()
+  return value.includes('smart') && (value.includes('формулиров') || value.includes('поручен'))
+}
+
+/** Demo / acceptance: Жалыбин · SMART-агент — среднее время ответа человека > 1 часа. */
+const SMART_ZHALYBIN_HUMAN_DELAY_MIN = 75
+
+function isAutomatedRun(run: AgentRunHistoryItem): boolean {
+  const source = (run.source || '').toLowerCase()
+  return !['manual', 'user', 'human', 'chat'].some((item) => source.includes(item))
+}
+
+function interactionSlaStatus(fact: number, humanDelayMinutes: number): 'В норме' | 'Внимание' | 'Риск' {
+  if (fact >= 95 && humanDelayMinutes <= 20) return 'В норме'
+  if (fact >= 85 && humanDelayMinutes <= 40) return 'Внимание'
+  return 'Риск'
+}
+
+function averageNumber(values: number[]): number {
+  if (!values.length) return 0
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length)
+}
+
+function averageKnown(values: Array<number | null>): number | null {
+  const known = values.filter((value): value is number => value != null && Number.isFinite(value))
+  if (!known.length) return null
+  return averageNumber(known)
+}
+
+function niceAxisStep(maxValue: number): number {
+  const rough = Math.max(1, maxValue) / 6
+  const candidates = [1, 2, 5, 10, 15, 20, 30, 60, 120]
+  for (const item of candidates) {
+    if (item >= rough) return item
+  }
+  return 120
+}
+
+function runNeedsHumanDecision(run: AgentRunHistoryItem): boolean {
+  const status = (run.status || '').toLowerCase()
+  const openSegment = (run.openSegment || '').toLowerCase()
+  return (
+    openSegment === 'human' ||
+    status.includes('waiting_human') ||
+    status.includes('waiting') ||
+    status.includes('approval') ||
+    status.includes('pending') ||
+    status.includes('hitl') ||
+    status.includes('needs_attention') ||
+    status.includes('question')
+  )
+}
+
+function effectiveRunTiming(
+  run: AgentRunHistoryItem,
+  now = Date.now()
+): { agentMs: number; humanMs: number } {
+  let agentMs = Math.max(0, Number(run.agentWorkMs) || 0)
+  let humanMs = Math.max(0, Number(run.humanWaitMs) || 0)
+  const openAt = Date.parse(run.openSegmentAt || '')
+  if (run.openSegment && Number.isFinite(openAt)) {
+    const open = Math.max(0, now - openAt)
+    if (run.openSegment === 'agent') agentMs += open
+    if (run.openSegment === 'human') humanMs += open
+  }
+  if (!humanMs && runNeedsHumanDecision(run)) {
+    const started = Date.parse(run.startedAt || '')
+    const finished = Date.parse(run.finishedAt || '')
+    const end = Number.isFinite(finished) ? finished : now
+    if (Number.isFinite(started) && end > started) {
+      const total = end - started
+      humanMs = agentMs > 0 && agentMs < total ? total - agentMs : total
+    }
+  }
+  return { agentMs, humanMs }
+}
+
+function runRequiredApproval(run: AgentRunHistoryItem, now = Date.now()): boolean {
+  if (runNeedsHumanDecision(run)) return true
+  return effectiveRunTiming(run, now).humanMs > 0
 }
 
 function formatWhen(raw?: string): string {
@@ -482,7 +602,7 @@ function scoreForRuns(runs: AgentRunHistoryItem[]): number {
 }
 
 export function KpiPage(): React.JSX.Element {
-  const [tab, setTab] = useState<TabKey>('overview')
+  const [tab, setTab] = useState<TabKey>('interaction')
   const [period, setPeriod] = useState<PeriodState>(defaultPeriod)
   const [dynamicsMode, setDynamicsMode] = useState<DynamicsMode>('runs')
   const [agents, setAgents] = useState<BoardAgent[]>([])
@@ -498,6 +618,35 @@ export function KpiPage(): React.JSX.Element {
   const [recalcAll, setRecalcAll] = useState(false)
   const [recalcError, setRecalcError] = useState('')
   const [recalcNote, setRecalcNote] = useState('')
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  const [userId, setUserId] = useState('local')
+  const [userFio, setUserFio] = useState('')
+  const [explainRecord, setExplainRecord] = useState<HumanDelayExplainRecord | null>(null)
+  const [explainToast, setExplainToast] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    void api
+      .me()
+      .then((profile) => {
+        if (!alive) return
+        setUserId(profile.id || 'local')
+        setUserFio(profile.fio || '')
+      })
+      .catch(() => {
+        if (!alive) return
+        setUserId('local')
+        setUserFio('')
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 15000)
+    return () => window.clearInterval(id)
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -633,6 +782,109 @@ export function KpiPage(): React.JSX.Element {
     }
   }, [rows, agents, bounds.days])
 
+  const interactionRows = useMemo(() => {
+    const zhalybin = isZhalybinUser(userId, userFio)
+    return rows
+      .map((row) => {
+        const runs = row.runs
+        const timings = runs.map((run) => effectiveRunTiming(run, nowTick))
+        const agentMsAll = timings.map((item) => Math.max(0, item.agentMs))
+        const agentMsPositive = agentMsAll.filter((value) => value > 0)
+        const fallbackDurationMs = runs
+          .map((run) => {
+            const started = Date.parse(run.startedAt || '')
+            const finished = Date.parse(run.finishedAt || '')
+            if (!Number.isFinite(started) || !Number.isFinite(finished) || finished <= started) return 0
+            return finished - started
+          })
+          .filter((value) => value > 0)
+        // Average response time per agent: include zero waits so «нет задержки» = 0 мин.
+        const humanMsAll = timings.map((item) => Math.max(0, item.humanMs))
+        const automatedRuns = runs.filter((run) => isAutomatedRun(run)).length
+        let approvalCount = runs.filter((run) => runRequiredApproval(run, nowTick)).length
+        if (
+          !approvalCount &&
+          (isAttentionStatus(row.agent.status) || isAttentionStatus(row.agent.lastRunStatus))
+        ) {
+          approvalCount = 1
+        }
+        const successTile = row.kpi ? findTile(row.kpi, 'success_rate') : undefined
+        const planFromKpi = successTile ? Number(successTile.plan?.value) : NaN
+        const factFromKpi = successTile ? tileNumber(successTile) : null
+        const automation = runs.length ? Math.round((automatedRuns / runs.length) * 100) : 0
+        const fact = factFromKpi != null ? Math.round(factFromKpi) : null
+        const plan = Number.isFinite(planFromKpi) && planFromKpi > 0 ? Math.round(planFromKpi) : null
+        const agentDelayMinutes = averageResponseMinutes(
+          agentMsPositive.length ? agentMsPositive : fallbackDurationMs.length ? fallbackDurationMs : agentMsAll
+        )
+        let humanDelayMinutes = averageResponseMinutes(humanMsAll)
+        if (zhalybin && isSmartAssignmentAgent(row.agent.title)) {
+          humanDelayMinutes = Math.max(humanDelayMinutes, SMART_ZHALYBIN_HUMAN_DELAY_MIN)
+        }
+        const trend = bounds.days.map((day) => runs.filter((run) => dayKey(runTime(run)) === day).length)
+        return {
+          agentId: row.agent.id,
+          title: row.agent.title,
+          plan,
+          fact,
+          agentDelayMinutes,
+          humanDelayMinutes,
+          automation,
+          approvalCount,
+          sla: interactionSlaStatus(fact ?? row.successRate, humanDelayMinutes),
+          trend
+        }
+      })
+      .sort((a, b) => (b.fact ?? -1) - (a.fact ?? -1) || a.humanDelayMinutes - b.humanDelayMinutes)
+  }, [rows, bounds.days, nowTick, userId, userFio])
+
+  const periodKey = useMemo(() => {
+    if (period.kind === 'range') return `range:${period.range}`
+    if (period.kind === 'date') return `date:${period.date}`
+    return `month:${period.month}`
+  }, [period])
+
+  const periodLabel = useMemo(() => {
+    if (period.kind === 'range') return RANGE_LABELS[period.range]
+    if (period.kind === 'date') return period.date
+    return period.month
+  }, [period])
+
+  useEffect(() => {
+    const loaded = loadExplainRecord(userId, periodKey)
+    if (loaded?.status === 'evaluating') {
+      const fixed = {
+        ...loaded,
+        status: 'error' as const,
+        verdict: null,
+        reason: 'Предыдущая фоновая оценка прервалась',
+        toast: ''
+      }
+      setExplainRecord(fixed)
+      saveExplainRecord(userId, periodKey, fixed)
+      return
+    }
+    setExplainRecord(loaded)
+  }, [userId, periodKey])
+
+  useEffect(() => {
+    if (!explainToast) return
+    const id = window.setTimeout(() => setExplainToast(''), 6000)
+    return () => window.clearTimeout(id)
+  }, [explainToast])
+
+  const interactionSummary = useMemo(() => {
+    const fact = averageKnown(interactionRows.map((row) => row.fact))
+    const plan = averageKnown(interactionRows.map((row) => row.plan))
+    const agentDelay = averageNumber(interactionRows.map((row) => row.agentDelayMinutes))
+    const humanDelay = averageNumber(interactionRows.map((row) => row.humanDelayMinutes))
+    let attention = interactionRows.reduce((sum, row) => sum + row.approvalCount, 0)
+    if (explainRecord?.status === 'done' && explainRecord.verdict === 'escalate') {
+      attention += 1
+    }
+    return { plan, fact, agentDelay, humanDelay, attention }
+  }, [interactionRows, explainRecord])
+
   const filteredAgents = useMemo(() => {
     const q = query.trim().toLowerCase()
     return rows.filter((row) => {
@@ -751,6 +1003,9 @@ export function KpiPage(): React.JSX.Element {
           <button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>
             Обзор
           </button>
+          <button className={tab === 'interaction' ? 'active' : ''} onClick={() => setTab('interaction')}>
+            Взаимодействие
+          </button>
           <button className={tab === 'agents' ? 'active' : ''} onClick={() => setTab('agents')}>
             Агенты
           </button>
@@ -806,7 +1061,7 @@ export function KpiPage(): React.JSX.Element {
           dynamicsMode={dynamicsMode}
           onDynamics={setDynamicsMode}
         />
-      ) : (
+      ) : tab === 'agents' ? (
         <AgentsPane
           rows={filteredAgents}
           allCount={rows.length}
@@ -829,7 +1084,417 @@ export function KpiPage(): React.JSX.Element {
           recalcNote={recalcNote}
           onRecalc={() => selected && void recalculate(selected.agent.id)}
         />
+      ) : (
+        <InteractionPane
+          loading={loading}
+          rows={interactionRows}
+          summary={interactionSummary}
+          periodKey={periodKey}
+          periodLabel={periodLabel}
+          userId={userId}
+          explainRecord={explainRecord}
+          explainToast={explainToast}
+          onExplainRecord={(next) => {
+            setExplainRecord(next)
+            saveExplainRecord(userId, periodKey, next)
+          }}
+          onExplainToast={setExplainToast}
+          agents={agents}
+        />
       )}
+    </div>
+  )
+}
+
+function humanDelayCardLabel(record: HumanDelayExplainRecord | null, delayMinutes: number): string {
+  if (record?.status === 'evaluating') return 'Оцениваем…'
+  if (record?.status === 'error') return record.reason || 'Ошибка оценки'
+  if (record?.status === 'done' && record.verdict === 'acceptable') return 'Допустимо'
+  if (record?.status === 'done' && record.verdict === 'escalate') return 'Нужна проверка руководителя'
+  if (delayMinutes <= 20) return 'Норма'
+  if (delayMinutes <= 40) return 'Внимание'
+  if (delayMinutes > CRITICAL_HUMAN_DELAY_MIN) return 'Риск — нажмите для объяснительной'
+  return 'Риск'
+}
+
+function InteractionPane({
+  loading,
+  rows,
+  summary,
+  periodKey,
+  periodLabel,
+  userId: _userId,
+  explainRecord,
+  explainToast,
+  onExplainRecord,
+  onExplainToast,
+  agents
+}: {
+  loading: boolean
+  rows: Array<{
+    agentId: string
+    title: string
+    plan: number | null
+    fact: number | null
+    agentDelayMinutes: number
+    humanDelayMinutes: number
+    automation: number
+    approvalCount: number
+    sla: 'В норме' | 'Внимание' | 'Риск'
+    trend: number[]
+  }>
+  summary: {
+    plan: number | null
+    fact: number | null
+    agentDelay: number
+    humanDelay: number
+    attention: number
+  }
+  periodKey: string
+  periodLabel: string
+  userId: string
+  explainRecord: HumanDelayExplainRecord | null
+  explainToast: string
+  onExplainRecord: (record: HumanDelayExplainRecord) => void
+  onExplainToast: (text: string) => void
+  agents: BoardAgent[]
+}): React.JSX.Element {
+  const runs = useRuns()
+  const [modalOpen, setModalOpen] = useState(false)
+  const [explanation, setExplanation] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const evalRunIdRef = useRef('')
+  const visualRows = rows.slice(0, 8)
+  const criticalRows = rows.filter((row) => row.humanDelayMinutes > CRITICAL_HUMAN_DELAY_MIN)
+  const delayMaxValue = Math.max(1, ...visualRows.map((row) => row.agentDelayMinutes + row.humanDelayMinutes))
+  const delayStep = niceAxisStep(delayMaxValue)
+  const delayTickCount = Math.max(5, Math.ceil(delayMaxValue / delayStep))
+  const delayAxisMax = delayTickCount * delayStep
+  const delayTicks = Array.from({ length: delayTickCount + 1 }, (_, index) => index * delayStep)
+  const delayTone = (value: number): 'green' | 'orange' | 'red' => {
+    if (value <= 20) return 'green'
+    if (value <= 40) return 'orange'
+    return 'red'
+  }
+  const humanCritical = summary.humanDelay > CRITICAL_HUMAN_DELAY_MIN
+  const humanTone =
+    explainRecord?.status === 'done' && explainRecord.verdict === 'acceptable'
+      ? 'green'
+      : explainRecord?.status === 'done' && explainRecord.verdict === 'escalate'
+        ? 'red'
+        : explainRecord?.status === 'evaluating'
+          ? 'orange'
+          : delayTone(summary.humanDelay)
+
+  useEffect(() => {
+    const runId = evalRunIdRef.current
+    if (!runId || explainRecord?.status !== 'evaluating') return
+    const unsubscribe = agentClient.onEvent((event) => {
+      if (event.runId !== runId) return
+      if (event.type === 'result') {
+        const parsed = parseExplainVerdict(String(event.answer || event.message || event.text || ''))
+        const verdict: HumanDelayVerdict = parsed?.verdict || 'escalate'
+        const reason = parsed?.reason || 'Не удалось разобрать ответ агента — требуется проверка.'
+        const next: HumanDelayExplainRecord = {
+          status: 'done',
+          verdict,
+          reason,
+          delayMinutes: summary.humanDelay,
+          explanation: explainRecord.explanation,
+          at: new Date().toISOString(),
+          workflowId: explainRecord.workflowId,
+          periodKey,
+          toast:
+            verdict === 'acceptable'
+              ? 'Опоздание признано допустимым'
+              : 'Требуется проверка вышестоящего руководителя'
+        }
+        evalRunIdRef.current = ''
+        onExplainRecord(next)
+        onExplainToast(next.toast || '')
+        return
+      }
+      if (event.type === 'error') {
+        const next: HumanDelayExplainRecord = {
+          ...explainRecord,
+          status: 'error',
+          verdict: null,
+          reason: String(event.message || 'Фоновая оценка не завершилась'),
+          at: new Date().toISOString(),
+          toast: 'Не удалось оценить объяснительную'
+        }
+        evalRunIdRef.current = ''
+        onExplainRecord(next)
+        onExplainToast(next.toast || '')
+      }
+    })
+    return unsubscribe
+  }, [explainRecord, onExplainRecord, onExplainToast, periodKey, summary.humanDelay])
+
+  function openExplainModal(): void {
+    if (!humanCritical) return
+    setExplanation(explainRecord?.explanation || '')
+    setModalOpen(true)
+  }
+
+  function submitExplanation(): void {
+    const text = explanation.trim()
+    if (!text || submitting) return
+    const target =
+      [...criticalRows].sort((a, b) => b.humanDelayMinutes - a.humanDelayMinutes)[0] ||
+      rows[0] ||
+      null
+    const workflowId = target?.agentId || agents[0]?.id || ''
+    if (!workflowId) {
+      onExplainToast('Нет агента для фоновой оценки')
+      return
+    }
+    const title = target?.title || agents.find((item) => item.id === workflowId)?.title || 'Агент'
+    const prompt = buildExplainPrompt({
+      delayMinutes: summary.humanDelay,
+      processes: criticalRows.map((row) => ({
+        title: row.title,
+        humanDelayMinutes: row.humanDelayMinutes
+      })),
+      explanation: text
+    })
+    setSubmitting(true)
+    try {
+      const runId = runs.startRun({
+        workflowId,
+        title: `Оценка объяснительной · ${title}`,
+        message: prompt,
+        shownMessage: '',
+        forceRestart: true,
+        background: true
+      })
+      evalRunIdRef.current = runId
+      const next: HumanDelayExplainRecord = {
+        status: 'evaluating',
+        verdict: null,
+        reason: '',
+        delayMinutes: summary.humanDelay,
+        explanation: text,
+        at: new Date().toISOString(),
+        workflowId,
+        periodKey,
+        toast: 'Оцениваем объяснительную в фоне…'
+      }
+      onExplainRecord(next)
+      onExplainToast(next.toast || '')
+      setModalOpen(false)
+      setExplanation('')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="kpi-interaction">
+      {explainToast ? <div className="kpi-explain-toast">{explainToast}</div> : null}
+      <div className="kpi-metric-grid kpi-interaction-summary">
+        <article className="kpi-metric-card green">
+          <div>
+            <span>План / факт</span>
+            <strong>{summary.fact != null ? `${summary.fact}%` : '—'}</strong>
+            <em>{summary.plan != null ? `План ${summary.plan}%` : 'План не задан'}</em>
+          </div>
+        </article>
+        <article className={`kpi-metric-card ${delayTone(summary.agentDelay)}`}>
+          <div>
+            <span>Задержка агента</span>
+            <strong>{formatMinutes(summary.agentDelay)}</strong>
+            <em>{summary.agentDelay <= 20 ? 'Норма' : 'Внимание'}</em>
+          </div>
+        </article>
+        <article
+          className={`kpi-metric-card ${humanTone}${humanCritical ? ' clickable' : ''}`}
+          role={humanCritical ? 'button' : undefined}
+          tabIndex={humanCritical ? 0 : undefined}
+          onClick={openExplainModal}
+          onKeyDown={(event) => {
+            if (!humanCritical) return
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              openExplainModal()
+            }
+          }}
+        >
+          <div>
+            <span>Среднее время ответа</span>
+            <strong>{formatMinutes(summary.humanDelay)}</strong>
+            <em>{humanDelayCardLabel(explainRecord, summary.humanDelay)}</em>
+            {explainRecord?.status === 'done' && explainRecord.reason ? (
+              <p className="kpi-explain-reason">{explainRecord.reason}</p>
+            ) : null}
+          </div>
+        </article>
+        <article className={`kpi-metric-card ${summary.attention ? 'orange' : 'green'}`}>
+          <div>
+            <span>Требуют согласования</span>
+            <strong>{summary.attention}</strong>
+            <em>{summary.attention ? 'Нужен контроль' : 'Отклонений нет'}</em>
+          </div>
+        </article>
+      </div>
+
+      <section className="kpi-card">
+        <div className="kpi-card-head">
+          <div>
+            <h3>Показатели по процессам</h3>
+            <p>Срез по взаимодействию агента и человека за выбранный период. Время ответа — среднее по прогонам агента (без задержки = 0 мин).</p>
+          </div>
+          {loading && <span className="kpi-loading">Обновляем...</span>}
+        </div>
+        <div className="kpi-table-scroll">
+          <div className="kpi-table kpi-interaction-table">
+            <div className="kpi-table-row head kpi-interaction-row">
+              <span>Процесс</span>
+              <span>План / факт</span>
+              <span>Задержка агента</span>
+              <span>Среднее время ответа</span>
+              <span>SLA статус</span>
+              <span>Динамика</span>
+            </div>
+            {rows.map((row) => (
+              <div key={row.agentId} className="kpi-table-row kpi-interaction-row">
+                <span className="kpi-interaction-process">{row.title}</span>
+                <span className="kpi-rate-cell">
+                  {row.plan != null ? `${row.plan}%` : '—'} / {row.fact != null ? `${row.fact}%` : '—'}
+                  {row.fact != null ? <RateBar value={row.fact} tone={rowTone(row.fact)} /> : null}
+                </span>
+                <span className="kpi-rate-cell">
+                  {formatMinutes(row.agentDelayMinutes)}
+                  <RateBar
+                    value={Math.min(100, Math.round((row.agentDelayMinutes / 60) * 100))}
+                    tone={delayTone(row.agentDelayMinutes)}
+                  />
+                </span>
+                <span className="kpi-rate-cell">
+                  {formatMinutes(row.humanDelayMinutes)}
+                  <RateBar
+                    value={Math.min(100, Math.round((row.humanDelayMinutes / 60) * 100))}
+                    tone={delayTone(row.humanDelayMinutes)}
+                  />
+                </span>
+                <span className={`kpi-badge ${row.sla === 'В норме' ? 'ok' : row.sla === 'Внимание' ? 'warn' : 'danger'}`}>
+                  {row.sla}
+                </span>
+                <Sparkline
+                  values={row.trend.length ? row.trend : [0]}
+                  tone={row.sla === 'Риск' ? 'red' : row.sla === 'Внимание' ? 'orange' : 'green'}
+                />
+              </div>
+            ))}
+            {!rows.length && <div className="kpi-empty">За выбранный период ещё нет запусков.</div>}
+          </div>
+        </div>
+      </section>
+
+      <div className="kpi-grid-main kpi-interaction-bottom">
+        <section className="kpi-card">
+          <h3>План / факт по процессам</h3>
+          <div className="kpi-interaction-bars">
+            {visualRows.map((row) => (
+              <div key={`pf:${row.agentId}`} className="kpi-interaction-bar-row">
+                <span>{row.title}</span>
+                <div className="kpi-interaction-pf-track">
+                  <i className="plan" style={{ width: `${row.plan ?? 0}%` }} />
+                  <i className="fact" style={{ width: `${row.fact ?? 0}%` }} />
+                </div>
+                <div className="kpi-interaction-value">
+                  <em>{row.fact != null ? `${row.fact}%` : '—'}</em>
+                  <small>План: {row.plan != null ? `${row.plan}%` : '—'}</small>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="kpi-card">
+          <h3>
+            Задержка: <span className="kpi-delay-word-agent">агент</span> vs{' '}
+            <span className="kpi-delay-word-human">человек</span>
+          </h3>
+          <div className="kpi-delay-chart">
+            <div className="kpi-delay-grid">
+              {delayTicks.map((tick) => (
+                <span key={`line:${tick}`} style={{ left: `${(tick / delayAxisMax) * 100}%` }} />
+              ))}
+            </div>
+            <div className="kpi-delay-rows">
+              {visualRows.map((row) => {
+                const agentWidth = `${Math.max(0, Math.round((row.agentDelayMinutes / delayAxisMax) * 1000) / 10)}%`
+                const humanWidth = `${Math.max(0, Math.round((row.humanDelayMinutes / delayAxisMax) * 1000) / 10)}%`
+                return (
+                  <div key={`delay:${row.agentId}`} className="kpi-delay-row">
+                    <span className="kpi-delay-label">{row.title}</span>
+                    <div className="kpi-delay-track">
+                      <i className="agent" style={{ width: agentWidth }}>
+                        {row.agentDelayMinutes > 0 ? row.agentDelayMinutes : ''}
+                      </i>
+                      <i className="human" style={{ width: humanWidth }}>
+                        {row.humanDelayMinutes > 0 ? row.humanDelayMinutes : ''}
+                      </i>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="kpi-delay-axis">
+              {delayTicks.map((tick) => (
+                <span key={`tick:${tick}`} style={{ left: `${(tick / delayAxisMax) * 100}%` }}>
+                  {tick}
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+      </div>
+
+      {modalOpen ? (
+        <div className="modal-overlay" onClick={() => setModalOpen(false)}>
+          <div className="modal-card kpi-explain-dialog" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-title">Объяснительная по задержке человека</div>
+            <p className="modal-note">
+              Средняя задержка {formatMinutes(summary.humanDelay)} за период «{periodLabel}». Порог риска —{' '}
+              {CRITICAL_HUMAN_DELAY_MIN} мин.
+            </p>
+            {criticalRows.length ? (
+              <ul className="kpi-explain-processes">
+                {criticalRows.map((row) => (
+                  <li key={row.agentId}>
+                    {row.title}: {formatMinutes(row.humanDelayMinutes)}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <label className="modal-label" htmlFor="kpi-human-explain">
+              Причина задержки
+            </label>
+            <textarea
+              id="kpi-human-explain"
+              className="kpi-explain-textarea"
+              rows={5}
+              value={explanation}
+              onChange={(event) => setExplanation(event.target.value)}
+              placeholder="Опишите, почему ответ занял больше допустимого времени…"
+            />
+            <div className="modal-actions">
+              <button className="btn-light" type="button" onClick={() => setModalOpen(false)} disabled={submitting}>
+                Отмена
+              </button>
+              <button
+                className="btn-primary"
+                type="button"
+                onClick={submitExplanation}
+                disabled={submitting || !explanation.trim()}
+              >
+                {submitting ? 'Отправляем…' : 'Отправить'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -964,7 +1629,7 @@ function Overview({
               <img src={iconAttention} alt="" />
               <div>
                 <strong>{row.agent.title}</strong>
-                <span>{row.agent.lastRunStatus || row.agent.status || 'Требуется проверка'}</span>
+                <span>{localizeStatusText(row.agent.lastRunStatus || row.agent.status || '', 'Требуется проверка')}</span>
               </div>
             </div>
           ))}

@@ -92,8 +92,8 @@ export const agentClient = {
     void window.agent.skip({ requestId })
   },
 
-  cancel(runId = ''): void {
-    void window.agent.cancel({ id: runId })
+  cancel(runId = '', workflowId = ''): void {
+    void window.agent.cancel({ id: runId, workflowId })
   },
 
   onEvent(callback: (event: AgentEvent) => void): () => void {

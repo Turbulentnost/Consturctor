@@ -328,6 +328,103 @@ def answer_from_result(result: Any) -> str:
     return str(result or "").strip()
 
 
+_WAIT_START = frozenset({"human_wait", "question", "hitl"})
+_WAIT_END = frozenset({"human_reply"})
+# Events that can arrive while entering a wait (askQuestion emits tool_request
+# right after question). They must not close the human segment.
+_WAIT_HOLD = frozenset({"tool_request", "human_wait", "question", "hitl", "status", "ready"})
+
+
+def _parse_event_at(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        stamp = value
+    elif isinstance(value, str) and value.strip():
+        raw = value.strip().replace("Z", "+00:00")
+        try:
+            stamp = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    else:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp
+
+
+def compute_run_timing(
+    events: list[Any] | None,
+    *,
+    started_at: datetime | str | None,
+    finished_at: datetime | str | None,
+    in_flight: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    start = _parse_event_at(started_at)
+    end = _parse_event_at(finished_at)
+    empty = {
+        "agent_work_ms": 0,
+        "human_wait_ms": 0,
+        "open_segment": "",
+        "open_segment_at": "",
+    }
+    if start is None:
+        return empty
+
+    mode = "agent"
+    cursor = start
+    agent_ms = 0
+    human_ms = 0
+
+    def close_until(at: datetime, next_mode: str) -> None:
+        nonlocal mode, cursor, agent_ms, human_ms
+        if at < cursor:
+            at = cursor
+        delta = int((at - cursor).total_seconds() * 1000)
+        if delta > 0:
+            if mode == "agent":
+                agent_ms += delta
+            elif mode == "human":
+                human_ms += delta
+        mode = next_mode
+        cursor = at
+
+    for raw in events or []:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("type") or "").strip().lower()
+        at = _parse_event_at(raw.get("at"))
+        if at is None:
+            continue
+        if kind in _WAIT_START:
+            if mode != "human":
+                close_until(at, "human")
+        elif kind in _WAIT_END:
+            if mode == "human":
+                close_until(at, "agent")
+        elif mode == "human" and kind not in _WAIT_HOLD:
+            close_until(at, "agent")
+
+    open_segment = ""
+    open_at = ""
+    if end is not None:
+        close_until(end, "")
+    elif in_flight:
+        open_segment = mode
+        open_at = _iso(cursor)
+    elif agent_ms == 0 and human_ms == 0:
+        close_until(now or datetime.now(timezone.utc), "")
+
+    if agent_ms == 0 and human_ms == 0 and end is not None:
+        agent_ms = max(0, int((end - start).total_seconds() * 1000))
+
+    return {
+        "agent_work_ms": agent_ms,
+        "human_wait_ms": human_ms,
+        "open_segment": open_segment,
+        "open_segment_at": open_at,
+    }
+
+
 def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
     stored: list[dict[str, Any]] = []
     for raw in events:
@@ -337,10 +434,13 @@ def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
         if kind in {"", "run", "done"}:
             continue
         item: dict[str, Any] = {"type": kind}
-        for key in ("text", "message", "tool", "title", "request_id", "requestId", "error", "status"):
+        for key in ("text", "message", "tool", "title", "request_id", "requestId", "error", "status", "at", "wait"):
             value = raw.get(key)
             if isinstance(value, str) and value.strip():
                 item[key] = value.strip()[:8000]
+        request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
+        if request_id:
+            item["requestId"] = request_id[:80]
         if raw.get("ok") is not None:
             item["ok"] = bool(raw.get("ok"))
         if raw.get("skipped") is not None:
@@ -386,12 +486,23 @@ def _clip_json(value: Any, *, depth: int = 0) -> Any:
 
 
 def _to_out(row: AgentRun, *, include_events: bool = False) -> AgentRunOut:
-    events = row.events_json if include_events and isinstance(row.events_json, list) else []
+    stored = row.events_json if isinstance(row.events_json, list) else []
+    events = stored if include_events else []
+    in_flight = _row_in_flight(row)
+    timing = compute_run_timing(
+        stored,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
+        in_flight=in_flight,
+    )
+    status = row.status or ""
+    if in_flight and str(timing.get("open_segment") or "") == "human":
+        status = "waiting_human"
     return AgentRunOut(
         id=row.id,
         workflow_id=row.workflow_id,
         message=row.message or "",
-        status=effective_run_status(row.status or "", row.answer or "", in_flight=_row_in_flight(row)),
+        status=status,
         answer=row.answer or "",
         source=row.source or "chat",
         trigger_id=row.trigger_id or "",
@@ -399,5 +510,9 @@ def _to_out(row: AgentRun, *, include_events: bool = False) -> AgentRunOut:
         trigger_reason=row.trigger_reason or "",
         started_at=_iso(row.started_at),
         finished_at=_iso(row.finished_at) if row.finished_at else "",
+        agent_work_ms=int(timing["agent_work_ms"]),
+        human_wait_ms=int(timing["human_wait_ms"]),
+        open_segment=str(timing["open_segment"] or ""),
+        open_segment_at=str(timing["open_segment_at"] or ""),
         events=[item for item in events if isinstance(item, dict)],
     )

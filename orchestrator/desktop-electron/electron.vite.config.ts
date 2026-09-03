@@ -2,6 +2,8 @@ import { resolve } from 'node:path'
 import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 
+const rendererPort = Number(process.env.ORCH_VITE_PORT || 5174)
+
 export default defineConfig({
   main: {
     build: {
@@ -25,7 +27,7 @@ export default defineConfig({
       }
     },
     server: {
-      port: 5174,
+      port: Number.isFinite(rendererPort) ? rendererPort : 5174,
       strictPort: true
     },
     build: {

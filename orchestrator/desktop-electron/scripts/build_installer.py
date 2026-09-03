@@ -13,8 +13,21 @@ from pathlib import Path
 
 
 ELECTRON_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = ELECTRON_ROOT.parents[1]
-DESKTOP_ROOT = REPO_ROOT / "desktop"
+REPO_ROOT = ELECTRON_ROOT.parent
+
+
+def resolve_repo_resource(name: str) -> Path:
+    local = REPO_ROOT / name
+    if local.exists():
+        return local
+    parent = REPO_ROOT.parent / name
+    if parent.exists():
+        return parent
+    return local
+
+
+DESKTOP_ROOT = resolve_repo_resource("desktop")
+TOOLS_ROOT = resolve_repo_resource("tools")
 RUNTIME_ROOT = ELECTRON_ROOT / ".installer-runtime"
 CACHE_ROOT = RUNTIME_ROOT / ".cache"
 

@@ -8,15 +8,17 @@ import { useRuns } from '../store/runs'
 import { isInFlightRunStatus, isLiveRunState } from '../store/liveRun'
 import { cleanRunResult } from '../utils/cleanRunResult'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
-import {
-  formatRunTime,
-  formatRunWhen,
-  groupRunsByDay,
-  HISTORY_STATUS_LABELS,
-  historyRunStatus
-} from '../utils/historyDisplay'
-import { filesForHistoryRun } from '../utils/historyFiles'
+import { durationLabel } from '../workplace/runTiming'
 import { formatSize } from './filesGrouping'
+import {
+  eventsForHistoryRun,
+  filesForHistoryRun,
+  formatRunWhen,
+  historyResultText,
+  historySourceLabel,
+  historyStatusLabel,
+  historyStatusTone
+} from './historyDetail'
 
 interface AgentHistoryPageProps {
   workflowId: string
@@ -80,16 +82,17 @@ export function AgentHistoryPage({
     let alive = true
     setDetailLoading(true)
     setPane('result')
-    void Promise.all([
-      api.getAgentRunDetail(workflowId, selected),
-      api.listWorkflowFiles(workflowId)
-    ])
+    void Promise.all([api.getAgentRunDetail(workflowId, selected), api.listWorkflowFiles(workflowId)])
       .then(([detail, allFiles]) => {
         if (!alive) return
-        const text = (detail.item.answer || detail.item.summary || '').trim()
+        const stored = (detail.item.answer || detail.item.summary || '').trim()
+        const text = historyResultText(stored, detail.events)
         setAnswer(text)
         setEvents(detail.events)
         setFiles(filesForHistoryRun(allFiles, selected, text, detail.events))
+        setRuns((current) =>
+          current.map((item) => (item.runId === detail.item.runId ? { ...item, ...detail.item } : item))
+        )
       })
       .catch(() => {
         if (!alive) return
@@ -106,12 +109,15 @@ export function AgentHistoryPage({
   }, [workflowId, selected])
 
   const selectedRun = runs.find((item) => item.runId === selected)
-  const groups = useMemo(() => groupRunsByDay(runs), [runs])
+  const feedEvents = useMemo(
+    () => eventsForHistoryRun(events, selectedRun, answer),
+    [events, selectedRun, answer]
+  )
+  const feedItems = useMemo(() => buildFeedItems(feedEvents), [feedEvents])
   const cleaned = useMemo(
-    () => cleanRunResult({ answer, events, status: selectedRun ? historyRunStatus(selectedRun) : '' }),
+    () => cleanRunResult({ answer, events, status: selectedRun?.status || '' }),
     [answer, events, selectedRun]
   )
-  const feedItems = useMemo(() => buildFeedItems(events), [events])
   const planMeetings = useMemo(() => meetingsFromEvents(events), [events])
   const showLiveFeed = Boolean(
     live &&
@@ -121,6 +127,9 @@ export function AgentHistoryPage({
         !live.backendRunId ||
         live.backendRunId === selected)
   )
+  const sourceLabel = selectedRun ? historySourceLabel(selectedRun) : ''
+  const agentTime = selectedRun ? durationLabel(selectedRun.agentWorkMs || 0) : ''
+  const humanTime = selectedRun ? durationLabel(selectedRun.humanWaitMs || 0) : ''
 
   return (
     <div className="agent-studio">
@@ -143,27 +152,26 @@ export function AgentHistoryPage({
               <p>Пока нет запусков этого агента.</p>
             </div>
           )}
-          {groups.map((group) => (
-            <div key={group.key} className="history-day">
-              <div className="history-day-label">{group.label}</div>
-              {group.items.map((run) => (
-                <button
-                  key={run.runId}
-                  className={
-                    selected === run.runId ? 'agent-side-card history-run active' : 'agent-side-card history-run'
-                  }
-                  onClick={() => setSelected(run.runId)}
-                  style={{ textAlign: 'left', cursor: 'pointer', width: '100%' }}
-                >
-                  <div className="history-status">
-                    {HISTORY_STATUS_LABELS[historyRunStatus(run)] || 'Отменён'}
-                  </div>
-                  <div className="history-summary" style={{ fontSize: 12 }}>
-                    {formatRunTime(run.startedAt) || formatRunWhen(run.startedAt)}
-                  </div>
-                </button>
-              ))}
-            </div>
+          {runs.map((run) => (
+            <button
+              key={run.runId}
+              className={
+                selected === run.runId ? 'agent-side-card history-run active' : 'agent-side-card history-run'
+              }
+              onClick={() => setSelected(run.runId)}
+              style={{ textAlign: 'left', cursor: 'pointer', width: '100%' }}
+            >
+              <div className={`history-status is-${historyStatusTone(run.status)}`}>
+                {historyStatusLabel(run.status)}
+              </div>
+              <div className="history-summary" style={{ fontSize: 12 }}>
+                {formatRunWhen(run.startedAt)}
+                {run.source ? ` · ${historySourceLabel(run)}` : ''}
+              </div>
+              {run.triggerReason ? (
+                <div className="history-run-reason">{run.triggerReason}</div>
+              ) : null}
+            </button>
           ))}
         </div>
 
@@ -189,9 +197,7 @@ export function AgentHistoryPage({
                 onAnswer={(requestId, value, filePaths) =>
                   liveStore.answer(workflowId, requestId, value, filePaths)
                 }
-                onHitl={(requestId, approved) =>
-                  liveStore.respondHitl(workflowId, requestId, approved)
-                }
+                onHitl={(requestId, approved) => liveStore.respondHitl(workflowId, requestId, approved)}
                 onSkip={() => liveStore.skip(workflowId)}
               />
             </div>
@@ -201,18 +207,40 @@ export function AgentHistoryPage({
             <div className="wf-files-empty">Выберите запуск, чтобы увидеть результат.</div>
           ) : (
             <div className="history-result">
+              <div className="files-tabs history-result-tabs">
+                <button
+                  className={pane === 'result' ? 'active' : ''}
+                  type="button"
+                  onClick={() => setPane('result')}
+                >
+                  Результат
+                </button>
+                <button
+                  className={pane === 'events' ? 'active' : ''}
+                  type="button"
+                  onClick={() => setPane('events')}
+                >
+                  Ход работы
+                </button>
+              </div>
+              {selectedRun ? (
+                <div className="history-run-meta">
+                  <span>
+                    {historyStatusLabel(selectedRun.status)}
+                    {selectedRun.startedAt ? ` · ${formatRunWhen(selectedRun.startedAt)}` : ''}
+                  </span>
+                  <span>{sourceLabel}</span>
+                  {selectedRun.finishedAt ? <span>конец: {formatRunWhen(selectedRun.finishedAt)}</span> : null}
+                  {selectedRun.agentWorkMs > 0 || selectedRun.openSegment === 'agent' ? (
+                    <span>работа агента: {agentTime}</span>
+                  ) : null}
+                  {selectedRun.humanWaitMs > 0 || selectedRun.openSegment === 'human' ? (
+                    <span>ответ человека: {humanTime}</span>
+                  ) : null}
+                </div>
+              ) : null}
               {pane === 'events' ? (
                 <section className="wf-result-card">
-                  <div className="wf-result-head">
-                    <div className="wf-result-title">Ход работы</div>
-                    <button
-                      type="button"
-                      className="btn-ghost wf-result-action"
-                      onClick={() => setPane('result')}
-                    >
-                      К результату
-                    </button>
-                  </div>
                   <div className="wf-feed-wrap history-feed">
                     <AgentFeed
                       items={feedItems}
@@ -229,16 +257,6 @@ export function AgentHistoryPage({
                 </section>
               ) : (
                 <section className="wf-result-card">
-                  <div className="wf-result-head">
-                    <div className="wf-result-title">Результат</div>
-                    <button
-                      type="button"
-                      className="btn-ghost wf-result-action"
-                      onClick={() => setPane('events')}
-                    >
-                      Ход работы
-                    </button>
-                  </div>
                   {planMeetings.length > 0 && (
                     <div className="wf-result-calendar">
                       <MiniCalendar meetings={planMeetings} />
