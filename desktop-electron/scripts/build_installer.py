@@ -413,9 +413,9 @@ def publish_github_release() -> None:
                 f"Constructor {version} and Orchestrator {version}. "
                 "Constructor-Setup.exe installs both programs. "
                 "An update from either app installs both Constructor and Orchestrator. "
-                "Adds timestamps in regulation interview chat, "
-                "keeps a longer run result in history, "
-                "and includes calendar and trigger updates from david."
+                "Shows the meeting plan calendar in the agent result, "
+                "adds run timing and agent passport from david, "
+                "and keeps history and decisions result views."
             ),
         ],
         cwd=REPO_ROOT,
