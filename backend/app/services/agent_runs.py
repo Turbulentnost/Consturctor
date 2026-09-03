@@ -294,7 +294,27 @@ def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -
     row = db.get(AgentRun, run_id)
     if row is None or row.workflow_id != workflow_id or row.user_id != user_id:
         raise WorkflowError("Запуск не найден", status_code=404)
-    return _to_out(row, include_events=True)
+    out = _to_out(row, include_events=True)
+    out.calendar_meetings = _calendar_meetings_for(
+        db, user_id=user_id, workflow_id=workflow_id
+    )
+    if out.calendar_meetings and not any(
+        str(item.get("tool") or "").strip() == "calendar.show_meetings"
+        for item in out.events
+        if isinstance(item, dict)
+    ):
+        out.events.append(
+            {
+                "type": "tool_call",
+                "tool": "calendar.show_meetings",
+                "arguments": {"meetings": out.calendar_meetings},
+                "result": {
+                    "shown": len(out.calendar_meetings),
+                    "meetings": out.calendar_meetings,
+                },
+            }
+        )
+    return out
 
 
 def _notify_board(
@@ -425,6 +445,52 @@ def compute_run_timing(
     }
 
 
+_MAX_RUN_EVENTS = 400
+_LOW_VALUE_EVENT_TYPES = {"thinking", "status"}
+_MUST_KEEP_EVENT_TYPES = {
+    "work_result",
+    "final",
+    "result",
+    "user_message",
+    "question",
+    "tool_request",
+    "human_wait",
+    "human_reply",
+}
+
+
+def _event_must_keep(item: dict[str, Any]) -> bool:
+    kind = str(item.get("type") or "").strip().lower()
+    if kind in _MUST_KEEP_EVENT_TYPES:
+        return True
+    return str(item.get("tool") or "").strip() == "calendar.show_meetings"
+
+
+def _trim_run_events(stored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(stored) <= _MAX_RUN_EVENTS:
+        return stored
+    kept = list(stored)
+    while len(kept) > _MAX_RUN_EVENTS:
+        drop_at = next(
+            (
+                index
+                for index, item in enumerate(kept)
+                if str(item.get("type") or "").strip().lower() in _LOW_VALUE_EVENT_TYPES
+                and not _event_must_keep(item)
+            ),
+            -1,
+        )
+        if drop_at < 0:
+            drop_at = next(
+                (index for index, item in enumerate(kept) if not _event_must_keep(item)),
+                -1,
+            )
+        if drop_at < 0:
+            break
+        kept.pop(drop_at)
+    return kept[-_MAX_RUN_EVENTS:]
+
+
 def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
     stored: list[dict[str, Any]] = []
     for raw in events:
@@ -460,9 +526,21 @@ def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
             if isinstance(value, list) and value:
                 item[key] = _clip_json(value)
         stored.append(item)
-        if len(stored) >= 300:
-            break
-    return stored
+    return _trim_run_events(stored)
+
+
+def _calendar_meetings_for(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+) -> list[dict[str, Any]]:
+    from app.services.calendar_overlay import list_overlays, normalize_meetings
+
+    rows = list_overlays(db, user_id=user_id, workflow_id=workflow_id)
+    if not rows:
+        return []
+    return normalize_meetings(rows[0].meetings)
 
 
 def _clip_json(value: Any, *, depth: int = 0) -> Any:

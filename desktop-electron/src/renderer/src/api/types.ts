@@ -159,6 +159,13 @@ export interface AgentRunHistoryItem {
   finishedAt: string
   summary: string
   answer: string
+  calendarMeetings?: Array<{
+    title: string
+    start: string
+    end: string
+    mark: string
+    reason: string
+  }>
 }
 
 export interface RegulationCreationMessage {

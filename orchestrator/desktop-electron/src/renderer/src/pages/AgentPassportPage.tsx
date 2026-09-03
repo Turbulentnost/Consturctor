@@ -9,7 +9,8 @@ import type {
   WorkflowRecord
 } from '../api/types'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
-import { presentAgentText } from '../components/agentfeed/formatAgentText'
+import { MiniCalendar, meetingsForHistoryRun } from '../components/agentfeed/MiniCalendar'
+import { cleanRunResult } from '../utils/cleanRunResult'
 import { triggerChipLabel } from './AgentSchedulePage'
 import { formatSize } from './filesGrouping'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
@@ -164,15 +165,17 @@ export function AgentPassportPage({
     }
     let alive = true
     setDetailLoading(true)
-    void api
-      .getAgentRunDetail(workflowId, selectedRun)
-      .then((detail) => {
+    void Promise.all([api.getAgentRunDetail(workflowId, selectedRun), api.getCalendarOverlay(workflowId)])
+      .then(([detail, overlay]) => {
         if (!alive) return
         const stored = (detail.item.answer || detail.item.summary || '').trim()
         setRunAnswer(historyResultText(stored, detail.events))
         setRunEvents(detail.events)
+        const meetings = detail.item.calendarMeetings?.length ? detail.item.calendarMeetings : overlay
         setRuns((current) =>
-          current.map((item) => (item.runId === detail.item.runId ? { ...item, ...detail.item } : item))
+          current.map((item) =>
+            item.runId === detail.item.runId ? { ...item, ...detail.item, calendarMeetings: meetings } : item
+          )
         )
       })
       .catch(() => {
@@ -212,7 +215,13 @@ export function AgentPassportPage({
   const displayTitle = (form.name || sourceForm.name || 'ИИ-агент').trim()
   const triggers = draft?.triggers || []
   const selected = runs.find((item) => item.runId === selectedRun)
-  const resultText = presentAgentText(runAnswer)
+  const cleaned = cleanRunResult({
+    answer: runAnswer,
+    events: runEvents,
+    status: selected?.status || ''
+  })
+  const resultText = cleaned.text
+  const planMeetings = meetingsForHistoryRun(runEvents, selected?.calendarMeetings)
   const latestRun = runs[0] || null
   const runFiles = selected
     ? filesForHistoryRun(files, selected.runId, runAnswer, runEvents)
@@ -548,9 +557,14 @@ export function AgentPassportPage({
                     Открыть запуск
                   </button>
                 </div>
+                {planMeetings.length > 0 ? (
+                  <div className="wf-result-calendar">
+                    <MiniCalendar meetings={planMeetings} />
+                  </div>
+                ) : null}
                 {resultText ? (
                   <MarkdownBody text={resultText} />
-                ) : (
+                ) : planMeetings.length > 0 ? null : (
                   <p className="passport-empty">У этого запуска нет сохранённого результата.</p>
                 )}
                 <section className="wf-file-section" style={{ marginTop: 16 }}>

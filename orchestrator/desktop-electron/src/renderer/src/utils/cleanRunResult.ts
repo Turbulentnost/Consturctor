@@ -57,6 +57,26 @@ export function isPlaceholderResult(text: string): boolean {
   return PLACEHOLDERS.some((marker) => value.includes(marker))
 }
 
+const WORK_RESULT_RE = /^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\b.*$/im
+
+export function stripToWorkResult(text: string): string {
+  const raw = text || ''
+  const match = WORK_RESULT_RE.exec(raw)
+  if (!match || match.index === undefined) return raw.trim()
+  return raw.slice(match.index).trim()
+}
+
+export function hasWorkResultMarker(text: string): boolean {
+  return WORK_RESULT_RE.test(text || '')
+}
+
+function stripWorkResultChrome(text: string): string {
+  return (text || '')
+    .replace(/^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\s*:?\s*/im, '')
+    .replace(/^\s*TESTS:\s*(PASS|FAIL)\s*$/gim, '')
+    .trim()
+}
+
 function stripToolFences(text: string): string {
   let cleaned = (text || '').replace(/\ufffd/g, '')
   if (!cleaned.includes('```constructor_tool') && !cleaned.includes('```tool')) return cleaned.trim()
@@ -142,6 +162,10 @@ function preferLongerResult(named: string, full: string): string {
 function cleanText(raw: string): string {
   const stripped = stripToolFences(raw)
   if (!stripped || isPlaceholderResult(stripped)) return ''
+  if (hasWorkResultMarker(stripped)) {
+    const body = stripWorkResultChrome(stripToWorkResult(stripped))
+    if (body && !isPlaceholderResult(body)) return presentAgentText(body).trim()
+  }
   const full = stripResultHeading(stripJunkParagraphs(stripped))
   let named = ''
   for (const heading of NAMED_HEADINGS) {
@@ -228,7 +252,11 @@ export function cleanRunResult(input: {
     statusKey === 'cancelled' ||
     statusKey === 'error' ||
     statusKey === 'failed'
-  const fromEvent = fromEvents(events, !terminatedBad)
+  if (!terminatedBad && hasWorkResultMarker(rawAnswer)) {
+    const fromStored = cleanText(rawAnswer)
+    if (fromStored) return { text: fromStored, emptyHint: '' }
+  }
+  const fromEvent = fromEvents(events, !terminatedBad && !rawAnswer)
   // For cancelled/errored runs the raw answer is usually partial narration, not a result.
   const fromAnswer = terminatedBad ? '' : cleanText(rawAnswer)
   const text = preferLongerResult(fromEvent, fromAnswer) || fromEvent || fromAnswer

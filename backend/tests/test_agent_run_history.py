@@ -153,6 +153,33 @@ def test_effective_run_status_success_needs_result() -> None:
     assert effective_run_status("error", "инструмент вернул 500") == "error"
 
 
+def test_slim_run_events_keeps_calendar_after_thinking_overflow() -> None:
+    events = [{"type": "thinking", "text": f"step {index}"} for index in range(420)]
+    events.append(
+        {
+            "type": "tool_call",
+            "tool": "calendar.show_meetings",
+            "arguments": {
+                "meetings": [
+                    {
+                        "title": "СЗ 000014029",
+                        "start": "2026-09-03T07:00:00+00:00",
+                        "end": "2026-09-03T08:00:00+00:00",
+                        "mark": "keep",
+                    }
+                ]
+            },
+        }
+    )
+    events.append({"type": "work_result", "text": "## WORK_RESULT\nПлан готов\nTESTS: PASS"})
+    stored = slim_run_events(events)
+    assert len(stored) <= 400
+    tools = [item.get("tool") for item in stored]
+    types = [item.get("type") for item in stored]
+    assert "calendar.show_meetings" in tools
+    assert "work_result" in types
+
+
 def test_slim_run_events_keeps_timing_markers() -> None:
     stored = slim_run_events(
         [

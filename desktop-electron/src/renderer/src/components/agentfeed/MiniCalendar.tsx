@@ -90,13 +90,24 @@ export function meetingsFromFeed(items: FeedItem[]): MiniMeeting[] {
 export function meetingsFromEvents(events: AgentRunnerEvent[]): MiniMeeting[] {
   let found: MiniMeeting[] = []
   for (const event of events) {
-    const type = String(event.type || '').toLowerCase()
-    if (type !== 'tool_call' && type !== 'tool_result') continue
-    if (String(event.tool || '') !== 'calendar.show_meetings') continue
-    const parsed = meetingsFromToolItem({ result: event.result, arguments: event.arguments })
-    if (parsed.length) found = parsed
+    if (String(event.tool || '') === 'calendar.show_meetings') {
+      const parsed = meetingsFromToolItem({ result: event.result, arguments: event.arguments })
+      if (parsed.length) found = parsed
+      continue
+    }
+    const nested = meetingsFromResult(event.result).concat(meetingsFromResult(event.arguments))
+    if (nested.length > 1) found = nested
   }
   return found
+}
+
+export function meetingsForHistoryRun(
+  events: AgentRunnerEvent[],
+  stored?: Array<{ title: string; start: string; end?: string; mark?: string; reason?: string }> | null
+): MiniMeeting[] {
+  const fromEvents = meetingsFromEvents(events)
+  if (fromEvents.length) return fromEvents
+  return normalizeMeetingList(stored || [])
 }
 
 function pad2(n: number): string {

@@ -766,8 +766,23 @@ function parseAgentRunItem(item: Record<string, unknown>, workflowId: string): A
     agentWorkMs: Math.max(0, Number(item.agent_work_ms ?? item.agentWorkMs ?? 0) || 0),
     humanWaitMs: Math.max(0, Number(item.human_wait_ms ?? item.humanWaitMs ?? 0) || 0),
     openSegment: String(item.open_segment ?? item.openSegment ?? ''),
-    openSegmentAt: String(item.open_segment_at ?? item.openSegmentAt ?? '')
+    openSegmentAt: String(item.open_segment_at ?? item.openSegmentAt ?? ''),
+    calendarMeetings: parseCalendarMeetings(item.calendar_meetings ?? item.calendarMeetings)
   }
+}
+
+function parseCalendarMeetings(raw: unknown): AgentRunHistoryItem['calendarMeetings'] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    .map((item) => ({
+      title: String(item.title ?? item.subject ?? ''),
+      start: String(item.start ?? item.start_at ?? ''),
+      end: String(item.end ?? item.end_at ?? ''),
+      mark: String(item.mark ?? item.color ?? 'keep'),
+      reason: String(item.reason ?? item.note ?? '')
+    }))
+    .filter((item) => item.title && item.start)
 }
 
 export function scheduleTriggerToApi(spec: ScheduleTriggerSpec): Record<string, unknown> {
@@ -1599,6 +1614,20 @@ export class ApiClient {
     return {
       item: parseAgentRunItem({ ...data, id: data.run_id ?? data.runId ?? data.id ?? runId }, workflowId),
       events
+    }
+  }
+
+  async getCalendarOverlay(workflowId: string): Promise<AgentRunHistoryItem['calendarMeetings']> {
+    try {
+      const data = await this.request<{ items?: Record<string, unknown>[] }>(
+        'GET',
+        '/api/v1/calendar/overlays',
+        { timeoutMs: 20_000, params: { workflow_id: workflowId } }
+      )
+      const first = (data.items ?? []).find((item) => item && typeof item === 'object')
+      return parseCalendarMeetings(first?.meetings)
+    } catch {
+      return []
     }
   }
 

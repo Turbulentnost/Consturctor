@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.db.session import get_db
-from app.services.calendar_overlay import normalize_meetings, upsert_overlay
+from app.services.calendar_overlay import list_overlays, normalize_meetings, upsert_overlay
 from app.services.workflows.board_live import push_board_updated
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
@@ -49,3 +49,25 @@ def save_calendar_overlay(
     )
     shown = normalize_meetings(row.meetings)
     return {"ok": True, "id": row.id, "shown": len(shown), "meetings": shown}
+
+
+@router.get("/overlays")
+def get_calendar_overlays(
+    workflow_id: str = "",
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    rows = list_overlays(db, user_id=auth.user_id, workflow_id=workflow_id)
+    items = []
+    for row in rows:
+        meetings = normalize_meetings(row.meetings)
+        items.append(
+            {
+                "id": row.id,
+                "workflow_id": row.workflow_id,
+                "run_id": row.run_id,
+                "shown": len(meetings),
+                "meetings": meetings,
+            }
+        )
+    return {"ok": True, "items": items}

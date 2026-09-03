@@ -11,6 +11,9 @@ function mentionedOutputNames(answer: string, events: AgentRunnerEvent[]): Set<s
     if (name && /\.[A-Za-z0-9]{1,8}$/.test(name)) names.add(name.toLowerCase())
   }
   for (const match of answer.matchAll(/`([^`]+)`/g)) add(match[1])
+  for (const match of answer.matchAll(/([^\s`"'<>]+\.(?:xlsx|xls|docx|pdf|md|csv|txt))/gi)) {
+    add(match[1])
+  }
   for (const event of events) {
     if (event.text) {
       for (const match of event.text.matchAll(/`([^`]+)`/g)) add(match[1])
@@ -37,10 +40,14 @@ export function filesForHistoryRun(
   events: AgentRunnerEvent[]
 ): WorkflowFileItem[] {
   const mentioned = mentionedOutputNames(answer, events)
+  const wanted = (runId || '').trim()
   return files.filter((file) => {
     if (!isAgentOutput(file)) return false
     const rid = (file.runId || '').trim()
-    if (!rid || rid === runId || rid === 'local') return true
+    if (wanted && rid && rid !== wanted && rid !== 'local') {
+      return mentioned.has((file.name || '').toLowerCase())
+    }
+    if (wanted && rid === wanted) return true
     return mentioned.has((file.name || '').toLowerCase())
   })
 }

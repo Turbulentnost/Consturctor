@@ -270,6 +270,7 @@ class AgentRunOut(BaseModel):
     open_segment: str = ""
     open_segment_at: str = ""
     events: list[dict[str, Any]] = Field(default_factory=list)
+    calendar_meetings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class KpiMeasureSchema(BaseModel):

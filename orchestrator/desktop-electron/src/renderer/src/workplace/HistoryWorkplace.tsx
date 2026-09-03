@@ -7,7 +7,9 @@ import type {
   WorkflowFileItem
 } from '../api/types'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
-import { MiniCalendar, meetingsFromEvents } from '../components/agentfeed/MiniCalendar'
+import { MiniCalendar, meetingsForHistoryRun, meetingsFromFeed } from '../components/agentfeed/MiniCalendar'
+import { historyResultText } from '../pages/historyDetail'
+import { useRuns } from '../store/runs'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { cleanRunResult } from '../utils/cleanRunResult'
 import {
@@ -47,7 +49,9 @@ export function HistoryWorkplace({
   const [answer, setAnswer] = useState('')
   const [events, setEvents] = useState<AgentRunnerEvent[]>([])
   const [files, setFiles] = useState<WorkflowFileItem[]>([])
+  const [detailMeetings, setDetailMeetings] = useState<AgentRunHistoryItem['calendarMeetings']>([])
   const [detailLoading, setDetailLoading] = useState(false)
+  const liveStore = useRuns()
   const reloadRef = useRef<() => Promise<void>>(async () => undefined)
 
   const agents = useMemo(
@@ -152,6 +156,7 @@ export function HistoryWorkplace({
       setAnswer('')
       setEvents([])
       setFiles([])
+      setDetailMeetings([])
       return
     }
     const run = runs.find((item) => item.runId === selected)
@@ -159,23 +164,31 @@ export function HistoryWorkplace({
       setAnswer('')
       setEvents([])
       setFiles([])
+      setDetailMeetings([])
       return
     }
     let alive = true
     setDetailLoading(true)
-    void Promise.all([api.getAgentRunDetail(run.workflowId, selected), api.listWorkflowFiles(run.workflowId)])
-      .then(([detail, allFiles]) => {
+    void Promise.all([
+      api.getAgentRunDetail(run.workflowId, selected),
+      api.listWorkflowFiles(run.workflowId),
+      api.getCalendarOverlay(run.workflowId)
+    ])
+      .then(([detail, allFiles, overlay]) => {
         if (!alive) return
-        const text = (detail.item.answer || detail.item.summary || '').trim()
+        const stored = (detail.item.answer || detail.item.summary || '').trim()
+        const text = historyResultText(stored, detail.events)
         setAnswer(text)
         setEvents(detail.events)
         setFiles(filesForHistoryRun(allFiles, selected, text, detail.events))
+        setDetailMeetings(detail.item.calendarMeetings?.length ? detail.item.calendarMeetings : overlay)
       })
       .catch(() => {
         if (!alive) return
         setAnswer('')
         setEvents([])
         setFiles([])
+        setDetailMeetings([])
       })
       .finally(() => {
         if (alive) setDetailLoading(false)
@@ -191,7 +204,15 @@ export function HistoryWorkplace({
     () => cleanRunResult({ answer, events, status: selectedStatus }),
     [answer, events, selectedStatus]
   )
-  const planMeetings = useMemo(() => meetingsFromEvents(events), [events])
+  const live = selectedRun ? liveStore.entries[selectedRun.workflowId] : undefined
+  const planMeetings = useMemo(() => {
+    const stored = meetingsForHistoryRun(events, detailMeetings)
+    if (stored.length) return stored
+    if (live?.backendRunId && live.backendRunId === selected) {
+      return meetingsFromFeed(live.state.items)
+    }
+    return []
+  }, [events, detailMeetings, live, selected])
 
   return (
     <div className="wp-page wp-history">
@@ -199,8 +220,7 @@ export function HistoryWorkplace({
         <div>
           <h1 className="page-title">История</h1>
           <div className="wp-sub">
-            Запуски по дням. Справа только результат, без хода работы агента. Календарь — во вкладке
-            «Календарь».
+            Запуски по дням. Справа только результат: план совещаний и итог, без хода работы агента.
           </div>
         </div>
         <span className="orch-badge">{loading ? 'загрузка' : `${visible.length} прогонов`}</span>

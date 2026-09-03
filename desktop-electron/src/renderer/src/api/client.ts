@@ -766,6 +766,20 @@ export function parseScheduleDraft(raw: Record<string, unknown>): ScheduleDraft 
   }
 }
 
+function parseCalendarMeetings(raw: unknown): NonNullable<AgentRunHistoryItem['calendarMeetings']> {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    .map((item) => ({
+      title: String(item.title ?? item.subject ?? ''),
+      start: String(item.start ?? item.start_at ?? ''),
+      end: String(item.end ?? item.end_at ?? ''),
+      mark: String(item.mark ?? item.color ?? 'keep'),
+      reason: String(item.reason ?? item.note ?? '')
+    }))
+    .filter((item) => item.title && item.start)
+}
+
 export function scheduleTriggerToApi(spec: ScheduleTriggerSpec): Record<string, unknown> {
   return {
     kind: spec.kind,
@@ -1324,7 +1338,8 @@ export class ApiClient {
         startedAt: String(item.started_at ?? item.startedAt ?? ''),
         finishedAt: String(item.finished_at ?? item.finishedAt ?? ''),
         summary: String(item.summary ?? item.answer ?? item.result ?? ''),
-        answer: String(item.answer ?? item.summary ?? item.result ?? '')
+        answer: String(item.answer ?? item.summary ?? item.result ?? ''),
+        calendarMeetings: parseCalendarMeetings(item.calendar_meetings ?? item.calendarMeetings)
       }))
   }
 
@@ -1700,7 +1715,8 @@ export class ApiClient {
         startedAt: String(data.started_at ?? data.startedAt ?? ''),
         finishedAt: String(data.finished_at ?? data.finishedAt ?? ''),
         summary: String(data.summary ?? data.answer ?? data.result ?? ''),
-        answer: String(data.answer ?? data.summary ?? data.result ?? '')
+        answer: String(data.answer ?? data.summary ?? data.result ?? ''),
+        calendarMeetings: parseCalendarMeetings(data.calendar_meetings ?? data.calendarMeetings)
       },
       events
     }

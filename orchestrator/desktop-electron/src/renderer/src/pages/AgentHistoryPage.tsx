@@ -3,7 +3,7 @@ import { api } from '../api/client'
 import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowFileItem } from '../api/types'
 import { AgentFeed, buildFeedItems } from '../components/agentfeed'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
-import { MiniCalendar, meetingsFromEvents } from '../components/agentfeed/MiniCalendar'
+import { MiniCalendar, meetingsForHistoryRun, meetingsFromFeed } from '../components/agentfeed/MiniCalendar'
 import { useRuns } from '../store/runs'
 import { isInFlightRunStatus, isLiveRunState } from '../store/liveRun'
 import { cleanRunResult } from '../utils/cleanRunResult'
@@ -82,16 +82,23 @@ export function AgentHistoryPage({
     let alive = true
     setDetailLoading(true)
     setPane('result')
-    void Promise.all([api.getAgentRunDetail(workflowId, selected), api.listWorkflowFiles(workflowId)])
-      .then(([detail, allFiles]) => {
+    void Promise.all([
+      api.getAgentRunDetail(workflowId, selected),
+      api.listWorkflowFiles(workflowId),
+      api.getCalendarOverlay(workflowId)
+    ])
+      .then(([detail, allFiles, overlay]) => {
         if (!alive) return
         const stored = (detail.item.answer || detail.item.summary || '').trim()
         const text = historyResultText(stored, detail.events)
         setAnswer(text)
         setEvents(detail.events)
         setFiles(filesForHistoryRun(allFiles, selected, text, detail.events))
+        const meetings = detail.item.calendarMeetings?.length ? detail.item.calendarMeetings : overlay
         setRuns((current) =>
-          current.map((item) => (item.runId === detail.item.runId ? { ...item, ...detail.item } : item))
+          current.map((item) =>
+            item.runId === detail.item.runId ? { ...item, ...detail.item, calendarMeetings: meetings } : item
+          )
         )
       })
       .catch(() => {
@@ -118,7 +125,14 @@ export function AgentHistoryPage({
     () => cleanRunResult({ answer, events, status: selectedRun?.status || '' }),
     [answer, events, selectedRun]
   )
-  const planMeetings = useMemo(() => meetingsFromEvents(events), [events])
+  const planMeetings = useMemo(() => {
+    const stored = meetingsForHistoryRun(events, selectedRun?.calendarMeetings)
+    if (stored.length) return stored
+    if (live?.backendRunId && live.backendRunId === selected) {
+      return meetingsFromFeed(live.state.items)
+    }
+    return []
+  }, [events, selectedRun, live, selected])
   const showLiveFeed = Boolean(
     live &&
       isLiveRunState(live.state) &&

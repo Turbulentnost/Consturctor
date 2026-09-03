@@ -1,4 +1,5 @@
 import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowFileItem } from '../api/types'
+import { hasWorkResultMarker, stripToWorkResult } from '../utils/cleanRunResult'
 
 export const HISTORY_STATUS_LABELS: Record<string, string> = {
   ok: 'Успешно',
@@ -71,6 +72,9 @@ export function mentionedOutputNames(answer: string, events: AgentRunnerEvent[])
     for (const match of text.matchAll(/`([^`]+)`/g)) collectPathNames(match[1], names)
   }
   addFromText(answer)
+  for (const match of answer.matchAll(/([^\s`"'<>]+\.(?:xlsx|xls|docx|pdf|md|csv|txt))/gi)) {
+    collectPathNames(match[1], names)
+  }
   for (const event of events) {
     if (event.text) addFromText(event.text)
     if (event.message) addFromText(event.message)
@@ -90,10 +94,14 @@ export function filesForHistoryRun(
   events: AgentRunnerEvent[]
 ): WorkflowFileItem[] {
   const mentioned = mentionedOutputNames(answer, events)
+  const wanted = (runId || '').trim()
   return files.filter((file) => {
     if (!isAgentOutput(file)) return false
     const rid = (file.runId || '').trim()
-    if (!rid || rid === runId || rid === 'local') return true
+    if (wanted && rid && rid !== wanted && rid !== 'local') {
+      return mentioned.has((file.name || '').toLowerCase())
+    }
+    if (wanted && rid === wanted) return true
     return mentioned.has((file.name || '').toLowerCase())
   })
 }
@@ -134,26 +142,25 @@ function textFromEvent(event: AgentRunnerEvent): string {
 }
 
 export function historyResultText(answer: string, events: AgentRunnerEvent[]): string {
-  const preferredTypes = new Set(['work_result', 'final', 'result', 'agent_message'])
+  const stored = (answer || '').trim()
+  if (hasWorkResultMarker(stored)) {
+    return sanitizeStoredAnswer(stripToWorkResult(stored))
+  }
+  const preferredTypes = new Set(['work_result', 'final', 'result'])
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
     if (!preferredTypes.has(event.type)) continue
     const text = textFromEvent(event)
-    if (text) return text
+    if (text) return hasWorkResultMarker(text) ? stripToWorkResult(text) : text
   }
+  if (stored) return sanitizeStoredAnswer(stored)
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
-    if (event.type !== 'tool_result' && event.type !== 'tool') continue
+    if (event.type !== 'agent_message' && event.type !== 'assistant' && event.type !== 'agent') continue
     const text = textFromEvent(event)
-    if (text) return text
+    if (text && hasWorkResultMarker(text)) return stripToWorkResult(text)
   }
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (event.type !== 'assistant' && event.type !== 'agent') continue
-    const text = visibleAssistant(event.text || '')
-    if (text) return text
-  }
-  return sanitizeStoredAnswer((answer || '').trim())
+  return ''
 }
 
 function sanitizeStoredAnswer(text: string): string {

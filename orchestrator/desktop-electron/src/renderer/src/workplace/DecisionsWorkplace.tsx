@@ -141,7 +141,9 @@ export function DecisionsTab({
             status: run.status
           })
           const meetings = meetingsFromEvents(events)
-          if (cleaned.text || meetings.length) {
+          const storedMeetings = detail?.item.calendarMeetings || []
+          const plan = meetings.length ? meetings : storedMeetings
+          if (cleaned.text || plan.length) {
             collectedResults.push({
               workflowId: agent.workflowId,
               agentName: agent.name,
@@ -149,7 +151,7 @@ export function DecisionsTab({
               at,
               text: cleaned.text,
               status: run.status,
-              meetings
+              meetings: plan
             })
           }
         }
