@@ -408,18 +408,25 @@ export function AgentPassportPage({
           <section className="passport-card">
             <h3>Показатели</h3>
             {kpi?.tiles?.length ? (
-              <div className="wp-kpi-mini">
-                {kpi.tiles.map((tile) => (
-                  <div key={tile.id || tile.name}>
-                    <span>{tile.name}</span>
-                    <strong>
-                      {tile.scorePercent != null
-                        ? `${Math.round(tile.scorePercent)}%`
-                        : tile.fact?.value ?? '—'}
-                    </strong>
-                  </div>
-                ))}
-              </div>
+              <dl className="passport-view-dl">
+                {kpi.tiles.map((tile) => {
+                  const kind = tile.measure?.kind || tile.id || ''
+                  const label =
+                    kind === 'runs_count' || tile.name === 'Число прогонов'
+                      ? 'Запусков всего'
+                      : tile.name
+                  return (
+                    <div key={tile.id || tile.name}>
+                      <dt>{label}</dt>
+                      <dd>
+                        {tile.scorePercent != null
+                          ? `${Math.round(tile.scorePercent)}%`
+                          : tile.fact?.value ?? '—'}
+                      </dd>
+                    </div>
+                  )
+                })}
+              </dl>
             ) : (
               <p className="passport-empty">KPI этого агента ещё не посчитаны.</p>
             )}
@@ -428,10 +435,6 @@ export function AgentPassportPage({
           <section className="passport-card">
             <h3>Системные сведения</h3>
             <dl className="passport-view-dl">
-              <div>
-                <dt>Запусков всего</dt>
-                <dd>{runs.length}</dd>
-              </div>
               <div>
                 <dt>Файлов всего</dt>
                 <dd>{files.length}</dd>

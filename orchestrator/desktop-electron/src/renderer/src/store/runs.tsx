@@ -33,6 +33,8 @@ export interface RunEntry {
   /** Backend AgentRun id, when the sidecar reports it. */
   backendRunId: string
   state: RunState
+  /** Silent evaluation run: hidden from live banners / chat. */
+  background?: boolean
 }
 
 interface StartRunOptions {
@@ -44,6 +46,12 @@ interface StartRunOptions {
   filePaths?: string[]
   resumeAgentId?: string
   forceRestart?: boolean
+  /** Run without chat UI / active-agent banner. */
+  background?: boolean
+}
+
+function backgroundEntryKey(workflowId: string): string {
+  return `__bg_explain__${workflowId}`
 }
 
 export interface RunStore {
@@ -70,7 +78,7 @@ export interface RunStore {
 const RunContext = createContext<RunStore | null>(null)
 
 function isActive(entry: RunEntry): boolean {
-  return isLiveRunState(entry.state)
+  return !entry.background && isLiveRunState(entry.state)
 }
 
 function emptyLiveEntry(
@@ -140,6 +148,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         if (!entriesRef.current[workflowId]?.title) fillTitle(workflowId)
       }
       const backendRunId = eventBackendRunId(event)
+      let cancelBackground = false
       setEntries((prev) => {
         const entry = prev[workflowId] ?? emptyLiveEntry(workflowId, '', backendRunId, runId)
         const outcome = applyAgentEvent(entry.state, event)
@@ -150,14 +159,37 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         if (state.running && !state.runningSinceMs) {
           state = { ...state, runningSinceMs: Date.now() }
         }
+        const isBackground = Boolean(entry.background) || workflowId.startsWith('__bg_explain__')
+        if (
+          isBackground &&
+          (event.type === 'question' || event.type === 'hitl')
+        ) {
+          cancelBackground = true
+          state = {
+            ...state,
+            running: false,
+            pendingQuestion: null,
+            pendingHitl: null,
+            error: 'Фоновая оценка остановилась: агент запросил действие пользователя.',
+            status: 'Оценка прервана',
+            activeRunId: null
+          }
+        }
         const next: RunEntry = {
           ...entry,
+          background: isBackground || entry.background,
           backendRunId: backendRunId || entry.backendRunId,
           resumeAgentId: outcome.result?.agentId || entry.resumeAgentId,
           state
         }
         return { ...prev, [workflowId]: next }
       })
+      if (cancelBackground) {
+        cancelledRunIdsRef.current[runId] = true
+        agentClient.cancel(runId)
+        delete indexRef.current[runId]
+        return
+      }
       if (event.type === 'result' || event.type === 'error') {
         delete indexRef.current[runId]
       }
@@ -166,10 +198,11 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
   }, [fillTitle])
 
   const startRun = useCallback((opts: StartRunOptions): string => {
-    const { workflowId, title, message, shownMessage, filePaths, resumeAgentId, forceRestart } = opts
-    const existing = entriesRef.current[workflowId]
+    const { workflowId, title, message, shownMessage, filePaths, resumeAgentId, forceRestart, background } = opts
+    const entryKey = background ? backgroundEntryKey(workflowId) : workflowId
+    const existing = entriesRef.current[entryKey]
     if (existing && existing.state.running) {
-      if (!forceRestart) {
+      if (!forceRestart && !background) {
         // The same agent cannot run twice at once - focus the live run instead.
         return existing.state.activeRunId || ''
       }
@@ -182,7 +215,8 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     void agentClient
       .ready(token, { login: creds.login, password: creds.password })
       .catch(() => undefined)
-    const resume = resumeAgentId || existing?.resumeAgentId || ''
+    // Background evaluations always start a fresh thread (no resume / no chat).
+    const resume = background ? '' : resumeAgentId || existing?.resumeAgentId || ''
     const runId = agentClient.start({
       kind: 'run',
       workflowId,
@@ -190,9 +224,9 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       resumeAgentId: resume || undefined,
       filePaths: filePaths && filePaths.length ? filePaths : undefined
     })
-    indexRef.current[runId] = workflowId
+    indexRef.current[runId] = entryKey
     setEntries((prev) => {
-      const prevEntry = prev[workflowId]
+      const prevEntry = prev[entryKey]
       const baseState = prevEntry?.state ?? createRunState()
       const items = shownMessage ? reducerPushUser(baseState.items, shownMessage) : baseState.items
       const state: RunState = {
@@ -209,11 +243,12 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       }
       return {
         ...prev,
-        [workflowId]: {
+        [entryKey]: {
           workflowId,
           title: title || prevEntry?.title || 'ИИ-агент',
           resumeAgentId: resume,
           backendRunId: prevEntry?.backendRunId || '',
+          background: Boolean(background),
           state
         }
       }

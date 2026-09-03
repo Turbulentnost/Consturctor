@@ -330,6 +330,9 @@ def answer_from_result(result: Any) -> str:
 
 _WAIT_START = frozenset({"human_wait", "question", "hitl"})
 _WAIT_END = frozenset({"human_reply"})
+# Events that can arrive while entering a wait (askQuestion emits tool_request
+# right after question). They must not close the human segment.
+_WAIT_HOLD = frozenset({"tool_request", "human_wait", "question", "hitl", "status", "ready"})
 
 
 def _parse_event_at(value: Any) -> datetime | None:
@@ -395,9 +398,11 @@ def compute_run_timing(
         if kind in _WAIT_START:
             if mode != "human":
                 close_until(at, "human")
-        elif kind in _WAIT_END or (mode == "human" and kind not in _WAIT_START):
+        elif kind in _WAIT_END:
             if mode == "human":
                 close_until(at, "agent")
+        elif mode == "human" and kind not in _WAIT_HOLD:
+            close_until(at, "agent")
 
     open_segment = ""
     open_at = ""
@@ -482,11 +487,14 @@ def _to_out(row: AgentRun, *, include_events: bool = False) -> AgentRunOut:
         finished_at=row.finished_at,
         in_flight=in_flight,
     )
+    status = row.status or ""
+    if in_flight and str(timing.get("open_segment") or "") == "human":
+        status = "waiting_human"
     return AgentRunOut(
         id=row.id,
         workflow_id=row.workflow_id,
         message=row.message or "",
-        status=row.status or "",
+        status=status,
         answer=row.answer or "",
         source=row.source or "chat",
         trigger_id=row.trigger_id or "",
