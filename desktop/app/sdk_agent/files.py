@@ -2,12 +2,48 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 
 from app.api_client import ApiClient, WorkflowFileItem, WorkflowRecord
 
 AGENT_BRIEF_RELATIVE = "materials/agent.md"
 AGENTS_MD_RELATIVE = "AGENTS.md"
+
+
+def _clear_dir_contents(path: Path) -> None:
+    try:
+        if not path.is_dir():
+            return
+        for entry in path.iterdir():
+            try:
+                if entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def reset_run_scratch(cwd: str, *, clear_attachments: bool = True) -> None:
+    """Delete leftover per-run temp files so they don't accumulate between runs.
+
+    The per-workflow workspace is reused across runs, so intermediate artifacts
+    would otherwise pile up and leak into the next run (stale attachments make the
+    agent see files that "shouldn't be there").
+
+    Always clears ``tool_results/`` (large tool-result dumps). Also clears
+    ``materials/attachments/`` when ``clear_attachments`` is True — the caller
+    keeps it False on a resume/follow-up so a file attached in an earlier turn
+    of the same conversation survives. Permanent knowledge in ``materials/`` and
+    the run journal are left untouched (they are re-seeded from the DB anyway).
+    """
+    base = Path((cwd or "").strip() or ".")
+    _clear_dir_contents(base / "tool_results")
+    if clear_attachments:
+        _clear_dir_contents(base / "materials" / "attachments")
 
 
 def write_workspace_note(cwd: str, relative: str, text: str) -> str:
