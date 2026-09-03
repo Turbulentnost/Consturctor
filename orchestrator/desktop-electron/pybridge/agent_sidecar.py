@@ -97,6 +97,7 @@ from app.sdk_agent.bridge import CursorSdkBridge, CursorSdkUnavailable  # noqa: 
 from app.sdk_agent.files import (  # noqa: E402
     _safe_filename,
     prepare_sdk_workspace,
+    reset_run_scratch,
     seed_workflow_files,
 )
 from app.tools.runtime_api import configure as configure_runtime_api  # noqa: E402
@@ -1959,6 +1960,9 @@ class Sidecar:
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
         active.workflow_id = workflow_id
+        # Wipe leftover temp files from previous trial runs. Keep attachments on
+        # resume so a sample attached earlier in this formation survives.
+        reset_run_scratch(run_cwd, clear_attachments=not resume_agent_id)
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=record)
         if _is_meeting_workflow(record):
             _ensure_outlook_rule_in_brief(run_cwd)
@@ -2056,6 +2060,14 @@ class Sidecar:
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
         active.workflow_id = workflow_id
+        # Each run is independent: clear leftover temp files (tool_results and
+        # stale attachments) so they don't pile up or leak into this run. A chat
+        # follow-up (resume, no new files) keeps the previous turn's attachments.
+        _has_new_files = any(str(p).strip() for p in (command.get("filePaths") or []))
+        reset_run_scratch(
+            run_cwd,
+            clear_attachments=autonomous or not resume_agent_id or _has_new_files,
+        )
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=workflow)
         if _is_meeting_workflow(workflow):
             _ensure_outlook_rule_in_brief(run_cwd)
