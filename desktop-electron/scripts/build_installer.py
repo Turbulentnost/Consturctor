@@ -413,9 +413,9 @@ def publish_github_release() -> None:
                 f"Constructor {version} and Orchestrator {version}. "
                 "Constructor-Setup.exe installs both programs. "
                 "An update from either app installs both Constructor and Orchestrator. "
-                "History shows the saved WORK_RESULT and the meeting-plan mini calendar, "
-                "not a leftover line from the run log. "
-                "COM worker keeps pywin32 DLLs on PATH after the David merge."
+                "KPI uses a chess clock, writes off an explanation after a long wait, "
+                "and shows the evaluation badge. "
+                "History still shows WORK_RESULT and the meeting-plan mini calendar."
             ),
         ],
         cwd=REPO_ROOT,
