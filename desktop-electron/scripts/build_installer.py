@@ -413,9 +413,9 @@ def publish_github_release() -> None:
                 f"Constructor {version} and Orchestrator {version}. "
                 "Constructor-Setup.exe installs both programs. "
                 "An update from either app installs both Constructor and Orchestrator. "
-                "Finishes a run only after the WORK_RESULT block, "
-                "so calendar.show_meetings is called before the answer, "
-                "and keeps the meeting plan calendar in the result."
+                "History shows the saved WORK_RESULT and the meeting-plan mini calendar, "
+                "not a leftover line from the run log. "
+                "COM worker keeps pywin32 DLLs on PATH after the David merge."
             ),
         ],
         cwd=REPO_ROOT,
