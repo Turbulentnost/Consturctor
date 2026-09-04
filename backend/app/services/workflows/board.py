@@ -372,6 +372,7 @@ def get_workflow_board(
                 trigger_kind=kind,
                 paused=paused,
                 phase=row.phase or "",
+                document_name=(row.document_name or "").strip(),
             )
         )
 

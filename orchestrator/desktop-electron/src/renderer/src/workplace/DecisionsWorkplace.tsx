@@ -68,6 +68,62 @@ function runStatusLabel(status: string): string {
   return status || 'готово'
 }
 
+function shiftDay(base: string, delta: number): string {
+  const stamp = parseIso(`${base}T12:00:00`) || new Date()
+  stamp.setDate(stamp.getDate() + delta)
+  return dayKey(stamp)
+}
+
+type DecisionStatusFilter = '' | 'pending' | 'review' | 'confirmed' | 'returned'
+type DueFilter = 'all' | 'today' | 'overdue' | 'period'
+type PriorityFilter = '' | 'high' | 'medium' | 'low'
+type DecisionSort = 'due_asc' | 'due_desc' | 'name' | 'status'
+
+const STATUS_FILTER_LABEL: Record<Exclude<DecisionStatusFilter, ''>, string> = {
+  pending: 'Ожидают меня',
+  review: 'На рассмотрении',
+  confirmed: 'Подтверждено',
+  returned: 'Возвращено'
+}
+
+const DUE_FILTER_LABEL: Record<DueFilter, string> = {
+  all: 'Все',
+  today: 'Сегодня',
+  overdue: 'Просрочено',
+  period: 'Период'
+}
+
+const PRIORITY_FILTER_LABEL: Record<Exclude<PriorityFilter, ''>, string> = {
+  high: 'Высокий',
+  medium: 'Средний',
+  low: 'Низкий'
+}
+
+const SORT_LABEL: Record<DecisionSort, string> = {
+  due_asc: 'Срок: сначала ближайшие',
+  due_desc: 'Срок: сначала дальние',
+  name: 'По названию',
+  status: 'По статусу'
+}
+
+function itemPriority(item: ToolDecisionItem): PriorityFilter {
+  if (item.status === 'pending' && item.live) return 'high'
+  if (item.status === 'pending') return 'medium'
+  if (item.status === 'rejected') return 'high'
+  return 'low'
+}
+
+function itemHasAttachment(item: ToolDecisionItem): boolean {
+  const blob = `${item.tool} ${item.title} ${item.intent} ${item.result}`.toLowerCase()
+  return /attach|влож|файл|file|document|xlsx|docx|pdf/.test(blob)
+}
+
+function decisionStatusBucket(item: ToolDecisionItem): Exclude<DecisionStatusFilter, ''> {
+  if (item.status === 'pending') return item.live ? 'pending' : 'review'
+  if (item.status === 'rejected') return 'returned'
+  return 'confirmed'
+}
+
 export function DecisionsTab({
   onOpenRun
 }: {
@@ -75,8 +131,14 @@ export function DecisionsTab({
 }): React.JSX.Element {
   const today = todayKey()
   const [query, setQuery] = useState('')
-  const [fromDay, setFromDay] = useState(today)
-  const [toDay, setToDay] = useState(today)
+  const [processId, setProcessId] = useState('')
+  const [status, setStatus] = useState<DecisionStatusFilter>('')
+  const [due, setDue] = useState<DueFilter>('all')
+  const [priority, setPriority] = useState<PriorityFilter>('')
+  const [attachmentsOnly, setAttachmentsOnly] = useState(false)
+  const [sort, setSort] = useState<DecisionSort>('due_asc')
+  const [fromDay, setFromDay] = useState(() => shiftDay(today, -90))
+  const [toDay, setToDay] = useState(() => shiftDay(today, 30))
   const [duePanelOpen, setDuePanelOpen] = useState(false)
   const [dueAnchor, setDueAnchor] = useState(() => {
     const now = new Date()
@@ -195,6 +257,27 @@ export function DecisionsTab({
     return items
   }, [runs.entries, fromDay, toDay])
 
+  const processOptions = useMemo(
+    () =>
+      agents
+        .filter((agent) => !agent.standalone)
+        .map((agent) => ({ id: agent.workflowId, name: agent.name }))
+        .sort((left, right) => left.name.localeCompare(right.name, 'ru')),
+    [agents]
+  )
+
+  useEffect(() => {
+    if (due === 'today') {
+      setFromDay(today)
+      setToDay(today)
+      return
+    }
+    if (due === 'all' || due === 'overdue') {
+      setFromDay(shiftDay(today, -90))
+      setToDay(shiftDay(today, 30))
+    }
+  }, [due, today])
+
   const visibleTools = useMemo(() => {
     const q = query.trim().toLowerCase()
     const seen = new Set<string>()
@@ -206,18 +289,53 @@ export function DecisionsTab({
       if (seen.has(key)) continue
       seen.add(key)
       if (q && !`${item.title} ${item.tool} ${item.agentName}`.toLowerCase().includes(q)) continue
+      if (processId && item.workflowId !== processId) continue
+      if (status && decisionStatusBucket(item) !== status) continue
+      if (priority && itemPriority(item) !== priority) continue
+      if (attachmentsOnly && !itemHasAttachment(item)) continue
+      if (due === 'today') {
+        const stamp = parseIso(item.at)
+        if (!stamp || dayKey(stamp) !== today) continue
+      }
+      if (due === 'overdue') {
+        const stamp = parseIso(item.at)
+        if (!stamp || dayKey(stamp) >= today || item.status !== 'pending') continue
+      }
       merged.push(item)
     }
+    merged.sort((left, right) => {
+      if (sort === 'name') return left.agentName.localeCompare(right.agentName, 'ru')
+      if (sort === 'status') {
+        return decisionStatusBucket(left).localeCompare(decisionStatusBucket(right), 'ru')
+      }
+      const leftAt = left.at || ''
+      const rightAt = right.at || ''
+      return sort === 'due_desc' ? rightAt.localeCompare(leftAt) : leftAt.localeCompare(rightAt)
+    })
     return merged
-  }, [livePending, tools, query])
+  }, [livePending, tools, query, processId, status, priority, attachmentsOnly, due, sort, today])
 
   const pending = visibleTools.filter((item) => item.status === 'pending')
   const history = visibleTools.filter((item) => item.status !== 'pending')
   const visibleResults = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return results
-    return results.filter((item) => `${item.agentName} ${item.workflowId} ${item.text}`.toLowerCase().includes(q))
-  }, [results, query])
+    return results
+      .filter((item) => {
+        if (processId && item.workflowId !== processId) return false
+        if (q && !`${item.agentName} ${item.workflowId} ${item.text}`.toLowerCase().includes(q)) return false
+        if (due === 'today') {
+          const stamp = parseIso(item.at)
+          if (!stamp || dayKey(stamp) !== today) return false
+        }
+        return true
+      })
+      .sort((left, right) => {
+        if (sort === 'name') return left.agentName.localeCompare(right.agentName, 'ru')
+        const leftAt = left.at || ''
+        const rightAt = right.at || ''
+        return sort === 'due_desc' ? rightAt.localeCompare(leftAt) : leftAt.localeCompare(rightAt)
+      })
+  }, [results, query, processId, due, sort, today])
 
   const dueMonthLabel = dueAnchor.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
   const dueCells = useMemo(() => {
@@ -234,15 +352,64 @@ export function DecisionsTab({
 
   function resetFilters(): void {
     setQuery('')
-    setFromDay(today)
-    setToDay(today)
+    setProcessId('')
+    setStatus('')
+    setDue('all')
+    setPriority('')
+    setAttachmentsOnly(false)
+    setSort('due_asc')
+    setFromDay(shiftDay(today, -90))
+    setToDay(shiftDay(today, 30))
+    setDuePanelOpen(false)
   }
 
   function pickDay(key: string): void {
+    setDue('period')
     setFromDay(key)
     setToDay(key)
     setDuePanelOpen(false)
   }
+
+  const filterChips = [
+    { id: 'q', label: query ? `Поиск: ${query}` : '', onClear: () => setQuery('') },
+    {
+      id: 'process',
+      label: processId
+        ? `Процесс: ${processOptions.find((item) => item.id === processId)?.name || processId}`
+        : '',
+      onClear: () => setProcessId('')
+    },
+    {
+      id: 'status',
+      label: status ? `Статус: ${STATUS_FILTER_LABEL[status]}` : '',
+      onClear: () => setStatus('')
+    },
+    {
+      id: 'due',
+      label: due !== 'all' ? `Срок: ${DUE_FILTER_LABEL[due]}` : '',
+      onClear: () => {
+        setDue('all')
+        setFromDay(shiftDay(today, -90))
+        setToDay(shiftDay(today, 30))
+        setDuePanelOpen(false)
+      }
+    },
+    {
+      id: 'priority',
+      label: priority ? `Приоритет: ${PRIORITY_FILTER_LABEL[priority]}` : '',
+      onClear: () => setPriority('')
+    },
+    {
+      id: 'attach',
+      label: attachmentsOnly ? 'Только с вложениями' : '',
+      onClear: () => setAttachmentsOnly(false)
+    },
+    {
+      id: 'sort',
+      label: sort !== 'due_asc' ? `Сортировка: ${SORT_LABEL[sort] || sort}` : '',
+      onClear: () => setSort('due_asc')
+    }
+  ].filter((item) => Boolean(item.label))
 
   return (
     <div className="wp-page">
@@ -283,40 +450,90 @@ export function DecisionsTab({
       <FilterBar
         query={query}
         onQuery={setQuery}
-        queryPlaceholder="Агент или инструмент"
-        chips={[
-          { id: 'q', label: query ? `поиск: ${query}` : '' },
-          { id: 'range', label: `период: ${formatRange(fromDay, toDay)}` }
-        ]}
+        queryPlaceholder="Найти решение"
+        chips={filterChips}
         onReset={resetFilters}
+        className="wp-filters-decisions"
       >
-        <label className="wp-range-field">
-          <span>С</span>
-          <input
-            className="wp-date"
-            type="date"
-            value={fromDay}
-            onChange={(event) => {
-              if (event.target.value) setFromDay(event.target.value)
-            }}
-          />
+        <label className="wp-filter-field">
+          <span>Процесс</span>
+          <select className="wp-select" value={processId} onChange={(e) => setProcessId(e.target.value)}>
+            <option value="">Все</option>
+            {processOptions.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
         </label>
-        <label className="wp-range-field">
-          <span>По</span>
-          <input
-            className="wp-date"
-            type="date"
-            value={toDay}
-            onChange={(event) => {
-              if (event.target.value) setToDay(event.target.value)
-            }}
-          />
+        <label className="wp-filter-field">
+          <span>Статус</span>
+          <select
+            className="wp-select"
+            value={status}
+            onChange={(e) => setStatus(e.target.value as DecisionStatusFilter)}
+          >
+            <option value="">Все</option>
+            {(Object.keys(STATUS_FILTER_LABEL) as Array<Exclude<DecisionStatusFilter, ''>>).map((key) => (
+              <option key={key} value={key}>
+                {STATUS_FILTER_LABEL[key]}
+              </option>
+            ))}
+          </select>
         </label>
-        <button className="btn-ghost wp-deadline-toggle" type="button" onClick={() => setDuePanelOpen((value) => !value)}>
-          День
-        </button>
+        <label className="wp-filter-field">
+          <span>Срок</span>
+          <select
+            className="wp-select"
+            value={due}
+            onChange={(e) => {
+              const next = e.target.value as DueFilter
+              setDue(next)
+              setDuePanelOpen(next === 'period')
+            }}
+          >
+            <option value="all">Все</option>
+            <option value="today">Сегодня</option>
+            <option value="overdue">Просрочено</option>
+            <option value="period">Период…</option>
+          </select>
+        </label>
+        <label className="wp-filter-field">
+          <span>Приоритет</span>
+          <select
+            className="wp-select"
+            value={priority}
+            onChange={(e) => setPriority(e.target.value as PriorityFilter)}
+          >
+            <option value="">Все</option>
+            {(Object.keys(PRIORITY_FILTER_LABEL) as Array<Exclude<PriorityFilter, ''>>).map((key) => (
+              <option key={key} value={key}>
+                {PRIORITY_FILTER_LABEL[key]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="wp-switch">
+          <input
+            type="checkbox"
+            checked={attachmentsOnly}
+            onChange={(e) => setAttachmentsOnly(e.target.checked)}
+          />
+          <span className="wp-switch-track" aria-hidden />
+          <span>Только с вложениями</span>
+        </label>
+        <label className="wp-filter-field wp-filter-field-sort">
+          <span>Сортировка</span>
+          <select className="wp-select" value={sort} onChange={(e) => setSort(e.target.value as DecisionSort)}>
+            {(Object.keys(SORT_LABEL) as DecisionSort[]).map((key) => (
+              <option key={key} value={key}>
+                {SORT_LABEL[key]}
+              </option>
+            ))}
+          </select>
+        </label>
       </FilterBar>
-      {duePanelOpen ? (
+      {duePanelOpen || due === 'period' ? (
         <section className="wp-card wp-deadline-panel">
           <div className="wp-deadline-head">
             <button

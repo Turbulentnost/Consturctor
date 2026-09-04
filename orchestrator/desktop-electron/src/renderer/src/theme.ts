@@ -1,4 +1,5 @@
 // Blue glass palette for Orchestrator (Constructor used emerald).
+// Today tab overrides shell to light via `.app-root.shell-today`.
 export const theme = {
   sidebarTop: '#1565C0',
   sidebarMiddle: '#0D3B73',

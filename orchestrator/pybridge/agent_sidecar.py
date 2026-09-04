@@ -1862,16 +1862,22 @@ class Sidecar:
                 and len(events) - last_flush >= 3
             ):
                 last_flush = len(events)
-                try:
-                    self._api.update_local_agent_run_events(
-                        active.workflow_id,
-                        run_ref,
-                        events,
-                    )
-                except ApiError:
-                    pass
+                snapshot = list(events)
+                threading.Thread(
+                    target=self._flush_history_events,
+                    args=(active.workflow_id, run_ref, snapshot),
+                    daemon=True,
+                ).start()
 
         return on_event
+
+    def _flush_history_events(
+        self, workflow_id: str, run_id: str, events: list[dict[str, Any]]
+    ) -> None:
+        try:
+            self._api.update_local_agent_run_events(workflow_id, run_id, events)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _run_design(self, command: dict[str, Any], active: ActiveRun) -> None:
         workflow_id = str(command.get("workflowId") or "").strip()

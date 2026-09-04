@@ -9,53 +9,10 @@ import type {
   WorkflowHealthInfo
 } from '../api/types'
 import { HistoryWorkplace } from './HistoryWorkplace'
+import { SettingsWorkplace } from './SettingsWorkplace'
 import { TICKET_STATUS_LABEL } from './labels'
 import { TodayWorkplace } from './WorkplaceBoard'
 import { humanWhen, parseIso, windowFor } from '../utils/calendar'
-
-type NotificationViewMode = 'comfortable' | 'compact'
-
-interface NotificationViewSettings {
-  mode: NotificationViewMode
-  showSender: boolean
-  showTime: boolean
-  highlightUnread: boolean
-}
-
-function notificationSettingsKey(userId: string): string {
-  return `orchestrator.notifications.view.${(userId || 'local').trim() || 'local'}`
-}
-
-function loadNotificationSettings(userId: string): NotificationViewSettings {
-  const fallback: NotificationViewSettings = {
-    mode: 'comfortable',
-    showSender: true,
-    showTime: true,
-    highlightUnread: true
-  }
-  try {
-    const raw = localStorage.getItem(notificationSettingsKey(userId))
-    if (!raw) return fallback
-    const data = JSON.parse(raw) as Partial<NotificationViewSettings>
-    const mode: NotificationViewMode = data.mode === 'compact' ? 'compact' : 'comfortable'
-    return {
-      mode,
-      showSender: data.showSender !== false,
-      showTime: data.showTime !== false,
-      highlightUnread: data.highlightUnread !== false
-    }
-  } catch {
-    return fallback
-  }
-}
-
-function saveNotificationSettings(userId: string, settings: NotificationViewSettings): void {
-  try {
-    localStorage.setItem(notificationSettingsKey(userId), JSON.stringify(settings))
-  } catch {
-    /* ignore local storage errors */
-  }
-}
 
 function Head({
   title,
@@ -145,134 +102,14 @@ export function SettingsTab({
   onFiles: () => void
   onSupport: () => void
 }): React.JSX.Element {
-  const [unread, setUnread] = useState(0)
-  const [error, setError] = useState('')
-  const [viewSettings, setViewSettings] = useState<NotificationViewSettings>(() =>
-    loadNotificationSettings(user.id)
-  )
-
-  async function reload(): Promise<void> {
-    try {
-      const count = await api.unreadNotificationCount()
-      setUnread(count)
-      setError('')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось загрузить уведомления')
-    }
-  }
-
-  useEffect(() => {
-    void reload()
-  }, [])
-
-  useEffect(() => {
-    setViewSettings(loadNotificationSettings(user.id))
-  }, [user.id])
-
-  const updateView = (patch: Partial<NotificationViewSettings>): void => {
-    setViewSettings((prev) => {
-      const next = { ...prev, ...patch }
-      saveNotificationSettings(user.id, next)
-      return next
-    })
-  }
-
   return (
-    <div className="wp-page">
-      <Head title="Настройки" badge={user.position || 'аккаунт'} />
-      <section className="wp-card">
-        <h2>Профиль</h2>
-        <p>
-          {user.fio}
-          {user.department ? ` · ${user.department}` : ''}
-          {user.position ? ` · ${user.position}` : ''}
-        </p>
-        <p>{user.isSupport ? 'Есть права технической поддержки' : 'Обычный сотрудник'}</p>
-      </section>
-      <section className="wp-card">
-        <h2>Уведомления</h2>
-        <p>Непрочитанных: {unread}. Это те же уведомления, что в колокольчике сверху.</p>
-        <div className="wp-notify-view">
-          <div className="wp-notify-label">Вид карточек</div>
-          <div className="wp-notify-controls">
-            <select
-              className="wp-select"
-              value={viewSettings.mode}
-              onChange={(event) =>
-                updateView({ mode: event.target.value === 'compact' ? 'compact' : 'comfortable' })
-              }
-            >
-              <option value="comfortable">Обычный</option>
-              <option value="compact">Компактный</option>
-            </select>
-            <label className="wp-toggle">
-              <input
-                type="checkbox"
-                checked={viewSettings.showSender}
-                onChange={(event) => updateView({ showSender: event.target.checked })}
-              />
-              Показывать автора
-            </label>
-            <label className="wp-toggle">
-              <input
-                type="checkbox"
-                checked={viewSettings.showTime}
-                onChange={(event) => updateView({ showTime: event.target.checked })}
-              />
-              Показывать дату и время
-            </label>
-            <label className="wp-toggle">
-              <input
-                type="checkbox"
-                checked={viewSettings.highlightUnread}
-                onChange={(event) => updateView({ highlightUnread: event.target.checked })}
-              />
-              Выделять непрочитанные
-            </label>
-          </div>
-        </div>
-        {error ? <p>{error}</p> : null}
-      </section>
-      <section className="wp-card">
-        <h2>Обновления</h2>
-        <p>Одно обновление ставит и Constructor, и Orchestrator.</p>
-        <div className="wp-actions">
-          <button
-            className="btn-primary"
-            type="button"
-            onClick={() => {
-              void window.api.installUpdate?.()
-            }}
-          >
-            Проверить и установить
-          </button>
-        </div>
-      </section>
-      <section className="wp-card">
-        <h2>Файлы агентов</h2>
-        <p>Файлы агентов, KPI и прогоны те же. Создать нового агента можно только в Constructor.</p>
-        <div className="wp-actions">
-          <button className="btn-primary" type="button" onClick={onFiles}>
-            Файлы агентов
-          </button>
-        </div>
-      </section>
-      <section className="wp-card">
-        <h2>Сопровождение</h2>
-        <p>Заявки и диагностика идут в тот же backend, что и чат поддержки.</p>
-        <div className="wp-actions">
-          <button className="btn-primary" type="button" onClick={onSupport}>
-            Чат поддержки
-          </button>
-          <button className="btn-ghost" type="button" onClick={onTickets}>
-            Журнал заявок
-          </button>
-          <button className="btn-ghost" type="button" onClick={onDiagnostics}>
-            Диагностика
-          </button>
-        </div>
-      </section>
-    </div>
+    <SettingsWorkplace
+      user={user}
+      onDiagnostics={onDiagnostics}
+      onTickets={onTickets}
+      onFiles={onFiles}
+      onSupport={onSupport}
+    />
   )
 }
 

@@ -145,6 +145,7 @@ const IDLE_UPDATE: UpdateStatus = {
 
 interface SidebarProps {
   active: PageKey | null
+  light?: boolean
   activeThreadId?: string
   currentUserId?: string
   onNavigate: (key: PageKey) => void
@@ -155,6 +156,7 @@ interface SidebarProps {
 
 export function Sidebar({
   active,
+  light = false,
   activeThreadId = '',
   currentUserId = '',
   onNavigate,
@@ -262,7 +264,7 @@ export function Sidebar({
     <aside className={collapsed ? 'sidebar collapsed' : 'sidebar'}>
       <div className="sidebar-brand">
         <img className="sidebar-logo" src={logoUrl} alt="Orchestrator" />
-        {!collapsed && <div className="sidebar-title">Orchestrator</div>}
+        {!collapsed && <div className="sidebar-title">{light ? 'ОРКЕСТРАТОР' : 'Orchestrator'}</div>}
       </div>
 
       <div className="sidebar-search" onClick={expandForSearch} title={collapsed ? 'ФИО' : undefined}>
@@ -277,7 +279,7 @@ export function Sidebar({
             }}
             placeholder="ФИО"
             inputClassName="sidebar-search-input"
-            variant="dark"
+            variant={light ? 'light' : 'dark'}
           />
         )}
       </div>

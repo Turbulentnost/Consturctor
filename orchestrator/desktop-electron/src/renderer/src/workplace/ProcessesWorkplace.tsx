@@ -149,6 +149,14 @@ function actionRank(status: ProcessStatus): number {
   return 3
 }
 
+function agentRegulationLabel(agent: WorkplaceAgent, regulationById: Record<string, string>): string {
+  const fromBoard = (agent.boardAgent?.documentName || '').trim()
+  if (fromBoard) return fromBoard
+  const fromList = (regulationById[agent.workflowId] || '').trim()
+  if (fromList) return fromList
+  return 'Без регламента'
+}
+
 function ProcessIcon({ status }: { status: ProcessStatus }): React.JSX.Element {
   const tone =
     status === 'PAUSED' || status === 'WAITING_HUMAN'
@@ -369,18 +377,36 @@ export function ProcessesWorkplace({
   onHistory: (workflowId: string, title: string) => void
   onSchedule: (workflowId: string, title: string) => void
 }): React.JSX.Element {
-  const { board, agents, loading, error, flash, pause, resume } = useWorkplaceData({
+  const { agents, loading, error, flash, pause, resume } = useWorkplaceData({
     userId,
     fio: userFio
   })
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<ProcessStatus | ''>('')
   const [stage, setStage] = useState('')
+  const [regulation, setRegulation] = useState('')
   const [devOnly, setDevOnly] = useState(false)
   const [sort, setSort] = useState<SortKey>('action')
   const [kpiById, setKpiById] = useState<Record<string, AgentKpi | null>>({})
   const [latestRunById, setLatestRunById] = useState<Record<string, AgentRunHistoryItem | null>>({})
+  const [regulationById, setRegulationById] = useState<Record<string, string>>({})
   const trackedAgentsCount = useMemo(() => agents.filter((item) => !item.standalone).length, [agents])
+
+  useEffect(() => {
+    let alive = true
+    void api.listWorkflows().catch(() => []).then((items) => {
+      if (!alive) return
+      const next: Record<string, string> = {}
+      for (const item of items) {
+        const name = String(item.documentName || '').trim()
+        if (name) next[item.id] = name
+      }
+      setRegulationById(next)
+    })
+    return () => {
+      alive = false
+    }
+  }, [agents])
 
   useEffect(() => {
     let alive = true
@@ -432,15 +458,30 @@ export function ProcessesWorkplace({
     return [...values]
   }, [agents])
 
+  const regulations = useMemo(() => {
+    const values = new Set<string>()
+    for (const agent of agents) {
+      if (agent.standalone) continue
+      values.add(agentRegulationLabel(agent, regulationById))
+    }
+    return [...values].sort((left, right) => left.localeCompare(right, 'ru'))
+  }, [agents, regulationById])
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
     const rows = agents.filter((item) => {
       if (status && item.status !== status) return false
       if (stage && item.stage !== stage) return false
+      if (regulation && agentRegulationLabel(item, regulationById) !== regulation) return false
       if (devOnly && item.status !== 'ERROR' && item.status !== 'WAITING_HUMAN' && item.status !== 'PAUSED') {
         return false
       }
-      if (q && !`${item.name} ${item.code} ${item.workflowId} ${item.stage}`.toLowerCase().includes(q)) {
+      if (
+        q &&
+        !`${item.name} ${item.code} ${item.workflowId} ${item.stage} ${agentRegulationLabel(item, regulationById)}`
+          .toLowerCase()
+          .includes(q)
+      ) {
         return false
       }
       return true
@@ -454,7 +495,7 @@ export function ProcessesWorkplace({
       return rank !== 0 ? rank : left.name.localeCompare(right.name, 'ru')
     })
     return rows
-  }, [agents, query, status, stage, devOnly, sort])
+  }, [agents, query, status, stage, regulation, regulationById, devOnly, sort])
 
   return (
     <div className="wp-page proc-page">
@@ -482,12 +523,18 @@ export function ProcessesWorkplace({
             onClear: () => setStatus('')
           },
           { id: 'st', label: stage ? `Этап: ${stage}` : '', onClear: () => setStage('') },
+          {
+            id: 'reg',
+            label: regulation ? `Регламент: ${regulation}` : '',
+            onClear: () => setRegulation('')
+          },
           { id: 'd', label: devOnly ? 'только с отклонениями' : '', onClear: () => setDevOnly(false) }
         ]}
         onReset={() => {
           setQuery('')
           setStatus('')
           setStage('')
+          setRegulation('')
           setDevOnly(false)
           setSort('action')
         }}
@@ -503,6 +550,14 @@ export function ProcessesWorkplace({
         <select className="wp-select" value={stage} onChange={(e) => setStage(e.target.value)}>
           <option value="">Текущий этап: все</option>
           {stages.map((item) => (
+            <option key={item} value={item}>
+              {item}
+            </option>
+          ))}
+        </select>
+        <select className="wp-select" value={regulation} onChange={(e) => setRegulation(e.target.value)}>
+          <option value="">Регламент: все</option>
+          {regulations.map((item) => (
             <option key={item} value={item}>
               {item}
             </option>

@@ -592,9 +592,10 @@ export function App(): React.JSX.Element {
   }
 
   return (
-    <div className="app-root">
+    <div className={view.kind === 'tab' && view.key === 'today' ? 'app-root shell-today' : 'app-root'}>
       <Sidebar
         active={activeKey}
+        light={view.kind === 'tab' && view.key === 'today'}
         activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
         currentUserId={user.id || ''}
         onNavigate={(key) => {

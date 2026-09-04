@@ -77,6 +77,7 @@ function parseWorkflowList(data: unknown): WorkflowListItem[] {
       id: String(item.id ?? ''),
       title: String(item.title ?? ''),
       phase: String(item.phase ?? ''),
+      documentName: String(item.document_name ?? item.documentName ?? ''),
       updatedAt: String(item.updatedAt ?? item.updated_at ?? '')
     }))
     .filter((item) => item.id)
@@ -550,7 +551,8 @@ export function parseBoard(data: Record<string, unknown>): WorkflowBoard {
       triggerKind: String(item.trigger_kind ?? item.triggerKind ?? ''),
       paused: Boolean(item.paused),
       phase: String(item.phase ?? ''),
-      draftId: String(item.draft_id ?? item.draftId ?? '')
+      draftId: String(item.draft_id ?? item.draftId ?? ''),
+      documentName: String(item.document_name ?? item.documentName ?? '')
     }))
   const events: CalendarEvent[] = (Array.isArray(data.events) ? data.events : [])
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')

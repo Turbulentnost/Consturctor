@@ -391,6 +391,65 @@ async function handleDownload(
   }
 }
 
+async function handleSaveLocalFile(
+  _evt: unknown,
+  opts: {
+    defaultName?: string
+    text?: string
+    base64?: string
+    filters?: { name: string; extensions: string[] }[]
+  }
+) {
+  const win = BrowserWindow.getFocusedWindow()
+  const result = await dialog.showSaveDialog(win!, {
+    defaultPath: opts.defaultName || 'file',
+    filters: opts.filters
+  })
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+  try {
+    const data = opts.base64
+      ? Buffer.from(opts.base64, 'base64')
+      : Buffer.from(opts.text || '', 'utf8')
+    writeFileSync(result.filePath, data)
+    return { ok: true, path: result.filePath }
+  } catch {
+    return { ok: false, error: 'Не удалось сохранить файл' }
+  }
+}
+
+async function handleExportPdf(
+  _evt: unknown,
+  opts: { html: string; defaultName?: string }
+) {
+  const win = BrowserWindow.getFocusedWindow()
+  const result = await dialog.showSaveDialog(win!, {
+    defaultPath: opts.defaultName || 'report.pdf',
+    filters: [{ name: 'PDF', extensions: ['pdf'] }]
+  })
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+
+  const pdfWin = new BrowserWindow({
+    show: false,
+    width: 1024,
+    height: 768,
+    webPreferences: { sandbox: true, contextIsolation: true }
+  })
+  try {
+    await pdfWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(opts.html || '')}`)
+    const pdf = await pdfWin.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      margins: { marginType: 'default' }
+    })
+    writeFileSync(result.filePath, pdf)
+    return { ok: true, path: result.filePath }
+  } catch {
+    return { ok: false, error: 'Не удалось сформировать PDF' }
+  } finally {
+    if (!pdfWin.isDestroyed()) pdfWin.destroy()
+  }
+}
+
 async function handleCreateWorkflow(
   _evt: unknown,
   opts: { notes: string; draftId?: string; token?: string | null }
@@ -564,6 +623,10 @@ function createWindow(): void {
   mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
     console.error(`Renderer failed to load: ${code} ${desc} ${url}`)
   })
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level < 2) return
+    console.log(`[renderer:error] ${message} (${sourceId}:${line})`)
+  })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
@@ -588,6 +651,8 @@ app.whenReady().then(() => {
   ipcMain.handle('api:upload', handleUpload)
   ipcMain.handle('api:fetchDataUrl', handleFetchDataUrl)
   ipcMain.handle('api:download', handleDownload)
+  ipcMain.handle('api:saveLocalFile', handleSaveLocalFile)
+  ipcMain.handle('api:exportPdf', handleExportPdf)
   ipcMain.handle('api:createWorkflow', handleCreateWorkflow)
   ipcMain.handle('api:stream', handleStream)
   ipcMain.handle(

@@ -82,6 +82,7 @@ export interface WorkflowListItem {
   id: string
   title: string
   phase: string
+  documentName?: string
   updatedAt?: string
 }
 
@@ -129,6 +130,7 @@ export interface BoardAgent {
   paused: boolean
   phase: string
   draftId: string
+  documentName?: string
 }
 
 export interface CalendarEvent {

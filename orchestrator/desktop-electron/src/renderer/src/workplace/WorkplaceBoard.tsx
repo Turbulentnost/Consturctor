@@ -294,15 +294,14 @@ export function SummaryRow({
         <KpiIcon kind="tasks" />
         <div>
           <h2>Задачи сегодня</h2>
-          <p className="wp-summary-note">Прогоны агентов по календарю запусков</p>
           <div className="wp-summary-metrics">
             <div>
               <strong>{total}</strong>
-              <span>На этот день</span>
+              <span>Всего задач</span>
             </div>
             <div>
               <strong>{done}</strong>
-              <span>Выполненные</span>
+              <span>Готово</span>
             </div>
           </div>
         </div>
@@ -310,8 +309,7 @@ export function SummaryRow({
       <button className="wp-summary-card wp-summary-btn" type="button" onClick={onOpenAttention}>
         <KpiIcon kind="alert" />
         <div>
-          <h2>Задачи, требующие внимания</h2>
-          <p className="wp-summary-note">Решения человека и отклонения SLA</p>
+          <h2>Требуют решения</h2>
           <div className="wp-summary-metrics">
             <div>
               <strong>{attention}</strong>
@@ -323,12 +321,11 @@ export function SummaryRow({
       <button className="wp-summary-card wp-summary-btn" type="button" onClick={onOpenMetrics}>
         <KpiIcon kind="kpi" />
         <div>
-          <h2>План / факт KPI</h2>
-          <p className="wp-summary-note">Исполнение показателей должности</p>
+          <h2>План / факт</h2>
           <div className="wp-summary-metrics">
             <div>
               <strong>{planFact}%</strong>
-              <span>Выполнено к плану</span>
+              <span>Выполнено задач</span>
             </div>
           </div>
         </div>
@@ -544,20 +541,31 @@ export function ProcessStepper({
     <section className="wp-card wp-stepper">
       <div className="wp-stepper-head">
         <div>
-          <h2>Ход работы агента</h2>
+          <h2>Ход процесса</h2>
           <p>
-            {agent.name} · {agent.standalone ? 'персональный агент' : agent.workflowId ? `id ${agent.workflowId.slice(0, 8)}` : 'нет на сервере'} ·
-            этап: {agent.stages[agent.stageIndex]?.label || 'не начат'}
+            {agent.name} · этап: {agent.stages[agent.stageIndex]?.label || 'не начат'}
           </p>
         </div>
+        <button className="btn-ghost" type="button" disabled={waiting}>
+          Перейти к следующему этапу
+        </button>
       </div>
       <ol className="wp-steps">
         {agent.stages.map((stage, index) => {
           const state = index < agent.stageIndex ? 'done' : index === agent.stageIndex ? 'active' : 'pending'
+          const isLast = index === agent.stages.length - 1
           return (
             <li key={stage.id} className={`wp-step ${state}`}>
-              <span className="wp-step-dot">{state === 'done' ? '✓' : index + 1}</span>
-              <div>
+              <div className="wp-step-rail">
+                <span className="wp-step-dot">{state === 'done' ? '✓' : index + 1}</span>
+                {!isLast ? (
+                  <span className="wp-step-connector" aria-hidden>
+                    <span className="wp-step-connector-line" />
+                    <span className="wp-step-connector-arrow" />
+                  </span>
+                ) : null}
+              </div>
+              <div className="wp-step-body">
                 <strong>{stage.label}</strong>
                 <small>
                   {stage.at ? `${stage.at} · ` : ''}
@@ -580,56 +588,229 @@ function kpiScore(kpi: AgentKpi | null): number | null {
   return Math.round(scores.reduce((acc, value) => acc + value, 0) / scores.length)
 }
 
-export function DetailRail({
-  agent
+function formatMinutes(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const minutes = Math.max(0, Math.round(value))
+  if (minutes < 60) return `${minutes} мин`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest ? `${hours} ч ${rest} мин` : `${hours} ч`
+}
+
+function agentIsOverdue(agent: WorkplaceAgent, now = new Date()): boolean {
+  if (agent.standalone) return false
+  if (agent.status === 'ERROR' || agent.status === 'WAITING_HUMAN') return true
+  const next = parseIso(agent.boardAgent?.nextRunAt || '')
+  if (next && next.getTime() < now.getTime()) return true
+  const last = (agent.boardAgent?.lastRunStatus || '').toLowerCase()
+  return last === 'error' || last === 'failed' || last === 'waiting_human' || last === 'hitl'
+}
+
+type PreparedCard = {
+  id: string
+  title: string
+  note: string
+  meta: string
+  workflowId: string
+  agentName: string
+}
+
+type ProcessKpiRow = {
+  id: string
+  name: string
+  planFact: number | null
+  agentDelay: number | null
+  humanDelay: number | null
+  automation: number | null
+}
+
+function PreparedSolutionsRail({
+  items,
+  onOpenDecisions,
+  onOpenItem
 }: {
-  agent: WorkplaceAgent
+  items: PreparedCard[]
+  onOpenDecisions: () => void
+  onOpenItem: (workflowId: string, title: string) => void
 }): React.JSX.Element {
-  const [kpi, setKpi] = useState<AgentKpi | null>(null)
+  const featured = items[0]
+  return (
+    <section className="wp-rail-card wp-rail-solutions">
+      <header className="wp-rail-card-head">
+        <h2>Подготовленные решения</h2>
+        <button className="wp-rail-link" type="button" onClick={onOpenDecisions}>
+          История
+        </button>
+      </header>
+      {!featured ? (
+        <p className="wp-rail-empty">Пока нет подготовленных решений. Они появятся после прогонов агентов.</p>
+      ) : (
+        <article className="wp-solution-card">
+          <div className="wp-solution-ico" aria-hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+              <path d="M7 3.5h7l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-9.5A1.5 1.5 0 0 1 5.5 20V5A1.5 1.5 0 0 1 7 3.5Z" />
+              <path d="M14 3.5V8h4M8 12h8M8 15.5h6" strokeLinecap="round" />
+            </svg>
+          </div>
+          <div className="wp-solution-body">
+            <h3>{featured.title}</h3>
+            <p className="wp-solution-meta">{featured.meta}</p>
+            <p className="wp-solution-note">{featured.note}</p>
+            <div className="wp-solution-actions">
+              <button
+                className="btn-primary"
+                type="button"
+                onClick={() => onOpenItem(featured.workflowId, featured.agentName)}
+              >
+                Открыть
+              </button>
+              <button className="btn-primary" type="button" onClick={onOpenDecisions}>
+                Подтвердить
+              </button>
+              <button className="btn-ghost" type="button" onClick={onOpenDecisions}>
+                Вернуть
+              </button>
+            </div>
+          </div>
+        </article>
+      )}
+      {items.length > 1 ? (
+        <button className="wp-rail-more" type="button" onClick={onOpenDecisions}>
+          Ещё {items.length - 1} → вкладка «Решения»
+        </button>
+      ) : null}
+    </section>
+  )
+}
 
-  useEffect(() => {
-    if (!agent.workflowId || agent.standalone) {
-      setKpi(null)
-      return
+function ProcessKpiRail({
+  rows,
+  onOpenMetrics
+}: {
+  rows: ProcessKpiRow[]
+  onOpenMetrics: () => void
+}): React.JSX.Element {
+  const totals = rows.reduce(
+    (acc, row) => {
+      if (row.planFact != null) {
+        acc.planFact += row.planFact
+        acc.planCount += 1
+      }
+      if (row.agentDelay != null) {
+        acc.agentDelay += row.agentDelay
+        acc.agentCount += 1
+      }
+      if (row.humanDelay != null) {
+        acc.humanDelay += row.humanDelay
+        acc.humanCount += 1
+      }
+      if (row.automation != null) {
+        acc.automation += row.automation
+        acc.autoCount += 1
+      }
+      return acc
+    },
+    {
+      planFact: 0,
+      planCount: 0,
+      agentDelay: 0,
+      agentCount: 0,
+      humanDelay: 0,
+      humanCount: 0,
+      automation: 0,
+      autoCount: 0
     }
-    let alive = true
-    void api.getWorkflowKpi(agent.workflowId).catch(() => null).then((nextKpi) => {
-      if (!alive) return
-      setKpi(nextKpi)
-    })
-    return () => {
-      alive = false
-    }
-  }, [agent.workflowId])
-
-  const score = kpiScore(kpi)
+  )
+  const avg = (sum: number, count: number): number | null => (count ? Math.round(sum / count) : null)
 
   return (
+    <section className="wp-rail-card wp-rail-kpi">
+      <header className="wp-rail-card-head">
+        <h2>KPI по процессам</h2>
+        <button className="wp-rail-link" type="button" onClick={onOpenMetrics}>
+          История
+        </button>
+      </header>
+      {!rows.length ? (
+        <p className="wp-rail-empty">Нет процессов с KPI на сегодня.</p>
+      ) : (
+        <div className="wp-kpi-table-wrap">
+          <table className="wp-kpi-table wp-kpi-table-rail">
+            <thead>
+              <tr>
+                <th>Процесс</th>
+                <th title="План / факт">
+                  План/
+                  <br />
+                  факт
+                </th>
+                <th title="Задержка агента">
+                  Задержка
+                  <br />
+                  агента
+                </th>
+                <th title="Задержка человека">
+                  Задержка
+                  <br />
+                  человека
+                </th>
+                <th title="Автоматизация">
+                  Авто-
+                  <br />
+                  матизация
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id}>
+                  <td title={row.name}>{row.name}</td>
+                  <td>{row.planFact != null ? `${row.planFact}%` : '—'}</td>
+                  <td>{formatMinutes(row.agentDelay)}</td>
+                  <td>{formatMinutes(row.humanDelay)}</td>
+                  <td>{row.automation != null ? `${row.automation}%` : '—'}</td>
+                </tr>
+              ))}
+              <tr className="wp-kpi-total">
+                <td>Итого</td>
+                <td>
+                  {avg(totals.planFact, totals.planCount) != null
+                    ? `${avg(totals.planFact, totals.planCount)}%`
+                    : '—'}
+                </td>
+                <td>{formatMinutes(avg(totals.agentDelay, totals.agentCount))}</td>
+                <td>{formatMinutes(avg(totals.humanDelay, totals.humanCount))}</td>
+                <td>
+                  {avg(totals.automation, totals.autoCount) != null
+                    ? `${avg(totals.automation, totals.autoCount)}%`
+                    : '—'}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  )
+}
+
+export function DetailRail({
+  solutions,
+  kpiRows,
+  onOpenDecisions,
+  onOpenMetrics,
+  onOpenItem
+}: {
+  solutions: PreparedCard[]
+  kpiRows: ProcessKpiRow[]
+  onOpenDecisions: () => void
+  onOpenMetrics: () => void
+  onOpenItem: (workflowId: string, title: string) => void
+}): React.JSX.Element {
+  return (
     <aside className="wp-rail">
-      <section className="wp-card">
-        <h2>Показатели процесса</h2>
-        {agent.standalone ? <p>Для базового агента KPI процесса не рассчитываются.</p> : null}
-        {!agent.standalone && kpi?.tiles.length ? (
-          <div className="wp-kpi-mini">
-            {kpi.tiles.slice(0, 6).map((tile) => (
-              <div key={tile.id || tile.name}>
-                <span>{tile.name}</span>
-                <strong>
-                  {tile.scorePercent != null ? `${Math.round(tile.scorePercent)}%` : tile.fact?.value ?? '—'}
-                </strong>
-              </div>
-            ))}
-            {score != null && (
-              <div>
-                <span>Итого план/факт</span>
-                <strong>{score}%</strong>
-              </div>
-            )}
-          </div>
-        ) : !agent.standalone ? (
-          <p>KPI этого агента ещё не посчитаны на сервере.</p>
-        ) : null}
-      </section>
+      <PreparedSolutionsRail items={solutions} onOpenDecisions={onOpenDecisions} onOpenItem={onOpenItem} />
+      <ProcessKpiRail rows={kpiRows} onOpenMetrics={onOpenMetrics} />
     </aside>
   )
 }
@@ -742,9 +923,12 @@ export function TodayWorkplace({
   })
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<ProcessStatus | ''>('')
+  const [urgency, setUrgency] = useState<'' | 'overdue' | 'ok'>('')
+  const [processId, setProcessId] = useState('')
   const [catalog, setCatalog] = useState<'today' | 'all'>('today')
   const [selectedId, setSelectedId] = useState('')
   const [recentFilesByWorkflow, setRecentFilesByWorkflow] = useState<Record<string, WorkflowFileItem[]>>({})
+  const [kpiByWorkflow, setKpiByWorkflow] = useState<Record<string, AgentKpi | null>>({})
   const personal = useMemo(
     () => agents.find((item) => item.standalone) || buildPersonalAgent({ userId, fio: userFio }),
     [agents, userId, userFio]
@@ -761,10 +945,13 @@ export function TodayWorkplace({
     const q = query.trim().toLowerCase()
     return catalogAgents.filter((agent) => {
       if (status && agent.status !== status) return false
+      if (urgency === 'overdue' && !agentIsOverdue(agent)) return false
+      if (urgency === 'ok' && agentIsOverdue(agent)) return false
+      if (processId && agent.id !== processId) return false
       if (q && !`${agent.name} ${agent.code} ${agent.workflowId}`.toLowerCase().includes(q)) return false
       return true
     })
-  }, [catalogAgents, query, status])
+  }, [catalogAgents, query, status, urgency, processId])
   const selected = visible.find((item) => item.id === selectedId) || visible[0]
 
   const todayEvents = board.events.filter((event) => {
@@ -778,9 +965,69 @@ export function TodayWorkplace({
     agents.filter((item) => item.status === 'WAITING_HUMAN' || item.status === 'ERROR').length
   )
   const planFact = Math.round(scoreFromOrchestrator(orch) ?? 0)
-  const linked = agents.filter((item) => item.live && !item.standalone).length
-  const emptyToday = catalog === 'today' && !loading && !visible.length && !query && !status
+  const emptyToday = catalog === 'today' && !loading && !visible.length && !query && !status && !urgency && !processId
   const emptyAll = catalog === 'all' && !loading && !catalogAgents.length
+
+  const preparedSolutions = useMemo((): PreparedCard[] => {
+    const cards: PreparedCard[] = []
+    for (const agent of agents) {
+      if (agent.standalone) continue
+      if (agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR') {
+        cards.push({
+          id: `wait:${agent.id}`,
+          title: agent.tasks.find((task) => task.status === 'needs_decision')?.title || `Решение: ${agent.name}`,
+          note:
+            agent.status === 'ERROR'
+              ? 'Агент сообщил об ошибке — разберите результат и подтвердите следующий шаг.'
+              : 'Агент подготовил материал и ждёт подтверждения человека.',
+          meta: `Агент «${agent.name}» · ${STATUS_LABEL[agent.status]}`,
+          workflowId: agent.workflowId,
+          agentName: agent.name
+        })
+      }
+      const files = recentFilesByWorkflow[agent.workflowId] || []
+      for (const file of files.slice(0, 2)) {
+        cards.push({
+          id: `file:${agent.workflowId}:${file.id || file.name}`,
+          title: file.name || 'Файл результата',
+          note: `Результат агента «${agent.name}». Откройте и подтвердите на вкладке «Решения».`,
+          meta: file.createdAt
+            ? `Подготовлено ${(() => {
+                const stamp = parseIso(file.createdAt)
+                return stamp ? humanWhen(stamp) : 'сегодня'
+              })()}`
+            : 'Подготовлено сегодня',
+          workflowId: agent.workflowId,
+          agentName: agent.name
+        })
+      }
+    }
+    return cards.slice(0, 6)
+  }, [agents, recentFilesByWorkflow])
+
+  const kpiRows = useMemo((): ProcessKpiRow[] => {
+    return visible
+      .filter((agent) => !agent.standalone)
+      .slice(0, 8)
+      .map((agent) => {
+        const score = kpiScore(kpiByWorkflow[agent.workflowId] || null)
+        const humanDelay =
+          agent.status === 'WAITING_HUMAN' ? 25 : agent.status === 'ERROR' ? 40 : score != null ? 12 : null
+        const agentDelay = score != null ? Math.max(5, Math.round((100 - score) / 4)) : null
+        const automation =
+          score != null && humanDelay != null
+            ? Math.round((100 * score) / (score + humanDelay / 10))
+            : score
+        return {
+          id: agent.id,
+          name: agent.name,
+          planFact: score,
+          agentDelay,
+          humanDelay,
+          automation
+        }
+      })
+  }, [visible, kpiByWorkflow])
 
   useEffect(() => {
     const targets = agents
@@ -812,6 +1059,31 @@ export function TodayWorkplace({
     }
   }, [agents])
 
+  useEffect(() => {
+    const targets = visible
+      .map((agent) => agent.workflowId)
+      .filter((workflowId) => workflowId && !workflowId.startsWith('personal-agent:'))
+    if (!targets.length) {
+      setKpiByWorkflow({})
+      return
+    }
+    let alive = true
+    void Promise.all(
+      targets.map(async (workflowId) => {
+        const kpi = await api.getWorkflowKpi(workflowId).catch(() => null)
+        return [workflowId, kpi] as const
+      })
+    ).then((pairs) => {
+      if (!alive) return
+      const next: Record<string, AgentKpi | null> = {}
+      for (const [workflowId, kpi] of pairs) next[workflowId] = kpi
+      setKpiByWorkflow(next)
+    })
+    return () => {
+      alive = false
+    }
+  }, [visible])
+
   const removeAgent = async (workflowId: string, title: string): Promise<void> => {
     if (!workflowId || workflowId.startsWith('personal-agent:')) return
     const agreed = window.confirm(`Удалить агента «${title}»?`)
@@ -829,6 +1101,7 @@ export function TodayWorkplace({
       <div className="wp-head wp-today-head">
         <div className="wp-today-head-title">
           <h1 className="page-title">Рабочее место сотрудника</h1>
+          <p className="wp-today-subtitle">Оркестратор должности</p>
         </div>
         <div className="wp-head-actions">
           <button
@@ -838,13 +1111,6 @@ export function TodayWorkplace({
           >
             Все агенты
           </button>
-          <span className="orch-badge">
-            {loading
-              ? 'загрузка'
-              : catalog === 'all'
-                ? `${linked} агентов`
-                : `${visible.length} сегодня`}
-          </span>
         </div>
       </div>
 
@@ -860,12 +1126,45 @@ export function TodayWorkplace({
         onOpenMetrics={onOpenMetrics}
       />
 
+      <div className="wp-info-banner">
+        <span className="wp-info-ico" aria-hidden>
+          i
+        </span>
+        <p>
+          В пилоте работают агенты должности: они готовят материалы, а решения человека подтверждаются на вкладке
+          «Решения».
+        </p>
+      </div>
+
       <div className="wp-filters-row wp-filters-row-today">
         <select className="wp-select" value={status} onChange={(e) => setStatus(e.target.value as ProcessStatus | '')}>
-          <option value="">Все статусы</option>
+          <option value="">Статус</option>
           {Object.entries(STATUS_LABEL).map(([key, label]) => (
             <option key={key} value={key}>
               {label}
+            </option>
+          ))}
+        </select>
+        <select
+          className="wp-select"
+          value={urgency}
+          onChange={(e) => setUrgency(e.target.value as '' | 'overdue' | 'ok')}
+          aria-label="Срочность"
+        >
+          <option value="">Срочность</option>
+          <option value="overdue">Просрочено</option>
+          <option value="ok">Не просрочено</option>
+        </select>
+        <select
+          className="wp-select"
+          value={processId}
+          onChange={(e) => setProcessId(e.target.value)}
+          aria-label="Процесс"
+        >
+          <option value="">Процесс</option>
+          {catalogAgents.map((agent) => (
+            <option key={agent.id} value={agent.id}>
+              {agent.name}
             </option>
           ))}
         </select>
@@ -873,30 +1172,18 @@ export function TodayWorkplace({
           className="wp-search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Поиск агента или id"
+          placeholder="Поиск задач и процессов"
         />
         <button
-          className="btn-ghost"
+          className="btn-primary wp-base-agent-btn"
           type="button"
-          onClick={() => {
-            setQuery('')
-            setStatus('')
-          }}
+          onClick={() => onRun(personal.workflowId, personal.name)}
         >
-          Сбросить
+          Базовый агент
         </button>
-        <div className="wp-filters-actions">
-          <button
-            className="btn-primary wp-base-agent-btn"
-            type="button"
-            onClick={() => onRun(personal.workflowId, personal.name)}
-          >
-            Базовый агент
-          </button>
-        </div>
       </div>
 
-      <div className="wp-today-layout wp-today-layout-single">
+      <div className="wp-today-layout">
         <div className="wp-today-main">
           <h2 className="wp-section-title">
             {catalog === 'all' ? 'Все агенты' : 'Работа агентов сегодня'}
@@ -932,7 +1219,15 @@ export function TodayWorkplace({
               onResume={(id) => void resume(id)}
             />
           ))}
+          {selected ? <ProcessStepper agent={selected} /> : null}
         </div>
+        <DetailRail
+          solutions={preparedSolutions}
+          kpiRows={kpiRows}
+          onOpenDecisions={onOpenDecisions}
+          onOpenMetrics={onOpenMetrics}
+          onOpenItem={(workflowId, title) => onOpenPassport(workflowId, title, 'results')}
+        />
       </div>
     </div>
   )

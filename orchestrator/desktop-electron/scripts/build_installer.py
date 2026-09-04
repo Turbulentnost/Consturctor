@@ -324,7 +324,12 @@ def prepare_playwright(skip: bool) -> None:
 def build_electron(dir_only: bool) -> None:
     env = build_env()
     run([tool("npm", env=env), "run", "build"], cwd=ELECTRON_ROOT, env=env)
-    cmd = [tool("npx", env=env), "electron-builder"]
+    # Prefer local binary — npx may hit the network and fail offline.
+    local_builder = ELECTRON_ROOT / "node_modules" / ".bin" / ("electron-builder.cmd" if os.name == "nt" else "electron-builder")
+    if local_builder.is_file():
+        cmd = [str(local_builder)]
+    else:
+        cmd = [tool("npm", env=env), "exec", "--", "electron-builder"]
     if dir_only:
         cmd.append("--dir")
     run(cmd, cwd=ELECTRON_ROOT, env=env)

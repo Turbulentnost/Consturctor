@@ -63,21 +63,35 @@ function collectDesktopCandidates(starts: string[]): string[] {
     const path = resolve(value)
     if (!rows.includes(path)) rows.push(path)
   }
+  for (const start of starts) {
+    // Prefer in-repo orchestrator/desktop (desktop-electron is nested under orchestrator/).
+    push(resolve(start, '..', 'desktop'))
+    push(resolve(start, '..', '..', 'desktop'))
+    push(resolve(start, 'desktop'))
+  }
   const constructorDesktop = findConstructorDesktop(starts)
   if (constructorDesktop) push(constructorDesktop)
   for (const start of starts) {
-    push(resolve(start, '..', 'desktop'))
-    push(resolve(start, 'desktop'))
     push(resolve(start, '..', 'Consturctor', 'desktop'))
     push(resolve(start, '..', '..', 'Consturctor', 'desktop'))
   }
   return rows.filter((path) => isDesktopRoot(path))
 }
 
+function isOrchestratorRepoDesktop(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/').toLowerCase()
+  return (
+    normalized.endsWith('/orchestrator/desktop') ||
+    /\/orchestrator\/(?:orchestrator\/)?desktop$/i.test(normalized)
+  )
+}
+
 function resolveDesktopRoot(starts: string[], fallback: string): string {
   const envDesktop = process.env.CONSTRUCTOR_DESKTOP_ROOT
   if (envDesktop && isDesktopRoot(envDesktop)) return envDesktop
   const found = collectDesktopCandidates(starts)
+  const local = found.find((path) => isOrchestratorRepoDesktop(path))
+  if (local) return local
   return found.find((path) => hasCursorKey(path)) || found[0] || fallback
 }
 

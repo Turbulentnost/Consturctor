@@ -37,6 +37,18 @@ const api = {
     token?: string | null
   }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
     ipcRenderer.invoke('api:download', opts),
+  saveLocalFile: (opts: {
+    defaultName?: string
+    text?: string
+    base64?: string
+    filters?: { name: string; extensions: string[] }[]
+  }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('api:saveLocalFile', opts),
+  exportPdf: (opts: {
+    html: string
+    defaultName?: string
+  }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('api:exportPdf', opts),
   createWorkflow: <T = unknown>(opts: {
     notes: string
     draftId?: string
