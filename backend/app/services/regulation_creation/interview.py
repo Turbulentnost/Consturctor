@@ -253,6 +253,8 @@ def new_interview_state() -> dict[str, Any]:
         "currentQuestion": {},
         "answerSufficiency": {},
         "answers": [],
+        "questionQueue": [],
+        "prefetchInProgress": False,
         "pipeline": default_pipeline(),
     }
 
@@ -294,6 +296,11 @@ def normalize_interview_state(raw: Any) -> dict[str, Any]:
         state["answerSufficiency"] = {}
     if not isinstance(state["answers"], list):
         state["answers"] = []
+    from app.services.regulation_creation.question_queue import normalize_question_queue
+
+    normalized_queue = normalize_question_queue(state)
+    state["questionQueue"] = normalized_queue.get("questionQueue") or []
+    state["prefetchInProgress"] = bool(normalized_queue.get("prefetchInProgress"))
     state["pipeline"] = normalize_pipeline(state.get("pipeline"))
     return state
 
@@ -371,6 +378,9 @@ def append_user_turn(state: Any, message: str, attachments: list[dict]) -> dict[
     )
     out["turns"] = out["turns"][-40:]
     _attach_answer_to_current_question(out, message)
+    from app.services.regulation_creation.question_queue import apply_collect_answer_to_facts
+
+    out = apply_collect_answer_to_facts(out, message)
     _apply_role_answer(out, message)
     _apply_explicit_unknown_answer(out, message)
     out = mark_upload_received(out)

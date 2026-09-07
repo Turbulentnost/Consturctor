@@ -66,11 +66,19 @@ from app.services.regulation_creation.interview import (
 from app.services.regulation_creation.pipeline import (
     apply_round_answers,
     incremental_document_from_state,
-    next_collect_question,
     normalize_pipeline,
     select_processes as pipeline_select_processes,
     set_pipeline_stage,
     slice_materials_for_prompt,
+)
+from app.services.regulation_creation.question_queue import (
+    build_fastpath_reply_from_queue,
+    consume_queue_head,
+    needs_llm_prefetch,
+    peek_queue_head,
+    queue_snapshot,
+    queued_question_metadata,
+    replenish_queue,
 )
 from app.services.regulation_creation.sto_template import STO_TEMPLATE_PATH, fill_sto_regulation
 from app.services.regulation_creation.template_tools import (
@@ -269,6 +277,16 @@ def apply_creation_reply(
         raw=request.answer,
         force_create=force_create,
     )
+    draft.interview_json = replenish_queue(
+        normalize_interview_state(draft.interview_json),
+        target=5,
+    )
+    if needs_llm_prefetch(draft.interview_json):
+        draft.interview_json = {
+            **normalize_interview_state(draft.interview_json),
+            "prefetchInProgress": True,
+        }
+    draft.status = "interview"
     db.add(draft)
     db.commit()
     db.refresh(draft)
@@ -285,6 +303,8 @@ def _turn_payload(
     timing_start = perf_counter()
     sdk_id = interview_sdk_agent_id(draft.interview_json)
     interview = normalize_interview_state(draft.interview_json)
+    interview = replenish_queue(interview, target=5)
+    draft.interview_json = interview
     pipeline = normalize_pipeline(interview.get("pipeline"))
     stage = str(pipeline.get("stage") or "upload")
     phase = str(pipeline.get("interviewPhase") or stage)
@@ -292,7 +312,15 @@ def _turn_payload(
         force_create
         or (isinstance(draft.interview_json, dict) and draft.interview_json.get("document_write_required"))
     )
-    prefetched_reply = _build_fastpath_reply(interview=interview, pipeline=pipeline, force_create=force_create)
+    prefetched_reply = build_fastpath_reply_from_queue(
+        interview=interview,
+        pipeline=pipeline,
+        force_create=force_create,
+    )
+    queue_meta = queue_snapshot(interview)
+    if needs_llm_prefetch(interview) and not prefetched_reply:
+        interview = {**interview, "prefetchInProgress": True}
+        draft.interview_json = interview
     prompt = ""
     if not prefetched_reply:
         prompt = (
@@ -333,6 +361,9 @@ def _turn_payload(
         sdkAgentId=sdk_id,
         forceCreate=force_create,
         prefetchedReply=prefetched_reply or "",
+        questionQueue=queue_meta.get("questionQueue") or [],
+        prefetchInProgress=bool(queue_meta.get("prefetchInProgress")),
+        queueDepth=int(queue_meta.get("queueDepth") or 0),
     )
 
 
@@ -732,17 +763,44 @@ def _apply_agent_reply(
             draft.interview_json.get("pipeline") if isinstance(draft.interview_json, dict) else {}
         )
         rq = pipeline_now.get("roundQuestions") or []
-        if rq:
-            # Batch round: don't collapse to a single currentQuestion field.
-            draft.interview_json = draft.interview_json if isinstance(draft.interview_json, dict) else {}
-        else:
+        queued_meta = queued_question_metadata(parsed)
+        head = peek_queue_head(draft.interview_json if isinstance(draft.interview_json, dict) else {})
+        if rq and head:
+            content = str(head.get("text") or "").strip() or content
+            quick_answers = head.get("options") or quick_answers
             draft.interview_json, content = remember_assistant_question(
                 draft.interview_json,
                 message=content,
                 quick_answers=quick_answers,
-                function_id=_message_function_id(parsed, draft.interview_json),
-                field=_message_field(parsed, draft.interview_json),
+                function_id=str(head.get("processId") or "").strip(),
+                field=str(head.get("field") or "").strip(),
+                process_id=str(head.get("processId") or "").strip(),
             )
+            draft.interview_json = consume_queue_head(
+                draft.interview_json,
+                question_id=str(head.get("id") or "").strip(),
+            )
+            rq = [dict(head)] if head else rq[:1]
+        elif rq:
+            draft.interview_json = draft.interview_json if isinstance(draft.interview_json, dict) else {}
+        else:
+            function_id = queued_meta.get("processId") or _message_function_id(parsed, draft.interview_json)
+            field = queued_meta.get("field") or _message_field(parsed, draft.interview_json)
+            draft.interview_json, content = remember_assistant_question(
+                draft.interview_json,
+                message=content,
+                quick_answers=quick_answers,
+                function_id=function_id,
+                field=field,
+                process_id=queued_meta.get("processId") or function_id,
+            )
+            if queued_meta.get("id"):
+                draft.interview_json = consume_queue_head(
+                    draft.interview_json,
+                    question_id=queued_meta.get("id"),
+                )
+            else:
+                draft.interview_json = consume_queue_head(draft.interview_json)
         processes = []
         if isinstance(draft.interview_json, dict):
             processes = [
@@ -778,27 +836,11 @@ def _build_fastpath_reply(
     pipeline: dict[str, Any],
     force_create: bool,
 ) -> str:
-    if force_create:
-        return ""
-    if str(pipeline.get("stage") or "") != "interview":
-        return ""
-    if str(pipeline.get("interviewPhase") or "") != "collect":
-        return ""
-    question = next_collect_question(interview)
-    if not question:
-        return ""
-    process_title = str(question.get("processId") or "процесс")
-    message = str(question.get("text") or f"Уточним обязательные факты по процессу «{process_title}».")
-    payload = {
-        "status": "need_more",
-        "message": message,
-        "quickAnswers": question.get("options") or [],
-        "roundQuestions": [],
-        "interview": {"processes": []},
-        "pipeline": {"stage": "interview"},
-        "document": {},
-    }
-    return json.dumps(payload, ensure_ascii=False)
+    return build_fastpath_reply_from_queue(
+        interview=interview,
+        pipeline=pipeline,
+        force_create=force_create,
+    )
 
 
 def _finalize_document(
@@ -1411,6 +1453,7 @@ def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationS
                 filename=Path(draft.result_document_path or "regulation.docx").name,
                 document=draft.draft_document_json,
             )
+    queue_info = queue_snapshot(draft.interview_json if isinstance(draft.interview_json, dict) else {})
     return RegulationCreationSession(
         draftId=draft.id,
         status=draft.status,
@@ -1436,6 +1479,9 @@ def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationS
         pipeline=normalize_pipeline(
             draft.interview_json.get("pipeline") if isinstance(draft.interview_json, dict) else {}
         ),
+        questionQueue=queue_info.get("questionQueue") or [],
+        prefetchInProgress=bool(queue_info.get("prefetchInProgress")),
+        queueDepth=int(queue_info.get("queueDepth") or 0),
         createdAt=draft.created_at,
         updatedAt=draft.updated_at,
     )

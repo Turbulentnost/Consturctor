@@ -177,6 +177,16 @@ export interface RegulationCreationMessage {
   createdAt: string
 }
 
+export interface RegulationQueuedQuestion {
+  id: string
+  processId: string
+  field: string
+  text: string
+  options?: string[]
+  smartKey?: string
+  source?: string
+}
+
 export interface RegulationCreationSession {
   draftId: string
   status: string
@@ -187,6 +197,9 @@ export interface RegulationCreationSession {
   sdkAgentId: string
   interview: Record<string, unknown>
   pipeline: Record<string, unknown>
+  questionQueue?: RegulationQueuedQuestion[]
+  prefetchInProgress?: boolean
+  queueDepth?: number
 }
 
 export interface RegulationCreationHistoryItem {
@@ -209,6 +222,9 @@ export interface RegulationCreationTurn {
   sdkAgentId: string
   forceCreate: boolean
   prefetchedReply: string
+  questionQueue?: RegulationQueuedQuestion[]
+  prefetchInProgress?: boolean
+  queueDepth?: number
 }
 
 export interface MatchEvidence {

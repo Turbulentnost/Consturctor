@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
-import { ApiError, type AgentEvent, type RegulationCreationSession, type RegulationCreationTurn } from '../api/types'
+import { ApiError, type AgentEvent, type RegulationCreationSession, type RegulationCreationTurn, type RegulationQueuedQuestion } from '../api/types'
 import wallpaperUrl from '../assets/chat/wallpaper.png'
 import programIcon from '../assets/logo.png'
 import iconAttention from '@agent-icons/agent-attention-animated.svg?raw'
@@ -46,6 +46,7 @@ const FORCE_CREATE_PROMPT =
   'Создай регламент принудительно по текущей информации. ' +
   'Если каких-то данных не хватает, используй разумные типовые формулировки и явно отметь, что это предположение.'
 const WORKING_STATUS = 'Готовлю вопрос...'
+const PREFETCH_STATUS = 'Готовлю следующие вопросы...'
 const COMPOSER_MIN_HEIGHT = 74
 // 15 строк по 25px line-height — дальше textarea прокручивается внутри.
 const COMPOSER_MAX_HEIGHT = 399
@@ -64,10 +65,11 @@ function busyHeadLabel(kind: BusyKind, fileCount: number): string {
   return 'Готовит вопрос'
 }
 
-function busyStatusLabel(kind: BusyKind, fileCount: number): string {
+function busyStatusLabel(kind: BusyKind, fileCount: number, prefetching: boolean): string {
   if (kind === 'reading') {
     return fileCount > 1 ? 'Читаю документы...' : 'Читаю документ...'
   }
+  if (prefetching) return PREFETCH_STATUS
   return WORKING_STATUS
 }
 
@@ -349,6 +351,22 @@ export function RegulationChatPage({
   const runIdRef = useRef('')
   const abortRef = useRef<AbortController | null>(null)
   const stoppedRef = useRef(false)
+  const queuedQuestionsRef = useRef<RegulationQueuedQuestion[]>([])
+  const [optimisticQuestion, setOptimisticQuestion] = useState<RegulationQueuedQuestion | null>(null)
+  const [prefetching, setPrefetching] = useState(false)
+
+  function syncQueueFromSession(next: RegulationCreationSession | RegulationCreationTurn): void {
+    const isTurn = 'session' in next
+    const sessionData = isTurn ? next.session : next
+    const queue = (isTurn ? next.questionQueue : undefined) ?? sessionData.questionQueue
+    const depth = (isTurn ? next.queueDepth : undefined) ?? sessionData.queueDepth ?? queue?.length ?? 0
+    const inProgress =
+      (isTurn ? next.prefetchInProgress : undefined) ?? sessionData.prefetchInProgress
+    if (queue?.length) {
+      queuedQuestionsRef.current = queue
+    }
+    setPrefetching(Boolean(inProgress) && (depth ?? 0) === 0)
+  }
 
   useEffect(() => {
     setError('')
@@ -364,7 +382,17 @@ export function RegulationChatPage({
     stoppedRef.current = false
     abortRef.current = null
     runIdRef.current = ''
+    queuedQuestionsRef.current = session.questionQueue ?? []
+    setOptimisticQuestion(null)
+    setPrefetching(Boolean(session.prefetchInProgress) && (session.queueDepth ?? 0) === 0)
   }, [session.draftId])
+
+  useEffect(() => {
+    if (session.questionQueue?.length) {
+      queuedQuestionsRef.current = session.questionQueue
+    }
+    setPrefetching(Boolean(session.prefetchInProgress) && (session.queueDepth ?? 0) === 0)
+  }, [session.questionQueue, session.prefetchInProgress, session.queueDepth])
 
   useEffect(() => {
     onBusyChange?.(busy)
@@ -403,6 +431,18 @@ export function RegulationChatPage({
   const phase: AgentPhase = ready ? 'completed' : busy ? 'working' : 'attention'
   const stageLabel = stageCaption(session)
   const remainingLabel = remainingEstimateLabel(session)
+
+  useEffect(() => {
+    if (ready || needsProcessSelection || stoppedRef.current || !window.agent?.start) return
+    const depth = session.queueDepth ?? session.questionQueue?.length ?? queuedQuestionsRef.current.length
+    if (depth >= 2) return
+    void api
+      .peekRegulationCreationTurn(session.draftId)
+      .then((turn) => {
+        syncQueueFromSession(turn)
+      })
+      .catch(() => undefined)
+  }, [session.draftId, ready, needsProcessSelection, session.queueDepth, session.questionQueue?.length])
 
   async function downloadResult(): Promise<void> {
     if (!ready) return
@@ -462,6 +502,12 @@ export function RegulationChatPage({
     setInput('')
     setPlaceholder(DEFAULT_PLACEHOLDER)
     setError('')
+    const cachedNext = queuedQuestionsRef.current[0]
+    const hasCachedNext = Boolean(cachedNext?.text)
+    if (hasCachedNext) {
+      setOptimisticQuestion(cachedNext)
+      queuedQuestionsRef.current = queuedQuestionsRef.current.slice(1)
+    }
     setBusy(true)
     setBusyKind(files.length > 0 ? 'reading' : 'question')
     setReadingFileCount(files.length)
@@ -633,12 +679,15 @@ export function RegulationChatPage({
 
   async function runSdkAndApply(turn: RegulationCreationTurn): Promise<void> {
     if (stoppedRef.current) throw new RegulationCancelledError()
+    syncQueueFromSession(turn)
     if (turn.prefetchedReply) {
       const updated = await api.applyRegulationCreationReply(session.draftId, turn.prefetchedReply, {
         sdkAgentId: turn.sdkAgentId,
         forceCreate: turn.forceCreate
       })
       if (stoppedRef.current) throw new RegulationCancelledError()
+      syncQueueFromSession(updated)
+      setOptimisticQuestion(null)
       onSessionChange(updated)
       return
     }
@@ -676,6 +725,8 @@ export function RegulationChatPage({
       if (abort.signal.aborted || stoppedRef.current) {
         throw new RegulationCancelledError()
       }
+      syncQueueFromSession(updated)
+      setOptimisticQuestion(null)
       onSessionChange(updated)
     } finally {
       if (abortRef.current === abort) abortRef.current = null
@@ -869,7 +920,30 @@ export function RegulationChatPage({
                   </div>
                 )
               })}
-              {busy && (
+              {optimisticQuestion && (
+                <div className="regchat-row ai">
+                  <AgentAvatar phase="attention" uid="queued-next" frozen={false} />
+                  <div className="regchat-bubble-col">
+                    <div className="regchat-bubble ai">
+                      <div className="regchat-bubble-text">{optimisticQuestion.text}</div>
+                    </div>
+                    {optimisticQuestion.options && optimisticQuestion.options.length > 0 && (
+                      <div className="regchat-quick-row">
+                        {optimisticQuestion.options.map((qa) => (
+                          <button
+                            key={qa}
+                            className="regchat-quick-chip"
+                            onClick={() => handleQuick(qa, optimisticQuestion.text)}
+                          >
+                            {qa}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {busy && !optimisticQuestion && (
                 <div className="regchat-row ai">
                   <AgentAvatar phase="working" uid="working" />
                   <div className="regchat-bubble-col">
@@ -878,7 +952,16 @@ export function RegulationChatPage({
                         <span>{busyHeadLabel(busyKind, readingFileCount)}</span>
                       </div>
                     </div>
-                    <div className="regchat-status">{busyStatusLabel(busyKind, readingFileCount)}</div>
+                    <div className="regchat-status">
+                      {busyStatusLabel(busyKind, readingFileCount, prefetching)}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {busy && optimisticQuestion && prefetching && (
+                <div className="regchat-row ai">
+                  <div className="regchat-bubble-col">
+                    <div className="regchat-status">{PREFETCH_STATUS}</div>
                   </div>
                 </div>
               )}

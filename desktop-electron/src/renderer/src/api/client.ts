@@ -18,6 +18,7 @@ import {
   type RegulationCreationHistoryItem,
   type RegulationCreationSession,
   type RegulationCreationTurn,
+  type RegulationQueuedQuestion,
   type FragmentEntityTag,
   type RegulationEntityLegendItem,
   type RegulationFragment,
@@ -123,6 +124,29 @@ function parseUser(data: Record<string, unknown>): UserProfile {
   })
 }
 
+function parseQueuedQuestions(raw: unknown): RegulationQueuedQuestion[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const row = item as Record<string, unknown>
+      const optionsRaw = row.options ?? row.quickAnswers
+      const options = Array.isArray(optionsRaw)
+        ? optionsRaw.map((opt) => String(opt ?? '')).filter(Boolean)
+        : []
+      return {
+        id: String(row.id ?? ''),
+        processId: String(row.processId ?? row.process_id ?? row.functionId ?? ''),
+        field: String(row.field ?? ''),
+        text: String(row.text ?? row.message ?? ''),
+        options,
+        smartKey: String(row.smartKey ?? row.smart_key ?? ''),
+        source: String(row.source ?? '')
+      }
+    })
+    .filter((item) => item.text || item.id)
+}
+
 function parseCreationSession(data: Record<string, unknown>): RegulationCreationSession {
   const rawMessages = (data.messages as Record<string, unknown>[]) ?? []
   const messages: RegulationCreationMessage[] = rawMessages.map((item) => ({
@@ -158,7 +182,10 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
     pipeline:
       data.pipeline && typeof data.pipeline === 'object'
         ? (data.pipeline as Record<string, unknown>)
-        : {}
+        : {},
+    questionQueue: parseQueuedQuestions(data.questionQueue ?? data.question_queue),
+    prefetchInProgress: Boolean(data.prefetchInProgress ?? data.prefetch_in_progress),
+    queueDepth: Number(data.queueDepth ?? data.queue_depth ?? 0)
   }
 }
 
@@ -175,7 +202,10 @@ function parseCreationTurn(data: Record<string, unknown>): RegulationCreationTur
     sdkRules: String(data.sdkRules ?? data.sdk_rules ?? ''),
     sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? ''),
     forceCreate: Boolean(data.forceCreate ?? data.force_create),
-    prefetchedReply: String(data.prefetchedReply ?? data.prefetched_reply ?? '')
+    prefetchedReply: String(data.prefetchedReply ?? data.prefetched_reply ?? ''),
+    questionQueue: parseQueuedQuestions(data.questionQueue ?? data.question_queue),
+    prefetchInProgress: Boolean(data.prefetchInProgress ?? data.prefetch_in_progress),
+    queueDepth: Number(data.queueDepth ?? data.queue_depth ?? 0)
   }
 }
 

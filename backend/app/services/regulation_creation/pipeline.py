@@ -184,6 +184,10 @@ def merge_pipeline_payload(state: dict[str, Any], payload: dict[str, Any]) -> di
         filtered = _filter_round_questions(round_questions, selected_set)
         if filtered:
             pipeline = start_round(pipeline, _drop_known_questions(out, filtered))
+            from app.services.regulation_creation.question_queue import enqueue_round_batch
+
+            out["pipeline"] = pipeline
+            out = enqueue_round_batch(out, pipeline.get("roundQuestions") or [])
 
     processes = out.get("processes") if isinstance(out.get("processes"), list) else []
     has_process_candidates = bool(pipeline["blocks"]) or bool(processes)
@@ -278,6 +282,9 @@ def select_processes(state: dict[str, Any], process_ids: list[str]) -> dict[str,
         pipeline["round"] = 0
     pipeline = _refresh_pipeline_derived(pipeline)
     out["pipeline"] = pipeline
+    from app.services.regulation_creation.question_queue import replenish_queue
+
+    out = replenish_queue(out, target=5)
     return out
 
 

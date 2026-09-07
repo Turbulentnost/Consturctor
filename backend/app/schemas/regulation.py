@@ -681,6 +681,9 @@ class RegulationCreationSession(BaseModel):
     sdkAgentId: str = ""
     interview: dict = Field(default_factory=dict)
     pipeline: dict = Field(default_factory=dict)
+    questionQueue: list[dict] = Field(default_factory=list)
+    prefetchInProgress: bool = False
+    queueDepth: int = 0
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
 
@@ -712,3 +715,6 @@ class RegulationCreationTurn(BaseModel):
     sdkAgentId: str = ""
     forceCreate: bool = False
     prefetchedReply: str = ""
+    questionQueue: list[dict] = Field(default_factory=list)
+    prefetchInProgress: bool = False
+    queueDepth: int = 0

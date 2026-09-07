@@ -1421,3 +1421,122 @@ def test_select_creation_processes_api_service() -> None:
     )
     assert answered.pipeline.get("questionnaire", {}).get("q1") == "Outlook"
     assert answered.resultDocument or answered.pipeline
+
+
+def test_question_queue_prefilled_after_process_select() -> None:
+    from app.services.regulation_creation.pipeline import select_processes
+    from app.services.regulation_creation.question_queue import queue_depth, replenish_queue
+
+    state = {
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Календарь",
+                "roleStatus": "unclear",
+                "knownFacts": {},
+                "sourceRefs": [],
+            }
+        ],
+        "functions": [],
+        "pipeline": {"stage": "select", "blocks": []},
+    }
+    out = select_processes(state, ["p1"])
+    assert queue_depth(out) >= 3
+    assert all(item.get("processId") == "p1" for item in out.get("questionQueue") or [])
+
+
+def test_apply_collect_answer_updates_queue_without_llm() -> None:
+    from app.services.regulation_creation.interview import append_user_turn, remember_assistant_question
+    from app.services.regulation_creation.pipeline import select_processes
+    from app.services.regulation_creation.question_queue import (
+        build_fastpath_reply_from_queue,
+        peek_queue_head,
+        queue_depth,
+        replenish_queue,
+    )
+
+    state = select_processes(
+        {
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Календарь",
+                    "roleStatus": "belongs",
+                    "knownFacts": {},
+                    "sourceRefs": [],
+                }
+            ],
+            "functions": [],
+            "pipeline": {"stage": "select", "blocks": []},
+        },
+        ["p1"],
+    )
+    head = peek_queue_head(state)
+    assert head is not None
+    state, _ = remember_assistant_question(
+        state,
+        message=head["text"],
+        quick_answers=head.get("options") or [],
+        function_id=head.get("processId") or "",
+        field=head.get("field") or "",
+        process_id=head.get("processId") or "",
+    )
+    state = append_user_turn(state, "Outlook", [])
+    assert state["processes"][0]["knownFacts"].get("workLocation") == "Outlook"
+    state = replenish_queue(state, target=5)
+    assert queue_depth(state) >= 2
+    pipeline = state.get("pipeline") or {}
+    reply = build_fastpath_reply_from_queue(
+        interview=state,
+        pipeline=pipeline,
+        force_create=False,
+    )
+    assert reply
+    assert "collect-p1-" in reply
+
+
+def test_prefetch_skips_unselected_processes() -> None:
+    from app.services.regulation_creation.pipeline import select_processes
+    from app.services.regulation_creation.question_queue import enqueue_questions, replenish_queue
+
+    state = select_processes(
+        {
+            "processes": [
+                {"id": "p1", "title": "Календарь", "roleStatus": "unclear", "knownFacts": {}, "sourceRefs": []},
+                {"id": "p2", "title": "Отчёты", "roleStatus": "unclear", "knownFacts": {}, "sourceRefs": []},
+            ],
+            "functions": [],
+            "pipeline": {"stage": "select", "blocks": []},
+        },
+        ["p1"],
+    )
+    out = enqueue_questions(
+        state,
+        [
+            {"id": "q1", "processId": "p1", "field": "trigger", "text": "Триггер p1?"},
+            {"id": "q2", "processId": "p2", "field": "trigger", "text": "Триггер p2?"},
+        ],
+    )
+    process_ids = {item.get("processId") for item in out.get("questionQueue") or []}
+    assert "p2" not in process_ids
+    assert "p1" in process_ids
+
+
+def test_queue_dedupe_on_replenish() -> None:
+    from app.services.regulation_creation.pipeline import select_processes
+    from app.services.regulation_creation.question_queue import enqueue_questions, queue_depth
+
+    state = select_processes(
+        {
+            "processes": [
+                {"id": "p1", "title": "Календарь", "roleStatus": "unclear", "knownFacts": {}, "sourceRefs": []},
+            ],
+            "functions": [],
+            "pipeline": {"stage": "select", "blocks": []},
+        },
+        ["p1"],
+    )
+    initial = queue_depth(state)
+    duplicate = (state.get("questionQueue") or [])[0]
+    out = enqueue_questions(state, [duplicate, duplicate])
+    assert queue_depth(out) == initial
