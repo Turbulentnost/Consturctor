@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -22,6 +23,7 @@ from app.services.regulation.types import ExtractedDocument
 from app.services.regulation.xlsx_extract import extract_xlsx
 
 _SUPPORTED = {".docx", ".pdf", ".xlsx", ".md", ".txt"}
+logger = logging.getLogger(__name__)
 
 
 class RegulationError(Exception):
@@ -50,9 +52,12 @@ def parse_upload(
     regulation_id = new_regulation_id()
     path = save_upload(regulation_id=regulation_id, filename=filename, data=data)
     try:
+        logger.info("Regulation extract start id=%s suffix=%s bytes=%s", regulation_id, suffix, len(data))
         extracted = _extract(path, suffix=suffix, regulation_id=regulation_id)
         result = build_result(regulation_id=regulation_id, filename=filename, extracted=extracted)
+        logger.info("Regulation extract done id=%s fragments=%s", regulation_id, len(result.fragments))
         result = _apply_cursor_entities(result, user_id=user_id)
+        logger.info("Regulation cursor tags done id=%s", regulation_id)
     except RegulationError:
         raise
     except RuntimeError as exc:
