@@ -239,6 +239,8 @@ _GENERIC_WORK_LOCATION_WORDS = {
 
 
 def new_interview_state() -> dict[str, Any]:
+    from app.services.regulation_creation.pipeline import default_pipeline
+
     return {
         "version": 2,
         "position": "",
@@ -251,10 +253,13 @@ def new_interview_state() -> dict[str, Any]:
         "currentQuestion": {},
         "answerSufficiency": {},
         "answers": [],
+        "pipeline": default_pipeline(),
     }
 
 
 def normalize_interview_state(raw: Any) -> dict[str, Any]:
+    from app.services.regulation_creation.pipeline import normalize_pipeline
+
     if not isinstance(raw, dict):
         return new_interview_state()
     state = deepcopy(raw)
@@ -289,6 +294,7 @@ def normalize_interview_state(raw: Any) -> dict[str, Any]:
         state["answerSufficiency"] = {}
     if not isinstance(state["answers"], list):
         state["answers"] = []
+    state["pipeline"] = normalize_pipeline(state.get("pipeline"))
     return state
 
 
@@ -338,6 +344,8 @@ def owned_functions(state: Any) -> list[dict[str, Any]]:
 
 
 def append_user_turn(state: Any, message: str, attachments: list[dict]) -> dict[str, Any]:
+    from app.services.regulation_creation.pipeline import apply_round_answers, mark_upload_received
+
     out = normalize_interview_state(state)
     out.pop("document_write_required", None)
     attachment_refs: list[str] = []
@@ -364,10 +372,16 @@ def append_user_turn(state: Any, message: str, attachments: list[dict]) -> dict[
     out["turns"] = out["turns"][-40:]
     _attach_answer_to_current_question(out, message)
     _apply_role_answer(out, message)
+    _apply_explicit_unknown_answer(out, message)
+    out = mark_upload_received(out)
+    if message.strip():
+        out = apply_round_answers(out, free_message=message.strip())
     return out
 
 
 def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    from app.services.regulation_creation.pipeline import merge_pipeline_payload
+
     out = normalize_interview_state(state)
     answer_sufficiency = _extract_answer_sufficiency(payload)
     if answer_sufficiency:
@@ -402,13 +416,14 @@ def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
         process["roleStatus"] = _resolve_role_status(process, position)
         process["sourceRefs"] = _clean_source_refs(process.get("sourceRefs"))
         process["unknowns"] = _normalize_unknowns(process.get("unknowns"))
+    out = merge_pipeline_payload(out, payload)
     return out
 
 
-def creation_system_rules(*, force_create: bool = False) -> str:
+def creation_interview_rules(*, force_create: bool = False) -> str:
     force = (
-        "Пользователь запросил принудительное создание. Можно вернуть status='ready' по текущим "
-        "проверенным данным, но нельзя выдавать предположения как факты."
+        "Пользователь запросил принудительное создание: можно вернуть status='ready' по проверенным данным "
+        "без выдумок."
         if force_create
         else (
             "Не возвращай status='ready', пока по каждому процессу должности нельзя написать "
@@ -416,138 +431,93 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         )
     )
     return (
-        "Ты помогаешь создать точный регламент действий пользователя. Продолжай интервью.\n"
-        "Работай только по текстам приложенных файлов и ответам пользователя. Не используй шаблоны, "
-        "эталоны и типовые догадки как содержание регламента.\n"
-        "Если приложено несколько файлов, анализируй их вместе и не теряй ранее приложенные файлы.\n"
-        "Сначала извлеки функциональные блоки из документов. Для каждого блока определи roleStatus: "
-        "belongs (это обязанность указанной должности), foreign (другая роль) или unclear (сомнение).\n"
-        "Если исполнитель в тексте не указан, указан общо (подразделение, ответственные) или не "
-        "совпадает с должностью пользователя, roleStatus=unclear и сначала спроси, относится ли "
-        "этот блок к должности пользователя. Не заполняй tool/periodicity/triggerAction/userAction, "
-        "пока принадлежность не подтверждена.\n"
-        "Чужие роли (foreign) не включай в регламент, только как получателей или источники входов.\n"
-        "По каждой функции со статусом belongs должны быть закрыты четыре поля: tool, periodicity, "
-        "triggerAction, userAction.\n"
-        "- tool: в какой системе, файле, канале или инструменте пользователь работает.\n"
-        "- periodicity: как часто или с какой периодичностью выполняется действие.\n"
-        "- triggerAction: конкретное наблюдаемое событие или действие, после которого начинается работа.\n"
-        "- userAction: что именно делает пользователь руками или в системе.\n"
-        "Но interview.functions - только совместимый краткий срез. Главная рабочая модель - "
-        "interview.processes: knownFacts, unknowns, askedQuestions и currentQuestion по каждому процессу.\n"
-        "Веди интервью как агент по процессу: сначала пойми границы процесса, затем входы, место работы, "
-        "объекты/реестры/формы, триггер, периодичность, шаги пользователя, результаты, получателей, "
-        "проверки, исключения и эскалации. Не заполняй ячейку только ради того, чтобы она была непустой.\n"
-        "Каждый последний ответ пользователя оцени в answerSufficiency: closed, partial или not_answered. "
-        "Не путай место работы и действие. Если пользователь назвал систему/канал, конкретную область "
-        "интерфейса или хранилище и объяснил, что он там смотрит или делает, workLocation/tool закрыт. "
-        "Например, корпоративный Outlook + вкладка Календарь + просмотр загруженности закрывает место "
-        "работы; если неясно, что создаётся, кому отправляется или чем завершается планирование, это "
-        "уже gaps по userAction, outputs или recipients, а не повторный вопрос про tool.\n"
-        "Если answerSufficiency partial или not_answered, задай следующий вопрос от себя как Cursor SDK: "
-        "в nextQuestion укажи targetFact, alreadyKnown, missingFact и whyThisQuestion. В message поставь "
-        "только текст этого вопроса, без технических формулировок вида 'указан общий инструмент'.\n"
-        "Не повторяй уже заданные вопросы из askedQuestions. Если прошлый вопрос был понят частично, "
-        "задай углубляющий вопрос по другому missingFact или объясни конкретно, какой шаг алгоритма "
-        "невозможно написать без ответа.\n"
-        "Триггер не может быть общей формулировкой. 'Сообщить за 2 часа до', 'уведомить заранее', "
-        "'контролировать сроки', 'по мере необходимости' не закрывают триггер.\n"
-        "Если не хватает данных, задай ровно один следующий вопрос по одной функции и одному полю. "
-        "Сначала закрывай roleStatus, затем остальные поля.\n"
-        "Не предлагай пользователю подтвердить выдуманный ответ. quickAnswers должны быть 2-6 "
-        "конкретными вариантами, без вариантов 'Оставить' и 'Переделать'.\n"
-        "Пока status='need_more', не пиши полный document и не повторяй весь список функций. "
-        "В interview.functions верни только новую или изменённую функцию. "
-        "Сначала сформулируй короткий вопрос в message, затем компактный JSON.\n"
-        "Когда все обязательные поля закрыты и можно вернуть status='ready', document обязателен. "
-        "Его должен написать Cursor SDK как самостоятельный регламент процесса: связный документ, "
-        "понятный без истории чата, без технического дампа полей interview. "
-        "В документе простым деловым языком объясни, для чего выполняется процесс, где его границы, "
-        "кто исполняет, какие входы используются, какое наблюдаемое событие или расписание запускает "
-        "работу, как пользователь выполняет процесс по шагам, какой результат создаётся, кому он "
-        "передаётся, какие исключения и эскалации подтверждены. "
-        "Не ограничивайся четырьмя полями interview: перечитай materials/* и вынеси в документ "
-        "релевантное содержание файлов пользователя - правила, условия, сроки, участников, входные "
-        "и выходные артефакты, ограничения, исключения и подтверждённые формулировки. "
-        "Документ должен читаться как нормальный деловой регламент, с абзацами и переходами между "
-        "мыслями, а не как анкета или таблица фактов. "
-        "interview.functions - это рабочая инвентаризация фактов для интервью, а не структура "
-        "будущего документа. document.sections - только технический контейнер для DOCX, не шаблон "
-        "разделов. Не делай 'одна функция = один раздел' и не повторяй в каждом разделе схему "
-        "'Основание -> список действий -> Предположение'. Объединяй связанные факты в цельное "
-        "описание процесса; списки используй только для реального порядка действий, а не вместо "
-        "связного объяснения. "
-        "Не используй фиксированный шаблон глав и не копируй лейблы вида 'Инструмент:', "
-        "'Периодичность:', 'Триггер:', 'Действие пользователя:' как тело документа. "
-        "Структуру разделов выбирай по фактическому процессу. Факты бери только из interview.json, "
-        "materials/* и ответов пользователя; неизвестное не выдумывай и не оформляй как факт. "
-        "Если в interview.json есть document_write_required=true, не задавай новый вопрос: "
-        "сразу верни status='ready' и перепиши document в полноценный самостоятельный текст.\n"
+        "Ты ведёшь короткое процессное интервью для регламента. Отвечай сразу.\n"
+        "Не пиши длинные рассуждения: сначала короткий вопрос в message, затем компактный JSON.\n"
+        "Работай только по текстам файлов и ответам пользователя. Не выдумывай факты.\n"
+        "Если файлов несколько — учитывай все. Извлеки функциональные блоки и для каждого roleStatus: "
+        "belongs / foreign / unclear.\n"
+        "Пока roleStatus не belongs, не заполняй tool/periodicity/triggerAction/userAction — сначала спроси "
+        "принадлежность. foreign не включай в регламент (только как источники/получатели).\n"
+        "По belongs закрой четыре поля: tool, periodicity, triggerAction, userAction.\n"
+        "Главная модель — interview.processes (knownFacts, unknowns, askedQuestions). "
+        "interview.functions — краткий срез.\n"
+        "Оцени последний ответ в answerSufficiency: closed|partial|not_answered. "
+        "Если partial/not_answered — один углубляющий вопрос по тому же процессу/полю, не перескакивай.\n"
+        "За один ход: ровно один вопрос, одно поле, одна функция. Не повторяй askedQuestions.\n"
+        "Триггер не закрывают общие фразы («при необходимости», «своевременно», «контролировать»).\n"
+        "quickAnswers: 2–6 конкретных вариантов, без «Оставить»/«Переделать».\n"
+        "Пока status='need_more': не пиши document, в interview.functions только новая/изменённая функция.\n"
         f"{force}\n"
-        "Ответ всегда строго JSON без markdown. Контракт:\n"
+        "Ответ строго JSON без markdown:\n"
         "{\n"
         '  "status": "need_more|ready",\n'
-        '  "message": "один вопрос или сообщение о готовности",\n'
+        '  "message": "один короткий вопрос",\n'
         '  "positions": ["..."],\n'
         '  "quickAnswers": ["вариант 1", "вариант 2"],\n'
         '  "answerSufficiency": {\n'
         '    "status": "closed|partial|not_answered",\n'
         '    "processId": "f1",\n'
         '    "field": "tool|periodicity|triggerAction|userAction|roleStatus",\n'
-        '    "answerSummary": "что именно стало известно",\n'
-        '    "missingFacts": ["чего не хватает для исполнимого алгоритма"],\n'
-        '    "reason": "почему ответ достаточен или недостаточен"\n'
-        "  },\n"
-        '  "nextQuestion": {\n'
-        '    "processId": "f1",\n'
-        '    "targetFact": "workLocation|objects|frequency|trigger|steps|outputs|recipients|controls|exceptions",\n'
-        '    "alreadyKnown": ["что уже известно и не надо спрашивать снова"],\n'
-        '    "missingFact": "какой факт нужен сейчас",\n'
-        '    "whyThisQuestion": "почему без этого нельзя написать алгоритм",\n'
-        '    "text": "вопрос пользователю простым языком"\n'
+        '    "answerSummary": "...",\n'
+        '    "missingFacts": ["..."],\n'
+        '    "reason": "..."\n'
         "  },\n"
         '  "interview": {\n'
-        '    "processes": [\n'
-        "      {\n"
-        '        "id": "f1",\n'
-        '        "title": "короткое название процесса",\n'
-        '        "actor": "должность из документа",\n'
-        '        "roleStatus": "belongs|foreign|unclear",\n'
-        '        "sourceRefs": [{"file": "имя файла", "quote": "цитата"}],\n'
-        '        "knownFacts": {\n'
-        '          "inputs": ["входные документы или события"],\n'
-        '          "workLocation": "система, файл или канал с конкретным объектом работы",\n'
-        '          "objects": ["реестр, форма, карточка, папка, статус"],\n'
-        '          "trigger": "наблюдаемое событие запуска",\n'
-        '          "frequency": "как часто",\n'
-        '          "steps": ["что делает пользователь по шагам"],\n'
-        '          "outputs": ["что получается на выходе"],\n'
-        '          "recipients": ["кому передается результат"],\n'
-        '          "controls": ["что проверяется"],\n'
-        '          "exceptions": ["исключения и эскалации"]\n'
-        "        },\n"
-        '        "unknowns": [{"field": "workLocation", "reason": "что неясно", "critical": true}],\n'
-        '        "askedQuestions": [{"message": "что спрашивали", "answer": "ответ", "sufficiency": "partial"}]\n'
-        "      }\n"
-        "    ],\n"
-        '    "functions": [\n'
-        "      {\n"
-        '        "id": "f1",\n'
-        '        "title": "короткое название функции",\n'
-        '        "actor": "должность из документа",\n'
-        '        "roleStatus": "belongs|foreign|unclear",\n'
-        '        "sourceRefs": [{"file": "имя файла", "quote": "цитата"}],\n'
-        '        "tool": "инструмент или система",\n'
-        '        "periodicity": "как часто",\n'
-        '        "triggerAction": "конкретное событие или действие запуска",\n'
-        '        "userAction": "что пользователь делает",\n'
-        '        "openGaps": ["roleStatus|tool|periodicity|triggerAction|userAction"]\n'
-        "      }\n"
-        "    ]\n"
+        '    "processes": [{"id":"f1","title":"...","actor":"...","roleStatus":"belongs|foreign|unclear",'
+        '"knownFacts":{},"unknowns":[],"askedQuestions":[]}],\n'
+        '    "functions": [{"id":"f1","title":"...","roleStatus":"...","tool":"","periodicity":"",'
+        '"triggerAction":"","userAction":"","openGaps":[]}]\n'
         "  },\n"
-        '  "document": {"title": "", "sections": [{"number": "1", "title": "", "paragraphs": [], "items": []}]}\n'
-        "}"
+        '  "document": {}\n'
+        "}\n"
+        "document заполняй только при status='ready' (см. правила финализации в отдельном запросе)."
     )
+
+
+def creation_document_rules(*, force_create: bool = False) -> str:
+    force = (
+        "Пользователь запросил принудительное создание. Можно вернуть status='ready' по текущим "
+        "проверенным данным, но нельзя выдавать предположения как факты."
+        if force_create
+        else "Верни status='ready' и полный document только если критичные unknowns закрыты."
+    )
+    return (
+        "Сейчас финализация: верни status='ready' и полный document как самостоятельный регламент.\n"
+        "Не задавай новый вопрос. Не копируй историю чата — пиши нормативный текст.\n"
+        "Факты только из interview.json, materials/* и ответов пользователя.\n"
+        "Шаблон СТО-34-003, разделы document.sections строго в порядке:\n"
+        "1 Назначение и область применения; 2 Нормативные ссылки; 3 Термины и определения; "
+        "4 Сокращения; 5 Ответственность; 6 Организация работы; 7 Ресурсы; "
+        "8 Документирование и архивирование; 9 Приложения.\n"
+        "Раздел 6 — жёсткая последовательность: кто, что, кому, срок, форма. "
+        "Таблицы в section.tables {headers, rows}. Подразделы 6.1/6.2 — в section.sections.\n"
+        "Не своди документ к четырём полям interview. Сохрани детали из материалов.\n"
+        "Запрещены заглушки и общие фразы без критерия.\n"
+        f"{force}\n"
+        "Ответ строго JSON: status='ready', message, interview (срез), полный document "
+        "(title, code, version, year, meta, sections)."
+    )
+
+
+def creation_system_rules(*, force_create: bool = False, for_document: bool = False, stage: str = "") -> str:
+    from app.services.regulation_creation.pipeline import (
+        creation_extract_rules,
+        creation_round_interview_rules,
+        creation_select_rules,
+    )
+
+    if for_document or force_create:
+        if for_document:
+            return creation_document_rules(force_create=force_create)
+        return (
+            f"{creation_round_interview_rules(force_create=True)}\n\n"
+            f"{creation_document_rules(force_create=True)}"
+        )
+    if stage == "extract":
+        return creation_extract_rules()
+    if stage == "select":
+        return creation_select_rules()
+    return creation_round_interview_rules(force_create=force_create)
 
 
 def build_creation_prompt(
@@ -557,11 +527,20 @@ def build_creation_prompt(
     initial: bool,
     force_create: bool,
     include_attachment_bodies: bool = True,
+    for_document: bool = False,
 ) -> str:
+    from app.services.regulation_creation.pipeline import normalize_pipeline, slice_materials_for_prompt
+
     interview = normalize_interview_state(state)
+    pipeline = normalize_pipeline(interview.get("pipeline"))
+    stage = str(pipeline.get("stage") or "upload")
+    for_document = for_document or bool(interview.get("document_write_required")) or force_create
     inventory = _prompt_state(interview)
     if not include_attachment_bodies:
         inventory["attachments"] = _prompt_attachment_refs(inventory.get("attachments") or [])
+    elif stage in ("interview", "select") and not for_document:
+        inventory["attachments"] = _prompt_attachments(slice_materials_for_prompt(interview, full=False))
+    inventory["pipeline"] = pipeline
     action = "Начни" if initial else "Продолжай"
     files_hint = (
         "Тексты приложенных файлов уже лежат в рабочей папке: interview.json и materials/*.txt. "
@@ -569,48 +548,68 @@ def build_creation_prompt(
         if not include_attachment_bodies
         else ""
     )
+    speed = (
+        ""
+        if for_document
+        else (
+            "Скорость: ответь сразу. На extract — JSON процессов; "
+            "на select — только список для выбора, без вопросов; "
+            "на interview — batch roundQuestions. Без длинного thinking.\n"
+        )
+    )
+    stage_hint = (
+        f"pipeline.stage={stage}, round={pipeline.get('round')}, "
+        f"questionsAskedTotal={pipeline.get('questionsAskedTotal')}.\n"
+    )
     return (
         f"{action} интервью.\n"
-        f"{creation_system_rules(force_create=force_create)}\n"
+        f"{speed}"
+        f"{stage_hint}"
+        f"{creation_system_rules(force_create=force_create, for_document=for_document, stage=stage)}\n"
         f"{files_hint}"
-        "Текущее постоянное состояние интервью:\n"
+        "Текущее состояние интервью:\n"
         f"{json.dumps(inventory, ensure_ascii=False, indent=2)}\n"
         f"Последний ответ пользователя: {message.strip()}"
     )
 
 
-def build_followup_creation_prompt(*, message: str, force_create: bool) -> str:
-    force = (
-        "Пользователь запросил принудительное создание. Можно вернуть status='ready' по текущим данным."
-        if force_create
-        else (
-            "Не возвращай status='ready', пока есть unclear roleStatus, открытые gaps или "
-            "критичные unknowns по процессам должности."
-        )
+def build_followup_creation_prompt(
+    *,
+    message: str,
+    force_create: bool,
+    for_document: bool = False,
+    stage: str = "interview",
+) -> str:
+    from app.services.regulation_creation.pipeline import (
+        creation_extract_rules,
+        creation_round_interview_rules,
+        creation_select_rules,
     )
+
+    if for_document or force_create:
+        return (
+            "Продолжи интервью. История уже у тебя. Прочитай обновлённый interview.json.\n"
+            f"{creation_document_rules(force_create=force_create)}\n"
+            f"Последний ответ пользователя: {message.strip()}"
+        )
+    if stage == "extract":
+        return (
+            "Продолжи этап EXTRACT. Прочитай interview.json и materials.\n"
+            f"{creation_extract_rules()}\n"
+            f"Последний ответ пользователя: {message.strip()}"
+        )
+    if stage == "select":
+        return (
+            "Этап SELECT: пользователь ещё не подтвердил процессы.\n"
+            f"{creation_select_rules()}\n"
+            f"Последний ответ пользователя: {message.strip()}"
+        )
     return (
-        "Продолжи то же интервью. История диалога уже у тебя. "
-        "Прочитай обновлённый interview.json в рабочей папке.\n"
-        f"{force}\n"
+        "Продолжи блочное интервью. Прочитай interview.json: answers, questionnaire, pipeline.\n"
+        "Сначала учти уже данные ответы, затем подготовь следующий roundQuestions (до 50).\n"
+        f"{creation_round_interview_rules(force_create=force_create)}\n"
         f"Последний ответ пользователя: {message.strip()}\n"
-        "Сначала оцени последний ответ в answerSufficiency. Не путай место работы и действие: если "
-        "пользователь назвал систему/канал, область интерфейса или хранилище и что он там смотрит "
-        "или делает, workLocation/tool закрыт. Недостающие результат, адресат, объект создания или "
-        "порядок действий переноси в targetFact outputs, recipients или steps, а не спрашивай снова "
-        "где именно он работает.\n"
-        "Веди interview.processes как карту процесса: knownFacts, unknowns, askedQuestions, "
-        "currentQuestion. interview.functions оставляй только как краткий совместимый срез.\n"
-        "Перед новым вопросом проверь askedQuestions: не повторяй то же самое. Верни nextQuestion "
-        "с targetFact, alreadyKnown, missingFact и whyThisQuestion; в message поставь только текст "
-        "этого вопроса простым языком.\n"
-        "Если в interview.json есть document_write_required=true, не задавай новый вопрос: "
-        "верни status='ready' и полный document как самостоятельный связный регламент процесса. "
-        "Иначе ответ строго JSON: status, message, quickAnswers и только изменённая функция. "
-        "document оставляй пустым, пока status не ready. При status='ready' document обязателен: "
-        "это должен быть полный деловой текст, а не список полей interview. Вынеси в него "
-        "релевантное содержание материалов пользователя, подтверждённое файлами или ответами. "
-        "Не используй interview.functions как оглавление и не пиши одинаковые карточки функций "
-        "с повтором 'Основание' и 'Предположение' в каждом блоке."
+        "document оставляй пустым, пока status не ready."
     )
 
 
@@ -623,15 +622,11 @@ def remember_assistant_question(
     field: str = "",
     process_id: str = "",
     intent: str = "",
-    already_known: list[str] | None = None,
-    missing_fact: str = "",
-    why_this_question: str = "",
 ) -> tuple[dict[str, Any], str]:
     out = normalize_interview_state(state)
-    text = _clean_str(message)
+    text = _dedupe_question_text(out, message=message, function_id=function_id, field=field)
     question_id = f"q{len(out['askedQuestions']) + 1}"
     canonical_field = _canonical_gap(field)
-    duplicate = _question_was_asked(out, message=text, function_id=function_id, field=canonical_field)
     question = {
         "id": question_id,
         "message": text,
@@ -640,13 +635,9 @@ def remember_assistant_question(
         "processId": _clean_str(process_id or function_id),
         "field": canonical_field,
         "intent": _clean_str(intent) or canonical_field,
-        "alreadyKnown": _clean_list(already_known or []),
-        "missingFact": _clean_str(missing_fact),
-        "whyThisQuestion": _clean_str(why_this_question),
         "answer": "",
         "sufficiency": "pending",
         "missingFacts": [],
-        "duplicate": duplicate,
     }
     out["currentQuestion"] = dict(question)
     out["askedQuestions"].append(dict(question))
@@ -664,23 +655,44 @@ def followup_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None
 def ready_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None:
     if payload.get("status") != "ready":
         return None
+    from app.services.regulation_creation.pipeline import normalize_pipeline, round_gate
+
     interview = merge_agent_payload(state, payload)
+    pipeline = normalize_pipeline(interview.get("pipeline"))
+    gate = round_gate(pipeline=pipeline, force_create=False)
+    if gate:
+        return ReadyBlocker(
+            message=gate,
+            quick_answers=["Продолжить раунд", "Отвечу на вопросы", "Принудительно создать"],
+            field="pipeline",
+        )
     functions = [item for item in interview.get("functions") or [] if isinstance(item, dict)]
     position = _clean_str(interview.get("position"))
     owned = [item for item in functions if _role_status(item) != ROLE_FOREIGN]
+    selected = set(pipeline.get("selectedProcessIds") or [])
+    if selected:
+        owned = [item for item in owned if _clean_str(item.get("id")) in selected] or owned
     if not owned:
-        return ReadyBlocker(
-            message=(
-                "Я пока не вижу полного списка функций пользователя. Приложите файл с обязанностями "
-                "или опишите первую функцию, которую нужно включить в регламент."
-            ),
-            quick_answers=[
-                "Приложу файл с обязанностями",
-                "Опишу функции сообщением",
-                "Начать с функций из моей должности",
-            ],
-            field="functions",
-        )
+        processes = [
+            item
+            for item in interview.get("processes") or []
+            if isinstance(item, dict) and _role_status(item) != ROLE_FOREIGN
+        ]
+        if selected:
+            processes = [item for item in processes if _clean_str(item.get("id")) in selected]
+        if not processes:
+            return ReadyBlocker(
+                message=(
+                    "Я пока не вижу полного списка функций пользователя. Приложите файл с обязанностями "
+                    "или опишите первую функцию, которую нужно включить в регламент."
+                ),
+                quick_answers=[
+                    "Приложу файл с обязанностями",
+                    "Опишу функции сообщением",
+                    "Начать с функций из моей должности",
+                ],
+                field="functions",
+            )
     for func in owned:
         gaps = _open_gaps(func, position=position)
         if gaps:
@@ -1339,20 +1351,158 @@ def _function_field(field: Any) -> str:
     return _PROCESS_FIELD_TO_FUNCTION_FIELD.get(canonical, canonical)
 
 
-def _question_was_asked(state: dict[str, Any], *, message: str, function_id: str, field: str) -> bool:
+def _dedupe_question_text(state: dict[str, Any], *, message: str, function_id: str, field: str) -> str:
     text = _clean_str(message)
     if not text:
-        return False
+        return text
     current_field = _function_field(field)
     current_function = _clean_str(function_id)
+    current_signature = _question_signature(text)
+    duplicate_count = 0
     for item in reversed(state.get("askedQuestions") or []):
         if not isinstance(item, dict):
             continue
         same_field = _function_field(item.get("field")) == current_field
         same_function = not current_function or _clean_str(item.get("functionId") or item.get("processId")) == current_function
-        if same_field and same_function and _fold(_clean_str(item.get("message"))) == _fold(text):
-            return True
-    return False
+        same_question = _question_signature(_clean_str(item.get("message"))) == current_signature
+        if same_field and same_function and same_question:
+            duplicate_count += 1
+    if duplicate_count <= 0:
+        return text
+    return _escalate_duplicate_question(text=text, field=current_field, duplicate_count=duplicate_count)
+
+
+def _escalate_duplicate_question(*, text: str, field: str, duplicate_count: int) -> str:
+    field_hint = _duplicate_question_hint(field, duplicate_count)
+    if duplicate_count == 1:
+        return f"{text}\n\n{field_hint}"
+    if duplicate_count == 2:
+        return f"Нужна конкретика, чтобы закрыть пробел.\n{field_hint}\n\n{text}"
+    return (
+        "Ответ пока слишком общий. Дайте исполнимое описание шага.\n"
+        f"{field_hint}\n"
+        "Можно в формате: [где/объект] -> [действие] -> [результат]."
+    )
+
+
+def _duplicate_question_hint(field: str, duplicate_count: int) -> str:
+    hint_map = {
+        "tool": [
+            "Укажите не только систему, а конкретный объект: файл/реестр/форма/карточка.",
+            "Напишите точный путь или название объекта работы (пример: папка, файл Excel, карточка в 1С).",
+        ],
+        "triggerAction": [
+            "Назовите наблюдаемое событие запуска: после чего именно начинается действие.",
+            "Укажите конкретный триггер с условием (кто/что/когда инициирует действие).",
+        ],
+        "periodicity": [
+            "Уточните периодичность: ежедневно/еженедельно/по событию + конкретное время или дедлайн.",
+            "Нужна измеримая частота выполнения (без формулировок «по необходимости»).",
+        ],
+        "userAction": [
+            "Опишите шаг руками: что открыть, что изменить, что сохранить/отправить.",
+            "Дайте последовательность 2-4 шага в системе или файле, чтобы действие можно было повторить.",
+        ],
+    }
+    variants = hint_map.get(field) or [
+        "Добавьте конкретику по шагу: объект работы, действие пользователя и результат.",
+        "Опишите этот шаг так, чтобы его можно было выполнить без догадок.",
+    ]
+    return variants[(max(1, duplicate_count) - 1) % len(variants)]
+
+
+def _question_signature(text: str) -> str:
+    folded = _fold(text)
+    if not folded:
+        return ""
+    # Убираем переменные части формулировки, чтобы ловить "тот же смысл" вопроса.
+    folded = re.sub(r"«[^»]+»", " ", folded)
+    folded = re.sub(r'"[^"]+"', " ", folded)
+    folded = re.sub(r"\bфункци[яи]\b\s+[a-zа-я0-9_-]+", " ", folded)
+    folded = re.sub(r"\s+", " ", folded)
+    return folded.strip()
+
+
+def _apply_explicit_unknown_answer(state: dict[str, Any], message: str) -> None:
+    current = state.get("currentQuestion") if isinstance(state.get("currentQuestion"), dict) else {}
+    if not current:
+        return
+    field = _function_field(current.get("field"))
+    if field not in {"tool", "periodicity", "triggerAction", "userAction"}:
+        return
+    answer = _fold(_clean_str(message))
+    if not answer:
+        return
+    unknown_markers = (
+        "нет данных",
+        "не знаю",
+        "неизвестно",
+        "не могу уточнить",
+        "уточню позже",
+        "пока нет",
+        "нет информации",
+    )
+    if not any(marker in answer for marker in unknown_markers):
+        return
+    func = _function_for_question(state, current.get("functionId") or current.get("processId"))
+    if func is None:
+        return
+    placeholder = _tbd_value_for_field(field)
+    func[field] = placeholder
+    _set_process_fact_tbd(state, process_id=current.get("processId") or current.get("functionId"), field=field, value=placeholder)
+    current["sufficiency"] = "closed"
+    current["answerSummary"] = "Зафиксировано как TBD по явному ответу пользователя."
+    current["missingFacts"] = []
+    current["reason"] = "Пользователь подтвердил отсутствие данных на текущем этапе."
+    question_id = _clean_str(current.get("id"))
+    for item in reversed(state.get("askedQuestions") or []):
+        if not isinstance(item, dict):
+            continue
+        if question_id and _clean_str(item.get("id")) != question_id:
+            continue
+        item["sufficiency"] = "closed"
+        item["answerSummary"] = current["answerSummary"]
+        item["missingFacts"] = []
+        item["reason"] = current["reason"]
+        break
+    state["currentQuestion"] = {}
+
+
+def _tbd_value_for_field(field: str) -> str:
+    labels = {
+        "tool": "<TBD: уточнить систему/объект работы>",
+        "periodicity": "<TBD: уточнить периодичность>",
+        "triggerAction": "<TBD: уточнить триггер запуска>",
+        "userAction": "<TBD: уточнить действие пользователя>",
+    }
+    return labels.get(field, "<TBD: уточнить>")
+
+
+def _set_process_fact_tbd(state: dict[str, Any], *, process_id: Any, field: str, value: str) -> None:
+    target_id = _clean_str(process_id)
+    canonical_process_field = {
+        "tool": "workLocation",
+        "periodicity": "frequency",
+        "triggerAction": "trigger",
+        "userAction": "steps",
+    }.get(field, "")
+    if not canonical_process_field:
+        return
+    for process in state.get("processes") or []:
+        if not isinstance(process, dict):
+            continue
+        pid = _clean_str(process.get("id"))
+        if target_id and pid != target_id:
+            continue
+        facts = process.setdefault("knownFacts", {})
+        if canonical_process_field == "steps":
+            steps = _clean_list(facts.get("steps"))
+            if value not in steps:
+                steps.append(value)
+            facts["steps"] = steps
+        else:
+            facts[canonical_process_field] = value
+        break
 
 
 def _prompt_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -1423,62 +1573,108 @@ def _prompt_attachments(attachments: list[Any]) -> list[dict[str, Any]]:
 
 
 def document_from_interview(state: Any, title: str = "") -> dict[str, Any]:
+    sto_sections = (
+        "Назначение и область применения",
+        "Нормативные ссылки",
+        "Термины и определения",
+        "Сокращения",
+        "Ответственность",
+        "Организация работы",
+        "Ресурсы",
+        "Документирование и архивирование",
+        "Приложения",
+    )
+
     interview = normalize_interview_state(state)
-    sections: list[dict[str, Any]] = []
-    index = 0
+    heading = _clean_str(title) or "Регламент"
     processes = [
         item
         for item in interview.get("processes") or []
         if isinstance(item, dict) and _role_status(item) != ROLE_FOREIGN
     ]
+    functions = [
+        item
+        for item in interview.get("functions") or []
+        if isinstance(item, dict) and _role_status(item) != ROLE_FOREIGN
+    ]
+    actors = []
+    for item in processes + functions:
+        actor = _clean_str(item.get("actor"))
+        if actor and actor not in actors:
+            actors.append(actor)
+    purpose = [
+        f"1.1 Настоящий Регламент устанавливает порядок выполнения процесса «{heading}».",
+    ]
+    if actors:
+        purpose.append(
+            "1.2 Исполнители процесса: " + ", ".join(actors) + "."
+        )
+    work_sections: list[dict[str, Any]] = []
     if processes:
-        for process in processes:
-            index += 1
-            sections.append(_document_section_from_process(process, index=index))
-        return {
-            "title": _clean_str(title) or "Регламент",
-            "sections": sections,
-        }
-    for func in interview.get("functions") or []:
-        if not isinstance(func, dict):
+        for index, process in enumerate(processes, start=1):
+            work_sections.append(_document_section_from_process(process, index=index))
+    elif functions:
+        for index, func in enumerate(functions, start=1):
+            work_sections.append(_document_section_from_function(func, index=index))
+    resources: list[str] = []
+    for process in processes:
+        facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+        location = _clean_str(facts.get("workLocation"))
+        if location:
+            resources.append(location)
+        for obj in _clean_list(facts.get("objects") or []):
+            resources.append(obj)
+    for func in functions:
+        tool = _clean_str(func.get("tool"))
+        if tool:
+            resources.append(tool)
+    seen: set[str] = set()
+    unique_resources: list[str] = []
+    for item in resources:
+        if item in seen:
             continue
-        if _role_status(func) == ROLE_FOREIGN:
-            continue
-        index += 1
-        heading = _clean_str(func.get("title")) or f"Функция {index}"
-        paragraphs: list[str] = []
-        items: list[str] = []
-        actor = _clean_str(func.get("actor"))
-        if actor:
-            paragraphs.append(f"Исполнитель: {actor}")
-        for key, label in (
-            ("tool", "Инструмент"),
-            ("periodicity", "Периодичность"),
-            ("triggerAction", "Триггер"),
-            ("userAction", "Действие пользователя"),
-        ):
-            value = _clean_str(func.get(key))
-            if value:
-                items.append(f"{label}: {value}")
-        for ref in func.get("sourceRefs") or []:
-            if not isinstance(ref, dict):
-                continue
-            quote = _clean_str(ref.get("quote"))
-            source = _clean_str(ref.get("file"))
-            if quote:
-                items.append(f"Источник{f' ({source})' if source else ''}: {quote}")
-        if heading or paragraphs or items:
-            sections.append(
-                {
-                    "number": str(index),
-                    "title": heading,
-                    "paragraphs": paragraphs,
-                    "items": items,
-                }
-            )
+        seen.add(item)
+        unique_resources.append(item)
+    sections = [
+        {"number": "1", "title": sto_sections[0], "paragraphs": purpose, "items": []},
+        {"number": "2", "title": sto_sections[1], "paragraphs": [], "items": ["СТО-34-003 «Управление документированной информацией»"]},
+        {"number": "3", "title": sto_sections[2], "paragraphs": ["В настоящем Регламенте применяются термины, необходимые для исполнения процесса."], "items": []},
+        {"number": "4", "title": sto_sections[3], "paragraphs": [], "items": []},
+        {
+            "number": "5",
+            "title": sto_sections[4],
+            "paragraphs": [f"Ответственность за исполнение несут: {', '.join(actors)}."] if actors else [],
+            "items": [],
+        },
+        {"number": "6", "title": sto_sections[5], "paragraphs": [], "items": [], "sections": work_sections},
+        {"number": "7", "title": sto_sections[6], "paragraphs": [], "items": unique_resources},
+        {"number": "8", "title": sto_sections[7], "paragraphs": [], "items": []},
+        {"number": "9", "title": sto_sections[8], "paragraphs": ["Приложений нет"], "items": []},
+    ]
+    return {"title": heading, "sections": sections}
+
+
+def _document_section_from_function(func: dict[str, Any], *, index: int) -> dict[str, Any]:
+    heading = _clean_str(func.get("title")) or f"Функция {index}"
+    paragraphs: list[str] = []
+    items: list[str] = []
+    actor = _clean_str(func.get("actor"))
+    if actor:
+        paragraphs.append(f"Исполнитель: {actor}")
+    for key, label in (
+        ("tool", "Инструмент"),
+        ("periodicity", "Периодичность"),
+        ("triggerAction", "Триггер"),
+        ("userAction", "Действие пользователя"),
+    ):
+        value = _clean_str(func.get(key))
+        if value:
+            items.append(f"{label}: {value}")
     return {
-        "title": _clean_str(title) or "Регламент",
-        "sections": sections,
+        "number": f"6.{index}",
+        "title": heading,
+        "paragraphs": paragraphs,
+        "items": items,
     }
 
 

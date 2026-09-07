@@ -12,7 +12,8 @@ from app.core.jwt import AuthContext
 from app.db.session import get_db
 from app.schemas.regulation import (
     RegulationCreationApplyRequest,
-    RegulationCreationHistoryResult,
+    RegulationCreationRoundAnswersRequest,
+    RegulationCreationSelectProcessesRequest,
     RegulationCreationSendRequest,
     RegulationCreationSession,
     RegulationCreationTurn,
@@ -23,13 +24,13 @@ from app.services.regulation_creation import (
     get_active_creation_session,
     get_creation_document,
     get_creation_session,
-    list_creation_sessions,
     peek_creation_turn,
     persist_creation_turn,
-    resume_creation_session,
+    select_creation_processes,
     send_creation_message,
     start_creation_session,
     stream_creation_message,
+    submit_creation_round_answers,
     terminate_active_creation_sessions,
 )
 
@@ -89,15 +90,6 @@ async def read_active_regulation_creation_session(
     return session
 
 
-@router.get("/sessions/history", response_model=RegulationCreationHistoryResult)
-async def read_regulation_creation_history(
-    limit: int = Query(50, ge=1, le=200),
-    auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> RegulationCreationHistoryResult:
-    return list_creation_sessions(db, user_id=auth.user_id, limit=limit)
-
-
 @router.get("/sessions/{draft_id}/turn", response_model=RegulationCreationTurn)
 async def peek_regulation_creation_turn(
     draft_id: str,
@@ -133,6 +125,43 @@ async def download_regulation_creation_document(
     )
 
 
+@router.post("/sessions/{draft_id}/select-processes", response_model=RegulationCreationSession)
+async def select_regulation_creation_processes(
+    draft_id: str,
+    request: RegulationCreationSelectProcessesRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RegulationCreationSession:
+    try:
+        return select_creation_processes(
+            db,
+            user_id=auth.user_id,
+            draft_id=draft_id,
+            process_ids=request.processIds,
+        )
+    except RegulationCreationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/sessions/{draft_id}/round-answers", response_model=RegulationCreationSession)
+async def submit_regulation_creation_round_answers(
+    draft_id: str,
+    request: RegulationCreationRoundAnswersRequest,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RegulationCreationSession:
+    try:
+        return submit_creation_round_answers(
+            db,
+            user_id=auth.user_id,
+            draft_id=draft_id,
+            answers=request.answers,
+            message=request.message,
+        )
+    except RegulationCreationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
 @router.get("/sessions/{draft_id}", response_model=RegulationCreationSession)
 async def read_regulation_creation_session(
     draft_id: str,
@@ -141,18 +170,6 @@ async def read_regulation_creation_session(
 ) -> RegulationCreationSession:
     try:
         return get_creation_session(db, user_id=auth.user_id, draft_id=draft_id)
-    except RegulationCreationError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-
-
-@router.post("/sessions/{draft_id}/resume", response_model=RegulationCreationSession)
-async def resume_regulation_creation_session(
-    draft_id: str,
-    auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> RegulationCreationSession:
-    try:
-        return resume_creation_session(db, user_id=auth.user_id, draft_id=draft_id)
     except RegulationCreationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 

@@ -48,6 +48,11 @@ interface StartRunOptions {
   forceRestart?: boolean
   /** Run without chat UI / active-agent banner. */
   background?: boolean
+  /** Workplace snapshot for personal/orchestrator agent. */
+  appContext?: string
+  /** One-shot KPI/eval run: sidecar must not resume the live agent. */
+  source?: string
+  fresh?: boolean
 }
 
 function backgroundEntryKey(workflowId: string): string {
@@ -144,8 +149,24 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         return
       }
       let workflowId = indexRef.current[runId]
+      const stampedWf = eventWorkflowId(event)
+      if (kind === 'eval' || stampedWf.startsWith('__bg_explain__')) {
+        const bgKey = stampedWf.startsWith('__bg_explain__')
+          ? stampedWf
+          : stampedWf
+            ? backgroundEntryKey(stampedWf)
+            : workflowId?.startsWith('__bg_explain__')
+              ? workflowId
+              : workflowId
+                ? backgroundEntryKey(workflowId)
+                : ''
+        if (bgKey) {
+          workflowId = bgKey
+          indexRef.current[runId] = bgKey
+        }
+      }
       if (!workflowId) {
-        workflowId = eventWorkflowId(event)
+        workflowId = stampedWf
         if (!workflowId) return
         if (!shouldTrackLiveRun(event) && !entriesRef.current[workflowId]) return
         indexRef.current[runId] = workflowId
@@ -183,7 +204,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
           ...entry,
           background: isBackground || entry.background,
           backendRunId: backendRunId || entry.backendRunId,
-          resumeAgentId: outcome.result?.agentId || entry.resumeAgentId,
+          resumeAgentId: isBackground ? entry.resumeAgentId : outcome.result?.agentId || entry.resumeAgentId,
           state
         }
         return { ...prev, [workflowId]: next }
@@ -202,7 +223,19 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
   }, [fillTitle])
 
   const startRun = useCallback((opts: StartRunOptions): string => {
-    const { workflowId, title, message, shownMessage, filePaths, resumeAgentId, forceRestart, background } = opts
+    const {
+      workflowId,
+      title,
+      message,
+      shownMessage,
+      filePaths,
+      resumeAgentId,
+      forceRestart,
+      background,
+      appContext,
+      source,
+      fresh
+    } = opts
     const entryKey = background ? backgroundEntryKey(workflowId) : workflowId
     const existing = entriesRef.current[entryKey]
     if (existing && existing.state.running) {
@@ -221,12 +254,16 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       .catch(() => undefined)
     // Background evaluations always start a fresh thread (no resume / no chat).
     const resume = background ? '' : resumeAgentId || existing?.resumeAgentId || ''
+    const evalRun = Boolean(background || fresh || source === 'eval' || source === 'explain')
     const runId = agentClient.start({
       kind: 'run',
       workflowId,
       message,
-      resumeAgentId: resume || undefined,
-      filePaths: filePaths && filePaths.length ? filePaths : undefined
+      source: evalRun ? 'eval' : source,
+      fresh: evalRun || undefined,
+      resumeAgentId: evalRun ? undefined : resume || undefined,
+      filePaths: filePaths && filePaths.length ? filePaths : undefined,
+      appContext: appContext || undefined
     })
     indexRef.current[runId] = entryKey
     setEntries((prev) => {
@@ -319,17 +356,18 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
   const cancel = useCallback((workflowId: string) => {
     const entry = entriesRef.current[workflowId]
     const runId = entry?.state.activeRunId
+    const sidecarWorkflowId = entry?.workflowId || workflowId
     if (runId) {
       cancelledRunIdsRef.current[runId] = true
       delete indexRef.current[runId]
-      agentClient.cancel(runId, workflowId)
+      agentClient.cancel(runId, sidecarWorkflowId)
     } else {
-      agentClient.cancel('', workflowId)
+      agentClient.cancel('', sidecarWorkflowId)
     }
     const backendRunId = entry?.backendRunId || ''
     if (backendRunId) {
       void api
-        .finishLocalAgentRun(workflowId, backendRunId, {
+        .finishLocalAgentRun(sidecarWorkflowId, backendRunId, {
           status: 'canceled',
           answer: 'Остановлено пользователем'
         })

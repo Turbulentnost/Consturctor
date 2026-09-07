@@ -59,13 +59,15 @@ export function TodayTab({
   onOpenDecisions,
   onOpenMetrics,
   onOpenPassport,
-  onRun
+  onRun,
+  onAskOrchestrator
 }: {
   user: UserProfile
   onOpenDecisions: () => void
   onOpenMetrics: () => void
   onOpenPassport: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
   onRun: (workflowId: string, title: string) => void
+  onAskOrchestrator: (message: string, appContext: string) => void
 }): React.JSX.Element {
   return (
     <TodayWorkplace
@@ -75,6 +77,7 @@ export function TodayTab({
       onOpenMetrics={onOpenMetrics}
       onOpenPassport={onOpenPassport}
       onRun={onRun}
+      onAskOrchestrator={onAskOrchestrator}
     />
   )
 }

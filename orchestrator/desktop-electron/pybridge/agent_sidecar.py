@@ -189,8 +189,8 @@ def _stamp_run_event(
     if wf and not out.get("workflowId"):
         out["workflowId"] = wf
     folded = (kind or "").strip()
-    if folded == "run" and not out.get("kind"):
-        out["kind"] = "run"
+    if folded in {"run", "eval"} and not out.get("kind"):
+        out["kind"] = folded
     return out
 
 
@@ -374,13 +374,17 @@ _RUN_INPUT_GATE_HINTS = (
 
 
 def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
+    folded = (mode or "").strip().casefold()
+    text = (prompt or "").strip()
+    # KPI explain / other one-shot evals must not inherit playbook tool hints.
+    if folded == "eval":
+        return text
     parts = [KEEP_FILE_HINT, OUTLOOK_MEETING_HINT]
-    if (mode or "").strip().casefold() == "design":
+    if folded == "design":
         parts.append(WHEN_TO_RUN_HINT)
         parts.append(RUN_INPUTS_HINT)
     else:
         parts.append(RUN_INPUTS_RUN_HINT)
-    text = (prompt or "").strip()
     if text:
         parts.append(text)
     return "\n\n".join(parts)
@@ -795,10 +799,14 @@ class ElectronBridge(CursorSdkBridge):
         on_question: Any = None,
         should_stop: Any = None,
         confirm_writes: bool = False,
+        include_app_tools: bool = True,
     ) -> dict[str, Any]:
-        specs = list(tools) if tools is not None else list(sdk_tool_specs())
-        if not any(_is_keep_knowledge_file(str(item.get("name") or "")) for item in specs):
-            specs.append(dict(KEEP_KNOWLEDGE_FILE_SPEC))
+        if include_app_tools:
+            specs = list(tools) if tools is not None else list(sdk_tool_specs())
+            if not any(_is_keep_knowledge_file(str(item.get("name") or "")) for item in specs):
+                specs.append(dict(KEEP_KNOWLEDGE_FILE_SPEC))
+        else:
+            specs = list(tools) if tools is not None else []
         if workflow_id:
             self._knowledge_workflow_id = workflow_id
         if cwd:
@@ -1613,6 +1621,60 @@ def _is_trigger_command(command: dict[str, Any]) -> bool:
     return bool(str(command.get("triggerId") or command.get("trigger_id") or "").strip())
 
 
+def _command_flag(value: Any) -> bool:
+    if value is True:
+        return True
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def _is_eval_command(command: dict[str, Any]) -> bool:
+    source = str(command.get("source") or "").strip().lower()
+    if source in {"eval", "explain"}:
+        return True
+    return _command_flag(command.get("fresh"))
+
+
+EVAL_UI_PREFIX = "__bg_explain__"
+
+
+def _eval_ui_workflow_id(workflow_id: str) -> str:
+    wid = (workflow_id or "").strip()
+    if not wid or wid.startswith(EVAL_UI_PREFIX):
+        return wid
+    return f"{EVAL_UI_PREFIX}{wid}"
+
+
+def _payload_explain_verdict(payload: dict[str, Any]) -> bool:
+    """True when assistant text already contains a complete explain JSON object."""
+    text = " ".join(
+        str(payload.get(key) or "")
+        for key in ("text", "message", "answer", "content")
+    )
+    if '"verdict"' not in text:
+        return False
+    start = text.find("{")
+    while start >= 0:
+        depth = 0
+        for index in range(start, len(text)):
+            char = text[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth != 0:
+                    continue
+                chunk = text[start : index + 1]
+                try:
+                    data = json.loads(chunk)
+                except json.JSONDecodeError:
+                    break
+                if isinstance(data, dict) and str(data.get("verdict") or "").strip():
+                    return True
+                break
+        start = text.find("{", start + 1)
+    return False
+
+
 PERSONAL_AGENT_PREFIX = "personal-agent:"
 
 
@@ -1620,14 +1682,24 @@ def _is_personal_agent(workflow_id: str) -> bool:
     return (workflow_id or "").startswith(PERSONAL_AGENT_PREFIX)
 
 
-def _build_personal_agent_prompt(message: str) -> str:
+def _build_personal_agent_prompt(message: str, app_context: str = "") -> str:
     task = (message or "").strip() or "Помоги сотруднику по организационному вопросу."
+    context = (app_context or "").strip()
+    context_block = (
+        "\n\nКонтекст рабочего места (Сегодня / процессы / решения / KPI). "
+        "Опирайся на него и на инструменты приложения (users.*, board, 1С, почта, файлы):\n"
+        f"{context}\n"
+        if context
+        else "\n\nКонтекст рабочего места не передан — при необходимости получи факты инструментами приложения.\n"
+    )
     return (
-        "Ты персональный базовый агент сотрудника. "
-        "Ты не привязан к конкретной должности или процессу и помогаешь по организационным задачам. "
-        "Используй доступные инструменты, сначала получай факты, потом давай итог. "
-        "Весь ответ и вопросы пиши на русском.\n\n"
-        f"Задача:\n{task}"
+        "Ты — Оркестратор, базовый агент рабочего места сотрудника в приложении «Оркестратор». "
+        "Ты видишь и можешь использовать данные всего приложения: вкладки Сегодня, Процессы, Решения, "
+        "Показатели, История, Настройки, а также серверные инструменты (пользователь, board, 1С, почта, "
+        "Turbo Project, файлы). Сначала получай факты инструментами, потом давай итог. "
+        "Весь ответ и вопросы пиши на русском."
+        f"{context_block}\n"
+        f"Вопрос сотрудника:\n{task}"
     )
 
 
@@ -1694,12 +1766,15 @@ class Sidecar:
         ).strip()
         if kind in {"form_orchestrator", "calc_orchestrator"}:
             return kind
+        if kind == "run" and _is_eval_command(command):
+            return f"eval:{target}" if target else "eval"
         return f"{kind}:{target}" if target else ""
 
     def start(self, kind: str, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or uuid.uuid4().hex)
         dedup_key = self._dedup_key(kind, command)
         replace_personal = dedup_key.startswith(f"run:{PERSONAL_AGENT_PREFIX}")
+        replace_eval = dedup_key.startswith("eval:")
         overlap_run_id = ""
         skip_run_id = ""
         with self._lock:
@@ -1707,7 +1782,7 @@ class Sidecar:
                 for existing in list(self._active.values()):
                     if existing.dedup_key != dedup_key:
                         continue
-                    if replace_personal:
+                    if replace_personal or replace_eval:
                         log(
                             "replace personal run: "
                             + _ascii(f"{dedup_key} (active run {existing.run_id})")
@@ -1775,6 +1850,9 @@ class Sidecar:
                 }
             )
             return
+        stamp_wf = str(command.get("workflowId") or "").strip()
+        if _is_eval_command(command):
+            stamp_wf = _eval_ui_workflow_id(stamp_wf)
         emit(
             _stamp_run_event(
                 {
@@ -1782,7 +1860,7 @@ class Sidecar:
                     "runId": run_id,
                     "payload": {"type": "status", "text": f"Запускаю агента ({kind})."},
                 },
-                workflow_id=str(command.get("workflowId") or ""),
+                workflow_id=stamp_wf,
                 kind=kind,
             )
         )
@@ -1869,17 +1947,25 @@ class Sidecar:
             event_type = str(payload.get("type") or "")
             if event_type not in {"ready", "done"}:
                 events.append(_with_at(payload))
+            event_wf = (active.event_workflow_id or active.workflow_id or "").strip()
             # Interactive question/tool_request are handled via HITL gate.
             if event_type in {"question", "tool_request"}:
                 self._flush_run_events(active)
+                if active.kind == "eval":
+                    active.stop.set()
                 return
             emit(
                 _stamp_run_event(
                     {"type": "event", "runId": active.run_id, "payload": payload},
-                    workflow_id=active.workflow_id,
+                    workflow_id=event_wf,
                     kind=active.kind,
                 )
             )
+            if active.kind == "eval":
+                if event_type in {"tool_call", "tool_result"}:
+                    active.stop.set()
+                elif _payload_explain_verdict(payload):
+                    active.stop.set()
             run_ref = (active.history_run_id or "").strip()
             if (
                 run_ref
@@ -2063,6 +2149,9 @@ class Sidecar:
         workflow_id = str(command.get("workflowId") or "").strip()
         if not workflow_id:
             raise ValueError("run requires workflowId")
+        if _is_eval_command(command):
+            self._run_eval(command, active, workflow_id)
+            return
         if _is_personal_agent(workflow_id):
             self._run_personal_agent(command, active, workflow_id)
             return
@@ -2246,6 +2335,82 @@ class Sidecar:
             }
         )
 
+    def _run_eval(
+        self,
+        command: dict[str, Any],
+        active: ActiveRun,
+        workflow_id: str,
+    ) -> None:
+        """One-shot JSON eval (KPI explain). Isolated from the live agent thread."""
+        message = str(command.get("message") or "").strip()
+        if not message:
+            raise ValueError("eval requires message")
+        active.workflow_id = workflow_id
+        active.kind = "eval"
+        active.event_workflow_id = _eval_ui_workflow_id(workflow_id)
+        active.gate.bind(workflow_id=workflow_id, kind="eval")
+        bridge = active.bridge
+        bridge.check_ready()
+        eval_cwd_id = f"eval-{workflow_id}"
+        run_cwd = bridge.workspace_cwd(eval_cwd_id)
+        active.run_cwd = run_cwd
+        bridge.bind_knowledge(None, "", run_cwd, active.run_id)
+
+        def _reject_question(payload: dict[str, Any], should_stop: Any = None) -> dict[str, Any]:
+            del payload, should_stop
+            active.stop.set()
+            return {"ok": False, "answer": "", "text": ""}
+
+        events = active.events
+        status = "ok"
+        answer = ""
+        try:
+            result = bridge.run(
+                prompt=message,
+                workflow_id=eval_cwd_id,
+                cwd=run_cwd,
+                mode="eval",
+                tools=[],
+                resume_agent_id="",
+                on_event=self._forward_events(active, events),
+                on_question=_reject_question,
+                should_stop=active.stop.is_set,
+                confirm_writes=False,
+                include_app_tools=False,
+            )
+            answer = str(result.get("answer") or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            if active.stop.is_set() and events:
+                status = "ok"
+                for event in reversed(events):
+                    text = str(event.get("text") or event.get("message") or event.get("answer") or "").strip()
+                    if text:
+                        answer = text
+                        break
+            else:
+                status = "error"
+                answer = str(exc)
+                emit(
+                    {
+                        "type": "error",
+                        "runId": active.run_id,
+                        "kind": "eval",
+                        "workflowId": active.event_workflow_id,
+                        "message": _exc_text(exc, "Фоновая оценка не завершилась"),
+                    }
+                )
+                return
+        emit(
+            {
+                "type": "result",
+                "runId": active.run_id,
+                "kind": "run",
+                "workflowId": active.event_workflow_id,
+                "status": status,
+                "answer": answer,
+            }
+        )
+
     def _run_personal_agent(
         self,
         command: dict[str, Any],
@@ -2256,6 +2421,7 @@ class Sidecar:
         active.kind = "run"
         active.gate.bind(workflow_id=workflow_id, kind="run")
         message = str(command.get("message") or "").strip()
+        app_context = str(command.get("appContext") or command.get("app_context") or "").strip()
         source = str(command.get("source") or "chat").strip() or "chat"
         autonomous = source == "trigger"
         resume_agent_id = str(command.get("resumeAgentId") or "").strip()
@@ -2265,12 +2431,22 @@ class Sidecar:
         bridge.check_ready()
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
-        # Personal agent is not bound to backend workflow knowledge.
+        # Personal agent is not bound to a single workflow playbook.
         bridge.bind_knowledge(None, "", run_cwd, active.run_id)
+        if app_context:
+            try:
+                materials = Path(run_cwd) / "materials"
+                materials.mkdir(parents=True, exist_ok=True)
+                (materials / "orchestrator_context.md").write_text(
+                    "# Контекст рабочего места\n\n" + app_context + "\n",
+                    encoding="utf-8",
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("orchestrator context write failed: " + repr(exc))
         file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
         attachment_paths = _copy_attachments(run_cwd, file_paths)
         events = active.events
-        prompt = _build_personal_agent_prompt(message)
+        prompt = _build_personal_agent_prompt(message, app_context)
         note = _attachments_note(attachment_paths)
         if note:
             prompt = prompt + "\n\n" + note
@@ -2882,15 +3058,18 @@ class Sidecar:
         run_id = str(command.get("id") or "")
         workflow_id = str(command.get("workflowId") or "").strip()
         for active in list(self._active.values()):
-            if run_id and active.run_id != run_id:
-                continue
-            if workflow_id and active.workflow_id != workflow_id:
-                continue
-            if not run_id and not workflow_id:
+            if run_id:
+                if active.run_id != run_id:
+                    continue
                 active.stop.set()
                 continue
-            if run_id or workflow_id:
+            if workflow_id:
+                ui_id = (active.event_workflow_id or "").strip()
+                if active.workflow_id != workflow_id and ui_id != workflow_id:
+                    continue
                 active.stop.set()
+                continue
+            active.stop.set()
 
     def shutdown(self) -> None:
         with self._lock:
@@ -2923,6 +3102,7 @@ class ActiveRun:
         self.dedup_key: str = ""
         self.history_run_id: str = ""
         self.history_finished: bool = False
+        self.event_workflow_id: str = ""
         self.events: list[dict[str, Any]] = []
         gate.bind_events(self.events)
 

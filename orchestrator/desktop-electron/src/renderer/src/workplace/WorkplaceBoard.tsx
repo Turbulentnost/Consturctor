@@ -9,12 +9,11 @@ import type {
   WorkflowBoard
 } from '../api/types'
 import { humanWhen, parseIso, sameDay, windowFor } from '../utils/calendar'
-import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { CardMenu } from '../components/agents/CardMenu'
+import { humanResponseDelayColor } from './humanResponseColor'
 import { personalAgentWorkflowId } from './personalAgent'
 import {
   STATUS_LABEL,
-  TASK_SOURCE_LABEL,
   TASK_STATUS_LABEL,
   type DayTask,
   type DayTaskStatus,
@@ -70,26 +69,46 @@ function formatDue(value: string): string {
   const now = new Date()
   const hh = String(stamp.getHours()).padStart(2, '0')
   const mm = String(stamp.getMinutes()).padStart(2, '0')
-  if (sameDay(stamp, now)) return `сегодня ${hh}:${mm}`
+  if (sameDay(stamp, now)) return `Сегодня, ${hh}:${mm}`
   const tomorrow = new Date(now)
   tomorrow.setDate(now.getDate() + 1)
-  if (sameDay(stamp, tomorrow)) return `завтра ${hh}:${mm}`
-  return `${String(stamp.getDate()).padStart(2, '0')}.${String(stamp.getMonth() + 1).padStart(2, '0')} ${hh}:${mm}`
+  if (sameDay(stamp, tomorrow)) return `Завтра, ${hh}:${mm}`
+  return `${String(stamp.getDate()).padStart(2, '0')}.${String(stamp.getMonth() + 1).padStart(2, '0')}, ${hh}:${mm}`
 }
 
-function eventToTask(event: CalendarEvent, processId: string): DayTask {
+function isTechnicalTaskText(text: string): boolean {
+  const value = (text || '').trim()
+  if (!value) return true
+  if (value.startsWith('{') || value.startsWith('[')) return true
+  if (/errno\s*\d+|traceback|invalid argument|filenotfounderror/i.test(value)) return true
+  if (/"verdict"\s*:/i.test(value) || /ответь только json/i.test(value)) return true
+  return false
+}
+
+function taskTitleFromEvent(event: CalendarEvent, agentName: string): string {
+  const agent = (agentName || '').trim()
+  for (const raw of [event.subtitle, event.title]) {
+    const text = (raw || '').trim()
+    if (!text || text === agent || isTechnicalTaskText(text)) continue
+    return text
+  }
+  return 'Прогон агента'
+}
+
+function eventToTask(event: CalendarEvent, processId: string, agentName: string): DayTask {
   const stamp = parseIso(event.startAt)
   const time = stamp
     ? `${String(stamp.getHours()).padStart(2, '0')}:${String(stamp.getMinutes()).padStart(2, '0')}`
     : '—'
+  const status = eventStatus(event.status)
   return {
     id: event.id || event.runId || `${event.workflowId}-${event.startAt}`,
     processId,
     time,
-    title: event.title || event.subtitle || 'Прогон агента',
-    source: 'agent',
+    title: taskTitleFromEvent(event, agentName),
+    source: status === 'needs_decision' ? 'human' : 'agent',
     due: formatDue(event.startAt),
-    status: eventStatus(event.status)
+    status
   }
 }
 
@@ -218,19 +237,25 @@ export function buildWorkplaceAgents(board: WorkflowBoard, personal?: PersonalAg
     const lastEvent = [...events].sort((a, b) => (a.startAt > b.startAt ? -1 : 1))[0]
     const pack = runStagePack(agent, lastEvent)
     const status = agentProcessStatus(agent)
+    const stage =
+      [agent.triggerSummary, lastEvent?.subtitle, agent.nextRunLabel].find(
+        (text) => Boolean(text) && !isTechnicalTaskText(text || '')
+      ) || 'Нет активного этапа'
     rows.push({
       id: agent.id,
       code: code || agentCode(agent.title),
       name: agent.title || 'ИИ-агент',
       status,
-      stage: agent.triggerSummary || lastEvent?.subtitle || agent.nextRunLabel || 'Нет активного этапа',
+      stage,
       owner: '',
       due: agent.nextRunLabel || (agent.nextRunAt ? formatDue(agent.nextRunAt) : 'нет слота'),
       sla: agent.lastRunStatus || 'нет прогона',
       paused: agent.paused,
       workflowId: agent.id,
       boardAgent: agent,
-      tasks: events.map((event) => eventToTask(event, agent.id)).sort((a, b) => a.time.localeCompare(b.time)),
+      tasks: events
+        .map((event) => eventToTask(event, agent.id, agent.title || 'ИИ-агент'))
+        .sort((a, b) => a.time.localeCompare(b.time)),
       stages: pack.stages,
       stageIndex: pack.current,
       solutions: [],
@@ -334,46 +359,93 @@ export function SummaryRow({
   )
 }
 
-function TaskTable({ tasks }: { tasks: DayTask[] }): React.JSX.Element {
-  if (!tasks.length) {
-    return <p className="wp-empty-plan">Плана на сегодня нет — карточку можно запустить вручную.</p>
+function tasksWord(count: number): string {
+  const n10 = count % 10
+  const n100 = count % 100
+  if (n10 === 1 && n100 !== 11) return 'задача'
+  if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return 'задачи'
+  return 'задач'
+}
+
+function groupWorkBadge(agent: WorkplaceAgent): { label: string; tone: 'work' | 'done' | 'pause' } {
+  if (agent.paused) return { label: 'Пауза', tone: 'pause' }
+  if (agent.tasks.length > 0 && agent.tasks.every((task) => task.status === 'done')) {
+    return { label: 'Готово', tone: 'done' }
   }
-  const sourceLabel = (source: DayTask['source']): string => {
-    if (source === 'agent') return 'Агент'
-    if (source === 'onec') return '1С'
-    return 'Человек'
+  if (agent.status === 'READY' && !agent.tasks.length) return { label: 'Готов', tone: 'work' }
+  return { label: 'В работе', tone: 'work' }
+}
+
+function IconRobot(): React.JSX.Element {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect x="5" y="8" width="14" height="11" rx="3" stroke="currentColor" strokeWidth="1.7" />
+      <circle cx="9.2" cy="13" r="1.15" fill="currentColor" />
+      <circle cx="14.8" cy="13" r="1.15" fill="currentColor" />
+      <path d="M12 8V5.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      <circle cx="12" cy="4.1" r="1.05" fill="currentColor" />
+    </svg>
+  )
+}
+
+function IconPerson(): React.JSX.Element {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="8" r="3.1" stroke="currentColor" strokeWidth="1.7" />
+      <path
+        d="M5.6 19c1.15-3.15 3.35-4.7 6.4-4.7s5.25 1.55 6.4 4.7"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function IconCalendar(): React.JSX.Element {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect x="4" y="6" width="16" height="14" rx="2.2" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M8 4.5v4M16 4.5v4M4 11h16" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function TaskRows({
+  tasks,
+  onOpenTask
+}: {
+  tasks: DayTask[]
+  onOpenTask: (task: DayTask) => void
+}): React.JSX.Element {
+  if (!tasks.length) {
+    return <p className="wp-empty-plan">Плана на сегодня нет — запустите агента из меню карточки.</p>
   }
   return (
-    <table className="wp-task-table">
-      <thead>
-        <tr>
-          <th className="col-time">Время</th>
-          <th className="col-task">Задача</th>
-          <th className="col-source">Источник</th>
-          <th className="col-due">Срок</th>
-          <th className="col-status">Статус</th>
-        </tr>
-      </thead>
-      <tbody>
-        {tasks.map((task) => (
-          <tr key={task.id}>
-            <td className="col-time">{task.time}</td>
-            <td className="col-task" title={task.title}>
-              {task.title}
-            </td>
-            <td className="col-source" title={TASK_SOURCE_LABEL[task.source]}>
-              {sourceLabel(task.source)}
-            </td>
-            <td className="col-due" title={task.due}>
-              {task.due}
-            </td>
-            <td className="col-status">
-              <span className={`wp-pill wp-pill-${task.status}`}>{TASK_STATUS_LABEL[task.status]}</span>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <ul className="wp-task-list">
+      {tasks.map((task) => {
+        const human = task.source === 'human'
+        return (
+          <li key={task.id}>
+            <button className="wp-task-row" type="button" onClick={() => onOpenTask(task)}>
+              <span className="wp-task-time">{task.time}</span>
+              <span className="wp-task-title" title={task.title}>
+                {task.title}
+              </span>
+              <span className={`wp-task-mode ${human ? 'human' : 'auto'}`}>
+                {human ? <IconPerson /> : <IconRobot />}
+                {human ? 'Решение человека' : 'Автоматически'}
+              </span>
+              <span className="wp-task-due">
+                <IconCalendar />
+                {task.due}
+              </span>
+              <span className={`wp-task-status wp-pill wp-pill-${task.status}`}>{TASK_STATUS_LABEL[task.status]}</span>
+            </button>
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 
@@ -387,7 +459,6 @@ export function AgentPlanCard({
   onHistory,
   onSchedule,
   onDelete,
-  recentFiles,
   onPause,
   onResume
 }: {
@@ -400,133 +471,83 @@ export function AgentPlanCard({
   onHistory: (workflowId: string, title: string) => void
   onSchedule: (workflowId: string, title: string) => void
   onDelete: (workflowId: string, title: string) => void
-  recentFiles: WorkflowFileItem[]
   onPause: (workflowId: string) => void
   onResume: (workflowId: string) => void
 }): React.JSX.Element {
   const hasPlan = agent.tasks.length > 0
-  const lastTwoFiles = [...recentFiles]
-    .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
-    .slice(0, 2)
+  const [expanded, setExpanded] = useState(hasPlan)
+  const badge = groupWorkBadge(agent)
   return (
-    <article
-      className={`wp-agent-card${selected ? ' selected' : ''}${hasPlan ? '' : ' idle'}`}
-      onClick={() => {
-        onSelect(agent.id)
-        onOpen(agent.workflowId, agent.name)
-      }}
-    >
+    <article className={`wp-agent-card${selected ? ' selected' : ''}${hasPlan ? '' : ' idle'}`}>
       <header className="wp-agent-head">
-        <div>
-          <div className="wp-code">{agent.code}</div>
+        <button
+          className={`wp-agent-toggle${expanded ? ' open' : ''}`}
+          type="button"
+          aria-expanded={expanded}
+          aria-label={expanded ? 'Свернуть' : 'Развернуть'}
+          onClick={() => {
+            onSelect(agent.id)
+            setExpanded((current) => !current)
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
+            <path d="M2.2 4.2L6 8l3.8-3.8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        <button
+          className="wp-agent-title-btn"
+          type="button"
+          onClick={() => {
+            onSelect(agent.id)
+            setExpanded(true)
+          }}
+        >
           <h2>{agent.name}</h2>
+        </button>
+        <span className={`wp-group-badge ${badge.tone}`}>{badge.label}</span>
+        <span className="wp-group-count">
+          {agent.tasks.length} {tasksWord(agent.tasks.length)}
+        </span>
+        <div className="wp-agent-head-actions">
           {!agent.standalone ? (
-            <p>
-              {STATUS_LABEL[agent.status]} · этап: {agent.stage}
-              {agent.owner ? ` · владелец: ${agent.owner}` : ''}
-            </p>
-          ) : null}
-        </div>
-        <div className="wp-agent-meta">
-          <span>{hasPlan ? `${agent.tasks.length} в плане` : 'Без плана на сегодня'}</span>
-          <div className="wp-actions">
             <button
-              className="btn-primary"
+              className="wp-history-link"
               type="button"
               onClick={(event) => {
                 event.stopPropagation()
-                onRun(agent.workflowId, agent.name)
+                onHistory(agent.workflowId, agent.name)
               }}
             >
-              Запустить
+              История
             </button>
-            {!agent.standalone &&
-              (agent.paused ? (
-                <button
-                  className="btn-ghost"
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onResume(agent.workflowId)
-                  }}
-                >
-                  Возобновить
-                </button>
-              ) : (
-                <button
-                  className="btn-ghost"
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onPause(agent.workflowId)
-                  }}
-                >
-                  Пауза
-                </button>
-              ))}
-            {!agent.standalone ? (
-              <CardMenu
-                items={[
-                  { label: 'Открыть агента', onClick: () => onOpen(agent.workflowId, agent.name) },
-                  { label: 'Изменить', onClick: () => onOpen(agent.workflowId, agent.name) },
-                  { label: 'Посмотреть историю', onClick: () => onHistory(agent.workflowId, agent.name) },
-                  { label: 'Изменить расписание', onClick: () => onSchedule(agent.workflowId, agent.name) },
-                  agent.paused
-                    ? { label: 'Возобновить', onClick: () => onResume(agent.workflowId) }
-                    : { label: 'Приостановить', onClick: () => onPause(agent.workflowId) },
-                  { label: 'Удалить', onClick: () => onDelete(agent.workflowId, agent.name), danger: true, separatorBefore: true }
-                ]}
-              />
-            ) : null}
-          </div>
+          ) : null}
+          {!agent.standalone ? (
+            <CardMenu
+              items={[
+                { label: 'Запустить', onClick: () => onRun(agent.workflowId, agent.name) },
+                { label: 'Открыть агента', onClick: () => onOpen(agent.workflowId, agent.name) },
+                { label: 'Посмотреть историю', onClick: () => onHistory(agent.workflowId, agent.name) },
+                { label: 'Файлы агента', onClick: () => onOpenFiles(agent.workflowId, agent.name) },
+                { label: 'Изменить расписание', onClick: () => onSchedule(agent.workflowId, agent.name) },
+                agent.paused
+                  ? { label: 'Возобновить', onClick: () => onResume(agent.workflowId) }
+                  : { label: 'Приостановить', onClick: () => onPause(agent.workflowId) },
+                { label: 'Удалить', onClick: () => onDelete(agent.workflowId, agent.name), danger: true, separatorBefore: true }
+              ]}
+            />
+          ) : (
+            <CardMenu items={[{ label: 'Запустить', onClick: () => onRun(agent.workflowId, agent.name) }]} />
+          )}
         </div>
       </header>
-      <div className={`wp-agent-content${agent.standalone ? ' single' : ''}`}>
-        <div className="wp-agent-content-main">{hasPlan ? <TaskTable tasks={agent.tasks} /> : <p className="wp-empty-plan">Плана на сегодня нет — карточку можно запустить вручную.</p>}</div>
-        {!agent.standalone ? (
-          <aside
-            className={`wp-agent-files-side${hasPlan ? ' with-plan' : ''}`}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="wp-agent-files-last">
-              {lastTwoFiles.length ? (
-                lastTwoFiles.map((file) => (
-                  <button
-                    key={file.id || file.name}
-                    className="wp-agent-file-chip"
-                    title={file.name}
-                    type="button"
-                    onClick={() => {
-                      if (file.downloadUrl) {
-                        void api.download(file.downloadUrl, file.name || 'file').catch(() => {
-                          onOpenFiles(agent.workflowId, agent.name)
-                        })
-                        return
-                      }
-                      onOpenFiles(agent.workflowId, agent.name)
-                    }}
-                  >
-                    <img src={fileTypeIconSrc(file.name || '')} alt="" />
-                    <span>{file.name}</span>
-                  </button>
-                ))
-              ) : (
-                <span className="wp-agent-file-empty">Файлов пока нет</span>
-              )}
-            </div>
-            <button
-              className="wp-agent-files-link"
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation()
-                onOpenFiles(agent.workflowId, agent.name)
-              }}
-            >
-              Все файлы агента →
-            </button>
-          </aside>
-        ) : null}
-      </div>
+      {expanded ? (
+        <div className="wp-agent-content single">
+          <TaskRows
+            tasks={agent.tasks}
+            onOpenTask={() => onHistory(agent.workflowId, agent.name)}
+          />
+        </div>
+      ) : null}
     </article>
   )
 }
@@ -546,9 +567,6 @@ export function ProcessStepper({
             {agent.name} · этап: {agent.stages[agent.stageIndex]?.label || 'не начат'}
           </p>
         </div>
-        <button className="btn-ghost" type="button" disabled={waiting}>
-          Перейти к следующему этапу
-        </button>
       </div>
       <ol className="wp-steps">
         {agent.stages.map((stage, index) => {
@@ -575,6 +593,11 @@ export function ProcessStepper({
             </li>
           )
         })}
+        <li className="wp-step-next-cell">
+          <button className="btn-ghost wp-step-next" type="button" disabled={waiting}>
+            Перейти к следующему этапу
+          </button>
+        </li>
       </ol>
       {waiting && <p className="wp-step-note">Сначала подтвердите решение или разберите ошибку в прогоне.</p>}
     </section>
@@ -604,6 +627,79 @@ function agentIsOverdue(agent: WorkplaceAgent, now = new Date()): boolean {
   if (next && next.getTime() < now.getTime()) return true
   const last = (agent.boardAgent?.lastRunStatus || '').toLowerCase()
   return last === 'error' || last === 'failed' || last === 'waiting_human' || last === 'hitl'
+}
+
+type TodaySort = '' | 'time' | 'status' | 'name'
+
+function taskClockMs(time: string, now = new Date()): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec((time || '').trim())
+  if (!match) return null
+  const hours = Number(match[1])
+  const minutes = Number(match[2])
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null
+  const stamp = new Date(now)
+  stamp.setHours(hours, minutes, 0, 0)
+  return stamp.getTime()
+}
+
+function agentSortTime(agent: WorkplaceAgent, now = new Date()): number {
+  const stamps: number[] = []
+  const next = parseIso(agent.boardAgent?.nextRunAt || '')
+  if (next) stamps.push(next.getTime())
+  const last = parseIso(agent.boardAgent?.lastRunAt || '')
+  if (last) stamps.push(last.getTime())
+  for (const task of agent.tasks) {
+    const clock = taskClockMs(task.time, now)
+    if (clock != null) stamps.push(clock)
+  }
+  return stamps.length ? Math.min(...stamps) : Number.POSITIVE_INFINITY
+}
+
+function agentStatusRank(agent: WorkplaceAgent): number {
+  if (agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR') return 0
+  if (agent.tasks.some((task) => task.status === 'needs_decision')) return 0
+  if (agent.status === 'ACTIVE') return 1
+  if (agent.tasks.some((task) => task.status === 'running')) return 1
+  if (agent.status === 'READY') return 2
+  if (agent.status === 'PAUSED') return 3
+  if (agent.status === 'COMPLETED') return 4
+  return 5
+}
+
+function taskStatusRank(status: DayTaskStatus): number {
+  if (status === 'needs_decision') return 0
+  if (status === 'running') return 1
+  if (status === 'todo') return 2
+  return 3
+}
+
+function sortTodayAgents(agents: WorkplaceAgent[], sort: TodaySort): WorkplaceAgent[] {
+  if (!sort) return agents
+  const rows = [...agents]
+  rows.sort((left, right) => {
+    if (sort === 'time') {
+      const cmp = agentSortTime(left) - agentSortTime(right)
+      return cmp !== 0 ? cmp : left.name.localeCompare(right.name, 'ru')
+    }
+    if (sort === 'status') {
+      const cmp = agentStatusRank(left) - agentStatusRank(right)
+      return cmp !== 0 ? cmp : left.name.localeCompare(right.name, 'ru')
+    }
+    return left.name.localeCompare(right.name, 'ru')
+  })
+  return rows.map((agent) => {
+    const tasks = [...agent.tasks]
+    if (sort === 'time') tasks.sort((left, right) => left.time.localeCompare(right.time))
+    else if (sort === 'status') {
+      tasks.sort((left, right) => {
+        const cmp = taskStatusRank(left.status) - taskStatusRank(right.status)
+        return cmp !== 0 ? cmp : left.time.localeCompare(right.time)
+      })
+    } else {
+      tasks.sort((left, right) => left.title.localeCompare(right.title, 'ru'))
+    }
+    return { ...agent, tasks }
+  })
 }
 
 type PreparedCard = {
@@ -638,9 +734,20 @@ function PreparedSolutionsRail({
     <section className="wp-rail-card wp-rail-solutions">
       <header className="wp-rail-card-head">
         <h2>Подготовленные решения</h2>
-        <button className="wp-rail-link" type="button" onClick={onOpenDecisions}>
-          История
-        </button>
+        <div className="wp-rail-card-actions">
+          <button className="wp-rail-link" type="button" onClick={onOpenDecisions}>
+            История
+          </button>
+          <CardMenu
+            items={[
+              { label: 'Открыть решения', onClick: onOpenDecisions },
+              ...(featured
+                ? [{ label: 'Открыть решение', onClick: () => onOpenItem(featured.workflowId, featured.agentName) }]
+                : []),
+              { label: 'Посмотреть историю', onClick: onOpenDecisions }
+            ]}
+          />
+        </div>
       </header>
       {!featured ? (
         <p className="wp-rail-empty">Пока нет подготовленных решений. Они появятся после прогонов агентов.</p>
@@ -727,9 +834,17 @@ function ProcessKpiRail({
     <section className="wp-rail-card wp-rail-kpi">
       <header className="wp-rail-card-head">
         <h2>KPI по процессам</h2>
-        <button className="wp-rail-link" type="button" onClick={onOpenMetrics}>
-          История
-        </button>
+        <div className="wp-rail-card-actions">
+          <button className="wp-rail-link" type="button" onClick={onOpenMetrics}>
+            История
+          </button>
+          <CardMenu
+            items={[
+              { label: 'Открыть показатели', onClick: onOpenMetrics },
+              { label: 'Посмотреть историю', onClick: onOpenMetrics }
+            ]}
+          />
+        </div>
       </header>
       {!rows.length ? (
         <p className="wp-rail-empty">Нет процессов с KPI на сегодня.</p>
@@ -767,7 +882,15 @@ function ProcessKpiRail({
                   <td title={row.name}>{row.name}</td>
                   <td>{row.planFact != null ? `${row.planFact}%` : '—'}</td>
                   <td>{formatMinutes(row.agentDelay)}</td>
-                  <td>{formatMinutes(row.humanDelay)}</td>
+                  <td
+                    style={
+                      row.humanDelay != null
+                        ? { color: humanResponseDelayColor(row.humanDelay), fontWeight: 700 }
+                        : undefined
+                    }
+                  >
+                    {formatMinutes(row.humanDelay)}
+                  </td>
                   <td>{row.automation != null ? `${row.automation}%` : '—'}</td>
                 </tr>
               ))}
@@ -779,7 +902,18 @@ function ProcessKpiRail({
                     : '—'}
                 </td>
                 <td>{formatMinutes(avg(totals.agentDelay, totals.agentCount))}</td>
-                <td>{formatMinutes(avg(totals.humanDelay, totals.humanCount))}</td>
+                <td
+                  style={
+                    avg(totals.humanDelay, totals.humanCount) != null
+                      ? {
+                          color: humanResponseDelayColor(avg(totals.humanDelay, totals.humanCount)!),
+                          fontWeight: 700
+                        }
+                      : undefined
+                  }
+                >
+                  {formatMinutes(avg(totals.humanDelay, totals.humanCount))}
+                </td>
                 <td>
                   {avg(totals.automation, totals.autoCount) != null
                     ? `${avg(totals.automation, totals.autoCount)}%`
@@ -813,18 +947,6 @@ export function DetailRail({
       <ProcessKpiRail rows={kpiRows} onOpenMetrics={onOpenMetrics} />
     </aside>
   )
-}
-
-export function useWorkplaceData(): {
-  board: WorkflowBoard
-  orch: PositionOrchestrator | null
-  agents: WorkplaceAgent[]
-  loading: boolean
-  error: string
-  flash: string
-  reload: () => Promise<void>
-  pause: (workflowId: string) => Promise<void>
-  resume: (workflowId: string) => Promise<void>
 }
 
 export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
@@ -908,7 +1030,8 @@ export function TodayWorkplace({
   onOpenDecisions,
   onOpenMetrics,
   onOpenPassport,
-  onRun
+  onRun,
+  onAskOrchestrator
 }: {
   userId: string
   userFio: string
@@ -916,6 +1039,7 @@ export function TodayWorkplace({
   onOpenMetrics: () => void
   onOpenPassport: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
   onRun: (workflowId: string, title: string) => void
+  onAskOrchestrator: (message: string, appContext: string) => void
 }): React.JSX.Element {
   const { board, orch, agents, loading, error, flash, pause, resume, reload } = useWorkplaceData({
     userId,
@@ -925,14 +1049,12 @@ export function TodayWorkplace({
   const [status, setStatus] = useState<ProcessStatus | ''>('')
   const [urgency, setUrgency] = useState<'' | 'overdue' | 'ok'>('')
   const [processId, setProcessId] = useState('')
+  const [sort, setSort] = useState<TodaySort>('')
   const [catalog, setCatalog] = useState<'today' | 'all'>('today')
   const [selectedId, setSelectedId] = useState('')
+  const [askText, setAskText] = useState('')
   const [recentFilesByWorkflow, setRecentFilesByWorkflow] = useState<Record<string, WorkflowFileItem[]>>({})
   const [kpiByWorkflow, setKpiByWorkflow] = useState<Record<string, AgentKpi | null>>({})
-  const personal = useMemo(
-    () => agents.find((item) => item.standalone) || buildPersonalAgent({ userId, fio: userFio }),
-    [agents, userId, userFio]
-  )
   const catalogAgents = useMemo(() => {
     const today = new Date()
     return agents.filter((agent) => {
@@ -943,7 +1065,7 @@ export function TodayWorkplace({
   }, [agents, catalog])
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return catalogAgents.filter((agent) => {
+    const rows = catalogAgents.filter((agent) => {
       if (status && agent.status !== status) return false
       if (urgency === 'overdue' && !agentIsOverdue(agent)) return false
       if (urgency === 'ok' && agentIsOverdue(agent)) return false
@@ -951,7 +1073,8 @@ export function TodayWorkplace({
       if (q && !`${agent.name} ${agent.code} ${agent.workflowId}`.toLowerCase().includes(q)) return false
       return true
     })
-  }, [catalogAgents, query, status, urgency, processId])
+    return sortTodayAgents(rows, sort)
+  }, [catalogAgents, query, status, urgency, processId, sort])
   const selected = visible.find((item) => item.id === selectedId) || visible[0]
 
   const todayEvents = board.events.filter((event) => {
@@ -1103,15 +1226,6 @@ export function TodayWorkplace({
           <h1 className="page-title">Рабочее место сотрудника</h1>
           <p className="wp-today-subtitle">Оркестратор должности</p>
         </div>
-        <div className="wp-head-actions">
-          <button
-            className={catalog === 'all' ? 'btn-primary' : 'btn-ghost'}
-            type="button"
-            onClick={() => setCatalog((current) => (current === 'all' ? 'today' : 'all'))}
-          >
-            Все агенты
-          </button>
-        </div>
       </div>
 
       {flash ? <div className="wp-toast">{flash}</div> : null}
@@ -1174,12 +1288,23 @@ export function TodayWorkplace({
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Поиск задач и процессов"
         />
-        <button
-          className="btn-primary wp-base-agent-btn"
-          type="button"
-          onClick={() => onRun(personal.workflowId, personal.name)}
+        <select
+          className="wp-select"
+          value={sort}
+          onChange={(e) => setSort(e.target.value as TodaySort)}
+          aria-label="Вид сортировки"
         >
-          Базовый агент
+          <option value="">Вид сортировки</option>
+          <option value="time">По времени</option>
+          <option value="status">По статусу</option>
+          <option value="name">По названию</option>
+        </select>
+        <button
+          className={catalog === 'all' ? 'btn-primary wp-all-agents-btn' : 'btn-ghost wp-all-agents-btn'}
+          type="button"
+          onClick={() => setCatalog((current) => (current === 'all' ? 'today' : 'all'))}
+        >
+          Все агенты
         </button>
       </div>
 
@@ -1214,7 +1339,6 @@ export function TodayWorkplace({
               onHistory={(workflowId, title) => onOpenPassport(workflowId, title, 'results')}
               onSchedule={(workflowId, title) => onOpenPassport(workflowId, title, 'info')}
               onDelete={(workflowId, title) => void removeAgent(workflowId, title)}
-              recentFiles={recentFilesByWorkflow[agent.workflowId] || []}
               onPause={(id) => void pause(id)}
               onResume={(id) => void resume(id)}
             />
@@ -1229,6 +1353,97 @@ export function TodayWorkplace({
           onOpenItem={(workflowId, title) => onOpenPassport(workflowId, title, 'results')}
         />
       </div>
+
+      <form
+        className="wp-ask-bar"
+        onSubmit={(event) => {
+          event.preventDefault()
+          const message = askText.trim()
+          if (!message) return
+          const context = buildOrchestratorContext({
+            userFio,
+            agents: catalogAgents,
+            solutions: preparedSolutions,
+            kpiRows,
+            selectedName: selected?.name || '',
+            stats: board.stats
+          })
+          setAskText('')
+          onAskOrchestrator(message, context)
+        }}
+      >
+        <span className="wp-ask-spark" aria-hidden>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M12 3l1.2 5.2L18 9.5l-4.8 1.3L12 16l-1.2-5.2L6 9.5l4.8-1.3L12 3z"
+              fill="currentColor"
+            />
+            <path d="M18 14l.7 2.3L21 17l-2.3.7L18 20l-.7-2.3L15 17l2.3-.7L18 14z" fill="currentColor" />
+          </svg>
+        </span>
+        <input
+          className="wp-ask-input"
+          value={askText}
+          onChange={(e) => setAskText(e.target.value)}
+          placeholder="Задать вопрос оркестратору..."
+          aria-label="Задать вопрос оркестратору"
+        />
+        <button className="wp-ask-send" type="submit" disabled={!askText.trim()} title="Отправить">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path
+              d="M4 11.5L20 4l-5.5 16-2.7-6.3L4 11.5z"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      </form>
     </div>
   )
+}
+
+function buildOrchestratorContext(opts: {
+  userFio: string
+  agents: WorkplaceAgent[]
+  solutions: PreparedCard[]
+  kpiRows: ProcessKpiRow[]
+  selectedName: string
+  stats: WorkflowBoard['stats']
+}): string {
+  const lines: string[] = [
+    `Сотрудник: ${opts.userFio || '—'}`,
+    `Сводка сегодня: активных агентов ${opts.stats.activeAgents}, прогонов ${opts.stats.runsToday}, ошибок ${opts.stats.errorsToday}, требуют внимания ${opts.stats.needsAttention}.`,
+    `Выбранный процесс на экране: ${opts.selectedName || 'не выбран'}.`,
+    '',
+    'Процессы / агенты:'
+  ]
+  for (const agent of opts.agents.slice(0, 20)) {
+    const tasks = agent.tasks
+      .slice(0, 5)
+      .map((task) => `${task.time} ${task.title} [${task.status}]`)
+      .join('; ')
+    lines.push(
+      `- ${agent.name} (${agent.status}${agent.paused ? ', пауза' : ''})` +
+        (tasks ? `: ${tasks}` : '')
+    )
+  }
+  lines.push('', 'Подготовленные решения:')
+  if (!opts.solutions.length) lines.push('- нет')
+  for (const item of opts.solutions.slice(0, 10)) {
+    lines.push(`- ${item.title} · ${item.agentName} · ${item.meta}`)
+  }
+  lines.push('', 'KPI по процессам:')
+  if (!opts.kpiRows.length) lines.push('- нет данных')
+  for (const row of opts.kpiRows.slice(0, 12)) {
+    lines.push(
+      `- ${row.name}: план/факт ${row.planFact ?? '—'}%, задержка агента ${formatMinutes(row.agentDelay)}, человека ${formatMinutes(row.humanDelay)}, авто ${row.automation ?? '—'}%`
+    )
+  }
+  lines.push(
+    '',
+    'Доступные вкладки UI: Сегодня, Процессы, Решения, Показатели, История, Настройки.',
+    'Можно открывать прогоны, подтверждать решения, смотреть KPI и историю через инструменты API.'
+  )
+  return lines.join('\n')
 }

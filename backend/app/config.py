@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -15,13 +15,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    erp_sql_server: str = "ii1"
+    erp_sql_server: str = "192.168.1.157"
     erp_sql_database: str = "erp_pm"
-    erp_sql_driver: str = "ODBC Driver 18 for SQL Server"
+    erp_sql_driver: str = "SQL Server"
     erp_sql_encrypt: str = "no"
     erp_sql_trusted_connection: bool = True
-    erp_sql_user: str = ""
-    erp_sql_password: str = ""
+    erp_sql_user: str = Field(default="", validation_alias=AliasChoices("ERP_SQL_USER", "SQL_USER"))
+    erp_sql_password: str = Field(default="", validation_alias=AliasChoices("ERP_SQL_PASSWORD", "SQL_PASSWORD"))
 
     jwt_secret: str = "change-me"
     jwt_algorithm: str = "HS256"
@@ -51,7 +51,10 @@ class Settings(BaseSettings):
     # Вариант модели: у grok-4.6 это Effort (low/medium/high/xhigh).
     cursor_workflow_model_effort: str = "high"
     cursor_regulation_creation_model: str = "grok-4.6"
-    cursor_regulation_creation_effort: str = "xhigh"
+    # Интервью: medium — быстрые вопросы без долгого thinking.
+    # Финализация документа: high (см. cursor_regulation_creation_finalize_effort).
+    cursor_regulation_creation_effort: str = "medium"
+    cursor_regulation_creation_finalize_effort: str = "high"
 
     # App Postgres (users, avatars, future agent data). Not ERP.
     database_url: str = (

@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import type { AgentKpi, AgentRunHistoryItem } from '../api/types'
+import { CardMenu, type MenuItem } from '../components/agents/CardMenu'
 import { useRuns } from '../store/runs'
 import { isLiveRunState } from '../store/liveRun'
-import { humanWhen, parseIso } from '../utils/calendar'
-import { localizeStatusText } from '../utils/statusText'
+import { parseIso } from '../utils/calendar'
 import { FilterBar } from './FilterBar'
 import { type ProcessStatus } from './labels'
-import { durationLabel, liveTotals } from './runTiming'
+import { humanResponseDelayColor } from './humanResponseColor'
+import { liveTotals } from './runTiming'
 import { useWorkplaceData, type WorkplaceAgent } from './WorkplaceBoard'
 
 const STATUS_BADGE: Record<ProcessStatus, string> = {
@@ -19,7 +20,7 @@ const STATUS_BADGE: Record<ProcessStatus, string> = {
   ERROR: 'Ошибка'
 }
 const STATUS_FILTER_ORDER: ProcessStatus[] = ['READY', 'ACTIVE', 'WAITING_HUMAN', 'PAUSED', 'ERROR']
-const DEFAULT_PLAN_PERCENT = 95
+const SOON_MS = 3 * 24 * 3_600_000
 
 const MONTHS_SHORT = ['янв.', 'февр.', 'мар.', 'апр.', 'мая', 'июн.', 'июл.', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.']
 
@@ -32,18 +33,6 @@ function latestRun(items: AgentRunHistoryItem[]): AgentRunHistoryItem | null {
     const rightAt = right.startedAt || right.finishedAt || ''
     return rightAt.localeCompare(leftAt)
   })[0]
-}
-
-function runStatusLabel(status: string): string {
-  const value = (status || '').toLowerCase()
-  if (value === 'ok' || value === 'done' || value === 'completed') return 'Выполнен'
-  if (value === 'running' || value === 'active') return 'В работе'
-  if (value === 'started') return 'Запущен'
-  if (value === 'waiting_human' || value === 'hitl' || value === 'waiting') return 'Ждёт решения'
-  if (value === 'canceled' || value === 'cancelled') return 'Отменён'
-  if (value === 'error' || value === 'failed') return 'Ошибка'
-  if (!value) return 'Без статуса'
-  return status
 }
 
 function useTicking(active: boolean): number {
@@ -94,7 +83,7 @@ function minutesLabel(ms: number): string {
   return rest ? `${hours} ч ${rest} мин` : `${hours} ч`
 }
 
-function formatDeadline(iso: string): { when: string; left: string } | null {
+function formatDeadline(iso: string): { when: string; left: string; urgent: boolean } | null {
   const stamp = parseIso(iso)
   if (!stamp) return null
   const hh = String(stamp.getHours()).padStart(2, '0')
@@ -103,15 +92,16 @@ function formatDeadline(iso: string): { when: string; left: string } | null {
   const diff = stamp.getTime() - Date.now()
   if (diff < 0) {
     const late = minutesLabel(-diff)
-    return { when, left: `просрочен на ${late}` }
+    return { when, left: `просрочен на ${late}`, urgent: true }
   }
   const hours = Math.floor(diff / 3_600_000)
   const days = Math.floor(hours / 24)
   const restHours = hours % 24
   const mins = Math.floor((diff % 3_600_000) / 60_000)
-  if (days > 0) return { when, left: `через ${days} дн. ${restHours} ч.` }
-  if (hours > 0) return { when, left: `через ${hours} ч. ${mins} мин.` }
-  return { when, left: `через ${mins} мин.` }
+  const urgent = diff <= SOON_MS
+  if (days > 0) return { when, left: `через ${days} дн. ${restHours} ч.`, urgent }
+  if (hours > 0) return { when, left: `через ${hours} ч. ${mins} мин.`, urgent }
+  return { when, left: `через ${mins} мин.`, urgent: true }
 }
 
 function metricNumber(raw: unknown): number | null {
@@ -157,17 +147,9 @@ function agentRegulationLabel(agent: WorkplaceAgent, regulationById: Record<stri
   return 'Без регламента'
 }
 
-function ProcessIcon({ status }: { status: ProcessStatus }): React.JSX.Element {
-  const tone =
-    status === 'PAUSED' || status === 'WAITING_HUMAN'
-      ? 'warn'
-      : status === 'ERROR'
-        ? 'err'
-        : status === 'ACTIVE' || status === 'COMPLETED'
-          ? 'ok'
-          : 'idle'
+function ProcessIcon(): React.JSX.Element {
   return (
-    <span className={`proc-ico ${tone}`} aria-hidden>
+    <span className="proc-ico ok" aria-hidden>
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
         <circle cx="8" cy="8" r="3" stroke="currentColor" strokeWidth="1.8" />
         <circle cx="16" cy="8" r="3" stroke="currentColor" strokeWidth="1.8" />
@@ -188,11 +170,59 @@ function ProcessIcon({ status }: { status: ProcessStatus }): React.JSX.Element {
   )
 }
 
+function StatIcon({ kind }: { kind: 'stages' | 'deadline' | 'agent' | 'plan' | 'agentDelay' | 'humanDelay' | 'auto' }): React.JSX.Element {
+  const tone = kind === 'auto' ? 'green' : kind === 'agentDelay' || kind === 'humanDelay' ? 'orange' : 'blue'
+  return (
+    <span className={`proc-stat-ico ${tone}`} aria-hidden>
+      {kind === 'stages' ? (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <rect x="6" y="3" width="12" height="18" rx="2.2" />
+          <path d="M9 8h6M9 12h6M9 16h4" strokeLinecap="round" />
+        </svg>
+      ) : kind === 'deadline' ? (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <rect x="4" y="5" width="16" height="15" rx="2.2" />
+          <path d="M8 3.5v3M16 3.5v3M4 10h16" strokeLinecap="round" />
+        </svg>
+      ) : kind === 'agent' ? (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <rect x="6" y="8" width="12" height="10" rx="3" />
+          <circle cx="10" cy="13" r="1.1" fill="currentColor" stroke="none" />
+          <circle cx="14" cy="13" r="1.1" fill="currentColor" stroke="none" />
+          <path d="M12 4v4M9 4h6" strokeLinecap="round" />
+        </svg>
+      ) : kind === 'plan' ? (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <circle cx="12" cy="12" r="8" />
+          <circle cx="12" cy="12" r="4.5" />
+          <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+        </svg>
+      ) : kind === 'agentDelay' ? (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <circle cx="12" cy="12" r="8" />
+          <path d="M12 8v4.4l2.6 1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : kind === 'humanDelay' ? (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <circle cx="12" cy="8" r="3" />
+          <path d="M6.5 19c.7-3 2.8-4.5 5.5-4.5s4.8 1.5 5.5 4.5" strokeLinecap="round" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M4 16l5-5 3.5 3.5L20 7" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M14 7h6v6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      )}
+    </span>
+  )
+}
+
 function ProcessCard({
   agent,
   kpi,
   onOpen,
   onOpenRun,
+  onHistory,
   onPause,
   onResume,
   latestRunInfo
@@ -201,6 +231,7 @@ function ProcessCard({
   kpi: AgentKpi | null
   onOpen: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
+  onHistory: (workflowId: string, title: string) => void
   onPause: (workflowId: string) => void
   onResume: (workflowId: string) => void
   latestRunInfo: AgentRunHistoryItem | null
@@ -208,7 +239,6 @@ function ProcessCard({
   const board = agent.boardAgent
   const deadline = formatDeadline(board?.nextRunAt || '')
   const factPercent = kpiScore(kpi)
-  const planFactLabel = `${DEFAULT_PLAN_PERCENT}% / ${factPercent != null ? `${factPercent}%` : '—'}`
   const live = useRuns().entries[agent.workflowId]
   const liveActive = Boolean(live && isLiveRunState(live.state))
   const backendOpen = Boolean(latestRunInfo?.openSegment || (latestRunInfo?.status || '').toLowerCase() === 'started')
@@ -217,39 +247,50 @@ function ProcessCard({
     liveActive && live?.state.timing
       ? liveTotals(live.state.timing, now)
       : backendTotals(latestRunInfo, now)
-  const agentDelay = totals.agentMs > 0 || liveActive || latestRunInfo ? durationLabel(totals.agentMs) : null
-  const humanDelay = totals.humanMs > 0 || liveActive || latestRunInfo ? durationLabel(totals.humanMs) : null
-  const mixed = agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR'
+  const hasRun = Boolean(liveActive || latestRunInfo)
+  const agentDelay = hasRun ? minutesLabel(totals.agentMs) : null
+  const humanDelay = hasRun ? minutesLabel(totals.humanMs) : null
+  const humanDelayMinutes = totals.humanMs > 0 ? totals.humanMs / 60_000 : 0
+  const humanDelayColor =
+    humanDelay && humanDelayMinutes > 0 ? humanResponseDelayColor(humanDelayMinutes) : undefined
+  const automation =
+    factPercent != null
+      ? Math.round((100 * factPercent) / (factPercent + humanDelayMinutes / 10))
+      : null
   const accent =
     agent.status === 'ERROR'
       ? 'err'
       : agent.status === 'PAUSED' || agent.status === 'WAITING_HUMAN'
         ? 'warn'
-        : agent.status === 'ACTIVE' || agent.status === 'COMPLETED'
-          ? 'ok'
-          : 'idle'
+        : 'ok'
   const stageCurrent = Math.min(agent.stageIndex + 1, agent.stages.length)
   const stageTotal = agent.stages.length
   const progress = stageTotal ? Math.round((stageCurrent / stageTotal) * 100) : 0
-  const version = localizeStatusText((board?.phase || '').trim())
-  const agentLive = board?.paused ? 'Пауза' : 'Активен'
-  const runStartedAt = parseIso(latestRunInfo?.startedAt || latestRunInfo?.finishedAt || '')
-  const runWhen = runStartedAt ? humanWhen(runStartedAt) : 'ещё не запускался'
-  const runStatus = runStatusLabel(latestRunInfo?.status || board?.lastRunStatus || '')
+  const agentLive =
+    agent.status === 'ERROR' ? 'Ошибка' : agent.paused || board?.paused ? 'Пауза' : 'Активен'
+  const agentLiveTone = agent.status === 'ERROR' ? 'err' : agent.paused || board?.paused ? 'pause' : 'live'
   const openPassportLabel = `Перейти в паспорт ${agent.name}`
   const openPassport = (): void => onOpen(agent.workflowId, agent.name, 'info')
-  const openPassportFiles = (): void => onOpen(agent.workflowId, agent.name, 'files')
   const startRun = (): void => onOpenRun(agent.workflowId, agent.name)
-  const stopRun = (): void => onPause(agent.workflowId)
   const deadlineText = agent.standalone ? 'По запросу пользователя' : deadline?.when || agent.due
   const compactDeadline = deadlineText.trim().toLowerCase() === 'следующий запуск не запланирован'
-  const stopCardClick: React.MouseEventHandler<HTMLElement> = (event): void => {
-    event.stopPropagation()
-  }
+  const agentTitle = (agent.name || '').trim() || agent.code
   const onCardKeyDown: React.KeyboardEventHandler<HTMLElement> = (event): void => {
     if (event.key !== 'Enter' && event.key !== ' ') return
     event.preventDefault()
     openPassport()
+  }
+  const menuItems: MenuItem[] = [
+    { label: 'Открыть', onClick: openPassport },
+    { label: 'Запустить', onClick: startRun }
+  ]
+  if (!agent.standalone) {
+    menuItems.push(
+      agent.paused
+        ? { label: 'Возобновить', onClick: () => onResume(agent.workflowId) }
+        : { label: 'Приостановить', onClick: () => onPause(agent.workflowId) },
+      { label: 'История', onClick: () => onHistory(agent.workflowId, agent.name) }
+    )
   }
 
   return (
@@ -262,36 +303,39 @@ function ProcessCard({
       aria-label={openPassportLabel}
     >
       <header className="proc-card-head">
-        <ProcessIcon status={agent.status} />
+        <ProcessIcon />
         <div className="proc-card-title">
           <h2>{agent.name}</h2>
           <div className="proc-badges">
             <span className={`proc-badge proc-badge-${agent.status.toLowerCase()}`}>
               {STATUS_BADGE[agent.status]}
             </span>
-            <span className={`proc-badge ${mixed ? 'proc-badge-mixed' : 'proc-badge-ai'}`}>
-              {mixed ? 'ИИ + человек' : 'ИИ'}
-            </span>
+            <span className="proc-badge proc-badge-ai">✨ ИИ</span>
           </div>
         </div>
+        <div className="proc-card-menu" onClick={(event) => event.stopPropagation()}>
+          <CardMenu items={menuItems} />
+        </div>
       </header>
-      <div className="proc-chat-hint" aria-hidden>
-        {openPassportLabel}
-      </div>
 
       <div className="proc-card-grid">
-        <div>
-          <span className="proc-label">Этапы</span>
+        <div className="proc-stat">
+          <div className="proc-stat-head">
+            <StatIcon kind="stages" />
+            <span className="proc-label">Этапы</span>
+          </div>
           <strong>
             {stageCurrent} / {stageTotal || '—'}
           </strong>
           <div className="proc-bar" aria-hidden>
             <i style={{ width: `${progress}%` }} />
           </div>
-          <small>{agent.stages[agent.stageIndex]?.label || agent.stage}</small>
         </div>
-        <div>
-          <span className="proc-label">Ближайший дедлайн</span>
+        <div className="proc-stat">
+          <div className="proc-stat-head">
+            <StatIcon kind="deadline" />
+            <span className="proc-label">Ближайший дедлайн</span>
+          </div>
           <strong className={`proc-deadline-value${compactDeadline ? ' proc-deadline-two-line' : ''}`}>
             {compactDeadline ? (
               <>
@@ -303,56 +347,57 @@ function ProcessCard({
             )}
           </strong>
           {!agent.standalone && deadline ? (
-            <small className={deadline.left.startsWith('просрочен') ? 'late' : ''}>{deadline.left}</small>
+            <small className={deadline.urgent || deadline.left.startsWith('просрочен') ? 'late' : 'soon'}>
+              {deadline.left}
+            </small>
           ) : null}
         </div>
-        <div>
-          <span className="proc-label">Ответственный агент</span>
-          <strong>
-            {agent.code}
-            {version ? ` · ${version}` : ''}
+        <div className="proc-stat">
+          <div className="proc-stat-head">
+            <StatIcon kind="agent" />
+            <span className="proc-label">Ответственный агент</span>
+          </div>
+          <strong className="proc-agent-name" title={agentTitle}>
+            {agentTitle}
           </strong>
-          <small className={agent.paused ? '' : 'live'}>{agentLive}</small>
-          {!agent.standalone ? <small>Последний прогон: {runWhen}</small> : null}
-        </div>
-        <div className="proc-card-tools proc-card-tools-grid" onClick={stopCardClick}>
-          {!agent.standalone ? (
-            <button className="btn-ghost proc-open-run-btn" type="button" onClick={openPassportFiles}>
-              Открыть
-            </button>
-          ) : null}
-          <button className="btn-primary proc-run-btn" type="button" onClick={startRun}>
-            Запустить
-          </button>
-          {!agent.standalone && agent.paused ? (
-            <button className="btn-primary proc-stop-btn" type="button" onClick={() => onResume(agent.workflowId)}>
-              Возобновить
-            </button>
-          ) : !agent.standalone ? (
-            <button className="btn-ghost proc-stop-btn" type="button" onClick={stopRun}>
-              Остановить
-            </button>
-          ) : null}
+          <small className={`proc-agent-status ${agentLiveTone}`}>
+            <i />
+            {agentLive}
+          </small>
         </div>
       </div>
 
       {!agent.standalone ? (
         <footer className="proc-kpis">
-          <div>
-            <span>План / факт</span>
-            <strong>{planFactLabel}</strong>
+          <div className="proc-kpi">
+            <div className="proc-kpi-head">
+              <StatIcon kind="plan" />
+              <span>План / факт</span>
+            </div>
+            <strong>{factPercent != null ? `${factPercent}%` : '—'}</strong>
           </div>
-          <div>
-            <span>Статус прогона</span>
-            <strong>{runStatus}</strong>
-          </div>
-          <div>
-            <span>Работа агента</span>
+          <div className="proc-kpi">
+            <div className="proc-kpi-head">
+              <StatIcon kind="agentDelay" />
+              <span>Задержка агента</span>
+            </div>
             <strong>{agentDelay || '—'}</strong>
           </div>
-          <div>
-            <span>Ответ человека</span>
-            <strong>{humanDelay || '—'}</strong>
+          <div className="proc-kpi">
+            <div className="proc-kpi-head">
+              <StatIcon kind="humanDelay" />
+              <span>Задержка человека</span>
+            </div>
+            <strong style={humanDelayColor ? { color: humanDelayColor } : undefined}>
+              {humanDelay || '—'}
+            </strong>
+          </div>
+          <div className="proc-kpi">
+            <div className="proc-kpi-head">
+              <StatIcon kind="auto" />
+              <span>Автоматизация</span>
+            </div>
+            <strong>{automation != null ? `${automation}%` : '—'}</strong>
           </div>
         </footer>
       ) : null}
@@ -366,7 +411,7 @@ export function ProcessesWorkplace({
   onOpen,
   onOpenRun,
   onFiles: _onFiles,
-  onHistory: _onHistory,
+  onHistory,
   onSchedule: _onSchedule
 }: {
   userId: string
@@ -591,6 +636,7 @@ export function ProcessesWorkplace({
             latestRunInfo={latestRunById[agent.workflowId] || null}
             onOpen={onOpen}
             onOpenRun={onOpenRun}
+            onHistory={onHistory}
             onPause={(id) => void pause(id)}
             onResume={(id) => void resume(id)}
           />

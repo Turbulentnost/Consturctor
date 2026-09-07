@@ -53,7 +53,7 @@ function isOpenRun(status: string): boolean {
 
 function toolStatusLabel(item: ToolDecisionItem): string {
   if (item.status === 'pending') return 'Ждёт подтверждения'
-  if (item.status === 'rejected') return 'Отклонено'
+  if (item.status === 'rejected') return 'Возвращено'
   if (item.status === 'confirmed') return 'Подтверждено'
   if (!item.result || /не был выполнен|не сохранился/i.test(item.result)) return 'Не выполнен'
   return 'Выполнено'
@@ -317,6 +317,7 @@ export function DecisionsTab({
 
   const pending = visibleTools.filter((item) => item.status === 'pending')
   const history = visibleTools.filter((item) => item.status !== 'pending')
+  const returned = visibleTools.filter((item) => decisionStatusBucket(item) === 'returned')
   const visibleResults = useMemo(() => {
     const q = query.trim().toLowerCase()
     return results
@@ -444,6 +445,15 @@ export function DecisionsTab({
           <div>
             <p>Результаты агентов</p>
             <strong>{visibleResults.length}</strong>
+          </div>
+        </article>
+        <article className="wp-decisions-kpi-card returned">
+          <div className="wp-decisions-kpi-icon" aria-hidden>
+            ↻
+          </div>
+          <div>
+            <p>Возвращено</p>
+            <strong>{returned.length}</strong>
           </div>
         </article>
       </section>

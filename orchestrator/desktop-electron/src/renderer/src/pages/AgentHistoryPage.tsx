@@ -8,6 +8,7 @@ import { useRuns } from '../store/runs'
 import { isInFlightRunStatus, isLiveRunState } from '../store/liveRun'
 import { cleanRunResult } from '../utils/cleanRunResult'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
+import { humanResponseDelayColor } from '../workplace/humanResponseColor'
 import { durationLabel } from '../workplace/runTiming'
 import { formatSize } from './filesGrouping'
 import {
@@ -149,8 +150,8 @@ export function AgentHistoryPage({
     const id = window.setInterval(() => setNowTick(Date.now()), 1000)
     return () => window.clearInterval(id)
   }, [openTick, selectedRun?.runId])
-  const { agentTime, humanTime } = useMemo(() => {
-    if (!selectedRun) return { agentTime: '', humanTime: '' }
+  const { agentTime, humanTime, humanMs } = useMemo(() => {
+    if (!selectedRun) return { agentTime: '', humanTime: '', humanMs: 0 }
     let agentMs = Math.max(0, selectedRun.agentWorkMs || 0)
     let humanMs = Math.max(0, selectedRun.humanWaitMs || 0)
     const openAt = Date.parse(selectedRun.openSegmentAt || '')
@@ -159,7 +160,7 @@ export function AgentHistoryPage({
       if (selectedRun.openSegment === 'agent') agentMs += open
       if (selectedRun.openSegment === 'human') humanMs += open
     }
-    return { agentTime: durationLabel(agentMs), humanTime: durationLabel(humanMs) }
+    return { agentTime: durationLabel(agentMs), humanTime: durationLabel(humanMs), humanMs }
   }, [selectedRun, nowTick])
 
   return (
@@ -266,7 +267,9 @@ export function AgentHistoryPage({
                     <span>работа агента: {agentTime}</span>
                   ) : null}
                   {selectedRun.humanWaitMs > 0 || selectedRun.openSegment === 'human' ? (
-                    <span>ответ человека: {humanTime}</span>
+                    <span style={{ color: humanResponseDelayColor(humanMs / 60_000), fontWeight: 700 }}>
+                      ответ человека: {humanTime}
+                    </span>
                   ) : null}
                 </div>
               ) : null}

@@ -22,14 +22,15 @@ __all__ = [
 ]
 
 
-def create_agent(prompt: str) -> tuple[str, str]:
+def create_agent(prompt: str, *, effort: str | None = None) -> tuple[str, str]:
+    effort_value = (effort or settings.cursor_regulation_creation_effort).strip() or "medium"
     data = cursor_client.create_agent(
         prompt=prompt,
         model_id=settings.cursor_regulation_creation_model,
         name="Создание регламента",
         mode="agent",
         model_params=[
-            {"id": "effort", "value": settings.cursor_regulation_creation_effort},
+            {"id": "effort", "value": effort_value},
             {"id": "fast", "value": "true"},
         ],
     )

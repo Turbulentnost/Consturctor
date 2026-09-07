@@ -59,6 +59,20 @@ def _one_line(value: str, limit: int = 90) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _is_noisy_event_text(value: str) -> bool:
+    text = (value or "").strip()
+    if not text:
+        return True
+    folded = text.casefold()
+    if folded.startswith("{") or folded.startswith("["):
+        return True
+    if "errno" in folded or "traceback" in folded or '"verdict"' in folded:
+        return True
+    if "ответь только json" in folded:
+        return True
+    return False
+
+
 def _agent_description(row: Workflow) -> str:
     plan = row.plan_json if isinstance(row.plan_json, dict) else {}
     goal = str(plan.get("goal") or "").strip()
@@ -82,6 +96,8 @@ def _run_event_status(status: str) -> str:
         return "error"
     if raw in {"canceled", "cancelled"}:
         return "canceled"
+    if raw in {"waiting_human", "hitl", "waiting"}:
+        return "waiting_human"
     return "running"
 
 
@@ -220,7 +236,10 @@ def _event_from_run(
     trigger_id: str = "",
     is_future: bool = False,
 ) -> CalendarEvent:
-    subtitle = _one_line(run.answer or run.trigger_reason or run.message or "", 70)
+    subtitle = _one_line(run.trigger_reason or run.message or "", 70)
+    if not subtitle or _is_noisy_event_text(subtitle):
+        answer = _one_line(run.answer or "", 70)
+        subtitle = "" if _is_noisy_event_text(answer) else answer
     return CalendarEvent(
         id=event_id or f"run:{run.id}",
         workflow_id=workflow.id,

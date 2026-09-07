@@ -20,6 +20,7 @@ import {
   type HumanDelayExplainRecord,
   type HumanDelayVerdict
 } from '../workplace/humanDelayExplain'
+import { humanResponseDelayBand, humanResponseDelayColor } from '../workplace/humanResponseColor'
 import { liveTotals } from '../workplace/runTiming'
 import {
   buildKpiCsv,
@@ -28,6 +29,7 @@ import {
   bytesToBase64,
   type KpiExportRow
 } from './kpiExport'
+import { formatKpiRangeLabel, KpiRangePicker, type KpiRangeShortcut } from './KpiRangePicker'
 
 const EXPLAIN_EVAL_TIMEOUT_MS = 3 * 60 * 1000
 
@@ -48,7 +50,6 @@ function extractExplainAnswerFromFeed(items: FeedItem[] | undefined): string {
   return deriveLatestOutput(items)
 }
 
-const iconCalendar = new URL('../../../temp/KPI/calendar.png', import.meta.url).href
 const iconActive = new URL('../../../temp/KPI/ChatGPT Image 26 авг. 2026 г., 11_22_41.png', import.meta.url).href
 const iconRuns = new URL('../../../temp/KPI/ChatGPT Image 26 авг. 2026 г., 11_23_18.png', import.meta.url).href
 const iconSuccess = new URL('../../../temp/KPI/ChatGPT Image 26 авг. 2026 г., 11_23_35.png', import.meta.url).href
@@ -61,8 +62,8 @@ const robotRed = new URL('../../../temp/KPI/59561baa-bbdc-4f74-8cf4-d78179bae59d
 const HISTORY_KEY = 'constructor.kpi.snapshots'
 
 type TabKey = 'overview' | 'agents' | 'interaction'
-type RangeKey = '7' | '30' | '90'
-type PeriodKind = 'range' | 'date' | 'month'
+type RangeKey = KpiRangeShortcut
+type PeriodKind = 'range' | 'date' | 'month' | 'custom'
 type AgentFilter = 'all' | 'deviations' | 'critical'
 type DynamicsMode = 'runs' | 'success'
 
@@ -71,6 +72,9 @@ interface PeriodState {
   range: RangeKey
   date: string
   month: string
+  /** Inclusive ISO dates `YYYY-MM-DD` — source of truth for `kind: 'custom'`. */
+  from: string
+  to: string
 }
 
 interface AgentKpiView {
@@ -119,8 +123,25 @@ function monthKey(timestamp = Date.now()): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
 }
 
+function rollingRangeKeys(days: number): { from: string; to: string } {
+  const end = new Date()
+  end.setHours(0, 0, 0, 0)
+  const start = new Date(end)
+  start.setDate(start.getDate() - (days - 1))
+  return { from: dayKey(start.getTime()), to: dayKey(end.getTime()) }
+}
+
 function defaultPeriod(): PeriodState {
-  return { kind: 'range', range: '30', date: todayKey(), month: monthKey() }
+  const today = todayKey()
+  const rolling = rollingRangeKeys(30)
+  return {
+    kind: 'range',
+    range: '30',
+    date: today,
+    month: monthKey(),
+    from: rolling.from,
+    to: rolling.to
+  }
 }
 
 function isSuccess(status: string): boolean {
@@ -171,7 +192,20 @@ function enumerateDays(from: number, to: number): string[] {
   return out
 }
 
+function inclusiveDayWindow(fromKey: string, toKey: string): { from: number; to: number; days: string[] } {
+  const start = new Date(`${fromKey}T00:00:00`)
+  const end = new Date(`${toKey}T23:59:59.999`)
+  const from = Number.isNaN(start.getTime()) ? Date.now() : start.getTime()
+  const to = Number.isNaN(end.getTime()) ? from + 86400000 - 1 : end.getTime()
+  const lo = Math.min(from, to)
+  const hi = Math.max(from, to)
+  return { from: lo, to: hi, days: enumerateDays(lo, hi) }
+}
+
 function periodWindow(period: PeriodState): { from: number; to: number; days: string[] } {
+  if (period.kind === 'custom') {
+    return inclusiveDayWindow(period.from, period.to)
+  }
   if (period.kind === 'date') {
     const start = new Date(`${period.date}T00:00:00`)
     const from = Number.isNaN(start.getTime()) ? Date.now() : start.getTime()
@@ -224,11 +258,19 @@ function Sparkline({
   )
 }
 
-function RateBar({ value, tone = 'green' }: { value: number; tone?: 'green' | 'orange' | 'red' }): React.JSX.Element {
+function RateBar({
+  value,
+  tone = 'green',
+  color
+}: {
+  value: number
+  tone?: 'green' | 'orange' | 'red'
+  color?: string
+}): React.JSX.Element {
   const normalized = Math.max(0, Math.min(100, value))
   return (
-    <span className={`kpi-rate ${tone}`}>
-      <span style={{ width: `${normalized}%` }} />
+    <span className={`kpi-rate ${color ? '' : tone}`.trim()}>
+      <span style={{ width: `${normalized}%`, ...(color ? { background: color } : {}) }} />
     </span>
   )
 }
@@ -300,26 +342,6 @@ function averageResponseMinutes(values: number[]): number {
   if (!values.length) return 0
   return averageMinutesFromMs(values)
 }
-
-function isZhalybinUser(userId: string, fio: string): boolean {
-  const id = (userId || '').toUpperCase()
-  const name = (fio || '').toLowerCase()
-  return id.includes('ZHALYBIN') || name.includes('жалыбин')
-}
-
-function isSmartAssignmentAgent(title: string): boolean {
-  const value = (title || '').toLowerCase()
-  return value.includes('smart') && (value.includes('формулиров') || value.includes('поручен'))
-}
-
-/** Demo offset: +N мин к среднему времени ответа на каждом агенте. */
-const HUMAN_RESPONSE_OFFSET_MIN = 70
-
-/** Жалыбин Максим — минимум среднего времени ответа по каждому агенту. */
-const ZHALYBIN_HUMAN_DELAY_MIN = 70
-
-/** Demo / acceptance: Жалыбин · SMART-агент — среднее время ответа человека > 1 часа. */
-const SMART_ZHALYBIN_HUMAN_DELAY_MIN = 75
 
 function isAutomatedRun(run: AgentRunHistoryItem): boolean {
   const source = (run.source || '').toLowerCase()
@@ -850,7 +872,6 @@ export function KpiPage({
   }, [rows, agents, bounds.days])
 
   const interactionRows = useMemo(() => {
-    const zhalybin = isZhalybinUser(userId, userFio)
     return rows
       .map((row) => {
         const runs = row.runs
@@ -886,13 +907,7 @@ export function KpiPage({
         const fact = factFromKpi != null ? Math.round(factFromKpi) : null
         const plan = Number.isFinite(planFromKpi) && planFromKpi > 0 ? Math.round(planFromKpi) : null
         const agentDelayMinutes = averageResponseMinutes(agentMsAll)
-        let humanDelayMinutes = averageResponseMinutes(humanMsAll) + HUMAN_RESPONSE_OFFSET_MIN
-        if (zhalybin) {
-          humanDelayMinutes = Math.max(humanDelayMinutes, ZHALYBIN_HUMAN_DELAY_MIN)
-          if (isSmartAssignmentAgent(row.agent.title)) {
-            humanDelayMinutes = Math.max(humanDelayMinutes, SMART_ZHALYBIN_HUMAN_DELAY_MIN)
-          }
-        }
+        let humanDelayMinutes = averageResponseMinutes(humanMsAll)
         // «Допустимо» — полное списание задержек ответа по всем агентам.
         if (
           explainRecord?.writtenOff ||
@@ -932,8 +947,6 @@ export function KpiPage({
     rows,
     bounds.days,
     nowTick,
-    userId,
-    userFio,
     explainRecord,
     liveRuns.entries,
     processFilter,
@@ -952,17 +965,25 @@ export function KpiPage({
     return [...values].sort((a, b) => a.localeCompare(b, 'ru'))
   }, [rows])
 
+  const periodKeys = useMemo(() => {
+    const from = bounds.days[0] || period.from
+    const to = bounds.days[bounds.days.length - 1] || period.to
+    return { from, to }
+  }, [bounds.days, period.from, period.to])
+
   const periodKey = useMemo(() => {
+    if (period.kind === 'custom') return `custom:${period.from}:${period.to}`
     if (period.kind === 'range') return `range:${period.range}`
     if (period.kind === 'date') return `date:${period.date}`
     return `month:${period.month}`
   }, [period])
 
   const periodLabel = useMemo(() => {
+    if (periodKeys.from && periodKeys.to) return formatKpiRangeLabel(periodKeys.from, periodKeys.to)
     if (period.kind === 'range') return RANGE_LABELS[period.range]
     if (period.kind === 'date') return period.date
     return period.month
-  }, [period])
+  }, [period, periodKeys])
 
   useEffect(() => {
     const loaded = loadEffectiveExplainRecord(userId, periodKey)
@@ -1108,16 +1129,32 @@ export function KpiPage({
       }
     : { up: 0, down: 0, same: selected ? 1 : 0 }
 
-  const setKind = (kind: PeriodKind | RangeKey): void => {
-    if (kind === '7' || kind === '30' || kind === '90') {
-      setPeriod((prev) => ({ ...prev, kind: 'range', range: kind }))
-      return
-    }
-    setPeriod((prev) => ({ ...prev, kind }))
+  const applyCustomRange = (next: { from: string; to: string }): void => {
+    setPeriod((prev) => ({
+      ...prev,
+      kind: 'custom',
+      from: next.from,
+      to: next.to,
+      date: next.to,
+      month: next.from.slice(0, 7)
+    }))
+  }
+
+  const applyRangeShortcut = (range: RangeKey): void => {
+    const rolling = rollingRangeKeys(Number(range))
+    setPeriod((prev) => ({
+      ...prev,
+      kind: 'range',
+      range,
+      from: rolling.from,
+      to: rolling.to,
+      date: rolling.to,
+      month: rolling.from.slice(0, 7)
+    }))
   }
 
   const jumpToDate = (date: string): void => {
-    setPeriod((prev) => ({ ...prev, kind: 'date', date }))
+    setPeriod((prev) => ({ ...prev, kind: 'date', date, from: date, to: date }))
     setHistoryOpen(false)
   }
 
@@ -1198,37 +1235,13 @@ export function KpiPage({
 
       <div className="kpi-filter-bar">
         <div className="kpi-filter-bar-left">
-          <label className="kpi-period">
-            <img src={iconCalendar} alt="" />
-            <select
-              value={period.kind === 'range' ? period.range : period.kind}
-              onChange={(event) => setKind(event.target.value as PeriodKind | RangeKey)}
-            >
-              {Object.entries(RANGE_LABELS).map(([key, label]) => (
-                <option key={key} value={key}>
-                  {label}
-                </option>
-              ))}
-              <option value="date">Конкретная дата</option>
-              <option value="month">Конкретный месяц</option>
-            </select>
-          </label>
-          {period.kind === 'date' && (
-            <input
-              className="kpi-date-input"
-              type="date"
-              value={period.date}
-              onChange={(event) => setPeriod((prev) => ({ ...prev, date: event.target.value }))}
-            />
-          )}
-          {period.kind === 'month' && (
-            <input
-              className="kpi-date-input"
-              type="month"
-              value={period.month}
-              onChange={(event) => setPeriod((prev) => ({ ...prev, month: event.target.value }))}
-            />
-          )}
+          <KpiRangePicker
+            from={periodKeys.from}
+            to={periodKeys.to}
+            shortcut={period.kind === 'range' ? period.range : null}
+            onApply={applyCustomRange}
+            onShortcut={applyRangeShortcut}
+          />
           <select
             className="kpi-filter-select"
             value={draftProcessId}
@@ -1478,7 +1491,7 @@ function InteractionPane({
         ? 'red'
         : explainRecord?.status === 'evaluating'
           ? 'orange'
-          : delayTone(summary.humanDelay)
+          : humanResponseDelayBand(summary.humanDelay)
 
   function finishExplainEvaluation(
     source: HumanDelayExplainRecord,
@@ -1779,6 +1792,12 @@ function InteractionPane({
     (explainRecord?.status === 'done' && explainRecord.verdict === 'acceptable')
       ? 0
       : summary.humanDelay
+  const humanDelayValueColor =
+    explainRecord?.status === 'done' && explainRecord.verdict === 'rejected'
+      ? humanResponseDelayColor(60)
+      : explainRecord?.status === 'evaluating'
+        ? humanResponseDelayColor(30)
+        : humanResponseDelayColor(Math.max(1, humanDelayDisplay || 1))
 
   return (
     <div className="kpi-interaction">
@@ -1834,7 +1853,7 @@ function InteractionPane({
         >
           <div>
             <span>Среднее время ответа</span>
-            <strong>{formatMinutes(humanDelayDisplay)}</strong>
+            <strong style={{ color: humanDelayValueColor }}>{formatMinutes(humanDelayDisplay)}</strong>
             <em>{humanDelayCardLabel(explainRecord, humanDelayDisplay, banRemaining)}</em>
           </div>
         </article>
@@ -1892,10 +1911,12 @@ function InteractionPane({
                   />
                 </span>
                 <span className="kpi-rate-cell">
-                  {formatMinutes(row.humanDelayMinutes)}
+                  <span style={{ color: humanResponseDelayColor(row.humanDelayMinutes), fontWeight: 700 }}>
+                    {formatMinutes(row.humanDelayMinutes)}
+                  </span>
                   <RateBar
                     value={Math.min(100, Math.round((row.humanDelayMinutes / 60) * 100))}
-                    tone={delayTone(row.humanDelayMinutes)}
+                    color={humanResponseDelayColor(row.humanDelayMinutes)}
                   />
                 </span>
                 <span className="kpi-rate-cell">
@@ -1957,7 +1978,13 @@ function InteractionPane({
                       <i className="agent" style={{ width: agentWidth }}>
                         {row.agentDelayMinutes > 0 ? row.agentDelayMinutes : ''}
                       </i>
-                      <i className="human" style={{ width: humanWidth }}>
+                      <i
+                        className="human"
+                        style={{
+                          width: humanWidth,
+                          background: humanResponseDelayColor(row.humanDelayMinutes)
+                        }}
+                      >
                         {row.humanDelayMinutes > 0 ? row.humanDelayMinutes : ''}
                       </i>
                     </div>
@@ -1987,7 +2014,7 @@ function InteractionPane({
             {criticalRows.length ? (
               <ul className="kpi-explain-processes">
                 {criticalRows.map((row) => (
-                  <li key={row.agentId}>
+                  <li key={row.agentId} style={{ color: humanResponseDelayColor(row.humanDelayMinutes) }}>
                     {row.title}: {formatMinutes(row.humanDelayMinutes)}
                   </li>
                 ))}

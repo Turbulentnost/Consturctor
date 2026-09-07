@@ -27,7 +27,7 @@ import { RunBannerCarousel, type BannerEntry } from './components/RunBannerCarou
 import { useRuns, deriveLatestOutput } from './store/runs'
 import { isInFlightRunStatus, isLiveRunState } from './store/liveRun'
 import { ChatDock } from './workplace/ChatDock'
-import { isPersonalAgentWorkflowId } from './workplace/personalAgent'
+import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import {
   DecisionsTab,
   DiagnosticsPage,
@@ -73,7 +73,7 @@ type View =
   | { kind: 'diagnostics' }
   | { kind: 'files'; workflowId?: string; title?: string }
   | { kind: 'passport'; workflowId: string; title: string; tab?: PassportTab }
-  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean }
+  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string }
   | { kind: 'history'; workflowId: string; title: string; runId?: string }
   | { kind: 'schedule'; workflowId: string; title: string }
 
@@ -392,7 +392,12 @@ export function App(): React.JSX.Element {
       return
     }
     if (isPersonalAgentWorkflowId(workflowId)) {
-      setView({ kind: 'agentrun', workflowId, title: title || 'Базовый агент', autoStart: false })
+      setView({
+        kind: 'agentrun',
+        workflowId,
+        title: title || 'Оркестратор',
+        autoStart: false
+      })
       return
     }
     const nextTitle = title || 'ИИ-агент'
@@ -472,6 +477,8 @@ export function App(): React.JSX.Element {
           workflowId={view.workflowId}
           title={view.title}
           autoStart={view.autoStart}
+          initialMessage={view.initialMessage}
+          appContext={view.appContext}
           onBack={() => setView({ kind: 'tab', key: lastTab })}
           onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
         />
@@ -568,6 +575,17 @@ export function App(): React.JSX.Element {
             onOpenMetrics={() => setView({ kind: 'tab', key: 'metrics' })}
             onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
             onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
+            onAskOrchestrator={(message, appContext) => {
+              const workflowId = personalAgentWorkflowId(activeUser.id || '')
+              setView({
+                kind: 'agentrun',
+                workflowId,
+                title: 'Оркестратор',
+                autoStart: false,
+                initialMessage: message,
+                appContext
+              })
+            }}
           />
         )
     }

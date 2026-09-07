@@ -14,6 +14,8 @@ interface AgentRunPageProps {
   workflowId: string
   title: string
   autoStart?: boolean
+  initialMessage?: string
+  appContext?: string
   onBack: () => void
   onOpenHistory?: (workflowId: string, title: string) => void
 }
@@ -69,6 +71,8 @@ export function AgentRunPage({
   workflowId,
   title,
   autoStart = false,
+  initialMessage = '',
+  appContext = '',
   onBack,
   onOpenHistory
 }: AgentRunPageProps): React.JSX.Element {
@@ -87,9 +91,10 @@ export function AgentRunPage({
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const resumeAgentRef = useRef<string>(entry?.resumeAgentId || '')
   const autoStartedRef = useRef(false)
+  const initialSentRef = useRef(false)
 
   const isTodayFile = useCallback((item: WorkflowFileItem): boolean => {
-    const stamp = parseIso(item.createdAt)
+    const stamp = parseIso(item.createdAt || '')
     if (!stamp) return false
     return sameDay(stamp, new Date())
   }, [])
@@ -157,10 +162,10 @@ export function AgentRunPage({
   // On open, restore the latest known conversation for this exact agent.
   // Play (autoStart) must start a new run, not reopen the last feed.
   useEffect(() => {
-    if (autoStart) return
+    if (autoStart || initialMessage.trim()) return
     if ((state?.items?.length ?? 0) > 0) return
     void runs.attachHistoryFeed(workflowId)
-  }, [workflowId, runs, state?.items?.length, autoStart])
+  }, [workflowId, runs, state?.items?.length, autoStart, initialMessage])
 
   // The "Запустить" play button opens this page with autoStart, so the agent
   // starts immediately on its own playbook instead of waiting for a message.
@@ -179,6 +184,24 @@ export function AgentRunPage({
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStart, workflowId])
+
+  // Поле «Задать вопрос оркестратору» на Сегодня: сразу отправляем вопрос.
+  useEffect(() => {
+    const message = initialMessage.trim()
+    if (!message || initialSentRef.current) return
+    if (running) return
+    initialSentRef.current = true
+    runs.startRun({
+      workflowId,
+      title: title || 'Оркестратор',
+      message,
+      shownMessage: message,
+      resumeAgentId: resumeAgentRef.current || undefined,
+      forceRestart: true,
+      appContext: appContext || undefined
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflowId, initialMessage])
 
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({
@@ -211,7 +234,8 @@ export function AgentRunPage({
       shownMessage: shownMessage || message,
       filePaths: filePaths.length ? filePaths : undefined,
       resumeAgentId: resumeAgentRef.current || undefined,
-      forceRestart: running
+      forceRestart: running,
+      appContext: personalAgent ? appContext || undefined : undefined
     })
   }
 
@@ -285,7 +309,7 @@ export function AgentRunPage({
         kind: 'message',
         id: 'personal-greeting',
         role: 'agent',
-        text: 'Чем могу помочь?'
+        text: 'Я Оркестратор — базовый агент рабочего места. Задайте вопрос по процессам, решениям или задачам.'
       }
     ]
   }, [state?.items, personalAgent])
@@ -302,7 +326,10 @@ export function AgentRunPage({
         <button className="btn-ghost" onClick={onBack}>
           Назад
         </button>
-        <h1 className="wf-title">{title || 'Запуск агента'}</h1>
+        <div className="wf-title-block">
+          <h1 className="wf-title">{title || (personalAgent ? 'Оркестратор' : 'Запуск агента')}</h1>
+          {personalAgent ? <span className="wf-title-sub">Базовый агент</span> : null}
+        </div>
         <div className="wf-topbar-spacer" />
         {onOpenHistory && !personalAgent && (
           <button className="btn-ghost" onClick={() => onOpenHistory(workflowId, title)}>
