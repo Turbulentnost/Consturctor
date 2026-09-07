@@ -1610,3 +1610,118 @@ def test_turn_payload_skips_llm_on_select_and_uses_fastpath_after_select() -> No
     reply = build_fastpath_reply_from_queue(interview=state, pipeline=pipeline, force_create=False)
     assert reply
     assert "collect-p1-" in reply
+
+
+def test_extract_does_not_surface_llm_message_as_question() -> None:
+    from app.models.regulation import RegulationCreationMessage
+
+    db = _session()
+    user = AppUser(id="user-extract", fio="Extract User", position="промпт-инженер 2 категории")
+    db.add(user)
+    db.commit()
+    session = start_creation_session(db, user_id=user.id)
+    draft = db.query(RegulationCreationDraft).filter(RegulationCreationDraft.id == session.draftId).one()
+    payload = {
+        "status": "need_more",
+        "message": (
+            "В приложенном документе организация подготовки заседаний Совета директоров "
+            "отнесена к Помощнику ПСД. Эта работа входит в ваши обязанности как промпт-инженера 2 категории?"
+        ),
+        "quickAnswers": ["Да", "Нет"],
+        "interview": {
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Организация заседаний Совета директоров",
+                    "actor": "Помощник ПСД",
+                    "roleStatus": "unclear",
+                    "knownFacts": {},
+                    "sourceRefs": [],
+                }
+            ]
+        },
+        "pipeline": {"stage": "interview"},
+    }
+    _apply_agent_reply(
+        db,
+        user_id=user.id,
+        draft=draft,
+        raw=json.dumps(payload, ensure_ascii=False),
+    )
+    db.commit()
+    messages = [
+        item.content
+        for item in db.query(RegulationCreationMessage)
+        .filter(RegulationCreationMessage.draft_id == draft.id, RegulationCreationMessage.role == "assistant")
+        .all()
+    ]
+    assert messages
+    assert payload["message"] not in messages[-1]
+    assert "Отметьте" in messages[-1] or "выделить процессы" in messages[-1]
+
+
+def test_ownership_question_is_deterministic_template() -> None:
+    from app.services.regulation_creation.question_queue import all_ownership_questions, populate_queue_after_extract
+
+    state = set_interview_position(
+        {
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Организация заседаний Совета директоров",
+                    "actor": "Помощник ПСД",
+                    "roleStatus": "unclear",
+                    "knownFacts": {},
+                    "sourceRefs": [],
+                }
+            ],
+            "pipeline": {"stage": "select", "blocks": []},
+        },
+        "промпт-инженер 2 категории",
+    )
+    ownership = all_ownership_questions(state, all_candidates=True)
+    assert len(ownership) == 1
+    item = ownership[0]
+    assert item["source"] == "ownership"
+    assert item["field"] == "roleStatus"
+    assert "Помощник ПСД" in item["text"]
+    assert "промпт-инженер 2 категории" in item["text"]
+    assert "ownership-p1" == item["id"]
+
+    out = populate_queue_after_extract(state)
+    queue = out.get("questionQueue") or []
+    assert any(entry.get("source") == "ownership" for entry in queue)
+
+
+def test_no_sdk_invoke_during_collect_with_nonempty_queue() -> None:
+    from app.services.regulation_creation.pipeline import select_processes
+    from app.services.regulation_creation.service import _turn_payload
+
+    db = _session()
+    user = AppUser(id="user-queue", fio="Queue User", position="Помощник ПСД")
+    db.add(user)
+    db.commit()
+    state = select_processes(
+        {
+            "position": "Помощник ПСД",
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Календарь",
+                    "roleStatus": "belongs",
+                    "knownFacts": {},
+                    "sourceRefs": [],
+                }
+            ],
+            "functions": [],
+            "pipeline": {"stage": "select", "blocks": []},
+        },
+        ["p1"],
+    )
+    draft = RegulationCreationDraft(id="draft-queue-1", user_id=user.id, status="interview", interview_json=state)
+    db.add(draft)
+    db.commit()
+    turn = _turn_payload(db, draft, message="", force_create=False)
+    assert not turn.sdkPrompt.strip()
+    assert turn.prefetchedReply
+    assert turn.queueDepth >= 1

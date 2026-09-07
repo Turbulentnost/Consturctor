@@ -1933,6 +1933,11 @@ def _looks_like_service_line(text: str) -> bool:
 
 
 def _apply_role_answer(state: dict[str, Any], message: str) -> None:
+    current = state.get("currentQuestion") if isinstance(state.get("currentQuestion"), dict) else {}
+    target_id = _clean_str(current.get("processId") or current.get("functionId"))
+    if target_id:
+        _apply_role_answer_for_process(state, target_id, message)
+        return
     target = None
     for func in state.get("functions") or []:
         if isinstance(func, dict) and _role_status(func) == ROLE_UNCLEAR:
@@ -1940,15 +1945,31 @@ def _apply_role_answer(state: dict[str, Any], message: str) -> None:
             break
     if target is None:
         return
+    _apply_role_answer_for_process(state, _clean_str(target.get("id")), message)
+
+
+def _apply_role_answer_for_process(state: dict[str, Any], process_id: str, message: str) -> None:
+    target_id = _clean_str(process_id)
+    if not target_id:
+        return
     text = message.strip().lower()
+    new_status = ""
     if any(marker in text for marker in _ROLE_FOREIGN_MARKERS):
-        target["roleStatus"] = ROLE_FOREIGN
+        new_status = ROLE_FOREIGN
+    elif "частично" in text:
+        new_status = ROLE_BELONGS
+    elif any(marker in text for marker in _ROLE_BELONGS_MARKERS) or text in {"да", "относится"}:
+        new_status = ROLE_BELONGS
+    if not new_status:
         return
-    if "частично" in text:
-        target["roleStatus"] = ROLE_BELONGS
-        return
-    if any(marker in text for marker in _ROLE_BELONGS_MARKERS) or text in {"да", "относится"}:
-        target["roleStatus"] = ROLE_BELONGS
+    for key in ("functions", "processes"):
+        for item in state.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            if _clean_str(item.get("id")) != target_id:
+                continue
+            item["roleStatus"] = new_status
+            return
 
 
 def _role_status(func: dict[str, Any]) -> str:

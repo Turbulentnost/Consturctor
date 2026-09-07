@@ -217,12 +217,19 @@ function stageCaption(session: RegulationCreationSession): string {
 
 function remainingEstimateLabel(session: RegulationCreationSession): string {
   const pipeline = pipelineMeta(session)
+  const stage = String(pipeline.stage || '').trim().toLowerCase()
   const remaining =
     pipeline.estimatedRemainingQuestions && typeof pipeline.estimatedRemainingQuestions === 'object'
       ? (pipeline.estimatedRemainingQuestions as Record<string, unknown>)
       : {}
   const text = String(remaining.text || '').trim()
   if (text) return text
+  if (stage === 'select') {
+    const processCount = processChoicesFromSession(session).length
+    if (processCount > 0) {
+      return `Выберите процессы (${processCount} процессов × ~4 вопроса)`
+    }
+  }
   const min = Number(remaining.min ?? 0)
   const max = Number(remaining.max ?? min)
   if (Number.isFinite(min) && Number.isFinite(max) && min >= 0 && max >= min) {
@@ -231,6 +238,27 @@ function remainingEstimateLabel(session: RegulationCreationSession): string {
       : `Осталось примерно: ${Math.round(min)}-${Math.round(max)} вопросов`
   }
   return ''
+}
+
+function shouldBlockSdkAgent(
+  session: RegulationCreationSession,
+  turn?: RegulationCreationTurn
+): boolean {
+  const pipeline = pipelineMeta(session)
+  const stage = String(pipeline.stage || '').trim().toLowerCase()
+  const phase = String(pipeline.interviewPhase || stage).trim().toLowerCase()
+  if (['upload', 'select'].includes(stage)) return true
+  if (['upload', 'select'].includes(phase)) return true
+  if (Boolean(turn?.prefetchedReply)) return true
+  const queueLen = Math.max(
+    turn?.queueDepth ?? 0,
+    turn?.questionQueue?.length ?? 0,
+    session.queueDepth ?? 0,
+    session.questionQueue?.length ?? 0
+  )
+  if (queueLen > 0) return true
+  if (stage === 'interview' && phase === 'collect') return true
+  return false
 }
 
 class RegulationCancelledError extends Error {
@@ -443,12 +471,16 @@ export function RegulationChatPage({
 
   useEffect(() => {
     if (ready || needsProcessSelection || stoppedRef.current || !window.agent?.start) return
+    if (shouldBlockSdkAgent(session)) return
     const depth = session.queueDepth ?? session.questionQueue?.length ?? queuedQuestionsRef.current.length
     if (depth >= 2) return
     void api
       .peekRegulationCreationTurn(session.draftId)
       .then((turn) => {
         syncQueueFromSession(turn)
+        if (shouldBlockSdkAgent(session, turn) && turn.prefetchedReply) {
+          void runSdkAndApply(turn)
+        }
       })
       .catch(() => undefined)
   }, [session.draftId, ready, needsProcessSelection, session.queueDepth, session.questionQueue?.length])
@@ -678,7 +710,9 @@ export function RegulationChatPage({
     })
   }
 
-  const visible = session.messages.filter((m) => m.role === 'assistant' || m.role === 'user')
+  const visible = session.messages
+    .filter((m) => m.role === 'assistant' || m.role === 'user')
+    .filter((m) => !needsProcessSelection || m.role === 'user')
   const lastAssistantId = [...visible].reverse().find((item) => item.role === 'assistant')?.messageId || ''
   const lastVisible = visible[visible.length - 1]
   const pendingUserId =
@@ -689,6 +723,21 @@ export function RegulationChatPage({
   async function runSdkAndApply(turn: RegulationCreationTurn): Promise<void> {
     if (stoppedRef.current) throw new RegulationCancelledError()
     syncQueueFromSession(turn)
+    if (shouldBlockSdkAgent(turn.session, turn)) {
+      if (turn.prefetchedReply) {
+        const updated = await api.applyRegulationCreationReply(session.draftId, turn.prefetchedReply, {
+          sdkAgentId: turn.sdkAgentId,
+          forceCreate: turn.forceCreate
+        })
+        if (stoppedRef.current) throw new RegulationCancelledError()
+        syncQueueFromSession(updated)
+        setOptimisticQuestion(null)
+        onSessionChange(updated)
+      } else {
+        onSessionChange(turn.session)
+      }
+      return
+    }
     if (turn.prefetchedReply) {
       const updated = await api.applyRegulationCreationReply(session.draftId, turn.prefetchedReply, {
         sdkAgentId: turn.sdkAgentId,
@@ -768,6 +817,7 @@ export function RegulationChatPage({
 
   useEffect(() => {
     if (busy || ready || stoppedRef.current || !pendingUserId || !window.agent?.start) return
+    if (shouldBlockSdkAgent(session)) return
     const key = `${session.draftId}:${pendingUserId}`
     if (resumeKeyRef.current === key) return
     resumeKeyRef.current = key

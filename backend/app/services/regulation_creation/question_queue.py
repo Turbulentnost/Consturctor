@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from copy import deepcopy
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from app.services.regulation_creation.pipeline import (
     MAX_QUESTIONS_PER_ROUND,
@@ -63,6 +66,44 @@ def peek_queue_head(state: dict[str, Any]) -> dict[str, Any] | None:
     return dict(queue[0]) if queue else None
 
 
+def all_ownership_questions(state: dict[str, Any], *, all_candidates: bool = False) -> list[dict[str, Any]]:
+    interview = state if isinstance(state, dict) else {}
+    pipeline = normalize_pipeline(interview.get("pipeline"))
+    stage = str(pipeline.get("stage") or "")
+    if stage not in {"extract", "select", "interview"}:
+        return []
+    if stage == "interview" and _collect_stage_done(pipeline):
+        return []
+    selected_ids = [
+        str(item).strip()
+        for item in (pipeline.get("selectedProcessIds") or [])
+        if str(item).strip()
+    ]
+    if not selected_ids and all_candidates:
+        selected_ids = [
+            _clean(item.get("id"))
+            for item in (interview.get("processes") or [])
+            if isinstance(item, dict) and _clean(item.get("id"))
+        ]
+    if not selected_ids:
+        return []
+    by_id = {
+        _clean(item.get("id")): item
+        for item in (interview.get("processes") or [])
+        if isinstance(item, dict) and _clean(item.get("id"))
+    }
+    position = _clean(interview.get("position"))
+    questions: list[dict[str, Any]] = []
+    for pid in selected_ids:
+        process = by_id.get(pid)
+        if not isinstance(process, dict):
+            continue
+        item = _ownership_question_item(process, position=position)
+        if item:
+            questions.append(item)
+    return questions
+
+
 def all_collect_questions(state: dict[str, Any], *, all_candidates: bool = False) -> list[dict[str, Any]]:
     interview = state if isinstance(state, dict) else {}
     pipeline = normalize_pipeline(interview.get("pipeline"))
@@ -95,34 +136,48 @@ def all_collect_questions(state: dict[str, Any], *, all_candidates: bool = False
         process = by_id.get(pid)
         if not isinstance(process, dict):
             continue
+        if _needs_ownership_question(process, position):
+            continue
         for field in _collect_required_gaps_for_process(process):
             questions.append(_collect_question_item(process, field, position=position))
     return questions
 
 
 def build_deterministic_queue(state: dict[str, Any], *, all_candidates: bool = False) -> dict[str, Any]:
-    """Fill questionQueue with all pending collect questions synchronously (no LLM)."""
+    """Fill questionQueue with ownership + collect questions synchronously (no LLM)."""
     out = normalize_question_queue(state)
     pipeline = normalize_pipeline(out.get("pipeline"))
     stage = str(pipeline.get("stage") or "")
     if stage not in {"extract", "select", "interview"}:
         return out
     use_all = all_candidates or stage in {"extract", "select"}
-    candidates = all_collect_questions(out, all_candidates=use_all)
+    candidates = all_ownership_questions(out, all_candidates=use_all) + all_collect_questions(
+        out, all_candidates=use_all
+    )
     if not candidates:
         return out
+    before = queue_depth(out)
     out = enqueue_questions(out, candidates)
+    added = queue_depth(out) - before
+    if added > 0:
+        logger.info(
+            "[deterministic-queue] added=%s stage=%s ownership=%s collect=%s",
+            added,
+            stage,
+            sum(1 for item in candidates if _clean(item.get("source")) == "ownership"),
+            sum(1 for item in candidates if _clean(item.get("source")) == "collect"),
+        )
     out["prefetchInProgress"] = False
     return out
 
 
 def rebuild_collect_queue(state: dict[str, Any]) -> dict[str, Any]:
-    """Replace collect queue after process selection."""
+    """Replace collect/ownership queue after process selection."""
     out = normalize_question_queue(state)
     out["questionQueue"] = [
         item
         for item in (out.get("questionQueue") or [])
-        if _clean((item or {}).get("source")) != "collect"
+        if _clean((item or {}).get("source")) not in {"collect", "ownership"}
     ]
     return build_deterministic_queue(out, all_candidates=False)
 
@@ -142,8 +197,15 @@ def enqueue_questions(state: dict[str, Any], questions: list[Any]) -> dict[str, 
     selected = {str(item).strip() for item in (pipeline.get("selectedProcessIds") or []) if str(item).strip()}
     if stage not in {"extract", "select", "interview"}:
         return out
-    collect_items = [item for item in questions if isinstance(item, dict) and _clean(item.get("source")) == "collect"]
-    round_items = [item for item in questions if isinstance(item, dict) and _clean(item.get("source")) != "collect"]
+    deterministic_sources = {"collect", "ownership"}
+    collect_items = [
+        item for item in questions if isinstance(item, dict) and _clean(item.get("source")) in deterministic_sources
+    ]
+    round_items = [
+        item
+        for item in questions
+        if isinstance(item, dict) and _clean(item.get("source")) not in deterministic_sources
+    ]
     if stage in {"extract", "select"}:
         filtered_in = collect_items
     elif not selected and pipeline.get("interviewPhase") != "collect":
@@ -277,6 +339,12 @@ def apply_collect_answer_to_facts(state: dict[str, Any], message: str) -> dict[s
     qid = _clean(current.get("id"))
     process_id = _clean(current.get("processId") or current.get("functionId"))
     field = _clean(current.get("field"))
+    if field == "roleStatus" or qid.startswith("ownership-"):
+        from app.services.regulation_creation.interview import _apply_role_answer_for_process
+
+        _apply_role_answer_for_process(out, process_id, answer)
+        out["pipeline"] = normalize_pipeline(out.get("pipeline"))
+        return out
     if not field and qid.startswith("collect-"):
         parts = qid.split("-", 2)
         if len(parts) == 3:
@@ -338,6 +406,50 @@ def _normalize_queue_item(item: dict[str, Any]) -> dict[str, Any]:
         "options": [_clean(opt) for opt in options if _clean(opt)],
         "smartKey": _clean(item.get("smartKey")),
         "source": _clean(item.get("source")) or "round",
+    }
+
+
+def _needs_ownership_question(process: dict[str, Any], position: str) -> bool:
+    from app.services.regulation_creation.interview import (
+        ROLE_BELONGS,
+        ROLE_FOREIGN,
+        _actors_match,
+        _is_generic_actor,
+        _role_status,
+    )
+
+    actor = _clean(process.get("actor"))
+    if not actor or not position or _is_generic_actor(actor):
+        return False
+    if _role_status(process) in {ROLE_BELONGS, ROLE_FOREIGN}:
+        return False
+    return not _actors_match(actor, position)
+
+
+def _ownership_question_item(process: dict[str, Any], *, position: str = "") -> dict[str, Any] | None:
+    if not _needs_ownership_question(process, position):
+        return None
+    title = _clean(process.get("title")) or "этот процесс"
+    actor = _clean(process.get("actor"))
+    pid = _clean(process.get("id"))
+    role = position or "вашей должности"
+    text = (
+        f"В приложенном документе «{title}» отнесена к должности «{actor}». "
+        f"Эта работа входит в ваши обязанности как «{role}»?"
+    )
+    logger.info("[deterministic-queue] ownership process=%s actor=%s position=%s", pid, actor, role)
+    return {
+        "id": f"ownership-{pid}",
+        "processId": pid,
+        "field": "roleStatus",
+        "text": text,
+        "options": [
+            "Да, это моя обязанность",
+            "Нет, другая роль",
+            "Частично, уточню",
+        ],
+        "smartKey": "R",
+        "source": "ownership",
     }
 
 

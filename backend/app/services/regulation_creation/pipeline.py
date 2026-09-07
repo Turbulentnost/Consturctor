@@ -964,7 +964,7 @@ def _estimate_remaining_questions(
         per_process = len(COLLECT_REQUIRED_FIELDS)
         min_q = max(1, process_count * per_process)
         if stage == "select":
-            text = f"Выберите процессы · оценка ~{min_q} базовых вопросов"
+            text = f"Выберите процессы ({process_count} процессов × ~{per_process} вопроса)"
         else:
             text = f"Осталось примерно: {min_q} базовых вопросов"
         return {"min": min_q, "max": min_q, "text": text}
