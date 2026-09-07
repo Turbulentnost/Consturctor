@@ -65,6 +65,8 @@ from app.services.regulation_creation.interview import (
 )
 from app.services.regulation_creation.pipeline import (
     apply_round_answers,
+    ensure_process_selection_state,
+    has_process_candidates,
     incremental_document_from_state,
     normalize_pipeline,
     select_processes as pipeline_select_processes,
@@ -328,11 +330,15 @@ def _turn_payload(
         force_create=force_create,
     )
     queue_meta = queue_snapshot(interview)
+    awaiting_process_selection = (
+        not (pipeline.get("selectedProcessIds") or []) and has_process_candidates(interview)
+    )
     block_llm = (
         not force_create
         and (
-            stage in ("select", "upload")
-            or phase in ("select", "upload")
+            stage in ("select", "upload", "extract")
+            or phase in ("select", "upload", "extract")
+            or awaiting_process_selection
             or queue_depth(interview) > 0
             or bool(prefetched_reply)
             or (stage == "interview" and phase == "collect" and not pipeline.get("collectReadiness", {}).get("isReady"))
@@ -663,22 +669,49 @@ def stream_creation_message(
 def _is_early_pipeline_stage(pipeline: dict[str, Any]) -> bool:
     stage = str(pipeline.get("stage") or "")
     phase = str(pipeline.get("interviewPhase") or stage)
-    return stage in ("upload", "select") or phase in ("upload", "select")
+    return stage in ("upload", "extract", "select") or phase in ("upload", "extract", "select")
 
 
 def _processes_for_select_message(state: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(state, dict):
         return []
-    return [
-        {
-            "id": item.get("id"),
-            "title": item.get("title"),
-            "actor": item.get("actor"),
-            "roleStatus": item.get("roleStatus"),
-        }
-        for item in (state.get("processes") or [])
-        if isinstance(item, dict)
-    ]
+    state = ensure_process_selection_state(state)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in state.get("processes") or []:
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("id") or item.get("processId") or "").strip()
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        out.append(
+            {
+                "id": pid,
+                "title": item.get("title"),
+                "actor": item.get("actor"),
+                "roleStatus": item.get("roleStatus"),
+            }
+        )
+    if out:
+        return out
+    pipeline = normalize_pipeline(state.get("pipeline"))
+    for block in pipeline.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        pid = str(block.get("processId") or block.get("id") or "").strip()
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        out.append(
+            {
+                "id": pid,
+                "title": block.get("title") or pid,
+                "actor": "",
+                "roleStatus": "unclear",
+            }
+        )
+    return out
 
 
 def _post_select_stage_message(
@@ -801,26 +834,14 @@ def _apply_agent_reply(
     pipeline = normalize_pipeline(
         draft.interview_json.get("pipeline") if isinstance(draft.interview_json, dict) else {}
     )
+    if isinstance(draft.interview_json, dict):
+        draft.interview_json = ensure_process_selection_state(draft.interview_json)
+        pipeline = normalize_pipeline(draft.interview_json.get("pipeline"))
     processes = (
         draft.interview_json.get("processes")
         if isinstance(draft.interview_json, dict) and isinstance(draft.interview_json.get("processes"), list)
         else []
     )
-    selected = pipeline.get("selectedProcessIds") or []
-    if processes and not selected and pipeline.get("stage") == "interview":
-        draft.interview_json = set_pipeline_stage(draft.interview_json, "select")
-        draft.interview_json = replenish_queue(
-            normalize_interview_state(draft.interview_json),
-            target=FULL_QUEUE_TARGET,
-        )
-        if isinstance(draft.interview_json, dict):
-            draft.interview_json = {
-                **draft.interview_json,
-                "pipeline": sync_remaining_estimate(draft.interview_json),
-            }
-        pipeline = normalize_pipeline(
-            draft.interview_json.get("pipeline") if isinstance(draft.interview_json, dict) else {}
-        )
     logger.info(
         "reg_create timing merge/apply phase=%s ms=%s stage=%s round_questions=%s draft=%s",
         pipeline.get("interviewPhase"),
@@ -931,6 +952,7 @@ def _apply_agent_reply(
         pipeline.get("stage") == "interview"
         and phase == "collect"
         and queue_has_items
+        and (pipeline.get("selectedProcessIds") or [])
         and not force_create
         and not round_questions
     ):

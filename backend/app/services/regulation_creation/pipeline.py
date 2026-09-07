@@ -142,6 +142,69 @@ def mark_upload_received(state: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def has_process_candidates(state: dict[str, Any]) -> bool:
+    if not isinstance(state, dict):
+        return False
+    pipeline = normalize_pipeline(state.get("pipeline"))
+    if pipeline.get("blocks"):
+        return True
+    processes = state.get("processes")
+    return isinstance(processes, list) and bool(processes)
+
+
+def sync_processes_from_blocks(state: dict[str, Any]) -> dict[str, Any]:
+    """Ensure interview.processes contains every pipeline block (for select UI)."""
+    out = deepcopy(state) if isinstance(state, dict) else {}
+    pipeline = normalize_pipeline(out.get("pipeline"))
+    blocks = pipeline.get("blocks") or []
+    if not blocks:
+        return out
+    processes = out.get("processes") if isinstance(out.get("processes"), list) else []
+    by_id = {
+        _clean(item.get("id") or item.get("processId")): item
+        for item in processes
+        if isinstance(item, dict) and _clean(item.get("id") or item.get("processId"))
+    }
+    changed = False
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        process_id = _clean(block.get("processId") or block.get("id"))
+        if not process_id or process_id in by_id:
+            continue
+        by_id[process_id] = {
+            "id": process_id,
+            "title": _clean(block.get("title")) or process_id,
+            "actor": "",
+            "roleStatus": "unclear",
+            "knownFacts": block.get("elements") if isinstance(block.get("elements"), dict) else {},
+            "sourceRefs": block.get("sourceRefs") if isinstance(block.get("sourceRefs"), list) else [],
+        }
+        changed = True
+    if changed:
+        out["processes"] = list(by_id.values())
+    return out
+
+
+def ensure_process_selection_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Keep pipeline on select until the user confirms process ids."""
+    out = sync_processes_from_blocks(state)
+    pipeline = normalize_pipeline(out.get("pipeline"))
+    selected = [str(item).strip() for item in pipeline.get("selectedProcessIds") or [] if str(item).strip()]
+    if selected or not has_process_candidates(out):
+        return out
+    if pipeline["stage"] not in ("upload", "extract", "select", "interview"):
+        return out
+    pipeline["stage"] = "select"
+    pipeline["round"] = 0
+    pipeline["rounds"] = []
+    pipeline["roundQuestions"] = []
+    out.pop("currentQuestion", None)
+    pipeline = _refresh_pipeline_derived(pipeline)
+    out["pipeline"] = pipeline
+    return out
+
+
 def merge_pipeline_payload(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """Merge extract / roundQuestions / blocks from agent JSON into interview state."""
     out = deepcopy(state) if isinstance(state, dict) else {}
@@ -189,19 +252,15 @@ def merge_pipeline_payload(state: dict[str, Any], payload: dict[str, Any]) -> di
             out["pipeline"] = pipeline
             out = enqueue_round_batch(out, pipeline.get("roundQuestions") or [])
 
-    processes = out.get("processes") if isinstance(out.get("processes"), list) else []
-    has_process_candidates = bool(pipeline["blocks"]) or bool(processes)
-    if not has_selection and has_process_candidates and pipeline["stage"] in ("upload", "extract", "interview"):
-        pipeline["stage"] = "select"
-    elif pipeline["stage"] == "extract" and pipeline["blocks"]:
-        pipeline["stage"] = "select"
-
     # Refresh SMART from current process facts.
     pipeline["blocks"] = [
         {**block, "smart": smart_check_block(block, out)} for block in pipeline["blocks"]
     ]
     pipeline = _refresh_pipeline_derived(pipeline)
     out["pipeline"] = pipeline
+    out = sync_processes_from_blocks(out)
+    out = ensure_process_selection_state(out)
+    pipeline = normalize_pipeline(out.get("pipeline"))
     from app.services.regulation_creation.question_queue import populate_queue_after_extract
 
     out = populate_queue_after_extract(out)

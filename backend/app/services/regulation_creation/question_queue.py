@@ -318,6 +318,13 @@ def build_fastpath_reply_from_queue(
 ) -> str:
     if force_create:
         return ""
+    selected = {
+        str(item).strip()
+        for item in (pipeline.get("selectedProcessIds") or [])
+        if str(item).strip()
+    }
+    if not selected:
+        return ""
     if str(pipeline.get("stage") or "") != "interview":
         return ""
     phase = str(pipeline.get("interviewPhase") or "")

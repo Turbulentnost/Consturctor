@@ -801,7 +801,7 @@ export function App(): React.JSX.Element {
           setRegulation(result)
           setView({ kind: 'review', result })
         }}
-        onStartRegulationChat={() => void startRegulationChat()}
+        onStartRegulationChat={() => void startRegulationChat({ fresh: true })}
         hasRegulationDraft={isOpenRegulationDraft(regChat)}
         regulationDraftBusy={regChatBusy}
         onResumeRegulationDraft={() => void startRegulationChat()}

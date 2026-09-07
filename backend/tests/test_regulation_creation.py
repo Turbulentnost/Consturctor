@@ -1725,3 +1725,91 @@ def test_no_sdk_invoke_during_collect_with_nonempty_queue() -> None:
     assert not turn.sdkPrompt.strip()
     assert turn.prefetchedReply
     assert turn.queueDepth >= 1
+
+
+def test_extract_with_blocks_only_forces_select_and_syncs_processes() -> None:
+    from app.services.regulation_creation.interview import merge_agent_payload
+
+    state = {
+        "attachments": [{"id": "f1", "name": "duties.txt", "kind": "text", "text": "Календарь"}],
+        "processes": [],
+        "functions": [],
+        "pipeline": {"stage": "extract"},
+    }
+    payload = {
+        "status": "need_more",
+        "message": "Сразу задаю вопрос по регламенту",
+        "pipeline": {
+            "stage": "interview",
+            "blocks": [{"id": "b-p1", "processId": "p1", "title": "Календарь"}],
+        },
+    }
+    out = merge_agent_payload(state, payload)
+    assert out["pipeline"]["stage"] == "select"
+    assert out["pipeline"]["selectedProcessIds"] == []
+    assert not out.get("currentQuestion")
+    assert any(item.get("id") == "p1" for item in out.get("processes") or [])
+
+
+def test_extract_with_candidates_has_no_current_question() -> None:
+    from app.services.regulation_creation.interview import merge_agent_payload
+
+    state = {
+        "attachments": [{"id": "f1", "name": "duties.txt", "kind": "text", "text": "Совет директоров"}],
+        "processes": [],
+        "functions": [],
+        "pipeline": {"stage": "extract"},
+    }
+    payload = {
+        "status": "need_more",
+        "message": "Это ваша обязанность?",
+        "interview": {
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Организация заседаний",
+                    "actor": "Помощник ПСД",
+                    "roleStatus": "unclear",
+                    "knownFacts": {},
+                    "sourceRefs": [],
+                }
+            ]
+        },
+        "pipeline": {"stage": "interview"},
+    }
+    out = merge_agent_payload(state, payload)
+    assert out["pipeline"]["stage"] == "select"
+    assert out["pipeline"]["interviewPhase"] == "select"
+    assert not out.get("currentQuestion")
+
+
+def test_turn_payload_blocks_fastpath_before_process_selection() -> None:
+    from app.services.regulation_creation.service import _turn_payload
+
+    db = _session()
+    user = AppUser(id="user-select-block", fio="Select User", position="Инженер")
+    db.add(user)
+    db.commit()
+    draft = RegulationCreationDraft(
+        id="draft-select-block",
+        user_id=user.id,
+        status="interview",
+        interview_json={
+            "position": "Инженер",
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Календарь",
+                    "roleStatus": "unclear",
+                    "knownFacts": {},
+                    "sourceRefs": [],
+                }
+            ],
+            "pipeline": {"stage": "select", "blocks": [{"id": "b-p1", "processId": "p1", "title": "Календарь"}]},
+        },
+    )
+    db.add(draft)
+    db.commit()
+    turn = _turn_payload(db, draft, message="", force_create=False)
+    assert not turn.prefetchedReply
+    assert not turn.sdkPrompt.strip()

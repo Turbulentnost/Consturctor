@@ -177,6 +177,21 @@ function processChoicesFromSession(session: RegulationCreationSession): ProcessC
       actor: String(row.actor || '').trim()
     })
   }
+  if (out.length > 0) return out
+  const pipeline = pipelineMeta(session)
+  const blocks = Array.isArray(pipeline.blocks) ? pipeline.blocks : []
+  for (const item of blocks) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Record<string, unknown>
+    const id = String(row.processId || row.id || '').trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    out.push({
+      id,
+      title: String(row.title || row.name || id).trim() || id,
+      actor: String(row.actor || '').trim()
+    })
+  }
   return out
 }
 
@@ -189,12 +204,14 @@ function selectedProcessIds(session: RegulationCreationSession): string[] {
   return raw.map((item) => String(item || '').trim()).filter(Boolean)
 }
 
-function isSelectStage(session: RegulationCreationSession): boolean {
-  const pipeline =
-    session.pipeline && typeof session.pipeline === 'object'
-      ? (session.pipeline as Record<string, unknown>)
-      : {}
-  return String(pipeline.stage || '').trim().toLowerCase() === 'select'
+function needsProcessSelectionForSession(session: RegulationCreationSession, ready: boolean): boolean {
+  if (ready) return false
+  const pipeline = pipelineMeta(session)
+  const stage = String(pipeline.stage || '').trim().toLowerCase()
+  if (stage === 'assemble' || stage === 'done') return false
+  const processChoices = processChoicesFromSession(session)
+  const pipelineSelectedIds = selectedProcessIds(session)
+  return processChoices.length > 0 && pipelineSelectedIds.length === 0
 }
 
 function pipelineMeta(session: RegulationCreationSession): Record<string, unknown> {
@@ -247,8 +264,10 @@ function shouldBlockSdkAgent(
   const pipeline = pipelineMeta(session)
   const stage = String(pipeline.stage || '').trim().toLowerCase()
   const phase = String(pipeline.interviewPhase || stage).trim().toLowerCase()
-  if (['upload', 'select'].includes(stage)) return true
-  if (['upload', 'select'].includes(phase)) return true
+  const ready = Boolean(session.resultRegulation || session.resultDocumentPath)
+  if (needsProcessSelectionForSession(session, ready)) return true
+  if (['upload', 'select', 'extract'].includes(stage)) return true
+  if (['upload', 'select', 'extract'].includes(phase)) return true
   if (Boolean(turn?.prefetchedReply)) return true
   const queueLen = Math.max(
     turn?.queueDepth ?? 0,
@@ -445,8 +464,7 @@ export function RegulationChatPage({
   const ready = Boolean(session.resultRegulation || session.resultDocumentPath)
   const processChoices = processChoicesFromSession(session)
   const pipelineSelectedIds = selectedProcessIds(session)
-  const needsProcessSelection =
-    !ready && isSelectStage(session) && processChoices.length > 0 && pipelineSelectedIds.length === 0
+  const needsProcessSelection = needsProcessSelectionForSession(session, ready)
   const hasUserMessage = session.messages.some((m) => m.role === 'user')
   useEffect(() => {
     if (!needsProcessSelection) return
@@ -724,7 +742,7 @@ export function RegulationChatPage({
     if (stoppedRef.current) throw new RegulationCancelledError()
     syncQueueFromSession(turn)
     if (shouldBlockSdkAgent(turn.session, turn)) {
-      if (turn.prefetchedReply) {
+      if (turn.prefetchedReply && !needsProcessSelectionForSession(turn.session, ready)) {
         const updated = await api.applyRegulationCreationReply(session.draftId, turn.prefetchedReply, {
           sdkAgentId: turn.sdkAgentId,
           forceCreate: turn.forceCreate
