@@ -620,6 +620,12 @@ def complete_passport(
                     excerpt=excerpt,
                     functions=functions,
                 )
+            prev_q = prev_prompts.get(field_name, "").strip()
+            if prev_q and follow_up.strip() == prev_q:
+                follow_up = (
+                    f"Нужна более конкретная информация.\n{follow_up}\n"
+                    "Опишите объект работы, действие и результат."
+                )
             elif (
                 field_name in _QUOTE_WORTHY_FIELDS
                 and excerpt

@@ -1991,7 +1991,10 @@ class Sidecar:
             interview=command.get("interview") if isinstance(command.get("interview"), dict) else {},
         )
         events: list[dict[str, Any]] = []
+        agent_role = str(command.get("agentRole") or "interview").strip().lower()
         agent_id = str(command.get("resumeAgentId") or "").strip()
+        if agent_role == "research":
+            agent_id = str(command.get("resumeResearchAgentId") or command.get("resumeAgentId") or "").strip()
 
         def emit_cancelled() -> None:
             emit(
@@ -2792,6 +2795,27 @@ def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[
         json.dumps(interview, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    static_root = Path(__file__).resolve().parents[2] / "backend" / "app" / "static" / "regulation_dual_agent"
+    for name in (
+        "REGULATION_BRIEF.md",
+        "RESEARCHER_AGENT.md",
+        "INTERVIEWER_AGENT.md",
+        "DUAL_WORKFLOW.md",
+    ):
+        src = static_root / name
+        if src.is_file():
+            (run_cwd / name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    reviews = interview.get("materialReview")
+    if isinstance(reviews, list) and reviews:
+        try:
+            from app.services.regulation_creation.dual_workflow import completeness_report_markdown
+
+            (run_cwd / "PROCESS_COMPLETENESS.md").write_text(
+                completeness_report_markdown(reviews),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
     materials = run_cwd / "materials"
     materials.mkdir(parents=True, exist_ok=True)
     attachments = interview.get("attachments") if isinstance(interview.get("attachments"), list) else []

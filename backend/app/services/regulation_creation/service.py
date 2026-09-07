@@ -47,6 +47,7 @@ from app.services.regulation_creation.interview import (
     append_user_turn,
     build_creation_prompt,
     build_followup_creation_prompt,
+    build_round_prefetch_prompt,
     creation_system_rules,
     document_from_interview,
     document_has_body,
@@ -62,6 +63,9 @@ from app.services.regulation_creation.interview import (
     remember_assistant_question,
     set_interview_position,
     set_sdk_agent_id,
+    set_research_sdk_agent_id,
+    research_sdk_agent_id,
+    _clean_str,
 )
 from app.services.regulation_creation.pipeline import (
     apply_round_answers,
@@ -69,21 +73,40 @@ from app.services.regulation_creation.pipeline import (
     has_process_candidates,
     incremental_document_from_state,
     normalize_pipeline,
+    pending_interview_work,
+    resume_interview_if_pending,
     select_processes as pipeline_select_processes,
     set_pipeline_stage,
     slice_materials_for_prompt,
     sync_remaining_estimate,
+    _drop_known_questions,
+    _filter_round_questions,
+)
+from app.services.regulation_creation.dual_workflow import (
+    apply_material_review,
+    apply_research_payload,
+    build_material_review_prompt,
+    build_research_prefetch_prompt,
+    completeness_report_markdown,
+    dual_workflow_enabled,
+    enable_dual_workflow,
+    merge_agent_candidates_from_payload,
+    processes_ready_for_agent,
+    spawn_regulation_process_agents,
 )
 from app.services.regulation_creation.question_queue import (
     FULL_QUEUE_TARGET,
+    MIN_QUEUE_DEPTH,
     build_fastpath_reply_from_queue,
     consume_queue_head,
+    enqueue_round_batch,
     needs_llm_prefetch,
     peek_queue_head,
     queue_depth,
     queue_snapshot,
     queued_question_metadata,
     replenish_queue,
+    _has_open_current_question,
 )
 from app.services.regulation_creation.sto_template import STO_TEMPLATE_PATH, fill_sto_regulation
 from app.services.regulation_creation.template_tools import (
@@ -145,7 +168,9 @@ def start_creation_session(
         terminate_active_creation_sessions(db, user_id=user_id)
 
     user = db.get(AppUser, user_id)
-    interview = set_interview_position(new_interview_state(), getattr(user, "position", "") or "")
+    interview = enable_dual_workflow(
+        set_interview_position(new_interview_state(), getattr(user, "position", "") or "")
+    )
     draft = RegulationCreationDraft(
         id=f"reg-create-{uuid4().hex[:12]}",
         user_id=user_id,
@@ -172,12 +197,102 @@ def peek_creation_turn(db: Session, *, user_id: str, draft_id: str) -> Regulatio
         if item.role == "user":
             last_user = item.content or ""
             break
-    return _turn_payload(
+    turn = _turn_payload(
         db,
         draft,
         message=last_user,
         force_create=_is_force_create_message(last_user),
     )
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return turn
+
+
+def advance_creation_question(
+    db: Session,
+    *,
+    user_id: str,
+    draft_id: str,
+) -> RegulationCreationSession:
+    """Serve the next deterministic collect question when the UI is waiting."""
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    if draft.status == "finalized":
+        return _session(db, draft)
+    interview = normalize_interview_state(draft.interview_json)
+    interview = resume_interview_if_pending(interview)
+    draft.interview_json = interview
+    if pending_interview_work(interview) and _has_open_current_question(interview):
+        current = interview.get("currentQuestion") if isinstance(interview.get("currentQuestion"), dict) else {}
+        if not _clean_str(current.get("answer")):
+            interview.pop("currentQuestion", None)
+            draft.interview_json = interview
+    if _has_open_current_question(interview):
+        draft.interview_json = interview
+        db.add(draft)
+        db.commit()
+        return _session(db, draft)
+    interview.pop("currentQuestion", None)
+    interview = replenish_queue(interview, target=FULL_QUEUE_TARGET)
+    if isinstance(interview, dict):
+        interview = {**interview, "pipeline": sync_remaining_estimate(interview)}
+    draft.interview_json = interview
+    pipeline = normalize_pipeline(interview.get("pipeline"))
+    head = peek_queue_head(interview)
+    messages = _messages_for_draft(db, draft.id)
+    last_msg = messages[-1] if messages else None
+    last_assistant = next((item for item in reversed(messages) if item.role == "assistant"), None)
+    head_text = str((head or {}).get("text") or "").strip()
+    if (
+        last_assistant
+        and head_text
+        and (last_assistant.content or "").strip() == head_text
+        and last_msg
+        and last_msg.role == "assistant"
+    ):
+        draft.status = "interview"
+        db.add(draft)
+        db.commit()
+        db.refresh(draft)
+        return _session(db, draft)
+    if (
+        last_assistant
+        and head_text
+        and (last_assistant.content or "").strip() == head_text
+        and last_msg
+        and last_msg.role == "user"
+        and head
+    ):
+        interview = consume_queue_head(interview, question_id=str(head.get("id") or ""))
+        interview = replenish_queue(interview, target=FULL_QUEUE_TARGET)
+        draft.interview_json = interview
+        head = peek_queue_head(interview)
+        if head:
+            _post_queued_question_message(
+                db,
+                draft=draft,
+                parsed={"status": "need_more"},
+                head=head,
+                force_post=True,
+            )
+        draft.status = "interview"
+        db.add(draft)
+        db.commit()
+        db.refresh(draft)
+        return _session(db, draft)
+    if head and (pipeline.get("selectedProcessIds") or []) and pending_interview_work(interview):
+        _post_queued_question_message(
+            db,
+            draft=draft,
+            parsed={"status": "need_more"},
+            head=head,
+            force_post=True,
+        )
+    draft.status = "interview"
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return _session(db, draft)
 
 
 def get_creation_document(db: Session, *, user_id: str, draft_id: str) -> Path:
@@ -233,6 +348,21 @@ def persist_creation_turn(
         return _turn_payload(db, draft, message="", force_create=False)
     force_create = _is_force_create_message(message)
     display_message = _display_user_message(message, attachments)
+    existing_messages = _messages_for_draft(db, draft.id)
+    if existing_messages and existing_messages[-1].role == "user":
+        last_user = (existing_messages[-1].content or "").strip()
+        if last_user == display_message.strip() and draft.status in {"generating", "interview"}:
+            logger.info(
+                "reg_create skip duplicate user message draft=%s status=%s",
+                draft.id,
+                draft.status,
+            )
+            turn = _turn_payload(db, draft, message=message, force_create=force_create)
+            turn = _strip_duplicate_prefetch_turn(db, draft, turn)
+            db.add(draft)
+            db.commit()
+            db.refresh(draft)
+            return turn
     before_stage = normalize_pipeline(
         draft.interview_json.get("pipeline") if isinstance(draft.interview_json, dict) else {}
     ).get("stage")
@@ -259,7 +389,30 @@ def persist_creation_turn(
     db.add(draft)
     db.commit()
     db.refresh(draft)
-    return _turn_payload(db, draft, message=message, force_create=force_create)
+    draft.interview_json = resume_interview_if_pending(
+        draft.interview_json if isinstance(draft.interview_json, dict) else {}
+    )
+    draft.interview_json = replenish_queue(
+        normalize_interview_state(draft.interview_json),
+        target=FULL_QUEUE_TARGET,
+    )
+    if isinstance(draft.interview_json, dict):
+        draft.interview_json = {
+            **draft.interview_json,
+            "pipeline": sync_remaining_estimate(draft.interview_json),
+        }
+    _ensure_queued_question_posted(db, draft)
+    _autostart_assemble_when_ready(db, draft)
+    draft.status = "interview"
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    turn = _turn_payload(db, draft, message=message, force_create=force_create)
+    turn = _strip_duplicate_prefetch_turn(db, draft, turn)
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return turn
 
 
 def apply_creation_reply(
@@ -275,12 +428,35 @@ def apply_creation_reply(
     if request.sdkAgentId.strip():
         draft.interview_json = set_sdk_agent_id(draft.interview_json, request.sdkAgentId)
     force_create = bool(request.forceCreate)
-    _apply_agent_reply(
-        db,
-        user_id=user_id,
-        draft=draft,
-        raw=request.answer,
-        force_create=force_create,
+    if request.researchOnly:
+        _apply_research_reply(db, draft=draft, raw=request.answer, research_agent_id=request.sdkAgentId)
+        draft.interview_json = resume_interview_if_pending(
+            draft.interview_json if isinstance(draft.interview_json, dict) else {}
+        )
+        draft.interview_json = replenish_queue(
+            normalize_interview_state(draft.interview_json),
+            target=FULL_QUEUE_TARGET,
+        )
+        _ensure_queued_question_posted(db, draft)
+    elif request.prefetchOnly:
+        _apply_prefetch_reply(db, draft=draft, raw=request.answer)
+        draft.interview_json = resume_interview_if_pending(
+            draft.interview_json if isinstance(draft.interview_json, dict) else {}
+        )
+        _ensure_queued_question_posted(db, draft)
+    else:
+        _apply_agent_reply(
+            db,
+            user_id=user_id,
+            draft=draft,
+            raw=request.answer,
+            force_create=force_create,
+        )
+        _ensure_queued_question_posted(db, draft)
+        _autostart_assemble_when_ready(db, draft)
+        _maybe_spawn_process_agents(db, user_id=user_id, draft=draft)
+    draft.interview_json = resume_interview_if_pending(
+        draft.interview_json if isinstance(draft.interview_json, dict) else {}
     )
     draft.interview_json = replenish_queue(
         normalize_interview_state(draft.interview_json),
@@ -312,6 +488,9 @@ def _turn_payload(
 ) -> RegulationCreationTurn:
     timing_start = perf_counter()
     sdk_id = interview_sdk_agent_id(draft.interview_json)
+    draft.interview_json = resume_interview_if_pending(
+        draft.interview_json if isinstance(draft.interview_json, dict) else {}
+    )
     interview = normalize_interview_state(draft.interview_json)
     interview = replenish_queue(interview, target=FULL_QUEUE_TARGET)
     if isinstance(interview, dict):
@@ -322,6 +501,7 @@ def _turn_payload(
     phase = str(pipeline.get("interviewPhase") or stage)
     for_document = bool(
         force_create
+        or stage == "assemble"
         or (isinstance(draft.interview_json, dict) and draft.interview_json.get("document_write_required"))
     )
     prefetched_reply = build_fastpath_reply_from_queue(
@@ -333,25 +513,47 @@ def _turn_payload(
     awaiting_process_selection = (
         not (pipeline.get("selectedProcessIds") or []) and has_process_candidates(interview)
     )
-    block_llm = (
-        not force_create
-        and (
-            stage in ("select", "upload", "extract")
-            or phase in ("select", "upload", "extract")
-            or awaiting_process_selection
-            or queue_depth(interview) > 0
-            or bool(prefetched_reply)
-            or (stage == "interview" and phase == "collect" and not pipeline.get("collectReadiness", {}).get("isReady"))
+    is_extract = stage == "extract" or phase == "extract"
+    if is_extract and not force_create:
+        block_llm = bool(prefetched_reply)
+    else:
+        block_llm = (
+            not force_create
+            and (
+                stage in ("select", "upload")
+                or phase in ("select", "upload")
+                or awaiting_process_selection
+                or queue_depth(interview) > 0
+                or bool(prefetched_reply)
+                or (
+                    stage == "interview"
+                    and phase == "collect"
+                    and not pipeline.get("collectReadiness", {}).get("isReady")
+                )
+            )
         )
-    )
     if needs_llm_prefetch(interview) and not prefetched_reply and not block_llm:
         interview = {**interview, "prefetchInProgress": True}
         draft.interview_json = interview
     elif queue_depth(interview) > 0:
         interview = {**interview, "prefetchInProgress": False}
         draft.interview_json = interview
+    prefetch_prompt = ""
+    research_prompt = ""
+    if (
+        needs_llm_prefetch(interview)
+        and phase == "rounds"
+        and _has_open_current_question(interview)
+        and queue_depth(interview) < MIN_QUEUE_DEPTH
+    ):
+        prefetch_prompt = build_round_prefetch_prompt(state=interview, pipeline=pipeline)
+    if dual_workflow_enabled(interview) and phase in {"collect", "rounds"} and (pipeline.get("selectedProcessIds") or []):
+        research_prompt = build_research_prefetch_prompt(state=interview, pipeline=pipeline)
     prompt = ""
-    if not block_llm and not prefetched_reply:
+    if dual_workflow_enabled(interview) and phase == "material_review":
+        prompt = build_material_review_prompt(state=interview)
+        block_llm = False
+    elif not block_llm and not prefetched_reply:
         prompt = (
             build_followup_creation_prompt(
                 message=message,
@@ -390,6 +592,10 @@ def _turn_payload(
         sdkAgentId=sdk_id,
         forceCreate=force_create,
         prefetchedReply=prefetched_reply or "",
+        prefetchPrompt=prefetch_prompt,
+        researchPrompt=research_prompt,
+        sdkAgentRole="research" if phase == "material_review" else "interview",
+        researchAgentId=research_sdk_agent_id(draft.interview_json),
         questionQueue=queue_meta.get("questionQueue") or [],
         prefetchInProgress=bool(queue_meta.get("prefetchInProgress")),
         queueDepth=int(queue_meta.get("queueDepth") or 0),
@@ -408,6 +614,16 @@ def select_creation_processes(
         draft.interview_json = pipeline_select_processes(draft.interview_json, process_ids)
     except ValueError as exc:
         raise RegulationCreationError(str(exc), status_code=400) from exc
+    draft.interview_json = replenish_queue(
+        normalize_interview_state(draft.interview_json),
+        target=FULL_QUEUE_TARGET,
+    )
+    if isinstance(draft.interview_json, dict):
+        draft.interview_json.pop("currentQuestion", None)
+        draft.interview_json = {
+            **draft.interview_json,
+            "pipeline": sync_remaining_estimate(draft.interview_json),
+        }
     draft.status = "interview"
     _add_message(
         db,
@@ -416,13 +632,22 @@ def select_creation_processes(
         content=f"Выбраны процессы: {', '.join(process_ids)}",
         structured={"selectedProcessIds": process_ids, "pipeline": normalize_pipeline(draft.interview_json.get("pipeline"))},
     )
-    _add_message(
-        db,
-        draft=draft,
-        role="assistant",
-        content="Процессы выбраны. Готовлю первый раунд вопросов по блокам и SMART-критериям.",
-        structured={"pipeline": normalize_pipeline(draft.interview_json.get("pipeline"))},
-    )
+    head = peek_queue_head(draft.interview_json if isinstance(draft.interview_json, dict) else {})
+    if head:
+        _post_queued_question_message(
+            db,
+            draft=draft,
+            parsed={"status": "need_more"},
+            head=head,
+        )
+    else:
+        _add_message(
+            db,
+            draft=draft,
+            role="assistant",
+            content="Базовые факты по выбранным процессам уже есть в материалах. Перехожу к уточняющим вопросам.",
+            structured={"pipeline": normalize_pipeline(draft.interview_json.get("pipeline"))},
+        )
     db.add(draft)
     db.commit()
     db.refresh(draft)
@@ -714,6 +939,20 @@ def _processes_for_select_message(state: dict[str, Any]) -> list[dict[str, Any]]
     return out
 
 
+def _awaiting_process_selection(state: dict[str, Any]) -> bool:
+    if not isinstance(state, dict):
+        return False
+    state = ensure_process_selection_state(state)
+    pipeline = normalize_pipeline(state.get("pipeline"))
+    stage = str(pipeline.get("stage") or "").lower()
+    if stage in ("assemble", "done"):
+        return False
+    selected = pipeline.get("selectedProcessIds") or []
+    if selected:
+        return False
+    return has_process_candidates(state)
+
+
 def _post_select_stage_message(
     db: Session,
     *,
@@ -736,11 +975,17 @@ def _post_select_stage_message(
         draft.interview_json if isinstance(draft.interview_json, dict) else {}
     )
     content = (
-        "Из документа извлечены процессы. Отметьте те, по которым продолжим интервью — "
-        "базовые вопросы будут заданы сразу, без ожидания ИИ."
+        "Из документа извлечены процессы. Отметьте нужные — дальше спрошу только то, "
+        "чего не удалось однозначно взять из текста документа."
         if processes
         else "Не удалось автоматически выделить процессы из документа. Опишите функции сообщением."
     )
+    if _would_duplicate_assistant(db, draft.id, content):
+        logger.info("reg_create skip duplicate select prompt draft=%s", draft.id)
+        draft.status = "interview"
+        if positions := parsed.get("positions"):
+            draft.positions_json = [str(item) for item in positions if str(item).strip()]
+        return
     _add_message(
         db,
         draft=draft,
@@ -757,22 +1002,73 @@ def _post_select_stage_message(
         draft.positions_json = [str(item) for item in positions if str(item).strip()]
 
 
+def _last_assistant_content(db: Session, draft_id: str) -> str:
+    for item in reversed(_messages_for_draft(db, draft_id)):
+        if item.role == "assistant":
+            return (item.content or "").strip()
+        if item.role == "user":
+            break
+    return ""
+
+
+def _would_duplicate_assistant(db: Session, draft_id: str, content: str) -> bool:
+    text = (content or "").strip()
+    if not text:
+        return False
+    msgs = _messages_for_draft(db, draft_id)
+    if not msgs:
+        return False
+    last = msgs[-1]
+    if last.role == "assistant" and (last.content or "").strip() == text:
+        return True
+    return False
+
+
+def _strip_duplicate_prefetch_turn(
+    db: Session,
+    draft: RegulationCreationDraft,
+    turn: RegulationCreationTurn,
+) -> RegulationCreationTurn:
+    raw = (turn.prefetchedReply or "").strip()
+    if not raw:
+        return turn
+    try:
+        parsed = _parse_agent_response(raw)
+    except Exception:
+        return turn
+    message = str(parsed.get("message") or "").strip()
+    if message and _would_duplicate_assistant(db, draft.id, message):
+        logger.info("reg_create strip duplicate prefetch draft=%s", draft.id)
+        return turn.model_copy(update={"prefetchedReply": ""})
+    return turn
+
+
 def _post_queued_question_message(
     db: Session,
     *,
     draft: RegulationCreationDraft,
     parsed: dict[str, Any],
     head: dict[str, Any],
+    force_post: bool = False,
 ) -> None:
     quick_answers = head.get("options") or []
-    content = str(head.get("text") or "").strip()
+    raw_content = str(head.get("text") or "").strip()
+    if not raw_content:
+        return
+    if not force_post and _would_duplicate_assistant(db, draft.id, raw_content):
+        logger.info("reg_create skip duplicate queued question draft=%s q=%s", draft.id, head.get("id"))
+        draft.status = "interview"
+        if positions := parsed.get("positions"):
+            draft.positions_json = [str(item) for item in positions if str(item).strip()]
+        return
     draft.interview_json, content = remember_assistant_question(
         draft.interview_json,
-        message=content,
+        message=raw_content,
         quick_answers=quick_answers,
         function_id=str(head.get("processId") or "").strip(),
         field=str(head.get("field") or "").strip(),
         process_id=str(head.get("processId") or "").strip(),
+        queue_question_id=str(head.get("id") or "").strip(),
     )
     draft.interview_json = consume_queue_head(
         draft.interview_json,
@@ -800,6 +1096,175 @@ def _post_queued_question_message(
         draft.positions_json = [str(item) for item in positions if str(item).strip()]
 
 
+def _apply_research_reply(
+    db: Session,
+    *,
+    draft: RegulationCreationDraft,
+    raw: str,
+    research_agent_id: str = "",
+) -> None:
+    raw = raw.strip()
+    if not raw:
+        return
+    if research_agent_id.strip():
+        draft.interview_json = set_research_sdk_agent_id(draft.interview_json, research_agent_id)
+    parsed = _parse_agent_response(raw)
+    state = draft.interview_json if isinstance(draft.interview_json, dict) else {}
+    if isinstance(parsed.get("materialReview"), list):
+        state = apply_material_review(state, parsed)
+    state = apply_research_payload(state, parsed)
+    draft.interview_json = state
+    logger.info(
+        "[research-agent] facts=%s draft=%s",
+        len(parsed.get("researchFacts") or []) if isinstance(parsed.get("researchFacts"), list) else 0,
+        draft.id,
+    )
+
+
+def _maybe_spawn_process_agents(
+    db: Session,
+    *,
+    user_id: str,
+    draft: RegulationCreationDraft,
+) -> list[dict[str, Any]]:
+    if not dual_workflow_enabled(draft.interview_json if isinstance(draft.interview_json, dict) else {}):
+        return []
+    interview = draft.interview_json if isinstance(draft.interview_json, dict) else {}
+    title = ""
+    if isinstance(draft.draft_document_json, dict):
+        title = str(draft.draft_document_json.get("title") or "")
+    created_entries, updated_interview = spawn_regulation_process_agents(
+        db,
+        user_id=user_id,
+        interview=interview,
+        regulation_title=title,
+    )
+    if not created_entries:
+        return []
+    draft.interview_json = updated_interview
+    names = ", ".join(f"«{item.get('title')}»" for item in created_entries if isinstance(item, dict))
+    _add_message(
+        db,
+        draft=draft,
+        role="system",
+        content=f"Созданы агенты в «Мои агенты»: {names}.",
+        structured={"spawnedAgents": created_entries},
+    )
+    return created_entries
+
+
+def _apply_prefetch_reply(
+    db: Session,
+    *,
+    draft: RegulationCreationDraft,
+    raw: str,
+) -> None:
+    raw = raw.strip()
+    if not raw:
+        return
+    parsed = _parse_agent_response(raw)
+    round_questions = parsed.get("roundQuestions")
+    if not isinstance(round_questions, list):
+        interview = parsed.get("interview") if isinstance(parsed.get("interview"), dict) else {}
+        round_questions = interview.get("roundQuestions") if isinstance(interview, dict) else None
+    if not isinstance(round_questions, list) or not round_questions:
+        return
+    pipeline = normalize_pipeline(
+        draft.interview_json.get("pipeline") if isinstance(draft.interview_json, dict) else {}
+    )
+    selected = {str(item).strip() for item in (pipeline.get("selectedProcessIds") or []) if str(item).strip()}
+    filtered = _drop_known_questions(
+        draft.interview_json if isinstance(draft.interview_json, dict) else {},
+        _filter_round_questions(round_questions, selected),
+    )
+    if filtered:
+        draft.interview_json = enqueue_round_batch(draft.interview_json, filtered)
+    logger.info(
+        "[prefetch-queue] enqueued=%s draft=%s depth=%s",
+        len(filtered or []),
+        draft.id,
+        queue_depth(draft.interview_json if isinstance(draft.interview_json, dict) else {}),
+    )
+
+
+def _ensure_queued_question_posted(db: Session, draft: RegulationCreationDraft) -> None:
+    """Post the next queued interview question when chat is idle."""
+    interview = normalize_interview_state(
+        draft.interview_json if isinstance(draft.interview_json, dict) else {}
+    )
+    interview = resume_interview_if_pending(interview)
+    draft.interview_json = interview
+    pipeline = normalize_pipeline(interview.get("pipeline"))
+    if not pending_interview_work(interview):
+        return
+    if not (pipeline.get("selectedProcessIds") or []):
+        return
+    if _has_open_current_question(interview):
+        current = interview.get("currentQuestion") if isinstance(interview.get("currentQuestion"), dict) else {}
+        if not _clean_str(current.get("answer")):
+            interview.pop("currentQuestion", None)
+            draft.interview_json = interview
+        if _has_open_current_question(interview):
+            return
+    if queue_depth(interview) <= 0:
+        interview = replenish_queue(interview, target=FULL_QUEUE_TARGET)
+        draft.interview_json = interview
+    head = peek_queue_head(interview)
+    if not head:
+        return
+    text = str(head.get("text") or "").strip()
+    if text and _would_duplicate_assistant(db, draft.id, text):
+        return
+    _post_queued_question_message(
+        db,
+        draft=draft,
+        parsed={"status": "need_more"},
+        head=head,
+    )
+
+
+def _autostart_assemble_when_ready(db: Session, draft: RegulationCreationDraft) -> bool:
+    """Switch to assemble automatically once interview gaps are fully closed."""
+    interview = normalize_interview_state(
+        draft.interview_json if isinstance(draft.interview_json, dict) else {}
+    )
+    interview = resume_interview_if_pending(interview)
+    if pending_interview_work(interview):
+        draft.interview_json = interview
+        return False
+    pipeline = normalize_pipeline(interview.get("pipeline"))
+    if str(pipeline.get("stage") or "") != "interview":
+        draft.interview_json = interview
+        return False
+    if not (pipeline.get("selectedProcessIds") or []):
+        draft.interview_json = interview
+        return False
+    if interview.get("document_write_required"):
+        draft.interview_json = interview
+        return False
+    interview = {**interview, "document_write_required": True}
+    interview = set_pipeline_stage(interview, "assemble")
+    interview.pop("currentQuestion", None)
+    pipe = normalize_pipeline(interview.get("pipeline"))
+    pipe["roundQuestions"] = []
+    interview["pipeline"] = sync_remaining_estimate({**interview, "pipeline": pipe})
+    draft.interview_json = interview
+    draft.status = "interview"
+    assemble_msg = "Факты по выбранным процессам собраны. Формирую регламент."
+    if not _would_duplicate_assistant(db, draft.id, assemble_msg):
+        _add_message(
+            db,
+            draft=draft,
+            role="assistant",
+            content=assemble_msg,
+            structured={
+                "pipeline": normalize_pipeline(interview.get("pipeline")),
+                "documentWritePending": True,
+            },
+        )
+    return True
+
+
 def _apply_agent_reply(
     db: Session,
     *,
@@ -822,6 +1287,42 @@ def _apply_agent_reply(
         parsed["status"] = "need_more"
     merge_started = perf_counter()
     draft.interview_json = merge_agent_payload(draft.interview_json, parsed)
+    if dual_workflow_enabled(draft.interview_json if isinstance(draft.interview_json, dict) else {}):
+        if isinstance(parsed.get("materialReview"), list):
+            draft.interview_json = apply_material_review(draft.interview_json, parsed)
+            reviews = parsed.get("materialReview") or []
+            md = completeness_report_markdown(reviews if isinstance(reviews, list) else [])
+            pipe = normalize_pipeline(draft.interview_json.get("pipeline"))
+            pipe["materialReviewDone"] = True
+            pipe["materialReviewPending"] = False
+            pipe["stage"] = "select"
+            pipe["interviewPhase"] = "select"
+            draft.interview_json["pipeline"] = pipe
+            if md.strip():
+                _add_message(
+                    db,
+                    draft=draft,
+                    role="assistant",
+                    content=str(parsed.get("message") or "Обзор материалов завершён. Отметьте процессы для интервью."),
+                    structured={"materialReview": reviews, "completenessMarkdown": md},
+                )
+        elif isinstance(draft.interview_json, dict):
+            processes = draft.interview_json.get("processes") or []
+            pipe = normalize_pipeline(draft.interview_json.get("pipeline"))
+            if (
+                processes
+                and not pipe.get("materialReviewDone")
+                and str(pipe.get("stage") or "") in {"select", "extract"}
+                and has_process_candidates(draft.interview_json)
+            ):
+                pipe["materialReviewPending"] = True
+                pipe["stage"] = "extract"
+                pipe["interviewPhase"] = "material_review"
+                draft.interview_json["pipeline"] = pipe
+        draft.interview_json = merge_agent_candidates_from_payload(
+            draft.interview_json if isinstance(draft.interview_json, dict) else {},
+            parsed,
+        )
     draft.interview_json = replenish_queue(
         normalize_interview_state(draft.interview_json),
         target=FULL_QUEUE_TARGET,
@@ -859,6 +1360,8 @@ def _apply_agent_reply(
         draft.draft_document_json if isinstance(draft.draft_document_json, dict) else None,
     )
     queue_has_items = queue_depth(draft.interview_json if isinstance(draft.interview_json, dict) else {}) > 0
+    answer_sufficiency = parsed.get("answerSufficiency") if isinstance(parsed.get("answerSufficiency"), dict) else {}
+    partial_answer = str(answer_sufficiency.get("status") or "") in {"partial", "not_answered"}
     skip_single_followup = (
         bool(round_questions)
         or early_stage
@@ -866,7 +1369,7 @@ def _apply_agent_reply(
         or (pipeline.get("stage") == "interview" and phase == "collect")
     )
     blocker = None
-    if not force_create and not skip_single_followup:
+    if not force_create and (partial_answer or not skip_single_followup):
         blocker = followup_blocker(parsed, draft.interview_json)
     if blocker is None and not force_create and not skip_single_followup and not queue_has_items:
         blocker = ready_blocker(parsed, draft.interview_json)
@@ -908,9 +1411,32 @@ def _apply_agent_reply(
     has_full_document = document_has_full_text(document)
     if wants_document and not has_full_document and not force_create:
         state = draft.interview_json if isinstance(draft.interview_json, dict) else {}
+        if pending_interview_work(state):
+            draft.interview_json = resume_interview_if_pending(state)
+            _ensure_queued_question_posted(db, draft)
+            draft.status = "interview"
+            db.add(draft)
+            return
         draft.interview_json = {**state, "document_write_required": True}
         draft.interview_json = set_pipeline_stage(draft.interview_json, "assemble")
+        draft.interview_json.pop("currentQuestion", None)
+        pipeline = normalize_pipeline(draft.interview_json.get("pipeline"))
+        pipeline["roundQuestions"] = []
+        draft.interview_json["pipeline"] = sync_remaining_estimate({**draft.interview_json, "pipeline": pipeline})
         draft.status = "interview"
+        _add_message(
+            db,
+            draft=draft,
+            role="assistant",
+            content=(
+                parsed.get("message")
+                or "Интервью завершено. Формирую текст регламента по собранным данным — подождите."
+            ),
+            structured={
+                "pipeline": normalize_pipeline(draft.interview_json.get("pipeline")),
+                "documentWritePending": True,
+            },
+        )
         if positions := parsed.get("positions"):
             draft.positions_json = [str(item) for item in positions if str(item).strip()]
         db.add(draft)
@@ -925,6 +1451,7 @@ def _apply_agent_reply(
             draft.interview_json.pop("document_write_required", None)
         draft.interview_json = set_pipeline_stage(draft.interview_json, "assemble")
         try:
+            _maybe_spawn_process_agents(db, user_id=user_id, draft=draft)
             result = _finalize_document(db, user_id=user_id, draft=draft, document=document or {})
         except RegulationError as exc:
             draft.status = "error"
@@ -946,23 +1473,53 @@ def _apply_agent_reply(
         )
         draft.status = "finalized"
         draft.result_regulation_id = result.regulationId
+        spawned = (draft.interview_json or {}).get("spawnedAgents") if isinstance(draft.interview_json, dict) else []
+        if isinstance(spawned, list) and spawned:
+            names = ", ".join(f"«{x.get('title')}»" for x in spawned if isinstance(x, dict) and x.get("title"))
+            if names:
+                _add_message(
+                    db,
+                    draft=draft,
+                    role="assistant",
+                    content=f"Регламент готов. Новые агенты в «Мои агенты»: {names}.",
+                    structured={"spawnedAgents": spawned, "resultRegulationId": result.regulationId},
+                )
     elif early_stage and not force_create:
         _post_select_stage_message(db, draft=draft, parsed=parsed)
     elif (
+        _awaiting_process_selection(
+            draft.interview_json if isinstance(draft.interview_json, dict) else {}
+        )
+        and not force_create
+    ):
+        _post_select_stage_message(db, draft=draft, parsed=parsed)
+    elif (
         pipeline.get("stage") == "interview"
-        and phase == "collect"
         and queue_has_items
         and (pipeline.get("selectedProcessIds") or [])
         and not force_create
         and not round_questions
     ):
-        head = peek_queue_head(draft.interview_json if isinstance(draft.interview_json, dict) else {})
+        interview_state = draft.interview_json if isinstance(draft.interview_json, dict) else {}
+        head = peek_queue_head(interview_state)
         if head:
             logger.info("[deterministic-queue] serving head=%s draft=%s", head.get("id"), draft.id)
             _post_queued_question_message(db, draft=draft, parsed=parsed, head=head)
         else:
             db.add(draft)
     else:
+        if (
+            _awaiting_process_selection(
+                draft.interview_json if isinstance(draft.interview_json, dict) else {}
+            )
+            and not force_create
+        ):
+            _post_select_stage_message(db, draft=draft, parsed=parsed)
+            draft.status = "interview"
+            if positions := parsed.get("positions"):
+                draft.positions_json = [str(item) for item in positions if str(item).strip()]
+            db.add(draft)
+            return
         quick_answers = _quick_answers(parsed.get("quickAnswers"))
         content = parsed.get("message") or raw or "Уточните, пожалуйста, детали процесса."
         pipeline_now = normalize_pipeline(
@@ -981,6 +1538,7 @@ def _apply_agent_reply(
                 function_id=str(head.get("processId") or "").strip(),
                 field=str(head.get("field") or "").strip(),
                 process_id=str(head.get("processId") or "").strip(),
+                queue_question_id=str(head.get("id") or queued_meta.get("id") or "").strip(),
             )
             draft.interview_json = consume_queue_head(
                 draft.interview_json,
@@ -992,6 +1550,8 @@ def _apply_agent_reply(
         else:
             function_id = queued_meta.get("processId") or _message_function_id(parsed, draft.interview_json)
             field = queued_meta.get("field") or _message_field(parsed, draft.interview_json)
+            if not field:
+                field = _infer_field_from_assistant_content(content)
             draft.interview_json, content = remember_assistant_question(
                 draft.interview_json,
                 message=content,
@@ -999,6 +1559,7 @@ def _apply_agent_reply(
                 function_id=function_id,
                 field=field,
                 process_id=queued_meta.get("processId") or function_id,
+                queue_question_id=str(queued_meta.get("id") or (head or {}).get("id") or "").strip(),
             )
             if queued_meta.get("id"):
                 draft.interview_json = consume_queue_head(
@@ -1019,18 +1580,21 @@ def _apply_agent_reply(
                 for item in (draft.interview_json.get("processes") or [])
                 if isinstance(item, dict)
             ]
-        _add_message(
-            db,
-            draft=draft,
-            role="assistant",
-            content=content,
-            structured={
-                "quickAnswers": quick_answers,
-                "roundQuestions": rq,
-                "pipeline": pipeline_now,
-                "processes": processes,
-            },
-        )
+        if not _would_duplicate_assistant(db, draft.id, content):
+            _add_message(
+                db,
+                draft=draft,
+                role="assistant",
+                content=content,
+                structured={
+                    "quickAnswers": quick_answers,
+                    "roundQuestions": rq,
+                    "pipeline": pipeline_now,
+                    "processes": processes,
+                },
+            )
+        else:
+            logger.info("reg_create skip duplicate assistant reply draft=%s", draft.id)
         draft.status = "interview"
         if positions := parsed.get("positions"):
             draft.positions_json = [str(item) for item in positions if str(item).strip()]
@@ -1600,6 +2164,12 @@ def _message_function_id(parsed: dict, state: object) -> str:
     return ""
 
 
+def _infer_field_from_assistant_content(message: str) -> str:
+    from app.services.regulation_creation.question_queue import _infer_gap_field_from_context
+
+    return _infer_gap_field_from_context({"message": message}, "")
+
+
 def _message_field(parsed: dict, state: object) -> str:
     answer = parsed.get("answerSufficiency") if isinstance(parsed.get("answerSufficiency"), dict) else {}
     text = str(answer.get("field") or answer.get("intent") or "").strip()
@@ -1660,7 +2230,14 @@ def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationS
                 document=draft.draft_document_json,
             )
     queue_info = queue_snapshot(draft.interview_json if isinstance(draft.interview_json, dict) else {})
-    pipeline = sync_remaining_estimate(draft.interview_json if isinstance(draft.interview_json, dict) else {})
+    interview_state = normalize_interview_state(draft.interview_json if isinstance(draft.interview_json, dict) else {})
+    interview_state = replenish_queue(interview_state, target=FULL_QUEUE_TARGET)
+    if isinstance(interview_state, dict):
+        interview_state = {**interview_state, "pipeline": sync_remaining_estimate(interview_state)}
+        queue_info = queue_snapshot(interview_state)
+    pipeline = interview_state.get("pipeline") if isinstance(interview_state.get("pipeline"), dict) else sync_remaining_estimate(
+        draft.interview_json if isinstance(draft.interview_json, dict) else {}
+    )
     return RegulationCreationSession(
         draftId=draft.id,
         status=draft.status,
@@ -1687,6 +2264,9 @@ def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationS
         questionQueue=queue_info.get("questionQueue") or [],
         prefetchInProgress=bool(queue_info.get("prefetchInProgress")),
         queueDepth=int(queue_info.get("queueDepth") or 0),
+        dualWorkflow=dual_workflow_enabled(interview_state),
+        materialReview=list((interview_state.get("materialReview") or []) if isinstance(interview_state.get("materialReview"), list) else []),
+        spawnedAgents=list((interview_state.get("spawnedAgents") or []) if isinstance(interview_state.get("spawnedAgents"), list) else []),
         createdAt=draft.created_at,
         updatedAt=draft.updated_at,
     )

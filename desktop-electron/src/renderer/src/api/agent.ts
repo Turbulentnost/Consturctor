@@ -20,6 +20,7 @@ export interface RegulationCreationCommand {
   rules?: string
   interview?: Record<string, unknown>
   resumeAgentId?: string
+  agentRole?: 'interview' | 'research'
 }
 
 export interface DemoCommand {

@@ -185,7 +185,14 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
         : {},
     questionQueue: parseQueuedQuestions(data.questionQueue ?? data.question_queue),
     prefetchInProgress: Boolean(data.prefetchInProgress ?? data.prefetch_in_progress),
-    queueDepth: Number(data.queueDepth ?? data.queue_depth ?? 0)
+    queueDepth: Number(data.queueDepth ?? data.queue_depth ?? 0),
+    dualWorkflow: Boolean(data.dualWorkflow ?? data.dual_workflow),
+    materialReview: Array.isArray(data.materialReview ?? data.material_review)
+      ? ((data.materialReview ?? data.material_review) as Record<string, unknown>[])
+      : [],
+    spawnedAgents: Array.isArray(data.spawnedAgents ?? data.spawned_agents)
+      ? ((data.spawnedAgents ?? data.spawned_agents) as Record<string, unknown>[])
+      : []
   }
 }
 
@@ -203,6 +210,10 @@ function parseCreationTurn(data: Record<string, unknown>): RegulationCreationTur
     sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? ''),
     forceCreate: Boolean(data.forceCreate ?? data.force_create),
     prefetchedReply: String(data.prefetchedReply ?? data.prefetched_reply ?? ''),
+    prefetchPrompt: String(data.prefetchPrompt ?? data.prefetch_prompt ?? ''),
+    researchPrompt: String(data.researchPrompt ?? data.research_prompt ?? ''),
+    sdkAgentRole: String(data.sdkAgentRole ?? data.sdk_agent_role ?? 'interview'),
+    researchAgentId: String(data.researchAgentId ?? data.research_agent_id ?? ''),
     questionQueue: parseQueuedQuestions(data.questionQueue ?? data.question_queue),
     prefetchInProgress: Boolean(data.prefetchInProgress ?? data.prefetch_in_progress),
     queueDepth: Number(data.queueDepth ?? data.queue_depth ?? 0)
@@ -1204,6 +1215,15 @@ export class ApiClient {
     return parseCreationTurn(data)
   }
 
+  async advanceRegulationCreationQuestion(draftId: string): Promise<RegulationCreationSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulation-creation/sessions/${draftId}/advance-question`,
+      { timeoutMs: 60_000 }
+    )
+    return parseCreationSession(data)
+  }
+
   async persistRegulationCreationTurn(
     draftId: string,
     message: string,
@@ -1226,7 +1246,7 @@ export class ApiClient {
   async applyRegulationCreationReply(
     draftId: string,
     answer: string,
-    opts: { sdkAgentId?: string; forceCreate?: boolean } = {}
+    opts: { sdkAgentId?: string; forceCreate?: boolean; prefetchOnly?: boolean; researchOnly?: boolean } = {}
   ): Promise<RegulationCreationSession> {
     const data = await this.request<Record<string, unknown>>(
       'POST',
@@ -1235,7 +1255,9 @@ export class ApiClient {
         body: {
           answer,
           sdkAgentId: opts.sdkAgentId || '',
-          forceCreate: Boolean(opts.forceCreate)
+          forceCreate: Boolean(opts.forceCreate),
+          prefetchOnly: Boolean(opts.prefetchOnly),
+          researchOnly: Boolean(opts.researchOnly)
         },
         timeoutMs: 180_000
       }

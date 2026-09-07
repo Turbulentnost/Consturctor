@@ -67,7 +67,7 @@ function emit(payload: Record<string, unknown>): void {
 }
 
 const INTERVIEW_MODEL_PARAMS: ModelParam[] = [
-  { id: "effort", value: "xhigh" },
+  { id: "effort", value: "low" },
   { id: "fast", value: "true" },
 ];
 
@@ -425,7 +425,23 @@ function interviewDraftReady(text: string): boolean {
   if (!data) return false;
   const status = String(data.status || "");
   const message = String(data.message || "").trim();
-  return (status === "need_more" || status === "ready") && Boolean(message || data.interview);
+  if (status === "ready") {
+    return Boolean(message || data.document);
+  }
+  if (status === "need_more") {
+    // Do not stop on partial extraction payloads in thinking stream.
+    // Interview turn is ready only when there is an explicit next question/message.
+    if (message) return true;
+    const quick = Array.isArray(data.quickAnswers) ? data.quickAnswers : [];
+    if (quick.length > 0) return true;
+    const interview = data.interview;
+    if (!interview || typeof interview !== "object" || Array.isArray(interview)) return false;
+    const queued = (interview as Record<string, unknown>).queuedQuestion;
+    if (!queued || typeof queued !== "object" || Array.isArray(queued)) return false;
+    const queuedText = String((queued as Record<string, unknown>).text || "").trim();
+    return Boolean(queuedText);
+  }
+  return false;
 }
 
 async function settleRun(run: {
@@ -744,7 +760,7 @@ async function runAgent(command: RunCommand): Promise<void> {
       } else if (event.type === "thinking" && event.text) {
         thought += event.text;
         emit({ type: "thinking", text: event.text });
-        if ((await finishIfReady(thought)) || (await finishIfReady(answer))) return;
+        if (!interview && ((await finishIfReady(thought)) || (await finishIfReady(answer)))) return;
       } else if (event.type === "tool_call") {
         // Model went back to work: everything said so far was intermediate.
         lastAssistant = "";

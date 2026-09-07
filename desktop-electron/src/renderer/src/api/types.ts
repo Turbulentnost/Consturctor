@@ -200,6 +200,9 @@ export interface RegulationCreationSession {
   questionQueue?: RegulationQueuedQuestion[]
   prefetchInProgress?: boolean
   queueDepth?: number
+  dualWorkflow?: boolean
+  materialReview?: Record<string, unknown>[]
+  spawnedAgents?: Record<string, unknown>[]
 }
 
 export interface RegulationCreationHistoryItem {
@@ -222,6 +225,10 @@ export interface RegulationCreationTurn {
   sdkAgentId: string
   forceCreate: boolean
   prefetchedReply: string
+  prefetchPrompt?: string
+  researchPrompt?: string
+  sdkAgentRole?: string
+  researchAgentId?: string
   questionQueue?: RegulationQueuedQuestion[]
   prefetchInProgress?: boolean
   queueDepth?: number

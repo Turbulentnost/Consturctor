@@ -1,5 +1,6 @@
 from app.services.regulation_creation.service import (
     RegulationCreationError,
+    advance_creation_question,
     apply_creation_reply,
     get_active_creation_session,
     get_creation_document,
@@ -16,6 +17,7 @@ from app.services.regulation_creation.service import (
 
 __all__ = [
     "RegulationCreationError",
+    "advance_creation_question",
     "apply_creation_reply",
     "get_active_creation_session",
     "get_creation_document",

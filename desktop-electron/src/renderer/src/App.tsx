@@ -1139,6 +1139,7 @@ export function App(): React.JSX.Element {
               hidden={view.kind !== 'regchat'}
             >
               <RegulationChatPage
+                key={regChat.draftId}
                 session={regChat}
                 onSessionChange={setRegChat}
                 onBusyChange={setRegChatBusy}

@@ -205,6 +205,56 @@ def ensure_process_selection_state(state: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def pending_interview_work(state: dict[str, Any]) -> bool:
+    """True while unanswered queued/collect/round work remains before document assembly."""
+    from app.services.regulation_creation.interview import normalize_interview_state
+    from app.services.regulation_creation.question_queue import (
+        _has_open_current_question,
+        queue_depth,
+    )
+
+    if not isinstance(state, dict):
+        return False
+    interview = normalize_interview_state(state)
+    if queue_depth(interview) > 0:
+        return True
+    if _has_open_current_question(interview):
+        return True
+    pipeline = normalize_pipeline(interview.get("pipeline"))
+    if str(pipeline.get("stage") or "") != "interview":
+        return False
+    collect = pipeline.get("collectReadiness")
+    if not isinstance(collect, dict):
+        collect = _collect_readiness(pipeline)
+    if not bool(collect.get("isReady")):
+        return True
+    round_questions = pipeline.get("roundQuestions") or []
+    return any(
+        isinstance(item, dict) and not _clean(item.get("answer"))
+        for item in round_questions
+    )
+
+
+def resume_interview_if_pending(state: dict[str, Any]) -> dict[str, Any]:
+    """Return to interview stage when assembly was triggered too early."""
+    from app.services.regulation_creation.interview import normalize_interview_state
+    from app.services.regulation_creation.question_queue import replenish_queue
+
+    out = normalize_interview_state(state)
+    pipeline = normalize_pipeline(out.get("pipeline"))
+    if str(pipeline.get("stage") or "") != "assemble":
+        return out
+    if not pending_interview_work(out):
+        return out
+    out.pop("document_write_required", None)
+    pipeline["stage"] = "interview"
+    pipeline["roundQuestions"] = []
+    out["pipeline"] = _refresh_pipeline_derived(pipeline)
+    out = replenish_queue(out)
+    out["pipeline"] = sync_remaining_estimate(out)
+    return out
+
+
 def merge_pipeline_payload(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """Merge extract / roundQuestions / blocks from agent JSON into interview state."""
     out = deepcopy(state) if isinstance(state, dict) else {}
@@ -261,6 +311,17 @@ def merge_pipeline_payload(state: dict[str, Any], payload: dict[str, Any]) -> di
     out = sync_processes_from_blocks(out)
     out = ensure_process_selection_state(out)
     pipeline = normalize_pipeline(out.get("pipeline"))
+    if str(pipeline.get("stage") or "") == "assemble":
+        if pending_interview_work(out):
+            out.pop("document_write_required", None)
+            pipeline["stage"] = "interview"
+            pipeline["roundQuestions"] = []
+            out["pipeline"] = _refresh_pipeline_derived(pipeline)
+        else:
+            out["document_write_required"] = True
+            out.pop("currentQuestion", None)
+            pipeline["roundQuestions"] = []
+            out["pipeline"] = _refresh_pipeline_derived(pipeline)
     from app.services.regulation_creation.question_queue import populate_queue_after_extract
 
     out = populate_queue_after_extract(out)
@@ -345,6 +406,7 @@ def select_processes(state: dict[str, Any], process_ids: list[str]) -> dict[str,
         pipeline["round"] = 0
     pipeline = _refresh_pipeline_derived(pipeline)
     out["pipeline"] = pipeline
+    out.pop("currentQuestion", None)
     from app.services.regulation_creation.question_queue import rebuild_collect_queue
 
     out = rebuild_collect_queue(out)
@@ -359,6 +421,7 @@ def start_round(pipeline: dict[str, Any], questions: list[Any]) -> dict[str, Any
     remaining = pipe["maxQuestionsTotal"] - pipe["questionsAskedTotal"]
     if remaining <= 0:
         pipe["stage"] = "assemble"
+        pipe["roundQuestions"] = []
         return _refresh_pipeline_derived(pipe)
     normalized = _dedupe_round_questions(pipe, _normalize_round_questions(questions))[
         : min(pipe["maxQuestionsPerRound"], remaining)
@@ -933,9 +996,15 @@ def _refresh_pipeline_derived(pipeline: dict[str, Any]) -> dict[str, Any]:
 
 def _derive_interview_phase(pipeline: dict[str, Any], collect: dict[str, Any]) -> str:
     stage = str(pipeline.get("stage") or "")
+    if pipeline.get("dualWorkflow") and pipeline.get("materialReviewPending"):
+        return "material_review"
     if stage in {"upload", "extract", "select", "assemble", "done"}:
+        if stage == "extract" and pipeline.get("dualWorkflow") and not pipeline.get("materialReviewDone"):
+            return "material_review"
         return stage
     if stage == "interview":
+        if pipeline.get("dualWorkflow") and not pipeline.get("materialReviewDone"):
+            return "material_review"
         return "rounds" if bool(collect.get("isReady")) else "collect"
     return "select"
 
@@ -1013,6 +1082,13 @@ def _estimate_remaining_questions(
     stage = str(pipeline.get("stage") or "upload")
     if stage in {"done"}:
         return {"min": 0, "max": 0, "text": "Осталось примерно: 0 вопросов"}
+    if stage == "assemble":
+        queue_len = len(question_queue or [])
+        has_current = bool(current_question and _clean(current_question.get("id")))
+        if queue_len > 0 or has_current:
+            stage = "interview"
+        else:
+            return {"min": 0, "max": 0, "text": "ИИ формирует документ регламента"}
     queue_len = len(question_queue or [])
     has_current = bool(current_question and _clean(current_question.get("id")))
     if stage in {"upload", "extract", "select"}:
@@ -1058,6 +1134,9 @@ def sync_remaining_estimate(state: dict[str, Any]) -> dict[str, Any]:
     """Refresh estimatedRemainingQuestions using queue + current question."""
     interview = state if isinstance(state, dict) else {}
     pipeline = normalize_pipeline(interview.get("pipeline"))
+    if str(pipeline.get("stage") or "") == "assemble" and pending_interview_work(interview):
+        interview = resume_interview_if_pending(interview)
+        pipeline = normalize_pipeline(interview.get("pipeline"))
     collect = pipeline.get("collectReadiness")
     if not isinstance(collect, dict):
         collect = _collect_readiness(pipeline)
@@ -1150,7 +1229,8 @@ def _apply_answer_to_facts(state: dict[str, Any], entry: dict[str, Any]) -> None
     answer = _clean(entry.get("answer"))
     if not answer:
         return
-    fact_field = _ROUND_FIELD_TO_FACT.get(field)
+    fact_field = _ROUND_FIELD_TO_FACT.get(field) or _ROUND_FIELD_TO_FACT.get(_normalize_collect_field(field))
+    touched_process_ids: set[str] = set()
     for process in state.get("processes") or []:
         if not isinstance(process, dict):
             continue
@@ -1168,10 +1248,74 @@ def _apply_answer_to_facts(state: dict[str, Any], entry: dict[str, Any]) -> None
                     current.append(answer)
                 else:
                     facts["steps"] = [answer]
+                process["userAction"] = _text_join(facts.get("steps"))
             else:
                 facts[fact_field] = answer
+                if fact_field == "workLocation":
+                    process["tool"] = answer
+                elif fact_field == "frequency":
+                    process["periodicity"] = answer
+                elif fact_field == "trigger":
+                    process["triggerAction"] = answer
+            if pid:
+                touched_process_ids.add(pid)
         if not process_id:
             break
+    for pid in touched_process_ids:
+        sync_process_facts_to_blocks(state, pid)
+    if touched_process_ids and isinstance(state.get("pipeline"), dict):
+        state["pipeline"] = _refresh_pipeline_derived(normalize_pipeline(state["pipeline"]))
+
+
+def _normalize_collect_field(field: str) -> str:
+    folded = field.strip().lower()
+    if folded in {"tool", "worklocation", "work_location"}:
+        return "workLocation"
+    if folded in {"periodicity", "frequency", "cadence"}:
+        return "frequency"
+    if folded in {"triggeraction", "trigger_action"}:
+        return "trigger"
+    if folded in {"useraction", "user_action", "actions"}:
+        return "steps"
+    return field
+
+
+def sync_process_facts_to_blocks(state: dict[str, Any], process_id: str) -> None:
+    """Mirror process knownFacts into pipeline block elements for collect readiness."""
+    pid = _clean(process_id)
+    if not pid:
+        return
+    process = None
+    for item in state.get("processes") or []:
+        if isinstance(item, dict) and _clean(item.get("id")) == pid:
+            process = item
+            break
+    if not process:
+        return
+    facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+    pipeline = normalize_pipeline(state.get("pipeline"))
+    blocks = pipeline.get("blocks") if isinstance(pipeline.get("blocks"), list) else []
+    for block in blocks:
+        if not isinstance(block, dict) or _clean(block.get("processId")) != pid:
+            continue
+        elements = block.setdefault("elements", {})
+        if not isinstance(elements, dict):
+            elements = {}
+            block["elements"] = elements
+        work_location = _text_join(facts.get("workLocation"), process.get("tool"))
+        if work_location:
+            elements["workLocation"] = _as_list(work_location)
+        frequency = _text_join(facts.get("frequency"), process.get("periodicity"))
+        if frequency:
+            elements["frequency"] = _as_list(frequency)
+        trigger = _text_join(facts.get("trigger"), process.get("triggerAction"))
+        if trigger:
+            elements["trigger"] = _as_list(trigger)
+        steps = facts.get("steps")
+        step_text = _text_join(steps if isinstance(steps, list) else steps, process.get("userAction"))
+        if step_text:
+            elements["steps"] = _as_list(step_text)
+    state["pipeline"] = pipeline
 
 
 def _section_has_body(section: dict[str, Any]) -> bool:

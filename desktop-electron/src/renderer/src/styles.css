@@ -1892,6 +1892,8 @@ input {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  position: relative;
+  z-index: 2;
 }
 .regchat-select-card h3 {
   margin: 0;
@@ -1917,9 +1919,12 @@ input {
   align-items: start;
   font-size: 14px;
   color: var(--main-text);
+  cursor: pointer;
+  user-select: none;
 }
 .regchat-select-item input {
   margin-top: 2px;
+  cursor: pointer;
 }
 .regchat-select-title {
   font-weight: 600;
@@ -2151,15 +2156,24 @@ input {
   color: var(--content-muted);
   font-size: 12px;
   font-weight: 600;
+  text-align: left;
+}
+.regchat-think-head-static {
+  cursor: default;
+}
+.regchat-think-chevron {
+  width: 12px;
+  flex-shrink: 0;
+  color: #08745f;
 }
 .regchat-think-body {
   padding: 0 12px 10px;
   color: var(--content-muted);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 220px;
+  max-height: 320px;
   overflow-y: auto;
 }
 .regchat-status {

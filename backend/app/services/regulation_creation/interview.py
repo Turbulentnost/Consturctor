@@ -317,8 +317,18 @@ def set_sdk_agent_id(state: Any, agent_id: str) -> dict[str, Any]:
     return out
 
 
+def set_research_sdk_agent_id(state: Any, agent_id: str) -> dict[str, Any]:
+    out = normalize_interview_state(state)
+    out["research_sdk_agent_id"] = _clean_str(agent_id)
+    return out
+
+
 def interview_sdk_agent_id(state: Any) -> str:
     return _clean_str(normalize_interview_state(state).get("sdk_agent_id"))
+
+
+def research_sdk_agent_id(state: Any) -> str:
+    return _clean_str(normalize_interview_state(state).get("research_sdk_agent_id"))
 
 
 def interview_snapshot(state: Any) -> dict[str, Any]:
@@ -386,6 +396,12 @@ def append_user_turn(state: Any, message: str, attachments: list[dict]) -> dict[
     out = mark_upload_received(out)
     if message.strip():
         out = apply_round_answers(out, free_message=message.strip())
+    from app.services.regulation_creation.pipeline import resume_interview_if_pending, sync_remaining_estimate
+    from app.services.regulation_creation.question_queue import replenish_queue
+
+    out = resume_interview_if_pending(out)
+    out = replenish_queue(out)
+    out["pipeline"] = sync_remaining_estimate(out)
     return out
 
 
@@ -395,6 +411,9 @@ def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
     out = normalize_interview_state(state)
     answer_sufficiency = _extract_answer_sufficiency(payload)
     if answer_sufficiency:
+        if _should_accept_periodicity_despite_partial(out, answer_sufficiency):
+            answer_sufficiency = {**answer_sufficiency, "status": "closed"}
+            _apply_concrete_periodicity_fact(out, answer_sufficiency)
         _record_answer_sufficiency(out, answer_sufficiency)
     incoming = _extract_functions(payload)
     for raw in incoming:
@@ -453,9 +472,15 @@ def creation_interview_rules(*, force_create: bool = False) -> str:
         "interview.functions — краткий срез.\n"
         "Оцени последний ответ в answerSufficiency: closed|partial|not_answered. "
         "Если partial/not_answered — один углубляющий вопрос по тому же процессу/полю, не перескакивай.\n"
-        "За один ход: ровно один вопрос, одно поле, одна функция. Не повторяй askedQuestions.\n"
+        "Работай почти автономно: заранее строй сценарий интервью по каждому processId и проверяй полноту на каждом "
+        "рубеже (roleStatus -> tool -> periodicity -> triggerAction -> userAction).\n"
+        "Формируй пакет уточнений заранее: roundQuestions 3-8 штук по выбранным процессам, без повторов; message "
+        "должен содержать только ближайший вопрос для пользователя.\n"
+        "За один ход в message: ровно один вопрос, одно поле, одна функция. Не повторяй askedQuestions.\n"
         "Триггер не закрывают общие фразы («при необходимости», «своевременно», «контролировать»).\n"
         "quickAnswers: 2–6 конкретных вариантов, без «Оставить»/«Переделать».\n"
+        "Материалам из файлов доверяй как источнику фактов: сверяй ключевые места между файлами, отмечай связи и "
+        "заполняй knownFacts без лишних уточнений, если факт прямо указан.\n"
         "Пока status='need_more': не пиши document, в interview.functions только новая/изменённая функция.\n"
         f"{force}\n"
         "Ответ строго JSON без markdown:\n"
@@ -545,10 +570,28 @@ def creation_system_rules(
         )
     if phase == "extract":
         return creation_extract_rules()
+    if phase == "material_review":
+        from app.services.regulation_creation.dual_workflow import creation_material_review_rules
+
+        return creation_material_review_rules()
     if phase == "select":
         return creation_select_rules()
     if phase == "collect":
+        from app.services.regulation_creation.dual_workflow import (
+            creation_interviewer_dual_rules,
+            dual_workflow_enabled,
+        )
+
+        if dual_workflow_enabled({"pipeline": pipe}):
+            return creation_interviewer_dual_rules(force_create=force_create)
         return creation_collect_rules()
+    from app.services.regulation_creation.dual_workflow import (
+        creation_interviewer_dual_rules,
+        dual_workflow_enabled,
+    )
+
+    if dual_workflow_enabled({"pipeline": pipe}):
+        return creation_interviewer_dual_rules(force_create=force_create)
     return creation_round_interview_rules(force_create=force_create)
 
 
@@ -606,6 +649,23 @@ def build_creation_prompt(
     )
 
 
+def build_round_prefetch_prompt(
+    *,
+    state: dict[str, Any],
+    pipeline: dict[str, Any] | None = None,
+) -> str:
+    from app.services.regulation_creation.pipeline import MAX_QUESTIONS_PER_ROUND, creation_round_interview_rules, normalize_pipeline
+
+    pipe = normalize_pipeline(pipeline or (state.get("pipeline") if isinstance(state, dict) else {}))
+    return (
+        "Фоновая подготовка очереди вопросов (пользователь ещё отвечает на предыдущий).\n"
+        "Прочитай interview.json и materials. Не задавай вопрос пользователю в message.\n"
+        f"Верни batch roundQuestions (до {MAX_QUESTIONS_PER_ROUND}) по выбранным процессам.\n"
+        f"{creation_round_interview_rules(force_create=False)}\n"
+        'Ответ строго JSON: status="need_more", message="", quickAnswers=[], roundQuestions=[...], document={}.'
+    )
+
+
 def build_followup_creation_prompt(
     *,
     message: str,
@@ -624,9 +684,10 @@ def build_followup_creation_prompt(
 
     phase = str(normalize_pipeline(pipeline or {"stage": stage}).get("interviewPhase") or stage)
 
-    if for_document or force_create:
+    if for_document or force_create or phase == "assemble" or stage == "assemble":
         return (
-            "Продолжи интервью. История уже у тебя. Прочитай обновлённый interview.json.\n"
+            "Интервью завершено. Сформируй полный текст регламента по собранным данным.\n"
+            "Прочитай interview.json и materials. Не задавай новых вопросов пользователю.\n"
             f"{creation_document_rules(force_create=force_create)}\n"
             f"Последний ответ пользователя: {message.strip()}"
         )
@@ -667,11 +728,16 @@ def remember_assistant_question(
     field: str = "",
     process_id: str = "",
     intent: str = "",
+    queue_question_id: str = "",
 ) -> tuple[dict[str, Any], str]:
+    from app.services.regulation_creation.pipeline import _normalize_collect_field
+
     out = normalize_interview_state(state)
     text = _dedupe_question_text(out, message=message, function_id=function_id, field=field)
-    question_id = f"q{len(out['askedQuestions']) + 1}"
-    canonical_field = _canonical_gap(field)
+    raw_field = _clean_str(field)
+    collect_field = _normalize_collect_field(raw_field) if raw_field else ""
+    question_id = _clean_str(queue_question_id) or f"q{len(out['askedQuestions']) + 1}"
+    canonical_field = collect_field or _canonical_gap(raw_field)
     question = {
         "id": question_id,
         "message": text,
@@ -1131,6 +1197,11 @@ def _open_gaps(func: dict[str, Any], *, position: str = "") -> list[str]:
 def _canonical_gap(value: Any) -> str:
     text = _clean_str(value).strip()
     folded = _fold(text)
+    if not folded:
+        return text
+    for field, aliases in _PROCESS_FACT_ALIASES.items():
+        if folded in {_fold(alias) for alias in aliases}:
+            return _PROCESS_FIELD_TO_FUNCTION_FIELD.get(field, field)
     if folded in {"tool", "instrument", "system", "channel", "place", "location", "worklocation"}:
         return "tool"
     if folded in {"object", "objects", "records", "forms", "registers", "entity", "entities"}:
@@ -1273,6 +1344,17 @@ def _attach_answer_to_current_question(state: dict[str, Any], message: str) -> N
     answer = _clean_str(message)
     if not current or not answer:
         return
+    field = _function_field(current.get("field"))
+    if field in {"tool", "periodicity", "triggerAction", "userAction"}:
+        func = _function_for_question(state, current.get("functionId") or current.get("processId"))
+        if func is not None:
+            func[field] = answer
+        _set_process_fact_value(
+            state,
+            process_id=current.get("processId") or current.get("functionId"),
+            field=field,
+            value=answer,
+        )
     current["answer"] = answer
     current["sufficiency"] = "pending"
     state["currentQuestion"] = current
@@ -1316,6 +1398,8 @@ def _answer_sufficiency_blocker(payload: dict[str, Any], state: Any) -> ReadyBlo
     if not answer_sufficiency or answer_sufficiency.get("status") == "closed":
         return None
     interview = normalize_interview_state(state)
+    if _should_accept_periodicity_despite_partial(interview, answer_sufficiency):
+        return None
     field = _canonical_gap(
         answer_sufficiency.get("field")
         or (answer_sufficiency.get("missingFacts") or [""])[0]
@@ -1334,6 +1418,119 @@ def _answer_sufficiency_blocker(payload: dict[str, Any], state: Any) -> ReadyBlo
             field=_current_question_field(interview),
         )
     return None
+
+
+def _last_user_turn_message(interview: dict[str, Any]) -> str:
+    for turn in reversed(interview.get("turns") or []):
+        if not isinstance(turn, dict) or turn.get("role") != "user":
+            continue
+        return _clean_str(turn.get("message"))
+    return ""
+
+
+def _should_accept_periodicity_despite_partial(
+    interview: dict[str, Any],
+    answer_sufficiency: dict[str, Any],
+) -> bool:
+    """Guard against periodicity loops: concrete cadence answers must close the gap."""
+    field = _canonical_gap(
+        answer_sufficiency.get("field")
+        or (answer_sufficiency.get("missingFacts") or [""])[0]
+        or _current_question_field(interview)
+    )
+    if field != "periodicity":
+        return False
+    current = interview.get("currentQuestion") if isinstance(interview.get("currentQuestion"), dict) else {}
+    for candidate in (
+        _clean_str(current.get("answer")),
+        _last_user_turn_message(interview),
+    ):
+        if _is_concrete_periodicity_answer(candidate):
+            return True
+    process_id = _clean_str(
+        answer_sufficiency.get("processId")
+        or current.get("processId")
+        or current.get("functionId")
+    )
+    func = _function_for_question(interview, process_id)
+    if func is not None and _is_concrete_periodicity_answer(_clean_str(func.get("periodicity"))):
+        return True
+    process = _process_for_id(interview, process_id)
+    facts = process.get("knownFacts") if isinstance(process, dict) and isinstance(process.get("knownFacts"), dict) else {}
+    periodicity = _clean_str(facts.get("frequency") or process.get("periodicity"))
+    return _is_concrete_periodicity_answer(periodicity)
+
+
+def _apply_concrete_periodicity_fact(
+    interview: dict[str, Any],
+    answer_sufficiency: dict[str, Any],
+) -> None:
+    current = interview.get("currentQuestion") if isinstance(interview.get("currentQuestion"), dict) else {}
+    process_id = _clean_str(
+        answer_sufficiency.get("processId")
+        or current.get("processId")
+        or current.get("functionId")
+    )
+    value = ""
+    for candidate in (
+        _clean_str(current.get("answer")),
+        _last_user_turn_message(interview),
+    ):
+        if _is_concrete_periodicity_answer(candidate):
+            value = candidate
+            break
+    if not value:
+        func = _function_for_question(interview, process_id)
+        if func is not None:
+            value = _clean_str(func.get("periodicity"))
+        process = _process_for_id(interview, process_id)
+        facts = process.get("knownFacts") if isinstance(process, dict) and isinstance(process.get("knownFacts"), dict) else {}
+        value = _clean_str(facts.get("frequency") or process.get("periodicity"))
+    if not value:
+        return
+    func = _function_for_question(interview, process_id)
+    if func is not None:
+        func["periodicity"] = value
+        func["openGaps"] = _open_gaps(func, position=_clean_str(interview.get("position")))
+    process = _process_for_id(interview, process_id)
+    if isinstance(process, dict):
+        known = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+        known["frequency"] = value
+        process["knownFacts"] = known
+
+
+def _is_concrete_periodicity_answer(value: str) -> bool:
+    text = _fold(_clean_str(value))
+    if not text:
+        return False
+    weak = {"по необходимости", "иногда", "по мере", "время от времени", "когда нужно"}
+    if any(item in text for item in weak):
+        return False
+    concrete_patterns = (
+        r"\bежеднев",
+        r"\bкажд(ыи|ый|ая|ое)\b",
+        r"\bраз в (день|недел|месяц|квартал|год)\b",
+        r"\bеженедел",
+        r"\bежемесяч",
+        r"\bежекварт",
+        r"\bежегод",
+        r"\bпо событи",
+        r"\bпри каждом\b",
+        r"\bкаждый рабочий день\b",
+    )
+    return any(re.search(pat, text) for pat in concrete_patterns)
+
+
+def _process_for_id(state: dict[str, Any], process_id: str) -> dict[str, Any]:
+    target = _clean_str(process_id)
+    if not target:
+        return {}
+    for item in state.get("processes") or []:
+        if not isinstance(item, dict):
+            continue
+        if _clean_str(item.get("id") or item.get("processId")) == target:
+            return item
+    return {}
 
 
 def _current_question_blocker(state: Any) -> ReadyBlocker | None:
@@ -1524,6 +1721,10 @@ def _tbd_value_for_field(field: str) -> str:
 
 
 def _set_process_fact_tbd(state: dict[str, Any], *, process_id: Any, field: str, value: str) -> None:
+    _set_process_fact_value(state, process_id=process_id, field=field, value=value)
+
+
+def _set_process_fact_value(state: dict[str, Any], *, process_id: Any, field: str, value: str) -> None:
     target_id = _clean_str(process_id)
     canonical_process_field = {
         "tool": "workLocation",

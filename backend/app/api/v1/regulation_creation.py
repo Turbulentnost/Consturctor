@@ -20,6 +20,7 @@ from app.schemas.regulation import (
 )
 from app.services.regulation_creation import (
     RegulationCreationError,
+    advance_creation_question,
     apply_creation_reply,
     get_active_creation_session,
     get_creation_document,
@@ -201,6 +202,18 @@ async def persist_regulation_creation_turn(
     except Exception:
         logger.exception("reg_create turn crashed draft_id=%s", draft_id)
         raise
+
+
+@router.post("/sessions/{draft_id}/advance-question", response_model=RegulationCreationSession)
+async def advance_regulation_creation_question(
+    draft_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RegulationCreationSession:
+    try:
+        return advance_creation_question(db, user_id=auth.user_id, draft_id=draft_id)
+    except RegulationCreationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 @router.post("/sessions/{draft_id}/apply", response_model=RegulationCreationSession)

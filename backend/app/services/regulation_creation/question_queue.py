@@ -20,9 +20,10 @@ from app.services.regulation_creation.pipeline import (
     normalize_pipeline,
 )
 
-TARGET_QUEUE_DEPTH = 5
-MIN_QUEUE_DEPTH = 3
+TARGET_QUEUE_DEPTH = 8
+MIN_QUEUE_DEPTH = 4
 FULL_QUEUE_TARGET = 999
+MAX_REASK_PER_FIELD = 2
 
 _COLLECT_FIELD_TO_FUNCTION = {
     "workLocation": "tool",
@@ -36,6 +37,13 @@ _COLLECT_FIELD_TO_SMART = {
     "frequency": "T",
     "trigger": "T",
     "steps": "S",
+}
+
+_FIELD_TBD_VALUE = {
+    "workLocation": "TBD: не уточнено пользователем",
+    "frequency": "TBD: периодичность не уточнена",
+    "trigger": "TBD: триггер не уточнен",
+    "steps": "TBD: шаги не уточнены",
 }
 
 
@@ -139,7 +147,11 @@ def all_collect_questions(state: dict[str, Any], *, all_candidates: bool = False
         if _needs_ownership_question(process, position):
             continue
         for field in _collect_required_gaps_for_process(process):
-            questions.append(_collect_question_item(process, field, position=position))
+            attempts = _collect_attempts_for_field(interview, process_id=pid, field=field)
+            if attempts >= MAX_REASK_PER_FIELD:
+                _finalize_exhausted_gap(process, field=field)
+                continue
+            questions.append(_collect_question_item(process, field, position=position, attempts=attempts))
     return questions
 
 
@@ -252,15 +264,15 @@ def replenish_queue(state: dict[str, Any], *, target: int = TARGET_QUEUE_DEPTH) 
         out["prefetchInProgress"] = False
         return out
 
-    current_depth = len(out.get("questionQueue") or [])
     if phase == "collect" or not _collect_stage_done(pipeline):
-        candidates = all_collect_questions(out)
-        out = enqueue_questions(out, candidates)
+        out = build_deterministic_queue(out, all_candidates=False)
         current_depth = len(out.get("questionQueue") or [])
         out["prefetchInProgress"] = current_depth == 0 and not _collect_stage_done(
             normalize_pipeline(out.get("pipeline"))
         )
         return out
+
+    current_depth = len(out.get("questionQueue") or [])
 
     if current_depth >= target:
         out["prefetchInProgress"] = False
@@ -310,6 +322,11 @@ def question_to_prefetched_reply(question: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _has_open_current_question(interview: dict[str, Any]) -> bool:
+    current = interview.get("currentQuestion") if isinstance(interview.get("currentQuestion"), dict) else {}
+    return bool(_clean(current.get("id"))) and not _clean(current.get("answer"))
+
+
 def build_fastpath_reply_from_queue(
     *,
     interview: dict[str, Any],
@@ -331,6 +348,11 @@ def build_fastpath_reply_from_queue(
     if phase in {"select", "upload", "extract", "assemble", "done"}:
         return ""
     filled = replenish_queue(interview, target=TARGET_QUEUE_DEPTH)
+    current = filled.get("currentQuestion") if isinstance(filled.get("currentQuestion"), dict) else {}
+    if current and _clean(current.get("answer")):
+        filled["currentQuestion"] = {}
+    if _has_open_current_question(filled):
+        return ""
     head = peek_queue_head(filled)
     if head:
         return question_to_prefetched_reply(head)
@@ -341,23 +363,45 @@ def apply_collect_answer_to_facts(state: dict[str, Any], message: str) -> dict[s
     out = normalize_question_queue(state)
     current = out.get("currentQuestion") if isinstance(out.get("currentQuestion"), dict) else {}
     answer = _clean(message)
-    if not current or not answer:
+    if not answer:
+        return out
+    if not current:
+        for item in reversed(out.get("askedQuestions") or []):
+            if isinstance(item, dict) and not _clean(item.get("answer")):
+                current = dict(item)
+                break
+    if not current:
         return out
     qid = _clean(current.get("id"))
     process_id = _clean(current.get("processId") or current.get("functionId"))
-    field = _clean(current.get("field"))
+    field = _normalize_collect_field(_clean(current.get("field") or current.get("intent")))
+    if not field:
+        field = _infer_gap_field_from_context(current, answer)
+    if not field and qid.startswith("collect-"):
+        parts = qid.split("-", 2)
+        if len(parts) == 3:
+            process_id = process_id or parts[1]
+            field = _normalize_collect_field(parts[2])
+    if not field and process_id:
+        from app.services.regulation_creation.pipeline import _collect_required_gaps_for_process
+
+        by_id = {
+            _clean(item.get("id")): item
+            for item in (out.get("processes") or [])
+            if isinstance(item, dict) and _clean(item.get("id"))
+        }
+        gaps = _collect_required_gaps_for_process(by_id.get(process_id))
+        if gaps:
+            field = gaps[0]
     if field == "roleStatus" or qid.startswith("ownership-"):
         from app.services.regulation_creation.interview import _apply_role_answer_for_process
 
         _apply_role_answer_for_process(out, process_id, answer)
         out["pipeline"] = normalize_pipeline(out.get("pipeline"))
+        out = _finalize_collect_answer(out, qid=qid, process_id=process_id, field=field, answer=answer)
         return out
-    if not field and qid.startswith("collect-"):
-        parts = qid.split("-", 2)
-        if len(parts) == 3:
-            process_id = process_id or parts[1]
-            field = parts[2]
     if not field:
+        out = _finalize_collect_answer(out, qid=qid, process_id=process_id, field="", answer=answer)
         return out
     from app.services.regulation_creation.pipeline import _apply_answer_to_facts
 
@@ -369,8 +413,107 @@ def apply_collect_answer_to_facts(state: dict[str, Any], message: str) -> dict[s
             "answer": answer,
         },
     )
-    out["pipeline"] = normalize_pipeline(out.get("pipeline"))
+    return _finalize_collect_answer(out, qid=qid, process_id=process_id, field=field, answer=answer)
+
+
+def _normalize_collect_field(field: str) -> str:
+    from app.services.regulation_creation.pipeline import _normalize_collect_field as normalize
+
+    return normalize(field)
+
+
+def _infer_gap_field_from_context(current: dict[str, Any], answer: str) -> str:
+    message = _clean(current.get("message") or current.get("text")).lower()
+    text = answer.lower()
+    if any(token in message for token in ("систем", "реестр", "документ", "1с", "erp", "где именно", "место работ")):
+        return "workLocation"
+    if any(token in message for token in ("как часто", "периодич", "график", "регуляр")):
+        return "frequency"
+    if any(token in message for token in ("событи", "триггер", "когда запуск", "что запускает")):
+        return "trigger"
+    if any(token in message for token in ("шаг", "порядок", "что именно выпол", "как созда")):
+        return "steps"
+    if any(token in text for token in ("1с", "erp", "тд_", "документ")) and not any(
+        token in text for token in ("шаг", "сначала", "потом", "заполня", "нажим")
+    ):
+        return "workLocation"
+    return ""
+
+
+def _finalize_collect_answer(
+    state: dict[str, Any],
+    *,
+    qid: str,
+    process_id: str,
+    field: str,
+    answer: str,
+) -> dict[str, Any]:
+    out = normalize_question_queue(state)
+    pipeline = normalize_pipeline(out.get("pipeline"))
+    questionnaire = dict(pipeline.get("questionnaire") or {})
+    if qid and _clean(answer):
+        questionnaire[qid] = _clean(answer)
+    pipeline["questionnaire"] = questionnaire
+    out["pipeline"] = pipeline
+    out = purge_filled_questions_from_queue(out, process_id=process_id, field=field)
+    if qid:
+        out = consume_queue_head(out, question_id=qid)
+    current = out.get("currentQuestion") if isinstance(out.get("currentQuestion"), dict) else {}
+    if current and _clean(current.get("id")) == qid:
+        out["currentQuestion"] = {}
+    from app.services.regulation_creation.pipeline import sync_remaining_estimate
+
+    out["pipeline"] = sync_remaining_estimate(out)
     return out
+
+
+def purge_filled_questions_from_queue(
+    state: dict[str, Any],
+    *,
+    process_id: str = "",
+    field: str = "",
+) -> dict[str, Any]:
+    from app.services.regulation_creation.pipeline import _collect_required_gaps_for_process
+
+    out = normalize_question_queue(state)
+    pipeline = normalize_pipeline(out.get("pipeline"))
+    by_id = {
+        _clean(item.get("id")): item
+        for item in (out.get("processes") or [])
+        if isinstance(item, dict) and _clean(item.get("id"))
+    }
+
+    def gap_closed(pid: str, raw_field: str) -> bool:
+        canonical = _normalize_collect_field(raw_field)
+        process = by_id.get(pid)
+        if not isinstance(process, dict):
+            return False
+        return canonical not in _collect_required_gaps_for_process(process)
+
+    filtered: list[dict[str, Any]] = []
+    for item in out.get("questionQueue") or []:
+        if not isinstance(item, dict):
+            continue
+        pid = _clean(item.get("processId") or item.get("functionId"))
+        fld = _clean(item.get("field"))
+        src = _clean(item.get("source"))
+        if src in {"collect", "round", "ownership"} and pid and fld and gap_closed(pid, fld):
+            continue
+        if process_id and field and pid == _clean(process_id):
+            canonical = _normalize_collect_field(field)
+            item_field = _normalize_collect_field(fld)
+            if canonical and item_field == canonical:
+                continue
+        filtered.append(item)
+    out["questionQueue"] = filtered
+    out["pipeline"] = _refresh_pipeline_derived(pipeline)
+    return out
+
+
+def _refresh_pipeline_derived(pipeline: dict[str, Any]) -> dict[str, Any]:
+    from app.services.regulation_creation.pipeline import _refresh_pipeline_derived as refresh
+
+    return refresh(pipeline)
 
 
 def queued_question_metadata(parsed: dict[str, Any]) -> dict[str, str]:
@@ -460,22 +603,55 @@ def _ownership_question_item(process: dict[str, Any], *, position: str = "") -> 
     }
 
 
-def _collect_question_item(process: dict[str, Any], field: str, *, position: str = "") -> dict[str, Any]:
+def _collect_question_item(
+    process: dict[str, Any],
+    field: str,
+    *,
+    position: str = "",
+    attempts: int = 0,
+) -> dict[str, Any]:
     from app.services.regulation_creation.interview import _question_for_gap
 
     pid = _clean(process.get("id"))
     func = _process_as_function(process)
     func_field = _COLLECT_FIELD_TO_FUNCTION.get(field, field)
     blocker = _question_for_gap(func, func_field, position=position)
+    options = list(blocker.quick_answers)
+    if attempts > 0 and "Не знаю / нет данных" not in options:
+        options = options + ["Не знаю / нет данных"]
     return {
         "id": f"collect-{pid}-{field}",
         "processId": pid,
         "field": field,
         "text": blocker.message,
         "smartKey": _COLLECT_FIELD_TO_SMART.get(field, ""),
-        "options": list(blocker.quick_answers),
+        "options": options,
         "source": "collect",
     }
+
+
+def _collect_attempts_for_field(state: dict[str, Any], *, process_id: str, field: str) -> int:
+    canonical = _normalize_collect_field(field)
+    pid = _clean(process_id)
+    if not canonical or not pid:
+        return 0
+    attempts = 0
+    for item in reversed(state.get("askedQuestions") or []):
+        if not isinstance(item, dict):
+            continue
+        asked_pid = _clean(item.get("processId") or item.get("functionId"))
+        asked_field = _normalize_collect_field(_clean(item.get("field") or item.get("intent")))
+        if asked_pid == pid and asked_field == canonical:
+            attempts += 1
+    return attempts
+
+
+def _finalize_exhausted_gap(process: dict[str, Any], *, field: str) -> None:
+    canonical = _normalize_collect_field(field)
+    if canonical not in _FIELD_TBD_VALUE:
+        return
+    facts = process.setdefault("knownFacts", {}) if isinstance(process, dict) else {}
+    facts[canonical] = _FIELD_TBD_VALUE[canonical]
 
 
 def _process_as_function(process: dict[str, Any]) -> dict[str, Any]:

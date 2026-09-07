@@ -325,6 +325,72 @@ def test_repeated_question_is_saved_as_deeper_followup() -> None:
     assert len(state["askedQuestions"]) >= 2
 
 
+def test_periodicity_daily_answer_breaks_partial_loop() -> None:
+    state = merge_agent_payload(
+        {},
+        {
+            "interview": {
+                "functions": [
+                    {
+                        "id": "f1",
+                        "title": "Организация внеплановых служебных совещаний",
+                        "actor": "Помощник ПСД",
+                        "roleStatus": "belongs",
+                    }
+                ],
+                "processes": [
+                    {
+                        "id": "f1",
+                        "title": "Организация внеплановых служебных совещаний",
+                        "roleStatus": "belongs",
+                        "knownFacts": {},
+                        "sourceRefs": [],
+                    }
+                ],
+            }
+        },
+    )
+    state, _ = remember_assistant_question(
+        state,
+        message="По функции не указано, как часто она выполняется. Какая периодичность?",
+        function_id="f1",
+        field="periodicity",
+        process_id="f1",
+    )
+    state = append_user_turn(state, "Каждый рабочий день", [])
+    state = merge_agent_payload(
+        state,
+        {
+            "status": "need_more",
+            "message": "Уточните периодичность: ежедневно/еженедельно/по событию.",
+            "answerSufficiency": {
+                "status": "partial",
+                "processId": "f1",
+                "field": "periodicity",
+                "answerSummary": "Недостаточно конкретно",
+                "missingFacts": ["периодичность"],
+            },
+            "interview": {
+                "functions": [{"id": "f1", "periodicity": "Каждый рабочий день"}],
+                "processes": [{"id": "f1", "knownFacts": {"frequency": "Каждый рабочий день"}}],
+            },
+        },
+    )
+    blocker = followup_blocker(
+        {
+            "status": "need_more",
+            "answerSufficiency": {
+                "status": "partial",
+                "processId": "f1",
+                "field": "periodicity",
+                "missingFacts": ["периодичность"],
+            },
+        },
+        state,
+    )
+    assert blocker is None
+
+
 def test_notify_two_hours_is_not_concrete_trigger() -> None:
     payload = _ready_payload(
         {
@@ -1813,3 +1879,681 @@ def test_turn_payload_blocks_fastpath_before_process_selection() -> None:
     turn = _turn_payload(db, draft, message="", force_create=False)
     assert not turn.prefetchedReply
     assert not turn.sdkPrompt.strip()
+
+
+def test_erp_answer_closes_work_location_and_next_is_frequency() -> None:
+    from app.services.regulation_creation.interview import remember_assistant_question
+    from app.services.regulation_creation.pipeline import _collect_readiness, select_processes
+    from app.services.regulation_creation.question_queue import (
+        apply_collect_answer_to_facts,
+        build_deterministic_queue,
+        peek_queue_head,
+        purge_filled_questions_from_queue,
+    )
+
+    state = select_processes(
+        {
+            "position": "Инженер",
+            "processes": [
+                {
+                    "id": "f1",
+                    "title": "Создание задач после протокола",
+                    "roleStatus": "belongs",
+                    "knownFacts": {},
+                    "sourceRefs": [],
+                }
+            ],
+            "functions": [],
+            "pipeline": {"stage": "select", "blocks": []},
+        },
+        ["f1"],
+    )
+    head = peek_queue_head(state)
+    assert head is not None
+    assert head["field"] == "workLocation"
+    state, _ = remember_assistant_question(
+        state,
+        message=head["text"],
+        quick_answers=head.get("options") or [],
+        function_id=head.get("processId") or "",
+        field=head.get("field") or "",
+        process_id=head.get("processId") or "",
+    )
+    updated = apply_collect_answer_to_facts(state, "1С ERP, документ ТД_Поручения")
+    proc = updated["processes"][0]
+    assert proc["knownFacts"]["workLocation"] == "1С ERP, документ ТД_Поручения"
+    assert proc["tool"] == "1С ERP, документ ТД_Поручения"
+    assert not updated.get("currentQuestion")
+
+    updated = purge_filled_questions_from_queue(updated)
+    updated = build_deterministic_queue(updated)
+    queue = updated.get("questionQueue") or []
+    assert queue
+    assert queue[0]["field"] == "frequency"
+    assert queue[0]["processId"] == "f1"
+    assert not any(q.get("field") == "workLocation" for q in queue)
+
+    readiness = _collect_readiness(updated.get("pipeline") or {})
+    assert readiness["ready"] is False
+    assert int(readiness.get("requiredGaps") or 0) >= 1
+
+
+def test_collect_chain_prefetches_next_questions_without_llm() -> None:
+    from app.services.regulation_creation.interview import append_user_turn, remember_assistant_question
+    from app.services.regulation_creation.pipeline import select_processes
+    from app.services.regulation_creation.question_queue import (
+        build_fastpath_reply_from_queue,
+        consume_queue_head,
+        peek_queue_head,
+        queue_depth,
+        replenish_queue,
+    )
+
+    state = select_processes(
+        {
+            "position": "Инженер",
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Календарь",
+                    "roleStatus": "belongs",
+                    "knownFacts": {},
+                    "sourceRefs": [],
+                }
+            ],
+            "functions": [],
+            "pipeline": {"stage": "select", "blocks": []},
+        },
+        ["p1"],
+    )
+    assert queue_depth(state) >= 3
+
+    for answer in ("Outlook", "Ежедневно", "Письмо"):
+        head = peek_queue_head(state)
+        assert head is not None
+        state, _ = remember_assistant_question(
+            state,
+            message=head["text"],
+            quick_answers=head.get("options") or [],
+            function_id=head.get("processId") or "",
+            field=head.get("field") or "",
+            process_id=head.get("processId") or "",
+        )
+        state = consume_queue_head(state, question_id=str(head.get("id") or ""))
+        state = append_user_turn(state, answer, [])
+        state = replenish_queue(state, target=5)
+        pipeline = state.get("pipeline") or {}
+        reply = build_fastpath_reply_from_queue(
+            interview=state,
+            pipeline=pipeline,
+            force_create=False,
+        )
+        assert reply
+        assert "collect-p1-" in reply
+
+    assert queue_depth(state) >= 1
+
+
+def test_work_location_quick_answer_closes_gap_and_advances_queue() -> None:
+    from app.services.regulation_creation.interview import append_user_turn, remember_assistant_question
+    from app.services.regulation_creation.pipeline import _collect_required_gaps_for_process, select_processes
+    from app.services.regulation_creation.question_queue import (
+        apply_collect_answer_to_facts,
+        build_fastpath_reply_from_queue,
+        consume_queue_head,
+        peek_queue_head,
+        purge_filled_questions_from_queue,
+    )
+
+    state = select_processes(
+        {
+            "position": "Инженер",
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Поручения",
+                    "roleStatus": "belongs",
+                    "knownFacts": {},
+                    "sourceRefs": [],
+                }
+            ],
+            "functions": [],
+            "pipeline": {"stage": "select", "blocks": []},
+        },
+        ["p1"],
+    )
+    head = peek_queue_head(state)
+    assert head is not None
+    state, _ = remember_assistant_question(
+        state,
+        message=head["text"],
+        quick_answers=head.get("options") or [],
+        function_id=head.get("processId") or "",
+        field=head.get("field") or "",
+        process_id=head.get("processId") or "",
+        queue_question_id=str(head.get("id") or ""),
+    )
+    state = consume_queue_head(state, question_id=str(head.get("id") or ""))
+    updated = apply_collect_answer_to_facts(state, "Реестр или журнал в системе")
+    proc = updated["processes"][0]
+    assert proc["knownFacts"]["workLocation"] == "Реестр или журнал в системе"
+    assert "workLocation" not in _collect_required_gaps_for_process(proc)
+    updated = purge_filled_questions_from_queue(updated, process_id="p1", field="workLocation")
+    next_head = peek_queue_head(updated)
+    assert next_head is not None
+    assert next_head.get("field") != "workLocation"
+    reply = build_fastpath_reply_from_queue(
+        interview=updated,
+        pipeline=updated.get("pipeline") or {},
+        force_create=False,
+    )
+    assert reply
+    assert "collect-p1-workLocation" not in reply
+
+
+def test_peek_turn_persists_replenished_queue() -> None:
+    from app.services.regulation_creation.pipeline import select_processes
+    from app.services.regulation_creation.question_queue import queue_depth
+    from app.services.regulation_creation.service import peek_creation_turn
+
+    db = _session()
+    user = AppUser(id="user-peek-persist", fio="Peek User", position="Инженер")
+    db.add(user)
+    db.commit()
+    state = select_processes(
+        {
+            "position": "Инженер",
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Календарь",
+                    "roleStatus": "belongs",
+                    "knownFacts": {"workLocation": "Outlook"},
+                    "sourceRefs": [],
+                }
+            ],
+            "functions": [],
+            "pipeline": {"stage": "select", "blocks": []},
+        },
+        ["p1"],
+    )
+    state["questionQueue"] = []
+    draft = RegulationCreationDraft(
+        id="draft-peek-persist",
+        user_id=user.id,
+        status="interview",
+        interview_json=state,
+    )
+    db.add(draft)
+    db.commit()
+
+    turn = peek_creation_turn(db, user_id=user.id, draft_id=draft.id)
+    db.refresh(draft)
+
+    assert turn.queueDepth >= 2
+    assert queue_depth(draft.interview_json or {}) >= 2
+
+
+def test_advance_after_user_answer_posts_next_not_duplicate() -> None:
+    from app.services.regulation_creation.service import advance_creation_question, select_creation_processes
+    from app.services.regulation_creation.question_queue import peek_queue_head
+
+    db = _session()
+    db.add(AppUser(id="user-adv", fio="Тест"))
+    db.commit()
+    session = start_creation_session(db, user_id="user-adv")
+    draft = db.query(RegulationCreationDraft).filter(RegulationCreationDraft.id == session.draftId).one()
+    draft.interview_json = {
+        **(draft.interview_json or {}),
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Календарь",
+                "roleStatus": "belongs",
+                "knownFacts": {},
+                "sourceRefs": [],
+            }
+        ],
+        "pipeline": {"stage": "select", "blocks": []},
+    }
+    db.add(draft)
+    db.commit()
+    updated = select_creation_processes(db, user_id="user-adv", draft_id=session.draftId, process_ids=["p1"])
+    assistant_msgs = [m for m in updated.messages if m.role == "assistant"]
+    assert assistant_msgs, "expected first collect question after process select"
+    first_q = assistant_msgs[-1].content.strip()
+
+    draft = db.query(RegulationCreationDraft).filter(RegulationCreationDraft.id == session.draftId).one()
+    from app.services.regulation_creation.interview import append_user_turn
+    from app.services.regulation_creation.service import _add_message
+
+    draft.interview_json = append_user_turn(draft.interview_json, "Outlook календарь", [])
+    _add_message(db, draft=draft, role="user", content="Outlook календарь")
+    db.add(draft)
+    db.commit()
+
+    advanced = advance_creation_question(db, user_id="user-adv", draft_id=session.draftId)
+    assistant_after = [m for m in advanced.messages if m.role == "assistant"]
+    assert len(assistant_after) >= 2
+    assert assistant_after[-1].content.strip() != first_q
+
+    head = peek_queue_head(
+        db.query(RegulationCreationDraft).filter(RegulationCreationDraft.id == session.draftId).one().interview_json or {}
+    )
+    if head:
+        assert head.get("field") != "workLocation"
+
+
+def test_persist_turn_posts_next_queued_question() -> None:
+    from app.models.regulation import RegulationCreationMessage
+    from app.services.regulation_creation.interview import remember_assistant_question
+    from app.services.regulation_creation.service import persist_creation_turn
+
+    db = _session()
+    db.add(AppUser(id="user-persist", fio="Тест"))
+    db.commit()
+    session = start_creation_session(db, user_id="user-persist")
+    draft = db.query(RegulationCreationDraft).filter(RegulationCreationDraft.id == session.draftId).one()
+    state = {
+        **(draft.interview_json or {}),
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Командировки",
+                "roleStatus": "unclear",
+                "knownFacts": {},
+                "sourceRefs": [],
+            }
+        ],
+        "questionQueue": [
+            {
+                "id": "ownership-p1",
+                "processId": "p1",
+                "field": "roleStatus",
+                "text": "Эта работа входит в ваши обязанности?",
+                "options": ["Да", "Нет"],
+                "source": "ownership",
+            },
+            {
+                "id": "p1-workLocation",
+                "processId": "p1",
+                "field": "workLocation",
+                "text": "Где выполняется процесс «Командировки»?",
+                "options": ["Excel", "1С"],
+            },
+        ],
+        "pipeline": {
+            "stage": "interview",
+            "interviewPhase": "collect",
+            "selectedProcessIds": ["p1"],
+            "collectReadiness": {"isReady": False, "requiredGaps": 4, "selectedProcesses": 1},
+            "blocks": [{"processId": "p1", "title": "Командировки"}],
+        },
+    }
+    state, _ = remember_assistant_question(
+        state,
+        message="Эта работа входит в ваши обязанности?",
+        quick_answers=["Да", "Нет"],
+        function_id="p1",
+        field="roleStatus",
+        process_id="p1",
+        queue_question_id="ownership-p1",
+    )
+    draft.interview_json = state
+    db.add(draft)
+    db.commit()
+
+    turn = persist_creation_turn(
+        db,
+        user_id="user-persist",
+        draft_id=session.draftId,
+        request=RegulationCreationSendRequest(message="Да, это моя обязанность"),
+    )
+    assistants = [m for m in turn.session.messages if m.role == "assistant"]
+    assert len(assistants) >= 2
+    assert "Где выполняется" in assistants[-1].content
+
+
+def test_apply_suppresses_interview_question_before_process_selection() -> None:
+    from app.models.regulation import RegulationCreationMessage
+
+    db = _session()
+    db.add(AppUser(id="user-sel", fio="Тест"))
+    db.commit()
+    session = start_creation_session(db, user_id="user-sel")
+    draft = db.query(RegulationCreationDraft).filter(RegulationCreationDraft.id == session.draftId).one()
+    llm_question = (
+        "Вопрос 1. Процесс «Разработка ТЗ на ИИ-агента». "
+        "По «сроки исполнения» в материалах нет однозначного ответа."
+    )
+    draft.interview_json = {
+        **(draft.interview_json or {}),
+        "processes": [
+            {
+                "id": "tz-dev",
+                "title": "Разработка ТЗ на ИИ-агента",
+                "roleStatus": "unclear",
+                "knownFacts": {"trigger": "на основании паспорта"},
+                "sourceRefs": [],
+            }
+        ],
+        "pipeline": {
+            "stage": "interview",
+            "interviewPhase": "rounds",
+            "blocks": [{"processId": "tz-dev", "title": "Разработка ТЗ на ИИ-агента"}],
+            "selectedProcessIds": [],
+        },
+    }
+    db.add(draft)
+    db.commit()
+
+    _apply_agent_reply(
+        db,
+        user_id="user-sel",
+        draft=draft,
+        raw=json.dumps(
+            {
+                "status": "need_more",
+                "message": llm_question,
+                "interview": {"processes": draft.interview_json["processes"]},
+            }
+        ),
+    )
+    db.commit()
+
+    assistants = (
+        db.query(RegulationCreationMessage)
+        .filter(
+            RegulationCreationMessage.draft_id == draft.id,
+            RegulationCreationMessage.role == "assistant",
+        )
+        .order_by(RegulationCreationMessage.created_at.asc())
+        .all()
+    )
+    assert assistants, "expected select prompt after extract apply"
+    assert llm_question not in (assistants[-1].content or "")
+    assert "извлечены процессы" in (assistants[-1].content or "").lower()
+    assert all(llm_question not in (item.content or "") for item in assistants)
+
+
+def test_ensure_collect_question_posted_when_queue_waiting() -> None:
+    from app.models.regulation import RegulationCreationMessage
+    from app.services.regulation_creation.service import _ensure_queued_question_posted
+
+    db = _session()
+    db.add(AppUser(id="user-q", fio="Тест"))
+    db.commit()
+    session = start_creation_session(db, user_id="user-q")
+    draft = db.query(RegulationCreationDraft).filter(RegulationCreationDraft.id == session.draftId).one()
+    draft.interview_json = {
+        **(draft.interview_json or {}),
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Календарь",
+                "roleStatus": "belongs",
+                "knownFacts": {},
+                "sourceRefs": [],
+            }
+        ],
+        "questionQueue": [
+            {
+                "id": "p1-workLocation",
+                "processId": "p1",
+                "field": "workLocation",
+                "text": "Где выполняется процесс «Календарь»?",
+                "options": ["Outlook", "1С", "Другое"],
+            }
+        ],
+        "pipeline": {
+            "stage": "interview",
+            "interviewPhase": "collect",
+            "selectedProcessIds": ["p1"],
+            "collectReadiness": {"isReady": False},
+            "blocks": [{"processId": "p1", "title": "Календарь"}],
+        },
+    }
+    db.add(draft)
+    db.commit()
+
+    _ensure_queued_question_posted(db, draft)
+    db.commit()
+
+    assistants = (
+        db.query(RegulationCreationMessage)
+        .filter(
+            RegulationCreationMessage.draft_id == draft.id,
+            RegulationCreationMessage.role == "assistant",
+        )
+        .all()
+    )
+    assert assistants
+    assert "Где выполняется" in (assistants[-1].content or "")
+
+
+def test_resume_interview_when_assemble_with_pending_queue() -> None:
+    from app.models.regulation import RegulationCreationMessage
+    from app.services.regulation_creation.pipeline import resume_interview_if_pending
+    from app.services.regulation_creation.service import _ensure_queued_question_posted
+
+    db = _session()
+    db.add(AppUser(id="user-resume", fio="Тест"))
+    db.commit()
+    session = start_creation_session(db, user_id="user-resume")
+    draft = db.query(RegulationCreationDraft).filter(RegulationCreationDraft.id == session.draftId).one()
+    draft.interview_json = {
+        **(draft.interview_json or {}),
+        "document_write_required": True,
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Контроль поручений",
+                "roleStatus": "belongs",
+                "knownFacts": {"workLocation": "1С"},
+                "sourceRefs": [],
+            }
+        ],
+        "questionQueue": [
+            {
+                "id": "p1-frequency",
+                "processId": "p1",
+                "field": "frequency",
+                "text": "Процесс «Контроль поручений»: как часто выполняется действие?",
+                "options": ["Ежедневно", "По событию"],
+            }
+        ],
+        "pipeline": {
+            "stage": "assemble",
+            "interviewPhase": "assemble",
+            "selectedProcessIds": ["p1"],
+            "collectReadiness": {"isReady": True, "requiredGaps": 0, "selectedProcesses": 1},
+            "blocks": [{"processId": "p1", "title": "Контроль поручений"}],
+        },
+    }
+    db.add(draft)
+    db.commit()
+
+    resumed = resume_interview_if_pending(draft.interview_json or {})
+    assert str(resumed.get("pipeline", {}).get("stage")) == "interview"
+    assert not resumed.get("document_write_required")
+
+    draft.interview_json = resumed
+    _ensure_queued_question_posted(db, draft)
+    db.commit()
+
+    assistants = (
+        db.query(RegulationCreationMessage)
+        .filter(
+            RegulationCreationMessage.draft_id == draft.id,
+            RegulationCreationMessage.role == "assistant",
+        )
+        .all()
+    )
+    assert assistants
+    assert "как часто" in (assistants[-1].content or "").lower()
+
+
+def test_apply_prefers_queued_question_over_assemble_message() -> None:
+    from app.models.regulation import RegulationCreationMessage
+
+    db = _session()
+    db.add(AppUser(id="user-queue-priority", fio="Тест"))
+    db.commit()
+    session = start_creation_session(db, user_id="user-queue-priority")
+    draft = db.query(RegulationCreationDraft).filter(RegulationCreationDraft.id == session.draftId).one()
+    draft.interview_json = {
+        **(draft.interview_json or {}),
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Командировки и мероприятия",
+                "roleStatus": "belongs",
+                "knownFacts": {"workLocation": "Excel"},
+                "sourceRefs": [],
+            }
+        ],
+        "questionQueue": [
+            {
+                "id": "ownership-p1",
+                "processId": "p1",
+                "field": "roleStatus",
+                "text": "Эта работа входит в ваши обязанности?",
+                "options": ["Да", "Нет"],
+                "source": "ownership",
+            }
+        ],
+        "pipeline": {
+            "stage": "interview",
+            "interviewPhase": "rounds",
+            "selectedProcessIds": ["p1"],
+            "collectReadiness": {"isReady": True, "requiredGaps": 0, "selectedProcesses": 1},
+            "blocks": [{"processId": "p1", "title": "Командировки и мероприятия"}],
+            "roundQuestions": [],
+        },
+    }
+    db.add(draft)
+    db.commit()
+
+    _apply_agent_reply(
+        db,
+        user_id="user-queue-priority",
+        draft=draft,
+        raw=json.dumps(
+            {
+                "status": "need_more",
+                "message": "По выбранным процессам в документе уже хватает фактов. Собираю регламент.",
+                "interview": {"processes": draft.interview_json["processes"]},
+            }
+        ),
+    )
+    db.commit()
+
+    assistants = (
+        db.query(RegulationCreationMessage)
+        .filter(
+            RegulationCreationMessage.draft_id == draft.id,
+            RegulationCreationMessage.role == "assistant",
+        )
+        .order_by(RegulationCreationMessage.created_at.asc())
+        .all()
+    )
+    assert assistants
+    assert "Эта работа входит в ваши обязанности?" in (assistants[-1].content or "")
+    assert "Собираю регламент" not in (assistants[-1].content or "")
+
+
+def test_persist_autostarts_assemble_after_full_collection() -> None:
+    db = _session()
+    db.add(AppUser(id="user-auto-assemble", fio="Тест"))
+    db.commit()
+    session = start_creation_session(db, user_id="user-auto-assemble")
+    draft = db.query(RegulationCreationDraft).filter(RegulationCreationDraft.id == session.draftId).one()
+    draft.interview_json = {
+        **(draft.interview_json or {}),
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Контроль поручений",
+                "roleStatus": "belongs",
+                "knownFacts": {
+                    "workLocation": "1С",
+                    "frequency": "Ежедневно",
+                    "trigger": "Поступило поручение",
+                    "steps": ["Открывает реестр", "Проверяет статус", "Отмечает выполнение"],
+                },
+                "sourceRefs": [],
+            }
+        ],
+        "questionQueue": [],
+        "pipeline": {
+            "stage": "interview",
+            "interviewPhase": "rounds",
+            "selectedProcessIds": ["p1"],
+            "collectReadiness": {"isReady": True, "requiredGaps": 0, "selectedProcesses": 1},
+            "blocks": [{"processId": "p1", "title": "Контроль поручений", "status": "done"}],
+            "roundQuestions": [],
+        },
+    }
+    db.add(draft)
+    db.commit()
+
+    turn = persist_creation_turn(
+        db,
+        user_id="user-auto-assemble",
+        draft_id=session.draftId,
+        request=RegulationCreationSendRequest(message="Ок"),
+    )
+    assert str(turn.session.pipeline.get("stage")) == "assemble"
+    assert "Формирую регламент" in " ".join(
+        [m.content or "" for m in turn.session.messages if m.role == "assistant"]
+    )
+
+
+def test_collect_gap_stops_reasking_after_max_attempts() -> None:
+    from app.services.regulation_creation.question_queue import all_collect_questions
+
+    state = {
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Контроль поручений",
+                "roleStatus": "belongs",
+                "knownFacts": {},
+                "sourceRefs": [],
+            }
+        ],
+        "askedQuestions": [
+            {
+                "id": "q1",
+                "processId": "p1",
+                "field": "workLocation",
+                "intent": "workLocation",
+                "message": "Где выполняется процесс?",
+                "answer": "В системе",
+                "sufficiency": "partial",
+            },
+            {
+                "id": "q2",
+                "processId": "p1",
+                "field": "workLocation",
+                "intent": "workLocation",
+                "message": "Уточните объект в системе",
+                "answer": "Точно не знаю",
+                "sufficiency": "not_answered",
+            },
+        ],
+        "pipeline": {
+            "stage": "interview",
+            "interviewPhase": "collect",
+            "selectedProcessIds": ["p1"],
+            "collectReadiness": {"isReady": False, "requiredGaps": 4, "selectedProcesses": 1},
+            "blocks": [{"processId": "p1", "title": "Контроль поручений"}],
+        },
+    }
+
+    questions = all_collect_questions(state, all_candidates=False)
+    work_location = [q for q in questions if q.get("field") == "workLocation"]
+    assert not work_location, "field should not be re-asked after max attempts"
+    process = state["processes"][0]
+    assert "TBD" in str((process.get("knownFacts") or {}).get("workLocation") or "")
+

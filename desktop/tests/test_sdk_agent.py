@@ -536,7 +536,7 @@ def test_default_sdk_model_is_grok_46() -> None:
 
     assert DEFAULT_SDK_MODEL == "grok-4.6"
     assert REGULATION_SDK_MODEL == "grok-4.6"
-    assert {"id": "effort", "value": "xhigh"} in list(REGULATION_SDK_MODEL_PARAMS)
+    assert {"id": "effort", "value": "low"} in list(REGULATION_SDK_MODEL_PARAMS)
     assert {"id": "fast", "value": "true"} in list(REGULATION_SDK_MODEL_PARAMS)
 
 

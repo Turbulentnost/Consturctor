@@ -51,10 +51,15 @@ export function PassportPage({
   const ready = Boolean(passport?.name.trim()) && missing.length === 0
 
   useEffect(() => {
-    if (prompt && prompt !== lastPromptRef.current) {
-      lastPromptRef.current = prompt
-      setMessages((prev) => [...prev, { role: 'ai', text: prompt }])
-    }
+    if (!prompt) return
+    const prev = lastPromptRef.current
+    if (prompt === prev) return
+    lastPromptRef.current = prompt
+    setMessages((prevMsgs) => {
+      const last = prevMsgs[prevMsgs.length - 1]
+      if (last?.role === 'ai' && last.text.trim() === prompt.trim()) return prevMsgs
+      return [...prevMsgs, { role: 'ai', text: prompt }]
+    })
   }, [prompt])
 
   useEffect(() => {

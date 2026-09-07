@@ -684,6 +684,9 @@ class RegulationCreationSession(BaseModel):
     questionQueue: list[dict] = Field(default_factory=list)
     prefetchInProgress: bool = False
     queueDepth: int = 0
+    dualWorkflow: bool = False
+    materialReview: list[dict] = Field(default_factory=list)
+    spawnedAgents: list[dict] = Field(default_factory=list)
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
 
@@ -705,6 +708,8 @@ class RegulationCreationApplyRequest(BaseModel):
     answer: str
     sdkAgentId: str = ""
     forceCreate: bool = False
+    prefetchOnly: bool = False
+    researchOnly: bool = False
 
 
 class RegulationCreationTurn(BaseModel):
@@ -715,6 +720,10 @@ class RegulationCreationTurn(BaseModel):
     sdkAgentId: str = ""
     forceCreate: bool = False
     prefetchedReply: str = ""
+    prefetchPrompt: str = ""
+    researchPrompt: str = ""
+    sdkAgentRole: str = "interview"
+    researchAgentId: str = ""
     questionQueue: list[dict] = Field(default_factory=list)
     prefetchInProgress: bool = False
     queueDepth: int = 0
