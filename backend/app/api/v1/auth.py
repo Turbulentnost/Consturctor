@@ -55,11 +55,12 @@ async def departments(_: AuthContext = Depends(get_current_user)) -> DepartmentL
 async def login(body: LoginRequest) -> LoginResponse:
     try:
         _trace(f"Auth API /login request fio={body.fio}")
-        result = await auth_service.login(body.fio, body.password)
+        result = await auth_service.login(body.fio, body.password, client=body.client)
         from app.services.notifications.hub import hub
+        from app.services.sessions import normalize_client
 
-        await hub.kick_user(result.user.id)
-        _trace(f"Auth API /login ok fio={body.fio} user_id={result.user.id}")
+        await hub.kick_user(result.user.id, client=normalize_client(body.client))
+        _trace(f"Auth API /login ok fio={body.fio} user_id={result.user.id} client={body.client}")
         return result
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc

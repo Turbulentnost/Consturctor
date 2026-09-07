@@ -18,6 +18,6 @@ def get_current_user(
         auth = validate_token(credentials.credentials)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail="Недействительный токен") from exc
-    if not is_current_session(auth.user_id, auth.session_id):
+    if not is_current_session(auth.user_id, auth.session_id, client=auth.client):
         raise HTTPException(status_code=401, detail="Сеанс завершён на другом устройстве")
     return auth

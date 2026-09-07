@@ -77,6 +77,7 @@ def list_desktop_tools() -> list[dict[str, Any]]:
             "description": str(definition.description or definition.title or name),
             "inputSchema": schema,
             "execution": "desktop",
+            "timeoutSeconds": int(definition.timeout_seconds),
         }
         if definition.runtime:
             item["runtime"] = definition.runtime

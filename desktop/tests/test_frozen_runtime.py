@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from app.frozen_runtime import (
     COM_WORKER_EXE_NAME,
     agent_python_command,
+    com_worker_bootstrap_code,
     com_worker_command,
     desktop_root,
     entry_mode,
@@ -59,7 +63,9 @@ def test_com_worker_command_falls_back_to_flag(tmp_path: Path) -> None:
     gui = tmp_path / "ConstructorDesktop.exe"
     gui.write_bytes(b"x")
     assert com_worker_command(str(gui), "mod", frozen=True) == [str(gui), "--com-worker"]
-    assert com_worker_command("python", "mod", frozen=False) == ["python", "-m", "mod"]
+    command = com_worker_command("python", "mod", frozen=False, desktop=tmp_path)
+    assert command[:2] == ["python", "-c"]
+    assert command[2] == com_worker_bootstrap_code("mod", tmp_path)
 
 
 def test_agent_python_command_uses_console_sibling(tmp_path: Path) -> None:
@@ -71,15 +77,48 @@ def test_agent_python_command_uses_console_sibling(tmp_path: Path) -> None:
     assert agent_python_command("python", frozen=False) == ["python"]
 
 
-def test_desktop_root_frozen_is_exe_dir(tmp_path: Path) -> None:
+def test_desktop_root_frozen_is_exe_dir(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("CONSTRUCTOR_DESKTOP_ROOT", raising=False)
     exe = tmp_path / "ConstructorDesktop.exe"
     exe.write_bytes(b"x")
     assert desktop_root(frozen=True, executable=str(exe)) == tmp_path
 
 
+def test_desktop_root_uses_env_override(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CONSTRUCTOR_DESKTOP_ROOT", str(tmp_path))
+    exe = tmp_path / "ConstructorDesktop.exe"
+    exe.write_bytes(b"x")
+    assert desktop_root(frozen=False) == tmp_path.resolve()
+    assert desktop_root(frozen=True, executable=str(exe)) == tmp_path.resolve()
+
+
 def test_build_worker_command_unfrozen() -> None:
     command = _build_worker_command("app.tools.ac.workers.com_worker_process")
-    assert command[-2:] == ["-m", "app.tools.ac.workers.com_worker_process"]
+    assert command[1] == "-c"
+    assert "sys.path.insert" in command[2]
+    assert "from app.tools.ac.workers.com_worker_process import main" in command[2]
+
+
+def test_unfrozen_com_worker_imports_app_without_pythonpath() -> None:
+    command = com_worker_command(
+        sys.executable,
+        "app.tools.ac.workers.com_worker_process",
+        frozen=False,
+    )
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    env["PYTHONPATH"] = ""
+    completed = subprocess.run(
+        command,
+        input="{}",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=30,
+    )
+    combined = f"{completed.stdout or ''}{completed.stderr or ''}"
+    assert "No module named 'app'" not in combined
+    assert "INVALID_WORKER_TASK" in (completed.stdout or "")
 
 
 def test_python_prefix_unfrozen() -> None:

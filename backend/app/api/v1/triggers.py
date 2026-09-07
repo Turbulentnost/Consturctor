@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.db.session import SessionLocal, get_db
-from app.schemas.trigger import TriggerCreate, TriggerFiredAck, TriggerList, TriggerOut
+from app.schemas.trigger import TriggerCreate, TriggerFiredAck, TriggerList, TriggerOut, TriggerSkipSlot
 from app.services.tool_bridge import tool_bridge
 from app.services.triggers.check import check_trigger_condition
 from app.services.triggers.service import (
@@ -21,6 +21,7 @@ from app.services.triggers.service import (
     create_trigger,
     list_triggers,
     mark_fired,
+    skip_trigger_slot,
 )
 from app.services.workflows.cursor_tools import clear_tool_context, set_tool_context
 
@@ -66,6 +67,20 @@ def cancel_trigger_endpoint(
 ) -> TriggerOut:
     try:
         return cancel_trigger(db, user_id=auth.user_id, trigger_id=trigger_id)
+    except TriggerError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{trigger_id}/skip-slot", response_model=TriggerOut)
+def skip_trigger_slot_endpoint(
+    trigger_id: str,
+    body: TriggerSkipSlot,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TriggerOut:
+    try:
+        return skip_trigger_slot(db, user_id=auth.user_id, trigger_id=trigger_id, at=body.at)
     except TriggerError as exc:
         _raise(exc)
         raise

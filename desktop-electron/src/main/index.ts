@@ -1,8 +1,20 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } from 'electron'
-import { join, basename, extname } from 'node:path'
-import { readFileSync, existsSync, writeFileSync } from 'node:fs'
-import { NotificationGuard, showToast, type ToastPayload } from './notifications'
+import { execFileSync } from 'node:child_process'
+import { join, basename, dirname, extname } from 'node:path'
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import {
+  APP_PROTOCOL,
+  consumeToastActivation,
+  findConstructorUrl,
+  focusAppWindows,
+  installToastActivation,
+  NotificationGuard,
+  setToastHooks,
+  showToast,
+  type ToastPayload
+} from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
+import { getUpdateStatus, installAvailableUpdate, startUpdater, stopUpdater } from './updater'
 
 interface RequestOptions {
   method?: string
@@ -11,6 +23,8 @@ interface RequestOptions {
   params?: Record<string, string | number | boolean | undefined | null>
   token?: string | null
   timeoutMs?: number
+  filePaths?: string[]
+  extraFields?: Record<string, string>
 }
 
 interface UploadOptions {
@@ -46,11 +60,32 @@ function parseEnvFile(path: string): Record<string, string> {
   return out
 }
 
-function loadConfig(): { backendUrl: string; testUser: boolean } {
+function loadConfig(): {
+  backendUrl: string
+  testUser: boolean
+  updateOwner: string
+  updateRepo: string
+  updateToken: string
+} {
+  const userEnv = join(app.getPath('userData'), '.env')
+  const resourceEnv = join(process.resourcesPath, 'desktop', '.env')
+  if (!existsSync(userEnv) && existsSync(resourceEnv)) {
+    try {
+      mkdirSync(dirname(userEnv), { recursive: true })
+      writeFileSync(userEnv, readFileSync(resourceEnv))
+    } catch {
+      /* Keep resource .env as fallback. */
+    }
+  }
   const candidates = [
+    userEnv,
+    join(dirname(app.getPath('exe')), '.env'),
+    resourceEnv,
     join(app.getAppPath(), '.env'),
     join(process.cwd(), '.env'),
-    join(app.getAppPath(), '..', '.env')
+    join(app.getAppPath(), '..', '.env'),
+    join(process.cwd(), '..', 'desktop', '.env'),
+    join(app.getAppPath(), '..', 'desktop', '.env')
   ]
   let env: Record<string, string> = {}
   for (const candidate of candidates) {
@@ -67,10 +102,151 @@ function loadConfig(): { backendUrl: string; testUser: boolean } {
     .trim()
     .toLowerCase()
   const testUser = ['1', 'true', 'yes', 'on'].includes(flag)
-  return { backendUrl, testUser }
+  const updateOwner = (
+    process.env.UPDATE_GITHUB_OWNER ||
+    env.UPDATE_GITHUB_OWNER ||
+    'Turbulentnost'
+  ).trim()
+  const updateRepo = (
+    process.env.UPDATE_GITHUB_REPO ||
+    env.UPDATE_GITHUB_REPO ||
+    'Consturctor'
+  ).trim()
+  const updateToken = (
+    process.env.UPDATE_GITHUB_TOKEN ||
+    process.env.GH_TOKEN ||
+    process.env.GITHUB_TOKEN ||
+    env.UPDATE_GITHUB_TOKEN ||
+    env.GH_TOKEN ||
+    env.GITHUB_TOKEN ||
+    ''
+  ).trim()
+  return { backendUrl, testUser, updateOwner, updateRepo, updateToken }
 }
 
 const CONFIG = loadConfig()
+
+function resolveAppIcon(): string {
+  const candidates = [
+    join(process.resourcesPath, 'icon.ico'),
+    join(__dirname, '../../build/icon.ico'),
+    join(process.cwd(), 'build/icon.ico'),
+    join(process.cwd(), 'src/renderer/src/assets/logo.png')
+  ]
+  for (const item of candidates) {
+    if (existsSync(item)) return item
+  }
+  return ''
+}
+
+const APP_ICON = resolveAppIcon()
+
+const APP_USER_MODEL_ID = 'com.constructor.desktop'
+
+app.setName('Constructor')
+if (process.platform === 'win32') {
+  app.setAppUserModelId(APP_USER_MODEL_ID)
+}
+
+function quoteArg(value: string): string {
+  if (!/[\s"]/.test(value)) return value
+  return `"${value.replace(/"/g, '\\"')}"`
+}
+
+function unpackagedAppEntry(): string {
+  const fromCwd = process.cwd()
+  if (existsSync(join(fromCwd, 'package.json'))) return fromCwd
+  const fromMain = join(__dirname, '../..')
+  if (existsSync(join(fromMain, 'package.json'))) return fromMain
+  return __filename
+}
+
+function relaunchCommandLine(): string {
+  if (app.isPackaged) return quoteArg(process.execPath)
+  return `${quoteArg(process.execPath)} ${quoteArg(unpackagedAppEntry())}`
+}
+
+function registerProtocolCommand(command: string): void {
+  const root = `HKCU\\Software\\Classes\\${APP_PROTOCOL}`
+  execFileSync('reg.exe', ['add', root, '/ve', '/t', 'REG_SZ', '/d', `URL:${APP_PROTOCOL} Protocol`, '/f'], {
+    windowsHide: true,
+    timeout: 5000
+  })
+  execFileSync('reg.exe', ['add', root, '/v', 'URL Protocol', '/t', 'REG_SZ', '/d', '', '/f'], {
+    windowsHide: true,
+    timeout: 5000
+  })
+  execFileSync(
+    'reg.exe',
+    ['add', `${root}\\shell\\open\\command`, '/ve', '/t', 'REG_SZ', '/d', command, '/f'],
+    { windowsHide: true, timeout: 5000 }
+  )
+}
+
+function registerWindowsLaunchers(): void {
+  const entry = unpackagedAppEntry()
+  const protocolCommand = app.isPackaged
+    ? `${quoteArg(process.execPath)} "%1"`
+    : `${quoteArg(process.execPath)} ${quoteArg(entry)} "%1"`
+  if (app.isPackaged) {
+    app.setAsDefaultProtocolClient(APP_PROTOCOL)
+  } else {
+    app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, [entry])
+  }
+  if (process.platform !== 'win32') return
+  try {
+    registerProtocolCommand(protocolCommand)
+    console.log(`Constructor protocol handler: ${protocolCommand}`)
+  } catch (err) {
+    console.error(
+      `Failed to write constructor protocol: ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+  if (app.isPackaged) return
+  const programs = join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs')
+  try {
+    mkdirSync(programs, { recursive: true })
+    const shortcutPath = join(programs, 'Constructor Dev.lnk')
+    const icon = APP_ICON && /\.(ico|exe)$/i.test(APP_ICON) ? APP_ICON : process.execPath
+    const shortcut = {
+      target: process.execPath,
+      args: quoteArg(entry),
+      cwd: existsSync(join(entry, 'package.json')) ? entry : process.cwd(),
+      appUserModelId: APP_USER_MODEL_ID,
+      description: 'Constructor',
+      icon,
+      iconIndex: 0
+    }
+    const operation = existsSync(shortcutPath) ? 'replace' : 'create'
+    let wrote = shell.writeShortcutLink(shortcutPath, operation, shortcut)
+    if (!wrote || !existsSync(shortcutPath)) {
+      wrote = shell.writeShortcutLink(shortcutPath, existsSync(shortcutPath) ? 'replace' : 'create', {
+        ...shortcut,
+        icon: process.execPath
+      })
+    }
+    if (!wrote || !existsSync(shortcutPath)) {
+      console.error(`Failed to write Constructor Dev toast shortcut at ${shortcutPath}`)
+      return
+    }
+    console.log(`Constructor toast shortcut: ${shortcutPath}`)
+  } catch (err) {
+    console.error(
+      `Failed to register toast shortcut: ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+}
+
+const isPrimaryInstance = app.requestSingleInstanceLock()
+if (!isPrimaryInstance) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const url = findConstructorUrl(argv)
+    if (url) consumeToastActivation(url)
+    else focusAppWindows()
+  })
+}
 
 function broadcastAgentEvent(message: AgentSidecarMessage): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -80,12 +256,30 @@ function broadcastAgentEvent(message: AgentSidecarMessage): void {
 
 const agentSidecar = new AgentSidecar(CONFIG.backendUrl, broadcastAgentEvent)
 
+setToastHooks({
+  onHitl: (decision) => {
+    agentSidecar.send({
+      type: 'hitl',
+      requestId: decision.requestId,
+      approved: decision.approved
+    })
+  }
+})
+
+// Scheduled agent start now belongs to Orchestrator. Keep the handlers, do not run them here.
+const SCHEDULED_AGENT_AUTOSTART = false
+const ORCHESTRATOR_DESKTOP_COMMANDS = false
+
 const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
   const kind = String(command.type || '')
   const triggerId = String(command.trigger_id || command.id || '')
   const workflowId = String(command.workflow_id || '')
   const message = String(command.message || '')
   if (kind === 'evaluate_trigger') {
+    if (!SCHEDULED_AGENT_AUTOSTART) {
+      console.log(`Constructor skips scheduled trigger ${triggerId}`)
+      return
+    }
     agentSidecar.send({
       type: 'check_trigger',
       id: `trg-${triggerId}-${Date.now()}`,
@@ -94,6 +288,10 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
       message
     })
   } else if (kind === 'run_agent') {
+    if (!SCHEDULED_AGENT_AUTOSTART) {
+      console.log(`Constructor skips scheduled agent run ${workflowId}`)
+      return
+    }
     agentSidecar.send({
       type: 'run',
       id: `run-${Date.now()}`,
@@ -103,11 +301,17 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
       triggerId
     })
   } else if (kind === 'form_orchestrator') {
+    if (!ORCHESTRATOR_DESKTOP_COMMANDS) {
+      return
+    }
     agentSidecar.send({
       type: 'form_orchestrator',
       id: `orch-form-${Date.now()}`
     })
   } else if (kind === 'calc_orchestrator') {
+    if (!ORCHESTRATOR_DESKTOP_COMMANDS) {
+      return
+    }
     const tileIds = Array.isArray(command.tile_ids)
       ? command.tile_ids.map((item) => String(item))
       : []
@@ -131,6 +335,24 @@ const MIME_BY_EXT: Record<string, string> = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.gif': 'image/gif'
+}
+
+function appendLocalFiles(form: FormData, filePaths: string[]): number {
+  let count = 0
+  for (const filePath of filePaths) {
+    if (!filePath || !existsSync(filePath)) continue
+    const buffer = readFileSync(filePath)
+    const name = basename(filePath)
+    const mime = MIME_BY_EXT[extname(filePath).toLowerCase()] || 'application/octet-stream'
+    const bytes = new Uint8Array(buffer)
+    if (typeof File === 'function') {
+      form.append('files', new File([bytes], name, { type: mime }))
+    } else {
+      form.append('files', new Blob([bytes], { type: mime }), name)
+    }
+    count += 1
+  }
+  return count
 }
 
 function buildUrl(path: string, params?: RequestOptions['params']): string {
@@ -165,8 +387,25 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? DEFAULT_TIMEOUT)
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
-  let bodyInit: string | undefined
-  if (opts.body !== undefined && opts.body !== null) {
+  let bodyInit: string | FormData | undefined
+  const filePaths = Array.isArray(opts.filePaths) ? opts.filePaths : []
+  if (filePaths.length > 0) {
+    const form = new FormData()
+    for (const [key, value] of Object.entries(opts.extraFields || {})) {
+      form.append(key, value)
+    }
+    if (opts.body && typeof opts.body === 'object' && !Array.isArray(opts.body)) {
+      for (const [key, value] of Object.entries(opts.body as Record<string, unknown>)) {
+        if (value != null) form.append(key, String(value))
+      }
+    }
+    const attached = appendLocalFiles(form, filePaths)
+    if (attached === 0) {
+      clearTimeout(timer)
+      return { ok: false, status: 0, error: 'Файлы не найдены на диске' }
+    }
+    bodyInit = form
+  } else if (opts.body !== undefined && opts.body !== null) {
     headers['Content-Type'] = 'application/json'
     bodyInit = JSON.stringify(opts.body)
   }
@@ -304,24 +543,64 @@ async function handleFetchDataUrl(
   }
 }
 
+function ensureDocxPath(filePath: string): string {
+  const dir = dirname(filePath)
+  let name = basename(filePath)
+    .replace(/[<>:"/\\|?*]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/g, '')
+  if (!name) name = 'Reglament'
+  if (extname(name).toLowerCase() !== '.docx') name = `${name}.docx`
+  return join(dir, name)
+}
+
 async function handleDownload(
-  _evt: unknown,
+  evt: IpcMainInvokeEvent,
   opts: { url: string; defaultName?: string; token?: string | null }
 ) {
-  const win = BrowserWindow.getFocusedWindow()
-  const result = await dialog.showSaveDialog(win!, { defaultPath: opts.defaultName || 'file' })
+  const win = BrowserWindow.fromWebContents(evt.sender) || BrowserWindow.getFocusedWindow()
+  const suggested = ensureDocxPath(join(app.getPath('downloads'), opts.defaultName || 'Reglament.docx'))
+  const saveOptions = {
+    defaultPath: suggested,
+    filters: [{ name: 'Word', extensions: ['docx'] }]
+  }
+  const result = win
+    ? await dialog.showSaveDialog(win, saveOptions)
+    : await dialog.showSaveDialog(saveOptions)
   if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+  const target = ensureDocxPath(result.filePath)
   const url = resolveBackendUrl(opts.url)
   const headers: Record<string, string> = {}
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
   try {
     const response = await fetch(url, { headers })
-    if (!response.ok) return { ok: false, error: `Ошибка загрузки (${response.status})` }
-    const arrayBuffer = await response.arrayBuffer()
-    writeFileSync(result.filePath, Buffer.from(arrayBuffer))
-    return { ok: true, path: result.filePath }
-  } catch {
-    return { ok: false, error: 'Не удалось скачать файл' }
+    if (!response.ok) {
+      let detail = `Ошибка загрузки (${response.status})`
+      try {
+        const payload = JSON.parse(await response.text()) as { detail?: unknown }
+        if (typeof payload.detail === 'string' && payload.detail.trim()) {
+          detail = payload.detail
+        }
+      } catch {
+        /* keep status text */
+      }
+      return { ok: false, error: detail }
+    }
+    const buffer = Buffer.from(await response.arrayBuffer())
+    if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4b) {
+      return { ok: false, error: 'Сервер вернул не документ Word' }
+    }
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, buffer)
+    if (!existsSync(target)) {
+      return { ok: false, error: 'Файл не записался на диск' }
+    }
+    shell.showItemInFolder(target)
+    return { ok: true, path: target }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : 'Не удалось скачать файл'
+    return { ok: false, error: reason }
   }
 }
 
@@ -380,13 +659,8 @@ async function handleStream(
     for (const [key, value] of Object.entries(opts.extraFields || {})) {
       form.append(key, value)
     }
-    for (const filePath of opts.filePaths) {
-      if (!existsSync(filePath)) continue
-      const buffer = readFileSync(filePath)
-      const name = basename(filePath)
-      const mime = MIME_BY_EXT[extname(filePath).toLowerCase()] || 'application/octet-stream'
-      const blob = new Blob([new Uint8Array(buffer)], { type: mime })
-      form.append('files', blob, name)
+    if (appendLocalFiles(form, opts.filePaths) === 0) {
+      return { ok: false, status: 0, error: 'Файлы не найдены на диске' }
     }
     bodyInit = form
   } else if (opts.body !== undefined && opts.body !== null) {
@@ -478,12 +752,22 @@ function createWindow(): void {
     autoHideMenuBar: true,
     backgroundColor: '#06483D',
     title: 'Constructor',
+    icon: APP_ICON || undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true
     }
   })
+
+  if (process.platform === 'win32') {
+    mainWindow.setAppDetails({
+      appId: APP_USER_MODEL_ID,
+      appIconPath: APP_ICON || undefined,
+      relaunchCommand: relaunchCommandLine(),
+      relaunchDisplayName: 'Constructor'
+    })
+  }
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
   mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
@@ -504,6 +788,9 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  if (!isPrimaryInstance) return
+  registerWindowsLaunchers()
+  installToastActivation()
   console.log(`Constructor backend: ${CONFIG.backendUrl}`)
   ipcMain.handle('app:getConfig', () => ({
     backendUrl: CONFIG.backendUrl,
@@ -557,8 +844,17 @@ app.whenReady().then(() => {
     const result = await dialog.showOpenDialog(win!, options)
     return result.canceled ? [] : result.filePaths
   })
+  ipcMain.handle('updater:getStatus', () => getUpdateStatus())
+  ipcMain.handle('updater:install', () => installAvailableUpdate())
+  startUpdater({
+    owner: CONFIG.updateOwner,
+    repo: CONFIG.updateRepo,
+    token: CONFIG.updateToken
+  })
 
   createWindow()
+  const launchUrl = findConstructorUrl(process.argv)
+  if (launchUrl) consumeToastActivation(launchUrl)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -568,6 +864,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   notifyGuard.stop()
   agentSidecar.stop()
+  stopUpdater()
 })
 
 app.on('window-all-closed', () => {

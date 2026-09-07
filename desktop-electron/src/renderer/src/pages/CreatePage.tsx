@@ -9,11 +9,21 @@ const ALLOWED = ['.docx', '.doc', '.pdf', '.xlsx', '.md', '.txt']
 interface CreatePageProps {
   onRegulationParsed: (result: RegulationParseResult) => void
   onStartRegulationChat: () => void
+  hasRegulationDraft?: boolean
+  regulationDraftBusy?: boolean
+  onResumeRegulationDraft?: () => void
+  onRestartRegulationDraft?: () => void
+  onOpenRegulationHistory?: () => void
 }
 
 export function CreatePage({
   onRegulationParsed,
-  onStartRegulationChat
+  onStartRegulationChat,
+  hasRegulationDraft = false,
+  regulationDraftBusy = false,
+  onResumeRegulationDraft,
+  onRestartRegulationDraft,
+  onOpenRegulationHistory
 }: CreatePageProps): React.JSX.Element {
   const [hover, setHover] = useState(false)
   const [fileName, setFileName] = useState('')
@@ -121,6 +131,9 @@ export function CreatePage({
         <div className="option-card">
           <div className="option-badge-row">
             <div className="badge-pill">Нет регламента?</div>
+            <button className="history-link" type="button" onClick={onOpenRegulationHistory}>
+              История
+            </button>
           </div>
           <div className="option-icon">
             <img src={aiIcon} alt="" />
@@ -128,9 +141,32 @@ export function CreatePage({
           <h3>Создать с помощью ИИ</h3>
           <div className="option-card-mid">
             <p>Ответьте на несколько вопросов — ИИ поможет оформить регламент и подготовить агента</p>
-            <button className="btn-primary" onClick={onStartRegulationChat} disabled={busy}>
-              Создать регламент
-            </button>
+            {hasRegulationDraft ? (
+              <div className="create-ai-actions">
+                <p className="create-ai-hint">
+                  Черновик и история вопросов сохранены. Можно продолжить с того же места.
+                </p>
+                <button
+                  className="btn-primary"
+                  onClick={onResumeRegulationDraft || onStartRegulationChat}
+                  disabled={busy}
+                >
+                  Продолжить черновик
+                </button>
+                <button
+                  className="btn-ghost-dark"
+                  type="button"
+                  onClick={onRestartRegulationDraft}
+                  disabled={busy || regulationDraftBusy}
+                >
+                  Начать заново
+                </button>
+              </div>
+            ) : (
+              <button className="btn-primary" onClick={onStartRegulationChat} disabled={busy}>
+                Создать регламент
+              </button>
+            )}
           </div>
         </div>
       </div>

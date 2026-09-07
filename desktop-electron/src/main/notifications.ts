@@ -16,29 +16,247 @@ export interface ToastPayload {
   body?: string
   workflowId?: string
   runId?: string
+  requestId?: string
+  draftId?: string
+}
+
+export interface HitlToastDecision {
+  requestId: string
+  approved: boolean
+  workflowId: string
+  runId: string
+}
+
+export interface ToastHooks {
+  onOpen?: (payload: { workflowId: string; runId: string }) => void
+  onHitl?: (decision: HitlToastDecision) => void
+}
+
+let toastHooks: ToastHooks = {}
+const liveToasts = new Map<string, Notification>()
+const handledActivations = new Set<string>()
+let activationInstalled = false
+
+export const APP_PROTOCOL = 'constructor'
+
+export function setToastHooks(hooks: ToastHooks): void {
+  toastHooks = hooks
+}
+
+export function focusAppWindows(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  }
+}
+
+function openFromToast(payload: ToastPayload): void {
+  focusAppWindows()
+  const open = {
+    workflowId: payload.workflowId || '',
+    runId: payload.runId || '',
+    draftId: payload.draftId || ''
+  }
+  toastHooks.onOpen?.(open)
+  notifyWindows('notification:open', open)
+}
+
+function decideHitl(payload: ToastPayload, approved: boolean): void {
+  const requestId = (payload.requestId || '').trim()
+  if (!requestId) {
+    openFromToast(payload)
+    return
+  }
+  const key = `${requestId}:${approved ? '1' : '0'}`
+  if (handledActivations.has(key)) return
+  handledActivations.add(key)
+  const toast = liveToasts.get(requestId)
+  if (toast) {
+    try {
+      toast.close()
+    } catch {
+      /* already dismissed */
+    }
+    liveToasts.delete(requestId)
+  }
+  const decision: HitlToastDecision = {
+    requestId,
+    approved,
+    workflowId: payload.workflowId || '',
+    runId: payload.runId || ''
+  }
+  toastHooks.onHitl?.(decision)
+  notifyWindows('notification:hitl', decision)
+  openFromToast(payload)
+}
+
+function escapeXml(value: string): string {
+  return (value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
+function payloadFromParams(params: URLSearchParams): ToastPayload {
+  return {
+    title: '',
+    workflowId: params.get('wid') || '',
+    runId: params.get('rid') || '',
+    draftId: params.get('did') || '',
+    requestId: params.get('qid') || ''
+  }
+}
+
+function toastLaunchUrl(
+  payload: ToastPayload,
+  action: 'open' | 'accept' | 'reject' = 'open'
+): string {
+  const params = new URLSearchParams()
+  if (payload.workflowId) params.set('wid', payload.workflowId)
+  if (payload.runId) params.set('rid', payload.runId)
+  if (payload.draftId) params.set('did', payload.draftId)
+  if (payload.requestId) params.set('qid', payload.requestId)
+  const query = params.toString()
+  // In-process toast args. Do not use constructor:// here: Windows protocol
+  // activation starts electron.exe without the app path and shows the default
+  // Electron welcome page.
+  return `constructor-hitl:${action}${query ? `?${query}` : ''}`
+}
+
+function parseHitlActivation(raw: string): { kind: 'open' | 'accept' | 'reject'; payload: ToastPayload } | null {
+  const text = (raw || '').trim()
+  if (text.startsWith('constructor-hitl:')) {
+    const rest = text.slice('constructor-hitl:'.length)
+    const q = rest.indexOf('?')
+    const kind = (q >= 0 ? rest.slice(0, q) : rest).trim()
+    const query = q >= 0 ? rest.slice(q + 1) : ''
+    const payload = payloadFromParams(new URLSearchParams(query))
+    if (kind === 'accept' || kind === 'reject' || kind === 'open') {
+      return { kind, payload }
+    }
+    return null
+  }
+  if (!text.startsWith(`${APP_PROTOCOL}:`)) return null
+  try {
+    const url = new URL(text)
+    const host = (url.hostname || '').toLowerCase()
+    const path = url.pathname.replace(/^\/+/, '').toLowerCase()
+    const payload = payloadFromParams(url.searchParams)
+    if (host === 'hitl' && (path === 'accept' || path === 'reject')) {
+      return { kind: path, payload }
+    }
+    return { kind: 'open', payload }
+  } catch {
+    return null
+  }
+}
+
+export function findConstructorUrl(argv: string[]): string {
+  return (
+    (argv || []).find((item) => {
+      const text = String(item || '')
+      return text.startsWith(`${APP_PROTOCOL}:`) || text.startsWith('constructor-hitl:')
+    }) || ''
+  )
+}
+
+export function consumeToastActivation(raw: string): boolean {
+  const parsed = parseHitlActivation(raw)
+  if (!parsed) {
+    if ((raw || '').trim()) return false
+    focusAppWindows()
+    return true
+  }
+  if (parsed.kind === 'accept') {
+    decideHitl(parsed.payload, true)
+    return true
+  }
+  if (parsed.kind === 'reject') {
+    decideHitl(parsed.payload, false)
+    return true
+  }
+  openFromToast(parsed.payload)
+  return true
+}
+
+function hitlToastXml(title: string, body: string, payload: ToastPayload): string {
+  const launch = escapeXml(toastLaunchUrl(payload))
+  const accept = escapeXml(toastLaunchUrl(payload, 'accept'))
+  const reject = escapeXml(toastLaunchUrl(payload, 'reject'))
+  return (
+    `<toast launch="${launch}" activationType="foreground" duration="long" scenario="reminder">` +
+    `<visual><binding template="ToastGeneric">` +
+    `<text>${escapeXml(title)}</text>` +
+    `<text>${escapeXml(body)}</text>` +
+    `</binding></visual>` +
+    `<actions>` +
+    `<action content="Принять" arguments="${accept}" activationType="foreground"/>` +
+    `<action content="Отклонить" arguments="${reject}" activationType="foreground"/>` +
+    `</actions></toast>`
+  )
+}
+
+export function installToastActivation(): void {
+  if (activationInstalled) return
+  const handle = (
+    Notification as typeof Notification & {
+      handleActivation?: (callback: (details: {
+        type?: string
+        arguments?: string
+        actionIndex?: number
+      }) => void) => void
+    }
+  ).handleActivation
+  if (typeof handle !== 'function') return
+  activationInstalled = true
+  handle((details) => {
+    consumeToastActivation(String(details?.arguments || ''))
+  })
 }
 
 /**
  * Show a native OS toast and, on click, focus the app window and ask the
- * renderer to open the related agent. Mirrors the desktop winotify behavior.
+ * renderer to open the related agent. HITL toasts also get Accept / Reject.
  */
 export function showToast(payload: ToastPayload): void {
   const title = (payload.title || '').trim() || 'Уведомление'
+  const body = (payload.body || '').trim()
+  const requestId = (payload.requestId || '').trim()
   if (!Notification.isSupported()) {
     notifyWindows('notification:open', payload)
     return
   }
-  const toast = new Notification({ title, body: (payload.body || '').trim() })
-  toast.on('click', () => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (win.isMinimized()) win.restore()
-      win.show()
-      win.focus()
-    }
-    notifyWindows('notification:open', {
-      workflowId: payload.workflowId || '',
-      runId: payload.runId || ''
-    })
+  const options: Electron.NotificationConstructorOptions = {
+    title,
+    body,
+    timeoutType: requestId ? 'never' : 'default',
+    urgency: requestId ? 'critical' : 'normal'
+  }
+  if (requestId) {
+    options.id = requestId
+    options.actions = [
+      { type: 'button', text: 'Принять' },
+      { type: 'button', text: 'Отклонить' }
+    ]
+  }
+  // Open toasts stay on Electron's native Windows toast so a click activates
+  // this process. Custom protocol XML launches a bare electron.exe in dev.
+  if (process.platform === 'win32' && requestId) {
+    options.toastXml = hitlToastXml(title, body, payload)
+  }
+  const toast = new Notification(options)
+  if (requestId) liveToasts.set(requestId, toast)
+  toast.on('click', () => openFromToast(payload))
+  toast.on('action', (event: Electron.Event & { actionIndex?: number }, index?: number) => {
+    const actionIndex = typeof event?.actionIndex === 'number' ? event.actionIndex : (index ?? 0)
+    decideHitl(payload, actionIndex === 0)
+  })
+  toast.on('close', () => {
+    if (requestId) liveToasts.delete(requestId)
   })
   toast.show()
 }
@@ -153,13 +371,11 @@ export class NotificationGuard {
       this.kick(String(payload.message || KICK_MESSAGE))
       return
     }
-    if (
-      kind === 'evaluate_trigger' ||
-      kind === 'run_agent' ||
-      kind === 'form_orchestrator' ||
-      kind === 'calc_orchestrator'
-    ) {
-      this.onCommand?.(payload)
+    if (kind === 'evaluate_trigger' || kind === 'run_agent') {
+      // Scheduled start is owned by Orchestrator. Constructor only shows the slot.
+      return
+    }
+    if (kind === 'form_orchestrator' || kind === 'calc_orchestrator') {
       return
     }
     if (kind === 'notification') {
@@ -189,7 +405,8 @@ export class NotificationGuard {
       title: String(payload.title || ''),
       body: String(payload.body || ''),
       workflowId: String(payload.workflow_id || payload.workflowId || ''),
-      runId: String(payload.run_id || payload.runId || '')
+      runId: String(payload.run_id || payload.runId || ''),
+      draftId: String(payload.draft_id || payload.draftId || '')
     })
     notifyWindows('inbox:changed', { id })
     if (id) void this.ack(id)

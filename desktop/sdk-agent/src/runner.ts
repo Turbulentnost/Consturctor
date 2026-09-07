@@ -1,4 +1,5 @@
 import { Agent } from "@cursor/sdk";
+import { writeSync } from "node:fs";
 import * as readline from "node:readline";
 import { stdin, stdout } from "node:process";
 import { randomUUID } from "node:crypto";
@@ -15,6 +16,12 @@ type ToolSpec = {
   name: string;
   description?: string;
   inputSchema?: Record<string, JsonValue>;
+  timeoutSeconds?: number;
+};
+
+type ModelParam = {
+  id: string;
+  value: string;
 };
 
 type RunCommand = {
@@ -22,8 +29,9 @@ type RunCommand = {
   id: string;
   prompt: string;
   model?: string;
+  modelParams?: ModelParam[];
   cwd?: string;
-  mode?: "design" | "run";
+  mode?: "design" | "run" | "interview";
   tools?: ToolSpec[];
   resumeAgentId?: string;
 };
@@ -52,7 +60,26 @@ type PendingTool = {
 const pendingTools = new Map<string, PendingTool>();
 
 function emit(payload: Record<string, unknown>): void {
-  stdout.write(JSON.stringify(payload) + "\n");
+  // writeSync: stdout.write can keep the last line in the pipe buffer.
+  // execute() then waits for tool_result, Python never sees tool_request,
+  // and the UI stays on «Выполняется».
+  writeSync(stdout.fd, `${JSON.stringify(payload)}\n`);
+}
+
+const INTERVIEW_MODEL_PARAMS: ModelParam[] = [
+  { id: "effort", value: "xhigh" },
+  { id: "fast", value: "true" },
+];
+
+function modelParamsFor(command: RunCommand): ModelParam[] {
+  const incoming = Array.isArray(command.modelParams) ? command.modelParams : null;
+  const raw = incoming !== null ? incoming : command.mode === "interview" ? INTERVIEW_MODEL_PARAMS : [];
+  return raw
+    .map((item) => ({
+      id: typeof item?.id === "string" ? item.id.trim() : "",
+      value: typeof item?.value === "string" ? item.value : String(item?.value ?? ""),
+    }))
+    .filter((item) => item.id);
 }
 
 function safeError(error: unknown): string {
@@ -98,9 +125,8 @@ function toolNameFrom(value: unknown, fallback = ""): string {
 
 function emitSdkToolCall(event: Record<string, unknown>, extra: Record<string, unknown> = {}): void {
   const args = recordFrom(event.args || event.arguments);
-  const provider = stringFrom(args.providerIdentifier);
   const rawName = stringFrom(event.name) || stringFrom(event.type);
-  if (rawName.toLowerCase() === "mcp" && provider === "custom-user-tools") {
+  if (rawName.toLowerCase() === "mcp") {
     return;
   }
   emit({
@@ -218,7 +244,7 @@ async function executeAskQuestion(args: Record<string, JsonValue>): Promise<Json
     tool: "askQuestion",
     arguments: args || {},
   });
-  const payload = await waitForToolResult(requestId);
+  const payload = await waitForToolResult(requestId, 15 * 60 * 1000);
   const result = payload.result && typeof payload.result === "object" ? payload.result : {};
   const answer =
     stringFrom((result as Record<string, unknown>).answer) ||
@@ -273,7 +299,18 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
           tool: name,
           arguments: args || {},
         });
-        const payload = await waitForToolResult(requestId);
+        let payload: ToolResultCommand;
+        try {
+          payload = await waitForToolResult(requestId, toolResultTimeoutMs({ ...spec, name }, args || {}));
+        } catch (error) {
+          const message = safeError(error) || `Tool ${name} timed out`;
+          emit({ type: "tool_result", requestId, tool: name, ok: false, error: message });
+          return {
+            content: [{ type: "text", text: message }],
+            isError: true,
+            structuredContent: { error: message },
+          };
+        }
         if (!payload.ok) {
           const message = payload.error || `Tool ${name} failed`;
           emit({ type: "tool_result", requestId, tool: name, ok: false, error: message });
@@ -308,6 +345,24 @@ function testsPassReady(text: string): boolean {
   return upper.includes("TESTS: PASS") || upper.includes("TESTS:PASS");
 }
 
+// Matches the "## WORK_RESULT" header the run answer must start with.
+// Mirrors strip_to_work_result in desktop/app/sdk_agent/prompt.py.
+const WORK_RESULT_RE = /^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\b.*$/im;
+
+function hasWorkResult(text: string): boolean {
+  return WORK_RESULT_RE.test(text || "");
+}
+
+// Keep only the final "## WORK_RESULT" block; drop the reasoning narration
+// the model streamed before it. Returns the trimmed text unchanged when no
+// marker is present so we never lose a genuine answer.
+function stripToWorkResult(text: string): string {
+  const raw = text || "";
+  const match = raw.match(WORK_RESULT_RE);
+  if (!match || match.index === undefined) return raw.trim();
+  return raw.slice(match.index).trim();
+}
+
 function playbookDraftReady(text: string): boolean {
   const raw = (text || "").trim();
   if (!raw) return false;
@@ -320,6 +375,57 @@ function playbookDraftReady(text: string): boolean {
   } catch {
     return false;
   }
+}
+
+function firstJsonObject(text: string): Record<string, unknown> | null {
+  const raw = text || "";
+  const start = raw.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (inStr) {
+      if (esc) {
+        esc = false;
+        continue;
+      }
+      if (ch === "\\") {
+        esc = true;
+        continue;
+      }
+      if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const data = JSON.parse(raw.slice(start, i + 1)) as unknown;
+          return data && typeof data === "object" && !Array.isArray(data)
+            ? (data as Record<string, unknown>)
+            : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function interviewDraftReady(text: string): boolean {
+  const data = firstJsonObject(text);
+  if (!data) return false;
+  const status = String(data.status || "");
+  const message = String(data.message || "").trim();
+  return (status === "need_more" || status === "ready") && Boolean(message || data.interview);
 }
 
 async function settleRun(run: {
@@ -392,7 +498,22 @@ function modelView(result: JsonValue): JsonValue {
   };
 }
 
-function waitForToolResult(requestId: string, timeoutMs = 15 * 60 * 1000): Promise<ToolResultCommand> {
+const DEFAULT_TOOL_TIMEOUT_MS = 90 * 1000;
+const TOOL_RESULT_BUFFER_MS = 20 * 1000;
+
+function toolResultTimeoutMs(spec: ToolSpec, args: Record<string, JsonValue>): number {
+  const fromSpec = Number(spec.timeoutSeconds);
+  let seconds = Number.isFinite(fromSpec) && fromSpec > 0 ? fromSpec : 90;
+  if (normalizeToolName(spec.name).toLowerCase() === "agent.wait") {
+    const requested = Number(args.seconds);
+    if (Number.isFinite(requested) && requested >= 0) {
+      seconds = Math.min(requested + 60, 3660);
+    }
+  }
+  return Math.max(DEFAULT_TOOL_TIMEOUT_MS, Math.round(seconds * 1000) + TOOL_RESULT_BUFFER_MS);
+}
+
+function waitForToolResult(requestId: string, timeoutMs = DEFAULT_TOOL_TIMEOUT_MS): Promise<ToolResultCommand> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingTools.delete(requestId);
@@ -436,6 +557,14 @@ function isDatabaseLockedError(error: unknown): boolean {
   );
 }
 
+function isAgentNotFoundError(error: unknown): boolean {
+  const message = safeError(error).toLowerCase();
+  return (
+    message.includes("agent") &&
+    (message.includes("not found") || message.includes("404") || message.includes("no such"))
+  );
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -466,6 +595,7 @@ async function withDbLockRetry<T>(
 async function runAgent(command: RunCommand): Promise<void> {
   const id = command.id || randomUUID();
   const model = command.model || process.env.CURSOR_SDK_MODEL || "grok-4.6";
+  const modelParams = modelParamsFor(command);
   const cwd = command.cwd || process.cwd();
   const apiKey = process.env.CURSOR_API_KEY || "";
   if (!apiKey.trim()) {
@@ -480,10 +610,19 @@ async function runAgent(command: RunCommand): Promise<void> {
   }
 
   let answer = "";
+  // Cursor-style result: only the LAST assistant segment. Reset on every tool
+  // call so intermediate narration between tools never leaks into the result.
+  let lastAssistant = "";
   let thought = "";
   emit({ type: "run", id });
-  emit({ type: "status", text: "Запускаю локальный Cursor SDK агент..." });
+  emit({
+    type: "status",
+    text: modelParams.length
+      ? `Запускаю локальный Cursor SDK агент (${model} ${modelParams.map((item) => `${item.id}=${item.value}`).join(" ")})...`
+      : "Запускаю локальный Cursor SDK агент...",
+  });
   const design = command.mode === "design";
+  const interview = command.mode === "interview";
   const customTools = buildCustomTools(command.tools || []);
   const customNames = Object.keys(customTools);
   emit({
@@ -496,7 +635,14 @@ async function runAgent(command: RunCommand): Promise<void> {
   try {
     const agentOptions = {
       apiKey,
-      model: { id: model },
+      model: modelParams.length ? { id: model, params: modelParams } : { id: model },
+      // Ban the built-in mutating/exec tools so every write goes through a
+      // Constructor customTool with HITL. Read-only built-ins (read/grep/glob/
+      // ls) stay for navigation, "mcp" keeps our customTools, askQuestion stays.
+      // Not persisted across resume, so it is re-applied on every create/resume.
+      // Do not enable autoReview: it waits for the IDE classifier/UI we don't have,
+      // and the feed stays on «Выполняется» forever.
+      disallowedTools: ["shell", "edit", "delete", "applyAgentDiff"],
       local: {
         cwd,
         customTools: customTools as never,
@@ -504,15 +650,31 @@ async function runAgent(command: RunCommand): Promise<void> {
         settingSources: [],
       },
     };
-    agent = await withDbLockRetry(
-      () =>
-        command.resumeAgentId
-          ? Agent.resume(command.resumeAgentId as string, agentOptions as never)
-          : Agent.create(agentOptions as never),
-      command.resumeAgentId ? "resume" : "create",
-    );
-    const agentId = readAgentId(agent, command.resumeAgentId || "");
-    emit({ type: "agent", id, agentId, resumed: Boolean(command.resumeAgentId) });
+    let resumed = Boolean(command.resumeAgentId);
+    try {
+      agent = await withDbLockRetry(
+        () =>
+          command.resumeAgentId
+            ? Agent.resume(command.resumeAgentId as string, agentOptions as never)
+            : Agent.create(agentOptions as never),
+        command.resumeAgentId ? "resume" : "create",
+      );
+    } catch (error) {
+      if (!command.resumeAgentId || !isAgentNotFoundError(error)) {
+        throw error;
+      }
+      resumed = false;
+      emit({
+        type: "status",
+        text: "Previous Cursor SDK agent was not found. Starting a new local agent.",
+      });
+      agent = await withDbLockRetry(
+        () => Agent.create(agentOptions as never),
+        "create-after-missing-resume",
+      );
+    }
+    const agentId = readAgentId(agent, resumed ? command.resumeAgentId || "" : "");
+    emit({ type: "agent", id, agentId, resumed });
     const sendOptions = {
       local: {
         force: true,
@@ -541,16 +703,30 @@ async function runAgent(command: RunCommand): Promise<void> {
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
     const finishIfReady = async (draft: string): Promise<boolean> => {
       const designReady = design && playbookDraftReady(draft);
-      const demoReady = !design && testsPassReady(draft);
-      if (!designReady && !demoReady) return false;
+      const interviewReady = interview && interviewDraftReady(draft);
+      // Only finish a run when the model has actually produced the structured
+      // "## WORK_RESULT" block (ending in TESTS: PASS). A bare "TESTS: PASS"
+      // mentioned mid-reasoning must NOT stop the run: doing so cut the model
+      // off before it wrote the result / called visualization tools and dumped
+      // the whole reasoning monologue into the answer.
+      const demoReady =
+        !design && !interview && testsPassReady(draft) && hasWorkResult(draft);
+      if (!designReady && !interviewReady && !demoReady) return false;
+      const readyAnswer = interviewReady
+        ? JSON.stringify(firstJsonObject(draft) || {})
+        : demoReady
+          ? stripToWorkResult(draft)
+          : draft;
       emit({
         type: "status",
-        text: designReady
-          ? "Черновик готов. Останавливаю этот ход и перехожу к пробному прогону."
-          : "Пробный прогон завершен (TESTS: PASS). Останавливаю этот ход.",
+        text: interviewReady
+          ? "Вопрос интервью готов. Останавливаю этот ход."
+          : designReady
+            ? "Черновик готов. Останавливаю этот ход и перехожу к пробному прогону."
+            : "Пробный прогон завершен (TESTS: PASS). Останавливаю этот ход.",
       });
-      emit({ type: "final", id, status: "ok", answer: draft });
-      emit({ type: "done", id, status: "ok", answer: draft });
+      emit({ type: "final", id, status: "ok", answer: readyAnswer });
+      emit({ type: "done", id, status: "ok", answer: readyAnswer });
       await settleRun(run);
       await (agent as NonNullable<typeof agent>).close();
       return true;
@@ -560,6 +736,7 @@ async function runAgent(command: RunCommand): Promise<void> {
         for (const block of event.message.content) {
           if (block.type === "text" && block.text) {
             answer += block.text;
+            lastAssistant += block.text;
             emit({ type: "assistant", text: block.text });
             if (await finishIfReady(answer)) return;
           }
@@ -569,6 +746,8 @@ async function runAgent(command: RunCommand): Promise<void> {
         emit({ type: "thinking", text: event.text });
         if ((await finishIfReady(thought)) || (await finishIfReady(answer))) return;
       } else if (event.type === "tool_call") {
+        // Model went back to work: everything said so far was intermediate.
+        lastAssistant = "";
         emitSdkToolCall(event as unknown as Record<string, unknown>);
       } else if (event.type === "task") {
         const rec = event as { status?: string; text?: string };
@@ -590,18 +769,17 @@ async function runAgent(command: RunCommand): Promise<void> {
     }
     const result = await run.wait();
     const status = String(result.status || "").toLowerCase();
-    emit({
-      type: "final",
-      id,
-      status: status === "finished" || status === "success" ? "ok" : status || "ok",
-      answer: answer || String(result.result || ""),
-    });
-    emit({
-      type: "done",
-      id,
-      status: status === "finished" || status === "success" ? "ok" : status || "ok",
-      answer: answer || String(result.result || ""),
-    });
+    const okStatus =
+      status === "finished" || status === "success" ? "ok" : status || "ok";
+    // Prefer the structured "## WORK_RESULT" block when the model produced one
+    // (it may sit after reasoning narration). Otherwise fall back to the last
+    // assistant segment (reset on every tool call) so intermediate narration
+    // between tools never leaks into the result.
+    const finalAnswer = hasWorkResult(answer)
+      ? stripToWorkResult(answer)
+      : lastAssistant.trim() || answer || String(result.result || "");
+    emit({ type: "final", id, status: okStatus, answer: finalAnswer });
+    emit({ type: "done", id, status: okStatus, answer: finalAnswer });
   } catch (error) {
     const message = safeError(error);
     emit({ type: "error", id, message });

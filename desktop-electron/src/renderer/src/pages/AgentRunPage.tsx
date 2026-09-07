@@ -132,14 +132,15 @@ export function AgentRunPage({
   // starts immediately on its own playbook instead of waiting for a message.
   useEffect(() => {
     if (!autoStart || autoStartedRef.current) return
-    if (running || (state?.items?.length ?? 0) > 0) return
+    if (running) return
     autoStartedRef.current = true
     runs.startRun({
       workflowId,
       title,
       message: '',
       shownMessage: 'Запуск агента',
-      resumeAgentId: resumeAgentRef.current || undefined
+      resumeAgentId: resumeAgentRef.current || undefined,
+      forceRestart: true
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStart, workflowId])

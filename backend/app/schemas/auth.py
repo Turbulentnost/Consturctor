@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class LoginRequest(BaseModel):
     fio: str = Field(..., min_length=1, description="ФИО пользователя из 1С")
     password: str = Field(..., min_length=1)
+    client: str = Field(default="constructor", description="constructor или orchestrator")
 
 
 class UserOut(BaseModel):

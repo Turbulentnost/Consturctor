@@ -13,8 +13,16 @@ from app.models.regulation import AgentDraft
 from app.models.trigger import AgentTrigger
 from app.models.workflow import Workflow
 from app.schemas.workflow import BoardAgent, BoardStats, CalendarEvent, WorkflowBoard
-from app.services.agent_runs import fail_stale_started_runs
-from app.services.triggers.service import is_workflow_paused, workflow_is_deleted
+from app.services.agent_runs import effective_run_status, fail_stale_started_runs
+from app.services.triggers.service import (
+    has_window,
+    is_workflow_paused,
+    parse_active_days,
+    parse_skipped_slots,
+    slot_key,
+    windowed_slots_between,
+    workflow_is_deleted,
+)
 
 
 def _stamp_iso(value: datetime | None) -> str:
@@ -100,11 +108,24 @@ def _expand_slot_times(
     interval_seconds: int,
     window_start: datetime,
     window_end: datetime,
+    active_days: object = "",
+    window_start_min: int | None = None,
+    window_end_min: int | None = None,
 ) -> list[datetime]:
     origin = _as_utc(fire_at)
     if origin is None:
         return []
     interval = max(0, int(interval_seconds or 0))
+    if interval > 0 and has_window(window_start_min, window_end_min):
+        return windowed_slots_between(
+            start=window_start,
+            end=window_end,
+            interval_seconds=interval,
+            window_start_min=int(window_start_min),
+            window_end_min=int(window_end_min),
+            active_days=parse_active_days(active_days),
+            max_slots=_MAX_SLOTS_PER_TRIGGER,
+        )
     if interval <= 0:
         if window_start <= origin <= window_end:
             return [origin]
@@ -119,8 +140,10 @@ def _expand_slot_times(
         steps = math.ceil((window_start - cursor).total_seconds() / interval)
         cursor = cursor + timedelta(seconds=steps * interval)
     times: list[datetime] = []
+    days = parse_active_days(active_days)
+    msk = timezone(timedelta(hours=3))
     while cursor <= window_end and len(times) < _MAX_SLOTS_PER_TRIGGER:
-        if cursor >= window_start:
+        if cursor >= window_start and (not days or cursor.astimezone(msk).weekday() in days):
             times.append(cursor)
         cursor = cursor + step
     return times
@@ -204,7 +227,13 @@ def _event_from_run(
         title=workflow.title or "ИИ-агент",
         subtitle=subtitle,
         start_at=_stamp_iso(start_at),
-        status=_run_event_status(run.status),
+        status=_run_event_status(
+            effective_run_status(
+                run.status or "",
+                run.answer or "",
+                in_flight=(run.status or "") in {"started", "running"} and run.finished_at is None,
+            )
+        ),
         source=_run_source(run),
         is_future=is_future,
         run_id=run.id,
@@ -307,7 +336,15 @@ def get_workflow_board(
         if not paused and next_at is not None:
             next_candidates.append(next_at)
         last = last_run.get(row.id)
-        last_status = (last.status or "") if last is not None else ""
+        last_status = (
+            effective_run_status(
+                last.status or "",
+                last.answer or "",
+                in_flight=(last.status or "") in {"started", "running"} and last.finished_at is None,
+            )
+            if last is not None
+            else ""
+        )
         status = "paused" if paused else ("needs_attention" if last_status == "error" else "active")
         condition = (event_trigger.condition_text if event_trigger is not None else "") or ""
         label = _next_run_label(kind=kind, next_at=next_at, paused=paused, condition=condition)
@@ -371,7 +408,13 @@ def get_workflow_board(
                     interval_seconds=interval,
                     window_start=earliest,
                     window_end=end,
+                    active_days=getattr(item, "active_days", ""),
+                    window_start_min=getattr(item, "window_start_min", None),
+                    window_end_min=getattr(item, "window_end_min", None),
                 )
+                skipped = parse_skipped_slots(getattr(item, "skipped_slots", None))
+                if skipped:
+                    times = [stamp for stamp in times if slot_key(stamp) not in skipped]
                 grace = timedelta(seconds=min(120, interval if interval > 0 else 120))
                 for stamp in times:
                     hit = next(
@@ -534,6 +577,11 @@ def get_workflow_board(
             stamp = _parse_dt(item.start_at)
             if stamp is not None:
                 upcoming.append(stamp)
+    # Meetings from calendar.show_meetings are NOT mixed into the run calendar.
+    # They belong to the agent's own answer as a mini calendar form (rendered in
+    # the run feed from the tool result), so the shared "Календарь запусков"
+    # stays a board of agent runs only.
+
     upcoming.sort()
     stats = BoardStats(
         active_agents=sum(

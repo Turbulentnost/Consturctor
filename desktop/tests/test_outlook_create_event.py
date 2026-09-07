@@ -6,7 +6,12 @@ from app.tools.ac.com_backed_tools import (
 )
 
 from app.tools.ac.workers.outlook_com_actions import (
+    _attach_attendees,
     _compute_free_slots,
+    _meeting_specs,
+    _open_shared_calendar,
+    _people_from_input,
+    _people_names,
     stamp_ai_agent_meeting,
 )
 
@@ -45,6 +50,69 @@ def test_outlook_save_failure_is_retried() -> None:
         None,
     )
     assert _is_transient_com_error(err)
+
+
+def test_people_names_from_string_and_list() -> None:
+    assert _people_names("Иванов Иван; Петров П.П.") == ["Иванов Иван", "Петров П.П."]
+    assert _people_from_input(
+        {"attendees": [{"fio": "Сидоров"}, "a@turbo-don.ru"], "people": "Сидоров"}
+    ) == ["Сидоров", "a@turbo-don.ru"]
+
+
+def test_meeting_specs_keep_attendees_and_organizer() -> None:
+    specs = _meeting_specs(
+        {
+            "subject": "Планерка",
+            "start": "2026-09-07T10:00:00",
+            "duration_minutes": 45,
+            "attendees": ["Мангасарян Давид Каренович", "Уставицкий А. А."],
+            "organizer": "Ильченко Екатерина Александровна",
+        }
+    )
+    assert len(specs) == 1
+    assert specs[0]["attendees"] == [
+        "Мангасарян Давид Каренович",
+        "Уставицкий А. А.",
+    ]
+    assert specs[0]["organizer"] == "Ильченко Екатерина Александровна"
+    assert specs[0]["send_invites"] is True
+
+
+def test_attach_attendees_marks_meeting() -> None:
+    class _Recipients:
+        def __init__(self) -> None:
+            self.added: list[str] = []
+
+        def Add(self, name: str):
+            self.added.append(name)
+            return type("R", (), {"Type": 0})()
+
+        def ResolveAll(self) -> bool:
+            return True
+
+    appt = type("A", (), {})()
+    appt.MeetingStatus = 0
+    appt.Recipients = _Recipients()
+    added = _attach_attendees(appt, ["Иванов", "Петров"])
+    assert added == ["Иванов", "Петров"]
+    assert appt.MeetingStatus == 1
+    assert appt.Recipients.added == ["Иванов", "Петров"]
+
+
+def test_open_shared_calendar_unresolved() -> None:
+    class _Recipient:
+        Resolved = False
+
+        def Resolve(self) -> bool:
+            return False
+
+    class _Ns:
+        def CreateRecipient(self, _name: str):
+            return _Recipient()
+
+    folder, status = _open_shared_calendar(_Ns(), "Неизвестный")
+    assert folder is None
+    assert status == "unresolved"
 
 
 def test_stamp_ai_agent_meeting_adds_prefix_and_footer() -> None:
@@ -225,3 +293,89 @@ def test_free_slots_skip_busy_work_hours() -> None:
     assert slots[0]["start"].startswith("2026-08-20T09:00")
     assert any(item["start"].startswith("2026-08-20T11:00") for item in slots)
     assert all(not (item["start"] <= "2026-08-20T10:00" < item["end"]) for item in slots)
+
+
+def test_event_involves_person_by_organizer_and_attendees() -> None:
+    from app.tools.ac.workers.outlook_com_actions import event_involves_person
+
+    ilchenko = "Ильченко Екатерина Александровна"
+    assert event_involves_person(
+        {"organizer": "Ильченко Екатерина Александровна", "required_attendees": ""},
+        ilchenko,
+    )
+    assert event_involves_person(
+        {
+            "organizer": "Донцова Анна Егоровна",
+            "required_attendees": "Ильченко Е.А.; Мангасарян Д.К.",
+        },
+        ilchenko,
+    )
+    assert event_involves_person(
+        {"subject": "Планерка с Ильченко Екатериной", "organizer": "Донцова"},
+        ilchenko,
+    )
+    assert not event_involves_person(
+        {
+            "organizer": "Мангасарян Давид Каренович",
+            "required_attendees": "Уставицкий А. А.",
+            "subject": "Планерное совещание",
+        },
+        ilchenko,
+    )
+
+
+def test_same_calendar_person_matches_partial_fio() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _same_calendar_person
+
+    assert _same_calendar_person(
+        "Ильченко Екатерина Александровна",
+        "Ильченко Екатерина Александровна",
+    )
+    assert _same_calendar_person("Ильченко Екатерина Александровна", "Ильченко Е. А.")
+    assert not _same_calendar_person("Ильченко", "")
+
+
+def test_restrict_filters_put_russian_locale_first() -> None:
+    from app.tools.ac.workers.outlook_com_actions import restrict_filter_strings
+
+    filters = restrict_filter_strings(datetime(2026, 8, 31, 0, 0), datetime(2026, 9, 7, 0, 0))
+    assert filters[0] == "[Start] >= '31.08.2026 00:00' AND [Start] <= '07.09.2026 00:00'"
+    assert any("08/31/2026" in item for item in filters)
+
+
+def test_iso_com_datetime_normalizes_naive_and_text() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _iso_com_datetime
+
+    assert _iso_com_datetime(datetime(2026, 9, 3, 14, 0, 0)) == "2026-09-03T14:00:00"
+    assert _iso_com_datetime("2026-09-03 14:00:00") == "2026-09-03T14:00:00"
+
+
+def test_collect_range_retries_restrict_when_us_filter_is_empty() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _collect_calendar_range
+
+    class _Item:
+        def __init__(self) -> None:
+            self.EntryID = "e1"
+            self.Subject = "Планерка"
+            self.Start = datetime(2026, 9, 3, 10, 0, 0)
+            self.End = datetime(2026, 9, 3, 11, 0, 0)
+            self.Location = ""
+            self.PropertyAccessor = type("A", (), {"GetProperty": staticmethod(lambda _s: "")})()
+
+    class _Items:
+        def Restrict(self, restriction: str):
+            if "31.08.2026" in restriction:
+                return [_Item()]
+            return []
+
+    events, scanned = _collect_calendar_range(
+        _Items(),
+        datetime(2026, 8, 31),
+        datetime(2026, 9, 7),
+        max_results=20,
+        max_scan_items=50,
+        include_body=False,
+    )
+    assert scanned >= 1
+    assert events[0]["subject"] == "Планерка"
+    assert events[0]["start"] == "2026-09-03T10:00:00"

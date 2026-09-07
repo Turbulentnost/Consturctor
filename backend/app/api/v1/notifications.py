@@ -77,7 +77,7 @@ def read_unread_count(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
-    mark_online(auth.user_id, auth.session_id)
+    mark_online(auth.user_id, auth.session_id, client=auth.client)
     return {"count": unread_count(db, user_id=auth.user_id)}
 
 
@@ -103,7 +103,7 @@ def read_pending(
     db: Session = Depends(get_db),
 ) -> list[NotificationOut]:
     # Desktop polls every ~15s; keep Redis presence alive even if WS briefly drops.
-    mark_online(auth.user_id, auth.session_id)
+    mark_online(auth.user_id, auth.session_id, client=auth.client)
     return list_pending(db, user_id=auth.user_id)
 
 
@@ -155,12 +155,12 @@ async def notifications_ws(websocket: WebSocket, token: str = "") -> None:
     except ValueError:
         await websocket.close(code=1008)
         return
-    if not is_current_session(auth.user_id, auth.session_id):
+    if not is_current_session(auth.user_id, auth.session_id, client=auth.client):
         await websocket.close(code=4001)
         return
     await websocket.accept()
-    await hub.replace(auth.user_id, websocket, session_id=auth.session_id)
-    mark_online(auth.user_id, auth.session_id)
+    await hub.replace(auth.user_id, websocket, session_id=auth.session_id, client=auth.client)
+    mark_online(auth.user_id, auth.session_id, client=auth.client)
     latest = None
     with SessionLocal() as db:
         pending = list_pending(db, user_id=auth.user_id)
@@ -175,10 +175,10 @@ async def notifications_ws(websocket: WebSocket, token: str = "") -> None:
     try:
         while True:
             await websocket.receive_text()
-            if not is_current_session(auth.user_id, auth.session_id):
+            if not is_current_session(auth.user_id, auth.session_id, client=auth.client):
                 await websocket.close(code=4001)
                 break
-            mark_online(auth.user_id, auth.session_id)
+            mark_online(auth.user_id, auth.session_id, client=auth.client)
     except WebSocketDisconnect:
         pass
     except Exception:  # noqa: BLE001

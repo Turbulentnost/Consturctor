@@ -265,7 +265,12 @@ class AgentRunOut(BaseModel):
     trigger_reason: str = ""
     started_at: str = ""
     finished_at: str = ""
+    agent_work_ms: int = 0
+    human_wait_ms: int = 0
+    open_segment: str = ""
+    open_segment_at: str = ""
     events: list[dict[str, Any]] = Field(default_factory=list)
+    calendar_meetings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class KpiMeasureSchema(BaseModel):

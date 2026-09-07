@@ -186,23 +186,40 @@ def _split_message_attachments(text: str, structured: dict | None = None) -> tup
                 names.append(value)
     if names:
         body_lines = []
+        had_note = False
         for line in (text or "").splitlines():
-            if line.strip().startswith("📎"):
+            if _is_attachment_note_line(line):
+                had_note = True
                 continue
             body_lines.append(line)
-        return "\n".join(body_lines).strip(), names
+        body = "\n".join(body_lines).strip()
+        if had_note and body.lower() in {item.lower() for item in names}:
+            body = ""
+        return body, names
 
     body_lines: list[str] = []
     for line in (text or "").splitlines():
         stripped = line.strip()
-        if stripped.startswith("📎"):
-            for part in stripped.lstrip("📎").split(","):
+        if _is_attachment_note_line(stripped):
+            rest = stripped.lstrip("📎")
+            if rest.lower().startswith("приложены файлы"):
+                rest = rest.split(":", 1)[-1]
+            for part in rest.split(","):
                 value = part.strip()
                 if value:
                     names.append(value)
             continue
         body_lines.append(line)
     return "\n".join(body_lines).strip(), names
+
+
+def _is_attachment_note_line(line: str) -> bool:
+    stripped = (line or "").strip()
+    if not stripped:
+        return False
+    if stripped.startswith("📎"):
+        return True
+    return stripped.lower().startswith("приложены файлы")
 
 
 def _extract_proposal_text(message: str) -> str:
@@ -502,6 +519,10 @@ class RegulationCreationPage(QWidget):
         self._pending_files.clear()
         self._sync_files_chips()
         self._resize_input()
+        if files:
+            self._live_status = "Читаю документы..." if len(files) > 1 else "Читаю документ..."
+        else:
+            self._live_status = "Задаю вопрос..."
         self.message_requested.emit(self._session.draft_id, text, files)
 
     def _pick_files(self) -> None:

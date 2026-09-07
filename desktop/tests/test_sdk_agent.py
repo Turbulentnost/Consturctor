@@ -17,10 +17,16 @@ from app.sdk_agent.prompt import (
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
     build_followup_sdk_prompt,
+    build_regulation_sdk_prompt,
     build_sdk_prompt,
     inferred_design_answers,
 )
-from app.sdk_agent.tool_adapter import is_ask_question, sdk_design_tool_specs, sdk_tool_specs
+from app.sdk_agent.tool_adapter import (
+    is_ask_question,
+    sdk_design_tool_specs,
+    sdk_tool_specs,
+    tool_timeout_seconds,
+)
 from app.tools.ac.turboproject_tools import _sample_for_agent
 from app.ui.pages.workflow_page import (
     demo_run_passed,
@@ -240,6 +246,7 @@ def test_run_sdk_prompt_does_not_dump_tool_catalog() -> None:
     assert "web_search" not in prompt
     assert "- turboproject." not in prompt
     assert build_followup_sdk_prompt("ответ: ежедневно") == "ответ: ежедневно"
+    assert build_regulation_sdk_prompt("  JSON  ") == "JSON"
 
 
 def test_sdk_event_json_parses_structured_payload() -> None:
@@ -363,6 +370,9 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert "force: true" in text
     assert "settleRun" in text
     assert "playbookDraftReady" in text
+    assert "interviewDraftReady" in text
+    assert "modelParamsFor" in text
+    assert 'value: "xhigh"' in text
     assert "testsPassReady" in text
     assert "thought +=" in text
     assert "finishIfReady" in text
@@ -397,6 +407,16 @@ def test_sdk_tool_specs_include_desktop_schema() -> None:
     assert "пробел" in str(ask.get("description") or "")
     web = next(item for item in tools if item.get("name") == "web_search")
     assert isinstance(web.get("inputSchema"), dict)
+    wait = next(item for item in tools if item.get("name") == "agent.wait")
+    assert int(wait.get("timeoutSeconds") or 0) >= 3600
+
+
+def test_tool_timeout_seconds_for_wait_matches_requested_pause() -> None:
+    assert tool_timeout_seconds("agent.wait", {"seconds": 120}) == 180
+    assert tool_timeout_seconds("agent.wait", {"seconds": 3600}) == 3660
+    assert tool_timeout_seconds("agent.wait", {"seconds": 0}) == 60
+    assert tool_timeout_seconds("outlook.read_calendar") >= 180
+    assert tool_timeout_seconds("askQuestion") >= 900
 
 
 def test_record_ready_for_sdk_demo_clears_server_clarify_gate() -> None:
@@ -512,7 +532,12 @@ def test_node_version_parser() -> None:
 
 
 def test_default_sdk_model_is_grok_46() -> None:
+    from app.sdk_agent.bridge import REGULATION_SDK_MODEL, REGULATION_SDK_MODEL_PARAMS
+
     assert DEFAULT_SDK_MODEL == "grok-4.6"
+    assert REGULATION_SDK_MODEL == "grok-4.6"
+    assert {"id": "effort", "value": "xhigh"} in list(REGULATION_SDK_MODEL_PARAMS)
+    assert {"id": "fast", "value": "true"} in list(REGULATION_SDK_MODEL_PARAMS)
 
 
 def test_turboproject_empty_call_is_sampled_for_agent() -> None:
@@ -674,6 +699,75 @@ def test_bridge_skip_tool_unblocks_invoke(monkeypatch, tmp_path: Path) -> None:
     assert sent[0]["ok"] is True
     assert sent[0]["result"]["skipped"] is True
     assert sent[0]["requestId"] == "req-skip"
+
+
+def test_bridge_keeps_waiting_until_tool_limit(monkeypatch, tmp_path: Path) -> None:
+    import json
+    import threading
+    import time
+
+    def fake_invoke(tool: str, args: dict) -> dict:
+        time.sleep(1.2)
+        return {"waited": True}
+
+    monkeypatch.setattr("app.sdk_agent.bridge.invoke_sdk_tool", fake_invoke)
+    monkeypatch.setattr("app.sdk_agent.bridge.tool_timeout_seconds", lambda tool, args: 3)
+    sent: list[dict] = []
+
+    class _Stdin:
+        def write(self, raw: str) -> None:
+            sent.append(json.loads(raw))
+
+        def flush(self) -> None:
+            return None
+
+    class _Proc:
+        stdin = _Stdin()
+
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+    bridge._handle_tool_request(
+        _Proc(),  # type: ignore[arg-type]
+        {"requestId": "req-wait", "tool": "agent.wait", "arguments": {"seconds": 1}},
+        workflow_id="wf-1",
+        cwd=str(tmp_path),
+    )
+    assert sent
+    assert sent[0]["ok"] is True
+    assert sent[0]["result"]["waited"] is True
+
+
+def test_bridge_timeout_message_uses_tool_limit(monkeypatch, tmp_path: Path) -> None:
+    import json
+    import time
+
+    def fake_invoke(tool: str, args: dict) -> dict:
+        time.sleep(1.4)
+        return {"late": True}
+
+    monkeypatch.setattr("app.sdk_agent.bridge.invoke_sdk_tool", fake_invoke)
+    monkeypatch.setattr("app.sdk_agent.bridge.tool_timeout_seconds", lambda tool, args: 1)
+    sent: list[dict] = []
+
+    class _Stdin:
+        def write(self, raw: str) -> None:
+            sent.append(json.loads(raw))
+
+        def flush(self) -> None:
+            return None
+
+    class _Proc:
+        stdin = _Stdin()
+
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+    bridge._handle_tool_request(
+        _Proc(),  # type: ignore[arg-type]
+        {"requestId": "req-slow", "tool": "agent.wait", "arguments": {"seconds": 10}},
+        workflow_id="wf-1",
+        cwd=str(tmp_path),
+    )
+    assert sent
+    assert sent[0]["ok"] is False
+    assert "не ответил за 1 с" in str(sent[0].get("error") or "")
 
 
 def test_tools_to_skip_uses_running_card_when_request_id_is_stale() -> None:

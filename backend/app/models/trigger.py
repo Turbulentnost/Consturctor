@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -23,6 +23,12 @@ class AgentTrigger(Base):
     condition_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     fire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Recurrence window (MSK). active_days: comma-separated weekday ints 0=Mon..6=Sun, ""=every day.
+    active_days: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    window_start_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    window_end_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # UTC minute keys ("2026-09-03T08:00") the user cancelled on the calendar.
+    skipped_slots: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     once: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

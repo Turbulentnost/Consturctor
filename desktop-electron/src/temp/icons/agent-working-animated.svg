@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Агент работает</title>
+  <desc id="desc">Зелёная круглая иконка агента с движущимся индикатором, импульсными дугами и мягким свечением.</desc>
+
+  <defs>
+    <radialGradient id="body" cx="43%" cy="35%" r="70%">
+      <stop offset="0" stop-color="#29e7b0"/>
+      <stop offset="0.34" stop-color="#0c9d78"/>
+      <stop offset="0.72" stop-color="#045448"/>
+      <stop offset="1" stop-color="#022b28"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="30" y1="28" x2="218" y2="224">
+      <stop stop-color="#58ffd0"/>
+      <stop offset="0.42" stop-color="#0aa67d"/>
+      <stop offset="1" stop-color="#043a34"/>
+    </linearGradient>
+    <linearGradient id="scan" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#a7ffe6" stop-opacity="0"/>
+      <stop offset="0.46" stop-color="#a7ffe6"/>
+      <stop offset="0.62" stop-color="#42f5c0"/>
+      <stop offset="1" stop-color="#42f5c0" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-35%" y="-35%" width="170%" height="180%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#001b18" flood-opacity="0.5"/>
+    </filter>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <style>
+    .agent { transform-origin: 128px 128px; animation: breathe 2.4s ease-in-out infinite; }
+    .halo { transform-origin: 128px 128px; animation: halo 2.4s ease-in-out infinite; }
+    .runner { transform-origin: 128px 128px; animation: orbit 2.4s linear infinite; }
+    .arc { transform-origin: 128px 128px; animation: signal 2.4s ease-in-out infinite; }
+    .arc.two { animation-delay: .16s; }
+    .arc.three { animation-delay: .32s; }
+    .core { transform-origin: 128px 143px; animation: think 2.4s ease-in-out infinite; }
+    .eye { transform-box: fill-box; transform-origin: center; animation: blink 4.8s ease-in-out infinite; }
+    .scanline { animation: scan 2.4s ease-in-out infinite; }
+    .dot { animation: dot 1.2s ease-in-out infinite alternate; }
+    .dot.b { animation-delay: .4s; }
+    .dot.c { animation-delay: .8s; }
+
+    @keyframes breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.025); } }
+    @keyframes halo { 0%,100% { opacity:.18; transform:scale(.96); } 50% { opacity:.55; transform:scale(1.06); } }
+    @keyframes orbit { to { transform:rotate(360deg); } }
+    @keyframes signal { 0%,55%,100% { opacity:.28; } 18%,38% { opacity:1; filter:url(#glow); } }
+    @keyframes think { 0%,100% { transform:rotate(-1.5deg); } 50% { transform:rotate(1.5deg); } }
+    @keyframes blink { 0%,45%,49%,100% { transform:scaleY(1); } 47% { transform:scaleY(.12); } }
+    @keyframes scan { 0%,12% { transform:translateX(-70px); opacity:0; } 24% { opacity:.65; } 62%,100% { transform:translateX(72px); opacity:0; } }
+    @keyframes dot { from { opacity:.28; } to { opacity:1; } }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; }
+      .runner { opacity:.9; }
+    }
+  </style>
+
+  <circle class="halo" cx="128" cy="128" r="111" fill="none" stroke="#35efb8" stroke-width="7" opacity=".25" filter="url(#glow)"/>
+
+  <g class="agent" filter="url(#shadow)">
+    <circle cx="128" cy="128" r="99" fill="url(#body)" stroke="#021f1d" stroke-width="7"/>
+    <circle cx="128" cy="128" r="88" fill="none" stroke="url(#rim)" stroke-width="7" opacity=".95"/>
+    <path d="M58 91 A78 78 0 0 1 198 91" fill="none" stroke="#77ffda" stroke-width="5" stroke-linecap="round" opacity=".25"/>
+
+    <g fill="none" stroke="#8affe0" stroke-linecap="round">
+      <path class="arc one" d="M91 112 A44 44 0 0 1 165 112" stroke-width="7"/>
+      <path class="arc two" d="M103 119 A31 31 0 0 1 153 119" stroke-width="7"/>
+      <path class="arc three" d="M115 126 A17 17 0 0 1 141 126" stroke-width="7"/>
+    </g>
+
+    <g class="core">
+      <rect x="78" y="126" width="100" height="61" rx="30.5" fill="#063c36" stroke="#36dca8" stroke-width="4"/>
+      <rect x="88" y="136" width="80" height="41" rx="20.5" fill="#031f20"/>
+      <g clip-path="url(#screenClip)">
+        <rect class="scanline" x="86" y="135" width="31" height="44" fill="url(#scan)" opacity="0"/>
+      </g>
+      <ellipse class="eye" cx="112" cy="156" rx="7" ry="9" fill="#79ffda" filter="url(#glow)"/>
+      <ellipse class="eye" cx="144" cy="156" rx="7" ry="9" fill="#79ffda" filter="url(#glow)"/>
+      <path d="M116 169 Q128 177 140 169" fill="none" stroke="#5de8bd" stroke-width="4" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <defs>
+    <clipPath id="screenClip"><rect x="88" y="136" width="80" height="41" rx="20.5"/></clipPath>
+  </defs>
+
+  <g class="runner" fill="none" stroke-linecap="round">
+    <circle cx="128" cy="128" r="105" stroke="#0b4d43" stroke-width="4"/>
+    <circle cx="128" cy="128" r="105" stroke="#a0ffe4" stroke-width="6" stroke-dasharray="22 638" filter="url(#glow)"/>
+  </g>
+
+  <g transform="translate(106 211)" fill="#75ffd8">
+    <circle class="dot a" cx="0" cy="0" r="3.5"/>
+    <circle class="dot b" cx="22" cy="0" r="3.5"/>
+    <circle class="dot c" cx="44" cy="0" r="3.5"/>
+  </g>
+</svg>

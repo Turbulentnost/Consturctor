@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from app.services.agent_runtime import _playbook_plan_text
-from app.services.agent_runs import slim_run_events
+from app.services.agent_runs import SDK_DEAD_ANSWER, effective_run_status, slim_run_events
 from app.services.workflows.cursor_tools import (
     clear_tool_context,
     current_history_run_id,
@@ -35,6 +35,30 @@ def test_slim_run_events_keeps_tool_and_work_result() -> None:
     assert stored[1]["files"] == ["artifacts/RESULT.md"]
     assert stored[1]["actions"] == ["открыть отчёт"]
     assert stored[1]["notifications"] == ["руководителю"]
+
+
+def test_slim_run_events_keeps_hitl_fields() -> None:
+    stored = slim_run_events(
+        [
+            {
+                "type": "tool_request",
+                "text": "Нужно подтверждение: outlook.send_mail",
+                "tool": "outlook.send_mail",
+                "title": "Письмо",
+                "request_id": "req-1",
+                "confirm_only": True,
+                "ok": True,
+                "skipped": False,
+                "status": "pending",
+            }
+        ]
+    )
+    assert stored[0]["request_id"] == "req-1"
+    assert stored[0]["confirm_only"] is True
+    assert stored[0]["ok"] is True
+    assert stored[0]["skipped"] is False
+    assert stored[0]["status"] == "pending"
+    assert stored[0]["title"] == "Письмо"
 
 
 def test_slim_run_events_keeps_decision_and_plan() -> None:
@@ -116,3 +140,155 @@ def test_notify_send_writes_history_run_id(monkeypatch) -> None:
     assert captured["run_id"] == "run-hist"
     assert captured["workflow_id"] == "wf-1"
     assert captured["sender"] == "user-1"
+
+
+def test_effective_run_status_success_needs_result() -> None:
+    assert effective_run_status("ok", "сводка готова") == "ok"
+    assert effective_run_status("ok", "") == "canceled"
+    assert effective_run_status("ok", "Остановлено пользователем") == "canceled"
+    assert effective_run_status("canceled", "") == "canceled"
+    assert effective_run_status("started", "", in_flight=True) == "started"
+    assert effective_run_status("started", "", in_flight=False) == "canceled"
+    assert effective_run_status("error", SDK_DEAD_ANSWER) == "canceled"
+    assert effective_run_status("error", "инструмент вернул 500") == "error"
+
+
+def test_slim_run_events_keeps_calendar_after_thinking_overflow() -> None:
+    events = [{"type": "thinking", "text": f"step {index}"} for index in range(420)]
+    events.append(
+        {
+            "type": "tool_call",
+            "tool": "calendar.show_meetings",
+            "arguments": {
+                "meetings": [
+                    {
+                        "title": "СЗ 000014029",
+                        "start": "2026-09-03T07:00:00+00:00",
+                        "end": "2026-09-03T08:00:00+00:00",
+                        "mark": "keep",
+                    }
+                ]
+            },
+        }
+    )
+    events.append({"type": "work_result", "text": "## WORK_RESULT\nПлан готов\nTESTS: PASS"})
+    stored = slim_run_events(events)
+    assert len(stored) <= 400
+    tools = [item.get("tool") for item in stored]
+    types = [item.get("type") for item in stored]
+    assert "calendar.show_meetings" in tools
+    assert "work_result" in types
+
+
+def test_slim_run_events_keeps_timing_markers() -> None:
+    stored = slim_run_events(
+        [
+            {"type": "thinking", "text": "думаю", "at": "2026-09-02T08:00:00Z"},
+            {
+                "type": "human_wait",
+                "wait": "question",
+                "requestId": "q1",
+                "at": "2026-09-02T08:00:10Z",
+            },
+            {
+                "type": "human_reply",
+                "wait": "question",
+                "requestId": "q1",
+                "at": "2026-09-02T08:01:10Z",
+            },
+        ]
+    )
+    assert [item["type"] for item in stored] == ["thinking", "human_wait", "human_reply"]
+    assert stored[1]["requestId"] == "q1"
+    assert stored[1]["at"] == "2026-09-02T08:00:10Z"
+
+
+def test_compute_run_timing_splits_agent_and_human() -> None:
+    from datetime import datetime, timezone
+
+    from app.services.agent_runs import compute_run_timing
+
+    started = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+    finished = datetime(2026, 9, 2, 8, 3, tzinfo=timezone.utc)
+    timing = compute_run_timing(
+        [
+            {"type": "thinking", "at": "2026-09-02T08:00:05Z"},
+            {"type": "question", "at": "2026-09-02T08:00:20Z"},
+            {"type": "human_reply", "at": "2026-09-02T08:01:20Z"},
+            {"type": "thinking", "at": "2026-09-02T08:01:21Z"},
+        ],
+        started_at=started,
+        finished_at=finished,
+    )
+    assert timing["agent_work_ms"] == 120_000
+    assert timing["human_wait_ms"] == 60_000
+    assert timing["open_segment"] == ""
+
+
+def test_compute_run_timing_holds_through_tool_request() -> None:
+    from datetime import datetime, timezone
+
+    from app.services.agent_runs import compute_run_timing
+
+    started = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+    finished = datetime(2026, 9, 2, 8, 3, tzinfo=timezone.utc)
+    timing = compute_run_timing(
+        [
+            {"type": "thinking", "at": "2026-09-02T08:00:05Z"},
+            {"type": "question", "at": "2026-09-02T08:00:20Z"},
+            {"type": "tool_request", "at": "2026-09-02T08:00:21Z"},
+            {"type": "human_wait", "wait": "question", "at": "2026-09-02T08:00:21Z"},
+            {"type": "human_reply", "wait": "question", "at": "2026-09-02T08:01:20Z"},
+            {"type": "thinking", "at": "2026-09-02T08:01:21Z"},
+        ],
+        started_at=started,
+        finished_at=finished,
+    )
+    assert timing["human_wait_ms"] == 60_000
+    assert timing["agent_work_ms"] == 120_000
+
+
+def test_compute_run_timing_chess_clock_multiple_switches() -> None:
+    from datetime import datetime, timezone
+
+    from app.services.agent_runs import compute_run_timing
+
+    started = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+    finished = datetime(2026, 9, 2, 8, 5, tzinfo=timezone.utc)
+    timing = compute_run_timing(
+        [
+            {"type": "thinking", "at": "2026-09-02T08:00:10Z"},
+            {"type": "question", "at": "2026-09-02T08:00:30Z"},
+            {"type": "human_reply", "at": "2026-09-02T08:01:30Z"},
+            {"type": "thinking", "at": "2026-09-02T08:01:40Z"},
+            {"type": "hitl", "at": "2026-09-02T08:02:00Z"},
+            {"type": "human_reply", "at": "2026-09-02T08:03:00Z"},
+            {"type": "thinking", "at": "2026-09-02T08:03:10Z"},
+        ],
+        started_at=started,
+        finished_at=finished,
+    )
+    # agent: 0→30s + 1:30→2:00 + 3:00→5:00 = 30 + 30 + 120 = 180s
+    # human: 0:30→1:30 + 2:00→3:00 = 60 + 60 = 120s
+    assert timing["agent_work_ms"] == 180_000
+    assert timing["human_wait_ms"] == 120_000
+    assert timing["open_segment"] == ""
+
+
+def test_compute_run_timing_keeps_agent_slice_before_human_wait() -> None:
+    from datetime import datetime, timezone
+
+    from app.services.agent_runs import compute_run_timing
+
+    started = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+    finished = datetime(2026, 9, 2, 8, 36, tzinfo=timezone.utc)
+    timing = compute_run_timing(
+        [
+            {"type": "human_wait", "at": "2026-09-02T08:05:26Z"},
+            {"type": "human_reply", "at": "2026-09-02T08:36:00Z"},
+        ],
+        started_at=started,
+        finished_at=finished,
+    )
+    assert timing["agent_work_ms"] == 5 * 60_000 + 26_000
+    assert timing["human_wait_ms"] == 30 * 60_000 + 34_000

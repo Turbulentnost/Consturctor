@@ -1,6 +1,13 @@
 from app.services.regulation_creation.service import (
     RegulationCreationError,
+    apply_creation_reply,
+    get_active_creation_session,
+    get_creation_document,
     get_creation_session,
+    list_creation_sessions,
+    peek_creation_turn,
+    persist_creation_turn,
+    resume_creation_session,
     send_creation_message,
     start_creation_session,
     stream_creation_message,
@@ -9,7 +16,14 @@ from app.services.regulation_creation.service import (
 
 __all__ = [
     "RegulationCreationError",
+    "apply_creation_reply",
+    "get_active_creation_session",
+    "get_creation_document",
     "get_creation_session",
+    "list_creation_sessions",
+    "peek_creation_turn",
+    "persist_creation_turn",
+    "resume_creation_session",
     "send_creation_message",
     "start_creation_session",
     "stream_creation_message",

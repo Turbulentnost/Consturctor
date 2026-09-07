@@ -159,6 +159,13 @@ export interface AgentRunHistoryItem {
   finishedAt: string
   summary: string
   answer: string
+  calendarMeetings?: Array<{
+    title: string
+    start: string
+    end: string
+    mark: string
+    reason: string
+  }>
 }
 
 export interface RegulationCreationMessage {
@@ -167,6 +174,7 @@ export interface RegulationCreationMessage {
   role: string
   content: string
   structured: Record<string, unknown>
+  createdAt: string
 }
 
 export interface RegulationCreationSession {
@@ -174,7 +182,30 @@ export interface RegulationCreationSession {
   status: string
   messages: RegulationCreationMessage[]
   resultRegulation: RegulationParseResult | null
+  resultDocument: Record<string, unknown>
   resultDocumentPath: string
+  sdkAgentId: string
+}
+
+export interface RegulationCreationHistoryItem {
+  draftId: string
+  status: string
+  title: string
+  preview: string
+  messageCount: number
+  hasResult: boolean
+  canContinue: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RegulationCreationTurn {
+  session: RegulationCreationSession
+  interview: Record<string, unknown>
+  sdkPrompt: string
+  sdkRules: string
+  sdkAgentId: string
+  forceCreate: boolean
 }
 
 export interface MatchEvidence {
@@ -417,6 +448,9 @@ export interface ScheduleTriggerSpec {
   condition: string
   at: string
   once: boolean
+  weekdays?: number[]
+  windowStart?: string
+  windowEnd?: string
 }
 
 export interface ScheduleDraft {
@@ -555,7 +589,15 @@ export interface AgentEvent {
   accept?: string[]
   tool?: string
   arguments?: Record<string, unknown>
-  kind?: 'design' | 'readiness' | 'demo' | 'run' | 'trigger' | 'form_orchestrator' | 'calc_orchestrator'
+  kind?:
+    | 'design'
+    | 'readiness'
+    | 'regulation_creation'
+    | 'demo'
+    | 'run'
+    | 'trigger'
+    | 'form_orchestrator'
+    | 'calc_orchestrator'
   workflowId?: string
   draftId?: string
   agentId?: string

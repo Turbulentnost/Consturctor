@@ -20,6 +20,7 @@ from app.tools.ac.powershell_tools import register_powershell_tools
 from app.tools.ac.registry import ToolRegistry
 from app.tools.ac.report_tools import register_report_tools
 from app.tools.ac.notify_tools import register_notify_tools
+from app.tools.ac.calendar_tools import register_calendar_tools
 from app.tools.ac.schedule_tools import register_schedule_tools
 from app.tools.ac.turboproject_tools import register_turboproject_tools
 from app.tools.ac.wait_tool import register_wait_tool
@@ -77,6 +78,7 @@ def build_registry() -> ToolRegistry:
     register_wait_tool(registry, skip_existing=True)
     register_notify_tools(registry, skip_existing=True)
     register_schedule_tools(registry, skip_existing=True)
+    register_calendar_tools(registry, skip_existing=True)
     register_turboproject_tools(registry, skip_existing=True)
     return registry
 

@@ -59,13 +59,17 @@ export const STATUS_STYLE: Record<string, StatusStyle> = {
   error: { bg: '#FDECEC', border: '#D64545', label: 'Ошибка' },
   canceled: { bg: '#F3EEEA', border: '#8B6F64', label: 'Отменён' },
   cancelled: { bg: '#F3EEEA', border: '#8B6F64', label: 'Отменён' },
-  paused: { bg: '#F2F4F3', border: '#8A9692', label: 'Приостановлен' }
+  paused: { bg: '#F2F4F3', border: '#8A9692', label: 'Приостановлен' },
+  meeting: { bg: '#E8F6F1', border: '#08745F', label: 'Совещание' },
+  recommend_add: { bg: '#E8F6EE', border: '#1B7F4A', label: 'Поставить' },
+  recommend_cancel: { bg: '#FDECEC', border: '#D64545', label: 'Отменить' }
 }
 
 export const SOURCE_LABEL: Record<string, string> = {
   schedule: 'по расписанию',
   manual: 'вручную',
-  event: 'по событию'
+  event: 'по событию',
+  meeting: 'совещание'
 }
 
 /** Parse an ISO timestamp (UTC or offset) into a local Date, or null. */

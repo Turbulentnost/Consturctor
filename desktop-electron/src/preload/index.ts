@@ -17,6 +17,8 @@ const api = {
     params?: Record<string, string | number | boolean | undefined | null>
     token?: string | null
     timeoutMs?: number
+    filePaths?: string[]
+    extraFields?: Record<string, string>
   }): Promise<ApiResponse<T>> => ipcRenderer.invoke('api:request', opts),
   upload: <T = unknown>(opts: {
     endpoint: string
@@ -79,16 +81,40 @@ const api = {
     body?: string
     workflowId?: string
     runId?: string
+    requestId?: string
+    draftId?: string
   }): Promise<{ ok: boolean }> => ipcRenderer.invoke('notify:show', payload),
   onNotificationOpen: (
-    callback: (payload: { workflowId: string; runId: string }) => void
+    callback: (payload: { workflowId: string; runId: string; draftId?: string }) => void
   ): (() => void) => {
-    const listener = (_event: unknown, payload: { workflowId: string; runId: string }): void => {
+    const listener = (
+      _event: unknown,
+      payload: { workflowId: string; runId: string; draftId?: string }
+    ): void => {
       callback(payload)
     }
     ipcRenderer.on('notification:open', listener)
     return () => {
       ipcRenderer.removeListener('notification:open', listener)
+    }
+  },
+  onNotificationHitl: (
+    callback: (payload: {
+      requestId: string
+      approved: boolean
+      workflowId: string
+      runId: string
+    }) => void
+  ): (() => void) => {
+    const listener = (
+      _event: unknown,
+      payload: { requestId: string; approved: boolean; workflowId: string; runId: string }
+    ): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('notification:hitl', listener)
+    return () => {
+      ipcRenderer.removeListener('notification:hitl', listener)
     }
   },
   onInboxChanged: (callback: (payload: { id: string }) => void): (() => void) => {
@@ -125,6 +151,40 @@ const api = {
     ipcRenderer.on('chat:event', listener)
     return () => {
       ipcRenderer.removeListener('chat:event', listener)
+    }
+  },
+  getUpdateStatus: (): Promise<{
+    state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+    currentVersion: string
+    availableVersion: string
+    percent: number
+    error: string
+  }> => ipcRenderer.invoke('updater:getStatus'),
+  installUpdate: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('updater:install'),
+  onUpdateStatus: (
+    callback: (payload: {
+      state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+      currentVersion: string
+      availableVersion: string
+      percent: number
+      error: string
+    }) => void
+  ): (() => void) => {
+    const listener = (
+      _event: unknown,
+      payload: {
+        state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+        currentVersion: string
+        availableVersion: string
+        percent: number
+        error: string
+      }
+    ): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('updater:status', listener)
+    return () => {
+      ipcRenderer.removeListener('updater:status', listener)
     }
   }
 }

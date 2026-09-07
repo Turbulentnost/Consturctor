@@ -678,9 +678,41 @@ class RegulationCreationSession(BaseModel):
     resultRegulation: RegulationParseResult | None = None
     resultDocument: dict = Field(default_factory=dict)
     resultDocumentPath: str = ""
+    sdkAgentId: str = ""
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
 
 
+class RegulationCreationHistoryItem(BaseModel):
+    draftId: str
+    status: RegulationCreationStatus = "collecting_positions"
+    title: str = ""
+    preview: str = ""
+    messageCount: int = 0
+    hasResult: bool = False
+    canContinue: bool = False
+    createdAt: datetime | None = None
+    updatedAt: datetime | None = None
+
+
+class RegulationCreationHistoryResult(BaseModel):
+    items: list[RegulationCreationHistoryItem] = Field(default_factory=list)
+
+
 class RegulationCreationSendRequest(BaseModel):
     message: str
+
+
+class RegulationCreationApplyRequest(BaseModel):
+    answer: str
+    sdkAgentId: str = ""
+    forceCreate: bool = False
+
+
+class RegulationCreationTurn(BaseModel):
+    session: RegulationCreationSession
+    interview: dict = Field(default_factory=dict)
+    sdkPrompt: str = ""
+    sdkRules: str = ""
+    sdkAgentId: str = ""
+    forceCreate: bool = False

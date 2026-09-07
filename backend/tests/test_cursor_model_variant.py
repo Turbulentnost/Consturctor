@@ -32,8 +32,26 @@ _COMPOSER = {
 }
 
 
+_GROK_XHIGH = [{"id": "effort", "value": "xhigh"}, {"id": "fast", "value": "true"}]
+
+
 def test_effort_picks_complete_high_variant() -> None:
     assert _effort_params(_GROK, "high") == _GROK_HIGH
+
+
+def test_effort_picks_xhigh_variant() -> None:
+    assert _effort_params(_GROK, "xhigh") == _GROK_XHIGH
+
+
+def test_regulation_creation_defaults_to_grok_xhigh_fast() -> None:
+    from app.config import Settings
+    from app.services.regulation_creation import cursor_agent
+
+    settings = Settings()
+    assert settings.cursor_regulation_creation_model == "grok-4.6"
+    assert settings.cursor_regulation_creation_effort == "xhigh"
+    assert cursor_agent.settings.cursor_regulation_creation_model == "grok-4.6"
+    assert cursor_agent.settings.cursor_regulation_creation_effort == "xhigh"
 
 
 def test_model_without_effort_uses_its_default_variant() -> None:

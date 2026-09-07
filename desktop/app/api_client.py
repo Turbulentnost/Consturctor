@@ -989,7 +989,7 @@ class ApiClient:
         data = self._request(
             "POST",
             "/api/v1/auth/login",
-            json={"fio": fio, "password": password},
+            json={"fio": fio, "password": password, "client": "constructor"},
         )
         user = self._parse_user(data.get("user") or {})
         token = str(data.get("access_token", ""))

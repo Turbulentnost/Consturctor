@@ -42,7 +42,10 @@ export function FormationBanner({
           <span className="formation-banner-name">{title || 'ИИ-агент'}</span>
           <span className="formation-banner-status">{statusLabel}</span>
         </div>
-        <div className="formation-banner-text">
+        <div
+          className="formation-banner-text"
+          title={preview || (mode === 'run' ? 'Агент выполняется…' : 'Агент формируется…')}
+        >
           {preview || (mode === 'run' ? 'Агент выполняется…' : 'Агент формируется…')}
         </div>
       </div>

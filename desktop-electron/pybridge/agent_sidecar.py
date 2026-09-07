@@ -13,6 +13,8 @@ Protocol: newline-delimited JSON.
     {"type": "check_ready"}
     {"type": "design", "id": str, "workflowId": str}
     {"type": "readiness", "id": str, "draftId": str}
+    {"type": "regulation_creation", "id": str, "draftId": str, "prompt": str,
+       "rules": str, "interview": {}, "resumeAgentId": str}
     {"type": "demo", "id": str, "workflowId": str}
     {"type": "run", "id": str, "workflowId": str, "message": str,
        "source": str, "triggerId": str, "resumeAgentId": str,
@@ -56,17 +58,30 @@ from typing import Any
 
 
 def _bootstrap_desktop_path() -> Path:
-    """Add the repo desktop/ folder to sys.path so app.* is importable."""
+    """Add the desktop/ folder to sys.path so app.* is importable."""
+    env_root = os.environ.get("CONSTRUCTOR_DESKTOP_ROOT", "").strip()
+    if env_root:
+        desktop_root = Path(env_root).resolve()
+        if not desktop_root.is_dir():
+            raise RuntimeError(f"desktop folder not found at {desktop_root}")
+        path_str = str(desktop_root)
+        if path_str not in sys.path:
+            sys.path.insert(0, path_str)
+        return desktop_root
+
     here = Path(__file__).resolve()
     # .../NewConstructor/desktop-electron/pybridge/agent_sidecar.py
-    repo_root = here.parents[2]
-    desktop_root = repo_root / "desktop"
-    if not desktop_root.is_dir():
-        raise RuntimeError(f"desktop folder not found at {desktop_root}")
-    path_str = str(desktop_root)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
-    return desktop_root
+    candidates = [
+        here.parents[1] / "desktop",
+        here.parents[2] / "desktop",
+    ]
+    for desktop_root in candidates:
+        if desktop_root.is_dir():
+            path_str = str(desktop_root)
+            if path_str not in sys.path:
+                sys.path.insert(0, path_str)
+            return desktop_root
+    raise RuntimeError(f"desktop folder not found near {here}")
 
 
 DESKTOP_ROOT = _bootstrap_desktop_path()
@@ -74,17 +89,24 @@ DESKTOP_ROOT = _bootstrap_desktop_path()
 # Importing app.config loads desktop/.env (CURSOR_API_KEY, BACKEND_URL, ...).
 from app.api_client import ApiClient, ApiError  # noqa: E402
 from app.orchestrator.json_blob import extract_json_object  # noqa: E402
-from app.sdk_agent.bridge import CursorSdkBridge, CursorSdkUnavailable  # noqa: E402
+from app.sdk_agent.bridge import (  # noqa: E402
+    REGULATION_SDK_MODEL,
+    REGULATION_SDK_MODEL_PARAMS,
+    CursorSdkBridge,
+    CursorSdkError,
+    CursorSdkUnavailable,
+)
 from app.sdk_agent.files import (  # noqa: E402
     _safe_filename,
     prepare_sdk_workspace,
+    reset_run_scratch,
     seed_workflow_files,
 )
 from app.tools.runtime_api import configure as configure_runtime_api  # noqa: E402
 from app.sdk_agent.prompt import (  # noqa: E402
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
-    build_followup_sdk_prompt,
+    build_regulation_sdk_prompt,
     build_sdk_prompt,
 )
 from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
@@ -107,6 +129,7 @@ _READ_EXACT = frozenset(
         "browser.get_page_html",
         "outlook.search_mail",
         "outlook.read_calendar",
+        "calendar.show_meetings",
         "excel.list_files",
         "excel.read_workbook",
         "onec.odata_catalog",
@@ -146,6 +169,21 @@ def needs_confirmation(name: str) -> bool:
 _STDOUT_LOCK = threading.Lock()
 
 
+def _configure_stdio() -> None:
+    """Keep the Electron JSON protocol on UTF-8 even on Windows consoles."""
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+
+_configure_stdio()
+
+
 def _stamp_run_event(
     message: dict[str, Any],
     *,
@@ -163,11 +201,53 @@ def _stamp_run_event(
     return out
 
 
+def _looks_like_replacement_garbage(text: str) -> bool:
+    value = (text or "").strip()
+    if len(value) < 8:
+        return False
+    qmarks = value.count("?")
+    if qmarks < 8:
+        return False
+    if re.search(r"[А-Яа-яЁё]", value):
+        return False
+    return qmarks >= max(8, len(value) // 3)
+
+
+def _interview_json_answer(raw: str) -> str:
+    decoder = json.JSONDecoder()
+    text = raw or ""
+    index = 0
+    while index < len(text):
+        start = text.find("{", index)
+        if start < 0:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+        status = str(obj.get("status") or "") if isinstance(obj, dict) else ""
+        if status in {"need_more", "ready"}:
+            message = str(obj.get("message") or "") if isinstance(obj, dict) else ""
+            if _looks_like_replacement_garbage(message):
+                index = end
+                continue
+            return json.dumps(obj, ensure_ascii=False)
+        index = end
+    return ""
+
+
 def emit(message: dict[str, Any]) -> None:
     """Write one JSON line to stdout for the Electron main process."""
-    line = json.dumps(message, ensure_ascii=False, default=_json_default)
+    line = json.dumps(message, ensure_ascii=False, default=_json_default) + "\n"
+    payload = line.encode("utf-8")
     with _STDOUT_LOCK:
-        sys.stdout.write(line + "\n")
+        buf = getattr(sys.stdout, "buffer", None)
+        if buf is not None:
+            buf.write(payload)
+            buf.flush()
+            return
+        sys.stdout.write(line)
         sys.stdout.flush()
 
 
@@ -176,6 +256,15 @@ def log(message: str) -> None:
     safe = message.encode("ascii", errors="replace").decode("ascii")
     sys.stderr.write(safe + "\n")
     sys.stderr.flush()
+
+
+def _stdin_lines():
+    buf = getattr(sys.stdin, "buffer", None)
+    if buf is None:
+        yield from sys.stdin
+        return
+    for raw in buf:
+        yield raw.decode("utf-8", errors="replace")
 
 
 def _json_default(value: Any) -> Any:
@@ -226,25 +315,33 @@ OUTLOOK_SERIES_MARKER = "самый ранний удобный свободны
 OUTLOOK_MEETING_HINT = (
     "If the task is to schedule planned meetings in Outlook, do not stop after reading. "
     "Call outlook.read_calendar (free_slots) first, then outlook.create_event. "
+    "Pass people[] to read those employees' calendars. "
+    "Pass attendees[] (who must attend) and organizer (whose calendar) to create_event. "
     "Writing the calendar is the result; a plan in chat is not. "
     "Weekly or monthly meeting without a date: pick the earliest convenient free weekday "
     "(prefer Monday if free). Keep that same weekday every week; for monthly keep the "
     "same weekday pattern (for example the first Monday). "
     "outlook.create_event has no recurrence field: pass events[] with one item per "
     "occurrence (about 8 weeks weekly, 6 months monthly). "
-    "Wait for HITL approval. Done only after create_event returns ok."
+    "Wait for HITL approval. Done only after create_event returns ok. "
+    "To show the plan on the Calendar tab call calendar.show_meetings: "
+    "cancel/red to drop, add/green to add."
 )
 
 OUTLOOK_MEETING_RULE = (
     "Плановые совещания записывай в Outlook: сначала outlook.read_calendar "
-    "(свободные слоты), затем outlook.create_event. Не ограничивайся чтением календаря. "
+    "(свободные слоты; people[] — календари этих сотрудников), затем outlook.create_event "
+    "с attendees[] (кто должен прийти) и при необходимости organizer (чей календарь). "
+    "Не ограничивайся чтением календаря. "
     "Если совещание еженедельное или ежемесячное, а конкретная дата не задана: выбери "
     "самый ранний удобный свободный день (предпочтительно понедельник, если он свободен). "
     "Дальше всегда этот же день недели: каждую неделю в один и тот же день; каждый месяц "
     "тот же день недели (например первый понедельник). "
     "Повторяемости в outlook.create_event нет: передай events[] — отдельную встречу "
     "на каждую дату серии (около 8 недель для еженедельных, 6 месяцев для ежемесячных). "
-    "Дождись подтверждения записи. Задача выполнена только после ok от create_event."
+    "Дождись подтверждения записи. Задача выполнена только после ok от create_event. "
+    "Чтобы показать план на вкладке Календарь, вызови calendar.show_meetings: "
+    "cancel/red - красным отменить, add/green - зеленым поставить."
 )
 
 _MEETING_TIPS = (
@@ -739,6 +836,7 @@ class ElectronBridge(CursorSdkBridge):
         prompt: str,
         workflow_id: str,
         model: str = "",
+        model_params: list[dict[str, str]] | None = None,
         cwd: str = "",
         mode: str = "run",
         tools: list[dict[str, Any]] | None = None,
@@ -759,6 +857,7 @@ class ElectronBridge(CursorSdkBridge):
             prompt=_with_sidecar_prompt(prompt, mode=mode),
             workflow_id=workflow_id,
             model=model,
+            model_params=model_params,
             cwd=cwd,
             mode=mode,
             tools=specs,
@@ -1675,6 +1774,8 @@ class Sidecar:
                 self._run_design(command, active)
             elif kind == "readiness":
                 self._run_readiness(command, active)
+            elif kind == "regulation_creation":
+                self._run_regulation_creation(command, active)
             elif kind == "demo":
                 self._run_demo(command, active)
             elif kind == "run":
@@ -1692,17 +1793,42 @@ class Sidecar:
                     "type": "error",
                     "runId": active.run_id,
                     "code": "sdk_unavailable",
-                    "message": _ascii(str(exc)),
+                    "message": str(exc),
                 }
             )
         except ApiError as exc:
             self._finish_active_history(active, "Cursor SDK не отвечает")
-            emit({"type": "error", "runId": active.run_id, "message": _ascii(exc.message)})
+            emit({"type": "error", "runId": active.run_id, "message": str(exc.message)})
         except Exception as exc:  # noqa: BLE001
+            if kind == "regulation_creation" and active.stop.is_set():
+                emit(
+                    {
+                        "type": "error",
+                        "runId": active.run_id,
+                        "kind": "regulation_creation",
+                        "draftId": str(command.get("draftId") or ""),
+                        "code": "cancelled",
+                        "message": "cancelled",
+                    }
+                )
+                return
+            recovered = _interview_json_answer(str(exc)) if kind == "regulation_creation" else ""
+            if recovered:
+                emit(
+                    {
+                        "type": "result",
+                        "runId": active.run_id,
+                        "kind": "regulation_creation",
+                        "draftId": str(command.get("draftId") or ""),
+                        "agentId": "",
+                        "answer": recovered,
+                    }
+                )
+                return
             self._finish_active_history(active, "Cursor SDK не отвечает")
             log("run failed: " + repr(exc))
             log(traceback.format_exc())
-            emit({"type": "error", "runId": active.run_id, "message": _ascii(str(exc))})
+            emit({"type": "error", "runId": active.run_id, "message": str(exc)})
         finally:
             with self._lock:
                 self._active.pop(active.run_id, None)
@@ -1736,16 +1862,22 @@ class Sidecar:
                 and len(events) - last_flush >= 3
             ):
                 last_flush = len(events)
-                try:
-                    self._api.update_local_agent_run_events(
-                        active.workflow_id,
-                        run_ref,
-                        events,
-                    )
-                except ApiError:
-                    pass
+                snapshot = list(events)
+                threading.Thread(
+                    target=self._flush_history_events,
+                    args=(active.workflow_id, run_ref, snapshot),
+                    daemon=True,
+                ).start()
 
         return on_event
+
+    def _flush_history_events(
+        self, workflow_id: str, run_id: str, events: list[dict[str, Any]]
+    ) -> None:
+        try:
+            self._api.update_local_agent_run_events(workflow_id, run_id, events)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _run_design(self, command: dict[str, Any], active: ActiveRun) -> None:
         workflow_id = str(command.get("workflowId") or "").strip()
@@ -1844,6 +1976,81 @@ class Sidecar:
             }
         )
 
+    def _run_regulation_creation(self, command: dict[str, Any], active: ActiveRun) -> None:
+        draft_id = str(command.get("draftId") or "").strip()
+        if not draft_id:
+            raise ValueError("regulation_creation requires draftId")
+        bridge = active.bridge
+        bridge.check_ready()
+        workspace_id = f"reg-create-{draft_id}"
+        run_cwd = Path(bridge.workspace_cwd(workspace_id))
+        active.run_cwd = str(run_cwd)
+        _prepare_regulation_workspace(
+            run_cwd,
+            rules=str(command.get("rules") or ""),
+            interview=command.get("interview") if isinstance(command.get("interview"), dict) else {},
+        )
+        events: list[dict[str, Any]] = []
+        agent_id = str(command.get("resumeAgentId") or "").strip()
+
+        def emit_cancelled() -> None:
+            emit(
+                {
+                    "type": "error",
+                    "runId": active.run_id,
+                    "kind": "regulation_creation",
+                    "draftId": draft_id,
+                    "code": "cancelled",
+                    "message": "cancelled",
+                }
+            )
+
+        try:
+            result = CursorSdkBridge.run(
+                bridge,
+                prompt=build_regulation_sdk_prompt(str(command.get("prompt") or "")),
+                workflow_id=workspace_id,
+                cwd=str(run_cwd),
+                model=REGULATION_SDK_MODEL,
+                model_params=[dict(item) for item in REGULATION_SDK_MODEL_PARAMS],
+                mode="interview",
+                tools=[],
+                resume_agent_id=agent_id,
+                on_event=self._forward_events(active, events),
+                should_stop=active.stop.is_set,
+                confirm_writes=False,
+            )
+            if active.stop.is_set():
+                emit_cancelled()
+                return
+            answer = str(result.get("answer") or "").strip()
+            agent_id = str(result.get("agent_id") or agent_id).strip()
+        except Exception as exc:  # noqa: BLE001
+            if active.stop.is_set():
+                emit_cancelled()
+                return
+            answer = _interview_json_answer(str(exc))
+            if not answer:
+                raise
+        if active.stop.is_set():
+            emit_cancelled()
+            return
+        recovered = _interview_json_answer(answer)
+        if recovered:
+            answer = recovered
+        if not answer:
+            raise CursorSdkError("regulation interview returned an empty answer")
+        emit(
+            {
+                "type": "result",
+                "runId": active.run_id,
+                "kind": "regulation_creation",
+                "draftId": draft_id,
+                "agentId": agent_id,
+                "answer": answer,
+            }
+        )
+
     def _run_demo(self, command: dict[str, Any], active: ActiveRun) -> None:
         workflow_id = str(command.get("workflowId") or "").strip()
         if not workflow_id:
@@ -1855,6 +2062,9 @@ class Sidecar:
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
         active.workflow_id = workflow_id
+        # Wipe leftover temp files from previous trial runs. Keep attachments on
+        # resume so a sample attached earlier in this formation survives.
+        reset_run_scratch(run_cwd, clear_attachments=not resume_agent_id)
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=record)
         if _is_meeting_workflow(record):
             _ensure_outlook_rule_in_brief(run_cwd)
@@ -1914,8 +2124,9 @@ class Sidecar:
         active.gate.bind(workflow_id=workflow_id, kind="run")
         message = str(command.get("message") or "").strip()
         source = str(command.get("source") or "chat").strip() or "chat"
-        # Trigger/scheduled runs are headless: there is no UI to approve writes,
-        # so they run autonomously like the desktop HeadlessRunner.
+        # Trigger/scheduled runs have no file picker, but write tools still
+        # wait for a human. Electron shows a Windows toast with accept/reject
+        # when the user is not on the agent page.
         autonomous = source == "trigger"
         trigger_id = str(command.get("triggerId") or "").strip()
         evidence = str(command.get("evidence") or "").strip()
@@ -1949,6 +2160,14 @@ class Sidecar:
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
         active.workflow_id = workflow_id
+        # Each run is independent: clear leftover temp files (tool_results and
+        # stale attachments) so they don't pile up or leak into this run. A chat
+        # follow-up (resume, no new files) keeps the previous turn's attachments.
+        _has_new_files = any(str(p).strip() for p in (command.get("filePaths") or []))
+        reset_run_scratch(
+            run_cwd,
+            clear_attachments=autonomous or not resume_agent_id or _has_new_files,
+        )
         prepare_sdk_workspace(self._api, workflow_id, run_cwd, workflow=workflow)
         if _is_meeting_workflow(workflow):
             _ensure_outlook_rule_in_brief(run_cwd)
@@ -1969,11 +2188,10 @@ class Sidecar:
                 active, workflow, provided_count=len(file_paths)
             )
         events: list[dict[str, Any]] = []
-        prompt = (
-            build_followup_sdk_prompt(message)
-            if resume_agent_id and message
-            else build_sdk_prompt(workflow, message)
-        )
+        # Always include current workflow materials in the prompt. If a saved
+        # SDK agent id belongs to another machine/account and resume falls back
+        # to a fresh agent, the run still has the full playbook context.
+        prompt = build_sdk_prompt(workflow, message)
         note = _attachments_note(attachment_paths)
         if note:
             prompt = prompt + "\n\n" + note
@@ -1993,7 +2211,7 @@ class Sidecar:
                 on_event=self._forward_events(active, events),
                 on_question=active.gate.ask_question,
                 should_stop=active.stop.is_set,
-                confirm_writes=not autonomous,
+                confirm_writes=True,
             )
             answer = str(result.get("answer") or "").strip()
             agent_id = str(result.get("agent_id") or resume_agent_id).strip()
@@ -2566,6 +2784,28 @@ def _copy_attachments(run_cwd: str, file_paths: list[str]) -> list[str]:
     return relative
 
 
+def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[str, Any]) -> None:
+    run_cwd.mkdir(parents=True, exist_ok=True)
+    agents = (rules or "").strip() or "Создай регламент по interview.json. Ответ строго JSON."
+    (run_cwd / "AGENTS.md").write_text(agents, encoding="utf-8")
+    (run_cwd / "interview.json").write_text(
+        json.dumps(interview, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    materials = run_cwd / "materials"
+    materials.mkdir(parents=True, exist_ok=True)
+    attachments = interview.get("attachments") if isinstance(interview.get("attachments"), list) else []
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("id") or "file.txt")
+        text = str(item.get("text") or "")
+        if not text:
+            continue
+        safe = Path(_safe_filename(name)).stem or "file"
+        (materials / f"{safe}.txt").write_text(text, encoding="utf-8")
+
+
 def _attachments_note(relative_paths: list[str]) -> str:
     if not relative_paths:
         return ""
@@ -2579,7 +2819,7 @@ def _attachments_note(relative_paths: list[str]) -> str:
 def main() -> None:
     sidecar = Sidecar()
     emit({"type": "ready"})
-    for raw in sys.stdin:
+    for raw in _stdin_lines():
         line = raw.strip()
         if not line:
             continue
@@ -2600,6 +2840,7 @@ def main() -> None:
             elif ctype in {
                 "design",
                 "readiness",
+                "regulation_creation",
                 "demo",
                 "run",
                 "check_trigger",

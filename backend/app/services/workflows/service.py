@@ -32,11 +32,13 @@ from app.schemas.workflow import (
     WorkflowSchema,
 )
 from app.services.notifications.service import delete_notifications_for_workflow
+from app.schemas.trigger import ScheduleTriggerSpec
 from app.services.triggers.service import (
     cancel_triggers_for_workflow,
     delete_triggers_for_workflow,
     is_workflow_deleted,
     is_workflow_paused,
+    sync_recurring_triggers_from_draft,
     workflow_is_deleted,
 )
 from app.services.workflows import prompts
@@ -305,10 +307,26 @@ def _notify_board(
         logger.exception("Board live notify failed user=%s workflow=%s", user_id, workflow_id)
 
 
+def _draft_trigger_payloads(draft: object) -> list[dict[str, Any]]:
+    data = draft if isinstance(draft, dict) else {}
+    items = data.get("triggers") if isinstance(data.get("triggers"), list) else []
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            spec = ScheduleTriggerSpec.model_validate(item)
+        except (TypeError, ValueError):
+            continue
+        out.append(spec.model_dump())
+    return out
+
+
 def update_local_run(
     db: Session, *, user_id: str, workflow_id: str, local_run: dict[str, Any]
 ) -> WorkflowSchema:
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    prev = dict(row.local_run or {})
     row.local_run = dict(local_run or {})
     draft = row.local_run.get("playbook_draft") if isinstance(row.local_run, dict) else {}
     has_steps = isinstance(draft, dict) and bool(draft.get("steps"))
@@ -320,6 +338,16 @@ def update_local_run(
         row.phase = "designing"
     db.commit()
     db.refresh(row)
+    if (row.phase or "") == "done":
+        old_draft = prev.get("schedule_draft") if isinstance(prev.get("schedule_draft"), dict) else {}
+        new_draft = (
+            row.local_run.get("schedule_draft")
+            if isinstance(row.local_run, dict) and isinstance(row.local_run.get("schedule_draft"), dict)
+            else {}
+        )
+        if _draft_trigger_payloads(old_draft) != _draft_trigger_payloads(new_draft):
+            sync_recurring_triggers_from_draft(db, user_id=user_id, workflow=row)
+            db.refresh(row)
     return _to_schema(row)
 
 
@@ -1491,6 +1519,8 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     row.phase = "done"
     db.commit()
     db.refresh(row)
+    sync_recurring_triggers_from_draft(db, user_id=user_id, workflow=row)
+    db.refresh(row)
     logger.info("Workflow published id=%s title=%s", workflow_id, row.title)
     return _to_schema(row)
 
@@ -2660,7 +2690,7 @@ def _stream_run(
                         assistant_parts.append(delta)
                         _emit(on_event, kind, delta)
                     if delta.strip():
-                        logger.info("Cursor %s [%s/%s]: %s", kind, agent_id[-8:], run_id[-8:], delta)
+                        logger.debug("Cursor %s [%s/%s]: %s", kind, agent_id[-8:], run_id[-8:], delta)
             elif event == "message":
                 _emit(on_event, "message", str(payload.get("text") or payload.get("message") or ""))
             elif event == "result":
@@ -2687,7 +2717,7 @@ def _stream_run(
                     result.error,
                 )
             elif event not in {"heartbeat", "ping", "message", "done"}:
-                logger.info(
+                logger.debug(
                     "Cursor stream event=%s agent=%s run=%s keys=%s",
                     event,
                     agent_id[-8:],

@@ -7,20 +7,28 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from app.config import DESKTOP_ROOT
+from app.sdk_agent.prompt import strip_to_work_result
 from app.sdk_agent.tool_adapter import (
     invoke_sdk_tool,
     is_ask_question,
     sdk_tool_specs,
+    tool_timeout_seconds,
 )
 from app.tools import ToolHostError
 
 DEFAULT_SDK_MODEL = "grok-4.6"
+REGULATION_SDK_MODEL = "grok-4.6"
+REGULATION_SDK_MODEL_PARAMS = (
+    {"id": "effort", "value": "xhigh"},
+    {"id": "fast", "value": "true"},
+)
 LARGE_TOOL_RESULT_BYTES = 6_000
 ENVELOPE_LIST_MIN = 50
 EXTERNALIZED_NEXT_STEP = (
@@ -44,7 +52,7 @@ SdkEventCallback = Callable[[dict[str, Any]], None]
 
 class CursorSdkBridge:
     def __init__(self, *, node: str = "node", runner: Path | None = None) -> None:
-        self._node = node
+        self._node = os.getenv("CONSTRUCTOR_NODE", "").strip() or node
         self._sdk_root = DESKTOP_ROOT / "sdk-agent"
         self._runner = runner or self._sdk_root / "src" / "runner.ts"
         self._skip_lock = threading.Lock()
@@ -177,12 +185,22 @@ class CursorSdkBridge:
             ),
         }
 
+    @staticmethod
+    def _emit_event(on_event: SdkEventCallback | None, payload: dict[str, Any]) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(payload)
+        except Exception:
+            return
+
     def run(
         self,
         *,
         prompt: str,
         workflow_id: str,
         model: str = "",
+        model_params: list[dict[str, str]] | None = None,
         cwd: str = "",
         mode: str = "run",
         tools: list[dict[str, Any]] | None = None,
@@ -218,15 +236,31 @@ class CursorSdkBridge:
         self._process = process
         try:
             final: dict[str, Any] | None = None
+            interview = mode == "interview"
+            run_model = (
+                model
+                or (
+                    os.getenv("CURSOR_REGULATION_SDK_MODEL", REGULATION_SDK_MODEL)
+                    if interview
+                    else os.getenv("CURSOR_SDK_MODEL", DEFAULT_SDK_MODEL)
+                )
+            )
+            if model_params is not None:
+                run_params = list(model_params)
+            elif interview:
+                run_params = [dict(item) for item in REGULATION_SDK_MODEL_PARAMS]
+            else:
+                run_params = []
             self._send(
                 process,
                 {
                     "type": "run",
                     "id": run_id,
                     "prompt": prompt,
-                    "model": model or os.getenv("CURSOR_SDK_MODEL", DEFAULT_SDK_MODEL),
+                    "model": run_model,
+                    "modelParams": run_params,
                     "cwd": run_cwd,
-                    "mode": "design" if mode == "design" else "run",
+                    "mode": "interview" if interview else "design" if mode == "design" else "run",
                     "tools": sdk_tool_specs() if tools is None else tools,
                     "resumeAgentId": agent_id or None,
                     "workflowId": workflow_id,
@@ -260,11 +294,9 @@ class CursorSdkBridge:
                         answer_parts.append(text)
                 if event_type == "done":
                     final = payload
-                    if on_event is not None:
-                        on_event(payload)
+                    self._emit_event(on_event, payload)
                     break
-                if on_event is not None:
-                    on_event(payload)
+                self._emit_event(on_event, payload)
                 if should_stop is not None and should_stop():
                     try:
                         self._send(process, {"type": "cancel", "id": run_id})
@@ -272,6 +304,8 @@ class CursorSdkBridge:
                         pass
                     process.kill()
                     collected = "\n\n".join(answer_parts).strip()
+                    if mode == "run":
+                        collected = strip_to_work_result(collected)
                     return {
                         "answer": collected,
                         "status": "ok",
@@ -284,6 +318,8 @@ class CursorSdkBridge:
                 process.kill()
             if final is None:
                 collected = "\n\n".join(answer_parts).strip()
+                if mode == "run":
+                    collected = strip_to_work_result(collected)
                 if collected:
                     return {
                         "answer": collected,
@@ -297,6 +333,8 @@ class CursorSdkBridge:
             answer = str(final.get("answer") or "") or "\n\n".join(answer_parts).strip()
             if status == "error":
                 raise CursorSdkError(answer or "Cursor SDK run failed")
+            if mode == "run":
+                answer = strip_to_work_result(answer)
             return {
                 "answer": answer,
                 "status": status or "ok",
@@ -442,6 +480,8 @@ class CursorSdkBridge:
 
         done = threading.Event()
         box: dict[str, Any] = {"result": None, "error": None}
+        tool_limit = float(tool_timeout_seconds(tool, args))
+        started_at = time.monotonic()
 
         def work() -> None:
             try:
@@ -508,6 +548,17 @@ class CursorSdkBridge:
                         "requestId": request_id,
                         "ok": True,
                         "result": self.skipped_tool_result(tool),
+                    }
+                )
+                self._clear_active(request_id)
+                return
+            if time.monotonic() - started_at >= tool_limit:
+                send_result(
+                    {
+                        "type": "tool_result",
+                        "requestId": request_id,
+                        "ok": False,
+                        "error": f"Инструмент {tool} не ответил за {int(tool_limit)} с",
                     }
                 )
                 self._clear_active(request_id)

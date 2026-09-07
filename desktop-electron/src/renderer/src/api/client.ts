@@ -15,7 +15,9 @@ import {
   type PassportSession,
   type QuestionChatSession,
   type RegulationCreationMessage,
+  type RegulationCreationHistoryItem,
   type RegulationCreationSession,
+  type RegulationCreationTurn,
   type FragmentEntityTag,
   type RegulationEntityLegendItem,
   type RegulationFragment,
@@ -84,8 +86,30 @@ function parsePlatformFile(item: Record<string, unknown>): WorkflowFileItem {
   }
 }
 
+function normalizeFioKey(value: string): string {
+  return (value || '').toLowerCase().replace(/[ьъ\u0301]/g, '')
+}
+
+const PROFILE_OVERRIDES: Array<{ needle: string; position: string; department: string }> = [
+  {
+    needle: 'мангасарян',
+    position: 'Помощник Председателя совета директоров',
+    department: 'Управление делами'
+  }
+]
+
+function applyProfileOverrides(user: UserProfile): UserProfile {
+  const key = normalizeFioKey(user.fio)
+  for (const item of PROFILE_OVERRIDES) {
+    if (key.includes(item.needle)) {
+      return { ...user, position: item.position, department: item.department || user.department }
+    }
+  }
+  return user
+}
+
 function parseUser(data: Record<string, unknown>): UserProfile {
-  return {
+  return applyProfileOverrides({
     id: String(data.id ?? ''),
     fio: String(data.fio ?? ''),
     department: String(data.department ?? ''),
@@ -96,7 +120,7 @@ function parseUser(data: Record<string, unknown>): UserProfile {
     activityStatus:
       (data.activityStatus as string) ?? (data.activity_status as string) ?? 'online',
     isSupport: (data.isSupport as boolean) ?? (data.is_support as boolean) ?? false
-  }
+  })
 }
 
 function parseCreationSession(data: Record<string, unknown>): RegulationCreationSession {
@@ -109,7 +133,8 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
     structured:
       item.structured && typeof item.structured === 'object'
         ? (item.structured as Record<string, unknown>)
-        : {}
+        : {},
+    createdAt: String(item.createdAt ?? item.created_at ?? '')
   }))
   const resultRaw = data.resultRegulation
   return {
@@ -120,7 +145,42 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
       resultRaw && typeof resultRaw === 'object'
         ? parseRegulation(resultRaw as Record<string, unknown>)
         : null,
-    resultDocumentPath: String(data.resultDocumentPath ?? '')
+    resultDocument:
+      data.resultDocument && typeof data.resultDocument === 'object'
+        ? (data.resultDocument as Record<string, unknown>)
+        : {},
+    resultDocumentPath: String(data.resultDocumentPath ?? ''),
+    sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? '')
+  }
+}
+
+function parseCreationTurn(data: Record<string, unknown>): RegulationCreationTurn {
+  const sessionRaw =
+    data.session && typeof data.session === 'object' ? (data.session as Record<string, unknown>) : data
+  return {
+    session: parseCreationSession(sessionRaw),
+    interview:
+      data.interview && typeof data.interview === 'object'
+        ? (data.interview as Record<string, unknown>)
+        : {},
+    sdkPrompt: String(data.sdkPrompt ?? data.sdk_prompt ?? ''),
+    sdkRules: String(data.sdkRules ?? data.sdk_rules ?? ''),
+    sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? ''),
+    forceCreate: Boolean(data.forceCreate ?? data.force_create)
+  }
+}
+
+function parseCreationHistoryItem(data: Record<string, unknown>): RegulationCreationHistoryItem {
+  return {
+    draftId: String(data.draftId ?? data.draft_id ?? ''),
+    status: String(data.status ?? ''),
+    title: String(data.title ?? ''),
+    preview: String(data.preview ?? ''),
+    messageCount: Number(data.messageCount ?? data.message_count ?? 0),
+    hasResult: Boolean(data.hasResult ?? data.has_result),
+    canContinue: Boolean(data.canContinue ?? data.can_continue),
+    createdAt: String(data.createdAt ?? data.created_at ?? ''),
+    updatedAt: String(data.updatedAt ?? data.updated_at ?? '')
   }
 }
 
@@ -674,6 +734,12 @@ export function parseScheduleTrigger(raw: Record<string, unknown>): ScheduleTrig
   const unitRaw = String(raw.interval_unit ?? raw.intervalUnit ?? 'hours').toLowerCase()
   const intervalUnit: IntervalUnit =
     unitRaw === 'minutes' || unitRaw === 'days' ? (unitRaw as IntervalUnit) : 'hours'
+  const weekdaysRaw = raw.weekdays ?? raw.active_days
+  const weekdays = Array.isArray(weekdaysRaw)
+    ? weekdaysRaw
+        .map((day) => Number(day))
+        .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6)
+    : []
   return {
     kind,
     message: String(raw.message ?? ''),
@@ -681,7 +747,10 @@ export function parseScheduleTrigger(raw: Record<string, unknown>): ScheduleTrig
     intervalUnit,
     condition: String(raw.condition ?? ''),
     at: String(raw.at ?? ''),
-    once: Boolean(raw.once)
+    once: Boolean(raw.once),
+    weekdays,
+    windowStart: String(raw.window_start ?? raw.windowStart ?? ''),
+    windowEnd: String(raw.window_end ?? raw.windowEnd ?? '')
   }
 }
 
@@ -697,6 +766,20 @@ export function parseScheduleDraft(raw: Record<string, unknown>): ScheduleDraft 
   }
 }
 
+function parseCalendarMeetings(raw: unknown): NonNullable<AgentRunHistoryItem['calendarMeetings']> {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    .map((item) => ({
+      title: String(item.title ?? item.subject ?? ''),
+      start: String(item.start ?? item.start_at ?? ''),
+      end: String(item.end ?? item.end_at ?? ''),
+      mark: String(item.mark ?? item.color ?? 'keep'),
+      reason: String(item.reason ?? item.note ?? '')
+    }))
+    .filter((item) => item.title && item.start)
+}
+
 export function scheduleTriggerToApi(spec: ScheduleTriggerSpec): Record<string, unknown> {
   return {
     kind: spec.kind,
@@ -705,7 +788,10 @@ export function scheduleTriggerToApi(spec: ScheduleTriggerSpec): Record<string, 
     interval_unit: spec.intervalUnit,
     condition: spec.condition,
     at: spec.at,
-    once: spec.once
+    once: spec.once,
+    weekdays: spec.weekdays ?? [],
+    window_start: spec.windowStart ?? '',
+    window_end: spec.windowEnd ?? ''
   }
 }
 
@@ -944,7 +1030,13 @@ export class ApiClient {
   private async request<T = unknown>(
     method: string,
     path: string,
-    opts: { body?: unknown; params?: Params; timeoutMs?: number } = {}
+    opts: {
+      body?: unknown
+      params?: Params
+      timeoutMs?: number
+      filePaths?: string[]
+      extraFields?: Record<string, string>
+    } = {}
   ): Promise<T> {
     const res = await window.api.request<T>({
       method,
@@ -952,7 +1044,9 @@ export class ApiClient {
       body: opts.body,
       params: opts.params,
       token: this.token,
-      timeoutMs: opts.timeoutMs
+      timeoutMs: opts.timeoutMs,
+      filePaths: opts.filePaths,
+      extraFields: opts.extraFields
     })
     if (!res.ok) {
       throw new ApiError(res.error || 'Ошибка backend', res.status)
@@ -963,7 +1057,7 @@ export class ApiClient {
   // ---------- Auth ----------
   async login(fio: string, password: string): Promise<LoginResult> {
     const data = await this.request<Record<string, unknown>>('POST', '/api/v1/auth/login', {
-      body: { fio, password }
+      body: { fio, password, client: 'constructor' }
     })
     const token = String(data.access_token ?? '')
     this.token = token
@@ -1000,11 +1094,43 @@ export class ApiClient {
     return parseRegulation(res.data ?? {})
   }
 
-  async startRegulationCreation(): Promise<RegulationCreationSession> {
+  async startRegulationCreation(opts?: { fresh?: boolean }): Promise<RegulationCreationSession> {
     const data = await this.request<Record<string, unknown>>(
       'POST',
       '/api/v1/regulation-creation/sessions',
-      { timeoutMs: 120_000 }
+      { timeoutMs: 120_000, params: opts?.fresh ? { fresh: true } : undefined }
+    )
+    return parseCreationSession(data)
+  }
+
+  async getActiveRegulationCreation(): Promise<RegulationCreationSession | null> {
+    try {
+      const data = await this.request<Record<string, unknown>>(
+        'GET',
+        '/api/v1/regulation-creation/sessions/active',
+        { timeoutMs: 60_000 }
+      )
+      return parseCreationSession(data)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null
+      throw err
+    }
+  }
+
+  async listRegulationCreationHistory(): Promise<RegulationCreationHistoryItem[]> {
+    const data = await this.request<{ items?: unknown[] }>(
+      'GET',
+      '/api/v1/regulation-creation/sessions/history',
+      { timeoutMs: 60_000 }
+    )
+    return (data.items ?? []).map((item) => parseCreationHistoryItem(asRecord(item)))
+  }
+
+  async resumeRegulationCreation(draftId: string): Promise<RegulationCreationSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulation-creation/sessions/${draftId}/resume`,
+      { timeoutMs: 60_000 }
     )
     return parseCreationSession(data)
   }
@@ -1026,6 +1152,54 @@ export class ApiClient {
       'POST',
       `/api/v1/regulation-creation/sessions/${draftId}/messages`,
       { body: { message }, timeoutMs: 600_000 }
+    )
+    return parseCreationSession(data)
+  }
+
+  async peekRegulationCreationTurn(draftId: string): Promise<RegulationCreationTurn> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/regulation-creation/sessions/${draftId}/turn`,
+      { timeoutMs: 60_000 }
+    )
+    return parseCreationTurn(data)
+  }
+
+  async persistRegulationCreationTurn(
+    draftId: string,
+    message: string,
+    filePaths: string[] = []
+  ): Promise<RegulationCreationTurn> {
+    const hasFiles = filePaths.length > 0
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulation-creation/sessions/${draftId}/turns`,
+      {
+        body: hasFiles ? undefined : { message },
+        filePaths: hasFiles ? filePaths : undefined,
+        extraFields: hasFiles ? { message } : undefined,
+        timeoutMs: 420_000
+      }
+    )
+    return parseCreationTurn(data)
+  }
+
+  async applyRegulationCreationReply(
+    draftId: string,
+    answer: string,
+    opts: { sdkAgentId?: string; forceCreate?: boolean } = {}
+  ): Promise<RegulationCreationSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulation-creation/sessions/${draftId}/apply`,
+      {
+        body: {
+          answer,
+          sdkAgentId: opts.sdkAgentId || '',
+          forceCreate: Boolean(opts.forceCreate)
+        },
+        timeoutMs: 180_000
+      }
     )
     return parseCreationSession(data)
   }
@@ -1075,16 +1249,21 @@ export class ApiClient {
 
   // ---------- Workflows / board ----------
   async listWorkflows(): Promise<WorkflowListItem[]> {
-    const data = await this.request<{ items?: Record<string, unknown>[] }>(
-      'GET',
-      '/api/v1/workflows'
-    )
-    return (data.items ?? []).map((item) => ({
-      id: String(item.id ?? ''),
-      title: String(item.title ?? ''),
-      phase: String(item.phase ?? ''),
-      updatedAt: (item.updatedAt as string) ?? (item.updated_at as string) ?? ''
-    }))
+    const data = await this.request<unknown>('GET', '/api/v1/workflows')
+    const rows = Array.isArray(data)
+      ? data
+      : data && typeof data === 'object' && Array.isArray((data as { items?: unknown[] }).items)
+        ? (data as { items: unknown[] }).items
+        : []
+    return rows
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({
+        id: String(item.id ?? ''),
+        title: String(item.title ?? ''),
+        phase: String(item.phase ?? ''),
+        updatedAt: String(item.updatedAt ?? item.updated_at ?? '')
+      }))
+      .filter((item) => item.id)
   }
 
   async getWorkflowBoard(params?: {
@@ -1108,6 +1287,13 @@ export class ApiClient {
 
   async cancelTrigger(triggerId: string): Promise<void> {
     await this.request('POST', `/api/v1/triggers/${triggerId}/cancel`, { timeoutMs: 30_000 })
+  }
+
+  async skipTriggerSlot(triggerId: string, at: string): Promise<void> {
+    await this.request('POST', `/api/v1/triggers/${triggerId}/skip-slot`, {
+      body: { at },
+      timeoutMs: 30_000
+    })
   }
 
   async deleteWorkflow(workflowId: string): Promise<void> {
@@ -1152,7 +1338,8 @@ export class ApiClient {
         startedAt: String(item.started_at ?? item.startedAt ?? ''),
         finishedAt: String(item.finished_at ?? item.finishedAt ?? ''),
         summary: String(item.summary ?? item.answer ?? item.result ?? ''),
-        answer: String(item.answer ?? item.summary ?? item.result ?? '')
+        answer: String(item.answer ?? item.summary ?? item.result ?? ''),
+        calendarMeetings: parseCalendarMeetings(item.calendar_meetings ?? item.calendarMeetings)
       }))
   }
 
@@ -1437,7 +1624,10 @@ export class ApiClient {
         workflowId,
         message: spec.message,
         intervalSeconds: intervalSecondsFromUnit(spec.intervalValue, spec.intervalUnit),
-        once: false
+        once: false,
+        activeDays: spec.weekdays ?? [],
+        windowStart: spec.windowStart ?? '',
+        windowEnd: spec.windowEnd ?? ''
       })
       return
     }
@@ -1465,6 +1655,9 @@ export class ApiClient {
     at?: string
     intervalSeconds?: number
     condition?: string
+    activeDays?: number[]
+    windowStart?: string
+    windowEnd?: string
   }): Promise<void> {
     const body: Record<string, unknown> = {
       workflow_id: spec.workflowId,
@@ -1477,6 +1670,9 @@ export class ApiClient {
       body.once = false
     }
     if (spec.condition) body.condition = spec.condition.trim()
+    if (spec.activeDays && spec.activeDays.length) body.active_days = spec.activeDays
+    if (spec.windowStart) body.window_start = spec.windowStart
+    if (spec.windowEnd) body.window_end = spec.windowEnd
     await this.request('POST', '/api/v1/triggers', { body, timeoutMs: 30_000 })
   }
 
@@ -1519,7 +1715,8 @@ export class ApiClient {
         startedAt: String(data.started_at ?? data.startedAt ?? ''),
         finishedAt: String(data.finished_at ?? data.finishedAt ?? ''),
         summary: String(data.summary ?? data.answer ?? data.result ?? ''),
-        answer: String(data.answer ?? data.summary ?? data.result ?? '')
+        answer: String(data.answer ?? data.summary ?? data.result ?? ''),
+        calendarMeetings: parseCalendarMeetings(data.calendar_meetings ?? data.calendarMeetings)
       },
       events
     }

@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowFileItem } from '../api/types'
 import { AgentFeed, buildFeedItems } from '../components/agentfeed'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
+import { MiniCalendar, meetingsForHistoryRun, meetingsFromFeed } from '../components/agentfeed/MiniCalendar'
 import { presentAgentText } from '../components/agentfeed/formatAgentText'
 import { useRuns } from '../store/runs'
 import { isInFlightRunStatus, isLiveRunState } from '../store/liveRun'
@@ -28,6 +29,9 @@ function mentionedOutputNames(answer: string, events: AgentRunnerEvent[]): Set<s
     if (name && /\.[A-Za-z0-9]{1,8}$/.test(name)) names.add(name.toLowerCase())
   }
   for (const match of answer.matchAll(/`([^`]+)`/g)) add(match[1])
+  for (const match of answer.matchAll(/([^\s`"'<>]+\.(?:xlsx|xls|docx|pdf|md|csv|txt))/gi)) {
+    add(match[1])
+  }
   for (const event of events) {
     if (event.text) {
       for (const match of event.text.matchAll(/`([^`]+)`/g)) add(match[1])
@@ -54,12 +58,26 @@ function filesForHistoryRun(
   events: AgentRunnerEvent[]
 ): WorkflowFileItem[] {
   const mentioned = mentionedOutputNames(answer, events)
+  const wanted = (runId || '').trim()
   return files.filter((file) => {
     if (!isAgentOutput(file)) return false
     const rid = (file.runId || '').trim()
-    if (!rid || rid === runId || rid === 'local') return true
+    if (wanted && rid && rid !== wanted && rid !== 'local') {
+      return mentioned.has((file.name || '').toLowerCase())
+    }
+    if (wanted && rid === wanted) return true
     return mentioned.has((file.name || '').toLowerCase())
   })
+}
+
+function stripToWorkResult(text: string): string {
+  const raw = text || ''
+  const match = /^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\b.*$/im.exec(raw)
+  const body = match && match.index !== undefined ? raw.slice(match.index) : raw
+  return body
+    .replace(/^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\s*:?\s*/im, '')
+    .replace(/^\s*TESTS:\s*(PASS|FAIL)\s*$/gim, '')
+    .trim()
 }
 
 function formatWhen(value: string): string {
@@ -78,6 +96,28 @@ const STATUS_LABELS: Record<string, string> = {
   started: 'Выполняется',
   canceled: 'Отменён',
   cancelled: 'Отменён'
+}
+
+function isHistoryResult(text: string): boolean {
+  const value = text.trim().toLowerCase()
+  if (!value) return false
+  return ![
+    'остановлено пользователем',
+    'cursor sdk не отвечает',
+    'агент уже выполняется',
+    'запуск не завершился'
+  ].some((marker) => value.includes(marker))
+}
+
+function historyRunStatus(run: { status: string; answer?: string; summary?: string }): string {
+  const status = (run.status || '').trim().toLowerCase()
+  if (status === 'started' || status === 'running') return status
+  if (status === 'ok') return 'ok'
+  if (status === 'error') return 'error'
+  if (status === 'canceled' || status === 'cancelled') return 'canceled'
+  const result = (run.answer || run.summary || '').trim()
+  if (isHistoryResult(result)) return 'ok'
+  return 'canceled'
 }
 
 export function AgentHistoryPage({
@@ -140,10 +180,14 @@ export function AgentHistoryPage({
     ])
       .then(([detail, allFiles]) => {
         if (!alive) return
-        const text = (detail.item.answer || detail.item.summary || '').trim()
+        const stored = (detail.item.answer || detail.item.summary || '').trim()
+        const text = stripToWorkResult(stored)
         setAnswer(text)
         setEvents(detail.events)
         setFiles(filesForHistoryRun(allFiles, selected, text, detail.events))
+        setRuns((current) =>
+          current.map((item) => (item.runId === detail.item.runId ? { ...item, ...detail.item } : item))
+        )
       })
       .catch(() => {
         if (!alive) return
@@ -161,6 +205,14 @@ export function AgentHistoryPage({
 
   const selectedRun = runs.find((item) => item.runId === selected)
   const feedItems = useMemo(() => buildFeedItems(events), [events])
+  const planMeetings = useMemo(() => {
+    const stored = meetingsForHistoryRun(events, selectedRun?.calendarMeetings)
+    if (stored.length) return stored
+    if (live?.backendRunId && live.backendRunId === selected) {
+      return meetingsFromFeed(live.state.items)
+    }
+    return []
+  }, [events, selectedRun, live, selected])
   const showLiveFeed = Boolean(
     live &&
       isLiveRunState(live.state) &&
@@ -200,7 +252,9 @@ export function AgentHistoryPage({
               onClick={() => setSelected(run.runId)}
               style={{ textAlign: 'left', cursor: 'pointer', width: '100%' }}
             >
-              <div className="history-status">{STATUS_LABELS[run.status] || run.status || 'Запуск'}</div>
+              <div className="history-status">
+                {STATUS_LABELS[historyRunStatus(run)] || 'Отменён'}
+              </div>
               <div className="history-summary" style={{ fontSize: 12 }}>
                 {formatWhen(run.startedAt)}
               </div>
@@ -280,9 +334,14 @@ export function AgentHistoryPage({
                       Ход работы
                     </button>
                   </div>
+                  {planMeetings.length > 0 && (
+                    <div className="wf-result-calendar">
+                      <MiniCalendar meetings={planMeetings} />
+                    </div>
+                  )}
                   {answer ? (
                     <MarkdownBody text={presentAgentText(answer)} />
-                  ) : (
+                  ) : planMeetings.length > 0 ? null : (
                     <p>Нет текста результата</p>
                   )}
                 </section>

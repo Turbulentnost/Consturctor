@@ -7,6 +7,7 @@ from uuid import uuid4
 import jwt
 
 from app.config import settings
+from app.services.sessions import DEFAULT_CLIENT, normalize_client
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +17,7 @@ class AuthContext:
     department: str | None = None
     position: str | None = None
     session_id: str = ""
+    client: str = DEFAULT_CLIENT
 
 
 def create_access_token(
@@ -25,6 +27,7 @@ def create_access_token(
     department: str = "",
     position: str = "",
     session_id: str = "",
+    client: str = DEFAULT_CLIENT,
 ) -> str:
     now = datetime.now(UTC)
     sid = (session_id or "").strip() or str(uuid4())
@@ -34,6 +37,7 @@ def create_access_token(
         "department": department,
         "position": position,
         "sid": sid,
+        "cid": normalize_client(client),
         "iat": now,
         "exp": now + timedelta(minutes=settings.jwt_expire_minutes),
     }
@@ -61,10 +65,12 @@ def validate_token(token: str) -> AuthContext:
     department = payload.get("department")
     position = payload.get("position")
     session_id = payload.get("sid")
+    raw_client = payload.get("cid") or payload.get("client")
     return AuthContext(
         user_id=user_id,
         fio=fio if isinstance(fio, str) else None,
         department=department if isinstance(department, str) else None,
         position=position if isinstance(position, str) else None,
         session_id=session_id if isinstance(session_id, str) else "",
+        client=normalize_client(raw_client if isinstance(raw_client, str) else ""),
     )

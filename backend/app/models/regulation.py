@@ -251,6 +251,7 @@ class RegulationCreationDraft(Base):
     status: Mapped[str] = mapped_column(String(64), nullable=False, default="collecting_positions")
     positions_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     style_profile_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    interview_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     draft_document_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     result_document_path: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
     result_regulation_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")

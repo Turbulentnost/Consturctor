@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import runpy
 import sys
 from pathlib import Path
@@ -32,7 +33,12 @@ def entry_mode(
 
 
 def desktop_root(*, frozen: bool | None = None, executable: str | None = None) -> Path:
-    """Корень desktop: рядом с exe в frozen, иначе папка desktop из исходников."""
+    """Корень desktop: CONSTRUCTOR_DESKTOP_ROOT, рядом с exe в frozen, иначе исходники."""
+    env_root = os.environ.get("CONSTRUCTOR_DESKTOP_ROOT", "").strip()
+    if env_root:
+        path = Path(env_root)
+        if path.is_dir():
+            return path.resolve()
     is_frozen = getattr(sys, "frozen", False) if frozen is None else frozen
     if is_frozen:
         exe = sys.executable if executable is None else executable
@@ -40,15 +46,32 @@ def desktop_root(*, frozen: bool | None = None, executable: str | None = None) -
     return Path(__file__).resolve().parents[1]
 
 
+def com_worker_bootstrap_code(module_name: str, desktop: Path | str) -> str:
+    """Python -c payload that puts desktop on sys.path, then runs worker.main.
+
+    Embed python*._pth ignores PYTHONPATH, so `python -m app...` cannot find
+    package app inside a packaged Electron runtime.
+    """
+    root = str(Path(desktop).resolve())
+    return (
+        "import sys; "
+        f"sys.path.insert(0, {root!r}); "
+        f"from {module_name} import main; "
+        "raise SystemExit(main() or 0)"
+    )
+
+
 def com_worker_command(
     executable: str,
     module_name: str,
     *,
     frozen: bool,
+    desktop: Path | str | None = None,
 ) -> list[str]:
-    """Команда COM-worker: консольный sibling-exe в frozen, иначе python -m."""
+    """Команда COM-worker: sibling-exe в frozen, иначе python -c с sys.path."""
     if not frozen:
-        return [executable, "-m", module_name]
+        root = Path(desktop) if desktop is not None else desktop_root()
+        return [executable, "-c", com_worker_bootstrap_code(module_name, root)]
     sibling = Path(executable).resolve().parent / COM_WORKER_EXE_NAME
     if sibling.is_file():
         return [str(sibling)]

@@ -86,4 +86,6 @@ async def relay_board_message(raw: Any) -> None:
     payload = data.get("payload")
     if not user_id or not isinstance(payload, dict):
         return
-    await hub.push(user_id, payload)
+    raw_client = data.get("client")
+    client = raw_client.strip() if isinstance(raw_client, str) else ""
+    await hub.push(user_id, payload, client=client)

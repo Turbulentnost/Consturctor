@@ -11,6 +11,17 @@ from sqlalchemy.orm import Session
 STALE_STARTED = timedelta(minutes=25)
 OVERLAP_CANCEL_ANSWER = "Агент уже выполняется"
 SDK_DEAD_ANSWER = "Cursor SDK не отвечает"
+STALE_STARTED_ANSWER = "Запуск не завершился за отведённое время."
+USER_CANCEL_ANSWER = "Остановлено пользователем"
+
+_INCOMPLETE_ANSWERS = frozenset(
+    {
+        OVERLAP_CANCEL_ANSWER.casefold(),
+        SDK_DEAD_ANSWER.casefold(),
+        STALE_STARTED_ANSWER.casefold(),
+        USER_CANCEL_ANSWER.casefold(),
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +97,8 @@ def fail_stale_started_runs(db: Session, *, user_id: str) -> int:
         finish_agent_run(
             db,
             run_id=row.id,
-            status="error",
-            answer="Запуск не завершился за отведённое время.",
+            status="canceled",
+            answer=STALE_STARTED_ANSWER,
             events=row.events_json if isinstance(row.events_json, list) else [],
             message=row.message or "",
         )
@@ -100,7 +111,42 @@ def _normalize_run_status(status: str) -> str:
         return "ok"
     if raw in {"canceled", "cancelled"}:
         return "canceled"
+    if raw in {"started", "running"}:
+        return "started"
     return "error"
+
+
+def _is_incomplete_answer(answer: str) -> bool:
+    text = (answer or "").strip()
+    if not text:
+        return True
+    key = text.casefold()
+    if key in _INCOMPLETE_ANSWERS:
+        return True
+    return key.startswith(OVERLAP_CANCEL_ANSWER.casefold())
+
+
+def has_run_result(answer: str) -> bool:
+    return bool((answer or "").strip()) and not _is_incomplete_answer(answer)
+
+
+def effective_run_status(status: str, answer: str = "", *, in_flight: bool = False) -> str:
+    """Success only when the run produced a result. Incomplete or canceled -> canceled."""
+    raw = (status or "").strip().lower()
+    if raw in {"started", "running"} and in_flight:
+        return "started"
+    if raw in {"canceled", "cancelled"}:
+        return "canceled"
+    if raw == "error" and (answer or "").strip() and not _is_incomplete_answer(answer):
+        return "error"
+    if has_run_result(answer):
+        return "ok"
+    return "canceled"
+
+
+def _row_in_flight(row: AgentRun) -> bool:
+    raw = (row.status or "").strip().lower()
+    return raw in {"started", "running"} and row.finished_at is None
 
 
 def list_started_runs(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRun]:
@@ -205,8 +251,8 @@ def finish_agent_run(
     row = db.get(AgentRun, run_id)
     if row is None:
         return
-    row.status = _normalize_run_status(status)
-    row.answer = (answer or "").strip()[:4000]
+    row.answer = (answer or "").strip()[:32000]
+    row.status = effective_run_status(_normalize_run_status(status), row.answer, in_flight=False)
     row.finished_at = datetime.now(timezone.utc)
     incoming = slim_run_events(events or [])
     if incoming:
@@ -248,7 +294,27 @@ def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -
     row = db.get(AgentRun, run_id)
     if row is None or row.workflow_id != workflow_id or row.user_id != user_id:
         raise WorkflowError("Запуск не найден", status_code=404)
-    return _to_out(row, include_events=True)
+    out = _to_out(row, include_events=True)
+    out.calendar_meetings = _calendar_meetings_for(
+        db, user_id=user_id, workflow_id=workflow_id
+    )
+    if out.calendar_meetings and not any(
+        str(item.get("tool") or "").strip() == "calendar.show_meetings"
+        for item in out.events
+        if isinstance(item, dict)
+    ):
+        out.events.append(
+            {
+                "type": "tool_call",
+                "tool": "calendar.show_meetings",
+                "arguments": {"meetings": out.calendar_meetings},
+                "result": {
+                    "shown": len(out.calendar_meetings),
+                    "meetings": out.calendar_meetings,
+                },
+            }
+        )
+    return out
 
 
 def _notify_board(
@@ -282,6 +348,169 @@ def answer_from_result(result: Any) -> str:
     return str(result or "").strip()
 
 
+_WAIT_START = frozenset({"human_wait", "question", "hitl"})
+_WAIT_END = frozenset({"human_reply"})
+# Events that can arrive while entering a wait (askQuestion emits tool_request
+# right after question). They must not close the human segment.
+_WAIT_HOLD = frozenset({"tool_request", "human_wait", "question", "hitl", "status", "ready"})
+
+
+def _parse_event_at(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        stamp = value
+    elif isinstance(value, str) and value.strip():
+        raw = value.strip().replace("Z", "+00:00")
+        try:
+            stamp = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    else:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp
+
+
+def compute_run_timing(
+    events: list[Any] | None,
+    *,
+    started_at: datetime | str | None,
+    finished_at: datetime | str | None,
+    in_flight: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Chess-clock split: only one side accrues time.
+
+    - Run starts on the agent clock.
+    - human_wait / question / hitl → stop agent, start human.
+    - human_reply → stop human, start agent again.
+    - Hold markers (tool_request, …) do not switch the clock.
+    Open in-flight segment is returned so the UI can keep ticking the active side.
+    """
+    start = _parse_event_at(started_at)
+    end = _parse_event_at(finished_at)
+    empty = {
+        "agent_work_ms": 0,
+        "human_wait_ms": 0,
+        "open_segment": "",
+        "open_segment_at": "",
+    }
+    if start is None:
+        return empty
+
+    mode = "agent"
+    cursor = start
+    agent_ms = 0
+    human_ms = 0
+
+    def close_until(at: datetime, next_mode: str) -> None:
+        nonlocal mode, cursor, agent_ms, human_ms
+        if at < cursor:
+            at = cursor
+        delta = int((at - cursor).total_seconds() * 1000)
+        if delta > 0:
+            if mode == "agent":
+                agent_ms += delta
+            elif mode == "human":
+                human_ms += delta
+        mode = next_mode
+        cursor = at
+
+    for raw in events or []:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("type") or "").strip().lower()
+        at = _parse_event_at(raw.get("at"))
+        if at is None:
+            continue
+        if kind in _WAIT_START:
+            # Agent asked human — human clock starts (chess switch).
+            if mode != "human":
+                close_until(at, "human")
+        elif kind in _WAIT_END:
+            # Human answered — agent clock starts immediately.
+            if mode == "human":
+                close_until(at, "agent")
+        elif kind in _WAIT_HOLD:
+            continue
+        elif mode == "human":
+            # Without human_reply marker, first post-wait agent activity
+            # resumes the agent clock (legacy runs).
+            close_until(at, "agent")
+
+    open_segment = ""
+    open_at = ""
+    if end is not None:
+        close_until(end, "")
+    elif in_flight:
+        open_segment = mode
+        open_at = _iso(cursor)
+    elif agent_ms == 0 and human_ms == 0:
+        close_until(now or datetime.now(timezone.utc), "")
+
+    # No HITL at all → whole span is agent clock.
+    # If only human was stamped, residual wall time belongs to the agent.
+    if end is not None:
+        wall_ms = max(0, int((end - start).total_seconds() * 1000))
+        if agent_ms == 0 and human_ms == 0:
+            agent_ms = wall_ms
+        elif agent_ms == 0 and 0 < human_ms < wall_ms:
+            agent_ms = wall_ms - human_ms
+
+    return {
+        "agent_work_ms": agent_ms,
+        "human_wait_ms": human_ms,
+        "open_segment": open_segment,
+        "open_segment_at": open_at,
+    }
+
+
+_MAX_RUN_EVENTS = 400
+_LOW_VALUE_EVENT_TYPES = {"thinking", "status"}
+_MUST_KEEP_EVENT_TYPES = {
+    "work_result",
+    "final",
+    "result",
+    "user_message",
+    "question",
+    "tool_request",
+    "human_wait",
+    "human_reply",
+}
+
+
+def _event_must_keep(item: dict[str, Any]) -> bool:
+    kind = str(item.get("type") or "").strip().lower()
+    if kind in _MUST_KEEP_EVENT_TYPES:
+        return True
+    return str(item.get("tool") or "").strip() == "calendar.show_meetings"
+
+
+def _trim_run_events(stored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(stored) <= _MAX_RUN_EVENTS:
+        return stored
+    kept = list(stored)
+    while len(kept) > _MAX_RUN_EVENTS:
+        drop_at = next(
+            (
+                index
+                for index, item in enumerate(kept)
+                if str(item.get("type") or "").strip().lower() in _LOW_VALUE_EVENT_TYPES
+                and not _event_must_keep(item)
+            ),
+            -1,
+        )
+        if drop_at < 0:
+            drop_at = next(
+                (index for index, item in enumerate(kept) if not _event_must_keep(item)),
+                -1,
+            )
+        if drop_at < 0:
+            break
+        kept.pop(drop_at)
+    return kept[-_MAX_RUN_EVENTS:]
+
+
 def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
     stored: list[dict[str, Any]] = []
     for raw in events:
@@ -291,10 +520,21 @@ def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
         if kind in {"", "run", "done"}:
             continue
         item: dict[str, Any] = {"type": kind}
-        for key in ("text", "message", "tool", "title"):
+        for key in ("text", "message", "tool", "title", "request_id", "requestId", "error", "status", "at", "wait"):
             value = raw.get(key)
             if isinstance(value, str) and value.strip():
                 item[key] = value.strip()[:8000]
+        request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
+        if request_id:
+            item["requestId"] = request_id[:80]
+        if raw.get("ok") is not None:
+            item["ok"] = bool(raw.get("ok"))
+        if raw.get("skipped") is not None:
+            item["skipped"] = bool(raw.get("skipped"))
+        if raw.get("confirm_only") is not None:
+            item["confirm_only"] = bool(raw.get("confirm_only"))
+        elif raw.get("confirmOnly") is not None:
+            item["confirm_only"] = bool(raw.get("confirmOnly"))
         arguments = raw.get("arguments")
         if isinstance(arguments, dict):
             item["arguments"] = _clip_json(arguments)
@@ -306,9 +546,21 @@ def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
             if isinstance(value, list) and value:
                 item[key] = _clip_json(value)
         stored.append(item)
-        if len(stored) >= 300:
-            break
-    return stored
+    return _trim_run_events(stored)
+
+
+def _calendar_meetings_for(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+) -> list[dict[str, Any]]:
+    from app.services.calendar_overlay import list_overlays, normalize_meetings
+
+    rows = list_overlays(db, user_id=user_id, workflow_id=workflow_id)
+    if not rows:
+        return []
+    return normalize_meetings(rows[0].meetings)
 
 
 def _clip_json(value: Any, *, depth: int = 0) -> Any:
@@ -332,12 +584,23 @@ def _clip_json(value: Any, *, depth: int = 0) -> Any:
 
 
 def _to_out(row: AgentRun, *, include_events: bool = False) -> AgentRunOut:
-    events = row.events_json if include_events and isinstance(row.events_json, list) else []
+    stored = row.events_json if isinstance(row.events_json, list) else []
+    events = stored if include_events else []
+    in_flight = _row_in_flight(row)
+    timing = compute_run_timing(
+        stored,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
+        in_flight=in_flight,
+    )
+    status = row.status or ""
+    if in_flight and str(timing.get("open_segment") or "") == "human":
+        status = "waiting_human"
     return AgentRunOut(
         id=row.id,
         workflow_id=row.workflow_id,
         message=row.message or "",
-        status=row.status or "",
+        status=status,
         answer=row.answer or "",
         source=row.source or "chat",
         trigger_id=row.trigger_id or "",
@@ -345,5 +608,9 @@ def _to_out(row: AgentRun, *, include_events: bool = False) -> AgentRunOut:
         trigger_reason=row.trigger_reason or "",
         started_at=_iso(row.started_at),
         finished_at=_iso(row.finished_at) if row.finished_at else "",
+        agent_work_ms=int(timing["agent_work_ms"]),
+        human_wait_ms=int(timing["human_wait_ms"]),
+        open_segment=str(timing["open_segment"] or ""),
+        open_segment_at=str(timing["open_segment_at"] or ""),
         events=[item for item in events if isinstance(item, dict)],
     )

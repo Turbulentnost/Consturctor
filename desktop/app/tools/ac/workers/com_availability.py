@@ -8,6 +8,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 ONEC_COM_RUNTIME_CSCRIPT32 = "cscript32"
 ONEC_COM_RUNTIME_INPROC = "inproc"
@@ -89,9 +90,61 @@ def describe_com_capability() -> dict[str, object]:
     }
 
 
+def pywin32_dll_dirs() -> list[str]:
+    """Каталоги с pythoncom/pywintypes DLL — после установщика они не в System32."""
+    dirs: list[str] = []
+    seen: set[str] = set()
+
+    def _add(path: Path) -> None:
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            return
+        if not path.is_dir() or resolved in seen:
+            return
+        seen.add(resolved)
+        dirs.append(resolved)
+
+    prefixes = [Path(sys.prefix), Path(sys.exec_prefix)]
+    try:
+        import site
+
+        prefixes.extend(Path(item) for item in site.getsitepackages())
+        user = site.getusersitepackages()
+        if user:
+            prefixes.append(Path(user))
+    except Exception:
+        pass
+    prefixes.append(Path(sys.prefix) / "Lib" / "site-packages")
+    for base in prefixes:
+        _add(base / "pywin32_system32")
+        _add(base / "win32")
+        _add(base / "Lib" / "site-packages" / "pywin32_system32")
+        _add(base / "Lib" / "site-packages" / "win32")
+    return dirs
+
+
+def ensure_pywin32_dll_path() -> None:
+    """Добавить pywin32 DLL в PATH — иначе embedded Python после установщика не грузит COM."""
+    extras = pywin32_dll_dirs()
+    if not extras:
+        return
+    if hasattr(os, "add_dll_directory"):
+        for item in extras:
+            try:
+                os.add_dll_directory(item)
+            except (OSError, FileNotFoundError):
+                pass
+    current = os.environ.get("PATH", "")
+    prefix = os.pathsep.join(extras)
+    if prefix and prefix not in current:
+        os.environ["PATH"] = prefix if not current else f"{prefix}{os.pathsep}{current}"
+
+
 def _check_pywin32_availability() -> tuple[bool, str | None]:
     """Проверить pywin32 без выбрасывания ошибок импорта наружу."""
     try:
+        ensure_pywin32_dll_path()
         if importlib.util.find_spec("pythoncom") is None:
             return False, "pywin32 не установлен: модуль pythoncom недоступен"
         if importlib.util.find_spec("win32com.client") is None:

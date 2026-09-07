@@ -23,6 +23,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 def init_db() -> None:
     # Import models so metadata is populated.
     from app.models import agent_run as _agent_run  # noqa: F401
+    from app.models import calendar_overlay as _calendar_overlay  # noqa: F401
     from app.models import notification as _notification  # noqa: F401
     from app.models import orchestrator as _orchestrator  # noqa: F401
     from app.models import regulation as _regulation  # noqa: F401
@@ -91,6 +92,28 @@ def _ensure_columns() -> None:
                     "ADD COLUMN interval_seconds INTEGER NOT NULL DEFAULT 0"
                 )
             )
+        if trigger_cols and "active_days" not in trigger_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE agent_triggers "
+                    "ADD COLUMN active_days VARCHAR(32) NOT NULL DEFAULT ''"
+                )
+            )
+        if trigger_cols and "window_start_min" not in trigger_cols:
+            conn.execute(
+                text("ALTER TABLE agent_triggers ADD COLUMN window_start_min INTEGER NULL")
+            )
+        if trigger_cols and "window_end_min" not in trigger_cols:
+            conn.execute(
+                text("ALTER TABLE agent_triggers ADD COLUMN window_end_min INTEGER NULL")
+            )
+        if trigger_cols and "skipped_slots" not in trigger_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE agent_triggers "
+                    "ADD COLUMN skipped_slots JSON NOT NULL DEFAULT '[]'"
+                )
+            )
         notif_rows = conn.execute(
             text(
                 """
@@ -132,6 +155,23 @@ def _ensure_columns() -> None:
         if run_cols and "trigger_reason" not in run_cols:
             conn.execute(
                 text("ALTER TABLE agent_runs ADD COLUMN trigger_reason TEXT NOT NULL DEFAULT ''")
+            )
+        creation_rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'regulation_creation_drafts'
+                """
+            )
+        ).fetchall()
+        creation_cols = {str(r[0]) for r in creation_rows}
+        if creation_cols and "interview_json" not in creation_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE regulation_creation_drafts "
+                    "ADD COLUMN interview_json JSON NOT NULL DEFAULT '{}'"
+                )
             )
 
 

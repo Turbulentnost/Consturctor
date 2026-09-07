@@ -9,6 +9,8 @@ import { KpiPage } from './pages/SimplePages'
 import { OrchestratorPage } from './pages/OrchestratorPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { RegulationChatPage } from './pages/RegulationChatPage'
+import { RegulationCreationHistoryPage } from './pages/RegulationCreationHistoryPage'
+import { visibleAssistantText } from './utils/regulationChat'
 import { RoleMatchPage } from './pages/RoleMatchPage'
 import { ReadinessPage } from './pages/ReadinessPage'
 import { SuggestionsPage } from './pages/SuggestionsPage'
@@ -48,10 +50,13 @@ import {
   setComCredentials
 } from './store/session'
 
+const CONSTRUCTOR_ORCHESTRATOR_TABS = false
+
 type View =
   | { kind: 'tab'; key: PageKey }
   | { kind: 'review'; result: RegulationParseResult }
-  | { kind: 'regchat'; session: RegulationCreationSession }
+  | { kind: 'regchat' }
+  | { kind: 'reghistory' }
   | { kind: 'rolematch' }
   | { kind: 'readiness' }
   | { kind: 'suggestions' }
@@ -64,6 +69,35 @@ type View =
   | { kind: 'chat'; thread: ChatThread }
   | { kind: 'loading'; title: string; subtitle: string }
   | { kind: 'soon'; title: string; note: string }
+
+function decodeJwtPart(part: string): string {
+  const normalized = part.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
+  try {
+    return decodeURIComponent(
+      atob(padded)
+        .split('')
+        .map((ch) => `%${ch.charCodeAt(0).toString(16).padStart(2, '0')}`)
+        .join('')
+    )
+  } catch {
+    return ''
+  }
+}
+
+function isConstructorToken(token: string): boolean {
+  const parts = token.split('.')
+  if (parts.length < 2) return false
+  const payloadRaw = decodeJwtPart(parts[1] || '')
+  if (!payloadRaw) return false
+  try {
+    const payload = JSON.parse(payloadRaw) as Record<string, unknown>
+    const cid = String(payload.cid || payload.client || '').trim().toLowerCase()
+    return !cid || cid === 'constructor'
+  } catch {
+    return false
+  }
+}
 
 function fioKey(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -83,6 +117,42 @@ function findExistingChat(threads: ChatThread[], name: string, peerId?: string):
   return threads.find((item) => item.kind !== 'support' && fioEquals(item.title, name))
 }
 
+function isOpenRegulationDraft(session: RegulationCreationSession | null): boolean {
+  if (!session?.draftId) return false
+  if (session.resultRegulation || session.resultDocumentPath) return false
+  return session.status !== 'finalized' && session.status !== 'closed'
+}
+
+function regulationDraftPreview(session: RegulationCreationSession | null): string {
+  if (!session) return ''
+  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+    const item = session.messages[i]
+    if (item.role !== 'assistant') continue
+    const text = visibleAssistantText(item.content)
+    if (text) return text
+  }
+  return ''
+}
+
+function lastRegulationQuestion(
+  session: RegulationCreationSession | null
+): { messageId: string; text: string } | null {
+  if (!session || !isOpenRegulationDraft(session)) return null
+  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+    const item = session.messages[i]
+    if (item.role !== 'assistant') continue
+    const text = visibleAssistantText(item.content).replace(/\s+/g, ' ').trim()
+    if (!text) return null
+    return { messageId: item.messageId || `assistant-${i}`, text }
+  }
+  return null
+}
+
+function clipToastBody(text: string, max = 180): string {
+  if (text.length <= max) return text
+  return `${text.slice(0, max - 1).trim()}...`
+}
+
 export function App(): React.JSX.Element {
   const [booting, setBooting] = useState(true)
   const [user, setUser] = useState<UserProfile | null>(null)
@@ -100,7 +170,13 @@ export function App(): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   const kickedRef = useRef(false)
   const seenHitlRef = useRef<Set<string>>(new Set())
+  const seenRegQuestionRef = useRef<Set<string>>(new Set())
+  const [windowFocused, setWindowFocused] = useState(() =>
+    typeof document === 'undefined' ? true : document.hasFocus()
+  )
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
+  const [regChat, setRegChat] = useState<RegulationCreationSession | null>(null)
+  const [regChatBusy, setRegChatBusy] = useState(false)
   const formation = useFormation()
   const runs = useRuns()
 
@@ -118,13 +194,17 @@ export function App(): React.JSX.Element {
         setShowLogout(!config.testUser)
         const stored = loadSession()
         if (stored?.accessToken) {
-          api.setToken(stored.accessToken)
-          try {
-            const profile = await api.me(8_000)
-            setUser(profile)
-          } catch {
+          if (!isConstructorToken(stored.accessToken)) {
             clearSession(true)
-            api.setToken(null)
+          } else {
+            api.setToken(stored.accessToken)
+            try {
+              const profile = await api.me(8_000)
+              setUser(profile)
+            } catch {
+              clearSession(true)
+              api.setToken(null)
+            }
           }
         }
       } catch {
@@ -139,6 +219,21 @@ export function App(): React.JSX.Element {
       done = true
     }
   }, [])
+
+  useEffect(() => {
+    if (!user) return
+    let alive = true
+    void api
+      .getActiveRegulationCreation()
+      .then((session) => {
+        if (!alive || !session) return
+        setRegChat((prev) => prev ?? session)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [user])
 
   useEffect(() => {
     if (!user) {
@@ -222,14 +317,41 @@ export function App(): React.JSX.Element {
     }
   }, [user?.id])
 
-  // A clicked OS toast (incoming notification) opens the related agent.
+  useEffect(() => {
+    const onFocus = (): void => setWindowFocused(true)
+    const onBlur = (): void => setWindowFocused(false)
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [])
+
+  // A clicked OS toast (incoming notification) opens the related agent
+  // or the regulation-creation chat that asked the question.
   useEffect(() => {
     const unsubscribe = window.api.onNotificationOpen?.((payload) => {
+      if (payload?.draftId) {
+        setView({ kind: 'regchat' })
+        return
+      }
       const workflowId = payload?.workflowId || ''
       if (workflowId) void openAgentRun(workflowId, payload?.runId || '')
     })
     return () => unsubscribe?.()
   }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.api.onNotificationHitl?.((payload) => {
+      const workflowId = payload?.workflowId || ''
+      const requestId = payload?.requestId || ''
+      if (!workflowId || !requestId) return
+      seenHitlRef.current.add(requestId)
+      runs.acknowledgeHitl(workflowId, requestId, Boolean(payload.approved))
+    })
+    return () => unsubscribe?.()
+  }, [runs])
 
   // The main process toasts incoming notifications; refresh the bell badge.
   useEffect(() => {
@@ -240,8 +362,9 @@ export function App(): React.JSX.Element {
     return () => unsubscribe?.()
   }, [user])
 
-  // When a tool needs approval while you are not on that agent's page, raise an
-  // OS toast so the pending HITL card is not missed (mirrors the desktop app).
+  // When a tool needs approval while you are not watching that agent, raise a
+  // Windows toast with Accept / Reject. Do not mark the request as shown while
+  // the user is still on the page, otherwise leaving the page silences it.
   useEffect(() => {
     const activeWorkflowId =
       view.kind === 'agentrun' || view.kind === 'history' || view.kind === 'studio'
@@ -249,24 +372,44 @@ export function App(): React.JSX.Element {
         : ''
     for (const entry of Object.values(runs.entries)) {
       const hitl = entry.state.pendingHitl
-      if (!hitl) continue
+      if (!hitl?.requestId) continue
       if (seenHitlRef.current.has(hitl.requestId)) continue
+      const watchingThisAgent = windowFocused && activeWorkflowId === entry.workflowId
+      if (watchingThisAgent) continue
       seenHitlRef.current.add(hitl.requestId)
-      const onThisAgent = activeWorkflowId === entry.workflowId
-      if (onThisAgent && document.hasFocus()) continue
       void window.api.showNotification?.({
         title: 'Агент ждёт подтверждения',
         body: `${entry.title || 'ИИ-агент'}: ${hitl.title || hitl.tool}`,
-        workflowId: entry.workflowId
+        workflowId: entry.workflowId,
+        runId: entry.state.activeRunId || entry.backendRunId || '',
+        requestId: hitl.requestId
       })
     }
-  }, [runs.entries, view])
+  }, [runs.entries, view, windowFocused])
+
+  // Each new interview question during regulation creation raises a Windows
+  // toast so the user knows the chat is waiting for an answer.
+  useEffect(() => {
+    if (!regChat || regChatBusy) return
+    const question = lastRegulationQuestion(regChat)
+    if (!question) return
+    const key = `${regChat.draftId}:${question.messageId}`
+    if (seenRegQuestionRef.current.has(key)) return
+    seenRegQuestionRef.current.add(key)
+    void window.api.showNotification?.({
+      title: 'Система ждёт вашего ответа на сообщение',
+      body: clipToastBody(question.text),
+      draftId: regChat.draftId
+    })
+  }, [regChat, regChatBusy])
 
   function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
     if (user && user.id !== result.user.id) {
       formation.cancel()
       formation.clear()
       runs.clearAll()
+      setRegChat(null)
+      setRegChatBusy(false)
     }
     api.setToken(result.accessToken || null)
     setComCredentials(result.user.fio, password)
@@ -287,7 +430,8 @@ export function App(): React.JSX.Element {
     formation.cancel()
     formation.clear()
     runs.clearAll()
-    await api.terminateRegulationCreationSessions()
+    setRegChat(null)
+    setRegChatBusy(false)
     clearSession(true)
     clearComCredentials()
     api.setToken(null)
@@ -381,17 +525,47 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function startRegulationChat(): Promise<void> {
+  async function startRegulationChat(opts?: { fresh?: boolean }): Promise<void> {
     setView({
       kind: 'loading',
-      title: 'Создаём чат регламента',
-      subtitle: 'Готовим профиль стиля и первый вопрос.'
+      title: opts?.fresh ? 'Создаём чат регламента' : 'Открываем черновик регламента',
+      subtitle: opts?.fresh
+        ? 'Готовим профиль стиля и первый вопрос.'
+        : 'Загружаем сохранённые ответы и историю вопросов.'
     })
     try {
-      const session = await api.startRegulationCreation()
-      setView({ kind: 'regchat', session })
+      if (!opts?.fresh && regChat && isOpenRegulationDraft(regChat)) {
+        try {
+          const latest = await api.getRegulationCreationSession(regChat.draftId)
+          setRegChat(latest)
+        } catch {
+          /* keep the in-memory draft */
+        }
+        setView({ kind: 'regchat' })
+        return
+      }
+      const session = opts?.fresh
+        ? await api.startRegulationCreation({ fresh: true })
+        : (await api.getActiveRegulationCreation()) || (await api.startRegulationCreation())
+      setRegChat(session)
+      setView({ kind: 'regchat' })
     } catch (err) {
       fail('Не удалось начать', err)
+    }
+  }
+
+  async function continueRegulationHistoryDraft(draftId: string): Promise<void> {
+    setView({
+      kind: 'loading',
+      title: 'Открываем черновик регламента',
+      subtitle: 'Загружаем сохранённую историю и готовим продолжение.'
+    })
+    try {
+      const session = await api.resumeRegulationCreation(draftId)
+      setRegChat(session)
+      setView({ kind: 'regchat' })
+    } catch (err) {
+      fail('Не удалось открыть черновик', err)
     }
   }
 
@@ -620,6 +794,23 @@ export function App(): React.JSX.Element {
           ? 'agents'
           : 'create'
 
+  function renderCreatePage(): React.JSX.Element {
+    return (
+      <CreatePage
+        onRegulationParsed={(result) => {
+          setRegulation(result)
+          setView({ kind: 'review', result })
+        }}
+        onStartRegulationChat={() => void startRegulationChat()}
+        hasRegulationDraft={isOpenRegulationDraft(regChat)}
+        regulationDraftBusy={regChatBusy}
+        onResumeRegulationDraft={() => void startRegulationChat()}
+        onRestartRegulationDraft={() => void startRegulationChat({ fresh: true })}
+        onOpenRegulationHistory={() => setView({ kind: 'reghistory' })}
+      />
+    )
+  }
+
   function renderContent(): React.JSX.Element {
     if (view.kind === 'chat') {
       return (
@@ -665,18 +856,11 @@ export function App(): React.JSX.Element {
         />
       )
     }
-    if (view.kind === 'regchat') {
+    if (view.kind === 'reghistory') {
       return (
-        <RegulationChatPage
-          session={view.session}
-          onSessionChange={(session) => setView({ kind: 'regchat', session })}
-          onReady={(session) => {
-            if (session.resultRegulation) {
-              setRegulation(session.resultRegulation)
-              setView({ kind: 'review', result: session.resultRegulation })
-            }
-          }}
+        <RegulationCreationHistoryPage
           onBack={() => setView({ kind: 'tab', key: 'create' })}
+          onContinue={(draftId) => void continueRegulationHistoryDraft(draftId)}
         />
       )
     }
@@ -804,27 +988,11 @@ export function App(): React.JSX.Element {
       )
     }
     if (view.kind !== 'tab') {
-      return (
-        <CreatePage
-          onRegulationParsed={(result) => {
-            setRegulation(result)
-            setView({ kind: 'review', result })
-          }}
-          onStartRegulationChat={startRegulationChat}
-        />
-      )
+      return renderCreatePage()
     }
     switch (view.key) {
       case 'create':
-        return (
-          <CreatePage
-            onRegulationParsed={(result) => {
-              setRegulation(result)
-              setView({ kind: 'review', result })
-            }}
-            onStartRegulationChat={startRegulationChat}
-          />
-        )
+        return renderCreatePage()
       case 'agents':
         return (
           <AgentsPage
@@ -837,18 +1005,54 @@ export function App(): React.JSX.Element {
           />
         )
       case 'files':
+        if (CONSTRUCTOR_ORCHESTRATOR_TABS) {
+          return (
+            <FilesPage
+              ownerName={user?.fio || ''}
+              onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+            />
+          )
+        }
         return (
-          <FilesPage
-            ownerName={user?.fio || ''}
-            onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+          <AgentsPage
+            onCreateAgent={() => setView({ kind: 'tab', key: 'create' })}
+            onOpenRun={(workflowId, runId, autoStart) =>
+              void openAgentRun(workflowId, runId, autoStart)
+            }
+            onFormDraftSuggestion={formDraftSuggestion}
+            onContinueDraft={continueDraft}
           />
         )
       case 'kpi':
-        return <KpiPage />
+        if (CONSTRUCTOR_ORCHESTRATOR_TABS) {
+          return <KpiPage />
+        }
+        return (
+          <AgentsPage
+            onCreateAgent={() => setView({ kind: 'tab', key: 'create' })}
+            onOpenRun={(workflowId, runId, autoStart) =>
+              void openAgentRun(workflowId, runId, autoStart)
+            }
+            onFormDraftSuggestion={formDraftSuggestion}
+            onContinueDraft={continueDraft}
+          />
+        )
       case 'orchestrator':
-        return <OrchestratorPage user={user!} />
+        if (CONSTRUCTOR_ORCHESTRATOR_TABS) {
+          return <OrchestratorPage user={user!} />
+        }
+        return (
+          <AgentsPage
+            onCreateAgent={() => setView({ kind: 'tab', key: 'create' })}
+            onOpenRun={(workflowId, runId, autoStart) =>
+              void openAgentRun(workflowId, runId, autoStart)
+            }
+            onFormDraftSuggestion={formDraftSuggestion}
+            onContinueDraft={continueDraft}
+          />
+        )
       default:
-        return <CreatePage onRegulationParsed={() => {}} onStartRegulationChat={startRegulationChat} />
+        return renderCreatePage()
     }
   }
 
@@ -884,6 +1088,19 @@ export function App(): React.JSX.Element {
         setView({ kind: 'agentrun', workflowId: entry.workflowId, title: entry.title })
     })
   }
+  if (regChat && isOpenRegulationDraft(regChat) && view.kind !== 'regchat') {
+    bannerEntries.push({
+      id: `regchat:${regChat.draftId}`,
+      title: 'Создание регламента',
+      output: regChatBusy
+        ? 'Готовлю вопрос...'
+        : regulationDraftPreview(regChat) || 'Ответьте на вопрос ИИ',
+      running: regChatBusy,
+      awaiting: !regChatBusy,
+      mode: 'formation',
+      onOpen: () => setView({ kind: 'regchat' })
+    })
+  }
 
   return (
     <div className="app-root">
@@ -891,7 +1108,13 @@ export function App(): React.JSX.Element {
         active={activeKey}
         activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
         currentUserId={user?.id || ''}
-        onNavigate={(key) => setView({ kind: 'tab', key })}
+        onNavigate={(key) => {
+          if (key === 'files' || key === 'kpi' || key === 'orchestrator') {
+            setView({ kind: 'tab', key: 'agents' })
+            return
+          }
+          setView({ kind: 'tab', key })
+        }}
         onOpenThread={openChat}
         onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
         refreshAt={chatRefreshAt}
@@ -909,8 +1132,45 @@ export function App(): React.JSX.Element {
               onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
             />
           </div>
-          <RunBannerCarousel entries={bannerEntries} />
-          {renderContent()}
+          {view.kind === 'regchat' ? null : <RunBannerCarousel entries={bannerEntries} />}
+          {regChat ? (
+            <div
+              className={view.kind === 'regchat' ? 'regchat-host' : 'regchat-host is-parked'}
+              hidden={view.kind !== 'regchat'}
+            >
+              <RegulationChatPage
+                session={regChat}
+                onSessionChange={setRegChat}
+                onBusyChange={setRegChatBusy}
+                onStopped={() => {
+                  setRegChat(null)
+                  setRegChatBusy(false)
+                  setView({ kind: 'tab', key: 'create' })
+                }}
+                banner={
+                  view.kind === 'regchat' ? <RunBannerCarousel entries={bannerEntries} /> : undefined
+                }
+                onReady={async (session) => {
+                  let result = session.resultRegulation
+                  if (!result?.regulationId) {
+                    const latest = await api.getRegulationCreationSession(session.draftId)
+                    setRegChat(latest)
+                    result = latest.resultRegulation
+                  }
+                  if (result?.regulationId) {
+                    setRegulation(result)
+                    setView({ kind: 'review', result })
+                    return
+                  }
+                  throw new Error(
+                    'Карточка регламента не собралась. Скачайте файл из чата или нажмите «Создать принудительно».'
+                  )
+                }}
+                onBack={() => setView({ kind: 'tab', key: 'create' })}
+              />
+            </div>
+          ) : null}
+          {view.kind === 'regchat' ? null : renderContent()}
         </div>
       </main>
     </div>

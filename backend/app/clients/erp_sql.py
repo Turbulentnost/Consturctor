@@ -169,8 +169,12 @@ def _windows_impersonation(user: str, password: str) -> Generator[None, None, No
 
 
 def _use_windows_impersonation() -> bool:
-    """Domain user + password → Trusted_Connection under impersonation."""
-    return bool(settings.erp_sql_user.strip() and settings.erp_sql_password)
+    """Windows account + password + Trusted_Connection → impersonate, then SSPI."""
+    return bool(
+        settings.erp_sql_trusted_connection
+        and settings.erp_sql_user.strip()
+        and settings.erp_sql_password
+    )
 
 
 def _build_connection_string() -> str:

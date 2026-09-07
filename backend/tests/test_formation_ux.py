@@ -146,6 +146,21 @@ def test_when_answer_creates_daily_trigger() -> None:
     assert trigger_chip_label(specs[0]) == "ежедневно"
 
 
+def test_when_answer_parses_work_window() -> None:
+    from app.services.workflows.schedule_draft import triggers_from_when_answer
+
+    specs = triggers_from_when_answer("каждые 3 часа с 8:00 до 17:00 в будни")
+    assert specs
+    spec = specs[0]
+    assert spec.kind == "interval"
+    assert spec.interval_value == 3
+    assert spec.interval_unit == "hours"
+    assert spec.window_start == "08:00"
+    assert spec.window_end == "17:00"
+    assert spec.weekdays == [0, 1, 2, 3, 4]
+    assert trigger_chip_label(spec) == "каждые 3 ч, 08:00–17:00, будни"
+
+
 def test_playbook_parse_name_and_triggers() -> None:
     parsed = parse_playbook_from_text(
         """
