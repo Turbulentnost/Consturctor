@@ -12,7 +12,10 @@ import {
   attachmentNamesFromContent,
   extractInterviewAnswer,
   formatRegulationMessageTime,
+  hasSelectedProcessesText,
+  isProcessSelectText,
   isReplacementGarbage,
+  rewriteSelectAfterChoice,
   visibleAssistantText,
   visibleUserText
 } from '../utils/regulationChat'
@@ -27,6 +30,7 @@ interface RegulationChatPageProps {
   onStopped?: () => void
   onBusyChange?: (busy: boolean) => void
   banner?: ReactNode
+  active?: boolean
 }
 
 interface PendingFile {
@@ -113,6 +117,105 @@ function quickAnswers(structured: Record<string, unknown>): string[] {
   const raw = structured.quickAnswers
   if (Array.isArray(raw)) return raw.map((x) => String(x)).filter(Boolean)
   return []
+}
+
+interface ProcessChoice {
+  id: string
+  title: string
+}
+
+function asStructuredRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function normalizeProcessId(value: string): string {
+  const raw = value.trim()
+  const block = raw.match(/^b-(p\d+)$/i)
+  if (block) return block[1].toLowerCase()
+  if (/^p\d+$/i.test(raw)) return raw.toLowerCase()
+  return raw
+}
+
+function processChoices(structured: Record<string, unknown>): ProcessChoice[] {
+  const out: ProcessChoice[] = []
+  const seen = new Set<string>()
+  const add = (raw: unknown): void => {
+    const rec = asStructuredRecord(raw)
+    if (!rec) return
+    const id = normalizeProcessId(String(rec.processId || rec.id || ''))
+    const title = String(rec.title || rec.name || id).trim()
+    if (!id || seen.has(id)) return
+    seen.add(id)
+    out.push({ id, title })
+  }
+  if (Array.isArray(structured.processes)) structured.processes.forEach(add)
+  const pipeline = asStructuredRecord(structured.pipeline)
+  if (Array.isArray(pipeline?.blocks)) pipeline.blocks.forEach(add)
+  return out
+}
+
+function isProcessSelect(structured: Record<string, unknown>, content: string): boolean {
+  const pipeline = asStructuredRecord(structured.pipeline)
+  const selected = pipeline?.selectedProcessIds
+  if (Array.isArray(selected) && selected.length > 0) return false
+  if (String(pipeline?.stage || '').toLowerCase() === 'select') return true
+  const text = content.toLowerCase()
+  return /отметьте нужн|отметьте процесс|выберите процесс/.test(text) && processChoices(structured).length > 0
+}
+
+function hasSelectedProcesses(messages: RegulationCreationSession['messages']): boolean {
+  return messages.some((item) => item.role === 'user' && hasSelectedProcessesText(item.content || ''))
+}
+
+function selectedProcessIdsFromText(text: string): string[] {
+  const match = text.match(/^\s*выбраны процессы\s*:\s*(.+)$/im)
+  if (!match) return []
+  const first = match[1].split(/\n/)[0]
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const part of first.split(/[,;]/)) {
+    const token = normalizeProcessId((part.trim().split(/\s+/)[0] || '').replace(/[.:;]+$/, ''))
+    if (!token || seen.has(token)) continue
+    seen.add(token)
+    out.push(token)
+  }
+  return out
+}
+
+function selectedProcessIdsFromMessages(messages: RegulationCreationSession['messages']): string[] {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const item = messages[i]
+    if (item.role !== 'user') continue
+    const ids = selectedProcessIdsFromText(item.content || '')
+    if (ids.length) return ids
+  }
+  return []
+}
+
+function lastUserIsProcessSelection(messages: RegulationCreationSession['messages']): boolean {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const item = messages[i]
+    if (item.role !== 'user') continue
+    return hasSelectedProcessesText(item.content || '')
+  }
+  return false
+}
+
+function askAfterSelectPrompt(ids: string[]): string {
+  const listed = ids.length ? ids.join(', ') : 'уже выбранные'
+  return (
+    `Процессы уже выбраны: ${listed}. Этап выбора закрыт: не проси отметить процессы снова ` +
+    `и не повторяй список. Переходи к вопросам по каждому выбранному процессу: по одному за ход, ` +
+    `только факт, которого нет в тексте документа.`
+  )
+}
+
+function selectedProcessesMessage(choices: ProcessChoice[]): string {
+  const ids = choices.map((item) => item.id).join(', ')
+  const lines = choices.map((item) => `- ${item.id}: ${item.title}`)
+  return `Выбраны процессы: ${ids}\n${lines.join('\n')}`
 }
 
 function safeDownloadName(name: string): string {
@@ -242,7 +345,8 @@ export function RegulationChatPage({
   onBack,
   onStopped,
   onBusyChange,
-  banner
+  banner,
+  active = true
 }: RegulationChatPageProps): React.JSX.Element {
   const [input, setInput] = useState('')
   const [placeholder, setPlaceholder] = useState(DEFAULT_PLACEHOLDER)
@@ -253,10 +357,12 @@ export function RegulationChatPage({
   const [savedNote, setSavedNote] = useState('')
   const [attachments, setAttachments] = useState<PendingFile[]>([])
   const [filesOpen, setFilesOpen] = useState(false)
+  const [pickedProcessIds, setPickedProcessIds] = useState<string[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const resumeKeyRef = useRef('')
+  const askAfterSelectRef = useRef('')
   const runIdRef = useRef('')
   const abortRef = useRef<AbortController | null>(null)
   const stoppedRef = useRef(false)
@@ -270,9 +376,11 @@ export function RegulationChatPage({
     setPlaceholder(DEFAULT_PLACEHOLDER)
     setBusyKind('question')
     setReadingFileCount(0)
+    setPickedProcessIds([])
     stoppedRef.current = false
     abortRef.current = null
     runIdRef.current = ''
+    askAfterSelectRef.current = ''
   }, [session.draftId])
 
   useEffect(() => {
@@ -382,7 +490,7 @@ export function RegulationChatPage({
       const filePaths = files.map((f) => f.path)
       const onStreamEvent = (type: string, text: string): void => {
         if (type === 'error' && text) setError(text)
-        if (type === 'status' && text && text !== 'reading') {
+        if ((type === 'status' && text && text !== 'reading') || (type === 'assistant' && text)) {
           setBusyKind('question')
         }
       }
@@ -468,6 +576,16 @@ export function RegulationChatPage({
     void send(answer, [])
   }
 
+  function toggleProcess(id: string): void {
+    setPickedProcessIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]))
+  }
+
+  function confirmProcesses(choices: ProcessChoice[]): void {
+    const picked = choices.filter((item) => pickedProcessIds.includes(item.id))
+    if (picked.length === 0 || busy) return
+    void send(selectedProcessesMessage(picked), [])
+  }
+
   async function pickFiles(): Promise<void> {
     if (busy) return
     const paths = await window.api.openFile({
@@ -499,6 +617,10 @@ export function RegulationChatPage({
   const visible = session.messages.filter((m) => m.role === 'assistant' || m.role === 'user')
   const lastAssistantId = [...visible].reverse().find((item) => item.role === 'assistant')?.messageId || ''
   const lastVisible = visible[visible.length - 1]
+
+  useEffect(() => {
+    setPickedProcessIds([])
+  }, [lastAssistantId])
   const pendingUserId =
     lastVisible?.role === 'user' && lastVisible.messageId !== 'local-pending'
       ? lastVisible.messageId
@@ -508,13 +630,21 @@ export function RegulationChatPage({
     if (stoppedRef.current) throw new RegulationCancelledError()
     const abort = new AbortController()
     abortRef.current = abort
+    const selectedIds = selectedProcessIdsFromMessages(session.messages)
+    const afterSelect = selectedIds.length ? askAfterSelectPrompt(selectedIds) : ''
+    const interview = afterSelect
+      ? { ...turn.interview, selectedProcessIds: selectedIds }
+      : turn.interview
     const runId = agentClient.start({
       kind: 'regulation_creation',
       draftId: session.draftId,
-      prompt: turn.sdkPrompt,
-      rules: turn.sdkRules,
-      interview: turn.interview,
-      resumeAgentId: turn.sdkAgentId || session.sdkAgentId
+      prompt: afterSelect ? `${turn.sdkPrompt}\n\n${afterSelect}` : turn.sdkPrompt,
+      rules: afterSelect ? `${turn.sdkRules}\n${afterSelect}` : turn.sdkRules,
+      interview,
+      resumeAgentId: turn.sdkAgentId || session.sdkAgentId,
+      writeDocument: turn.writeDocument || turn.forceCreate,
+      useTools: turn.useTools || turn.writeDocument || turn.forceCreate,
+      forceCreate: turn.forceCreate
     })
     runIdRef.current = runId
     try {
@@ -522,13 +652,17 @@ export function RegulationChatPage({
         runId,
         (type, text) => {
           if (type === 'error' && text) setError(text)
+          if (type === 'assistant' && text) setBusyKind('question')
         },
         abort.signal
       )
       if (abort.signal.aborted || stoppedRef.current) {
         throw new RegulationCancelledError()
       }
-      const answer = extractInterviewAnswer(sdk.answer) || sdk.answer
+      const answer = rewriteSelectAfterChoice(
+        extractInterviewAnswer(sdk.answer) || sdk.answer,
+        selectedIds
+      )
       const visibleText = visibleAssistantText(answer) || answer
       if (!answer || isReplacementGarbage(visibleText)) {
         throw new Error('Агент вернул нечитаемый ответ. Попробуйте ещё раз.')
@@ -572,6 +706,18 @@ export function RegulationChatPage({
     resumeKeyRef.current = key
     void continuePendingTurn()
   }, [session.draftId, pendingUserId, busy, ready])
+
+  useEffect(() => {
+    if (!active || busy || ready || stoppedRef.current || !window.agent?.start) return
+    if (!lastUserIsProcessSelection(session.messages)) return
+    const lastAssistant = [...session.messages].reverse().find((item) => item.role === 'assistant')
+    if (!lastAssistant || !isProcessSelectText(lastAssistant.content || '')) return
+    const key = `${session.draftId}:ask-after-select:${lastAssistant.messageId}`
+    if (askAfterSelectRef.current === key) return
+    askAfterSelectRef.current = key
+    const ids = selectedProcessIdsFromMessages(session.messages)
+    void send(askAfterSelectPrompt(ids), [])
+  }, [session.draftId, session.messages, busy, ready])
 
   return (
     <div className="regchat-page">
@@ -623,6 +769,15 @@ export function RegulationChatPage({
                 const text = isUser ? visibleUserText(m.content) : visibleAssistantText(m.content)
                 const timeLabel = formatRegulationMessageTime(m.createdAt)
                 const quicks = quickAnswers(m.structured)
+                const processes = processChoices(m.structured)
+                const showProcessPicker =
+                  !isUser &&
+                  !busy &&
+                  !ready &&
+                  m.messageId === lastAssistantId &&
+                  !hasSelectedProcesses(session.messages) &&
+                  isProcessSelect(m.structured, m.content) &&
+                  processes.length > 0
                 const isCurrentStage =
                   !isUser &&
                   !busy &&
@@ -657,7 +812,7 @@ export function RegulationChatPage({
                       {timeLabel ? (
                         <div className={isUser ? 'regchat-time user' : 'regchat-time'}>{timeLabel}</div>
                       ) : null}
-                      {!isUser && isCurrentStage && quicks.length > 0 && (
+                      {!isUser && isCurrentStage && !showProcessPicker && quicks.length > 0 && (
                         <div className="regchat-quick-row">
                           {quicks.map((qa) => (
                             <button
@@ -668,6 +823,49 @@ export function RegulationChatPage({
                               {qa}
                             </button>
                           ))}
+                        </div>
+                      )}
+                      {showProcessPicker && (
+                        <div className="regchat-process-picker">
+                          <div className="regchat-process-picker-head">
+                            <span>Отметьте процессы для регламента</span>
+                            <button
+                              type="button"
+                              className="regchat-process-link"
+                              onClick={() =>
+                                setPickedProcessIds(
+                                  pickedProcessIds.length === processes.length
+                                    ? []
+                                    : processes.map((item) => item.id)
+                                )
+                              }
+                            >
+                              {pickedProcessIds.length === processes.length ? 'Снять все' : 'Выбрать все'}
+                            </button>
+                          </div>
+                          <div className="regchat-process-list">
+                            {processes.map((item) => {
+                              const checked = pickedProcessIds.includes(item.id)
+                              return (
+                                <label key={item.id} className={checked ? 'regchat-process-item is-on' : 'regchat-process-item'}>
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => toggleProcess(item.id)}
+                                  />
+                                  <span>{item.title}</span>
+                                </label>
+                              )
+                            })}
+                          </div>
+                          <button
+                            type="button"
+                            className="regchat-process-submit"
+                            disabled={pickedProcessIds.length === 0}
+                            onClick={() => confirmProcesses(processes)}
+                          >
+                            Продолжить
+                          </button>
                         </div>
                       )}
                     </div>

@@ -13,10 +13,17 @@ from app.models.user import AppUser
 from app.services.regulation_creation.interview import (
     append_user_turn,
     build_creation_prompt,
+    build_followup_creation_prompt,
+    creation_interviewer_rules,
     document_from_interview,
+    interview_write_document,
+    interview_use_tools,
+    leading_question_text,
+    set_sdk_agent_id,
     document_has_full_text,
     is_replacement_garbage,
     merge_agent_payload,
+    parse_selected_process_ids,
     ready_blocker,
     remember_assistant_question,
     set_interview_position,
@@ -1089,6 +1096,116 @@ def test_display_user_message_keeps_only_typed_text() -> None:
     assert "a.pdf" not in _display_user_message("Привет", files)
 
 
+def test_leading_question_text_keeps_prose_before_json() -> None:
+    assert leading_question_text(
+        "В какой системе вы смотрите календарь?\n\n"
+        '{"status":"need_more","message":"В какой системе вы смотрите календарь?"}'
+    ) == "В какой системе вы смотрите календарь?"
+    assert leading_question_text('{"status":"need_more","message":"Вопрос"}') == ""
+
+
+def test_parse_agent_response_reads_prose_then_json() -> None:
+    parsed = _parse_agent_response(
+        "В какой системе вы смотрите календарь?\n"
+        '{"status":"need_more","message":"","quickAnswers":["Outlook"]}'
+    )
+    assert parsed["status"] == "need_more"
+    assert parsed["message"] == "В какой системе вы смотрите календарь?"
+    assert parsed["quickAnswers"] == ["Outlook"]
+
+
+def test_parse_agent_response_accepts_question_status() -> None:
+    parsed = _parse_agent_response(
+        '{"status":"question","message":"В каком разделе 1С?","quickAnswers":["Документы"]}'
+    )
+    assert parsed["status"] == "need_more"
+    assert parsed["message"] == "В каком разделе 1С?"
+    assert parsed["quickAnswers"] == ["Документы"]
+
+
+def test_followup_prompt_asks_for_plain_question_first() -> None:
+    prompt = build_followup_creation_prompt(
+        message="Outlook, календарь",
+        force_create=False,
+        state={"selectedProcessIds": ["p1"], "position": "Помощник"},
+    )
+    rules = creation_interviewer_rules()
+    assert "Не начинай ответ с фигурной скобки" in prompt
+    assert "Не начинай ответ с фигурной скобки" in rules
+    assert "только текст следующего вопроса" in prompt
+    assert "без инструментов" in prompt
+    assert "Не читай interview.json" in prompt
+    assert "selectedProcessIds" in prompt
+    assert "Прочитай обновлённый interview.json" not in prompt
+    assert not interview_write_document({"selectedProcessIds": ["p1"]})
+    assert interview_write_document({"document_write_required": True})
+    assert interview_write_document({}, force_create=True)
+    assert interview_use_tools(
+        {
+            "attachments": [{"name": "a.txt", "text": "Календарь"}],
+            "processes": [],
+        }
+    )
+    assert not interview_use_tools(
+        {
+            "attachments": [{"name": "a.txt", "text": "Календарь"}],
+            "processes": [{"id": "p1", "title": "Календарь"}],
+            "sdk_agent_id": "local-1",
+        }
+    )
+    assert interview_use_tools(
+        {"processes": [{"id": "p1", "title": "Календарь"}], "sdk_agent_id": "local-1"},
+        new_attachments=True,
+    )
+    assert interview_use_tools({}, force_create=True)
+
+
+def test_followup_turn_uses_short_interviewer_rules() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    db.commit()
+    session = start_creation_session(db, user_id="user-1")
+    draft = db.get(RegulationCreationDraft, session.draftId)
+    assert draft is not None
+    draft.interview_json = set_sdk_agent_id(draft.interview_json, "local-agent-1")
+    db.add(draft)
+    db.commit()
+    turn = persist_creation_turn(
+        db,
+        user_id="user-1",
+        draft_id=session.draftId,
+        request=RegulationCreationSendRequest(message="Смотрю календарь в Outlook"),
+    )
+    assert turn.sdkAgentId == "local-agent-1"
+    assert turn.writeDocument is False
+    assert turn.useTools is False
+    assert "Не начинай ответ с фигурной скобки" in turn.sdkRules
+    assert "только текст вопроса" in turn.sdkRules
+    assert "Ответ всегда строго JSON" not in turn.sdkRules
+    assert turn.sdkPrompt.startswith("Продолжи то же интервью текстом, без инструментов")
+    assert "Не читай interview.json" in turn.sdkPrompt
+    assert "без инструментов" in turn.sdkRules
+
+
+def test_first_file_turn_enables_read_tools() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    db.commit()
+    session = start_creation_session(db, user_id="user-1")
+    turn = persist_creation_turn(
+        db,
+        user_id="user-1",
+        draft_id=session.draftId,
+        request=RegulationCreationSendRequest(message="Разбери файл"),
+        files=[("duties.txt", "Пользователь ведет календарь совещаний.".encode("utf-8"))],
+    )
+    assert turn.useTools is True
+    assert turn.writeDocument is False
+    assert "materials/" in turn.sdkPrompt
+    assert "Пользователь ведет календарь совещаний." not in turn.sdkPrompt
+    assert "без инструментов" not in turn.sdkRules
+
+
 def test_parse_agent_response_keeps_first_interview_json() -> None:
     raw = (
         '{"status":"need_more","message":"Вопрос один","interview":{"functions":[]}}'
@@ -1128,3 +1245,108 @@ def test_unreadable_pdf_keeps_stub_and_does_not_abort_turn(monkeypatch) -> None:
     )
     assert turn.session.draftId == session.draftId
     assert any(item.role == "user" for item in turn.session.messages)
+
+
+def test_parse_selected_process_ids_normalizes_block_ids() -> None:
+    assert parse_selected_process_ids(
+        "Выбраны процессы: b-p5\n- b-p5: Ведение тем совещаний"
+    ) == ["p5"]
+    assert parse_selected_process_ids("Выбраны процессы: p1, p4") == ["p1", "p4"]
+    assert parse_selected_process_ids("Это не выбор процессов") == []
+
+
+def test_normalize_recovers_selected_ids_from_turns() -> None:
+    state = merge_agent_payload(
+        {
+            "turns": [
+                {
+                    "role": "user",
+                    "message": "Выбраны процессы: b-p5\n- b-p5: Ведение тем",
+                    "attachments": [],
+                }
+            ]
+        },
+        {},
+    )
+    assert state["selectedProcessIds"] == ["p5"]
+
+
+def test_append_user_turn_stores_selected_process_ids() -> None:
+    state = append_user_turn({}, "Выбраны процессы: b-p5\n- b-p5: Ведение тем", [])
+    assert state["selectedProcessIds"] == ["p5"]
+    prompt = build_creation_prompt(
+        state=state,
+        message="Выбраны процессы: b-p5",
+        initial=False,
+        force_create=False,
+    )
+    assert "selectedProcessIds" in prompt
+    assert "не проси отметить процессы снова" in prompt.casefold()
+    assert "pipeline.stage='select'" in prompt
+
+
+def test_apply_agent_reply_rewrites_select_after_choice() -> None:
+    from app.models.regulation import RegulationCreationMessage
+
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    state = append_user_turn(
+        {
+            "processes": [
+                {
+                    "id": "p4",
+                    "title": "Ведение тем регулярных совещаний",
+                    "roleStatus": "belongs",
+                    "knownFacts": {},
+                    "unknowns": [
+                        {
+                            "field": "trigger",
+                            "question": "Что запускает ведение тем?",
+                            "critical": True,
+                        }
+                    ],
+                }
+            ]
+        },
+        "Выбраны процессы: p4\n- p4: Ведение тем регулярных совещаний",
+        [],
+    )
+    draft = RegulationCreationDraft(
+        id="draft-select-after-choice",
+        user_id="user-1",
+        status="generating",
+        interview_json=state,
+    )
+    db.add(draft)
+    db.commit()
+
+    _apply_agent_reply(
+        db,
+        user_id="user-1",
+        draft=draft,
+        raw=json.dumps(
+            {
+                "status": "need_more",
+                "message": (
+                    "Из документа извлечены процессы. Отметьте нужные — дальше спрошу "
+                    "только то, чего не удалось однозначно взять из текста документа."
+                ),
+                "pipeline": {"stage": "select"},
+                "quickAnswers": ["p4"],
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db.commit()
+
+    message = (
+        db.query(RegulationCreationMessage)
+        .filter(RegulationCreationMessage.draft_id == "draft-select-after-choice")
+        .one()
+    )
+    text = message.content.casefold()
+    assert "отметьте" not in text
+    assert "извлечены процессы" not in text
+    assert "ведение тем" in text or "запускает" in text
+    assert (message.structured_json.get("pipeline") or {}).get("stage") == "questions"
+    assert draft.interview_json["selectedProcessIds"] == ["p4"]

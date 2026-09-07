@@ -166,7 +166,9 @@ function parseCreationTurn(data: Record<string, unknown>): RegulationCreationTur
     sdkPrompt: String(data.sdkPrompt ?? data.sdk_prompt ?? ''),
     sdkRules: String(data.sdkRules ?? data.sdk_rules ?? ''),
     sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? ''),
-    forceCreate: Boolean(data.forceCreate ?? data.force_create)
+    forceCreate: Boolean(data.forceCreate ?? data.force_create),
+    writeDocument: Boolean(data.writeDocument ?? data.write_document),
+    useTools: Boolean(data.useTools ?? data.use_tools)
   }
 }
 

@@ -22,14 +22,19 @@ __all__ = [
 ]
 
 
-def create_agent(prompt: str) -> tuple[str, str]:
+def create_agent(prompt: str, *, write_document: bool = False) -> tuple[str, str]:
+    effort = (
+        settings.cursor_regulation_creation_effort
+        if write_document
+        else settings.cursor_regulation_creation_question_effort
+    )
     data = cursor_client.create_agent(
         prompt=prompt,
         model_id=settings.cursor_regulation_creation_model,
         name="Создание регламента",
         mode="agent",
         model_params=[
-            {"id": "effort", "value": settings.cursor_regulation_creation_effort},
+            {"id": "effort", "value": effort},
             {"id": "fast", "value": "true"},
         ],
     )
@@ -42,8 +47,12 @@ def create_agent(prompt: str) -> tuple[str, str]:
     return agent_id, run_id
 
 
-def create_run(agent_id: str, prompt: str) -> str:
-    run = cursor_client.create_run(agent_id, prompt=prompt, mode="agent")
+def create_run(agent_id: str, prompt: str, *, write_document: bool = False) -> str:
+    run = cursor_client.create_run(
+        agent_id,
+        prompt=prompt,
+        mode="agent",
+    )
     run_id = str(run.get("id") or "")
     if not run_id:
         raise CursorAgentError("Cursor API не вернул run id")

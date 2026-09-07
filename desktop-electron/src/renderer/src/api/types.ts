@@ -206,6 +206,8 @@ export interface RegulationCreationTurn {
   sdkRules: string
   sdkAgentId: string
   forceCreate: boolean
+  writeDocument: boolean
+  useTools: boolean
 }
 
 export interface MatchEvidence {

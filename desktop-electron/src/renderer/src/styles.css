@@ -1934,6 +1934,20 @@ input {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.regchat-caret {
+  display: inline-block;
+  width: 2px;
+  height: 0.9em;
+  margin-left: 2px;
+  vertical-align: -0.1em;
+  background: currentColor;
+  animation: regchat-caret-blink 1s step-end infinite;
+}
+@keyframes regchat-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
 .regchat-time {
   margin-top: -2px;
   font-size: 11px;
@@ -2020,6 +2034,94 @@ input {
 }
 .regchat-quick-chip:hover {
   background: #dff5ec;
+}
+.regchat-process-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 560px;
+}
+.regchat-process-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #06483d;
+  font-size: 12px;
+  font-weight: 600;
+}
+.regchat-process-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: #08745f;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.regchat-process-link:hover {
+  text-decoration: underline;
+}
+.regchat-process-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.regchat-process-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(6, 72, 61, 0.14);
+  background: rgba(255, 255, 255, 0.92);
+  color: #16332c;
+  font-size: 13px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+.regchat-process-item.is-on {
+  border-color: rgba(8, 116, 95, 0.45);
+  background: #eef7f3;
+}
+.regchat-process-item input[type='checkbox'] {
+  appearance: none;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  margin: 2px 0 0;
+  border-radius: 4px;
+  border: 1px solid rgba(6, 72, 61, 0.35);
+  background: #fff;
+  cursor: pointer;
+}
+.regchat-process-item input[type='checkbox']:checked {
+  background-color: #08745f;
+  border-color: #08745f;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23fff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' d='M3.4 8.2l3 3 6.2-6.4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 10px 10px;
+}
+.regchat-process-submit {
+  align-self: flex-start;
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 10px;
+  background: #08745f;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.regchat-process-submit:hover:not(:disabled) {
+  background: #0a8670;
+}
+.regchat-process-submit:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .regchat-think {
   background: rgba(255, 255, 255, 0.85);

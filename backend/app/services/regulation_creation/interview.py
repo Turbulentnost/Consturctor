@@ -251,6 +251,7 @@ def new_interview_state() -> dict[str, Any]:
         "currentQuestion": {},
         "answerSufficiency": {},
         "answers": [],
+        "selectedProcessIds": [],
     }
 
 
@@ -269,6 +270,7 @@ def normalize_interview_state(raw: Any) -> dict[str, Any]:
     state.setdefault("currentQuestion", {})
     state.setdefault("answerSufficiency", {})
     state.setdefault("answers", [])
+    state.setdefault("selectedProcessIds", [])
     if not isinstance(state["position"], str):
         state["position"] = _clean_str(state.get("position"))
     if not isinstance(state["sdk_agent_id"], str):
@@ -289,6 +291,17 @@ def normalize_interview_state(raw: Any) -> dict[str, Any]:
         state["answerSufficiency"] = {}
     if not isinstance(state["answers"], list):
         state["answers"] = []
+    if not isinstance(state["selectedProcessIds"], list):
+        state["selectedProcessIds"] = []
+    selected = _clean_process_ids(state.get("selectedProcessIds"))
+    if not selected:
+        for turn in reversed(state.get("turns") or []):
+            if not isinstance(turn, dict):
+                continue
+            selected = parse_selected_process_ids(str(turn.get("message") or ""))
+            if selected:
+                break
+    state["selectedProcessIds"] = selected
     return state
 
 
@@ -308,6 +321,53 @@ def interview_sdk_agent_id(state: Any) -> str:
     return _clean_str(normalize_interview_state(state).get("sdk_agent_id"))
 
 
+def interview_write_document(state: Any, *, force_create: bool = False) -> bool:
+    if force_create:
+        return True
+    raw = state if isinstance(state, dict) else {}
+    return bool(raw.get("document_write_required"))
+
+
+def interview_has_attachment_text(state: Any) -> bool:
+    interview = normalize_interview_state(state)
+    for item in interview.get("attachments") or []:
+        if isinstance(item, dict) and _clean_str(item.get("text")):
+            return True
+    return False
+
+
+def interview_has_processes(state: Any) -> bool:
+    interview = normalize_interview_state(state)
+    for item in interview.get("processes") or []:
+        if isinstance(item, dict) and _clean_str(item.get("id") or item.get("title")):
+            return True
+    return False
+
+
+def interview_use_tools(
+    state: Any,
+    *,
+    force_create: bool = False,
+    new_attachments: bool = False,
+) -> bool:
+    if interview_write_document(state, force_create=force_create):
+        return True
+    if new_attachments:
+        return True
+    return interview_has_attachment_text(state) and not interview_has_processes(state)
+
+
+def leading_question_text(raw: Any) -> str:
+    text = _clean_str(raw)
+    if not text or text.startswith("{") or text.startswith("["):
+        return ""
+    parts = re.split(r"\n\s*```(?:json)?\s*\n\s*\{", text, maxsplit=1)
+    if len(parts) > 1:
+        return _clean_str(parts[0])
+    parts = re.split(r"\n\s*\{", text, maxsplit=1)
+    return _clean_str(parts[0]) if parts else ""
+
+
 def interview_snapshot(state: Any) -> dict[str, Any]:
     return _prompt_state(normalize_interview_state(state))
 
@@ -323,6 +383,147 @@ def is_replacement_garbage(value: Any) -> bool:
     if re.search(r"[А-Яа-яЁё]", text):
         return False
     return qmarks >= max(8, len(text) // 3)
+
+
+def normalize_process_id(value: Any) -> str:
+    text = _clean_str(value)
+    if not text:
+        return ""
+    folded = text.replace("_", "-")
+    match = re.fullmatch(r"(?i)b-(p\d+)", folded)
+    if match:
+        return match.group(1).lower()
+    match = re.fullmatch(r"(?i)p\d+", folded)
+    if match:
+        return folded.lower()
+    return text
+
+
+def _clean_process_ids(value: Any) -> list[str]:
+    raw = value if isinstance(value, list) else [value]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        process_id = normalize_process_id(item)
+        if not process_id or process_id in seen:
+            continue
+        seen.add(process_id)
+        out.append(process_id)
+    return out
+
+
+def parse_selected_process_ids(message: str) -> list[str]:
+    text = _clean_str(message)
+    if not text:
+        return []
+    match = re.search(r"(?im)^\s*выбраны процессы\s*:\s*(.+)$", text)
+    if not match:
+        return []
+    first_line = match.group(1).splitlines()[0]
+    found = re.findall(r"(?i)\bb-p\d+\b|\bp\d+\b", first_line)
+    extra = re.findall(r"(?im)^\s*-\s*(b-p\d+|p\d+)\b", text)
+    ids = _clean_process_ids([*found, *extra])
+    if ids:
+        return ids
+    tokens = []
+    for part in re.split(r"[,;]", first_line):
+        token = (part.strip().split() or [""])[0].strip(".:;")
+        if token:
+            tokens.append(token)
+    return _clean_process_ids(tokens)
+
+
+def is_process_select_message(value: Any) -> bool:
+    text = _fold(str(value or ""))
+    return any(
+        marker in text
+        for marker in (
+            "отметьте нужн",
+            "отметьте процесс",
+            "выберите процесс",
+            "извлечены процессы",
+        )
+    )
+
+
+def selected_process_ids(state: Any) -> list[str]:
+    return _clean_process_ids(normalize_interview_state(state).get("selectedProcessIds"))
+
+
+def question_for_selected_processes(state: Any) -> ReadyBlocker | None:
+    interview = normalize_interview_state(state)
+    wanted = set(selected_process_ids(interview))
+    processes = [item for item in interview.get("processes") or [] if isinstance(item, dict)]
+    if wanted:
+        processes = [
+            item
+            for item in processes
+            if normalize_process_id(item.get("id") or item.get("processId")) in wanted
+        ]
+    for process in processes:
+        if _role_status(process) == ROLE_FOREIGN:
+            continue
+        title = _clean_str(process.get("title")) or "выбранный процесс"
+        process_id = normalize_process_id(process.get("id") or process.get("processId"))
+        for unknown in _normalize_unknowns(process.get("unknowns")):
+            reason = _clean_str(unknown.get("question") or unknown.get("reason"))
+            field = _function_field(unknown.get("field"))
+            if reason:
+                return ReadyBlocker(
+                    message=f"По процессу «{title}»: {reason}",
+                    quick_answers=["Уточню", "Опишу шагами", "В документе этого нет"],
+                    function_id=process_id,
+                    field=field,
+                )
+        facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+        for key, label in (
+            ("trigger", "что запускает работу"),
+            ("steps", "какие шаги вы делаете"),
+            ("workLocation", "где именно вы это делаете"),
+            ("outputs", "какой результат получается"),
+            ("recipients", "кому передаёте результат"),
+        ):
+            value = facts.get(key)
+            empty = value in (None, "", []) or (isinstance(value, list) and not value)
+            if empty:
+                return ReadyBlocker(
+                    message=f"По процессу «{title}» в документе не видно, {label}. Как это устроено у вас?",
+                    quick_answers=["Опишу своими словами", "Этого шага нет", "Позже уточню"],
+                    function_id=process_id,
+                    field=key,
+                )
+    functions = [item for item in interview.get("functions") or [] if isinstance(item, dict)]
+    if wanted:
+        functions = [
+            item
+            for item in functions
+            if normalize_process_id(item.get("id") or item.get("processId")) in wanted
+        ]
+    position = _clean_str(interview.get("position"))
+    for func in functions:
+        if _role_status(func) == ROLE_FOREIGN:
+            continue
+        gaps = [str(gap) for gap in (func.get("openGaps") or []) if str(gap).strip()]
+        if gaps:
+            return _question_for_gap(func, gaps[0], position=position)
+    if wanted:
+        return ReadyBlocker(
+            message="По выбранному процессу уточните факт, которого нет в тексте документа.",
+            quick_answers=["Опишу своими словами", "В документе этого нет", "Позже уточню"],
+            function_id=next(iter(wanted), ""),
+            field="",
+        )
+    return None
+
+
+def _selected_ids_from_payload(payload: dict[str, Any]) -> list[str]:
+    pipeline = payload.get("pipeline") if isinstance(payload.get("pipeline"), dict) else {}
+    interview = payload.get("interview") if isinstance(payload.get("interview"), dict) else {}
+    return _clean_process_ids(
+        pipeline.get("selectedProcessIds")
+        or interview.get("selectedProcessIds")
+        or payload.get("selectedProcessIds")
+    )
 
 
 def owned_functions(state: Any) -> list[dict[str, Any]]:
@@ -362,6 +563,9 @@ def append_user_turn(state: Any, message: str, attachments: list[dict]) -> dict[
         }
     )
     out["turns"] = out["turns"][-40:]
+    selected = parse_selected_process_ids(message)
+    if selected:
+        out["selectedProcessIds"] = selected
     _attach_answer_to_current_question(out, message)
     _apply_role_answer(out, message)
     return out
@@ -402,7 +606,31 @@ def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
         process["roleStatus"] = _resolve_role_status(process, position)
         process["sourceRefs"] = _clean_source_refs(process.get("sourceRefs"))
         process["unknowns"] = _normalize_unknowns(process.get("unknowns"))
+    incoming_selected = _selected_ids_from_payload(payload)
+    if incoming_selected:
+        out["selectedProcessIds"] = incoming_selected
+    elif out.get("selectedProcessIds"):
+        out["selectedProcessIds"] = _clean_process_ids(out.get("selectedProcessIds"))
     return out
+
+
+def creation_interviewer_rules() -> str:
+    return (
+        "Ты в режиме agent: отвечай только текстом, без инструментов. "
+        "Не пиши Cursor-план и не меняй файлы. Вместо плана потом будет регламент.\n"
+        "Не вызывай Read, Grep, Glob, ls и любые другие tools. Не читай файлы с диска.\n"
+        "Все нужные факты уже есть в сообщении: карта интервью и тексты вложений.\n"
+        "Работай только по этим текстам и ответам пользователя. Не используй шаблоны, "
+        "эталоны и типовые догадки как содержание регламента.\n"
+        "Один ход = один вопрос. Сначала напиши пользователю только текст вопроса "
+        "простым языком, без JSON, без markdown и без служебных полей. "
+        "Не начинай ответ с фигурной скобки.\n"
+        "После вопроса с новой строки верни компактный JSON без markdown: status, message "
+        "(тот же вопрос), quickAnswers, nextQuestion и только изменённый процесс в "
+        "interview.processes. document оставляй пустым, пока status не ready.\n"
+        "Если selectedProcessIds уже есть, не проси отметить процессы снова.\n"
+        "Не повторяй askedQuestions. Спрашивай только факт, которого нет в тексте и knownFacts.\n"
+    )
 
 
 def creation_system_rules(*, force_create: bool = False) -> str:
@@ -416,10 +644,19 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         )
     )
     return (
-        "Ты помогаешь создать точный регламент действий пользователя. Продолжай интервью.\n"
+        "Ты помогаешь создать точный регламент действий пользователя. "
+        "Пока опрос не закрыт, работай в режиме agent: читай материалы только когда есть "
+        "новые файлы, задавай вопросы текстом, не пиши Cursor-план и не меняй файлы. "
+        "Регламент пишется только после закрытия опроса.\n"
         "Работай только по текстам приложенных файлов и ответам пользователя. Не используй шаблоны, "
         "эталоны и типовые догадки как содержание регламента.\n"
         "Если приложено несколько файлов, анализируй их вместе и не теряй ранее приложенные файлы.\n"
+        "Конвейер строго такой: прочитать файлы, извлечь процессы, дать выбор, сохранить "
+        "interview.selectedProcessIds, затем спрашивать только по выбранным процессам, затем "
+        "собрать регламент. Если selectedProcessIds уже есть, этап выбора закрыт: не проси "
+        "отметить процессы снова, не повторяй список и не возвращай pipeline.stage='select'. "
+        "По каждому выбранному процессу задавай вопросы по пробелам, по одному за ход, "
+        "только то, чего нет в тексте документа и knownFacts.\n"
         "Сначала извлеки функциональные блоки из документов. Для каждого блока определи roleStatus: "
         "belongs (это обязанность указанной должности), foreign (другая роль) или unclear (сомнение).\n"
         "Если исполнитель в тексте не указан, указан общо (подразделение, ответственные) или не "
@@ -458,7 +695,8 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "конкретными вариантами, без вариантов 'Оставить' и 'Переделать'.\n"
         "Пока status='need_more', не пиши полный document и не повторяй весь список функций. "
         "В interview.functions верни только новую или изменённую функцию. "
-        "Сначала сформулируй короткий вопрос в message, затем компактный JSON.\n"
+        "Сначала напиши пользователю только текст одного вопроса простым языком, "
+        "без JSON и без markdown. Не начинай ответ с фигурной скобки.\n"
         "Когда все обязательные поля закрыты и можно вернуть status='ready', document обязателен. "
         "Его должен написать Cursor SDK как самостоятельный регламент процесса: связный документ, "
         "понятный без истории чата, без технического дампа полей interview. "
@@ -484,7 +722,7 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "Если в interview.json есть document_write_required=true, не задавай новый вопрос: "
         "сразу верни status='ready' и перепиши document в полноценный самостоятельный текст.\n"
         f"{force}\n"
-        "Ответ всегда строго JSON без markdown. Контракт:\n"
+        "После вопроса с новой строки верни компактный JSON без markdown. Контракт:\n"
         "{\n"
         '  "status": "need_more|ready",\n'
         '  "message": "один вопрос или сообщение о готовности",\n'
@@ -567,7 +805,10 @@ def build_creation_prompt(
         "Тексты приложенных файлов уже лежат в рабочей папке: interview.json и materials/*.txt. "
         "Прочитай их оттуда. Не выдумывай содержание документов.\n"
         if not include_attachment_bodies
-        else ""
+        else (
+            "Отвечай только текстом, без инструментов. Не читай файлы с диска: "
+            "тексты вложений уже в этом сообщении.\n"
+        )
     )
     return (
         f"{action} интервью.\n"
@@ -579,7 +820,13 @@ def build_creation_prompt(
     )
 
 
-def build_followup_creation_prompt(*, message: str, force_create: bool) -> str:
+def build_followup_creation_prompt(
+    *,
+    message: str,
+    force_create: bool,
+    state: Any = None,
+    write_document: bool = False,
+) -> str:
     force = (
         "Пользователь запросил принудительное создание. Можно вернуть status='ready' по текущим данным."
         if force_create
@@ -588,9 +835,36 @@ def build_followup_creation_prompt(*, message: str, force_create: bool) -> str:
             "критичные unknowns по процессам должности."
         )
     )
+    snapshot = ""
+    if state is not None:
+        inventory = _prompt_state(normalize_interview_state(state))
+        inventory["attachments"] = _prompt_attachment_refs(inventory.get("attachments") or [])
+        snapshot = (
+            "Текущая карта интервью. Не читай файлы и не вызывай инструменты, "
+            "используй только это сообщение и историю диалога:\n"
+            f"{json.dumps(inventory, ensure_ascii=False, indent=2)}\n"
+        )
+    if write_document or force_create:
+        return (
+            "Продолжи то же интервью. История диалога уже у тебя. "
+            "Прочитай обновлённый interview.json и materials/* в рабочей папке.\n"
+            "Если interview.selectedProcessIds не пустой, этап выбора закрыт: не проси отметить "
+            "процессы снова и не возвращай pipeline.stage='select'.\n"
+            f"{force}\n"
+            f"Последний ответ пользователя: {message.strip()}\n"
+            "Не задавай новый вопрос: верни status='ready' и полный document как самостоятельный "
+            "связный регламент процесса. Вынеси в него релевантное содержание материалов "
+            "пользователя, подтверждённое файлами или ответами. "
+            "Не используй interview.functions как оглавление и не пиши одинаковые карточки функций "
+            "с повтором 'Основание' и 'Предположение' в каждом блоке."
+        )
     return (
-        "Продолжи то же интервью. История диалога уже у тебя. "
-        "Прочитай обновлённый interview.json в рабочей папке.\n"
+        "Продолжи то же интервью текстом, без инструментов. История диалога уже у тебя. "
+        "Не читай interview.json и materials/* с диска. Не пиши Cursor-план и не меняй файлы.\n"
+        f"{snapshot}"
+        "Если interview.selectedProcessIds не пустой, этап выбора закрыт: не проси отметить "
+        "процессы снова и не возвращай pipeline.stage='select'. По каждому выбранному "
+        "процессу задавай вопросы по пробелам, по одному за ход.\n"
         f"{force}\n"
         f"Последний ответ пользователя: {message.strip()}\n"
         "Сначала оцени последний ответ в answerSufficiency. Не путай место работы и действие: если "
@@ -600,12 +874,12 @@ def build_followup_creation_prompt(*, message: str, force_create: bool) -> str:
         "где именно он работает.\n"
         "Веди interview.processes как карту процесса: knownFacts, unknowns, askedQuestions, "
         "currentQuestion. interview.functions оставляй только как краткий совместимый срез.\n"
-        "Перед новым вопросом проверь askedQuestions: не повторяй то же самое. Верни nextQuestion "
-        "с targetFact, alreadyKnown, missingFact и whyThisQuestion; в message поставь только текст "
-        "этого вопроса простым языком.\n"
+        "Перед новым вопросом проверь askedQuestions: не повторяй то же самое. "
+        "Сначала напиши только текст следующего вопроса простым языком. Не начинай ответ "
+        "с фигурной скобки. Затем с новой строки верни компактный JSON: status, message, "
+        "quickAnswers, nextQuestion и только изменённый процесс.\n"
         "Если в interview.json есть document_write_required=true, не задавай новый вопрос: "
         "верни status='ready' и полный document как самостоятельный связный регламент процесса. "
-        "Иначе ответ строго JSON: status, message, quickAnswers и только изменённая функция. "
         "document оставляй пустым, пока status не ready. При status='ready' document обязателен: "
         "это должен быть полный деловой текст, а не список полей interview. Вынеси в него "
         "релевантное содержание материалов пользователя, подтверждённое файлами или ответами. "

@@ -716,3 +716,5 @@ class RegulationCreationTurn(BaseModel):
     sdkRules: str = ""
     sdkAgentId: str = ""
     forceCreate: bool = False
+    writeDocument: bool = False
+    useTools: bool = False
