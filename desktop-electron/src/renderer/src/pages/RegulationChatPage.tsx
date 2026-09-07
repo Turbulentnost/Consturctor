@@ -208,6 +208,7 @@ function stageCaption(session: RegulationCreationSession): string {
   const stage = String(pipeline.stage || '').trim().toLowerCase()
   const phase = String(pipeline.interviewPhase || '').trim().toLowerCase()
   if (stage === 'select') return 'Этап 1 из 3: выбор процессов'
+  if (stage === 'extract') return 'Этап 1 из 3: разбор документа'
   if (stage === 'interview' && phase === 'collect') return 'Этап 2 из 3: сбор фактов по выбранным процессам'
   if (stage === 'interview') return 'Этап 3 из 3: уточняющие вопросы'
   if (stage === 'assemble') return 'Финализация документа'
@@ -431,6 +432,14 @@ export function RegulationChatPage({
   const phase: AgentPhase = ready ? 'completed' : busy ? 'working' : 'attention'
   const stageLabel = stageCaption(session)
   const remainingLabel = remainingEstimateLabel(session)
+  const queueDepthLabel =
+    !ready && !needsProcessSelection
+      ? Math.max(
+          session.queueDepth ?? 0,
+          session.questionQueue?.length ?? 0,
+          queuedQuestionsRef.current.length
+        )
+      : 0
 
   useEffect(() => {
     if (ready || needsProcessSelection || stoppedRef.current || !window.agent?.start) return
@@ -691,6 +700,11 @@ export function RegulationChatPage({
       onSessionChange(updated)
       return
     }
+    if (!turn.sdkPrompt?.trim()) {
+      syncQueueFromSession(turn)
+      onSessionChange(turn.session)
+      return
+    }
     const abort = new AbortController()
     abortRef.current = abort
     const runId = agentClient.start({
@@ -785,6 +799,9 @@ export function RegulationChatPage({
           <div className="regchat-stage-hint">
             <span>{stageLabel}</span>
             {remainingLabel ? <span className="regchat-remaining">{remainingLabel}</span> : null}
+            {queueDepthLabel > 0 ? (
+              <span className="regchat-remaining">В очереди: {queueDepthLabel} вопросов</span>
+            ) : null}
           </div>
         )}
       </div>

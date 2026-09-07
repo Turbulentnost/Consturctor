@@ -202,6 +202,10 @@ def merge_pipeline_payload(state: dict[str, Any], payload: dict[str, Any]) -> di
     ]
     pipeline = _refresh_pipeline_derived(pipeline)
     out["pipeline"] = pipeline
+    from app.services.regulation_creation.question_queue import populate_queue_after_extract
+
+    out = populate_queue_after_extract(out)
+    out["pipeline"] = sync_remaining_estimate(out)
     return out
 
 
@@ -282,9 +286,10 @@ def select_processes(state: dict[str, Any], process_ids: list[str]) -> dict[str,
         pipeline["round"] = 0
     pipeline = _refresh_pipeline_derived(pipeline)
     out["pipeline"] = pipeline
-    from app.services.regulation_creation.question_queue import replenish_queue
+    from app.services.regulation_creation.question_queue import rebuild_collect_queue
 
-    out = replenish_queue(out, target=5)
+    out = rebuild_collect_queue(out)
+    out["pipeline"] = sync_remaining_estimate(out)
     return out
 
 
@@ -939,30 +944,74 @@ def _collect_required_gaps_for_block(block: dict[str, Any]) -> list[str]:
     return gaps
 
 
-def _estimate_remaining_questions(pipeline: dict[str, Any], collect: dict[str, Any]) -> dict[str, Any]:
+def _estimate_remaining_questions(
+    pipeline: dict[str, Any],
+    collect: dict[str, Any],
+    *,
+    question_queue: list[Any] | None = None,
+    current_question: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     stage = str(pipeline.get("stage") or "upload")
     if stage in {"done"}:
         return {"min": 0, "max": 0, "text": "Осталось примерно: 0 вопросов"}
+    queue_len = len(question_queue or [])
+    has_current = bool(current_question and _clean(current_question.get("id")))
     if stage in {"upload", "extract", "select"}:
-        return {"min": 1, "max": 3, "text": "Осталось примерно: 1-3 вопроса"}
+        blocks = pipeline.get("blocks") if isinstance(pipeline.get("blocks"), list) else []
+        process_count = len(blocks) or max(1, int(collect.get("selectedProcesses") or 0))
+        if queue_len:
+            process_count = max(process_count, max(1, queue_len // len(COLLECT_REQUIRED_FIELDS)))
+        per_process = len(COLLECT_REQUIRED_FIELDS)
+        min_q = max(1, process_count * per_process)
+        if stage == "select":
+            text = f"Выберите процессы · оценка ~{min_q} базовых вопросов"
+        else:
+            text = f"Осталось примерно: {min_q} базовых вопросов"
+        return {"min": min_q, "max": min_q, "text": text}
 
     gaps = max(0, int(collect.get("requiredGaps") or 0))
     rounds_left = max(0, int(pipeline.get("minRounds") or MIN_ROUNDS) - int(pipeline.get("round") or 0))
     round_budget = min(8, rounds_left * 3)
-    if gaps > 0:
-        min_q = max(1, gaps)
+    pending_now = queue_len + (1 if has_current else 0)
+    if gaps > 0 or pending_now > 0:
+        min_q = max(1, gaps + pending_now)
         max_q = min_q + max(2, min(8, gaps // 2 + round_budget))
     else:
         min_q = max(1, round_budget)
         max_q = min_q + max(2, min(8, round_budget))
     total_left = max(0, int(pipeline.get("maxQuestionsTotal") or MAX_QUESTIONS_TOTAL) - int(pipeline.get("questionsAskedTotal") or 0))
-    min_q = max(0, min(min_q, total_left))
-    max_q = max(min_q, min(max_q, total_left))
+    min_q = max(0, min(min_q, total_left)) if total_left else min_q
+    max_q = max(min_q, min(max_q, total_left)) if total_left else max_q
+    if pending_now > 0 and min_q == 0:
+        min_q = pending_now
+        max_q = max(max_q, pending_now)
+    if min_q == 0 and max_q == 0 and (pending_now > 0 or gaps > 0):
+        min_q = max(1, pending_now or gaps)
+        max_q = min_q
     if min_q == max_q:
         text = f"Осталось примерно: {min_q} вопросов"
     else:
         text = f"Осталось примерно: {min_q}-{max_q} вопросов"
     return {"min": min_q, "max": max_q, "text": text}
+
+
+def sync_remaining_estimate(state: dict[str, Any]) -> dict[str, Any]:
+    """Refresh estimatedRemainingQuestions using queue + current question."""
+    interview = state if isinstance(state, dict) else {}
+    pipeline = normalize_pipeline(interview.get("pipeline"))
+    collect = pipeline.get("collectReadiness")
+    if not isinstance(collect, dict):
+        collect = _collect_readiness(pipeline)
+    pipeline = {
+        **pipeline,
+        "estimatedRemainingQuestions": _estimate_remaining_questions(
+            pipeline,
+            collect,
+            question_queue=interview.get("questionQueue") if isinstance(interview.get("questionQueue"), list) else [],
+            current_question=interview.get("currentQuestion") if isinstance(interview.get("currentQuestion"), dict) else None,
+        ),
+    }
+    return pipeline
 
 
 def _collect_question_template(*, field: str, process_title: str) -> tuple[str, list[str], str]:

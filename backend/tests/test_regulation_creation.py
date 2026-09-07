@@ -1540,3 +1540,73 @@ def test_queue_dedupe_on_replenish() -> None:
     duplicate = (state.get("questionQueue") or [])[0]
     out = enqueue_questions(state, [duplicate, duplicate])
     assert queue_depth(out) == initial
+
+
+def test_extract_populates_deterministic_queue_without_llm() -> None:
+    from app.services.regulation_creation.interview import merge_agent_payload
+    from app.services.regulation_creation.question_queue import queue_depth
+
+    state = {
+        "attachments": [{"id": "f1", "name": "duties.docx", "kind": "text", "text": "Совет директоров"}],
+        "processes": [],
+        "functions": [],
+        "pipeline": {"stage": "extract"},
+    }
+    payload = {
+        "status": "need_more",
+        "message": "Это ваша обязанность по организации заседаний Совета директоров?",
+        "quickAnswers": ["Да", "Нет"],
+        "interview": {
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Организация заседаний Совета директоров",
+                    "actor": "Помощник ПСД",
+                    "roleStatus": "unclear",
+                    "knownFacts": {},
+                    "sourceRefs": [{"file": "duties.docx", "quote": "Совет директоров"}],
+                },
+                {
+                    "id": "p2",
+                    "title": "Другая функция",
+                    "actor": "Помощник ПСД",
+                    "roleStatus": "unclear",
+                    "knownFacts": {},
+                    "sourceRefs": [],
+                },
+            ]
+        },
+        "pipeline": {"stage": "interview"},
+    }
+    out = merge_agent_payload(state, payload)
+    assert out["pipeline"]["stage"] == "select"
+    assert queue_depth(out) >= 8
+    assert all(item.get("source") == "collect" for item in out.get("questionQueue") or [])
+    estimate = out["pipeline"].get("estimatedRemainingQuestions") or {}
+    assert int(estimate.get("min") or 0) >= 8
+
+
+def test_turn_payload_skips_llm_on_select_and_uses_fastpath_after_select() -> None:
+    from app.services.regulation_creation.pipeline import select_processes
+    from app.services.regulation_creation.question_queue import build_fastpath_reply_from_queue
+
+    state = select_processes(
+        {
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Календарь",
+                    "roleStatus": "unclear",
+                    "knownFacts": {},
+                    "sourceRefs": [],
+                }
+            ],
+            "functions": [],
+            "pipeline": {"stage": "select", "blocks": []},
+        },
+        ["p1"],
+    )
+    pipeline = state.get("pipeline") or {}
+    reply = build_fastpath_reply_from_queue(interview=state, pipeline=pipeline, force_create=False)
+    assert reply
+    assert "collect-p1-" in reply

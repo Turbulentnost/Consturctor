@@ -8,7 +8,6 @@ from typing import Any
 
 from app.services.regulation_creation.pipeline import (
     MAX_QUESTIONS_PER_ROUND,
-    _collect_question_template,
     _collect_required_gaps_for_process,
     _collect_stage_done,
     _dedupe_round_questions,
@@ -20,6 +19,21 @@ from app.services.regulation_creation.pipeline import (
 
 TARGET_QUEUE_DEPTH = 5
 MIN_QUEUE_DEPTH = 3
+FULL_QUEUE_TARGET = 999
+
+_COLLECT_FIELD_TO_FUNCTION = {
+    "workLocation": "tool",
+    "frequency": "periodicity",
+    "trigger": "triggerAction",
+    "steps": "userAction",
+}
+
+_COLLECT_FIELD_TO_SMART = {
+    "workLocation": "A",
+    "frequency": "T",
+    "trigger": "T",
+    "steps": "S",
+}
 
 
 def normalize_question_queue(state: dict[str, Any]) -> dict[str, Any]:
@@ -49,16 +63,25 @@ def peek_queue_head(state: dict[str, Any]) -> dict[str, Any] | None:
     return dict(queue[0]) if queue else None
 
 
-def all_collect_questions(state: dict[str, Any]) -> list[dict[str, Any]]:
+def all_collect_questions(state: dict[str, Any], *, all_candidates: bool = False) -> list[dict[str, Any]]:
     interview = state if isinstance(state, dict) else {}
     pipeline = normalize_pipeline(interview.get("pipeline"))
-    if pipeline.get("stage") != "interview" or _collect_stage_done(pipeline):
+    stage = str(pipeline.get("stage") or "")
+    if stage not in {"extract", "select", "interview"}:
+        return []
+    if stage == "interview" and _collect_stage_done(pipeline):
         return []
     selected_ids = [
         str(item).strip()
         for item in (pipeline.get("selectedProcessIds") or [])
         if str(item).strip()
     ]
+    if not selected_ids and all_candidates:
+        selected_ids = [
+            _clean(item.get("id"))
+            for item in (interview.get("processes") or [])
+            if isinstance(item, dict) and _clean(item.get("id"))
+        ]
     if not selected_ids:
         return []
     by_id = {
@@ -66,34 +89,65 @@ def all_collect_questions(state: dict[str, Any]) -> list[dict[str, Any]]:
         for item in (interview.get("processes") or [])
         if isinstance(item, dict) and _clean(item.get("id"))
     }
+    position = _clean(interview.get("position"))
     questions: list[dict[str, Any]] = []
     for pid in selected_ids:
         process = by_id.get(pid)
-        title = _clean((process or {}).get("title")) or pid
+        if not isinstance(process, dict):
+            continue
         for field in _collect_required_gaps_for_process(process):
-            text, options, smart_key = _collect_question_template(field=field, process_title=title)
-            questions.append(
-                {
-                    "id": f"collect-{pid}-{field}",
-                    "processId": pid,
-                    "field": field,
-                    "text": text,
-                    "smartKey": smart_key,
-                    "options": options,
-                    "source": "collect",
-                }
-            )
+            questions.append(_collect_question_item(process, field, position=position))
     return questions
+
+
+def build_deterministic_queue(state: dict[str, Any], *, all_candidates: bool = False) -> dict[str, Any]:
+    """Fill questionQueue with all pending collect questions synchronously (no LLM)."""
+    out = normalize_question_queue(state)
+    pipeline = normalize_pipeline(out.get("pipeline"))
+    stage = str(pipeline.get("stage") or "")
+    if stage not in {"extract", "select", "interview"}:
+        return out
+    use_all = all_candidates or stage in {"extract", "select"}
+    candidates = all_collect_questions(out, all_candidates=use_all)
+    if not candidates:
+        return out
+    out = enqueue_questions(out, candidates)
+    out["prefetchInProgress"] = False
+    return out
+
+
+def rebuild_collect_queue(state: dict[str, Any]) -> dict[str, Any]:
+    """Replace collect queue after process selection."""
+    out = normalize_question_queue(state)
+    out["questionQueue"] = [
+        item
+        for item in (out.get("questionQueue") or [])
+        if _clean((item or {}).get("source")) != "collect"
+    ]
+    return build_deterministic_queue(out, all_candidates=False)
+
+
+def populate_queue_after_extract(state: dict[str, Any]) -> dict[str, Any]:
+    out = deepcopy(state) if isinstance(state, dict) else {}
+    pipeline = normalize_pipeline(out.get("pipeline"))
+    if str(pipeline.get("stage") or "") not in {"extract", "select"}:
+        return out
+    return build_deterministic_queue(out, all_candidates=True)
 
 
 def enqueue_questions(state: dict[str, Any], questions: list[Any]) -> dict[str, Any]:
     out = normalize_question_queue(state)
     pipeline = normalize_pipeline(out.get("pipeline"))
+    stage = str(pipeline.get("stage") or "")
     selected = {str(item).strip() for item in (pipeline.get("selectedProcessIds") or []) if str(item).strip()}
-    if pipeline.get("stage") != "interview" or (selected and pipeline.get("stage") == "select"):
+    if stage not in {"extract", "select", "interview"}:
         return out
-    if not selected and pipeline.get("interviewPhase") != "collect":
-        filtered_in = [item for item in questions if isinstance(item, dict)]
+    collect_items = [item for item in questions if isinstance(item, dict) and _clean(item.get("source")) == "collect"]
+    round_items = [item for item in questions if isinstance(item, dict) and _clean(item.get("source")) != "collect"]
+    if stage in {"extract", "select"}:
+        filtered_in = collect_items
+    elif not selected and pipeline.get("interviewPhase") != "collect":
+        filtered_in = round_items or [item for item in questions if isinstance(item, dict)]
     else:
         filtered_in = _filter_round_questions(
             [item for item in questions if isinstance(item, dict)],
@@ -128,23 +182,26 @@ def replenish_queue(state: dict[str, Any], *, target: int = TARGET_QUEUE_DEPTH) 
     pipeline = normalize_pipeline(out.get("pipeline"))
     stage = str(pipeline.get("stage") or "")
     phase = str(pipeline.get("interviewPhase") or stage)
+
+    if stage in {"extract", "select"}:
+        return build_deterministic_queue(out, all_candidates=True)
+
     if stage != "interview" or phase == "select":
-        out["questionQueue"] = []
         out["prefetchInProgress"] = False
         return out
 
     current_depth = len(out.get("questionQueue") or [])
-    if current_depth >= target:
-        out["prefetchInProgress"] = False
-        return out
-
     if phase == "collect" or not _collect_stage_done(pipeline):
         candidates = all_collect_questions(out)
         out = enqueue_questions(out, candidates)
         current_depth = len(out.get("questionQueue") or [])
-        out["prefetchInProgress"] = current_depth < MIN_QUEUE_DEPTH and not _collect_stage_done(
+        out["prefetchInProgress"] = current_depth == 0 and not _collect_stage_done(
             normalize_pipeline(out.get("pipeline"))
         )
+        return out
+
+    if current_depth >= target:
+        out["prefetchInProgress"] = False
         return out
 
     # Rounds: queue may be filled by LLM batch; mark prefetch when shallow.
@@ -255,6 +312,8 @@ def needs_llm_prefetch(state: dict[str, Any]) -> bool:
     pipeline = normalize_pipeline(state.get("pipeline") if isinstance(state, dict) else {})
     if pipeline.get("stage") != "interview":
         return False
+    if queue_depth(state) > 0:
+        return False
     if not _collect_stage_done(pipeline):
         return False
     filled = replenish_queue(state, target=MIN_QUEUE_DEPTH)
@@ -279,6 +338,42 @@ def _normalize_queue_item(item: dict[str, Any]) -> dict[str, Any]:
         "options": [_clean(opt) for opt in options if _clean(opt)],
         "smartKey": _clean(item.get("smartKey")),
         "source": _clean(item.get("source")) or "round",
+    }
+
+
+def _collect_question_item(process: dict[str, Any], field: str, *, position: str = "") -> dict[str, Any]:
+    from app.services.regulation_creation.interview import _question_for_gap
+
+    pid = _clean(process.get("id"))
+    func = _process_as_function(process)
+    func_field = _COLLECT_FIELD_TO_FUNCTION.get(field, field)
+    blocker = _question_for_gap(func, func_field, position=position)
+    return {
+        "id": f"collect-{pid}-{field}",
+        "processId": pid,
+        "field": field,
+        "text": blocker.message,
+        "smartKey": _COLLECT_FIELD_TO_SMART.get(field, ""),
+        "options": list(blocker.quick_answers),
+        "source": "collect",
+    }
+
+
+def _process_as_function(process: dict[str, Any]) -> dict[str, Any]:
+    facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+    steps = facts.get("steps")
+    step_text = ""
+    if isinstance(steps, list):
+        step_text = ", ".join(_clean(item) for item in steps if _clean(item))
+    elif isinstance(steps, str):
+        step_text = _clean(steps)
+    return {
+        "id": _clean(process.get("id")),
+        "title": _clean(process.get("title")),
+        "tool": _clean(facts.get("workLocation")) or _clean(process.get("tool")),
+        "periodicity": _clean(facts.get("frequency")) or _clean(process.get("periodicity")),
+        "triggerAction": _clean(facts.get("trigger")) or _clean(process.get("triggerAction")),
+        "userAction": step_text or _clean(process.get("userAction")),
     }
 
 

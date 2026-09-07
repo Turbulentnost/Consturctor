@@ -70,12 +70,15 @@ from app.services.regulation_creation.pipeline import (
     select_processes as pipeline_select_processes,
     set_pipeline_stage,
     slice_materials_for_prompt,
+    sync_remaining_estimate,
 )
 from app.services.regulation_creation.question_queue import (
+    FULL_QUEUE_TARGET,
     build_fastpath_reply_from_queue,
     consume_queue_head,
     needs_llm_prefetch,
     peek_queue_head,
+    queue_depth,
     queue_snapshot,
     queued_question_metadata,
     replenish_queue,
@@ -279,8 +282,13 @@ def apply_creation_reply(
     )
     draft.interview_json = replenish_queue(
         normalize_interview_state(draft.interview_json),
-        target=5,
+        target=FULL_QUEUE_TARGET,
     )
+    if isinstance(draft.interview_json, dict):
+        draft.interview_json = {
+            **draft.interview_json,
+            "pipeline": sync_remaining_estimate(draft.interview_json),
+        }
     if needs_llm_prefetch(draft.interview_json):
         draft.interview_json = {
             **normalize_interview_state(draft.interview_json),
@@ -303,7 +311,9 @@ def _turn_payload(
     timing_start = perf_counter()
     sdk_id = interview_sdk_agent_id(draft.interview_json)
     interview = normalize_interview_state(draft.interview_json)
-    interview = replenish_queue(interview, target=5)
+    interview = replenish_queue(interview, target=FULL_QUEUE_TARGET)
+    if isinstance(interview, dict):
+        interview = {**interview, "pipeline": sync_remaining_estimate(interview)}
     draft.interview_json = interview
     pipeline = normalize_pipeline(interview.get("pipeline"))
     stage = str(pipeline.get("stage") or "upload")
@@ -318,11 +328,23 @@ def _turn_payload(
         force_create=force_create,
     )
     queue_meta = queue_snapshot(interview)
-    if needs_llm_prefetch(interview) and not prefetched_reply:
+    block_llm = (
+        not force_create
+        and (
+            stage in ("select", "extract", "upload")
+            or queue_depth(interview) > 0
+            or bool(prefetched_reply)
+            or (stage == "interview" and phase == "collect" and not pipeline.get("collectReadiness", {}).get("isReady"))
+        )
+    )
+    if needs_llm_prefetch(interview) and not prefetched_reply and not block_llm:
         interview = {**interview, "prefetchInProgress": True}
         draft.interview_json = interview
+    elif queue_depth(interview) > 0:
+        interview = {**interview, "prefetchInProgress": False}
+        draft.interview_json = interview
     prompt = ""
-    if not prefetched_reply:
+    if not block_llm and not prefetched_reply:
         prompt = (
             build_followup_creation_prompt(
                 message=message,
@@ -676,9 +698,14 @@ def _apply_agent_reply(
         draft.interview_json,
         draft.draft_document_json if isinstance(draft.draft_document_json, dict) else None,
     )
-    skip_single_followup = bool(round_questions) or pipeline.get("stage") in ("extract", "select")
+    queue_has_items = queue_depth(draft.interview_json if isinstance(draft.interview_json, dict) else {}) > 0
+    skip_single_followup = (
+        bool(round_questions)
+        or pipeline.get("stage") in ("extract", "select")
+        or queue_has_items
+    )
     blocker = None if force_create or skip_single_followup else followup_blocker(parsed, draft.interview_json)
-    if blocker is None and not force_create:
+    if blocker is None and not force_create and not queue_has_items:
         blocker = ready_blocker(parsed, draft.interview_json)
     if blocker is not None:
         draft.interview_json, message = remember_assistant_question(
@@ -756,6 +783,48 @@ def _apply_agent_reply(
         )
         draft.status = "finalized"
         draft.result_regulation_id = result.regulationId
+    elif pipeline.get("stage") == "select" and not force_create:
+        draft.interview_json = replenish_queue(
+            normalize_interview_state(draft.interview_json),
+            target=FULL_QUEUE_TARGET,
+        )
+        if isinstance(draft.interview_json, dict):
+            draft.interview_json = {
+                **draft.interview_json,
+                "pipeline": sync_remaining_estimate(draft.interview_json),
+            }
+        pipeline_now = normalize_pipeline(
+            draft.interview_json.get("pipeline") if isinstance(draft.interview_json, dict) else {}
+        )
+        processes = []
+        if isinstance(draft.interview_json, dict):
+            processes = [
+                {
+                    "id": item.get("id"),
+                    "title": item.get("title"),
+                    "actor": item.get("actor"),
+                    "roleStatus": item.get("roleStatus"),
+                }
+                for item in (draft.interview_json.get("processes") or [])
+                if isinstance(item, dict)
+            ]
+        _add_message(
+            db,
+            draft=draft,
+            role="assistant",
+            content=(
+                "Из документа извлечены процессы. Отметьте те, по которым продолжим интервью — "
+                "базовые вопросы будут заданы сразу, без ожидания ИИ."
+            ),
+            structured={
+                "quickAnswers": [],
+                "pipeline": pipeline_now,
+                "processes": processes,
+            },
+        )
+        draft.status = "interview"
+        if positions := parsed.get("positions"):
+            draft.positions_json = [str(item) for item in positions if str(item).strip()]
     else:
         quick_answers = _quick_answers(parsed.get("quickAnswers"))
         content = parsed.get("message") or raw or "Уточните, пожалуйста, детали процесса."
@@ -1454,6 +1523,7 @@ def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationS
                 document=draft.draft_document_json,
             )
     queue_info = queue_snapshot(draft.interview_json if isinstance(draft.interview_json, dict) else {})
+    pipeline = sync_remaining_estimate(draft.interview_json if isinstance(draft.interview_json, dict) else {})
     return RegulationCreationSession(
         draftId=draft.id,
         status=draft.status,
@@ -1476,9 +1546,7 @@ def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationS
         resultDocumentPath=draft.result_document_path,
         sdkAgentId=interview_sdk_agent_id(draft.interview_json),
         interview=interview_snapshot(draft.interview_json),
-        pipeline=normalize_pipeline(
-            draft.interview_json.get("pipeline") if isinstance(draft.interview_json, dict) else {}
-        ),
+        pipeline=pipeline,
         questionQueue=queue_info.get("questionQueue") or [],
         prefetchInProgress=bool(queue_info.get("prefetchInProgress")),
         queueDepth=int(queue_info.get("queueDepth") or 0),
