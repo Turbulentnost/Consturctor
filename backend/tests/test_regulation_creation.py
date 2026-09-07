@@ -1075,7 +1075,18 @@ def test_round_questions_apply_only_after_select() -> None:
 
     state = {
         "processes": [
-            {"id": "p1", "title": "Календарь", "roleStatus": "unclear", "knownFacts": {}, "sourceRefs": []}
+            {
+                "id": "p1",
+                "title": "Календарь",
+                "roleStatus": "unclear",
+                "knownFacts": {
+                    "workLocation": "Outlook календарь",
+                    "frequency": "ежедневно",
+                    "trigger": "письмо от руководителя",
+                    "steps": ["обновляет событие"],
+                },
+                "sourceRefs": [],
+            }
         ],
         "functions": [],
         "pipeline": {"stage": "select", "blocks": []},
@@ -1096,7 +1107,163 @@ def test_round_questions_apply_only_after_select() -> None:
     assert out["pipeline"]["round"] == 1
 
 
-def test_round_gates_min_three_and_max_fifty() -> None:
+def test_round_does_not_start_until_collect_stage_done() -> None:
+    from app.services.regulation_creation.interview import merge_agent_payload
+    from app.services.regulation_creation.pipeline import select_processes
+
+    state = {
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Календарь",
+                "roleStatus": "unclear",
+                "knownFacts": {"workLocation": "Outlook"},
+                "sourceRefs": [],
+            }
+        ],
+        "functions": [],
+        "pipeline": {"stage": "select", "blocks": []},
+    }
+    state = select_processes(state, ["p1"])
+    out = merge_agent_payload(
+        state,
+        {
+            "status": "need_more",
+            "message": "Попытка стартовать раунд",
+            "roundQuestions": [
+                {"id": "q1", "processId": "p1", "field": "trigger", "text": "Какой триггер?"},
+            ],
+        },
+    )
+    assert out["pipeline"]["interviewPhase"] == "collect"
+    assert out["pipeline"]["round"] == 0
+    assert out["pipeline"]["roundQuestions"] == []
+
+
+def test_remaining_questions_estimate_is_non_negative() -> None:
+    from app.services.regulation_creation.pipeline import normalize_pipeline
+
+    pipe = normalize_pipeline(
+        {
+            "stage": "interview",
+            "selectedProcessIds": ["p1"],
+            "blocks": [
+                {
+                    "id": "b-p1",
+                    "processId": "p1",
+                    "title": "Календарь",
+                    "elements": {"workLocation": ["Outlook"], "frequency": [], "trigger": [], "steps": []},
+                    "smart": {"S": "missing", "M": "missing", "A": "done", "R": "done", "T": "missing"},
+                    "status": "active",
+                    "sourceRefs": [],
+                }
+            ],
+            "questionsAskedTotal": 500,
+        }
+    )
+    estimate = pipe.get("estimatedRemainingQuestions") if isinstance(pipe.get("estimatedRemainingQuestions"), dict) else {}
+    assert int(estimate.get("min") or 0) >= 0
+    assert int(estimate.get("max") or 0) >= int(estimate.get("min") or 0)
+
+
+def test_round_questions_hidden_before_process_selection_even_if_nested() -> None:
+    from app.services.regulation_creation.interview import merge_agent_payload
+
+    state = {
+        "processes": [
+            {"id": "p1", "title": "Календарь", "roleStatus": "unclear", "knownFacts": {}, "sourceRefs": []}
+        ],
+        "functions": [],
+        "pipeline": {"stage": "select", "selectedProcessIds": []},
+    }
+    out = merge_agent_payload(
+        state,
+        {
+            "status": "need_more",
+            "message": "Сразу уточним детали",
+            "interview": {
+                "roundQuestions": [
+                    {"id": "q1", "processId": "p1", "field": "trigger", "text": "Когда запускается?"}
+                ]
+            },
+        },
+    )
+    assert out["pipeline"]["selectedProcessIds"] == []
+    assert out["pipeline"]["roundQuestions"] == []
+    assert out["pipeline"]["round"] == 0
+
+
+def test_round_questions_are_filtered_to_selected_processes() -> None:
+    from app.services.regulation_creation.interview import merge_agent_payload
+    from app.services.regulation_creation.pipeline import select_processes
+
+    state = {
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Календарь",
+                "roleStatus": "unclear",
+                "knownFacts": {
+                    "workLocation": "Outlook календарь",
+                    "frequency": "ежедневно",
+                    "trigger": "письмо от руководителя",
+                    "steps": ["обновляет событие"],
+                },
+                "sourceRefs": [],
+            },
+            {"id": "p2", "title": "Отчёты", "roleStatus": "unclear", "knownFacts": {}, "sourceRefs": []},
+        ],
+        "functions": [],
+        "pipeline": {"stage": "select", "blocks": []},
+    }
+    state = select_processes(state, ["p1"])
+    out = merge_agent_payload(
+        state,
+        {
+            "status": "need_more",
+            "message": "Раунд 1",
+            "roundQuestions": [
+                {"id": "q1", "processId": "p1", "field": "trigger", "text": "Триггер по p1?"},
+                {"id": "q2", "processId": "p2", "field": "trigger", "text": "Триггер по p2?"},
+                {"id": "q3", "field": "steps", "text": "Общий вопрос без processId"},
+            ],
+        },
+    )
+    assert out["pipeline"]["selectedProcessIds"] == ["p1"]
+    assert out["pipeline"]["round"] == 1
+    assert [item["id"] for item in out["pipeline"]["roundQuestions"]] == ["q1"]
+    assert {item["processId"] for item in out["pipeline"]["roundQuestions"]} == {"p1"}
+
+
+def test_single_selected_process_blocks_foreign_round_questions() -> None:
+    from app.services.regulation_creation.interview import merge_agent_payload
+    from app.services.regulation_creation.pipeline import select_processes
+
+    state = {
+        "processes": [
+            {"id": "p1", "title": "Календарь", "roleStatus": "unclear", "knownFacts": {}, "sourceRefs": []},
+            {"id": "p2", "title": "Отчёты", "roleStatus": "unclear", "knownFacts": {}, "sourceRefs": []},
+        ],
+        "functions": [],
+        "pipeline": {"stage": "select", "blocks": []},
+    }
+    state = select_processes(state, ["p2"])
+    out = merge_agent_payload(
+        state,
+        {
+            "status": "need_more",
+            "message": "Раунд 1",
+            "roundQuestions": [
+                {"id": "q1", "processId": "p1", "field": "steps", "text": "Шаги по p1?"},
+            ],
+        },
+    )
+    assert out["pipeline"]["selectedProcessIds"] == ["p2"]
+    assert out["pipeline"]["round"] == 0
+    assert out["pipeline"]["roundQuestions"] == []
+
+
+def test_round_gates_min_rounds_and_per_round_cap() -> None:
     from app.services.regulation_creation.pipeline import (
         MAX_QUESTIONS_PER_ROUND,
         apply_round_answers,
@@ -1106,7 +1273,28 @@ def test_round_gates_min_three_and_max_fifty() -> None:
     )
     from app.services.regulation_creation.interview import ready_blocker
 
-    pipe = normalize_pipeline({})
+    pipe = normalize_pipeline(
+        {
+            "stage": "interview",
+            "selectedProcessIds": ["p1"],
+            "blocks": [
+                {
+                    "id": "b-p1",
+                    "processId": "p1",
+                    "title": "Календарь",
+                    "elements": {
+                        "workLocation": ["Outlook календарь"],
+                        "frequency": ["ежедневно"],
+                        "trigger": ["письмо от руководителя"],
+                        "steps": ["обновляет событие"],
+                    },
+                    "smart": {"S": "done", "M": "partial", "A": "done", "R": "done", "T": "done"},
+                    "status": "active",
+                    "sourceRefs": [],
+                }
+            ],
+        }
+    )
     questions = [{"id": f"q{i}", "text": f"Вопрос {i}", "processId": "p1", "field": "trigger"} for i in range(60)]
     pipe = start_round(pipe, questions)
     assert len(pipe["roundQuestions"]) == MAX_QUESTIONS_PER_ROUND

@@ -13,9 +13,10 @@ SMART_STATUSES = ("missing", "partial", "done")
 ROUND_STATUSES = ("open", "answered", "reviewed")
 BLOCK_STATUSES = ("pending", "active", "done")
 
-MAX_QUESTIONS_PER_ROUND = 50
-MIN_ROUNDS = 3
-MAX_QUESTIONS_TOTAL = 250
+MAX_QUESTIONS_PER_ROUND = 12
+MIN_ROUNDS = 2
+MAX_QUESTIONS_TOTAL = 150
+COLLECT_REQUIRED_FIELDS = ("workLocation", "frequency", "trigger", "steps")
 
 _CONCRETE_MARKERS = (
     "outlook",
@@ -42,6 +43,19 @@ _TIME_MARKERS = (
     r"не\s+позднее",
     r"до\s+\d",
 )
+_ROUND_FIELD_TO_FACT = {
+    "tool": "workLocation",
+    "workLocation": "workLocation",
+    "periodicity": "frequency",
+    "frequency": "frequency",
+    "trigger": "trigger",
+    "triggerAction": "trigger",
+    "steps": "steps",
+    "userAction": "steps",
+    "controls": "controls",
+    "inputs": "inputs",
+    "outputs": "outputs",
+}
 _MEASURABLE_MARKERS = (
     "kpi",
     "%",
@@ -67,6 +81,9 @@ def default_pipeline() -> dict[str, Any]:
         "rounds": [],
         "questionnaire": {},
         "roundQuestions": [],
+        "interviewPhase": "select",
+        "collectReadiness": {"isReady": False, "requiredGaps": 0, "selectedProcesses": 0},
+        "estimatedRemainingQuestions": {"min": 0, "max": 0, "text": "Осталось примерно: 0 вопросов"},
         "progress": 0,
     }
 
@@ -95,8 +112,7 @@ def normalize_pipeline(raw: Any) -> dict[str, Any]:
     out["questionnaire"] = quest if isinstance(quest, dict) else {}
     rq = out.get("roundQuestions")
     out["roundQuestions"] = _normalize_round_questions(rq if isinstance(rq, list) else [])
-    out["progress"] = _compute_progress(out)
-    return out
+    return _refresh_pipeline_derived(out)
 
 
 def pipeline_snapshot(state: Any) -> dict[str, Any]:
@@ -109,7 +125,7 @@ def set_pipeline_stage(state: dict[str, Any], stage: str) -> dict[str, Any]:
     pipeline = normalize_pipeline(out.get("pipeline"))
     if stage in PIPELINE_STAGES:
         pipeline["stage"] = stage
-    pipeline["progress"] = _compute_progress(pipeline)
+    pipeline = _refresh_pipeline_derived(pipeline)
     out["pipeline"] = pipeline
     return out
 
@@ -121,7 +137,7 @@ def mark_upload_received(state: dict[str, Any]) -> dict[str, Any]:
     attachments = out.get("attachments") if isinstance(out.get("attachments"), list) else []
     if attachments and pipeline["stage"] == "upload":
         pipeline["stage"] = "extract"
-    pipeline["progress"] = _compute_progress(pipeline)
+    pipeline = _refresh_pipeline_derived(pipeline)
     out["pipeline"] = pipeline
     return out
 
@@ -130,7 +146,8 @@ def merge_pipeline_payload(state: dict[str, Any], payload: dict[str, Any]) -> di
     """Merge extract / roundQuestions / blocks from agent JSON into interview state."""
     out = deepcopy(state) if isinstance(state, dict) else {}
     pipeline = normalize_pipeline(out.get("pipeline"))
-    has_selection = bool(pipeline.get("selectedProcessIds"))
+    selected_set = {str(item).strip() for item in pipeline.get("selectedProcessIds") or [] if str(item).strip()}
+    has_selection = bool(selected_set)
     incoming = payload.get("pipeline") if isinstance(payload.get("pipeline"), dict) else {}
     if incoming:
         if isinstance(incoming.get("blocks"), list) and incoming["blocks"]:
@@ -154,8 +171,19 @@ def merge_pipeline_payload(state: dict[str, Any], payload: dict[str, Any]) -> di
     if not isinstance(round_questions, list):
         interview = payload.get("interview") if isinstance(payload.get("interview"), dict) else {}
         round_questions = interview.get("roundQuestions") if isinstance(interview, dict) else None
-    if isinstance(round_questions, list) and round_questions and has_selection:
-        pipeline = start_round(pipeline, round_questions)
+    readiness_probe = _refresh_pipeline_derived(
+        {
+            **pipeline,
+            "blocks": _merge_blocks(
+                pipeline.get("blocks") or [],
+                blocks_from_processes_list(out.get("processes") or []),
+            ),
+        }
+    )
+    if isinstance(round_questions, list) and round_questions and has_selection and _collect_stage_done(readiness_probe):
+        filtered = _filter_round_questions(round_questions, selected_set)
+        if filtered:
+            pipeline = start_round(pipeline, _drop_known_questions(out, filtered))
 
     processes = out.get("processes") if isinstance(out.get("processes"), list) else []
     has_process_candidates = bool(pipeline["blocks"]) or bool(processes)
@@ -168,7 +196,7 @@ def merge_pipeline_payload(state: dict[str, Any], payload: dict[str, Any]) -> di
     pipeline["blocks"] = [
         {**block, "smart": smart_check_block(block, out)} for block in pipeline["blocks"]
     ]
-    pipeline["progress"] = _compute_progress(pipeline)
+    pipeline = _refresh_pipeline_derived(pipeline)
     out["pipeline"] = pipeline
     return out
 
@@ -210,6 +238,7 @@ def select_processes(state: dict[str, Any], process_ids: list[str]) -> dict[str,
     """Mark selected processes as belongs, others foreign; enter interview stage."""
     out = deepcopy(state) if isinstance(state, dict) else {}
     selected = [str(item).strip() for item in process_ids if str(item).strip()]
+    selected = list(dict.fromkeys(selected))
     if not selected:
         raise ValueError("Нужно выбрать хотя бы один процесс")
     selected_set = set(selected)
@@ -221,6 +250,9 @@ def select_processes(state: dict[str, Any], process_ids: list[str]) -> dict[str,
             pid = _clean(item.get("id") or item.get("processId") or item.get("functionId"))
             item["roleStatus"] = "belongs" if pid in selected_set else "foreign"
     pipeline = normalize_pipeline(out.get("pipeline"))
+    prev_selected = {
+        str(item).strip() for item in pipeline.get("selectedProcessIds") or [] if str(item).strip()
+    }
     pipeline["selectedProcessIds"] = selected
     if not pipeline["blocks"]:
         pipeline["blocks"] = blocks_from_processes_list(out.get("processes") or [])
@@ -231,24 +263,37 @@ def select_processes(state: dict[str, Any], process_ids: list[str]) -> dict[str,
             block["smart"] = smart_check_block(block, out)
         else:
             block["status"] = "pending"
+    # If user changed subset, restart interview rounds to prevent stale cross-process questions.
+    if prev_selected != selected_set:
+        pipeline["round"] = 0
+        pipeline["rounds"] = []
+        pipeline["roundQuestions"] = []
+        pipeline["questionsAskedTotal"] = 0
+    else:
+        pipeline["roundQuestions"] = _normalize_round_questions(
+            _filter_round_questions(pipeline.get("roundQuestions") or [], selected_set)
+        )
     pipeline["stage"] = "interview"
     if pipeline["round"] <= 0:
         pipeline["round"] = 0
-    pipeline["progress"] = _compute_progress(pipeline)
+    pipeline = _refresh_pipeline_derived(pipeline)
     out["pipeline"] = pipeline
     return out
 
 
 def start_round(pipeline: dict[str, Any], questions: list[Any]) -> dict[str, Any]:
     pipe = normalize_pipeline(pipeline)
+    if not _collect_stage_done(pipe):
+        return pipe
     remaining = pipe["maxQuestionsTotal"] - pipe["questionsAskedTotal"]
     if remaining <= 0:
         pipe["stage"] = "assemble"
-        pipe["progress"] = _compute_progress(pipe)
-        return pipe
-    normalized = _normalize_round_questions(questions)[: min(pipe["maxQuestionsPerRound"], remaining)]
+        return _refresh_pipeline_derived(pipe)
+    normalized = _dedupe_round_questions(pipe, _normalize_round_questions(questions))[
+        : min(pipe["maxQuestionsPerRound"], remaining)
+    ]
     if not normalized:
-        return pipe
+        return _refresh_pipeline_derived(pipe)
     next_round = pipe["round"] + 1
     # Close previous open round as reviewed if still open.
     for item in pipe["rounds"]:
@@ -265,8 +310,7 @@ def start_round(pipeline: dict[str, Any], questions: list[Any]) -> dict[str, Any
     )
     pipe["questionsAskedTotal"] = pipe["questionsAskedTotal"] + len(normalized)
     pipe["stage"] = "interview"
-    pipe["progress"] = _compute_progress(pipe)
-    return pipe
+    return _refresh_pipeline_derived(pipe)
 
 
 def apply_round_answers(
@@ -337,7 +381,7 @@ def apply_round_answers(
             block["status"] = _block_status_from_smart(smart, block)
     pipeline["blocks"] = merged_blocks
     pipeline["questionnaire"] = questionnaire
-    pipeline["progress"] = _compute_progress(pipeline)
+    pipeline = _refresh_pipeline_derived(pipeline)
     out["pipeline"] = pipeline
     return out
 
@@ -347,6 +391,12 @@ def round_gate(*, pipeline: dict[str, Any], force_create: bool = False) -> str |
     pipe = normalize_pipeline(pipeline)
     if force_create:
         return None
+    if pipe["stage"] == "interview" and pipe.get("selectedProcessIds") and not _collect_stage_done(pipe):
+        return (
+            "Сначала завершим сбор фактов по выбранным процессам "
+            "(инструмент, периодичность, триггер и действие пользователя), "
+            "затем перейдём к раундовым уточнениям."
+        )
     # Legacy sessions (no rounds started / no process selection) keep old ready rules.
     if pipe["round"] <= 0 and not pipe["rounds"] and not pipe["selectedProcessIds"]:
         return None
@@ -373,7 +423,39 @@ def round_gate(*, pipeline: dict[str, Any], force_create: bool = False) -> str |
 
 def can_start_next_round(pipeline: dict[str, Any]) -> bool:
     pipe = normalize_pipeline(pipeline)
-    return pipe["questionsAskedTotal"] < pipe["maxQuestionsTotal"]
+    return pipe["questionsAskedTotal"] < pipe["maxQuestionsTotal"] and _collect_stage_done(pipe)
+
+
+def next_collect_question(state: dict[str, Any]) -> dict[str, Any] | None:
+    interview = state if isinstance(state, dict) else {}
+    pipeline = normalize_pipeline(interview.get("pipeline"))
+    if pipeline.get("stage") != "interview" or _collect_stage_done(pipeline):
+        return None
+    selected_ids = [str(item).strip() for item in (pipeline.get("selectedProcessIds") or []) if str(item).strip()]
+    if not selected_ids:
+        return None
+    by_id = {
+        _clean(item.get("id")): item
+        for item in (interview.get("processes") or [])
+        if isinstance(item, dict) and _clean(item.get("id"))
+    }
+    for pid in selected_ids:
+        process = by_id.get(pid)
+        title = _clean((process or {}).get("title")) or pid
+        gaps = _collect_required_gaps_for_process(process)
+        if not gaps:
+            continue
+        field = gaps[0]
+        text, options, smart_key = _collect_question_template(field=field, process_title=title)
+        return {
+            "id": f"collect-{pid}-{field}",
+            "processId": pid,
+            "field": field,
+            "text": text,
+            "smartKey": smart_key,
+            "options": options,
+        }
+    return None
 
 
 def should_assemble(pipeline: dict[str, Any], *, force_create: bool = False) -> bool:
@@ -529,6 +611,9 @@ def creation_round_interview_rules(*, force_create: bool = False) -> str:
         f"За один ход верни batch roundQuestions (максимум {MAX_QUESTIONS_PER_ROUND} вопросов).\n"
         "Сначала просмотри уже данные answers и questionnaire в interview.json — не повторяй закрытое.\n"
         "Выделяй мини-функциональные блоки и спрашивай только недостающие элементы (SMART).\n"
+        "Не спрашивай то, что уже есть в knownFacts процесса или в материалах — такие вопросы "
+        "отбрасываются. Один вопрос на один пробел, без переформулировок одного и того же.\n"
+        "Меньше вопросов лучше: если по процессу не хватает 2-3 фактов, спроси только их.\n"
         "Человек может параллельно писать свободные сообщения — учитывай их как факты.\n"
         "message — краткое введение к раунду (1–3 предложения).\n"
         f"{force}\n"
@@ -664,6 +749,62 @@ def _normalize_round_questions(raw: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _drop_known_questions(state: dict[str, Any], questions: list[Any]) -> list[Any]:
+    """Skip round questions whose fact is already filled from documents or earlier answers."""
+    facts_by_process: dict[str, dict[str, Any]] = {}
+    for process in state.get("processes") or []:
+        if not isinstance(process, dict):
+            continue
+        facts = process.get("knownFacts")
+        facts_by_process[_clean(process.get("id"))] = facts if isinstance(facts, dict) else {}
+    out: list[Any] = []
+    for item in questions:
+        if not isinstance(item, dict):
+            continue
+        fact_field = _ROUND_FIELD_TO_FACT.get(_clean(item.get("field")))
+        facts = facts_by_process.get(_clean(item.get("processId") or item.get("functionId")))
+        if fact_field and facts and _text_join(facts.get(fact_field)):
+            continue
+        out.append(item)
+    return out
+
+
+def _filter_round_questions(questions: list[Any], selected_process_ids: set[str]) -> list[Any]:
+    if not selected_process_ids:
+        return []
+    out: list[Any] = []
+    for item in questions:
+        if not isinstance(item, dict):
+            continue
+        process_id = _clean(item.get("processId") or item.get("functionId"))
+        if not process_id:
+            continue
+        if process_id not in selected_process_ids:
+            continue
+        out.append(item)
+    return out
+
+
+def _dedupe_round_questions(pipe: dict[str, Any], questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    answered = {qid for qid, value in (pipe.get("questionnaire") or {}).items() if _clean(value)}
+    seen = {_question_key(item) for item in pipe.get("roundQuestions") or []}
+    out: list[dict[str, Any]] = []
+    for item in questions:
+        if item["id"] in answered:
+            continue
+        key = _question_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def _question_key(question: dict[str, Any]) -> tuple[str, str, str]:
+    text = re.sub(r"\W+", " ", _clean(question.get("text")).casefold().replace("ё", "е")).strip()
+    return (_clean(question.get("processId")), _clean(question.get("field")), text)
+
+
 def _merge_blocks(current: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_id = {item["id"]: dict(item) for item in current}
     for item in incoming:
@@ -706,6 +847,141 @@ def _compute_progress(pipeline: dict[str, Any]) -> int:
             done = sum(1 for b in relevant if b.get("status") == "done")
             base = min(84, base + int(10 * done / len(relevant)))
     return max(0, min(100, base))
+
+
+def _refresh_pipeline_derived(pipeline: dict[str, Any]) -> dict[str, Any]:
+    pipe = dict(pipeline)
+    collect = _collect_readiness(pipe)
+    phase = _derive_interview_phase(pipe, collect)
+    pipe["interviewPhase"] = phase
+    pipe["collectReadiness"] = collect
+    pipe["estimatedRemainingQuestions"] = _estimate_remaining_questions(pipe, collect)
+    pipe["progress"] = _compute_progress(pipe)
+    return pipe
+
+
+def _derive_interview_phase(pipeline: dict[str, Any], collect: dict[str, Any]) -> str:
+    stage = str(pipeline.get("stage") or "")
+    if stage in {"upload", "extract", "select", "assemble", "done"}:
+        return stage
+    if stage == "interview":
+        return "rounds" if bool(collect.get("isReady")) else "collect"
+    return "select"
+
+
+def _collect_readiness(pipeline: dict[str, Any]) -> dict[str, Any]:
+    selected = {_clean(item) for item in (pipeline.get("selectedProcessIds") or []) if _clean(item)}
+    blocks = pipeline.get("blocks") if isinstance(pipeline.get("blocks"), list) else []
+    if not selected:
+        return {"isReady": False, "requiredGaps": 0, "selectedProcesses": 0}
+    required_gaps = 0
+    selected_count = 0
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if _clean(block.get("processId")) not in selected:
+            continue
+        selected_count += 1
+        required_gaps += len(_collect_required_gaps_for_block(block))
+    is_ready = selected_count > 0 and required_gaps == 0
+    return {"isReady": is_ready, "requiredGaps": required_gaps, "selectedProcesses": selected_count}
+
+
+def _collect_stage_done(pipeline: dict[str, Any]) -> bool:
+    collect = pipeline.get("collectReadiness")
+    if isinstance(collect, dict):
+        return bool(collect.get("isReady"))
+    return bool(_collect_readiness(pipeline).get("isReady"))
+
+
+def _collect_required_gaps_for_process(process: dict[str, Any] | None) -> list[str]:
+    if not isinstance(process, dict):
+        return list(COLLECT_REQUIRED_FIELDS)
+    facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+    steps = facts.get("steps")
+    gaps: list[str] = []
+    if not _text_join(facts.get("workLocation"), process.get("tool")):
+        gaps.append("workLocation")
+    if not _text_join(facts.get("frequency"), process.get("periodicity")):
+        gaps.append("frequency")
+    if not _text_join(facts.get("trigger"), process.get("triggerAction")):
+        gaps.append("trigger")
+    if not _text_join(steps if isinstance(steps, list) else [], process.get("userAction")):
+        gaps.append("steps")
+    return gaps
+
+
+def _collect_required_gaps_for_block(block: dict[str, Any]) -> list[str]:
+    elements = block.get("elements") if isinstance(block.get("elements"), dict) else {}
+    smart = block.get("smart") if isinstance(block.get("smart"), dict) else {}
+    field_values = {
+        "workLocation": _text_join(elements.get("workLocation")),
+        "frequency": _text_join(elements.get("frequency")),
+        "trigger": _text_join(elements.get("trigger")),
+        "steps": _text_join(elements.get("steps")),
+    }
+    gaps: list[str] = []
+    if not field_values["workLocation"] or smart.get("A") == "missing":
+        gaps.append("workLocation")
+    if not field_values["frequency"]:
+        gaps.append("frequency")
+    if not field_values["trigger"] or smart.get("T") == "missing":
+        gaps.append("trigger")
+    if not field_values["steps"] or smart.get("S") == "missing":
+        gaps.append("steps")
+    return gaps
+
+
+def _estimate_remaining_questions(pipeline: dict[str, Any], collect: dict[str, Any]) -> dict[str, Any]:
+    stage = str(pipeline.get("stage") or "upload")
+    if stage in {"done"}:
+        return {"min": 0, "max": 0, "text": "Осталось примерно: 0 вопросов"}
+    if stage in {"upload", "extract", "select"}:
+        return {"min": 1, "max": 3, "text": "Осталось примерно: 1-3 вопроса"}
+
+    gaps = max(0, int(collect.get("requiredGaps") or 0))
+    rounds_left = max(0, int(pipeline.get("minRounds") or MIN_ROUNDS) - int(pipeline.get("round") or 0))
+    round_budget = min(8, rounds_left * 3)
+    if gaps > 0:
+        min_q = max(1, gaps)
+        max_q = min_q + max(2, min(8, gaps // 2 + round_budget))
+    else:
+        min_q = max(1, round_budget)
+        max_q = min_q + max(2, min(8, round_budget))
+    total_left = max(0, int(pipeline.get("maxQuestionsTotal") or MAX_QUESTIONS_TOTAL) - int(pipeline.get("questionsAskedTotal") or 0))
+    min_q = max(0, min(min_q, total_left))
+    max_q = max(min_q, min(max_q, total_left))
+    if min_q == max_q:
+        text = f"Осталось примерно: {min_q} вопросов"
+    else:
+        text = f"Осталось примерно: {min_q}-{max_q} вопросов"
+    return {"min": min_q, "max": max_q, "text": text}
+
+
+def _collect_question_template(*, field: str, process_title: str) -> tuple[str, list[str], str]:
+    if field == "workLocation":
+        return (
+            f"Процесс «{process_title}»: где именно выполняется действие (система/реестр/файл/карточка)?",
+            ["Карточка в 1C", "Excel-файл", "Outlook", "Рабочий чат", "Другое"],
+            "A",
+        )
+    if field == "frequency":
+        return (
+            f"Процесс «{process_title}»: как часто выполняется действие?",
+            ["Ежедневно", "Еженедельно", "Ежемесячно", "По событию", "Другое"],
+            "T",
+        )
+    if field == "trigger":
+        return (
+            f"Процесс «{process_title}»: какое конкретное событие запускает работу?",
+            ["Письмо", "Изменение статуса", "Появление файла", "Время по графику", "Другое"],
+            "T",
+        )
+    return (
+        f"Процесс «{process_title}»: какие 2-4 шага делает пользователь?",
+        ["Открывает объект", "Проверяет данные", "Обновляет статус", "Отправляет результат", "Другое"],
+        "S",
+    )
 
 
 def _stage_rank(stage: str) -> int:
@@ -759,20 +1035,7 @@ def _apply_answer_to_facts(state: dict[str, Any], entry: dict[str, Any]) -> None
     answer = _clean(entry.get("answer"))
     if not answer:
         return
-    field_map = {
-        "tool": "workLocation",
-        "workLocation": "workLocation",
-        "periodicity": "frequency",
-        "frequency": "frequency",
-        "trigger": "trigger",
-        "triggerAction": "trigger",
-        "steps": "steps",
-        "userAction": "steps",
-        "controls": "controls",
-        "inputs": "inputs",
-        "outputs": "outputs",
-    }
-    fact_field = field_map.get(field)
+    fact_field = _ROUND_FIELD_TO_FACT.get(field)
     for process in state.get("processes") or []:
         if not isinstance(process, dict):
             continue

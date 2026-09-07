@@ -499,12 +499,32 @@ def creation_document_rules(*, force_create: bool = False) -> str:
     )
 
 
-def creation_system_rules(*, force_create: bool = False, for_document: bool = False, stage: str = "") -> str:
+def creation_collect_rules() -> str:
+    return (
+        "Сейчас этап COLLECT: добираем обязательные факты только по выбранным процессам.\n"
+        "Поля для закрытия: tool/workLocation, periodicity/frequency, triggerAction/trigger, userAction/steps.\n"
+        "Не переходи к свободному раунду до закрытия этого минимума.\n"
+        "За один ход: один процесс, одно поле, один конкретный вопрос.\n"
+        "Ответ строго JSON: status='need_more', message, quickAnswers, roundQuestions=[], document={}."
+    )
+
+
+def creation_system_rules(
+    *,
+    force_create: bool = False,
+    for_document: bool = False,
+    stage: str = "",
+    pipeline: dict[str, Any] | None = None,
+) -> str:
     from app.services.regulation_creation.pipeline import (
         creation_extract_rules,
         creation_round_interview_rules,
         creation_select_rules,
+        normalize_pipeline,
     )
+
+    pipe = normalize_pipeline(pipeline or {"stage": stage})
+    phase = str(pipe.get("interviewPhase") or stage or "")
 
     if for_document or force_create:
         if for_document:
@@ -513,10 +533,12 @@ def creation_system_rules(*, force_create: bool = False, for_document: bool = Fa
             f"{creation_round_interview_rules(force_create=True)}\n\n"
             f"{creation_document_rules(force_create=True)}"
         )
-    if stage == "extract":
+    if phase == "extract":
         return creation_extract_rules()
-    if stage == "select":
+    if phase == "select":
         return creation_select_rules()
+    if phase == "collect":
+        return creation_collect_rules()
     return creation_round_interview_rules(force_create=force_create)
 
 
@@ -535,7 +557,7 @@ def build_creation_prompt(
     pipeline = normalize_pipeline(interview.get("pipeline"))
     stage = str(pipeline.get("stage") or "upload")
     for_document = for_document or bool(interview.get("document_write_required")) or force_create
-    inventory = _prompt_state(interview)
+    inventory = _prompt_inventory_for_stage(interview, pipeline=pipeline, for_document=for_document)
     if not include_attachment_bodies:
         inventory["attachments"] = _prompt_attachment_refs(inventory.get("attachments") or [])
     elif stage in ("interview", "select") and not for_document:
@@ -554,18 +576,19 @@ def build_creation_prompt(
         else (
             "Скорость: ответь сразу. На extract — JSON процессов; "
             "на select — только список для выбора, без вопросов; "
-            "на interview — batch roundQuestions. Без длинного thinking.\n"
+            "на collect — один обязательный gap-вопрос; на interview — batch roundQuestions. "
+            "Без длинного thinking.\n"
         )
     )
     stage_hint = (
-        f"pipeline.stage={stage}, round={pipeline.get('round')}, "
+        f"pipeline.stage={stage}, phase={pipeline.get('interviewPhase')}, round={pipeline.get('round')}, "
         f"questionsAskedTotal={pipeline.get('questionsAskedTotal')}.\n"
     )
     return (
         f"{action} интервью.\n"
         f"{speed}"
         f"{stage_hint}"
-        f"{creation_system_rules(force_create=force_create, for_document=for_document, stage=stage)}\n"
+        f"{creation_system_rules(force_create=force_create, for_document=for_document, stage=stage, pipeline=pipeline)}\n"
         f"{files_hint}"
         "Текущее состояние интервью:\n"
         f"{json.dumps(inventory, ensure_ascii=False, indent=2)}\n"
@@ -579,12 +602,17 @@ def build_followup_creation_prompt(
     force_create: bool,
     for_document: bool = False,
     stage: str = "interview",
+    pipeline: dict[str, Any] | None = None,
 ) -> str:
     from app.services.regulation_creation.pipeline import (
+        MAX_QUESTIONS_PER_ROUND,
         creation_extract_rules,
         creation_round_interview_rules,
         creation_select_rules,
+        normalize_pipeline,
     )
+
+    phase = str(normalize_pipeline(pipeline or {"stage": stage}).get("interviewPhase") or stage)
 
     if for_document or force_create:
         return (
@@ -592,21 +620,28 @@ def build_followup_creation_prompt(
             f"{creation_document_rules(force_create=force_create)}\n"
             f"Последний ответ пользователя: {message.strip()}"
         )
-    if stage == "extract":
+    if phase == "extract":
         return (
             "Продолжи этап EXTRACT. Прочитай interview.json и materials.\n"
             f"{creation_extract_rules()}\n"
             f"Последний ответ пользователя: {message.strip()}"
         )
-    if stage == "select":
+    if phase == "select":
         return (
             "Этап SELECT: пользователь ещё не подтвердил процессы.\n"
             f"{creation_select_rules()}\n"
             f"Последний ответ пользователя: {message.strip()}"
         )
+    if phase == "collect":
+        return (
+            "Этап COLLECT: закрывай обязательные факты по выбранным процессам по одному gap за ход.\n"
+            f"{creation_collect_rules()}\n"
+            f"Последний ответ пользователя: {message.strip()}"
+        )
     return (
         "Продолжи блочное интервью. Прочитай interview.json: answers, questionnaire, pipeline.\n"
-        "Сначала учти уже данные ответы, затем подготовь следующий roundQuestions (до 50).\n"
+        f"Сначала учти уже данные ответы, затем подготовь следующий roundQuestions "
+        f"(до {MAX_QUESTIONS_PER_ROUND}).\n"
         f"{creation_round_interview_rules(force_create=force_create)}\n"
         f"Последний ответ пользователя: {message.strip()}\n"
         "document оставляй пустым, пока status не ready."
@@ -1508,6 +1543,60 @@ def _set_process_fact_tbd(state: dict[str, Any], *, process_id: Any, field: str,
 def _prompt_state(state: dict[str, Any]) -> dict[str, Any]:
     out = deepcopy(state)
     out["attachments"] = _prompt_attachments(out.get("attachments") or [])
+    return out
+
+
+def _prompt_inventory_for_stage(
+    state: dict[str, Any],
+    *,
+    pipeline: dict[str, Any],
+    for_document: bool,
+) -> dict[str, Any]:
+    if for_document:
+        return _prompt_state(state)
+    stage = str(pipeline.get("stage") or "")
+    phase = str(pipeline.get("interviewPhase") or stage)
+    if stage != "interview":
+        return _prompt_state(state)
+    selected = {
+        _clean_str(item)
+        for item in (pipeline.get("selectedProcessIds") or [])
+        if _clean_str(item)
+    }
+    processes = [item for item in (state.get("processes") or []) if isinstance(item, dict)]
+    if selected:
+        processes = [item for item in processes if _clean_str(item.get("id")) in selected]
+    out = {
+        "version": state.get("version"),
+        "position": state.get("position"),
+        "pipeline": pipeline,
+        "attachments": _prompt_attachments(state.get("attachments") or []),
+        "turns": (state.get("turns") or [])[-6:],
+        "answers": (state.get("answers") or [])[-20:],
+        "askedQuestions": (state.get("askedQuestions") or [])[-20:],
+        "currentQuestion": state.get("currentQuestion") or {},
+    }
+    if phase == "collect":
+        out["processes"] = [
+            {
+                "id": item.get("id"),
+                "title": item.get("title"),
+                "actor": item.get("actor"),
+                "roleStatus": item.get("roleStatus"),
+                "knownFacts": item.get("knownFacts") or {},
+                "unknowns": item.get("unknowns") or [],
+            }
+            for item in processes
+        ]
+        out["functions"] = []
+        return out
+    out["processes"] = processes
+    out["functions"] = [
+        item
+        for item in (state.get("functions") or [])
+        if isinstance(item, dict)
+        and (not selected or _clean_str(item.get("id") or item.get("processId")) in selected)
+    ]
     return out
 
 

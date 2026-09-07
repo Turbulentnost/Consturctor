@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import tempfile
+from time import perf_counter
 from pathlib import Path
 from collections.abc import Iterator
 from typing import Any
@@ -65,6 +66,7 @@ from app.services.regulation_creation.interview import (
 from app.services.regulation_creation.pipeline import (
     apply_round_answers,
     incremental_document_from_state,
+    next_collect_question,
     normalize_pipeline,
     select_processes as pipeline_select_processes,
     set_pipeline_stage,
@@ -218,7 +220,21 @@ def persist_creation_turn(
         return _turn_payload(db, draft, message="", force_create=False)
     force_create = _is_force_create_message(message)
     display_message = _display_user_message(message, attachments)
+    before_stage = normalize_pipeline(
+        draft.interview_json.get("pipeline") if isinstance(draft.interview_json, dict) else {}
+    ).get("stage")
+    started = perf_counter()
     draft.interview_json = append_user_turn(draft.interview_json, message, attachments)
+    after_stage = normalize_pipeline(
+        draft.interview_json.get("pipeline") if isinstance(draft.interview_json, dict) else {}
+    ).get("stage")
+    logger.info(
+        "reg_create timing extract/select phase_ms=%s draft=%s from=%s to=%s",
+        int((perf_counter() - started) * 1000),
+        draft.id,
+        before_stage,
+        after_stage,
+    )
     _add_message(
         db,
         draft=draft,
@@ -266,38 +282,57 @@ def _turn_payload(
     message: str,
     force_create: bool,
 ) -> RegulationCreationTurn:
+    timing_start = perf_counter()
     sdk_id = interview_sdk_agent_id(draft.interview_json)
     interview = normalize_interview_state(draft.interview_json)
     pipeline = normalize_pipeline(interview.get("pipeline"))
     stage = str(pipeline.get("stage") or "upload")
+    phase = str(pipeline.get("interviewPhase") or stage)
     for_document = bool(
         force_create
         or (isinstance(draft.interview_json, dict) and draft.interview_json.get("document_write_required"))
     )
-    prompt = (
-        build_followup_creation_prompt(
-            message=message,
-            force_create=force_create,
-            for_document=for_document,
-            stage=stage,
+    prefetched_reply = _build_fastpath_reply(interview=interview, pipeline=pipeline, force_create=force_create)
+    prompt = ""
+    if not prefetched_reply:
+        prompt = (
+            build_followup_creation_prompt(
+                message=message,
+                force_create=force_create,
+                for_document=for_document,
+                stage=stage,
+                pipeline=pipeline,
+            )
+            if sdk_id
+            else build_creation_prompt(
+                state=draft.interview_json,
+                message=message,
+                initial=True,
+                force_create=force_create,
+                include_attachment_bodies=False,
+                for_document=for_document,
+            )
         )
-        if sdk_id
-        else build_creation_prompt(
-            state=draft.interview_json,
-            message=message,
-            initial=True,
-            force_create=force_create,
-            include_attachment_bodies=False,
-            for_document=for_document,
-        )
+    logger.info(
+        "reg_create timing turn_payload phase=%s ms=%s fastpath=%s draft=%s",
+        phase,
+        int((perf_counter() - timing_start) * 1000),
+        bool(prefetched_reply),
+        draft.id,
     )
     return RegulationCreationTurn(
         session=_session(db, draft),
         interview=interview_snapshot(draft.interview_json),
         sdkPrompt=prompt,
-        sdkRules=creation_system_rules(force_create=force_create, for_document=for_document, stage=stage),
+        sdkRules=creation_system_rules(
+            force_create=force_create,
+            for_document=for_document,
+            stage=stage,
+            pipeline=pipeline,
+        ),
         sdkAgentId=sdk_id,
         forceCreate=force_create,
+        prefetchedReply=prefetched_reply or "",
     )
 
 
@@ -591,9 +626,18 @@ def _apply_agent_reply(
             "Опишу функции сообщением",
         ]
         parsed["status"] = "need_more"
+    merge_started = perf_counter()
     draft.interview_json = merge_agent_payload(draft.interview_json, parsed)
     pipeline = normalize_pipeline(
         draft.interview_json.get("pipeline") if isinstance(draft.interview_json, dict) else {}
+    )
+    logger.info(
+        "reg_create timing merge/apply phase=%s ms=%s stage=%s round_questions=%s draft=%s",
+        pipeline.get("interviewPhase"),
+        int((perf_counter() - merge_started) * 1000),
+        pipeline.get("stage"),
+        len(pipeline.get("roundQuestions") or []),
+        draft.id,
     )
     round_questions = pipeline.get("roundQuestions") or []
     # Incremental draft fill after every successful merge.
@@ -726,6 +770,35 @@ def _apply_agent_reply(
         draft.status = "interview"
         if positions := parsed.get("positions"):
             draft.positions_json = [str(item) for item in positions if str(item).strip()]
+
+
+def _build_fastpath_reply(
+    *,
+    interview: dict[str, Any],
+    pipeline: dict[str, Any],
+    force_create: bool,
+) -> str:
+    if force_create:
+        return ""
+    if str(pipeline.get("stage") or "") != "interview":
+        return ""
+    if str(pipeline.get("interviewPhase") or "") != "collect":
+        return ""
+    question = next_collect_question(interview)
+    if not question:
+        return ""
+    process_title = str(question.get("processId") or "процесс")
+    message = str(question.get("text") or f"Уточним обязательные факты по процессу «{process_title}».")
+    payload = {
+        "status": "need_more",
+        "message": message,
+        "quickAnswers": question.get("options") or [],
+        "roundQuestions": [],
+        "interview": {"processes": []},
+        "pipeline": {"stage": "interview"},
+        "document": {},
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _finalize_document(

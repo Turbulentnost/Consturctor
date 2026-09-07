@@ -711,3 +711,4 @@ class RegulationCreationTurn(BaseModel):
     sdkRules: str = ""
     sdkAgentId: str = ""
     forceCreate: bool = False
+    prefetchedReply: str = ""
