@@ -1743,6 +1743,23 @@ input {
   font-size: 13px;
   padding-right: 240px;
 }
+.regchat-stage-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #0a5b4b;
+}
+.regchat-remaining {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(8, 116, 95, 0.1);
+  color: #075645;
+  font-weight: 600;
+}
 .regchat-banner {
   position: relative;
   z-index: 2;
@@ -1792,7 +1809,7 @@ input {
 }
 .regchat-column {
   width: 100%;
-  max-width: 680px;
+  max-width: 780px;
   margin: 0 auto;
   min-height: 0;
   display: flex;
@@ -1827,16 +1844,109 @@ input {
 .regchat-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(8, 116, 95, 0.45);
 }
-.regchat-hint {
+.regchat-starter {
+  background: rgba(241, 248, 245, 0.92);
+  border: 1px solid rgba(8, 116, 95, 0.16);
+  border-radius: 18px;
+  padding: 16px 18px;
+  width: 100%;
+  max-width: 620px;
+  box-sizing: border-box;
+}
+.regchat-starter h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #06483d;
+}
+.regchat-starter ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.regchat-starter li {
+  position: relative;
+  padding-left: 18px;
+  color: var(--content-muted);
+  font-size: 15px;
+  line-height: 1.55;
+}
+.regchat-starter li::before {
+  content: '\2022';
+  position: absolute;
+  left: 2px;
+  color: #08745f;
+  font-weight: 700;
+}
+.regchat-select-card {
+  background: rgba(241, 248, 245, 0.95);
+  border: 1px solid rgba(8, 116, 95, 0.2);
+  border-radius: 18px;
+  padding: 16px 18px;
+  width: 100%;
+  max-width: 620px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.regchat-select-card h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #06483d;
+}
+.regchat-select-card p {
+  margin: 0;
   color: var(--content-muted);
   font-size: 14px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid var(--card-border);
-  border-radius: 14px;
-  padding: 18px 20px;
-  width: 100%;
-  max-width: 420px;
-  box-sizing: border-box;
+}
+.regchat-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.regchat-select-item {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  column-gap: 10px;
+  row-gap: 2px;
+  align-items: start;
+  font-size: 14px;
+  color: var(--main-text);
+}
+.regchat-select-item input {
+  margin-top: 2px;
+}
+.regchat-select-title {
+  font-weight: 600;
+}
+.regchat-select-actor {
+  grid-column: 2;
+  color: var(--content-muted);
+  font-size: 13px;
+}
+.regchat-select-submit {
+  align-self: flex-start;
+  height: 34px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 10px;
+  background: #08745f;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.regchat-select-submit:hover:not(:disabled) {
+  background: #0a8670;
+}
+.regchat-select-submit:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .regchat-row {
   display: flex;
@@ -1907,28 +2017,29 @@ input {
 .regchat-bubble-col {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
-  max-width: 320px;
+  max-width: 620px;
 }
 .regchat-bubble {
   width: fit-content;
   max-width: 100%;
-  padding: 12px 16px;
-  border-radius: 16px;
-  font-size: 14px;
-  line-height: 1.5;
+  padding: 14px 18px;
+  border-radius: 18px;
+  font-size: 16px;
+  line-height: 1.55;
 }
 .regchat-bubble.ai {
   background: #fff;
-  border: 1px solid var(--card-border);
+  border: 1px solid rgba(8, 116, 95, 0.16);
   color: var(--main-text);
-  border-top-left-radius: 4px;
+  border-top-left-radius: 6px;
+  min-width: min(100%, 320px);
 }
 .regchat-bubble.user {
   background: #08745f;
   color: #fff;
-  border-top-right-radius: 4px;
+  border-top-right-radius: 6px;
 }
 .regchat-bubble-text {
   white-space: pre-wrap;
@@ -2010,16 +2121,17 @@ input {
   gap: 8px;
 }
 .regchat-quick-chip {
-  background: #eef7f3;
+  background: #f1f8f5;
   color: #06483d;
-  border: 1px solid rgba(6, 72, 61, 0.14);
-  border-radius: 16px;
-  padding: 6px 14px;
-  font-size: 13px;
+  border: 1px solid rgba(8, 116, 95, 0.18);
+  border-radius: 18px;
+  padding: 8px 16px;
+  font-size: 14px;
   cursor: pointer;
 }
 .regchat-quick-chip:hover {
-  background: #dff5ec;
+  background: #e3f3ec;
+  border-color: #08745f;
 }
 .regchat-think {
   background: rgba(255, 255, 255, 0.85);
@@ -2052,26 +2164,34 @@ input {
 }
 .regchat-status {
   color: var(--content-muted);
-  font-size: 13px;
+  font-size: 14px;
   padding: 4px 2px;
 }
 .regchat-composer {
   display: flex;
-  justify-content: center;
-  padding-top: 10px;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding-top: 12px;
   flex-shrink: 0;
 }
 .regchat-composer-box {
   position: relative;
   width: 100%;
-  max-width: 420px;
-  border: 1px solid var(--card-border);
-  border-radius: 18px;
+  max-width: 780px;
+  border: 1px solid rgba(8, 116, 95, 0.2);
+  border-radius: 22px;
   background: #fff;
   overflow: hidden;
 }
 .regchat-composer-box:focus-within {
   border-color: #08745f;
+  box-shadow: 0 0 0 3px rgba(8, 116, 95, 0.1);
+}
+.regchat-composer-hint {
+  color: var(--content-muted);
+  font-size: 12px;
+  text-align: center;
 }
 .regchat-files {
   padding: 8px 12px 0;
@@ -2136,22 +2256,22 @@ input {
 .regchat-composer-input {
   display: flex;
   align-items: flex-end;
-  gap: 2px;
-  padding: 4px 6px 4px 8px;
+  gap: 4px;
+  padding: 6px 8px 6px 12px;
 }
 .regchat-composer-box textarea {
   display: block;
   flex: 1;
   min-width: 0;
-  min-height: 44px;
-  max-height: 129px;
-  height: 44px;
+  min-height: 74px;
+  max-height: 399px;
+  height: 74px;
   resize: none;
   border: none;
   border-radius: 14px;
-  padding: 11px 8px 11px 8px;
-  font-size: 14px;
-  line-height: 1.5;
+  padding: 12px 8px;
+  font-size: 16px;
+  line-height: 25px;
   outline: none;
   color: var(--main-text);
   background: transparent;
@@ -2189,10 +2309,10 @@ input {
   padding-bottom: 4px;
 }
 .regchat-tool-btn {
-  width: 32px;
-  height: 32px;
+  width: 38px;
+  height: 38px;
   border: none;
-  border-radius: 16px;
+  border-radius: 19px;
   background: transparent;
   color: #6b7773;
   display: flex;
@@ -2210,10 +2330,10 @@ input {
   cursor: default;
 }
 .regchat-send-btn {
-  width: 32px;
-  height: 32px;
+  width: 38px;
+  height: 38px;
   border: none;
-  border-radius: 16px;
+  border-radius: 19px;
   background: #08745f;
   color: #fff;
   display: flex;

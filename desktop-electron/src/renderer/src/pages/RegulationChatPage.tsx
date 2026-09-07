@@ -34,14 +34,26 @@ interface PendingFile {
   name: string
 }
 
+interface ProcessChoice {
+  id: string
+  title: string
+  actor: string
+}
+
 const DEFAULT_PLACEHOLDER = 'Опишите процесс или ответьте на вопрос ИИ...'
 const EDIT_PLACEHOLDER = 'Измените предложенный вариант и отправьте...'
 const FORCE_CREATE_PROMPT =
   'Создай регламент принудительно по текущей информации. ' +
   'Если каких-то данных не хватает, используй разумные типовые формулировки и явно отметь, что это предположение.'
 const WORKING_STATUS = 'Готовлю вопрос...'
-const COMPOSER_MIN_HEIGHT = 44
-const COMPOSER_MAX_HEIGHT = 129
+const COMPOSER_MIN_HEIGHT = 74
+// 15 строк по 25px line-height — дальше textarea прокручивается внутри.
+const COMPOSER_MAX_HEIGHT = 399
+const STARTER_HINTS = [
+  'Приложите должностную инструкцию или файл с обязанностями — скрепка слева от поля ввода.',
+  'Или коротко напишите должность и 2–3 основные функции сотрудника.',
+  'Дальше ИИ уточнит только то, чего не нашёл в документах, и соберёт регламент по СТО-34-003.'
+]
 
 type BusyKind = 'reading' | 'question'
 
@@ -141,6 +153,81 @@ function attachmentsOf(structured: Record<string, unknown>): string[] {
       return ''
     })
     .filter(Boolean)
+}
+
+function processChoicesFromSession(session: RegulationCreationSession): ProcessChoice[] {
+  const interview =
+    session.interview && typeof session.interview === 'object'
+      ? (session.interview as Record<string, unknown>)
+      : {}
+  const raw = Array.isArray(interview.processes) ? interview.processes : []
+  const out: ProcessChoice[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Record<string, unknown>
+    const id = String(row.id || row.processId || row.functionId || '').trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    out.push({
+      id,
+      title: String(row.title || row.name || id).trim() || id,
+      actor: String(row.actor || '').trim()
+    })
+  }
+  return out
+}
+
+function selectedProcessIds(session: RegulationCreationSession): string[] {
+  const pipeline =
+    session.pipeline && typeof session.pipeline === 'object'
+      ? (session.pipeline as Record<string, unknown>)
+      : {}
+  const raw = Array.isArray(pipeline.selectedProcessIds) ? pipeline.selectedProcessIds : []
+  return raw.map((item) => String(item || '').trim()).filter(Boolean)
+}
+
+function isSelectStage(session: RegulationCreationSession): boolean {
+  const pipeline =
+    session.pipeline && typeof session.pipeline === 'object'
+      ? (session.pipeline as Record<string, unknown>)
+      : {}
+  return String(pipeline.stage || '').trim().toLowerCase() === 'select'
+}
+
+function pipelineMeta(session: RegulationCreationSession): Record<string, unknown> {
+  return session.pipeline && typeof session.pipeline === 'object'
+    ? (session.pipeline as Record<string, unknown>)
+    : {}
+}
+
+function stageCaption(session: RegulationCreationSession): string {
+  const pipeline = pipelineMeta(session)
+  const stage = String(pipeline.stage || '').trim().toLowerCase()
+  const phase = String(pipeline.interviewPhase || '').trim().toLowerCase()
+  if (stage === 'select') return 'Этап 1 из 3: выбор процессов'
+  if (stage === 'interview' && phase === 'collect') return 'Этап 2 из 3: сбор фактов по выбранным процессам'
+  if (stage === 'interview') return 'Этап 3 из 3: уточняющие вопросы'
+  if (stage === 'assemble') return 'Финализация документа'
+  return 'Подготовка интервью'
+}
+
+function remainingEstimateLabel(session: RegulationCreationSession): string {
+  const pipeline = pipelineMeta(session)
+  const remaining =
+    pipeline.estimatedRemainingQuestions && typeof pipeline.estimatedRemainingQuestions === 'object'
+      ? (pipeline.estimatedRemainingQuestions as Record<string, unknown>)
+      : {}
+  const text = String(remaining.text || '').trim()
+  if (text) return text
+  const min = Number(remaining.min ?? 0)
+  const max = Number(remaining.max ?? min)
+  if (Number.isFinite(min) && Number.isFinite(max) && min >= 0 && max >= min) {
+    return min === max
+      ? `Осталось примерно: ${Math.round(min)} вопросов`
+      : `Осталось примерно: ${Math.round(min)}-${Math.round(max)} вопросов`
+  }
+  return ''
 }
 
 class RegulationCancelledError extends Error {
@@ -253,6 +340,8 @@ export function RegulationChatPage({
   const [savedNote, setSavedNote] = useState('')
   const [attachments, setAttachments] = useState<PendingFile[]>([])
   const [filesOpen, setFilesOpen] = useState(false)
+  const [pickedProcessIds, setPickedProcessIds] = useState<string[]>([])
+  const [selectingProcesses, setSelectingProcesses] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -266,6 +355,8 @@ export function RegulationChatPage({
     setSavedNote('')
     setAttachments([])
     setFilesOpen(false)
+    setPickedProcessIds([])
+    setSelectingProcesses(false)
     setInput('')
     setPlaceholder(DEFAULT_PLACEHOLDER)
     setBusyKind('question')
@@ -295,9 +386,23 @@ export function RegulationChatPage({
   }, [input])
 
   const ready = Boolean(session.resultRegulation || session.resultDocumentPath)
+  const processChoices = processChoicesFromSession(session)
+  const pipelineSelectedIds = selectedProcessIds(session)
+  const needsProcessSelection =
+    !ready && isSelectStage(session) && processChoices.length > 0 && pipelineSelectedIds.length === 0
   const hasUserMessage = session.messages.some((m) => m.role === 'user')
+  useEffect(() => {
+    if (!needsProcessSelection) return
+    setPickedProcessIds((prev) => {
+      if (prev.length > 0) return prev
+      return pipelineSelectedIds
+    })
+  }, [needsProcessSelection, pipelineSelectedIds])
+
   const resultName = resultFileName(session)
   const phase: AgentPhase = ready ? 'completed' : busy ? 'working' : 'attention'
+  const stageLabel = stageCaption(session)
+  const remainingLabel = remainingEstimateLabel(session)
 
   async function downloadResult(): Promise<void> {
     if (!ready) return
@@ -352,7 +457,7 @@ export function RegulationChatPage({
 
   async function send(text: string, files: PendingFile[]): Promise<void> {
     const message = text.trim()
-    if ((!message && files.length === 0) || busy) return
+    if ((!message && files.length === 0) || busy || needsProcessSelection) return
     stoppedRef.current = false
     setInput('')
     setPlaceholder(DEFAULT_PLACEHOLDER)
@@ -451,6 +556,28 @@ export function RegulationChatPage({
     }
   }
 
+  async function submitProcessSelection(): Promise<void> {
+    if (busy || selectingProcesses) return
+    const ids = Array.from(new Set(pickedProcessIds.map((item) => item.trim()).filter(Boolean)))
+    if (ids.length === 0) {
+      setError('Выберите хотя бы один процесс перед продолжением.')
+      return
+    }
+    setError('')
+    setSelectingProcesses(true)
+    try {
+      const updated = await api.selectRegulationCreationProcesses(session.draftId, ids)
+      onSessionChange(updated)
+      if (typeof window.agent.start === 'function') {
+        await continuePendingTurn()
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить выбранные процессы')
+    } finally {
+      setSelectingProcesses(false)
+    }
+  }
+
   function handleQuick(answer: string, sourceText: string): void {
     if (/^передел/i.test(answer.trim())) {
       const proposal = extractProposal(sourceText)
@@ -506,6 +633,15 @@ export function RegulationChatPage({
 
   async function runSdkAndApply(turn: RegulationCreationTurn): Promise<void> {
     if (stoppedRef.current) throw new RegulationCancelledError()
+    if (turn.prefetchedReply) {
+      const updated = await api.applyRegulationCreationReply(session.draftId, turn.prefetchedReply, {
+        sdkAgentId: turn.sdkAgentId,
+        forceCreate: turn.forceCreate
+      })
+      if (stoppedRef.current) throw new RegulationCancelledError()
+      onSessionChange(updated)
+      return
+    }
     const abort = new AbortController()
     abortRef.current = abort
     const runId = agentClient.start({
@@ -586,7 +722,7 @@ export function RegulationChatPage({
           <button
             className="regchat-force"
             onClick={() => void send(FORCE_CREATE_PROMPT, [])}
-            disabled={!hasUserMessage || busy}
+            disabled={!hasUserMessage || busy || needsProcessSelection}
           >
             Создать принудительно
           </button>
@@ -594,6 +730,12 @@ export function RegulationChatPage({
         <div className="regchat-subtitle">
           Ответьте на вопросы, и ИИ подготовит регламент в стиле ваших документов
         </div>
+        {!ready && (
+          <div className="regchat-stage-hint">
+            <span>{stageLabel}</span>
+            {remainingLabel ? <span className="regchat-remaining">{remainingLabel}</span> : null}
+          </div>
+        )}
       </div>
       {banner ? <div className="regchat-banner">{banner}</div> : null}
 
@@ -606,10 +748,63 @@ export function RegulationChatPage({
         <div className="regchat-feed-wrap">
             <div className="regchat-scroll" ref={scrollRef} onScroll={onScroll}>
               <div className="regchat-column">
-              {visible.length === 0 && !busy && (
-                <div className="regchat-hint">
-                  ИИ задаст несколько вопросов, чтобы собрать регламент. Опишите процесс, который нужно
-                  автоматизировать, или приложите файлы.
+              {!hasUserMessage && !ready && !needsProcessSelection && (
+                <div className="regchat-row ai">
+                  <AgentAvatar phase="attention" uid="starter" frozen={visible.length > 0} />
+                  <div className="regchat-bubble-col">
+                    <div className="regchat-starter">
+                      <h3>С чего начать</h3>
+                      <ul>
+                        {STARTER_HINTS.map((hint) => (
+                          <li key={hint}>{hint}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {needsProcessSelection && (
+                <div className="regchat-row ai">
+                  <AgentAvatar phase="attention" uid="process-select" frozen={false} />
+                  <div className="regchat-bubble-col">
+                    <div className="regchat-select-card">
+                      <h3>Выберите процессы для интервью</h3>
+                      <p>ИИ продолжит только по отмеченным процессам.</p>
+                      <div className="regchat-select-list">
+                        {processChoices.map((process) => {
+                          const checked = pickedProcessIds.includes(process.id)
+                          return (
+                            <label key={process.id} className="regchat-select-item">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={busy || selectingProcesses}
+                                onChange={(e) =>
+                                  setPickedProcessIds((prev) =>
+                                    e.target.checked
+                                      ? [...prev, process.id]
+                                      : prev.filter((id) => id !== process.id)
+                                  )
+                                }
+                              />
+                              <span className="regchat-select-title">{process.title}</span>
+                              {process.actor ? (
+                                <span className="regchat-select-actor">{process.actor}</span>
+                              ) : null}
+                            </label>
+                          )
+                        })}
+                      </div>
+                      <button
+                        type="button"
+                        className="regchat-select-submit"
+                        disabled={busy || selectingProcesses || pickedProcessIds.length === 0}
+                        onClick={() => void submitProcessSelection()}
+                      >
+                        {selectingProcesses ? 'Сохраняю выбор...' : 'Продолжить по выбранным процессам'}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
               {visible.map((m, index) => {
@@ -657,7 +852,7 @@ export function RegulationChatPage({
                       {timeLabel ? (
                         <div className={isUser ? 'regchat-time user' : 'regchat-time'}>{timeLabel}</div>
                       ) : null}
-                      {!isUser && isCurrentStage && quicks.length > 0 && (
+                      {!isUser && isCurrentStage && quicks.length > 0 && !needsProcessSelection && (
                         <div className="regchat-quick-row">
                           {quicks.map((qa) => (
                             <button
@@ -784,14 +979,14 @@ export function RegulationChatPage({
                     void send(input, attachments)
                   }
                 }}
-                disabled={busy}
+                disabled={busy || needsProcessSelection}
                 rows={1}
               />
               <div className="regchat-composer-tools">
                 <button
                   className="regchat-tool-btn"
                   onClick={() => void pickFiles()}
-                  disabled={busy}
+                  disabled={busy || needsProcessSelection}
                   title="Приложить файлы"
                   aria-label="Приложить файлы"
                   type="button"
@@ -821,7 +1016,7 @@ export function RegulationChatPage({
                   <button
                     className="regchat-send-btn"
                     onClick={() => void send(input, attachments)}
-                    disabled={!input.trim() && attachments.length === 0}
+                    disabled={needsProcessSelection || (!input.trim() && attachments.length === 0)}
                     title="Отправить"
                     aria-label="Отправить"
                     type="button"
@@ -833,6 +1028,9 @@ export function RegulationChatPage({
                 )}
               </div>
             </div>
+              </div>
+              <div className="regchat-composer-hint">
+                Enter — отправить {'\u2022'} Shift + Enter — новая строка
               </div>
             </div>
           )}

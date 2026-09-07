@@ -150,7 +150,15 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
         ? (data.resultDocument as Record<string, unknown>)
         : {},
     resultDocumentPath: String(data.resultDocumentPath ?? ''),
-    sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? '')
+    sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? ''),
+    interview:
+      data.interview && typeof data.interview === 'object'
+        ? (data.interview as Record<string, unknown>)
+        : {},
+    pipeline:
+      data.pipeline && typeof data.pipeline === 'object'
+        ? (data.pipeline as Record<string, unknown>)
+        : {}
   }
 }
 
@@ -166,7 +174,8 @@ function parseCreationTurn(data: Record<string, unknown>): RegulationCreationTur
     sdkPrompt: String(data.sdkPrompt ?? data.sdk_prompt ?? ''),
     sdkRules: String(data.sdkRules ?? data.sdk_rules ?? ''),
     sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? ''),
-    forceCreate: Boolean(data.forceCreate ?? data.force_create)
+    forceCreate: Boolean(data.forceCreate ?? data.force_create),
+    prefetchedReply: String(data.prefetchedReply ?? data.prefetched_reply ?? '')
   }
 }
 
@@ -1200,6 +1209,18 @@ export class ApiClient {
         },
         timeoutMs: 180_000
       }
+    )
+    return parseCreationSession(data)
+  }
+
+  async selectRegulationCreationProcesses(
+    draftId: string,
+    processIds: string[]
+  ): Promise<RegulationCreationSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulation-creation/sessions/${draftId}/select-processes`,
+      { body: { processIds }, timeoutMs: 120_000 }
     )
     return parseCreationSession(data)
   }

@@ -185,6 +185,8 @@ export interface RegulationCreationSession {
   resultDocument: Record<string, unknown>
   resultDocumentPath: string
   sdkAgentId: string
+  interview: Record<string, unknown>
+  pipeline: Record<string, unknown>
 }
 
 export interface RegulationCreationHistoryItem {
@@ -206,6 +208,7 @@ export interface RegulationCreationTurn {
   sdkRules: string
   sdkAgentId: string
   forceCreate: boolean
+  prefetchedReply: string
 }
 
 export interface MatchEvidence {
