@@ -25,6 +25,7 @@ from app.tools import ToolHostError
 
 DEFAULT_SDK_MODEL = "grok-4.6"
 REGULATION_SDK_MODEL = "grok-4.6"
+REGULATION_PREFETCH_MODEL = "composer-2.5"
 REGULATION_SDK_MODEL_PARAMS = (
     {"id": "effort", "value": "low"},
     {"id": "fast", "value": "true"},

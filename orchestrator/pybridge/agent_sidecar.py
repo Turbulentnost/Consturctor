@@ -91,6 +91,7 @@ from app.api_client import ApiClient, ApiError  # noqa: E402
 from app.orchestrator.json_blob import extract_json_object  # noqa: E402
 from app.sdk_agent.bridge import (  # noqa: E402
     REGULATION_SDK_MODEL,
+    REGULATION_PREFETCH_MODEL,
     REGULATION_SDK_MODEL_PARAMS,
     CursorSdkBridge,
     CursorSdkError,
@@ -1681,6 +1682,14 @@ class Sidecar:
         ).strip()
         if kind in {"form_orchestrator", "calc_orchestrator"}:
             return kind
+        if kind == "regulation_creation":
+            role = str(command.get("agentRole") or "interview").strip().lower()
+            prompt = str(command.get("prompt") or "")
+            if role == "research" or "materials/*.txt" in prompt:
+                return f"{kind}:{target}:research"
+            if "Фоновая подготовка" in prompt:
+                return f"{kind}:{target}:prefetch"
+            return f"{kind}:{target}:main"
         return f"{kind}:{target}" if target else ""
 
     def start(self, kind: str, command: dict[str, Any]) -> None:
@@ -2008,13 +2017,20 @@ class Sidecar:
                 }
             )
 
+        prompt_text = str(command.get("prompt") or "")
+        is_background = (
+            agent_role == "research"
+            or "Фоновая подготовка" in prompt_text
+            or "materials/*.txt" in prompt_text
+        )
+        run_model = os.getenv("CURSOR_REGULATION_PREFETCH_MODEL", REGULATION_PREFETCH_MODEL) if is_background else os.getenv("CURSOR_REGULATION_SDK_MODEL", REGULATION_SDK_MODEL)
         try:
             result = CursorSdkBridge.run(
                 bridge,
-                prompt=build_regulation_sdk_prompt(str(command.get("prompt") or "")),
+                prompt=build_regulation_sdk_prompt(prompt_text),
                 workflow_id=workspace_id,
                 cwd=str(run_cwd),
-                model=REGULATION_SDK_MODEL,
+                model=run_model,
                 model_params=[dict(item) for item in REGULATION_SDK_MODEL_PARAMS],
                 mode="interview",
                 tools=[],
@@ -2788,13 +2804,29 @@ def _copy_attachments(run_cwd: str, file_paths: list[str]) -> list[str]:
 
 
 def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[str, Any]) -> None:
+    import hashlib
+
     run_cwd.mkdir(parents=True, exist_ok=True)
     agents = (rules or "").strip() or "Создай регламент по interview.json. Ответ строго JSON."
-    (run_cwd / "AGENTS.md").write_text(agents, encoding="utf-8")
-    (run_cwd / "interview.json").write_text(
-        json.dumps(interview, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    agents_path = run_cwd / "AGENTS.md"
+    if not agents_path.is_file() or agents_path.read_text(encoding="utf-8") != agents:
+        agents_path.write_text(agents, encoding="utf-8")
+    slim = dict(interview) if isinstance(interview, dict) else {}
+    attachments = slim.get("attachments") if isinstance(slim.get("attachments"), list) else []
+    slim["attachments"] = [
+        {
+            "id": item.get("id"),
+            "name": item.get("name"),
+            "kind": item.get("kind") or "text",
+            "path": f"materials/{Path(str(item.get('name') or 'file')).stem}.txt",
+        }
+        for item in attachments
+        if isinstance(item, dict)
+    ]
+    interview_blob = json.dumps(slim, ensure_ascii=False, indent=2)
+    interview_path = run_cwd / "interview.json"
+    if not interview_path.is_file() or interview_path.read_text(encoding="utf-8") != interview_blob:
+        interview_path.write_text(interview_blob, encoding="utf-8")
     static_root = Path(__file__).resolve().parents[2] / "backend" / "app" / "static" / "regulation_dual_agent"
     for name in (
         "REGULATION_BRIEF.md",
@@ -2804,7 +2836,9 @@ def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[
     ):
         src = static_root / name
         if src.is_file():
-            (run_cwd / name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            dest = run_cwd / name
+            if not dest.is_file():
+                dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
     reviews = interview.get("materialReview")
     if isinstance(reviews, list) and reviews:
         try:
@@ -2827,7 +2861,13 @@ def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[
         if not text:
             continue
         safe = Path(_safe_filename(name)).stem or "file"
-        (materials / f"{safe}.txt").write_text(text, encoding="utf-8")
+        target = materials / f"{safe}.txt"
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        marker = target.with_suffix(target.suffix + ".hash")
+        if marker.is_file() and marker.read_text(encoding="utf-8") == digest and target.is_file():
+            continue
+        target.write_text(text, encoding="utf-8")
+        marker.write_text(digest, encoding="utf-8")
 
 
 def _attachments_note(relative_paths: list[str]) -> str:

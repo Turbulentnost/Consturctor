@@ -238,7 +238,10 @@ def enqueue_questions(state: dict[str, Any], questions: list[Any]) -> dict[str, 
 
 def enqueue_round_batch(state: dict[str, Any], questions: list[Any]) -> dict[str, Any]:
     pipeline = normalize_pipeline(state.get("pipeline") if isinstance(state, dict) else {})
-    if not _collect_stage_done(pipeline):
+    dual = bool(state.get("dualWorkflow") or pipeline.get("dualWorkflow"))
+    phase = str(pipeline.get("interviewPhase") or pipeline.get("stage") or "")
+    allow_during_collect = dual and phase in {"collect", "rounds"}
+    if not _collect_stage_done(pipeline) and not allow_during_collect:
         return normalize_question_queue(state)
     selected = {str(item).strip() for item in (pipeline.get("selectedProcessIds") or []) if str(item).strip()}
     filtered = _filter_round_questions(
@@ -526,11 +529,52 @@ def queued_question_metadata(parsed: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def enqueue_research_hypotheses(state: dict[str, Any]) -> dict[str, Any]:
+    """Turn research agent hypotheses into queued interview questions."""
+    out = normalize_question_queue(state)
+    hypotheses = out.get("researchQueue") if isinstance(out.get("researchQueue"), list) else []
+    if not hypotheses:
+        return out
+    items: list[dict[str, Any]] = []
+    for raw in hypotheses:
+        if not isinstance(raw, dict) or not raw.get("needsHumanConfirm"):
+            continue
+        pid = _clean(raw.get("processId"))
+        field = _clean(raw.get("field"))
+        hypothesis = _clean(raw.get("hypothesis"))
+        if not pid or not field:
+            continue
+        text = hypothesis or f"Уточните поле «{field}» для процесса."
+        if hypothesis and "?" not in hypothesis:
+            text = f"В документе предположительно: {hypothesis}. Верно? Если нет — уточните."
+        items.append(
+            {
+                "id": f"research-{pid}-{field}",
+                "processId": pid,
+                "field": field,
+                "text": text,
+                "options": ["Да, верно", "Нет, уточню", "Не знаю / нет данных"],
+                "source": "round",
+            }
+        )
+    if not items:
+        return out
+    return enqueue_questions(out, items)
+
+
 def needs_llm_prefetch(state: dict[str, Any]) -> bool:
     pipeline = normalize_pipeline(state.get("pipeline") if isinstance(state, dict) else {})
     if pipeline.get("stage") != "interview":
         return False
-    if queue_depth(state) > 0:
+    dual = bool(state.get("dualWorkflow") or pipeline.get("dualWorkflow"))
+    depth = queue_depth(state)
+    phase = str(pipeline.get("interviewPhase") or pipeline.get("stage") or "")
+    if dual and phase in {"collect", "rounds"}:
+        if depth >= TARGET_QUEUE_DEPTH:
+            return False
+        remaining = int(pipeline.get("maxQuestionsTotal") or 0) - int(pipeline.get("questionsAskedTotal") or 0)
+        return remaining > 0
+    if depth > 0:
         return False
     if not _collect_stage_done(pipeline):
         return False

@@ -109,3 +109,101 @@ def test_completeness_report_markdown() -> None:
     assert "Proc" in md
     assert "50%" in md
     assert "trigger" in md
+
+
+def test_select_processes_exits_material_review() -> None:
+    from app.services.regulation_creation.pipeline import select_processes
+
+    state = enable_dual_workflow(
+        {
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Проверка документации",
+                    "roleStatus": "unclear",
+                    "knownFacts": {},
+                }
+            ],
+            "pipeline": {
+                "stage": "select",
+                "materialReviewPending": True,
+                "materialReviewDone": False,
+            },
+        }
+    )
+    out = select_processes(state, ["p1"])
+    assert out["pipeline"]["stage"] == "interview"
+    assert out["pipeline"]["interviewPhase"] == "collect"
+    assert out["pipeline"]["materialReviewDone"] is True
+    assert (out.get("questionQueue") or [])
+
+
+def test_processes_need_collect_questions() -> None:
+    from app.services.regulation_creation.pipeline import processes_need_collect_questions
+
+    state = {
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Test",
+                "roleStatus": "belongs",
+                "knownFacts": {},
+            }
+        ],
+        "pipeline": {"selectedProcessIds": ["p1"]},
+    }
+    assert processes_need_collect_questions(state) is True
+    state["processes"][0]["knownFacts"] = {
+        "workLocation": "1C",
+        "frequency": "daily",
+        "trigger": "mail",
+        "steps": ["Шаг 1", "Шаг 2"],
+    }
+    assert processes_need_collect_questions(state) is False
+
+
+def test_build_regulation_gap_report() -> None:
+    from app.services.regulation_creation.dual_workflow import build_regulation_gap_report
+
+    state = {
+        "dualWorkflow": True,
+        "processes": [
+            {
+                "id": "p1",
+                "title": "Проверка документации",
+                "roleStatus": "belongs",
+                "knownFacts": {"workLocation": "1C"},
+            }
+        ],
+        "pipeline": {"selectedProcessIds": ["p1"], "dualWorkflow": True, "blocks": []},
+        "researchQueue": [
+            {
+                "processId": "p1",
+                "field": "trigger",
+                "hypothesis": "по заявке в Outlook",
+                "needsHumanConfirm": True,
+            }
+        ],
+    }
+    report = build_regulation_gap_report(state)
+    assert report["processes"][0]["collectGaps"]
+    assert report["processes"][0]["researchHypotheses"]
+    assert report["sectionRisks"]
+
+
+def test_enqueue_research_hypotheses() -> None:
+    from app.services.regulation_creation.question_queue import enqueue_research_hypotheses, queue_depth
+
+    state = {
+        "researchQueue": [
+            {
+                "processId": "p1",
+                "field": "trigger",
+                "hypothesis": "заявка в Outlook",
+                "needsHumanConfirm": True,
+            }
+        ],
+        "pipeline": {"stage": "interview", "interviewPhase": "collect", "selectedProcessIds": ["p1"]},
+    }
+    out = enqueue_research_hypotheses(state)
+    assert queue_depth(out) >= 1

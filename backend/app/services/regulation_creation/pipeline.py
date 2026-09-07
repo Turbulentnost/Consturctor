@@ -382,6 +382,9 @@ def select_processes(state: dict[str, Any], process_ids: list[str]) -> dict[str,
         str(item).strip() for item in pipeline.get("selectedProcessIds") or [] if str(item).strip()
     }
     pipeline["selectedProcessIds"] = selected
+    if pipeline.get("dualWorkflow"):
+        pipeline["materialReviewDone"] = True
+        pipeline["materialReviewPending"] = False
     if not pipeline["blocks"]:
         pipeline["blocks"] = blocks_from_processes_list(out.get("processes") or [])
     for block in pipeline["blocks"]:
@@ -1003,10 +1006,31 @@ def _derive_interview_phase(pipeline: dict[str, Any], collect: dict[str, Any]) -
             return "material_review"
         return stage
     if stage == "interview":
-        if pipeline.get("dualWorkflow") and not pipeline.get("materialReviewDone"):
-            return "material_review"
         return "rounds" if bool(collect.get("isReady")) else "collect"
     return "select"
+
+
+def processes_need_collect_questions(state: dict[str, Any]) -> bool:
+    """True when selected processes still miss core facts and user was not interviewed yet."""
+    interview = state if isinstance(state, dict) else {}
+    pipeline = normalize_pipeline(interview.get("pipeline"))
+    selected = {
+        str(item).strip()
+        for item in (pipeline.get("selectedProcessIds") or [])
+        if str(item).strip()
+    }
+    if not selected:
+        return False
+    by_id = {
+        str(item.get("id") or "").strip(): item
+        for item in (interview.get("processes") or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    for pid in selected:
+        process = by_id.get(pid)
+        if process and _collect_required_gaps_for_process(process):
+            return True
+    return False
 
 
 def _collect_readiness(pipeline: dict[str, Any]) -> dict[str, Any]:

@@ -203,7 +203,12 @@ def _read_docx_bytes(raw: bytes) -> str:
         raise DocumentError("Для DOCX нужен python-docx") from exc
     try:
         document = docx.Document(io.BytesIO(raw))
-        parts = [para.text for para in document.paragraphs]
+        parts = [para.text for para in document.paragraphs if para.text.strip()]
+        for table in document.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    parts.append("\t".join(cells))
     except Exception as exc:  # noqa: BLE001
         raise DocumentError(f"Не удалось разобрать DOCX: {exc}") from exc
     return "\n".join(parts)

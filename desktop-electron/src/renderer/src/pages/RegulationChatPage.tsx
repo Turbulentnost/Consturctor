@@ -381,6 +381,7 @@ function shouldBlockSdkAgent(
   if (phase === 'extract' || stage === 'extract') return false
   if (queueLen > 0) return true
   if (stage === 'interview' && phase === 'collect') return true
+  if (stage === 'interview' && phase === 'material_review') return true
   return false
 }
 
@@ -388,7 +389,7 @@ function isCollectInterview(session: RegulationCreationSession): boolean {
   const pipeline = pipelineMeta(session)
   const stage = String(pipeline.stage || '').trim().toLowerCase()
   const phase = String(pipeline.interviewPhase || stage).trim().toLowerCase()
-  return stage === 'interview' && phase === 'collect'
+  return stage === 'interview' && (phase === 'collect' || phase === 'rounds')
 }
 
 class RegulationCancelledError extends Error {
@@ -544,6 +545,8 @@ export function RegulationChatPage({
   const queuedQuestionsRef = useRef<RegulationQueuedQuestion[]>([])
   const prefetchRunRef = useRef(false)
   const researchPrefetchRunRef = useRef(false)
+  const lastResearchPrefetchAtRef = useRef(0)
+  const backgroundSdkBusyRef = useRef(false)
   const submittingRef = useRef(false)
   const sdkRanRef = useRef(false)
   const liveThinkingRef = useRef('')
@@ -597,7 +600,9 @@ export function RegulationChatPage({
 
   async function prefetchQueue(): Promise<void> {
     if (ready || needsProcessSelection || stoppedRef.current || busy) return
+    if (backgroundSdkBusyRef.current || prefetchRunRef.current) return
     try {
+      backgroundSdkBusyRef.current = true
       const turn = await api.peekRegulationCreationTurn(session.draftId)
       syncQueueFromSession(turn)
       const lastIsAssistant = session.messages[session.messages.length - 1]?.role === 'assistant'
@@ -630,6 +635,7 @@ export function RegulationChatPage({
         })
         syncQueueFromSession(updated)
         onSessionChange(updated)
+        void ensureCollectQuestionPosted(updated)
       } finally {
         prefetchRunRef.current = false
         setPrefetching(false)
@@ -637,13 +643,34 @@ export function RegulationChatPage({
     } catch {
       prefetchRunRef.current = false
       setPrefetching(false)
+    } finally {
+      backgroundSdkBusyRef.current = false
+    }
+  }
+
+  function scheduleBackgroundPrefetch(mode: 'queue' | 'research' | 'both' = 'both'): void {
+    if (ready || needsProcessSelection || stoppedRef.current || busy) return
+    const depth = effectiveQueueDepth(session, undefined, queuedQuestionsRef.current.length)
+    if (mode !== 'research' && depth < 3 && !prefetchRunRef.current) {
+      void prefetchQueue()
+    }
+    if (
+      mode !== 'queue' &&
+      session.dualWorkflow &&
+      depth < 4 &&
+      !researchPrefetchRunRef.current &&
+      Date.now() - lastResearchPrefetchAtRef.current > 90_000
+    ) {
+      void prefetchResearch()
     }
   }
 
   async function prefetchResearch(): Promise<void> {
     if (ready || needsProcessSelection || stoppedRef.current || busy) return
     if (!session.dualWorkflow) return
+    if (backgroundSdkBusyRef.current || researchPrefetchRunRef.current) return
     try {
+      backgroundSdkBusyRef.current = true
       const turn = await api.peekRegulationCreationTurn(session.draftId)
       if (!turn.researchPrompt?.trim() || researchPrefetchRunRef.current || typeof window.agent?.start !== 'function') {
         return
@@ -669,12 +696,15 @@ export function RegulationChatPage({
         })
         syncQueueFromSession(updated)
         onSessionChange(updated)
+        lastResearchPrefetchAtRef.current = Date.now()
         void ensureCollectQuestionPosted(updated)
       } finally {
         researchPrefetchRunRef.current = false
       }
     } catch {
       researchPrefetchRunRef.current = false
+    } finally {
+      backgroundSdkBusyRef.current = false
     }
   }
 
@@ -761,8 +791,7 @@ export function RegulationChatPage({
     if (ready || needsProcessSelection || stoppedRef.current || busy) return
     const depth = session.queueDepth ?? session.questionQueue?.length ?? queuedQuestionsRef.current.length
     if (depth >= 3) return
-    void prefetchQueue()
-    void prefetchResearch()
+    void scheduleBackgroundPrefetch()
   }, [
     session.draftId,
     ready,
@@ -917,9 +946,9 @@ export function RegulationChatPage({
           )
           if (depth > 0) {
             await ensureCollectQuestionPosted(turn.session)
+            void scheduleBackgroundPrefetch()
           } else {
-            void prefetchQueue()
-            void prefetchResearch()
+            void scheduleBackgroundPrefetch()
           }
           return
         }
@@ -994,13 +1023,12 @@ export function RegulationChatPage({
     const phase = String(pipeline.interviewPhase || '').trim().toLowerCase()
     const interviewStage = stage === 'interview' || (stage === 'assemble' && queueLen > 0)
     if (!interviewStage && !isCollectInterview(base)) return
-    if (stage === 'assemble' || phase === 'rounds' || isCollectInterview(base)) {
+    if (stage === 'assemble' || phase === 'rounds' || phase === 'collect' || isCollectInterview(base)) {
       try {
         const advanced = await drainQueueUntilPosted(base)
         syncQueueFromSession(advanced)
         onSessionChange(advanced)
-        void prefetchQueue()
-        void prefetchResearch()
+        void scheduleBackgroundPrefetch()
         return
       } catch {
         /* fall through to heuristics below */
@@ -1015,8 +1043,7 @@ export function RegulationChatPage({
         const advanced = await drainQueueUntilPosted(base)
         syncQueueFromSession(advanced)
         onSessionChange(advanced)
-        void prefetchQueue()
-        void prefetchResearch()
+        void scheduleBackgroundPrefetch()
       } catch {
         /* best effort when queue is waiting but chat is idle */
       }
@@ -1025,32 +1052,27 @@ export function RegulationChatPage({
 
   async function advanceCollectTurn(freshSession?: RegulationCreationSession): Promise<boolean> {
     const base = freshSession ?? session
-    const turn = await api.peekRegulationCreationTurn(base.draftId)
-    syncQueueFromSession(turn)
-    if (turn.prefetchedReply?.trim()) {
-      const updated = await api.applyRegulationCreationReply(base.draftId, turn.prefetchedReply, {
-        sdkAgentId: turn.sdkAgentId,
-        forceCreate: turn.forceCreate
-      })
-      syncQueueFromSession(updated)
+    const queueLen = Math.max(base.queueDepth ?? 0, base.questionQueue?.length ?? 0)
+    if (queueLen <= 0) return false
+    const visible = visibleChatMessages(base)
+    const lastVisible = visible[visible.length - 1]
+    const lastAssistant = [...base.messages].reverse().find((item) => item.role === 'assistant')
+    const hasOpenQuestion = Boolean(lastAssistant && quickAnswers(lastAssistant.structured).length > 0)
+    if (hasOpenQuestion && lastVisible?.role !== 'user') return false
+    try {
+      const advanced = await api.advanceRegulationCreationQuestion(base.draftId)
+      syncQueueFromSession(advanced)
       setOptimisticQuestion(null)
-      onSessionChange(updated)
-      void prefetchQueue()
-      void prefetchResearch()
-      await tryUnstickCollectTurn(updated)
-      return true
+      onSessionChange(advanced)
+      const servedAssistant = [...advanced.messages].reverse().find((item) => item.role === 'assistant')
+      const served = Boolean(servedAssistant && quickAnswers(servedAssistant.structured).length > 0)
+      if (served) {
+        void scheduleBackgroundPrefetch()
+      }
+      return served
+    } catch {
+      return false
     }
-    const advanced = await api.advanceRegulationCreationQuestion(base.draftId)
-    syncQueueFromSession(advanced)
-    setOptimisticQuestion(null)
-    onSessionChange(advanced)
-    const lastAssistant = [...advanced.messages].reverse().find((item) => item.role === 'assistant')
-    const served = Boolean(lastAssistant && quickAnswers(lastAssistant.structured).length > 0)
-    if (served) {
-      void prefetchQueue()
-      void prefetchResearch()
-    }
-    return served
   }
 
   async function tryAdvanceAfterReply(freshSession?: RegulationCreationSession): Promise<void> {
@@ -1063,8 +1085,7 @@ export function RegulationChatPage({
       const advanced = await api.advanceRegulationCreationQuestion(base.draftId)
       syncQueueFromSession(advanced)
       onSessionChange(advanced)
-      void prefetchQueue()
-      void prefetchResearch()
+      void scheduleBackgroundPrefetch()
     } catch {
       /* advance is best-effort when duplicate reply was skipped */
     }
@@ -1177,18 +1198,10 @@ export function RegulationChatPage({
     if (stoppedRef.current) throw new RegulationCancelledError()
     syncQueueFromSession(turn)
     if (shouldBlockSdkAgent(turn.session, turn)) {
-      if (turn.prefetchedReply && !needsProcessSelectionForSession(turn.session, ready)) {
-        const updated = await api.applyRegulationCreationReply(session.draftId, turn.prefetchedReply, {
-          sdkAgentId: turn.sdkAgentId,
-          forceCreate: turn.forceCreate
-        })
-        if (stoppedRef.current) throw new RegulationCancelledError()
-        syncQueueFromSession(updated)
-        setOptimisticQuestion(null)
-        onSessionChange(updated)
-        void prefetchQueue()
-        void prefetchResearch()
-        await tryAdvanceAfterReply(updated)
+      if (!needsProcessSelectionForSession(turn.session, ready)) {
+        await advanceCollectTurn(turn.session)
+        void scheduleBackgroundPrefetch()
+        await tryUnstickCollectTurn(turn.session)
       } else {
         const queueLen = Math.max(
           turn.queueDepth ?? 0,
@@ -1196,28 +1209,9 @@ export function RegulationChatPage({
           turn.session.queueDepth ?? 0,
           turn.session.questionQueue?.length ?? 0
         )
-        if (queueLen > 0 && !turn.prefetchedReply) {
-          const retry = await api.peekRegulationCreationTurn(session.draftId)
-          if (retry.prefetchedReply) {
-            const updated = await api.applyRegulationCreationReply(session.draftId, retry.prefetchedReply, {
-              sdkAgentId: retry.sdkAgentId,
-              forceCreate: retry.forceCreate
-            })
-            if (stoppedRef.current) throw new RegulationCancelledError()
-            syncQueueFromSession(updated)
-            setOptimisticQuestion(null)
-            onSessionChange(updated)
-            void prefetchQueue()
-            void prefetchResearch()
-            await ensureCollectQuestionPosted(updated)
-          } else {
-            await ensureCollectQuestionPosted(retry.session)
-          }
-        } else {
-          onSessionChange(turn.session)
-          if (queueLen > 0) {
-            await ensureCollectQuestionPosted(turn.session)
-          }
+        onSessionChange(turn.session)
+        if (queueLen > 0) {
+          await ensureCollectQuestionPosted(turn.session)
         }
       }
       return
@@ -1231,8 +1225,7 @@ export function RegulationChatPage({
       syncQueueFromSession(updated)
       setOptimisticQuestion(null)
       onSessionChange(updated)
-      void prefetchQueue()
-      void prefetchResearch()
+      void scheduleBackgroundPrefetch()
       await tryAdvanceAfterReply(updated)
       await tryUnstickCollectTurn(updated)
       await ensureCollectQuestionPosted(updated)
@@ -1280,8 +1273,7 @@ export function RegulationChatPage({
       syncQueueFromSession(updated)
       setOptimisticQuestion(null)
       onSessionChange(updated)
-      void prefetchQueue()
-      void prefetchResearch()
+      void scheduleBackgroundPrefetch()
       await tryAdvanceAfterReply(updated)
       await tryUnstickCollectTurn(updated)
       await ensureCollectQuestionPosted(updated)
@@ -1315,8 +1307,7 @@ export function RegulationChatPage({
         if (queueLen > 0) {
           await ensureCollectQuestionPosted(turn.session)
         } else {
-          void prefetchQueue()
-        void prefetchResearch()
+          void scheduleBackgroundPrefetch()
         }
         return
       }
@@ -1354,17 +1345,20 @@ export function RegulationChatPage({
 
   useEffect(() => {
     if (busy || ready || stoppedRef.current || needsProcessSelection) return
-    if (!waitingForAssistant || !isCollectInterview(session)) return
+    if (!waitingForAssistant) return
     const queueLen = Math.max(
       session.queueDepth ?? 0,
       session.questionQueue?.length ?? 0,
       queuedQuestionsRef.current.length
     )
     if (queueLen <= 0) return
-    const key = `collect:${session.draftId}:${pendingUserId || 'user'}`
+    const pipeline = pipelineMeta(session)
+    const stage = String(pipeline.stage || '').trim().toLowerCase()
+    if (stage !== 'interview' && stage !== 'assemble') return
+    const key = `collect:${session.draftId}:${pendingUserId || 'user'}:${queueLen}`
     if (collectRecoverKeyRef.current === key) return
     collectRecoverKeyRef.current = key
-    void tryUnstickCollectTurn(session)
+    void advanceCollectTurn(session)
   }, [
     session.draftId,
     pendingUserId,
@@ -1416,7 +1410,7 @@ export function RegulationChatPage({
     const timer = window.setInterval(() => {
       if (busy || stoppedRef.current) return
       void ensureCollectQuestionPosted(session)
-    }, 2000)
+    }, 1500)
     return () => window.clearInterval(timer)
   }, [
     session.draftId,

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-MAX_PROMPT_ATTACHMENT_CHARS = 120_000
+MAX_PROMPT_ATTACHMENT_CHARS = 32_000
 
 _UNKNOWN_VALUES = {
     "",
@@ -332,7 +332,11 @@ def research_sdk_agent_id(state: Any) -> str:
 
 
 def interview_snapshot(state: Any) -> dict[str, Any]:
-    return _prompt_state(normalize_interview_state(state))
+    """Slim snapshot for SDK/API — attachment bodies live in materials/*.txt."""
+    interview = normalize_interview_state(state)
+    slim = _prompt_state(interview)
+    slim["attachments"] = _prompt_attachment_refs(interview.get("attachments") or [])
+    return slim
 
 
 def is_replacement_garbage(value: Any) -> bool:
@@ -536,11 +540,12 @@ def creation_document_rules(*, force_create: bool = False) -> str:
 
 def creation_collect_rules() -> str:
     return (
-        "Сейчас этап COLLECT: добираем обязательные факты только по выбранным процессам.\n"
-        "Поля для закрытия: tool/workLocation, periodicity/frequency, triggerAction/trigger, userAction/steps.\n"
-        "Не переходи к свободному раунду до закрытия этого минимума.\n"
-        "За один ход: один процесс, одно поле, один конкретный вопрос.\n"
-        "Ответ строго JSON: status='need_more', message, quickAnswers, roundQuestions=[], document={}."
+        "Сейчас этап COLLECT: добираем факты по выбранным процессам для исполняемого регламента.\n"
+        "Обязательные поля: workLocation, frequency, trigger, steps.\n"
+        "Расширенные (если пробел в regulationGapReport): inputs, outputs, controls, exceptions, recipients.\n"
+        "Один вопрос за ход — по самому критичному незакрытому пробелу.\n"
+        "roundQuestions — пакет 3–8 следующих вопросов для prefetch (только по открытым gaps).\n"
+        "Ответ строго JSON: status='need_more', message, quickAnswers, roundQuestions=[...], document={}."
     )
 
 
@@ -654,15 +659,18 @@ def build_round_prefetch_prompt(
     state: dict[str, Any],
     pipeline: dict[str, Any] | None = None,
 ) -> str:
+    from app.services.regulation_creation.dual_workflow import format_gap_report_for_prompt
     from app.services.regulation_creation.pipeline import MAX_QUESTIONS_PER_ROUND, creation_round_interview_rules, normalize_pipeline
 
     pipe = normalize_pipeline(pipeline or (state.get("pipeline") if isinstance(state, dict) else {}))
+    gap_block = format_gap_report_for_prompt(state) if isinstance(state, dict) else ""
     return (
-        "Фоновая подготовка очереди вопросов (пользователь ещё отвечает на предыдущий).\n"
-        "Прочитай interview.json и materials. Не задавай вопрос пользователю в message.\n"
-        f"Верни batch roundQuestions (до {MAX_QUESTIONS_PER_ROUND}) по выбранным процессам.\n"
+        "Фоновая подготовка очереди (пользователь отвечает на предыдущий вопрос).\n"
+        "Читай materials/*.txt и regulationGapReport — не дублируй закрытые поля.\n"
+        f"Верни batch roundQuestions (до {MAX_QUESTIONS_PER_ROUND}).\n"
         f"{creation_round_interview_rules(force_create=False)}\n"
-        'Ответ строго JSON: status="need_more", message="", quickAnswers=[], roundQuestions=[...], document={}.'
+        f"regulationGapReport:\n{gap_block}\n"
+        'Ответ JSON: status="need_more", message="", roundQuestions=[...], document={}.'
     )
 
 
@@ -673,6 +681,7 @@ def build_followup_creation_prompt(
     for_document: bool = False,
     stage: str = "interview",
     pipeline: dict[str, Any] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> str:
     from app.services.regulation_creation.pipeline import (
         MAX_QUESTIONS_PER_ROUND,
@@ -704,16 +713,29 @@ def build_followup_creation_prompt(
             f"Последний ответ пользователя: {message.strip()}"
         )
     if phase == "collect":
+        from app.services.regulation_creation.dual_workflow import format_gap_report_for_prompt
+
+        gap_block = ""
+        if isinstance(state, dict):
+            gap_block = f"regulationGapReport:\n{format_gap_report_for_prompt(state)}\n"
         return (
-            "Этап COLLECT: закрывай обязательные факты по выбранным процессам по одному gap за ход.\n"
+            "Этап COLLECT: закрывай обязательные и расширенные факты по выбранным процессам.\n"
+            "Изучи regulationGapReport — спрашивай только то, чего не хватает для исполняемого регламента.\n"
             f"{creation_collect_rules()}\n"
+            f"{gap_block}"
             f"Последний ответ пользователя: {message.strip()}"
         )
+    gap_block = ""
+    if isinstance(state, dict):
+        from app.services.regulation_creation.dual_workflow import format_gap_report_for_prompt
+
+        gap_block = f"regulationGapReport:\n{format_gap_report_for_prompt(state)}\n"
     return (
         "Продолжи блочное интервью. Прочитай interview.json: answers, questionnaire, pipeline.\n"
         f"Сначала учти уже данные ответы, затем подготовь следующий roundQuestions "
         f"(до {MAX_QUESTIONS_PER_ROUND}).\n"
         f"{creation_round_interview_rules(force_create=force_create)}\n"
+        f"{gap_block}"
         f"Последний ответ пользователя: {message.strip()}\n"
         "document оставляй пустым, пока status не ready."
     )
@@ -1788,6 +1810,8 @@ def _prompt_inventory_for_stage(
         "currentQuestion": state.get("currentQuestion") or {},
     }
     if phase == "collect":
+        from app.services.regulation_creation.dual_workflow import build_regulation_gap_report, dual_workflow_enabled
+
         out["processes"] = [
             {
                 "id": item.get("id"),
@@ -1800,6 +1824,12 @@ def _prompt_inventory_for_stage(
             for item in processes
         ]
         out["functions"] = []
+        if dual_workflow_enabled(state):
+            out["regulationGapReport"] = build_regulation_gap_report(state)
+            out["materialReview"] = state.get("materialReview") or list(
+                (state.get("processCompleteness") or {}).values()
+            )
+            out["researchQueue"] = (state.get("researchQueue") or [])[-10:]
         return out
     out["processes"] = processes
     out["functions"] = [
@@ -1808,6 +1838,11 @@ def _prompt_inventory_for_stage(
         if isinstance(item, dict)
         and (not selected or _clean_str(item.get("id") or item.get("processId")) in selected)
     ]
+    from app.services.regulation_creation.dual_workflow import build_regulation_gap_report, dual_workflow_enabled
+
+    if dual_workflow_enabled(state):
+        out["regulationGapReport"] = build_regulation_gap_report(state)
+        out["researchQueue"] = (state.get("researchQueue") or [])[-10:]
     return out
 
 

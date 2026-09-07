@@ -84,6 +84,148 @@ def creation_material_review_rules() -> str:
     )
 
 
+EXTENDED_REGULATION_FIELDS = ("inputs", "outputs", "controls", "exceptions", "recipients", "objects")
+
+FIELD_LABELS: dict[str, str] = {
+    "workLocation": "где выполняется (система/место)",
+    "frequency": "периодичность",
+    "trigger": "триггер запуска",
+    "steps": "пошаговый алгоритм",
+    "inputs": "входы процесса",
+    "outputs": "результаты/выходы",
+    "controls": "контроль и проверки",
+    "exceptions": "исключения и эскалация",
+    "recipients": "получатели результата",
+    "objects": "объекты работы",
+    "actor": "исполнитель",
+    "roleStatus": "принадлежность должности",
+}
+
+
+def _extended_gaps_for_process(process: dict[str, Any]) -> list[str]:
+    facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+    gaps: list[str] = []
+    for field in EXTENDED_REGULATION_FIELDS:
+        value = facts.get(field)
+        if isinstance(value, list):
+            if not [item for item in value if _clean_str(item)]:
+                gaps.append(field)
+        elif not _clean_str(value):
+            gaps.append(field)
+    steps = facts.get("steps")
+    if isinstance(steps, list) and len([s for s in steps if _clean_str(s)]) < 2 and "steps" not in gaps:
+        if _clean_str(steps) or (isinstance(steps, list) and any(_clean_str(s) for s in steps)):
+            pass  # steps exist but thin — flagged separately
+    return gaps
+
+
+def _smart_gaps_for_process(process_id: str, pipeline: dict[str, Any]) -> list[str]:
+    from app.services.regulation_creation.pipeline import SMART_KEYS
+
+    pid = _clean_str(process_id)
+    for block in pipeline.get("blocks") or []:
+        if not isinstance(block, dict) or _clean_str(block.get("processId")) != pid:
+            continue
+        smart = block.get("smart") if isinstance(block.get("smart"), dict) else {}
+        return [key for key in SMART_KEYS if smart.get(key) in {"missing", "partial", None, ""}]
+    return []
+
+
+def _gap_report_cache_key(state: dict[str, Any]) -> str:
+    pipeline = normalize_pipeline(state.get("pipeline"))
+    asked = int(pipeline.get("questionsAskedTotal") or 0)
+    selected = ",".join(sorted(str(x) for x in (pipeline.get("selectedProcessIds") or [])))
+    facts_sig: list[str] = []
+    for process in state.get("processes") or []:
+        if not isinstance(process, dict):
+            continue
+        pid = _clean_str(process.get("id"))
+        facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+        facts_sig.append(f"{pid}:{len(facts)}:{hash(tuple(sorted(facts.items())))}")
+    return f"{asked}|{selected}|{'|'.join(facts_sig)}"
+
+
+def build_regulation_gap_report(state: dict[str, Any]) -> dict[str, Any]:
+    """Analyze what is still missing for an executable STO regulation."""
+    interview = normalize_interview_state(state)
+    pipeline = normalize_pipeline(interview.get("pipeline"))
+    selected = {
+        str(item).strip()
+        for item in (pipeline.get("selectedProcessIds") or [])
+        if str(item).strip()
+    }
+    completeness_map = interview.get("processCompleteness")
+    if not isinstance(completeness_map, dict):
+        completeness_map = {}
+    research_queue = interview.get("researchQueue") if isinstance(interview.get("researchQueue"), list) else []
+    processes_out: list[dict[str, Any]] = []
+    total_gaps = 0
+    for raw in interview.get("processes") or []:
+        if not isinstance(raw, dict):
+            continue
+        pid = _clean_str(raw.get("id") or raw.get("processId"))
+        if selected and pid not in selected:
+            continue
+        collect_gaps = _collect_required_gaps_for_process(raw)
+        extended_gaps = _extended_gaps_for_process(raw)
+        smart_gaps = _smart_gaps_for_process(pid, pipeline)
+        review = completeness_map.get(pid) if isinstance(completeness_map.get(pid), dict) else {}
+        doc_missing = review.get("missingInDocument") if isinstance(review.get("missingInDocument"), list) else []
+        hypotheses = [
+            {
+                "field": _canonical_field(item.get("field")),
+                "hypothesis": _clean_str(item.get("hypothesis")),
+                "needsHumanConfirm": bool(item.get("needsHumanConfirm")),
+            }
+            for item in research_queue
+            if isinstance(item, dict) and _clean_str(item.get("processId")) == pid
+        ]
+        gap_count = len(collect_gaps) + len(extended_gaps) + len(smart_gaps)
+        total_gaps += gap_count
+        processes_out.append(
+            {
+                "processId": pid,
+                "title": _clean_str(raw.get("title")) or pid,
+                "completenessScore": int(review.get("completenessScore") or process_completeness_score(raw)),
+                "collectGaps": [FIELD_LABELS.get(g, g) for g in collect_gaps],
+                "extendedGaps": [FIELD_LABELS.get(g, g) for g in extended_gaps],
+                "smartGaps": smart_gaps,
+                "missingInDocument": [str(x) for x in doc_missing],
+                "researchHypotheses": hypotheses,
+                "knownFacts": _facts_for_process(raw),
+            }
+        )
+    section_risks: list[str] = []
+    if any(not p.get("knownFacts", {}).get("steps") for p in processes_out):
+        section_risks.append("Раздел 6 «Организация работы» будет без исполняемых алгоритмов")
+    if any(p.get("extendedGaps") for p in processes_out):
+        section_risks.append("Не хватает входов/выходов/контролей — регламент не применим на практике")
+    if total_gaps == 0 and any(p.get("smartGaps") for p in processes_out):
+        section_risks.append("SMART-критерии не закрыты — процесс описан расплывчато")
+    summary = (
+        f"Выбрано процессов: {len(processes_out)}. Открытых пробелов: {total_gaps}. "
+        "Сформируй вопросы только по незакрытым полям — не повторяй knownFacts."
+    )
+    return {
+        "summary": summary,
+        "sectionRisks": section_risks,
+        "processes": processes_out,
+    }
+
+
+def format_gap_report_for_prompt(state: dict[str, Any]) -> str:
+    key = _gap_report_cache_key(state)
+    cached = state.get("_regulationGapReportCache")
+    if isinstance(cached, dict) and cached.get("key") == key:
+        text = cached.get("text")
+        if isinstance(text, str) and text:
+            return text
+    report = build_regulation_gap_report(state)
+    text = json.dumps(report, ensure_ascii=False, indent=2)
+    state["_regulationGapReportCache"] = {"key": key, "text": text, "report": report}
+    return text
+
+
 def creation_researcher_rules() -> str:
     return (
         "Режим RESEARCH: читай materials/*, не задавай вопросов пользователю.\n"
@@ -97,6 +239,10 @@ def creation_interviewer_dual_rules(*, force_create: bool = False) -> str:
     force = "Можно status=ready и document." if force_create else "Не ready, пока gaps не закрыты."
     return (
         "Режим INTERVIEWER: один вопрос в message, batch roundQuestions для prefetch.\n"
+        "Перед каждым ходом изучи regulationGapReport в промпте: что не хватает регламенту для "
+        "полноценной работы (алгоритм, триггер, контроль, исключения, ответственность).\n"
+        "Не задавай шаблонные вопросы по уже закрытым полям. Если steps есть, но короткие — "
+        "уточни детали шагов, системы, сроки, эскалацию.\n"
         f"{force}\n"
         f"\n{load_static_doc('INTERVIEWER_AGENT.md')}\n"
         f"\n{load_static_doc('REGULATION_BRIEF.md')}\n"
@@ -106,11 +252,26 @@ def creation_interviewer_dual_rules(*, force_create: bool = False) -> str:
 def build_research_prefetch_prompt(*, state: dict[str, Any], pipeline: dict[str, Any]) -> str:
     interview = normalize_interview_state(state)
     selected = pipeline.get("selectedProcessIds") or []
+    report = build_regulation_gap_report(interview)
+    gaps_short = json.dumps(
+        [
+            {
+                "processId": item.get("processId"),
+                "title": item.get("title"),
+                "collectGaps": item.get("collectGaps"),
+                "extendedGaps": item.get("extendedGaps"),
+            }
+            for item in (report.get("processes") or [])
+            if isinstance(item, dict)
+        ],
+        ensure_ascii=False,
+    )
     return (
-        "Продолжай исследование документов. Обнови researchFacts по выбранным процессам.\n"
+        "Продолжай исследование materials/*.txt (не перечитывай interview.json целиком).\n"
         f"selectedProcessIds={json.dumps(selected, ensure_ascii=False)}\n"
-        "Верни JSON с researchFacts и researchQueue (см. RESEARCHER_AGENT.md).\n"
-        "interview.json и materials/* — в рабочей папке.\n"
+        f"Пробелы: {report.get('summary')}\n"
+        f"gaps={gaps_short}\n"
+        "Верни JSON: researchFacts + researchQueue (needsHumanConfirm для спорных полей).\n"
     )
 
 
@@ -286,7 +447,9 @@ def apply_research_payload(state: dict[str, Any], payload: dict[str, Any]) -> di
     queue = payload.get("researchQueue")
     if isinstance(queue, list):
         out["researchQueue"] = queue[-40:]
-    return out
+    from app.services.regulation_creation.question_queue import enqueue_research_hypotheses
+
+    return enqueue_research_hypotheses(out)
 
 
 def process_completeness_score(process: dict[str, Any]) -> int:
