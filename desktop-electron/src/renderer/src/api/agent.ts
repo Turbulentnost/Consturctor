@@ -20,6 +20,9 @@ export interface RegulationCreationCommand {
   rules?: string
   interview?: Record<string, unknown>
   resumeAgentId?: string
+  writeDocument?: boolean
+  useTools?: boolean
+  forceCreate?: boolean
 }
 
 export interface DemoCommand {

@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     cursor_workflow_model_effort: str = "high"
     cursor_regulation_creation_model: str = "grok-4.6"
     cursor_regulation_creation_effort: str = "xhigh"
+    cursor_regulation_creation_question_effort: str = "low"
 
     # App Postgres (users, avatars, future agent data). Not ERP.
     database_url: str = (

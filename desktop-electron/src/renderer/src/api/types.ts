@@ -177,6 +177,17 @@ export interface RegulationCreationMessage {
   createdAt: string
 }
 
+export interface RegulationCreationProgress {
+  answered: number
+  remaining: number
+  total: number
+  currentProcessId: string
+  currentProcessTitle: string
+  currentProcessIndex: number
+  processCount: number
+  visible: boolean
+}
+
 export interface RegulationCreationSession {
   draftId: string
   status: string
@@ -185,6 +196,7 @@ export interface RegulationCreationSession {
   resultDocument: Record<string, unknown>
   resultDocumentPath: string
   sdkAgentId: string
+  progress?: RegulationCreationProgress
 }
 
 export interface RegulationCreationHistoryItem {
@@ -206,6 +218,8 @@ export interface RegulationCreationTurn {
   sdkRules: string
   sdkAgentId: string
   forceCreate: boolean
+  writeDocument: boolean
+  useTools: boolean
 }
 
 export interface MatchEvidence {

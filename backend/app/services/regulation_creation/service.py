@@ -47,15 +47,25 @@ from app.services.regulation_creation.interview import (
     append_user_turn,
     build_creation_prompt,
     build_followup_creation_prompt,
+    creation_interviewer_rules,
     creation_system_rules,
+    current_interview_process_id,
     document_from_interview,
     document_has_body,
     document_has_full_text,
+    interview_progress,
     interview_sdk_agent_id,
     interview_snapshot,
+    interview_write_document,
+    interview_use_tools,
+    leading_question_text,
+    is_process_select_message,
     is_replacement_garbage,
     merge_agent_payload,
+    question_for_selected_processes,
+    selected_process_ids,
     new_interview_state,
+    normalize_process_id,
     ready_blocker,
     remember_assistant_question,
     set_interview_position,
@@ -172,6 +182,7 @@ def peek_creation_turn(db: Session, *, user_id: str, draft_id: str) -> Regulatio
         draft,
         message=last_user,
         force_create=_is_force_create_message(last_user),
+        new_attachments=False,
     )
 
 
@@ -225,7 +236,7 @@ def persist_creation_turn(
         raise RegulationCreationError("Введите сообщение или приложите файл")
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     if draft.status == "finalized":
-        return _turn_payload(db, draft, message="", force_create=False)
+        return _turn_payload(db, draft, message="", force_create=False, new_attachments=False)
     force_create = _is_force_create_message(message)
     display_message = _display_user_message(message, attachments)
     draft.interview_json = append_user_turn(draft.interview_json, message, attachments)
@@ -240,7 +251,13 @@ def persist_creation_turn(
     db.add(draft)
     db.commit()
     db.refresh(draft)
-    return _turn_payload(db, draft, message=message, force_create=force_create)
+    return _turn_payload(
+        db,
+        draft,
+        message=message,
+        force_create=force_create,
+        new_attachments=bool(attachments),
+    )
 
 
 def apply_creation_reply(
@@ -275,26 +292,68 @@ def _turn_payload(
     *,
     message: str,
     force_create: bool,
+    new_attachments: bool = False,
 ) -> RegulationCreationTurn:
     sdk_id = interview_sdk_agent_id(draft.interview_json)
-    prompt = (
-        build_followup_creation_prompt(message=message, force_create=force_create)
-        if sdk_id
-        else build_creation_prompt(
+    write_document = interview_write_document(draft.interview_json, force_create=force_create)
+    use_tools = interview_use_tools(
+        draft.interview_json,
+        force_create=force_create,
+        new_attachments=new_attachments,
+    )
+    if write_document:
+        prompt = (
+            build_followup_creation_prompt(
+                message=message,
+                force_create=force_create,
+                state=draft.interview_json,
+                write_document=True,
+            )
+            if sdk_id
+            else build_creation_prompt(
+                state=draft.interview_json,
+                message=message,
+                initial=True,
+                force_create=force_create,
+                include_attachment_bodies=False,
+            )
+        )
+        rules = creation_system_rules(force_create=force_create)
+    elif use_tools:
+        prompt = build_creation_prompt(
+            state=draft.interview_json,
+            message=message,
+            initial=not sdk_id,
+            force_create=force_create,
+            include_attachment_bodies=False,
+        )
+        rules = creation_system_rules(force_create=force_create)
+    elif sdk_id:
+        prompt = build_followup_creation_prompt(
+            message=message,
+            force_create=force_create,
+            state=draft.interview_json,
+            write_document=False,
+        )
+        rules = creation_interviewer_rules()
+    else:
+        prompt = build_creation_prompt(
             state=draft.interview_json,
             message=message,
             initial=True,
             force_create=force_create,
-            include_attachment_bodies=False,
+            include_attachment_bodies=True,
         )
-    )
+        rules = creation_interviewer_rules()
     return RegulationCreationTurn(
         session=_session(db, draft),
         interview=interview_snapshot(draft.interview_json),
         sdkPrompt=prompt,
-        sdkRules=creation_system_rules(force_create=force_create),
+        sdkRules=rules,
         sdkAgentId=sdk_id,
         forceCreate=force_create,
+        writeDocument=write_document,
+        useTools=use_tools,
     )
 
 
@@ -364,12 +423,13 @@ def send_creation_message(
         force_create=force_create,
     )
     try:
+        write_document = interview_write_document(draft.interview_json, force_create=force_create)
         if not draft.cursor_agent_id:
-            agent_id, run_id = create_agent(prompt)
+            agent_id, run_id = create_agent(prompt, write_document=write_document)
             draft.cursor_agent_id = agent_id
             draft.latest_run_id = run_id
         else:
-            run_id = create_run(draft.cursor_agent_id, prompt)
+            run_id = create_run(draft.cursor_agent_id, prompt, write_document=write_document)
             draft.latest_run_id = run_id
         db.add(draft)
         db.commit()
@@ -434,12 +494,13 @@ def stream_creation_message(
     final_text = ""
     assistant_parts: list[str] = []
     try:
+        write_document = interview_write_document(draft.interview_json, force_create=force_create)
         if not draft.cursor_agent_id:
-            agent_id, run_id = create_agent(prompt)
+            agent_id, run_id = create_agent(prompt, write_document=write_document)
             draft.cursor_agent_id = agent_id
             draft.latest_run_id = run_id
         else:
-            run_id = create_run(draft.cursor_agent_id, prompt)
+            run_id = create_run(draft.cursor_agent_id, prompt, write_document=write_document)
             draft.latest_run_id = run_id
         db.add(draft)
         db.commit()
@@ -500,6 +561,8 @@ def _apply_agent_reply(
 ) -> None:
     raw = raw.strip()
     parsed = _parse_agent_response(raw)
+    if str(parsed.get("status") or "").strip().lower() in {"question", "in_progress"}:
+        parsed["status"] = "need_more"
     if is_replacement_garbage(parsed.get("message")) or is_replacement_garbage(raw):
         parsed["message"] = (
             "Ответ агента пришёл в нечитаемом виде. Нажмите отправку ещё раз "
@@ -511,6 +574,26 @@ def _apply_agent_reply(
         ]
         parsed["status"] = "need_more"
     draft.interview_json = merge_agent_payload(draft.interview_json, parsed)
+    chosen_ids = selected_process_ids(draft.interview_json)
+    if chosen_ids and (
+        is_process_select_message(parsed.get("message"))
+        or is_process_select_message(_message_content(parsed, raw))
+        or str((parsed.get("pipeline") or {}).get("stage") or "").lower() == "select"
+    ):
+        _force_gap_question(parsed, draft)
+    if chosen_ids and str(parsed.get("status") or "") == "need_more":
+        current_id = current_interview_process_id(draft.interview_json)
+        next_question = parsed.get("nextQuestion") if isinstance(parsed.get("nextQuestion"), dict) else {}
+        process_blob = parsed.get("process") if isinstance(parsed.get("process"), dict) else {}
+        asked_process = normalize_process_id(
+            next_question.get("processId")
+            or next_question.get("functionId")
+            or process_blob.get("id")
+        )
+        if current_id and asked_process and asked_process != current_id:
+            _force_gap_question(parsed, draft)
+        elif _should_replace_with_gap_question(_message_content(parsed, raw)):
+            _force_gap_question(parsed, draft)
     blocker = None if force_create or parsed.get("status") != "ready" else ready_blocker(parsed, draft.interview_json)
     if blocker is not None:
         draft.interview_json, message = remember_assistant_question(
@@ -596,7 +679,7 @@ def _apply_agent_reply(
             draft=draft,
             role="assistant",
             content=content,
-            structured={"quickAnswers": quick_answers},
+            structured=_assistant_question_structured(parsed, draft.interview_json, quick_answers),
         )
         draft.status = "interview"
         if positions := parsed.get("positions"):
@@ -986,7 +1069,10 @@ def _first_interview_object(raw: str) -> dict | None:
         except json.JSONDecodeError:
             index = start + 1
             continue
-        if isinstance(obj, dict) and str(obj.get("status") or "") in {"need_more", "ready"}:
+        status = str(obj.get("status") or "").strip().lower() if isinstance(obj, dict) else ""
+        if isinstance(obj, dict) and status in {"need_more", "ready", "question", "in_progress"}:
+            if status in {"question", "in_progress"}:
+                obj["status"] = "need_more"
             return obj
         index = end
     return None
@@ -998,6 +1084,10 @@ def _parse_agent_response(raw: str) -> dict:
     text = re.sub(r"```$", "", text).strip()
     first = _first_interview_object(text)
     if first is not None:
+        if not str(first.get("message") or "").strip():
+            prose = leading_question_text(text)
+            if prose:
+                first["message"] = prose
         return first
     try:
         data = json.loads(text)
@@ -1022,23 +1112,164 @@ def _parse_agent_response(raw: str) -> dict:
     return {"status": "need_more", "message": raw}
 
 
+def _assistant_question_structured(parsed: dict, interview: object, quick_answers: list[str]) -> dict:
+    structured: dict = {"quickAnswers": list(quick_answers)}
+    pipeline = parsed.get("pipeline") if isinstance(parsed.get("pipeline"), dict) else {}
+    chosen_ids = selected_process_ids(interview)
+    if chosen_ids:
+        stage = str(pipeline.get("stage") or "").strip() or "questions"
+        if stage.lower() == "select":
+            stage = "questions"
+        pipeline = {
+            **pipeline,
+            "stage": stage,
+            "selectedProcessIds": chosen_ids,
+        }
+    if pipeline:
+        structured["pipeline"] = pipeline
+    processes = _ui_processes(parsed, interview)
+    if processes:
+        structured["processes"] = processes
+    return structured
+
+
+def _ui_processes(parsed: dict, interview: object) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(raw: object) -> None:
+        if not isinstance(raw, dict):
+            return
+        process_id = normalize_process_id(raw.get("processId") or raw.get("id"))
+        title = str(raw.get("title") or raw.get("name") or process_id).strip()
+        if not process_id or process_id in seen:
+            return
+        seen.add(process_id)
+        items.append(
+            {
+                "id": process_id,
+                "title": title,
+                "actor": str(raw.get("actor") or "").strip(),
+                "roleStatus": str(raw.get("roleStatus") or "").strip(),
+            }
+        )
+
+    interview_payload = parsed.get("interview") if isinstance(parsed.get("interview"), dict) else {}
+    for source in (
+        parsed.get("processes"),
+        interview_payload.get("processes"),
+        (parsed.get("pipeline") or {}).get("blocks") if isinstance(parsed.get("pipeline"), dict) else None,
+        interview.get("processes") if isinstance(interview, dict) else None,
+    ):
+        if isinstance(source, list):
+            for raw in source:
+                add(raw)
+    return items
+
+
 def _quick_answers(value: object) -> list[str]:
-    if isinstance(value, list):
-        answers = [str(item).strip() for item in value if str(item).strip()]
-        answers = [
-            item
-            for item in answers
-            if item.lower() not in {"оставить", "переделать", "оставить это"}
-        ]
-        if answers:
-            return answers[:6]
-    return [
-        "Опишу действие вручную",
-        "Приложу файл с деталями",
-        "Это выполняется в Outlook",
-        "Это выполняется в 1C",
-        "Это выполняется в Excel",
+    if not isinstance(value, list):
+        return []
+    answers = [str(item).strip() for item in value if str(item).strip()]
+    answers = [
+        item
+        for item in answers
+        if item.lower() not in {"оставить", "переделать", "оставить это"}
     ]
+    return answers[:6]
+
+
+def _should_replace_with_gap_question(content: str) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return True
+    folded = text.lower()
+    if "?" in text or "？" in text:
+        # Still replace pure gap statements that only tack on a weak question mark.
+        gap_only = (
+            "не раскрыт",
+            "не указан",
+            "не указано",
+            "не хватает",
+            "отсутствует",
+            "неясн",
+            "упомянут",
+            "в тексте нет",
+        )
+        ask_markers = (
+            "как ",
+            "какой",
+            "какая",
+            "какие",
+            "где ",
+            "когда ",
+            "уточните",
+            "опишите",
+            "расскажите",
+            "относится",
+        )
+        if any(marker in folded for marker in gap_only) and not any(
+            marker in folded for marker in ask_markers
+        ):
+            return True
+        return False
+    status_markers = (
+        "нет пробел",
+        "пробелов нет",
+        "больше нет",
+        "все известно",
+        "всё известно",
+        "зафиксирован",
+        "закрыт",
+        "можно переходить",
+        "не раскрыт",
+        "не указан",
+        "не указано",
+        "не хватает",
+        "отсутствует",
+        "упомянут",
+        "в тексте нет",
+        "не видно,",
+    )
+    if any(marker in folded for marker in status_markers):
+        return True
+    question_markers = (
+        "как ",
+        "какой",
+        "какая",
+        "какие",
+        "где ",
+        "когда ",
+        "что ",
+        "уточните",
+        "опишите",
+        "расскажите",
+        "относится",
+    )
+    return not any(marker in folded for marker in question_markers)
+
+
+def _force_gap_question(parsed: dict, draft: RegulationCreationDraft) -> None:
+    fallback = question_for_selected_processes(draft.interview_json)
+    if fallback is None:
+        return
+    parsed["status"] = "need_more"
+    parsed["message"] = fallback.message
+    parsed["quickAnswers"] = list(fallback.quick_answers)
+    parsed["nextQuestion"] = {
+        "processId": fallback.function_id,
+        "field": fallback.field,
+        "targetFact": fallback.field,
+        "text": fallback.message,
+    }
+    pipeline = parsed.get("pipeline") if isinstance(parsed.get("pipeline"), dict) else {}
+    chosen_ids = selected_process_ids(draft.interview_json)
+    parsed["pipeline"] = {
+        **pipeline,
+        "stage": "questions",
+        "selectedProcessIds": chosen_ids,
+    }
+    draft.interview_json = merge_agent_payload(draft.interview_json, parsed)
 
 
 def _message_content(parsed: dict, raw: str) -> str:
@@ -1046,6 +1277,7 @@ def _message_content(parsed: dict, raw: str) -> str:
     return (
         str(next_question.get("text") or "").strip()
         or str(parsed.get("message") or "").strip()
+        or leading_question_text(raw)
         or raw
         or "Уточните, пожалуйста, детали процесса."
     )
@@ -1234,6 +1466,7 @@ def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationS
         resultDocument=draft.draft_document_json or {},
         resultDocumentPath=draft.result_document_path,
         sdkAgentId=interview_sdk_agent_id(draft.interview_json),
+        progress=interview_progress(draft.interview_json),
         createdAt=draft.created_at,
         updatedAt=draft.updated_at,
     )

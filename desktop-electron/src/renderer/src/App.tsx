@@ -10,7 +10,7 @@ import { OrchestratorPage } from './pages/OrchestratorPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { RegulationChatPage } from './pages/RegulationChatPage'
 import { RegulationCreationHistoryPage } from './pages/RegulationCreationHistoryPage'
-import { visibleAssistantText } from './utils/regulationChat'
+import { hasSelectedProcessesText, isProcessSelectText, visibleAssistantText } from './utils/regulationChat'
 import { RoleMatchPage } from './pages/RoleMatchPage'
 import { ReadinessPage } from './pages/ReadinessPage'
 import { SuggestionsPage } from './pages/SuggestionsPage'
@@ -138,14 +138,15 @@ function lastRegulationQuestion(
   session: RegulationCreationSession | null
 ): { messageId: string; text: string } | null {
   if (!session || !isOpenRegulationDraft(session)) return null
-  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-    const item = session.messages[i]
-    if (item.role !== 'assistant') continue
-    const text = visibleAssistantText(item.content).replace(/\s+/g, ' ').trim()
-    if (!text) return null
-    return { messageId: item.messageId || `assistant-${i}`, text }
-  }
-  return null
+  const last = session.messages[session.messages.length - 1]
+  if (!last || last.role !== 'assistant') return null
+  const text = visibleAssistantText(last.content).replace(/\s+/g, ' ').trim()
+  if (!text) return null
+  const alreadySelected = session.messages.some(
+    (item) => item.role === 'user' && hasSelectedProcessesText(item.content || '')
+  )
+  if (alreadySelected && isProcessSelectText(text)) return null
+  return { messageId: last.messageId || 'assistant-last', text }
 }
 
 function clipToastBody(text: string, max = 180): string {
@@ -177,6 +178,7 @@ export function App(): React.JSX.Element {
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
   const [regChat, setRegChat] = useState<RegulationCreationSession | null>(null)
   const [regChatBusy, setRegChatBusy] = useState(false)
+  const [regChatBusyKind, setRegChatBusyKind] = useState<'reading' | 'question' | 'document'>('question')
   const formation = useFormation()
   const runs = useRuns()
 
@@ -391,6 +393,8 @@ export function App(): React.JSX.Element {
   // toast so the user knows the chat is waiting for an answer.
   useEffect(() => {
     if (!regChat || regChatBusy) return
+    const watchingChat = windowFocused && view.kind === 'regchat'
+    if (watchingChat) return
     const question = lastRegulationQuestion(regChat)
     if (!question) return
     const key = `${regChat.draftId}:${question.messageId}`
@@ -401,7 +405,7 @@ export function App(): React.JSX.Element {
       body: clipToastBody(question.text),
       draftId: regChat.draftId
     })
-  }, [regChat, regChatBusy])
+  }, [regChat, regChatBusy, view.kind, windowFocused])
 
   function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
     if (user && user.id !== result.user.id) {
@@ -1093,7 +1097,11 @@ export function App(): React.JSX.Element {
       id: `regchat:${regChat.draftId}`,
       title: 'Создание регламента',
       output: regChatBusy
-        ? 'Готовлю вопрос...'
+        ? regChatBusyKind === 'document'
+          ? 'Формирую регламент...'
+          : regChatBusyKind === 'reading'
+            ? 'Читаю документ...'
+            : 'Готовлю вопрос...'
         : regulationDraftPreview(regChat) || 'Ответьте на вопрос ИИ',
       running: regChatBusy,
       awaiting: !regChatBusy,
@@ -1140,11 +1148,16 @@ export function App(): React.JSX.Element {
             >
               <RegulationChatPage
                 session={regChat}
+                active={view.kind === 'regchat'}
                 onSessionChange={setRegChat}
-                onBusyChange={setRegChatBusy}
+                onBusyChange={(busy, kind) => {
+                  setRegChatBusy(busy)
+                  if (kind) setRegChatBusyKind(kind)
+                }}
                 onStopped={() => {
                   setRegChat(null)
                   setRegChatBusy(false)
+                  setRegChatBusyKind('question')
                   setView({ kind: 'tab', key: 'create' })
                 }}
                 banner={

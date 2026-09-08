@@ -92,6 +92,7 @@ from app.orchestrator.json_blob import extract_json_object  # noqa: E402
 from app.sdk_agent.bridge import (  # noqa: E402
     REGULATION_SDK_MODEL,
     REGULATION_SDK_MODEL_PARAMS,
+    REGULATION_SDK_QUESTION_PARAMS,
     CursorSdkBridge,
     CursorSdkError,
     CursorSdkUnavailable,
@@ -226,8 +227,8 @@ def _interview_json_answer(raw: str) -> str:
         except json.JSONDecodeError:
             index = start + 1
             continue
-        status = str(obj.get("status") or "") if isinstance(obj, dict) else ""
-        if status in {"need_more", "ready"}:
+        status = str(obj.get("status") or "").strip().lower() if isinstance(obj, dict) else ""
+        if status in {"need_more", "ready", "question", "in_progress"}:
             message = str(obj.get("message") or "") if isinstance(obj, dict) else ""
             if _looks_like_replacement_garbage(message):
                 index = end
@@ -1992,6 +1993,21 @@ class Sidecar:
         )
         events: list[dict[str, Any]] = []
         agent_id = str(command.get("resumeAgentId") or "").strip()
+        interview_payload = (
+            command.get("interview") if isinstance(command.get("interview"), dict) else {}
+        )
+        write_document = bool(
+            command.get("writeDocument")
+            or command.get("forceCreate")
+            or interview_payload.get("document_write_required")
+        )
+        use_tools = bool(command.get("useTools")) or write_document
+        model_params = [
+            dict(item)
+            for item in (
+                REGULATION_SDK_MODEL_PARAMS if write_document else REGULATION_SDK_QUESTION_PARAMS
+            )
+        ]
 
         def emit_cancelled() -> None:
             emit(
@@ -2012,9 +2028,11 @@ class Sidecar:
                 workflow_id=workspace_id,
                 cwd=str(run_cwd),
                 model=REGULATION_SDK_MODEL,
-                model_params=[dict(item) for item in REGULATION_SDK_MODEL_PARAMS],
+                model_params=model_params,
                 mode="interview",
                 tools=[],
+                write_document=write_document,
+                use_tools=use_tools,
                 resume_agent_id=agent_id,
                 on_event=self._forward_events(active, events),
                 should_stop=active.stop.is_set,
@@ -2784,12 +2802,51 @@ def _copy_attachments(run_cwd: str, file_paths: list[str]) -> list[str]:
     return relative
 
 
+def _selected_process_ids(interview: dict[str, Any]) -> list[str]:
+    raw = interview.get("selectedProcessIds")
+    if isinstance(raw, list):
+        found = [str(item).strip() for item in raw if str(item).strip()]
+        if found:
+            return found
+    found: list[str] = []
+    seen: set[str] = set()
+    for turn in interview.get("turns") or []:
+        if not isinstance(turn, dict):
+            continue
+        text = str(turn.get("message") or "")
+        match = re.search(r"(?im)^\s*выбраны процессы\s*:\s*(.+)$", text)
+        if not match:
+            continue
+        first = match.group(1).splitlines()[0]
+        for part in re.split(r"[,;]", first):
+            token = (part.strip().split() or [""])[0].strip(".:;")
+            if token.lower().startswith("b-"):
+                token = token[2:]
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            found.append(token)
+    return found
+
+
 def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[str, Any]) -> None:
     run_cwd.mkdir(parents=True, exist_ok=True)
+    payload = dict(interview or {})
+    selected = _selected_process_ids(payload)
+    if selected:
+        payload["selectedProcessIds"] = selected
     agents = (rules or "").strip() or "Создай регламент по interview.json. Ответ строго JSON."
+    if selected:
+        agents += (
+            "\n\nПользователь уже выбрал процессы: "
+            + ", ".join(selected)
+            +             ". Этап выбора закрыт: не проси отметить процессы снова и не возвращай "
+            "pipeline.stage=select. По каждому выбранному процессу задавай вопросы по пробелам, "
+            "по одному за ход: только то, чего нет в документе."
+        )
     (run_cwd / "AGENTS.md").write_text(agents, encoding="utf-8")
     (run_cwd / "interview.json").write_text(
-        json.dumps(interview, ensure_ascii=False, indent=2),
+        json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     materials = run_cwd / "materials"
