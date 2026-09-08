@@ -906,6 +906,24 @@ def creation_interviewer_rules() -> str:
     )
 
 
+def process_extraction_model_rules(*, position: str = "") -> str:
+    """Granularity used when processes are extracted from uploaded documents."""
+    who = f"«{position}»" if str(position or "").strip() else "пользователя"
+    return (
+        "Один process — это контур ответственности должности, а не отдельный глагол и не шаг.\n"
+        f"Выделяй processes только для должности {who} и её явных алиасов.\n"
+        "Шаги, проверки, правки, пересчёт, уведомления и смена данных внутри одного контура "
+        "пиши в knownFacts.steps. Не делай из них отдельные processes.\n"
+        "Пример: «Контроль календаря ПСД» включает проверку календаря и внесение изменений — "
+        "это один process. Не выделяй «Изменение календаря» отдельно.\n"
+        "Не дроби один контур по системам (Outlook и Excel), по частоте или по получателям.\n"
+        "Отдельный process только если другой объект, другой цикл или другой бизнес-результат "
+        "(командировки, календарь ПСД, документооборот инициатив).\n"
+        "К каждому process сразу заполняй knownFacts: inputs, outputs, deadlines, "
+        "workLocation, frequency, steps.\n"
+    )
+
+
 def creation_system_rules(*, force_create: bool = False) -> str:
     force = (
         "Пользователь запросил принудительное создание. Можно вернуть status='ready' по текущим "
@@ -2013,11 +2031,14 @@ def _clean_source_refs(value: Any) -> list[dict[str, Any]]:
             continue
         file_name = _clean_str(ref.get("file"))
         quote = _clean_str(ref.get("quote"))
-        if not file_name and not quote:
+        fragment_id = _clean_str(ref.get("fragmentId"))
+        if not file_name and not quote and not fragment_id:
             continue
         item = dict(ref)
         item["file"] = file_name
         item["quote"] = quote
+        if fragment_id:
+            item["fragmentId"] = fragment_id
         out.append(item)
     return out
 

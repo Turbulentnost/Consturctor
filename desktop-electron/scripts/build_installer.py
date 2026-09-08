@@ -477,7 +477,13 @@ def build_electron(dir_only: bool) -> None:
     write_installer_nsh(companion.is_file())
     env = build_env()
     run([tool("npm", env=env), "run", "build"], cwd=ELECTRON_ROOT, env=env)
-    cmd = [tool("npx", env=env), "electron-builder", "--publish", "never"]
+    local_builder = ELECTRON_ROOT / "node_modules" / ".bin" / (
+        "electron-builder.cmd" if os.name == "nt" else "electron-builder"
+    )
+    if local_builder.is_file():
+        cmd = [str(local_builder), "--publish", "never"]
+    else:
+        cmd = [tool("npx", env=env), "--no-install", "electron-builder", "--publish", "never"]
     if dir_only:
         cmd.append("--dir")
     run(cmd, cwd=ELECTRON_ROOT, env=env)
