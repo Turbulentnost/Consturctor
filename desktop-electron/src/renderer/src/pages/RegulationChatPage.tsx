@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
-import { ApiError, type AgentEvent, type RegulationCreationProgress, type RegulationCreationSession, type RegulationCreationTurn } from '../api/types'
+import {
+  ApiError,
+  type AgentEvent,
+  type RegulationCreationProgress,
+  type RegulationCreationSession,
+  type RegulationCreationTurn,
+  type RegulationQueuedQuestion
+} from '../api/types'
 import wallpaperUrl from '../assets/chat/wallpaper.png'
 import programIcon from '../assets/logo.png'
 import iconAttention from '@agent-icons/agent-attention-animated.svg?raw'
@@ -92,12 +99,6 @@ interface PendingFile {
   name: string
 }
 
-interface ProcessChoice {
-  id: string
-  title: string
-  actor: string
-}
-
 const DEFAULT_PLACEHOLDER = 'Опишите процесс или ответьте на вопрос ИИ...'
 const EDIT_PLACEHOLDER = 'Измените предложенный вариант и отправьте...'
 const FORCE_CREATE_PROMPT =
@@ -105,6 +106,7 @@ const FORCE_CREATE_PROMPT =
   'Если каких-то данных не хватает, используй разумные типовые формулировки и явно отметь, что это предположение.'
 const WORKING_STATUS = 'Готовлю вопрос...'
 const DOCUMENT_STATUS = 'Формирую регламент...'
+const PREFETCH_STATUS = 'Готовлю следующие вопросы...'
 const COMPOSER_MIN_HEIGHT = 74
 // 15 строк по 25px line-height — дальше textarea прокручивается внутри.
 const COMPOSER_MAX_HEIGHT = 399
@@ -129,6 +131,7 @@ function busyStatusLabel(kind: BusyKind, fileCount: number, prefetching: boolean
     return fileCount > 1 ? 'Читаю документы...' : 'Читаю документ...'
   }
   if (kind === 'document') return DOCUMENT_STATUS
+  if (prefetching) return PREFETCH_STATUS
   return WORKING_STATUS
 }
 
@@ -686,20 +689,195 @@ export function RegulationChatPage({
   const [attachments, setAttachments] = useState<PendingFile[]>([])
   const [filesOpen, setFilesOpen] = useState(false)
   const [pickedProcessIds, setPickedProcessIds] = useState<string[]>([])
+  const [selectingProcesses, setSelectingProcesses] = useState(false)
+  const [optimisticQuestion, setOptimisticQuestion] = useState<RegulationQueuedQuestion | null>(null)
+  const [submitLocked, setSubmitLocked] = useState(false)
+  const [prefetching, setPrefetching] = useState(false)
+  const [liveThinking, setLiveThinking] = useState('')
+  const [savedThinkingBlocks, setSavedThinkingBlocks] = useState<Array<{ id: string; text: string }>>([])
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const resumeKeyRef = useRef('')
   const askAfterSelectRef = useRef('')
+  const collectRecoverKeyRef = useRef('')
+  const assembleRecoverKeyRef = useRef('')
+  const idleRecoverKeyRef = useRef('')
+  const repeatRecoverKeyRef = useRef('')
   const runIdRef = useRef('')
   const abortRef = useRef<AbortController | null>(null)
   const stoppedRef = useRef(false)
+  const queuedQuestionsRef = useRef<RegulationQueuedQuestion[]>([])
+  const prefetchRunRef = useRef(false)
+  const researchPrefetchRunRef = useRef(false)
+  const lastResearchPrefetchAtRef = useRef(0)
+  const backgroundSdkBusyRef = useRef(false)
+  const submittingRef = useRef(false)
+  const sdkRanRef = useRef(false)
+  const liveThinkingRef = useRef('')
   const sessionRef = useRef(session)
   sessionRef.current = session
+
+  function resetLiveThinking(): void {
+    liveThinkingRef.current = ''
+    setLiveThinking('')
+  }
+
+  function pushLiveThinkingEvent(event: AgentLiveEvent): void {
+    if (event.type === 'error' && event.text) {
+      setError(event.text)
+      return
+    }
+    setLiveThinking((prev) => {
+      const next = mergeLiveThinking(prev, event)
+      liveThinkingRef.current = next
+      return next
+    })
+    if (event.type === 'status' && event.text && event.text !== 'reading') {
+      setBusyKind('question')
+    }
+  }
+
+  function saveLiveThinkingSnapshot(): void {
+    const snapshot = liveThinkingRef.current.trim()
+    if (!isMeaningfulThinking(snapshot)) return
+    setSavedThinkingBlocks([{ id: `${Date.now()}`, text: snapshot }])
+    resetLiveThinking()
+  }
+
+  function syncQueueFromSession(next: RegulationCreationSession | RegulationCreationTurn): void {
+    const isTurn = 'session' in next
+    const sessionData = isTurn ? next.session : next
+    const queue = (isTurn ? next.questionQueue : undefined) ?? sessionData.questionQueue
+    const depth = (isTurn ? next.queueDepth : undefined) ?? sessionData.queueDepth ?? queue?.length ?? 0
+    const inProgress =
+      (isTurn ? next.prefetchInProgress : undefined) ?? sessionData.prefetchInProgress
+    if (queue?.length) {
+      queuedQuestionsRef.current = queue
+    } else if ((depth ?? 0) === 0) {
+      queuedQuestionsRef.current = []
+    }
+    setPrefetching(Boolean(inProgress) && (depth ?? 0) === 0)
+  }
+
+  async function prefetchQueue(): Promise<void> {
+    if (ready || needsProcessSelection || stoppedRef.current || busy) return
+    if (backgroundSdkBusyRef.current || prefetchRunRef.current) return
+    try {
+      backgroundSdkBusyRef.current = true
+      const turn = await api.peekRegulationCreationTurn(session.draftId)
+      syncQueueFromSession(turn)
+      const lastIsAssistant = session.messages[session.messages.length - 1]?.role === 'assistant'
+      if (
+        !turn.prefetchPrompt?.trim() ||
+        !lastIsAssistant ||
+        prefetchRunRef.current ||
+        typeof window.agent?.start !== 'function'
+      ) {
+        return
+      }
+      prefetchRunRef.current = true
+      setPrefetching(true)
+      const runId = agentClient.start({
+        kind: 'regulation_creation',
+        draftId: session.draftId,
+        prompt: turn.prefetchPrompt,
+        rules: turn.sdkRules,
+        interview: turn.interview,
+        resumeAgentId: turn.sdkAgentId || session.sdkAgentId
+      })
+      try {
+        const sdk = await waitForRegulationSdk(runId, () => undefined)
+        if (stoppedRef.current) return
+        const answer = extractInterviewAnswer(sdk.answer) || sdk.answer
+        if (!answer?.trim()) return
+        const updated = await api.applyRegulationCreationReply(session.draftId, answer, {
+          sdkAgentId: sdk.agentId || turn.sdkAgentId,
+          prefetchOnly: true
+        })
+        syncQueueFromSession(updated)
+        onSessionChange(updated)
+        void ensureCollectQuestionPosted(updated)
+      } finally {
+        prefetchRunRef.current = false
+        setPrefetching(false)
+      }
+    } catch {
+      prefetchRunRef.current = false
+      setPrefetching(false)
+    } finally {
+      backgroundSdkBusyRef.current = false
+    }
+  }
+
+  function scheduleBackgroundPrefetch(mode: 'queue' | 'research' | 'both' = 'both'): void {
+    if (ready || needsProcessSelection || stoppedRef.current || busy) return
+    const depth = effectiveQueueDepth(session, undefined, queuedQuestionsRef.current.length)
+    if (mode !== 'research' && depth < 3 && !prefetchRunRef.current) {
+      void prefetchQueue()
+    }
+    if (
+      mode !== 'queue' &&
+      session.dualWorkflow &&
+      depth < 4 &&
+      !researchPrefetchRunRef.current &&
+      Date.now() - lastResearchPrefetchAtRef.current > 90_000
+    ) {
+      void prefetchResearch()
+    }
+  }
+
+  async function prefetchResearch(): Promise<void> {
+    if (ready || needsProcessSelection || stoppedRef.current || busy) return
+    if (!session.dualWorkflow) return
+    if (backgroundSdkBusyRef.current || researchPrefetchRunRef.current) return
+    try {
+      backgroundSdkBusyRef.current = true
+      const turn = await api.peekRegulationCreationTurn(session.draftId)
+      if (!turn.researchPrompt?.trim() || researchPrefetchRunRef.current || typeof window.agent?.start !== 'function') {
+        return
+      }
+      researchPrefetchRunRef.current = true
+      const runId = agentClient.start({
+        kind: 'regulation_creation',
+        draftId: session.draftId,
+        prompt: turn.researchPrompt,
+        rules: turn.sdkRules,
+        interview: turn.interview,
+        resumeAgentId: turn.researchAgentId || '',
+        agentRole: 'research'
+      })
+      try {
+        const sdk = await waitForRegulationSdk(runId, () => undefined)
+        if (stoppedRef.current) return
+        const answer = extractInterviewAnswer(sdk.answer) || sdk.answer
+        if (!answer?.trim()) return
+        const updated = await api.applyRegulationCreationReply(session.draftId, answer, {
+          sdkAgentId: sdk.agentId || turn.researchAgentId,
+          researchOnly: true
+        })
+        syncQueueFromSession(updated)
+        onSessionChange(updated)
+        lastResearchPrefetchAtRef.current = Date.now()
+        void ensureCollectQuestionPosted(updated)
+      } finally {
+        researchPrefetchRunRef.current = false
+      }
+    } catch {
+      researchPrefetchRunRef.current = false
+    } finally {
+      backgroundSdkBusyRef.current = false
+    }
+  }
 
   function pushSession(next: RegulationCreationSession): void {
     onSessionChange(preserveReadyCreationSession(sessionRef.current, next))
   }
+
+  useEffect(() => {
+    setSavedThinkingBlocks([])
+    resetLiveThinking()
+  }, [session.messages.length, session.draftId])
 
   useEffect(() => {
     setError('')
@@ -712,12 +890,30 @@ export function RegulationChatPage({
     setPlaceholder(DEFAULT_PLACEHOLDER)
     setBusyKind('question')
     setReadingFileCount(0)
-    setPickedProcessIds([])
     stoppedRef.current = false
     abortRef.current = null
     runIdRef.current = ''
     askAfterSelectRef.current = ''
+    queuedQuestionsRef.current = session.questionQueue ?? []
+    setOptimisticQuestion(null)
+    setPrefetching(Boolean(session.prefetchInProgress) && (session.queueDepth ?? 0) === 0)
+    setSavedThinkingBlocks([])
+    resetLiveThinking()
+    resumeKeyRef.current = ''
+    collectRecoverKeyRef.current = ''
+    assembleRecoverKeyRef.current = ''
+    idleRecoverKeyRef.current = ''
+    repeatRecoverKeyRef.current = ''
+    setSubmitLocked(false)
+    submittingRef.current = false
   }, [session.draftId])
+
+  useEffect(() => {
+    if (session.questionQueue?.length) {
+      queuedQuestionsRef.current = session.questionQueue
+    }
+    setPrefetching(Boolean(session.prefetchInProgress) && (session.queueDepth ?? 0) === 0)
+  }, [session.questionQueue, session.prefetchInProgress, session.queueDepth])
 
   useEffect(() => {
     onBusyChange?.(busy, busyKind)
@@ -754,6 +950,8 @@ export function RegulationChatPage({
   }, [active, busy, session.draftId, session.status, session.resultDocumentPath])
 
   const ready = isCreationSessionReady(session)
+  const pipelineSelectedIds = selectedProcessIds(session)
+  const needsProcessSelection = needsProcessSelectionForSession(session, ready)
   const hasUserMessage = session.messages.some((m) => m.role === 'user')
   useEffect(() => {
     if (!needsProcessSelection) return
@@ -771,6 +969,22 @@ export function RegulationChatPage({
     showProgress && progress && progress.total > 0
       ? Math.min(100, Math.round((progress.answered / progress.total) * 100))
       : 0
+
+  useEffect(() => {
+    if (ready || needsProcessSelection || stoppedRef.current || busy) return
+    const depth = session.queueDepth ?? session.questionQueue?.length ?? queuedQuestionsRef.current.length
+    if (depth >= 3) return
+    void scheduleBackgroundPrefetch()
+  }, [
+    session.draftId,
+    ready,
+    needsProcessSelection,
+    busy,
+    session.queueDepth,
+    session.questionQueue?.length,
+    session.messages.length,
+    session.dualWorkflow
+  ])
 
   async function downloadResult(): Promise<void> {
     if (!ready) return
@@ -877,7 +1091,8 @@ export function RegulationChatPage({
     sdkRanRef.current = false
     try {
       const filePaths = files.map((f) => f.path)
-      const onStreamEvent = (type: string, text: string): void => {
+      const onStreamEvent = (type: string, text: string, tool?: string): void => {
+        pushLiveThinkingEvent({ type, text, tool })
         if (type === 'error' && text) setError(text)
         if ((type === 'status' && text && text !== 'reading') || (type === 'assistant' && text)) {
           setBusyKind((prev) => (prev === 'document' || prev === 'reading' ? prev : 'question'))
@@ -912,6 +1127,7 @@ export function RegulationChatPage({
         if (isCreationSessionReady(turn.session)) return
         const writing = turnWritesDocument(turn, turn.session)
         setBusyKind(writing ? 'document' : 'question')
+        sdkRanRef.current = true
         await runSdkAndApply(turn)
         await tryUnstickCollectTurn(turn.session)
       } else {
@@ -1160,6 +1376,7 @@ export function RegulationChatPage({
   const visible = visibleChatMessages(session)
   const lastAssistantId = [...visible].reverse().find((item) => item.role === 'assistant')?.messageId || ''
   const lastVisible = visible[visible.length - 1]
+  const waitingForAssistant = awaitingAssistantReply(session)
 
   useEffect(() => {
     setPickedProcessIds([])
@@ -1171,6 +1388,7 @@ export function RegulationChatPage({
 
   async function runSdkAndApply(turn: RegulationCreationTurn): Promise<void> {
     if (stoppedRef.current) throw new RegulationCancelledError()
+    sdkRanRef.current = true
     syncQueueFromSession(turn)
     if (shouldBlockSdkAgent(turn.session, turn)) {
       if (!needsProcessSelectionForSession(turn.session, ready)) {
@@ -1235,16 +1453,7 @@ export function RegulationChatPage({
     })
     runIdRef.current = runId
     try {
-      const sdk = await waitForRegulationSdk(
-        runId,
-        (type, text) => {
-          if (type === 'error' && text) setError(text)
-          if (type === 'assistant' && text) {
-            setBusyKind((prev) => (prev === 'document' || writing ? 'document' : 'question'))
-          }
-        },
-        abort.signal
-      )
+      const sdk = await waitForRegulationSdk(runId, pushLiveThinkingEvent, abort.signal)
       if (abort.signal.aborted || stoppedRef.current) {
         throw new RegulationCancelledError()
       }
@@ -1291,6 +1500,7 @@ export function RegulationChatPage({
         : 'question'
     )
     pinnedRef.current = true
+    sdkRanRef.current = false
     try {
       const turn = await api.peekRegulationCreationTurn(session.draftId)
       if (stoppedRef.current) throw new RegulationCancelledError()

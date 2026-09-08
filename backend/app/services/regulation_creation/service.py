@@ -66,6 +66,7 @@ from app.services.regulation_creation.interview import (
     question_for_selected_processes,
     selected_process_ids,
     new_interview_state,
+    normalize_interview_state,
     normalize_process_id,
     ready_blocker,
     remember_assistant_question,

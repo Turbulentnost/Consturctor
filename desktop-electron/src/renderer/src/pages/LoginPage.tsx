@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { ApiError, type LoginResult } from '../api/types'
 import { rememberPreference, savedFio, setRememberPreference } from '../store/session'
@@ -34,9 +34,33 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
   const [remember, setRemember] = useState(rememberPreference())
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [backendHint, setBackendHint] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    void window.api
+      .request({ method: 'GET', path: '/health', timeoutMs: 5000 })
+      .then((res) => {
+        if (!alive || res.ok) {
+          if (res.ok) setBackendHint('')
+          return
+        }
+        setBackendHint(
+          `Backend недоступен (${res.error || 'нет ответа'}). Запустите orchestrator\\backend\\run_dev.bat.`
+        )
+      })
+      .catch(() => {
+        if (!alive) return
+        setBackendHint('Backend недоступен. Запустите orchestrator\\backend\\run_dev.bat.')
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   async function submit(): Promise<void> {
     setError('')
+    setBackendHint('')
     if (!fio.trim() || !password) {
       setError('Введите ФИО и пароль')
       return
@@ -124,7 +148,7 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
           Запомнить пользователя
         </label>
 
-        <div className="error">{error}</div>
+        <div className="error">{backendHint || error}</div>
 
         <button className="btn-light" onClick={submit} disabled={busy}>
           {busy ? 'Входим...' : 'Войти'}

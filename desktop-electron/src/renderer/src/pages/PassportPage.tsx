@@ -91,7 +91,11 @@ export function PassportPage({
         <div className="chat-col">
           <div className="passport-chat-scroll" ref={scrollRef}>
             {!session && !messages.length && (
-              <div className="chat-hint">Собираю черновик паспорта агента…</div>
+              <div className="chat-hint">
+                {busy
+                  ? 'Собираю черновик паспорта через Cursor Agent… Обычно это занимает 1–2 минуты.'
+                  : 'Собираю черновик паспорта агента…'}
+              </div>
             )}
             {messages.map((message, index) => (
               <div key={index} className={`bubble ${message.role}`}>

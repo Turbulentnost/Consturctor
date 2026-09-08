@@ -17,7 +17,9 @@ router = APIRouter()
 async def health() -> HealthResponse:
     erp_reachable = False
     try:
-        erp_reachable = await asyncio.to_thread(ping)
+        erp_reachable = await asyncio.wait_for(asyncio.to_thread(ping), timeout=3.0)
+    except TimeoutError:
+        logger.warning("ERP health check timed out")
     except ErpSqlError:
         logger.warning("ERP health check failed", exc_info=True)
     except Exception:

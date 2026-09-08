@@ -28,7 +28,7 @@ export function ClarifyCard({
   }, [useCustom, question.requestId])
 
   const needsFile = Boolean(question.needsFile)
-  const accept = question.accept?.length ? question.accept : ['xlsx', 'xlsm', 'docx']
+  const accept = question.accept?.length ? question.accept : []
   const canAttach = allowFiles || needsFile
   const hasAnswer = needsFile
     ? filePaths.length > 0
@@ -46,16 +46,20 @@ export function ClarifyCard({
 
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({
-      title: needsFile ? 'Загрузить Excel или Word' : 'Прикрепить файл к ответу',
+      title: needsFile ? 'Загрузить файл для этого запуска' : 'Прикрепить файл к ответу',
       properties: ['openFile', 'multiSelections'],
-      filters: canAttach
-        ? [
-            {
-              name: 'Excel или Word',
-              extensions: accept
-            }
-          ]
-        : undefined
+      filters:
+        canAttach && accept.length
+          ? [
+              {
+                name: accept.join(', '),
+                extensions: accept
+              },
+              { name: 'Все файлы', extensions: ['*'] }
+            ]
+          : canAttach
+            ? [{ name: 'Все файлы', extensions: ['*'] }]
+            : undefined
     })
     if (!paths.length) return
     setFilePaths((prev) => Array.from(new Set([...prev, ...paths])))

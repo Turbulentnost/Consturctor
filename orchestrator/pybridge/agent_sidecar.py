@@ -93,6 +93,7 @@ from app.sdk_agent.bridge import (  # noqa: E402
     REGULATION_SDK_MODEL,
     REGULATION_PREFETCH_MODEL,
     REGULATION_SDK_MODEL_PARAMS,
+    REGULATION_SDK_QUESTION_PARAMS,
     CursorSdkBridge,
     CursorSdkError,
     CursorSdkUnavailable,
@@ -227,8 +228,8 @@ def _interview_json_answer(raw: str) -> str:
         except json.JSONDecodeError:
             index = start + 1
             continue
-        status = str(obj.get("status") or "") if isinstance(obj, dict) else ""
-        if status in {"need_more", "ready"}:
+        status = str(obj.get("status") or "").strip().lower() if isinstance(obj, dict) else ""
+        if status in {"need_more", "ready", "question", "in_progress"}:
             message = str(obj.get("message") or "") if isinstance(obj, dict) else ""
             if _looks_like_replacement_garbage(message):
                 index = end
@@ -1193,7 +1194,7 @@ def _accept_extensions(raw: Any) -> list[str]:
     out: list[str] = []
     for item in items:
         ext = str(item or "").strip().lower().lstrip(".")
-        if ext in _KB_ACCEPT and ext not in out:
+        if ext and ext not in out:
             out.append(ext)
     return out
 
@@ -1208,8 +1209,6 @@ def _file_request_from_payload(payload: dict[str, Any]) -> tuple[bool, list[str]
         or source.get("expectFile")
     )
     accept = _accept_extensions(source.get("accept") or source.get("allowedExtensions"))
-    if needs and not accept:
-        accept = list(_KB_ACCEPT)
     return needs, accept
 
 
@@ -1749,12 +1748,10 @@ class Sidecar:
         if skip_run_id:
             emit(
                 {
-                    "type": "event",
-                    "runId": skip_run_id,
-                    "payload": {
-                        "type": "status",
-                        "text": "Продолжаю текущий запуск агента.",
-                    },
+                    "type": "run_adopted",
+                    "runId": run_id,
+                    "linkedRunId": skip_run_id,
+                    "message": "Продолжаю текущий запуск агента.",
                 }
             )
             return
@@ -2002,8 +1999,21 @@ class Sidecar:
         events: list[dict[str, Any]] = []
         agent_role = str(command.get("agentRole") or "interview").strip().lower()
         agent_id = str(command.get("resumeAgentId") or "").strip()
-        if agent_role == "research":
-            agent_id = str(command.get("resumeResearchAgentId") or command.get("resumeAgentId") or "").strip()
+        interview_payload = (
+            command.get("interview") if isinstance(command.get("interview"), dict) else {}
+        )
+        write_document = bool(
+            command.get("writeDocument")
+            or command.get("forceCreate")
+            or interview_payload.get("document_write_required")
+        )
+        use_tools = bool(command.get("useTools")) or write_document
+        model_params = [
+            dict(item)
+            for item in (
+                REGULATION_SDK_MODEL_PARAMS if write_document else REGULATION_SDK_QUESTION_PARAMS
+            )
+        ]
 
         def emit_cancelled() -> None:
             emit(
@@ -2030,10 +2040,12 @@ class Sidecar:
                 prompt=build_regulation_sdk_prompt(prompt_text),
                 workflow_id=workspace_id,
                 cwd=str(run_cwd),
-                model=run_model,
-                model_params=[dict(item) for item in REGULATION_SDK_MODEL_PARAMS],
+                model=REGULATION_SDK_MODEL,
+                model_params=model_params,
                 mode="interview",
                 tools=[],
+                write_document=write_document,
+                use_tools=use_tools,
                 resume_agent_id=agent_id,
                 on_event=self._forward_events(active, events),
                 should_stop=active.stop.is_set,
@@ -2803,53 +2815,55 @@ def _copy_attachments(run_cwd: str, file_paths: list[str]) -> list[str]:
     return relative
 
 
+def _selected_process_ids(interview: dict[str, Any]) -> list[str]:
+    raw = interview.get("selectedProcessIds")
+    if isinstance(raw, list):
+        found = [str(item).strip() for item in raw if str(item).strip()]
+        if found:
+            return found
+    found: list[str] = []
+    seen: set[str] = set()
+    for turn in interview.get("turns") or []:
+        if not isinstance(turn, dict):
+            continue
+        text = str(turn.get("message") or "")
+        match = re.search(r"(?im)^\s*выбраны процессы\s*:\s*(.+)$", text)
+        if not match:
+            continue
+        first = match.group(1).splitlines()[0]
+        for part in re.split(r"[,;]", first):
+            token = (part.strip().split() or [""])[0].strip(".:;")
+            if token.lower().startswith("b-"):
+                token = token[2:]
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            found.append(token)
+    return found
+
+
 def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[str, Any]) -> None:
     import hashlib
 
     run_cwd.mkdir(parents=True, exist_ok=True)
+    payload = dict(interview or {})
+    selected = _selected_process_ids(payload)
+    if selected:
+        payload["selectedProcessIds"] = selected
     agents = (rules or "").strip() or "Создай регламент по interview.json. Ответ строго JSON."
-    agents_path = run_cwd / "AGENTS.md"
-    if not agents_path.is_file() or agents_path.read_text(encoding="utf-8") != agents:
-        agents_path.write_text(agents, encoding="utf-8")
-    slim = dict(interview) if isinstance(interview, dict) else {}
-    attachments = slim.get("attachments") if isinstance(slim.get("attachments"), list) else []
-    slim["attachments"] = [
-        {
-            "id": item.get("id"),
-            "name": item.get("name"),
-            "kind": item.get("kind") or "text",
-            "path": f"materials/{Path(str(item.get('name') or 'file')).stem}.txt",
-        }
-        for item in attachments
-        if isinstance(item, dict)
-    ]
-    interview_blob = json.dumps(slim, ensure_ascii=False, indent=2)
-    interview_path = run_cwd / "interview.json"
-    if not interview_path.is_file() or interview_path.read_text(encoding="utf-8") != interview_blob:
-        interview_path.write_text(interview_blob, encoding="utf-8")
-    static_root = Path(__file__).resolve().parents[2] / "backend" / "app" / "static" / "regulation_dual_agent"
-    for name in (
-        "REGULATION_BRIEF.md",
-        "RESEARCHER_AGENT.md",
-        "INTERVIEWER_AGENT.md",
-        "DUAL_WORKFLOW.md",
-    ):
-        src = static_root / name
-        if src.is_file():
-            dest = run_cwd / name
-            if not dest.is_file():
-                dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-    reviews = interview.get("materialReview")
-    if isinstance(reviews, list) and reviews:
-        try:
-            from app.services.regulation_creation.dual_workflow import completeness_report_markdown
-
-            (run_cwd / "PROCESS_COMPLETENESS.md").write_text(
-                completeness_report_markdown(reviews),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
+    if selected:
+        agents += (
+            "\n\nПользователь уже выбрал процессы: "
+            + ", ".join(selected)
+            +             ". Этап выбора закрыт: не проси отметить процессы снова и не возвращай "
+            "pipeline.stage=select. По каждому выбранному процессу задавай вопросы по пробелам, "
+            "по одному за ход: только то, чего нет в документе."
+        )
+    (run_cwd / "AGENTS.md").write_text(agents, encoding="utf-8")
+    (run_cwd / "interview.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     materials = run_cwd / "materials"
     materials.mkdir(parents=True, exist_ok=True)
     attachments = interview.get("attachments") if isinstance(interview.get("attachments"), list) else []

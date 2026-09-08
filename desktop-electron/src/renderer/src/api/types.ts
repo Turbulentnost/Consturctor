@@ -188,6 +188,16 @@ export interface RegulationCreationProgress {
   visible: boolean
 }
 
+export interface RegulationQueuedQuestion {
+  id: string
+  processId: string
+  field: string
+  text: string
+  options?: string[]
+  smartKey?: string
+  source?: string
+}
+
 export interface RegulationCreationSession {
   draftId: string
   status: string
@@ -197,6 +207,14 @@ export interface RegulationCreationSession {
   resultDocumentPath: string
   sdkAgentId: string
   progress?: RegulationCreationProgress
+  interview?: Record<string, unknown>
+  pipeline?: Record<string, unknown>
+  questionQueue?: RegulationQueuedQuestion[]
+  prefetchInProgress?: boolean
+  queueDepth?: number
+  dualWorkflow?: boolean
+  materialReview?: Record<string, unknown>[]
+  spawnedAgents?: Record<string, unknown>[]
 }
 
 export interface RegulationCreationHistoryItem {
@@ -220,6 +238,14 @@ export interface RegulationCreationTurn {
   forceCreate: boolean
   writeDocument: boolean
   useTools: boolean
+  prefetchedReply?: string
+  prefetchPrompt?: string
+  researchPrompt?: string
+  sdkAgentRole?: string
+  researchAgentId?: string
+  questionQueue?: RegulationQueuedQuestion[]
+  prefetchInProgress?: boolean
+  queueDepth?: number
 }
 
 export interface MatchEvidence {
@@ -592,6 +618,7 @@ export interface AgentEvent {
     | 'result'
     | 'error'
     | 'sidecar_exit'
+    | 'run_adopted'
     | 'log'
     | 'files_updated'
   runId?: string
@@ -623,6 +650,7 @@ export interface AgentEvent {
   code?: string | number
   message?: string
   text?: string
+  linkedRunId?: string
 }
 
 export interface ChatThread {

@@ -48,10 +48,22 @@ class DocumentError(Exception):
 def load_attachment_bytes(name: str, raw: bytes) -> dict:
     suffix = Path(name).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
-        raise DocumentError(
-            f"Формат «{suffix or 'без расширения'}» не поддерживается. "
-            f"Допустимо: {', '.join(sorted(SUPPORTED_SUFFIXES))}"
-        )
+        text = _read_text_bytes(raw)
+        if text.strip():
+            return {
+                "name": Path(name).name,
+                "text": text.strip(),
+                "kind": "text",
+                "mime_type": _guess_text_mime(suffix or ".txt"),
+                "data_b64": "",
+            }
+        return {
+            "name": Path(name).name,
+            "text": f"Прикреплён файл {Path(name).name} ({len(raw)} байт).",
+            "kind": "binary",
+            "mime_type": mimetypes.guess_type(name)[0] or "application/octet-stream",
+            "data_b64": base64.b64encode(raw).decode("ascii"),
+        }
     if suffix in IMAGE_SUFFIXES:
         return _load_image(name, raw, suffix)
     if suffix == ".pdf":

@@ -23,6 +23,7 @@ export interface RegulationCreationCommand {
   writeDocument?: boolean
   useTools?: boolean
   forceCreate?: boolean
+  agentRole?: string
 }
 
 export interface DemoCommand {

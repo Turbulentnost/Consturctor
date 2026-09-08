@@ -1078,7 +1078,8 @@ export class ApiClient {
   // ---------- Auth ----------
   async login(fio: string, password: string): Promise<LoginResult> {
     const data = await this.request<Record<string, unknown>>('POST', '/api/v1/auth/login', {
-      body: { fio, password, client: 'constructor' }
+      body: { fio, password, client: 'constructor' },
+      timeoutMs: 45_000
     })
     const token = String(data.access_token ?? '')
     this.token = token
@@ -1439,6 +1440,35 @@ export class ApiClient {
       { timeoutMs: 180_000 }
     )
     return parseDraft(data)
+  }
+
+  async answerReadinessQuestion(
+    regulationId: string,
+    readinessRunId: string,
+    questionId: string,
+    answer: string
+  ): Promise<AgentReadinessResult> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulations/${regulationId}/readiness/${readinessRunId}/answers`,
+      { body: { questionId, answer }, timeoutMs: 120_000 }
+    )
+    return parseReadiness(data)
+  }
+
+  async decideReadinessChange(
+    regulationId: string,
+    readinessRunId: string,
+    changeId: string,
+    status: 'accepted' | 'rejected' | 'edited' | 'unchanged' | 'not_required',
+    after = ''
+  ): Promise<AgentReadinessResult> {
+    const data = await this.request<Record<string, unknown>>(
+      'PATCH',
+      `/api/v1/regulations/${regulationId}/readiness/${readinessRunId}/changes/${changeId}`,
+      { body: { status, after }, timeoutMs: 60_000 }
+    )
+    return parseReadiness(data)
   }
 
   async updateAgentDraftStatus(draftId: string, status: string): Promise<AgentDraft> {

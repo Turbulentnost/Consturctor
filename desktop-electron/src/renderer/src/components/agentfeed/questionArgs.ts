@@ -70,7 +70,6 @@ function asBool(value: unknown): boolean {
 }
 
 function acceptList(raw: unknown): string[] {
-  const allowed = new Set(['xlsx', 'xlsm', 'docx'])
   const items = Array.isArray(raw) ? raw : raw ? [raw] : []
   const out: string[] = []
   for (const item of items) {
@@ -78,7 +77,7 @@ function acceptList(raw: unknown): string[] {
       .trim()
       .toLowerCase()
       .replace(/^\./, '')
-    if (allowed.has(ext) && !out.includes(ext)) out.push(ext)
+    if (ext && !out.includes(ext)) out.push(ext)
   }
   return out
 }
@@ -100,7 +99,7 @@ export function parseQuestionArgs(raw: unknown): {
     asText(source.text)
   const needsFile = asBool(source.needsFile ?? source.needs_file ?? source.expectFile)
   let accept = acceptList(source.accept || source.allowedExtensions)
-  if (needsFile && !accept.length) accept = ['xlsx', 'xlsm', 'docx']
+  if (needsFile && !accept.length) accept = []
   let options = asOptions(source.options)
   if (!options.length) options = asOptions(source.choices)
   if (!options.length) options = asOptions(source.answers)

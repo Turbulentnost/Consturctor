@@ -541,9 +541,18 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
     }
     case 'ready_state':
       if (!event.ok && event.message) {
-        return { state: { ...state, items: pushSystem(state.items, `Локальный Cursor SDK недоступен: ${event.message}`, 'error') } }
+        return {
+          state: {
+            ...state,
+            running: false,
+            status: '',
+            error: event.message,
+            items: pushSystem(state.items, `Локальный Cursor SDK недоступен: ${event.message}`, 'error')
+          },
+          error: event.message
+        }
       }
-      return { state }
+      return { state: { ...state, status: 'Агент работает…' } }
     case 'sidecar_exit':
       return { state: { ...state, items: pushSystem(state.items, 'Процесс агента завершился. Перезапуск…', 'error') } }
     default:

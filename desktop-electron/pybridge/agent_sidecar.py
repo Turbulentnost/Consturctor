@@ -1194,7 +1194,7 @@ def _accept_extensions(raw: Any) -> list[str]:
     out: list[str] = []
     for item in items:
         ext = str(item or "").strip().lower().lstrip(".")
-        if ext in _KB_ACCEPT and ext not in out:
+        if ext and ext not in out:
             out.append(ext)
     return out
 
@@ -1209,8 +1209,6 @@ def _file_request_from_payload(payload: dict[str, Any]) -> tuple[bool, list[str]
         or source.get("expectFile")
     )
     accept = _accept_extensions(source.get("accept") or source.get("allowedExtensions"))
-    if needs and not accept:
-        accept = list(_KB_ACCEPT)
     return needs, accept
 
 
@@ -1750,12 +1748,10 @@ class Sidecar:
         if skip_run_id:
             emit(
                 {
-                    "type": "event",
-                    "runId": skip_run_id,
-                    "payload": {
-                        "type": "status",
-                        "text": "Продолжаю текущий запуск агента.",
-                    },
+                    "type": "run_adopted",
+                    "runId": run_id,
+                    "linkedRunId": skip_run_id,
+                    "message": "Продолжаю текущий запуск агента.",
                 }
             )
             return

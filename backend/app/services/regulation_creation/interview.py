@@ -358,6 +358,10 @@ def set_research_sdk_agent_id(state: Any, agent_id: str) -> dict[str, Any]:
     return out
 
 
+def research_sdk_agent_id(state: Any) -> str:
+    return _clean_str(normalize_interview_state(state).get("research_sdk_agent_id"))
+
+
 def interview_sdk_agent_id(state: Any) -> str:
     return _clean_str(normalize_interview_state(state).get("sdk_agent_id"))
 
