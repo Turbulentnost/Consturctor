@@ -47,8 +47,14 @@ const FORCE_CREATE_PROMPT =
   'Если каких-то данных не хватает, используй разумные типовые формулировки и явно отметь, что это предположение.'
 const WORKING_STATUS = 'Готовлю вопрос...'
 const DOCUMENT_STATUS = 'Формирую регламент...'
-const COMPOSER_MIN_HEIGHT = 44
-const COMPOSER_MAX_HEIGHT = 129
+const COMPOSER_MIN_HEIGHT = 74
+// 15 строк по 25px line-height — дальше textarea прокручивается внутри.
+const COMPOSER_MAX_HEIGHT = 399
+const STARTER_HINTS = [
+  'Приложите должностную инструкцию или файл с обязанностями — скрепка слева от поля ввода.',
+  'Или коротко напишите должность и 2–3 основные функции сотрудника.',
+  'Дальше ИИ уточнит только то, чего не нашёл в документах, и соберёт регламент по СТО-34-003.'
+]
 
 type BusyKind = 'reading' | 'question' | 'document'
 
@@ -174,6 +180,7 @@ function InterviewProgressBar({
 interface ProcessChoice {
   id: string
   title: string
+  actor?: string
 }
 
 function asStructuredRecord(value: unknown): Record<string, unknown> | null {
@@ -198,9 +205,10 @@ function processChoices(structured: Record<string, unknown>): ProcessChoice[] {
     if (!rec) return
     const id = normalizeProcessId(String(rec.processId || rec.id || ''))
     const title = String(rec.title || rec.name || id).trim()
+    const actor = String(rec.actor || '').trim()
     if (!id || seen.has(id)) return
     seen.add(id)
-    out.push({ id, title })
+    out.push({ id, title, actor: actor || undefined })
   }
   if (Array.isArray(structured.processes)) structured.processes.forEach(add)
   const pipeline = asStructuredRecord(structured.pipeline)
@@ -857,9 +865,18 @@ export function RegulationChatPage({
             <div className="regchat-scroll" ref={scrollRef} onScroll={onScroll}>
               <div className="regchat-column">
               {visible.length === 0 && !busy && (
-                <div className="regchat-hint">
-                  ИИ задаст несколько вопросов, чтобы собрать регламент. Опишите процесс, который нужно
-                  автоматизировать, или приложите файлы.
+                <div className="regchat-row ai">
+                  <AgentAvatar phase="attention" uid="starter" frozen={false} />
+                  <div className="regchat-bubble-col">
+                    <div className="regchat-starter">
+                      <h3>С чего начать</h3>
+                      <ul>
+                        {STARTER_HINTS.map((hint) => (
+                          <li key={hint}>{hint}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
                 </div>
               )}
               {visible.map((m, index) => {
@@ -942,45 +959,34 @@ export function RegulationChatPage({
                         </div>
                       )}
                       {showProcessPicker && (
-                        <div className="regchat-process-picker">
-                          <div className="regchat-process-picker-head">
-                            <span>Отметьте процессы для регламента</span>
-                            <button
-                              type="button"
-                              className="regchat-process-link"
-                              onClick={() =>
-                                setPickedProcessIds(
-                                  pickedProcessIds.length === processes.length
-                                    ? []
-                                    : processes.map((item) => item.id)
-                                )
-                              }
-                            >
-                              {pickedProcessIds.length === processes.length ? 'Снять все' : 'Выбрать все'}
-                            </button>
-                          </div>
-                          <div className="regchat-process-list">
+                        <div className="regchat-select-card">
+                          <h3>Выберите процессы для интервью</h3>
+                          <p>ИИ продолжит только по отмеченным процессам.</p>
+                          <div className="regchat-select-list">
                             {processes.map((item) => {
                               const checked = pickedProcessIds.includes(item.id)
                               return (
-                                <label key={item.id} className={checked ? 'regchat-process-item is-on' : 'regchat-process-item'}>
+                                <label key={item.id} className="regchat-select-item">
                                   <input
                                     type="checkbox"
                                     checked={checked}
                                     onChange={() => toggleProcess(item.id)}
                                   />
-                                  <span>{item.title}</span>
+                                  <span className="regchat-select-title">{item.title}</span>
+                                  {item.actor ? (
+                                    <span className="regchat-select-actor">{item.actor}</span>
+                                  ) : null}
                                 </label>
                               )
                             })}
                           </div>
                           <button
                             type="button"
-                            className="regchat-process-submit"
+                            className="regchat-select-submit"
                             disabled={pickedProcessIds.length === 0}
                             onClick={() => confirmProcesses(processes)}
                           >
-                            Продолжить
+                            Продолжить по выбранным процессам
                           </button>
                         </div>
                       )}
@@ -1147,6 +1153,9 @@ export function RegulationChatPage({
                 )}
               </div>
             </div>
+              </div>
+              <div className="regchat-composer-hint">
+                Enter — отправить {'\u2022'} Shift + Enter — новая строка
               </div>
             </div>
           )}
