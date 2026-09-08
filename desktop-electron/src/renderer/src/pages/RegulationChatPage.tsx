@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
-import { ApiError, type AgentEvent, type RegulationCreationSession, type RegulationCreationTurn } from '../api/types'
+import { ApiError, type AgentEvent, type RegulationCreationProgress, type RegulationCreationSession, type RegulationCreationTurn } from '../api/types'
 import wallpaperUrl from '../assets/chat/wallpaper.png'
 import programIcon from '../assets/logo.png'
 import iconAttention from '@agent-icons/agent-attention-animated.svg?raw'
@@ -15,6 +15,8 @@ import {
   hasSelectedProcessesText,
   isProcessSelectText,
   isReplacementGarbage,
+  isCreationSessionReady,
+  preserveReadyCreationSession,
   rewriteSelectAfterChoice,
   visibleAssistantText,
   visibleUserText
@@ -28,7 +30,7 @@ interface RegulationChatPageProps {
   onReady: (session: RegulationCreationSession) => void | Promise<void>
   onBack: () => void
   onStopped?: () => void
-  onBusyChange?: (busy: boolean) => void
+  onBusyChange?: (busy: boolean, kind?: BusyKind) => void
   banner?: ReactNode
   active?: boolean
 }
@@ -44,15 +46,17 @@ const FORCE_CREATE_PROMPT =
   'Создай регламент принудительно по текущей информации. ' +
   'Если каких-то данных не хватает, используй разумные типовые формулировки и явно отметь, что это предположение.'
 const WORKING_STATUS = 'Готовлю вопрос...'
+const DOCUMENT_STATUS = 'Формирую регламент...'
 const COMPOSER_MIN_HEIGHT = 44
 const COMPOSER_MAX_HEIGHT = 129
 
-type BusyKind = 'reading' | 'question'
+type BusyKind = 'reading' | 'question' | 'document'
 
 function busyHeadLabel(kind: BusyKind, fileCount: number): string {
   if (kind === 'reading') {
     return fileCount > 1 ? 'Читаю документы' : 'Читаю документ'
   }
+  if (kind === 'document') return 'Формирует регламент'
   return 'Готовит вопрос'
 }
 
@@ -60,7 +64,17 @@ function busyStatusLabel(kind: BusyKind, fileCount: number): string {
   if (kind === 'reading') {
     return fileCount > 1 ? 'Читаю документы...' : 'Читаю документ...'
   }
+  if (kind === 'document') return DOCUMENT_STATUS
   return WORKING_STATUS
+}
+
+function turnWritesDocument(
+  turn: { writeDocument?: boolean; forceCreate?: boolean },
+  session: RegulationCreationSession
+): boolean {
+  if (turn.writeDocument || turn.forceCreate) return true
+  const progress = session.progress
+  return Boolean(progress?.visible && Number(progress.remaining || 0) <= 0)
 }
 
 function fileCountLabel(count: number): string {
@@ -117,6 +131,44 @@ function quickAnswers(structured: Record<string, unknown>): string[] {
   const raw = structured.quickAnswers
   if (Array.isArray(raw)) return raw.map((x) => String(x)).filter(Boolean)
   return []
+}
+
+function InterviewProgressBar({
+  progress,
+  percent
+}: {
+  progress: RegulationCreationProgress
+  percent: number
+}): React.JSX.Element {
+  const processTitle = progress.currentProcessTitle || progress.currentProcessId
+  const processLine =
+    progress.processCount > 0 && progress.currentProcessIndex > 0
+      ? `Блок ${progress.currentProcessIndex} из ${progress.processCount}`
+      : ''
+  return (
+    <div className="regchat-progress" aria-label="Прогресс интервью">
+      {processTitle ? (
+        <div className="regchat-progress-current">
+          <span className="regchat-progress-current-label">Сейчас</span>
+          <span className="regchat-progress-current-title" title={processTitle}>
+            {processTitle}
+          </span>
+          {processLine ? <span className="regchat-progress-current-index">{processLine}</span> : null}
+        </div>
+      ) : null}
+      <div className="regchat-progress-meta">
+        <span>
+          Известно {progress.answered} фактов · уточнить ещё {progress.remaining}
+        </span>
+        <span className="regchat-progress-hint">
+          Это не число вопросов в чате: один ответ может закрыть факт или только уточнить его
+        </span>
+      </div>
+      <div className="regchat-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+        <div className="regchat-progress-fill" style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  )
 }
 
 interface ProcessChoice {
@@ -366,6 +418,12 @@ export function RegulationChatPage({
   const runIdRef = useRef('')
   const abortRef = useRef<AbortController | null>(null)
   const stoppedRef = useRef(false)
+  const sessionRef = useRef(session)
+  sessionRef.current = session
+
+  function pushSession(next: RegulationCreationSession): void {
+    onSessionChange(preserveReadyCreationSession(sessionRef.current, next))
+  }
 
   useEffect(() => {
     setError('')
@@ -384,8 +442,8 @@ export function RegulationChatPage({
   }, [session.draftId])
 
   useEffect(() => {
-    onBusyChange?.(busy)
-  }, [busy, onBusyChange])
+    onBusyChange?.(busy, busyKind)
+  }, [busy, busyKind, onBusyChange])
 
   useEffect(() => {
     if (!pinnedRef.current) return
@@ -402,10 +460,31 @@ export function RegulationChatPage({
     node.style.overflowY = content > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden'
   }, [input])
 
-  const ready = Boolean(session.resultRegulation || session.resultDocumentPath)
+  useEffect(() => {
+    if (!active || busy || isCreationSessionReady(session)) return
+    let cancelled = false
+    void api
+      .getRegulationCreationSession(session.draftId)
+      .then((latest) => {
+        if (cancelled || !isCreationSessionReady(latest)) return
+        pushSession(latest)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [active, busy, session.draftId, session.status, session.resultDocumentPath])
+
+  const ready = isCreationSessionReady(session)
   const hasUserMessage = session.messages.some((m) => m.role === 'user')
   const resultName = resultFileName(session)
   const phase: AgentPhase = ready ? 'completed' : busy ? 'working' : 'attention'
+  const progress = session.progress
+  const showProgress = Boolean(progress?.visible) && !ready
+  const progressPercent =
+    showProgress && progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.answered / progress.total) * 100))
+      : 0
 
   async function downloadResult(): Promise<void> {
     if (!ready) return
@@ -466,7 +545,11 @@ export function RegulationChatPage({
     setPlaceholder(DEFAULT_PLACEHOLDER)
     setError('')
     setBusy(true)
-    setBusyKind(files.length > 0 ? 'reading' : 'question')
+    const forceCreate = message === FORCE_CREATE_PROMPT
+    const progressClosed = Boolean(session.progress?.visible && Number(session.progress.remaining || 0) <= 0)
+    setBusyKind(
+      files.length > 0 ? 'reading' : forceCreate || progressClosed ? 'document' : 'question'
+    )
     setReadingFileCount(files.length)
     pinnedRef.current = true
     const optimistic: RegulationCreationSession = {
@@ -484,14 +567,14 @@ export function RegulationChatPage({
         }
       ]
     }
-    onSessionChange(optimistic)
+    pushSession(optimistic)
     let persisted = false
     try {
       const filePaths = files.map((f) => f.path)
       const onStreamEvent = (type: string, text: string): void => {
         if (type === 'error' && text) setError(text)
         if ((type === 'status' && text && text !== 'reading') || (type === 'assistant' && text)) {
-          setBusyKind('question')
+          setBusyKind((prev) => (prev === 'document' || prev === 'reading' ? prev : 'question'))
         }
       }
       if (typeof window.agent.start === 'function') {
@@ -512,15 +595,17 @@ export function RegulationChatPage({
           if (stoppedRef.current) throw new RegulationCancelledError()
           setAttachments([])
           setFilesOpen(false)
-          onSessionChange(updated)
+          pushSession(updated)
           return
         }
         persisted = true
         if (stoppedRef.current) throw new RegulationCancelledError()
         setAttachments([])
         setFilesOpen(false)
-        setBusyKind('question')
-        onSessionChange(turn.session)
+        pushSession(turn.session)
+        if (isCreationSessionReady(turn.session)) return
+        const writing = turnWritesDocument(turn, turn.session)
+        setBusyKind(writing ? 'document' : 'question')
         await runSdkAndApply(turn)
       } else {
         const updated = await api.streamRegulationCreationMessage(
@@ -533,7 +618,7 @@ export function RegulationChatPage({
         if (stoppedRef.current) throw new RegulationCancelledError()
         setAttachments([])
         setFilesOpen(false)
-        onSessionChange(updated)
+        pushSession(updated)
       }
     } catch (err) {
       if (isRegulationCancelled(err) || stoppedRef.current) {
@@ -553,7 +638,7 @@ export function RegulationChatPage({
           /* keep the optimistic session with the user text and files */
         }
       }
-      onSessionChange(next)
+      pushSession(next)
     } finally {
       setBusy(false)
     }
@@ -635,6 +720,8 @@ export function RegulationChatPage({
     const interview = afterSelect
       ? { ...turn.interview, selectedProcessIds: selectedIds }
       : turn.interview
+    const writing = turnWritesDocument(turn, session)
+    if (writing) setBusyKind('document')
     const runId = agentClient.start({
       kind: 'regulation_creation',
       draftId: session.draftId,
@@ -642,8 +729,8 @@ export function RegulationChatPage({
       rules: afterSelect ? `${turn.sdkRules}\n${afterSelect}` : turn.sdkRules,
       interview,
       resumeAgentId: turn.sdkAgentId || session.sdkAgentId,
-      writeDocument: turn.writeDocument || turn.forceCreate,
-      useTools: turn.useTools || turn.writeDocument || turn.forceCreate,
+      writeDocument: turn.writeDocument || turn.forceCreate || writing,
+      useTools: turn.useTools || turn.writeDocument || turn.forceCreate || writing,
       forceCreate: turn.forceCreate
     })
     runIdRef.current = runId
@@ -652,7 +739,9 @@ export function RegulationChatPage({
         runId,
         (type, text) => {
           if (type === 'error' && text) setError(text)
-          if (type === 'assistant' && text) setBusyKind('question')
+          if (type === 'assistant' && text) {
+            setBusyKind((prev) => (prev === 'document' || writing ? 'document' : 'question'))
+          }
         },
         abort.signal
       )
@@ -674,7 +763,14 @@ export function RegulationChatPage({
       if (abort.signal.aborted || stoppedRef.current) {
         throw new RegulationCancelledError()
       }
-      onSessionChange(updated)
+      pushSession(updated)
+      if (!isCreationSessionReady(updated)) return
+      try {
+        const latest = await api.getRegulationCreationSession(session.draftId)
+        pushSession(latest)
+      } catch {
+        /* keep apply payload */
+      }
     } finally {
       if (abortRef.current === abort) abortRef.current = null
       if (runIdRef.current === runId) runIdRef.current = ''
@@ -685,11 +781,18 @@ export function RegulationChatPage({
     if (busy || ready || stoppedRef.current) return
     setError('')
     setBusy(true)
-    setBusyKind('question')
+    setBusyKind(
+      session.progress?.visible && Number(session.progress.remaining || 0) <= 0
+        ? 'document'
+        : 'question'
+    )
     pinnedRef.current = true
     try {
       const turn = await api.peekRegulationCreationTurn(session.draftId)
       if (stoppedRef.current) throw new RegulationCancelledError()
+      pushSession(turn.session)
+      if (isCreationSessionReady(turn.session)) return
+      if (turnWritesDocument(turn, turn.session)) setBusyKind('document')
       await runSdkAndApply(turn)
     } catch (err) {
       if (isRegulationCancelled(err) || stoppedRef.current) return
@@ -740,6 +843,7 @@ export function RegulationChatPage({
         <div className="regchat-subtitle">
           Ответьте на вопросы, и ИИ подготовит регламент в стиле ваших документов
         </div>
+        {showProgress && progress ? <InterviewProgressBar progress={progress} percent={progressPercent} /> : null}
       </div>
       {banner ? <div className="regchat-banner">{banner}</div> : null}
 
@@ -784,6 +888,17 @@ export function RegulationChatPage({
                   !ready &&
                   Boolean(lastAssistantId) &&
                   m.messageId === lastAssistantId
+                const blockLabel =
+                  isCurrentStage && showProgress && progress
+                    ? [
+                        progress.processCount > 0 && progress.currentProcessIndex > 0
+                          ? `Блок ${progress.currentProcessIndex} из ${progress.processCount}`
+                          : '',
+                        progress.currentProcessTitle || progress.currentProcessId
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')
+                    : ''
                 return (
                   <div key={m.messageId || index} className={isUser ? 'regchat-row user' : 'regchat-row ai'}>
                     {!isUser && (
@@ -795,6 +910,7 @@ export function RegulationChatPage({
                     )}
                     <div className="regchat-bubble-col">
                       <div className={isUser ? 'regchat-bubble user' : 'regchat-bubble ai'}>
+                        {blockLabel ? <div className="regchat-block-tag">{blockLabel}</div> : null}
                         {text ? <div className="regchat-bubble-text">{text}</div> : null}
                         {names.length > 0 && (
                           <div className="regchat-attach-list">

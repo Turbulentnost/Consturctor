@@ -49,9 +49,11 @@ from app.services.regulation_creation.interview import (
     build_followup_creation_prompt,
     creation_interviewer_rules,
     creation_system_rules,
+    current_interview_process_id,
     document_from_interview,
     document_has_body,
     document_has_full_text,
+    interview_progress,
     interview_sdk_agent_id,
     interview_snapshot,
     interview_write_document,
@@ -578,23 +580,20 @@ def _apply_agent_reply(
         or is_process_select_message(_message_content(parsed, raw))
         or str((parsed.get("pipeline") or {}).get("stage") or "").lower() == "select"
     ):
-        fallback = question_for_selected_processes(draft.interview_json)
-        if fallback is not None:
-            parsed["status"] = "need_more"
-            parsed["message"] = fallback.message
-            parsed["quickAnswers"] = fallback.quick_answers
-            parsed["nextQuestion"] = {
-                "processId": fallback.function_id,
-                "field": fallback.field,
-                "text": fallback.message,
-            }
-            pipeline = parsed.get("pipeline") if isinstance(parsed.get("pipeline"), dict) else {}
-            parsed["pipeline"] = {
-                **pipeline,
-                "stage": "questions",
-                "selectedProcessIds": chosen_ids,
-            }
-            draft.interview_json = merge_agent_payload(draft.interview_json, parsed)
+        _force_gap_question(parsed, draft)
+    if chosen_ids and str(parsed.get("status") or "") == "need_more":
+        current_id = current_interview_process_id(draft.interview_json)
+        next_question = parsed.get("nextQuestion") if isinstance(parsed.get("nextQuestion"), dict) else {}
+        process_blob = parsed.get("process") if isinstance(parsed.get("process"), dict) else {}
+        asked_process = normalize_process_id(
+            next_question.get("processId")
+            or next_question.get("functionId")
+            or process_blob.get("id")
+        )
+        if current_id and asked_process and asked_process != current_id:
+            _force_gap_question(parsed, draft)
+        elif _should_replace_with_gap_question(_message_content(parsed, raw)):
+            _force_gap_question(parsed, draft)
     blocker = None if force_create or parsed.get("status") != "ready" else ready_blocker(parsed, draft.interview_json)
     if blocker is not None:
         draft.interview_json, message = remember_assistant_question(
@@ -1169,22 +1168,108 @@ def _ui_processes(parsed: dict, interview: object) -> list[dict[str, str]]:
 
 
 def _quick_answers(value: object) -> list[str]:
-    if isinstance(value, list):
-        answers = [str(item).strip() for item in value if str(item).strip()]
-        answers = [
-            item
-            for item in answers
-            if item.lower() not in {"оставить", "переделать", "оставить это"}
-        ]
-        if answers:
-            return answers[:6]
-    return [
-        "Опишу действие вручную",
-        "Приложу файл с деталями",
-        "Это выполняется в Outlook",
-        "Это выполняется в 1C",
-        "Это выполняется в Excel",
+    if not isinstance(value, list):
+        return []
+    answers = [str(item).strip() for item in value if str(item).strip()]
+    answers = [
+        item
+        for item in answers
+        if item.lower() not in {"оставить", "переделать", "оставить это"}
     ]
+    return answers[:6]
+
+
+def _should_replace_with_gap_question(content: str) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return True
+    folded = text.lower()
+    if "?" in text or "？" in text:
+        # Still replace pure gap statements that only tack on a weak question mark.
+        gap_only = (
+            "не раскрыт",
+            "не указан",
+            "не указано",
+            "не хватает",
+            "отсутствует",
+            "неясн",
+            "упомянут",
+            "в тексте нет",
+        )
+        ask_markers = (
+            "как ",
+            "какой",
+            "какая",
+            "какие",
+            "где ",
+            "когда ",
+            "уточните",
+            "опишите",
+            "расскажите",
+            "относится",
+        )
+        if any(marker in folded for marker in gap_only) and not any(
+            marker in folded for marker in ask_markers
+        ):
+            return True
+        return False
+    status_markers = (
+        "нет пробел",
+        "пробелов нет",
+        "больше нет",
+        "все известно",
+        "всё известно",
+        "зафиксирован",
+        "закрыт",
+        "можно переходить",
+        "не раскрыт",
+        "не указан",
+        "не указано",
+        "не хватает",
+        "отсутствует",
+        "упомянут",
+        "в тексте нет",
+        "не видно,",
+    )
+    if any(marker in folded for marker in status_markers):
+        return True
+    question_markers = (
+        "как ",
+        "какой",
+        "какая",
+        "какие",
+        "где ",
+        "когда ",
+        "что ",
+        "уточните",
+        "опишите",
+        "расскажите",
+        "относится",
+    )
+    return not any(marker in folded for marker in question_markers)
+
+
+def _force_gap_question(parsed: dict, draft: RegulationCreationDraft) -> None:
+    fallback = question_for_selected_processes(draft.interview_json)
+    if fallback is None:
+        return
+    parsed["status"] = "need_more"
+    parsed["message"] = fallback.message
+    parsed["quickAnswers"] = list(fallback.quick_answers)
+    parsed["nextQuestion"] = {
+        "processId": fallback.function_id,
+        "field": fallback.field,
+        "targetFact": fallback.field,
+        "text": fallback.message,
+    }
+    pipeline = parsed.get("pipeline") if isinstance(parsed.get("pipeline"), dict) else {}
+    chosen_ids = selected_process_ids(draft.interview_json)
+    parsed["pipeline"] = {
+        **pipeline,
+        "stage": "questions",
+        "selectedProcessIds": chosen_ids,
+    }
+    draft.interview_json = merge_agent_payload(draft.interview_json, parsed)
 
 
 def _message_content(parsed: dict, raw: str) -> str:
@@ -1381,6 +1466,7 @@ def _session(db: Session, draft: RegulationCreationDraft) -> RegulationCreationS
         resultDocument=draft.draft_document_json or {},
         resultDocumentPath=draft.result_document_path,
         sdkAgentId=interview_sdk_agent_id(draft.interview_json),
+        progress=interview_progress(draft.interview_json),
         createdAt=draft.created_at,
         updatedAt=draft.updated_at,
     )

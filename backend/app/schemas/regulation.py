@@ -668,6 +668,17 @@ class RegulationCreationMessage(BaseModel):
     createdAt: datetime | None = None
 
 
+class RegulationCreationProgress(BaseModel):
+    answered: int = 0
+    remaining: int = 0
+    total: int = 0
+    currentProcessId: str = ""
+    currentProcessTitle: str = ""
+    currentProcessIndex: int = 0
+    processCount: int = 0
+    visible: bool = False
+
+
 class RegulationCreationSession(BaseModel):
     draftId: str
     status: RegulationCreationStatus = "collecting_positions"
@@ -679,6 +690,7 @@ class RegulationCreationSession(BaseModel):
     resultDocument: dict = Field(default_factory=dict)
     resultDocumentPath: str = ""
     sdkAgentId: str = ""
+    progress: RegulationCreationProgress = Field(default_factory=RegulationCreationProgress)
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
 

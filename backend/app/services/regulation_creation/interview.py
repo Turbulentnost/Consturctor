@@ -154,15 +154,22 @@ _ROLE_FOREIGN_MARKERS = (
     "другая роль",
     "не относится",
     "не моя",
+    "не мой",
     "чужая роль",
+    "снимаю",
+    "снимите",
+    "не моя обязанность",
+    "не мой процесс",
 )
 
 _ANSWER_SUFFICIENCY_STATUSES = {"closed", "partial", "not_answered"}
 
 _PROCESS_FACT_ALIASES = {
-    "inputs": ("inputs", "input", "sourceInputs", "входы", "исходные данные"),
+    "inputs": ("inputs", "input", "sourceInputs", "входы", "исходные данные", "что поступает"),
     "workLocation": (
         "workLocation",
+        "dataSources",
+        "readWriteSources",
         "tool",
         "instrument",
         "system",
@@ -172,12 +179,25 @@ _PROCESS_FACT_ALIASES = {
         "где работает",
         "место работы",
         "система",
+        "источник данных",
+        "источники чтения",
+        "чтение и запись",
     ),
     "objects": ("objects", "records", "forms", "registers", "entities", "объекты", "реестры", "формы"),
     "trigger": ("trigger", "triggerAction", "startEvent", "condition", "триггер", "условие запуска"),
-    "frequency": ("frequency", "periodicity", "cadence", "schedule", "периодичность"),
+    "deadlines": (
+        "deadlines",
+        "deadline",
+        "dueDate",
+        "timing",
+        "срок",
+        "сроки",
+        "сроки выполнения",
+        "к какому сроку",
+    ),
+    "frequency": ("frequency", "periodicity", "cadence", "schedule", "периодичность", "как часто"),
     "steps": ("steps", "actions", "userAction", "procedure", "шаги", "действия"),
-    "outputs": ("outputs", "result", "artifacts", "результаты", "выходы"),
+    "outputs": ("outputs", "result", "artifacts", "результаты", "выходы", "что получается"),
     "recipients": ("recipients", "receivers", "toWhom", "получатели", "кому передается"),
     "controls": ("controls", "checks", "criteria", "проверки", "контроль"),
     "exceptions": ("exceptions", "escalations", "risks", "исключения", "эскалации"),
@@ -188,8 +208,19 @@ _PROCESS_FIELD_TO_FUNCTION_FIELD = {
     "objects": "tool",
     "frequency": "periodicity",
     "trigger": "triggerAction",
+    "deadlines": "periodicity",
     "steps": "userAction",
 }
+
+# Knowledge goals after interview for each process (not a fixed question count).
+_PROGRESS_REQUIRED_FACTS = (
+    "inputs",
+    "outputs",
+    "deadlines",
+    "workLocation",
+    "frequency",
+    "steps",
+)
 
 _WORK_LOCATION_OBJECT_MARKERS = (
     "реестр",
@@ -399,6 +430,37 @@ def normalize_process_id(value: Any) -> str:
     return text
 
 
+def _is_internal_process_label(value: Any) -> bool:
+    text = _clean_str(value)
+    if not text:
+        return True
+    return bool(re.fullmatch(r"(?i)[pf]\d+", text.replace("_", "-")))
+
+
+def _process_display_title(process: dict[str, Any], *, index: int = 0) -> str:
+    title = _clean_str(process.get("title") or process.get("name") or process.get("description"))
+    process_id = normalize_process_id(process.get("id") or process.get("processId"))
+    if title and not _is_internal_process_label(title):
+        return title
+    facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+    for key in ("steps", "outputs", "inputs"):
+        raw = facts.get(key)
+        if isinstance(raw, list):
+            for item in raw:
+                text = _clean_str(item)
+                if text and not _is_internal_process_label(text):
+                    return text[:80]
+        else:
+            text = _clean_str(raw)
+            if text and not _is_internal_process_label(text):
+                return text[:80]
+    if index > 0:
+        return f"Процесс {index}"
+    if process_id and not _is_internal_process_label(process_id):
+        return process_id
+    return "выбранный процесс"
+
+
 def _clean_process_ids(value: Any) -> list[str]:
     raw = value if isinstance(value, list) else [value]
     out: list[str] = []
@@ -450,70 +512,268 @@ def selected_process_ids(state: Any) -> list[str]:
     return _clean_process_ids(normalize_interview_state(state).get("selectedProcessIds"))
 
 
+def interview_progress(state: Any) -> dict[str, Any]:
+    """Progress for the regulation interview UI: answered / remaining by process gaps."""
+    interview = normalize_interview_state(state)
+    selected = selected_process_ids(interview)
+    empty = {
+        "answered": 0,
+        "remaining": 0,
+        "total": 0,
+        "currentProcessId": "",
+        "currentProcessTitle": "",
+        "currentProcessIndex": 0,
+        "processCount": 0,
+        "visible": False,
+    }
+    if not selected:
+        return empty
+    by_id = _selected_processes_in_order(interview, selected)
+    if not by_id:
+        return {**empty, "processCount": len(selected), "visible": True}
+    answered = 0
+    remaining = 0
+    current_id = ""
+    current_title = ""
+    current_index = 0
+    position = _clean_str(interview.get("position"))
+    for index, process in enumerate(by_id, start=1):
+        process_id = normalize_process_id(process.get("id") or process.get("processId"))
+        open_fields = _process_open_fields(process, interview, position=position)
+        closed = _process_closed_count(process, open_fields)
+        answered += closed
+        remaining += len(open_fields)
+        if not current_id and open_fields and _role_status(process) != ROLE_FOREIGN:
+            current_id = process_id
+            current_title = _process_display_title(process, index=index)
+            current_index = index
+    if not current_id and by_id:
+        last = by_id[-1]
+        current_id = normalize_process_id(last.get("id") or last.get("processId"))
+        current_title = _process_display_title(last, index=len(by_id))
+        current_index = len(by_id)
+    total = answered + remaining
+    return {
+        "answered": answered,
+        "remaining": remaining,
+        "total": total,
+        "currentProcessId": current_id,
+        "currentProcessTitle": current_title,
+        "currentProcessIndex": current_index,
+        "processCount": len(by_id),
+        "visible": True,
+    }
+
+
+def current_interview_process_id(state: Any) -> str:
+    progress = interview_progress(state)
+    return _clean_str(progress.get("currentProcessId"))
+
+
 def question_for_selected_processes(state: Any) -> ReadyBlocker | None:
     interview = normalize_interview_state(state)
-    wanted = set(selected_process_ids(interview))
-    processes = [item for item in interview.get("processes") or [] if isinstance(item, dict)]
-    if wanted:
+    selected = selected_process_ids(interview)
+    processes = _selected_processes_in_order(interview, selected) if selected else [
+        item for item in interview.get("processes") or [] if isinstance(item, dict)
+    ]
+    current_id = current_interview_process_id(interview)
+    if current_id:
         processes = [
             item
             for item in processes
-            if normalize_process_id(item.get("id") or item.get("processId")) in wanted
-        ]
-    for process in processes:
+            if normalize_process_id(item.get("id") or item.get("processId")) == current_id
+        ] or processes
+    position = _clean_str(interview.get("position"))
+    for index, process in enumerate(processes, start=1):
         if _role_status(process) == ROLE_FOREIGN:
             continue
-        title = _clean_str(process.get("title")) or "выбранный процесс"
+        title = _process_display_title(process, index=index)
         process_id = normalize_process_id(process.get("id") or process.get("processId"))
+        open_fields = _process_open_fields(process, interview, position=position)
+        if "roleStatus" in open_fields:
+            return ReadyBlocker(
+                message=(
+                    f"Процесс «{title}» в документе выглядит неоднозначно. "
+                    "Он относится к вашей должности?"
+                ),
+                quick_answers=["Да, это моя обязанность", "Нет, другая роль", "Частично, уточню"],
+                function_id=process_id,
+                field="roleStatus",
+            )
         for unknown in _normalize_unknowns(process.get("unknowns")):
-            reason = _clean_str(unknown.get("question") or unknown.get("reason"))
-            field = _function_field(unknown.get("field"))
-            if reason:
-                return ReadyBlocker(
-                    message=f"По процессу «{title}»: {reason}",
-                    quick_answers=["Уточню", "Опишу шагами", "В документе этого нет"],
-                    function_id=process_id,
-                    field=field,
-                )
-        facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
-        for key, label in (
-            ("trigger", "что запускает работу"),
-            ("steps", "какие шаги вы делаете"),
-            ("workLocation", "где именно вы это делаете"),
-            ("outputs", "какой результат получается"),
-            ("recipients", "кому передаёте результат"),
-        ):
-            value = facts.get(key)
-            empty = value in (None, "", []) or (isinstance(value, list) and not value)
-            if empty:
-                return ReadyBlocker(
-                    message=f"По процессу «{title}» в документе не видно, {label}. Как это устроено у вас?",
-                    quick_answers=["Опишу своими словами", "Этого шага нет", "Позже уточню"],
-                    function_id=process_id,
-                    field=key,
-                )
-    functions = [item for item in interview.get("functions") or [] if isinstance(item, dict)]
-    if wanted:
-        functions = [
-            item
-            for item in functions
-            if normalize_process_id(item.get("id") or item.get("processId")) in wanted
-        ]
-    position = _clean_str(interview.get("position"))
-    for func in functions:
-        if _role_status(func) == ROLE_FOREIGN:
-            continue
-        gaps = [str(gap) for gap in (func.get("openGaps") or []) if str(gap).strip()]
-        if gaps:
-            return _question_for_gap(func, gaps[0], position=position)
-    if wanted:
-        return ReadyBlocker(
-            message="По выбранному процессу уточните факт, которого нет в тексте документа.",
-            quick_answers=["Опишу своими словами", "В документе этого нет", "Позже уточню"],
-            function_id=next(iter(wanted), ""),
-            field="",
-        )
+            field = _progress_field_key(unknown.get("field"))
+            if field not in open_fields:
+                continue
+            hint = _clean_str(unknown.get("question") or unknown.get("reason"))
+            return ReadyBlocker(
+                message=_question_message_for_process_gap(title=title, field=field, hint=hint),
+                quick_answers=[],
+                function_id=process_id,
+                field=field,
+            )
+        for key in _PROGRESS_REQUIRED_FACTS:
+            if key not in open_fields:
+                continue
+            return ReadyBlocker(
+                message=_question_message_for_process_gap(title=title, field=key),
+                quick_answers=[],
+                function_id=process_id,
+                field=key,
+            )
     return None
+
+
+def _process_gap_label(field: str) -> str:
+    return {
+        "inputs": "что поступает на вход",
+        "outputs": "какой результат получается",
+        "deadlines": "какие сроки выполнения",
+        "workLocation": "где читаются и записываются данные",
+        "frequency": "как часто нужно выполнять действие",
+        "steps": "какая последовательность действий",
+        "roleStatus": "относится ли процесс к вашей должности",
+    }.get(field, "как это устроено")
+
+
+def _question_message_for_process_gap(*, title: str, field: str, hint: str = "") -> str:
+    label = _process_gap_label(field)
+    text = _clean_str(hint)
+    if text and ("?" in text or "？" in text):
+        if text.lower().startswith("по процессу") or text.lower().startswith("процесс"):
+            return text
+        return f"По процессу «{title}»: {text}"
+    if text:
+        cleaned = text.rstrip(" .;")
+        return (
+            f"По процессу «{title}» не хватает ясности: {cleaned}. "
+            f"Уточните, пожалуйста, {label}?"
+        )
+    return f"По процессу «{title}» не видно, {label}. Как это устроено у вас?"
+
+
+def _selected_processes_in_order(interview: dict[str, Any], selected: list[str]) -> list[dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    for item in interview.get("processes") or []:
+        if not isinstance(item, dict):
+            continue
+        process_id = normalize_process_id(item.get("id") or item.get("processId"))
+        if process_id:
+            by_id[process_id] = item
+    for item in interview.get("functions") or []:
+        if not isinstance(item, dict):
+            continue
+        process_id = normalize_process_id(item.get("id") or item.get("processId"))
+        if process_id and process_id not in by_id:
+            by_id[process_id] = {
+                "id": process_id,
+                "title": _clean_str(item.get("title")),
+                "roleStatus": item.get("roleStatus"),
+                "knownFacts": {
+                    "workLocation": _clean_str(item.get("tool")),
+                    "frequency": _clean_str(item.get("periodicity")),
+                    "trigger": _clean_str(item.get("triggerAction")),
+                    "steps": [_clean_str(item.get("userAction"))] if _clean_str(item.get("userAction")) else [],
+                },
+                "unknowns": [
+                    {"field": gap, "critical": True, "reason": gap}
+                    for gap in (item.get("openGaps") or _open_gaps(item, position=_clean_str(interview.get("position"))))
+                ],
+            }
+    out: list[dict[str, Any]] = []
+    for process_id in selected:
+        process = by_id.get(process_id)
+        if process is not None:
+            out.append(process)
+    return out
+
+
+def _process_open_fields(
+    process: dict[str, Any],
+    interview: dict[str, Any],
+    *,
+    position: str = "",
+) -> set[str]:
+    if _role_status(process) == ROLE_FOREIGN:
+        return set()
+    open_fields: set[str] = set()
+    if position and _role_status(process) != ROLE_BELONGS:
+        open_fields.add("roleStatus")
+    facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+    for key in _PROGRESS_REQUIRED_FACTS:
+        value = facts.get(key)
+        empty = value in (None, "", []) or (
+            isinstance(value, list) and not any(str(item).strip() for item in value)
+        )
+        if empty:
+            open_fields.add(key)
+            continue
+        text = value if isinstance(value, str) else " ".join(
+            str(item) for item in value if str(item).strip()
+        )
+        if key == "workLocation" and _is_vague_work_location(text):
+            open_fields.add(key)
+        elif key == "steps" and _is_vague_user_action(text):
+            open_fields.add(key)
+    for unknown in _normalize_unknowns(process.get("unknowns")):
+        if not bool(unknown.get("critical")):
+            continue
+        field = _progress_field_key(unknown.get("field"))
+        if field in _PROGRESS_REQUIRED_FACTS or field == "roleStatus":
+            # Only keep as open if the required fact is still empty/vague.
+            if field == "roleStatus" or field in open_fields or _fact_missing(facts.get(field)):
+                open_fields.add(field if field else "unknown")
+    process_id = normalize_process_id(process.get("id") or process.get("processId"))
+    for func in interview.get("functions") or []:
+        if not isinstance(func, dict):
+            continue
+        if normalize_process_id(func.get("id") or func.get("processId")) != process_id:
+            continue
+        mapped = {
+            "tool": "workLocation",
+            "periodicity": "frequency",
+            "userAction": "steps",
+        }
+        for gap in _open_gaps(func, position=position):
+            key = mapped.get(gap) or _progress_field_key(gap)
+            if key in _PROGRESS_REQUIRED_FACTS and _fact_missing(facts.get(key)):
+                open_fields.add(key)
+    return open_fields
+
+
+def _fact_missing(value: Any) -> bool:
+    if value in (None, "", []):
+        return True
+    if isinstance(value, list):
+        return not any(str(item).strip() for item in value)
+    return not str(value).strip()
+
+
+def _process_closed_count(process: dict[str, Any], open_fields: set[str]) -> int:
+    if _role_status(process) == ROLE_FOREIGN:
+        return len(_PROGRESS_REQUIRED_FACTS)
+    closed = 0
+    for key in _PROGRESS_REQUIRED_FACTS:
+        if key not in open_fields:
+            closed += 1
+    return closed
+
+
+def _progress_field_key(value: Any) -> str:
+    canonical = _canonical_gap(value)
+    if not canonical:
+        return ""
+    if canonical == "deadlines":
+        return "deadlines"
+    if canonical == "inputs":
+        return "inputs"
+    if canonical == "outputs":
+        return "outputs"
+    for process_key, function_key in _PROCESS_FIELD_TO_FUNCTION_FIELD.items():
+        if canonical == function_key or canonical == process_key:
+            return process_key
+    if canonical in _PROGRESS_REQUIRED_FACTS or canonical == "roleStatus":
+        return canonical
+    return canonical
 
 
 def _selected_ids_from_payload(payload: dict[str, Any]) -> list[str]:
@@ -574,6 +834,12 @@ def append_user_turn(state: Any, message: str, attachments: list[dict]) -> dict[
 def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
     out = normalize_interview_state(state)
     answer_sufficiency = _extract_answer_sufficiency(payload)
+    next_question = payload.get("nextQuestion") if isinstance(payload.get("nextQuestion"), dict) else {}
+    _apply_progress_from_user_answer(
+        out,
+        answer_sufficiency=answer_sufficiency,
+        next_question=next_question,
+    )
     if answer_sufficiency:
         _record_answer_sufficiency(out, answer_sufficiency)
     incoming = _extract_functions(payload)
@@ -605,7 +871,7 @@ def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
             continue
         process["roleStatus"] = _resolve_role_status(process, position)
         process["sourceRefs"] = _clean_source_refs(process.get("sourceRefs"))
-        process["unknowns"] = _normalize_unknowns(process.get("unknowns"))
+        process["unknowns"] = _prune_filled_unknowns(process)
     incoming_selected = _selected_ids_from_payload(payload)
     if incoming_selected:
         out["selectedProcessIds"] = incoming_selected
@@ -622,14 +888,21 @@ def creation_interviewer_rules() -> str:
         "Все нужные факты уже есть в сообщении: карта интервью и тексты вложений.\n"
         "Работай только по этим текстам и ответам пользователя. Не используй шаблоны, "
         "эталоны и типовые догадки как содержание регламента.\n"
-        "Один ход = один вопрос. Сначала напиши пользователю только текст вопроса "
-        "простым языком, без JSON, без markdown и без служебных полей. "
-        "Не начинай ответ с фигурной скобки.\n"
+        "Один ход = один вопрос пользователю. Не констатируй пробел ('не указано', 'не раскрыто', "
+        "'упомянуто, но...') без вопроса: сразу спроси недостающий факт простым языком.\n"
         "После вопроса с новой строки верни компактный JSON без markdown: status, message "
         "(тот же вопрос), quickAnswers, nextQuestion и только изменённый процесс в "
         "interview.processes. document оставляй пустым, пока status не ready.\n"
         "Если selectedProcessIds уже есть, не проси отметить процессы снова.\n"
-        "Не повторяй askedQuestions. Спрашивай только факт, которого нет в тексте и knownFacts.\n"
+        "Спрашивай строго по одному текущему процессу: сначала закрой его пробелы, "
+        "потом переходи к следующему id из selectedProcessIds. Не прыгай между процессами.\n"
+        "По процессу к концу опроса должны быть ясны (это цели знания, не лимит вопросов): "
+        "входы, результат, сроки выполнения, источники чтения и записи данных, частота, "
+        "последовательность действий. Число вопросов не фиксировано: задавай столько уточнений, "
+        "сколько нужно, чтобы закрыть пробел, но не спрашивай то, что уже есть в тексте или knownFacts. "
+        "Не добавляй лишние обязательные темы вроде получателей или триггера, если без них уже можно "
+        "закрыть цели выше. Один ход = один вопрос.\n"
+        "Не повторяй askedQuestions.\n"
     )
 
 
@@ -639,8 +912,9 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "проверенным данным, но нельзя выдавать предположения как факты."
         if force_create
         else (
-            "Не возвращай status='ready', пока по каждому процессу должности нельзя написать "
-            "исполняемый алгоритм без критичных неизвестных."
+            "Не возвращай status='ready', пока по каждому выбранному процессу должности не ясны "
+            "входы, результат, сроки, источники чтения/записи данных, частота и последовательность "
+            "действий (или явно подтверждено, что факта нет)."
         )
     )
     return (
@@ -655,72 +929,48 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "interview.selectedProcessIds, затем спрашивать только по выбранным процессам, затем "
         "собрать регламент. Если selectedProcessIds уже есть, этап выбора закрыт: не проси "
         "отметить процессы снова, не повторяй список и не возвращай pipeline.stage='select'. "
-        "По каждому выбранному процессу задавай вопросы по пробелам, по одному за ход, "
-        "только то, чего нет в тексте документа и knownFacts.\n"
+        "По выбранным процессам иди строго по порядку selectedProcessIds: полностью закрой "
+        "пробелы текущего процесса, затем переходи к следующему. Не задавай вопрос по другому "
+        "процессу, пока текущий не закрыт.\n"
         "Сначала извлеки функциональные блоки из документов. Для каждого блока определи roleStatus: "
         "belongs (это обязанность указанной должности), foreign (другая роль) или unclear (сомнение).\n"
-        "Если исполнитель в тексте не указан, указан общо (подразделение, ответственные) или не "
-        "совпадает с должностью пользователя, roleStatus=unclear и сначала спроси, относится ли "
-        "этот блок к должности пользователя. Не заполняй tool/periodicity/triggerAction/userAction, "
-        "пока принадлежность не подтверждена.\n"
-        "Чужие роли (foreign) не включай в регламент, только как получателей или источники входов.\n"
-        "По каждой функции со статусом belongs должны быть закрыты четыре поля: tool, periodicity, "
-        "triggerAction, userAction.\n"
-        "- tool: в какой системе, файле, канале или инструменте пользователь работает.\n"
-        "- periodicity: как часто или с какой периодичностью выполняется действие.\n"
-        "- triggerAction: конкретное наблюдаемое событие или действие, после которого начинается работа.\n"
-        "- userAction: что именно делает пользователь руками или в системе.\n"
-        "Но interview.functions - только совместимый краткий срез. Главная рабочая модель - "
-        "interview.processes: knownFacts, unknowns, askedQuestions и currentQuestion по каждому процессу.\n"
-        "Веди интервью как агент по процессу: сначала пойми границы процесса, затем входы, место работы, "
-        "объекты/реестры/формы, триггер, периодичность, шаги пользователя, результаты, получателей, "
-        "проверки, исключения и эскалации. Не заполняй ячейку только ради того, чтобы она была непустой.\n"
-        "Каждый последний ответ пользователя оцени в answerSufficiency: closed, partial или not_answered. "
-        "Не путай место работы и действие. Если пользователь назвал систему/канал, конкретную область "
-        "интерфейса или хранилище и объяснил, что он там смотрит или делает, workLocation/tool закрыт. "
-        "Например, корпоративный Outlook + вкладка Календарь + просмотр загруженности закрывает место "
-        "работы; если неясно, что создаётся, кому отправляется или чем завершается планирование, это "
-        "уже gaps по userAction, outputs или recipients, а не повторный вопрос про tool.\n"
-        "Если answerSufficiency partial или not_answered, задай следующий вопрос от себя как Cursor SDK: "
-        "в nextQuestion укажи targetFact, alreadyKnown, missingFact и whyThisQuestion. В message поставь "
-        "только текст этого вопроса, без технических формулировок вида 'указан общий инструмент'.\n"
-        "Не повторяй уже заданные вопросы из askedQuestions. Если прошлый вопрос был понят частично, "
-        "задай углубляющий вопрос по другому missingFact или объясни конкретно, какой шаг алгоритма "
-        "невозможно написать без ответа.\n"
-        "Триггер не может быть общей формулировкой. 'Сообщить за 2 часа до', 'уведомить заранее', "
-        "'контролировать сроки', 'по мере необходимости' не закрывают триггер.\n"
-        "Если не хватает данных, задай ровно один следующий вопрос по одной функции и одному полю. "
-        "Сначала закрывай roleStatus, затем остальные поля.\n"
-        "Не предлагай пользователю подтвердить выдуманный ответ. quickAnswers должны быть 2-6 "
-        "конкретными вариантами, без вариантов 'Оставить' и 'Переделать'.\n"
+        "Если исполнитель в тексте не указан, указан общо или не совпадает с должностью пользователя, "
+        "roleStatus=unclear и сначала спроси принадлежность. Чужие роли (foreign) не включай в регламент.\n"
+        "Главная рабочая модель - interview.processes.knownFacts. К концу опроса по каждому "
+        "belongs-процессу должны быть ясны эти цели знания (это не лимит в N вопросов):\n"
+        "- inputs: что поступает на вход;\n"
+        "- outputs: какой результат получается;\n"
+        "- deadlines: сроки выполнения;\n"
+        "- workLocation: источники чтения и записи данных (система, файл, раздел, реестр);\n"
+        "- frequency: как часто нужно выполнять действие;\n"
+        "- steps: последовательность действий пользователя.\n"
+        "Число вопросов не фиксировано: задавай столько уточнений, сколько нужно, чтобы закрыть "
+        "пробел. Не злоупотребляй: если факт уже в документе или knownFacts - не спрашивай снова, "
+        "запиши его и иди дальше. Не делай обязательными темы вроде получателей или триггера "
+        "только ради анкеты, если цели выше уже закрыты.\n"
+        "interview.functions - только совместимый краткий срез (tool/periodicity/triggerAction/userAction), "
+        "не веди опрос по четырём полям функции отдельно от knownFacts.\n"
+        "Каждый последний ответ оцени в answerSufficiency: closed, partial или not_answered. "
+        "В nextQuestion укажи targetFact из inputs|outputs|deadlines|workLocation|frequency|steps, "
+        "alreadyKnown, missingFact и whyThisQuestion. В message - только текст вопроса простым языком.\n"
+        "Не повторяй askedQuestions. Один ход = один вопрос по текущему процессу.\n"
+        "Не предлагай пользователю подтвердить выдуманный ответ. quickAnswers — только если есть "
+        "2-6 вариантов из текста вложения или уже данных ответов; без Outlook/Excel/1C и других "
+        "систем наугад. Если вариантов нет, верни пустой quickAnswers. "
+        "В message всегда один реальный вопрос к пользователю. Запрещено вместо вопроса писать "
+        "констатацию пробела вроде 'срок не раскрыт', 'в тексте не указано', 'пробелов нет'. "
+        "Если факта нет - спроси его.\n"
         "Пока status='need_more', не пиши полный document и не повторяй весь список функций. "
-        "В interview.functions верни только новую или изменённую функцию. "
+        "В interview.processes верни только новый или изменённый процесс. "
         "Сначала напиши пользователю только текст одного вопроса простым языком, "
         "без JSON и без markdown. Не начинай ответ с фигурной скобки.\n"
-        "Когда все обязательные поля закрыты и можно вернуть status='ready', document обязателен. "
+        "Когда все обязательные цели знания закрыты и можно вернуть status='ready', document обязателен. "
         "Его должен написать Cursor SDK как самостоятельный регламент процесса: связный документ, "
-        "понятный без истории чата, без технического дампа полей interview. "
-        "В документе простым деловым языком объясни, для чего выполняется процесс, где его границы, "
-        "кто исполняет, какие входы используются, какое наблюдаемое событие или расписание запускает "
-        "работу, как пользователь выполняет процесс по шагам, какой результат создаётся, кому он "
-        "передаётся, какие исключения и эскалации подтверждены. "
-        "Не ограничивайся четырьмя полями interview: перечитай materials/* и вынеси в документ "
-        "релевантное содержание файлов пользователя - правила, условия, сроки, участников, входные "
-        "и выходные артефакты, ограничения, исключения и подтверждённые формулировки. "
-        "Документ должен читаться как нормальный деловой регламент, с абзацами и переходами между "
-        "мыслями, а не как анкета или таблица фактов. "
-        "interview.functions - это рабочая инвентаризация фактов для интервью, а не структура "
-        "будущего документа. document.sections - только технический контейнер для DOCX, не шаблон "
-        "разделов. Не делай 'одна функция = один раздел' и не повторяй в каждом разделе схему "
-        "'Основание -> список действий -> Предположение'. Объединяй связанные факты в цельное "
-        "описание процесса; списки используй только для реального порядка действий, а не вместо "
-        "связного объяснения. "
-        "Не используй фиксированный шаблон глав и не копируй лейблы вида 'Инструмент:', "
-        "'Периодичность:', 'Триггер:', 'Действие пользователя:' как тело документа. "
-        "Структуру разделов выбирай по фактическому процессу. Факты бери только из interview.json, "
-        "materials/* и ответов пользователя; неизвестное не выдумывай и не оформляй как факт. "
-        "Если в interview.json есть document_write_required=true, не задавай новый вопрос: "
-        "сразу верни status='ready' и перепиши document в полноценный самостоятельный текст.\n"
+        "понятный без истории чата. Вынеси в него подтверждённые входы, результаты, сроки, "
+        "источники данных, частоту, последовательность действий и релевантное содержание "
+        "materials/*, не выдумывая фактов.\n"
+        "Структуру разделов выбирай по фактическому процессу. Не используй фиксированный шаблон глав "
+        "и не копируй лейблы полей interview как тело документа.\n"
         f"{force}\n"
         "После вопроса с новой строки верни компактный JSON без markdown. Контракт:\n"
         "{\n"
@@ -731,17 +981,17 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         '  "answerSufficiency": {\n'
         '    "status": "closed|partial|not_answered",\n'
         '    "processId": "f1",\n'
-        '    "field": "tool|periodicity|triggerAction|userAction|roleStatus",\n'
+        '    "field": "inputs|outputs|deadlines|workLocation|frequency|steps|roleStatus",\n'
         '    "answerSummary": "что именно стало известно",\n'
-        '    "missingFacts": ["чего не хватает для исполнимого алгоритма"],\n'
+        '    "missingFacts": ["чего не хватает"],\n'
         '    "reason": "почему ответ достаточен или недостаточен"\n'
         "  },\n"
         '  "nextQuestion": {\n'
         '    "processId": "f1",\n'
-        '    "targetFact": "workLocation|objects|frequency|trigger|steps|outputs|recipients|controls|exceptions",\n'
+        '    "targetFact": "inputs|outputs|deadlines|workLocation|frequency|steps",\n'
         '    "alreadyKnown": ["что уже известно и не надо спрашивать снова"],\n'
         '    "missingFact": "какой факт нужен сейчас",\n'
-        '    "whyThisQuestion": "почему без этого нельзя написать алгоритм",\n'
+        '    "whyThisQuestion": "почему без этого нельзя закрыть процесс",\n'
         '    "text": "вопрос пользователю простым языком"\n'
         "  },\n"
         '  "interview": {\n'
@@ -754,34 +1004,17 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         '        "sourceRefs": [{"file": "имя файла", "quote": "цитата"}],\n'
         '        "knownFacts": {\n'
         '          "inputs": ["входные документы или события"],\n'
-        '          "workLocation": "система, файл или канал с конкретным объектом работы",\n'
-        '          "objects": ["реестр, форма, карточка, папка, статус"],\n'
-        '          "trigger": "наблюдаемое событие запуска",\n'
+        '          "outputs": ["результат"],\n'
+        '          "deadlines": "сроки выполнения",\n'
+        '          "workLocation": "где читают и пишут данные",\n'
         '          "frequency": "как часто",\n'
-        '          "steps": ["что делает пользователь по шагам"],\n'
-        '          "outputs": ["что получается на выходе"],\n'
-        '          "recipients": ["кому передается результат"],\n'
-        '          "controls": ["что проверяется"],\n'
-        '          "exceptions": ["исключения и эскалации"]\n'
+        '          "steps": ["последовательность действий"]\n'
         "        },\n"
-        '        "unknowns": [{"field": "workLocation", "reason": "что неясно", "critical": true}],\n'
+        '        "unknowns": [{"field": "inputs", "reason": "чего нет в тексте", "critical": true}],\n'
         '        "askedQuestions": [{"message": "что спрашивали", "answer": "ответ", "sufficiency": "partial"}]\n'
         "      }\n"
         "    ],\n"
-        '    "functions": [\n'
-        "      {\n"
-        '        "id": "f1",\n'
-        '        "title": "короткое название функции",\n'
-        '        "actor": "должность из документа",\n'
-        '        "roleStatus": "belongs|foreign|unclear",\n'
-        '        "sourceRefs": [{"file": "имя файла", "quote": "цитата"}],\n'
-        '        "tool": "инструмент или система",\n'
-        '        "periodicity": "как часто",\n'
-        '        "triggerAction": "конкретное событие или действие запуска",\n'
-        '        "userAction": "что пользователь делает",\n'
-        '        "openGaps": ["roleStatus|tool|periodicity|triggerAction|userAction"]\n'
-        "      }\n"
-        "    ]\n"
+        '    "functions": []\n'
         "  },\n"
         '  "document": {"title": "", "sections": [{"number": "1", "title": "", "paragraphs": [], "items": []}]}\n'
         "}"
@@ -810,10 +1043,12 @@ def build_creation_prompt(
             "тексты вложений уже в этом сообщении.\n"
         )
     )
+    focus = _current_process_prompt_hint(interview)
     return (
         f"{action} интервью.\n"
         f"{creation_system_rules(force_create=force_create)}\n"
         f"{files_hint}"
+        f"{focus}"
         "Текущее постоянное состояние интервью:\n"
         f"{json.dumps(inventory, ensure_ascii=False, indent=2)}\n"
         f"Последний ответ пользователя: {message.strip()}"
@@ -836,9 +1071,12 @@ def build_followup_creation_prompt(
         )
     )
     snapshot = ""
+    focus = ""
     if state is not None:
-        inventory = _prompt_state(normalize_interview_state(state))
+        interview = normalize_interview_state(state)
+        inventory = _prompt_state(interview)
         inventory["attachments"] = _prompt_attachment_refs(inventory.get("attachments") or [])
+        focus = _current_process_prompt_hint(interview)
         snapshot = (
             "Текущая карта интервью. Не читай файлы и не вызывай инструменты, "
             "используй только это сообщение и историю диалога:\n"
@@ -861,17 +1099,18 @@ def build_followup_creation_prompt(
     return (
         "Продолжи то же интервью текстом, без инструментов. История диалога уже у тебя. "
         "Не читай interview.json и materials/* с диска. Не пиши Cursor-план и не меняй файлы.\n"
+        f"{focus}"
         f"{snapshot}"
         "Если interview.selectedProcessIds не пустой, этап выбора закрыт: не проси отметить "
-        "процессы снова и не возвращай pipeline.stage='select'. По каждому выбранному "
-        "процессу задавай вопросы по пробелам, по одному за ход.\n"
+        "процессы снова и не возвращай pipeline.stage='select'. Задавай вопросы только по "
+        "текущему незакрытому процессу, по одному за ход; к следующему processId переходи "
+        "только после закрытия текущего.\n"
         f"{force}\n"
         f"Последний ответ пользователя: {message.strip()}\n"
-        "Сначала оцени последний ответ в answerSufficiency. Не путай место работы и действие: если "
-        "пользователь назвал систему/канал, область интерфейса или хранилище и что он там смотрит "
-        "или делает, workLocation/tool закрыт. Недостающие результат, адресат, объект создания или "
-        "порядок действий переноси в targetFact outputs, recipients или steps, а не спрашивай снова "
-        "где именно он работает.\n"
+        "Сначала оцени последний ответ в answerSufficiency. Цели знания по процессу: "
+        "inputs, outputs, deadlines, workLocation (чтение/запись данных), frequency, steps "
+        "(последовательность действий). Число вопросов не фиксировано. "
+        "Если факт уже есть в knownFacts или в тексте вложения - не спрашивай повторно.\n"
         "Веди interview.processes как карту процесса: knownFacts, unknowns, askedQuestions, "
         "currentQuestion. interview.functions оставляй только как краткий совместимый срез.\n"
         "Перед новым вопросом проверь askedQuestions: не повторяй то же самое. "
@@ -885,6 +1124,25 @@ def build_followup_creation_prompt(
         "релевантное содержание материалов пользователя, подтверждённое файлами или ответами. "
         "Не используй interview.functions как оглавление и не пиши одинаковые карточки функций "
         "с повтором 'Основание' и 'Предположение' в каждом блоке."
+    )
+
+
+def _current_process_prompt_hint(state: Any) -> str:
+    progress = interview_progress(state)
+    process_id = _clean_str(progress.get("currentProcessId"))
+    if not process_id:
+        return ""
+    index = int(progress.get("currentProcessIndex") or 0)
+    count = int(progress.get("processCount") or 0)
+    title = _clean_str(progress.get("currentProcessTitle")) or _process_display_title(
+        {"id": process_id, "title": ""},
+        index=index,
+    )
+    return (
+        f"Сейчас опрашивай только процесс {index} из {count}: id={process_id}, "
+        f"«{title}». nextQuestion.processId должен быть {process_id}. "
+        "Цели знания: inputs, outputs, deadlines, workLocation, frequency, steps. "
+        "Вопросов может быть больше одного на цель, если нужно уточнение.\n"
     )
 
 
@@ -939,6 +1197,24 @@ def ready_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None:
     if payload.get("status") != "ready":
         return None
     interview = merge_agent_payload(state, payload)
+    selected = selected_process_ids(interview)
+    if selected:
+        gap = question_for_selected_processes(interview)
+        if gap is not None:
+            return gap
+        progress = interview_progress(interview)
+        if int(progress.get("remaining") or 0) > 0:
+            return ReadyBlocker(
+                message=(
+                    "По выбранным процессам ещё не ясны входы, результат, сроки, "
+                    "источники данных, частота или последовательность действий. "
+                    "Уточните недостающий факт."
+                ),
+                quick_answers=[],
+                function_id=_clean_str(progress.get("currentProcessId")),
+                field="",
+            )
+        return None
     functions = [item for item in interview.get("functions") or [] if isinstance(item, dict)]
     position = _clean_str(interview.get("position"))
     owned = [item for item in functions if _role_status(item) != ROLE_FOREIGN]
@@ -1033,7 +1309,7 @@ def _normalize_process(raw: dict[str, Any], *, fallback_index: int) -> dict[str,
     known_facts = _normalize_known_facts(raw.get("knownFacts") if isinstance(raw.get("knownFacts"), dict) else raw)
     return {
         "id": process_id,
-        "title": title or process_id,
+        "title": title,
         "actor": _clean_str(raw.get("actor") or raw.get("position")),
         "roleStatus": _normalize_role_status(raw.get("roleStatus")),
         "sourceRefs": _clean_source_refs(raw.get("sourceRefs")),
@@ -1186,11 +1462,7 @@ def _merge_function(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
         if value:
             existing[key] = value
     incoming_role = _normalize_role_status(incoming.get("roleStatus"))
-    existing_role = _normalize_role_status(existing.get("roleStatus"))
-    if incoming_role in {ROLE_BELONGS, ROLE_FOREIGN}:
-        existing["roleStatus"] = incoming_role
-    elif incoming_role == ROLE_UNCLEAR and existing_role not in {ROLE_BELONGS, ROLE_FOREIGN}:
-        existing["roleStatus"] = ROLE_UNCLEAR
+    _apply_incoming_role_status(existing, incoming_role)
     refs = _clean_source_refs(incoming.get("sourceRefs"))
     if refs:
         current = _clean_source_refs(existing.get("sourceRefs"))
@@ -1214,7 +1486,7 @@ def _process_from_function(func: dict[str, Any], *, fallback_index: int) -> dict
         known_facts["steps"] = [action]
     return {
         "id": process_id,
-        "title": _clean_str(func.get("title")) or process_id,
+        "title": _clean_str(func.get("title")),
         "actor": _clean_str(func.get("actor")),
         "roleStatus": _normalize_role_status(func.get("roleStatus")),
         "sourceRefs": _clean_source_refs(func.get("sourceRefs")),
@@ -1237,14 +1509,13 @@ def _merge_process(state: dict[str, Any], incoming: dict[str, Any]) -> None:
         return
     for key in ("title", "actor"):
         value = _clean_str(incoming.get(key))
-        if value:
-            existing[key] = value
+        if not value:
+            continue
+        if key == "title" and _is_internal_process_label(value):
+            continue
+        existing[key] = value
     incoming_role = _normalize_role_status(incoming.get("roleStatus"))
-    existing_role = _normalize_role_status(existing.get("roleStatus"))
-    if incoming_role in {ROLE_BELONGS, ROLE_FOREIGN}:
-        existing["roleStatus"] = incoming_role
-    elif incoming_role == ROLE_UNCLEAR and existing_role not in {ROLE_BELONGS, ROLE_FOREIGN}:
-        existing["roleStatus"] = ROLE_UNCLEAR
+    _apply_incoming_role_status(existing, incoming_role)
     refs = _clean_source_refs(incoming.get("sourceRefs"))
     if refs:
         current = _clean_source_refs(existing.get("sourceRefs"))
@@ -1348,12 +1619,18 @@ def _open_gaps(func: dict[str, Any], *, position: str = "") -> list[str]:
 def _canonical_gap(value: Any) -> str:
     text = _clean_str(value).strip()
     folded = _fold(text)
-    if folded in {"tool", "instrument", "system", "channel", "place", "location", "worklocation"}:
+    if folded in {"tool", "instrument", "system", "channel", "place", "location", "worklocation", "datasources", "readwritesources"}:
         return "tool"
     if folded in {"object", "objects", "records", "forms", "registers", "entity", "entities"}:
         return "tool"
     if folded in {"frequency", "periodicity", "cadence", "schedule"}:
         return "periodicity"
+    if folded in {"deadline", "deadlines", "duedate", "timing", "срок", "сроки"}:
+        return "deadlines"
+    if folded in {"input", "inputs"}:
+        return "inputs"
+    if folded in {"output", "outputs", "result", "results"}:
+        return "outputs"
     if folded in {"trigger", "start event", "startevent", "condition"}:
         return "triggerAction"
     if folded in {"steps", "actions", "procedure", "useraction", "user action"}:
@@ -1409,11 +1686,7 @@ def _question_for_gap(func: dict[str, Any], field: str, *, position: str = "") -
                 f"Функция «{title}» в документе выглядит неоднозначно. "
                 f"Она относится к должности «{role}»?"
             ),
-            quick_answers=[
-                "Да, это моя обязанность",
-                "Нет, другая роль",
-                "Частично, уточню",
-            ],
+            quick_answers=["Да, это моя обязанность", "Нет, другая роль", "Частично, уточню"],
             function_id=_clean_str(func.get("id")),
             field=field,
         )
@@ -1428,28 +1701,14 @@ def _question_for_gap(func: dict[str, Any], field: str, *, position: str = "") -
             message = f"По функции «{title}» не указан инструмент. Где пользователь выполняет это действие?"
         return ReadyBlocker(
             message=message,
-            quick_answers=[
-                "Реестр или журнал в системе",
-                "Карточка документа",
-                "Конкретный файл или папка",
-                "Форма или раздел системы",
-                "Рабочий чат или канал",
-                "Уточню вручную",
-            ],
+            quick_answers=[],
             function_id=_clean_str(func.get("id")),
             field=field,
         )
     if field == "periodicity":
         return ReadyBlocker(
             message=f"По функции «{title}» не указано, как часто она выполняется. Какая периодичность?",
-            quick_answers=[
-                "Каждый рабочий день",
-                "Раз в неделю",
-                "Раз в месяц",
-                "При каждом входящем запросе",
-                "По календарю события",
-                "Другая",
-            ],
+            quick_answers=[],
             function_id=_clean_str(func.get("id")),
             field=field,
         )
@@ -1459,27 +1718,13 @@ def _question_for_gap(func: dict[str, Any], field: str, *, position: str = "") -
                 f"По функции «{title}» нужен конкретный триггер. Что именно происходит перед началом "
                 "действия: какое письмо, файл, статус, время или сообщение запускает работу?"
             ),
-            quick_answers=[
-                "Приходит письмо в Outlook",
-                "Появляется файл в папке",
-                "Наступает заданное время",
-                "Меняется статус в 1C",
-                "Руководитель пишет в чат",
-                "Другой конкретный триггер",
-            ],
+            quick_answers=[],
             function_id=_clean_str(func.get("id")),
             field=field,
         )
     return ReadyBlocker(
         message=f"По функции «{title}» не описано, что пользователь делает руками или в системе. Как выглядит действие?",
-        quick_answers=[
-            "Открывает карточку и меняет статус",
-            "Отправляет письмо",
-            "Заполняет Excel-файл",
-            "Загружает документ в папку",
-            "Пишет сообщение в чат",
-            "Другое действие",
-        ],
+        quick_answers=[],
         function_id=_clean_str(func.get("id")),
         field=field,
     )
@@ -1528,6 +1773,111 @@ def _record_answer_sufficiency(state: dict[str, Any], answer_sufficiency: dict[s
         state["currentQuestion"] = {} if answer_sufficiency.get("status") == "closed" else current
 
 
+def _apply_progress_from_user_answer(
+    state: dict[str, Any],
+    *,
+    answer_sufficiency: dict[str, Any],
+    next_question: dict[str, Any],
+) -> None:
+    """Write closed answers into knownFacts so interview_progress moves forward."""
+    current = state.get("currentQuestion") if isinstance(state.get("currentQuestion"), dict) else {}
+    answer_text = _clean_str(current.get("answer"))
+    summary = _clean_str(answer_sufficiency.get("answerSummary")) if answer_sufficiency else ""
+    value = summary or answer_text
+    if not value:
+        return
+    field = _progress_field_key(
+        (answer_sufficiency or {}).get("field")
+        or current.get("field")
+        or current.get("intent")
+        or current.get("missingFact")
+    )
+    if field not in _PROGRESS_REQUIRED_FACTS:
+        return
+    process_id = normalize_process_id(
+        (answer_sufficiency or {}).get("processId")
+        or (answer_sufficiency or {}).get("functionId")
+        or current.get("processId")
+        or current.get("functionId")
+        or next_question.get("processId")
+        or next_question.get("functionId")
+        or current_interview_process_id(state)
+    )
+    status = _clean_str((answer_sufficiency or {}).get("status")).lower()
+    next_field = _progress_field_key(next_question.get("targetFact") or next_question.get("field"))
+    advanced = bool(next_field and next_field != field and answer_text)
+    if status != "closed" and not advanced:
+        return
+    _set_process_fact(state, process_id=process_id, field=field, value=value)
+
+
+def _set_process_fact(state: dict[str, Any], *, process_id: str, field: str, value: str) -> None:
+    text = _clean_str(value)
+    if not text or field not in _PROGRESS_REQUIRED_FACTS:
+        return
+    process = None
+    for item in state.get("processes") or []:
+        if not isinstance(item, dict):
+            continue
+        if normalize_process_id(item.get("id") or item.get("processId")) == process_id:
+            process = item
+            break
+    if process is None and process_id:
+        process = {
+            "id": process_id,
+            "title": "",
+            "roleStatus": ROLE_BELONGS,
+            "knownFacts": {},
+            "unknowns": [],
+            "askedQuestions": [],
+        }
+        state.setdefault("processes", []).append(process)
+    if process is None:
+        return
+    facts = process.setdefault("knownFacts", {})
+    if field in {"steps", "inputs", "outputs", "recipients", "controls", "exceptions", "objects"}:
+        current = _clean_list(facts.get(field))
+        if text not in current:
+            facts[field] = current + [text]
+    else:
+        facts[field] = text
+    mapped = _PROCESS_FIELD_TO_FUNCTION_FIELD.get(field)
+    if mapped:
+        for func in state.get("functions") or []:
+            if not isinstance(func, dict):
+                continue
+            if normalize_process_id(func.get("id") or func.get("processId")) != process_id:
+                continue
+            if not _clean_str(func.get(mapped)):
+                func[mapped] = text
+
+
+def _fact_open_in_known_facts(facts: dict[str, Any], field: str) -> bool:
+    value = facts.get(field)
+    empty = value in (None, "", []) or (
+        isinstance(value, list) and not any(str(item).strip() for item in value)
+    )
+    if empty:
+        return True
+    text = value if isinstance(value, str) else " ".join(str(item) for item in value if str(item).strip())
+    if field == "workLocation" and _is_vague_work_location(text):
+        return True
+    if field == "steps" and _is_vague_user_action(text):
+        return True
+    return False
+
+
+def _prune_filled_unknowns(process: dict[str, Any]) -> list[dict[str, Any]]:
+    facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+    kept: list[dict[str, Any]] = []
+    for item in _normalize_unknowns(process.get("unknowns")):
+        field = _progress_field_key(item.get("field"))
+        if field in _PROGRESS_REQUIRED_FACTS and not _fact_open_in_known_facts(facts, field):
+            continue
+        kept.append(item)
+    return kept
+
+
 def _answer_sufficiency_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None:
     answer_sufficiency = _extract_answer_sufficiency(payload)
     if not answer_sufficiency or answer_sufficiency.get("status") == "closed":
@@ -1546,7 +1896,7 @@ def _answer_sufficiency_blocker(payload: dict[str, Any], state: Any) -> ReadyBlo
     if message:
         return ReadyBlocker(
             message=f"Ответ пока не закрывает вопрос. Уточните, пожалуйста: {message}",
-            quick_answers=["Уточню конкретно", "Опишу шагами", "Укажу источник и результат"],
+            quick_answers=[],
             function_id=_clean_str(current.get("functionId")),
             field=_current_question_field(interview),
         )
@@ -1586,7 +1936,7 @@ def _process_unknown_blocker(state: Any) -> ReadyBlocker | None:
             if message:
                 return ReadyBlocker(
                     message=message,
-                    quick_answers=["Уточню", "Опишу шагами", "Неизвестно"],
+                    quick_answers=[],
                     function_id=_clean_str(process.get("id")),
                     field=field,
                 )
@@ -1912,22 +2262,65 @@ def _looks_like_service_line(text: str) -> bool:
 
 
 def _apply_role_answer(state: dict[str, Any], message: str) -> None:
-    target = None
-    for func in state.get("functions") or []:
-        if isinstance(func, dict) and _role_status(func) == ROLE_UNCLEAR:
-            target = func
-            break
-    if target is None:
-        return
     text = message.strip().lower()
+    decided = ""
     if any(marker in text for marker in _ROLE_FOREIGN_MARKERS):
-        target["roleStatus"] = ROLE_FOREIGN
+        decided = ROLE_FOREIGN
+    elif "частично" in text:
+        decided = ROLE_BELONGS
+    elif any(marker in text for marker in _ROLE_BELONGS_MARKERS) or text in {"да", "относится"}:
+        decided = ROLE_BELONGS
+    if not decided:
         return
-    if "частично" in text:
-        target["roleStatus"] = ROLE_BELONGS
+
+    current = state.get("currentQuestion") if isinstance(state.get("currentQuestion"), dict) else {}
+    current_field = _progress_field_key(current.get("field") or current.get("intent"))
+    target_id = normalize_process_id(current.get("processId") or current.get("functionId"))
+    if current_field and current_field != "roleStatus":
         return
-    if any(marker in text for marker in _ROLE_BELONGS_MARKERS) or text in {"да", "относится"}:
-        target["roleStatus"] = ROLE_BELONGS
+
+    targets: list[dict[str, Any]] = []
+    if target_id:
+        for item in state.get("processes") or []:
+            if not isinstance(item, dict):
+                continue
+            if normalize_process_id(item.get("id") or item.get("processId")) == target_id:
+                targets.append(item)
+        for item in state.get("functions") or []:
+            if not isinstance(item, dict):
+                continue
+            if normalize_process_id(item.get("id") or item.get("processId") or item.get("functionId")) == target_id:
+                targets.append(item)
+    if not targets:
+        for item in state.get("processes") or []:
+            if isinstance(item, dict) and _role_status(item) == ROLE_UNCLEAR:
+                targets.append(item)
+                break
+    if not targets:
+        for item in state.get("functions") or []:
+            if isinstance(item, dict) and _role_status(item) == ROLE_UNCLEAR:
+                targets.append(item)
+                break
+    if not targets:
+        return
+
+    for target in targets:
+        target["roleStatus"] = decided
+        target["roleConfirmedByUser"] = True
+    if decided == ROLE_FOREIGN and target_id:
+        selected = selected_process_ids(state)
+        if target_id in selected:
+            state["selectedProcessIds"] = [item for item in selected if item != target_id]
+
+
+def _apply_incoming_role_status(existing: dict[str, Any], incoming_role: str) -> None:
+    existing_role = _normalize_role_status(existing.get("roleStatus"))
+    if bool(existing.get("roleConfirmedByUser")) and existing_role in {ROLE_BELONGS, ROLE_FOREIGN}:
+        return
+    if incoming_role in {ROLE_BELONGS, ROLE_FOREIGN}:
+        existing["roleStatus"] = incoming_role
+    elif incoming_role == ROLE_UNCLEAR and existing_role not in {ROLE_BELONGS, ROLE_FOREIGN}:
+        existing["roleStatus"] = ROLE_UNCLEAR
 
 
 def _role_status(func: dict[str, Any]) -> str:

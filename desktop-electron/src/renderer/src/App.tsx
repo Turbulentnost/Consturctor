@@ -178,6 +178,7 @@ export function App(): React.JSX.Element {
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
   const [regChat, setRegChat] = useState<RegulationCreationSession | null>(null)
   const [regChatBusy, setRegChatBusy] = useState(false)
+  const [regChatBusyKind, setRegChatBusyKind] = useState<'reading' | 'question' | 'document'>('question')
   const formation = useFormation()
   const runs = useRuns()
 
@@ -1096,7 +1097,11 @@ export function App(): React.JSX.Element {
       id: `regchat:${regChat.draftId}`,
       title: 'Создание регламента',
       output: regChatBusy
-        ? 'Готовлю вопрос...'
+        ? regChatBusyKind === 'document'
+          ? 'Формирую регламент...'
+          : regChatBusyKind === 'reading'
+            ? 'Читаю документ...'
+            : 'Готовлю вопрос...'
         : regulationDraftPreview(regChat) || 'Ответьте на вопрос ИИ',
       running: regChatBusy,
       awaiting: !regChatBusy,
@@ -1145,10 +1150,14 @@ export function App(): React.JSX.Element {
                 session={regChat}
                 active={view.kind === 'regchat'}
                 onSessionChange={setRegChat}
-                onBusyChange={setRegChatBusy}
+                onBusyChange={(busy, kind) => {
+                  setRegChatBusy(busy)
+                  if (kind) setRegChatBusyKind(kind)
+                }}
                 onStopped={() => {
                   setRegChat(null)
                   setRegChatBusy(false)
+                  setRegChatBusyKind('question')
                   setView({ kind: 'tab', key: 'create' })
                 }}
                 banner={

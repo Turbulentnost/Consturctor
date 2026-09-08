@@ -16,6 +16,7 @@ import {
   type QuestionChatSession,
   type RegulationCreationMessage,
   type RegulationCreationHistoryItem,
+  type RegulationCreationProgress,
   type RegulationCreationSession,
   type RegulationCreationTurn,
   type FragmentEntityTag,
@@ -123,6 +124,21 @@ function parseUser(data: Record<string, unknown>): UserProfile {
   })
 }
 
+function parseCreationProgress(raw: unknown): RegulationCreationProgress | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const item = raw as Record<string, unknown>
+  return {
+    answered: Number(item.answered ?? 0),
+    remaining: Number(item.remaining ?? 0),
+    total: Number(item.total ?? 0),
+    currentProcessId: String(item.currentProcessId ?? item.current_process_id ?? ''),
+    currentProcessTitle: String(item.currentProcessTitle ?? item.current_process_title ?? ''),
+    currentProcessIndex: Number(item.currentProcessIndex ?? item.current_process_index ?? 0),
+    processCount: Number(item.processCount ?? item.process_count ?? 0),
+    visible: Boolean(item.visible)
+  }
+}
+
 function parseCreationSession(data: Record<string, unknown>): RegulationCreationSession {
   const rawMessages = (data.messages as Record<string, unknown>[]) ?? []
   const messages: RegulationCreationMessage[] = rawMessages.map((item) => ({
@@ -137,6 +153,7 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
     createdAt: String(item.createdAt ?? item.created_at ?? '')
   }))
   const resultRaw = data.resultRegulation
+  const progress = parseCreationProgress(data.progress)
   return {
     draftId: String(data.draftId ?? ''),
     status: String(data.status ?? ''),
@@ -150,7 +167,8 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
         ? (data.resultDocument as Record<string, unknown>)
         : {},
     resultDocumentPath: String(data.resultDocumentPath ?? ''),
-    sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? '')
+    sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? ''),
+    ...(progress ? { progress } : {})
   }
 }
 

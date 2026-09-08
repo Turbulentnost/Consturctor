@@ -238,3 +238,36 @@ export function extractInterviewAnswer(raw: string): string {
   }
   return ''
 }
+
+export function isCreationSessionReady(session: {
+  status?: string
+  resultDocumentPath?: string
+  resultRegulation?: { regulationId?: string } | null
+}): boolean {
+  if (String(session.status || '').toLowerCase() === 'finalized') return true
+  if (String(session.resultDocumentPath || '').trim()) return true
+  return Boolean(session.resultRegulation?.regulationId)
+}
+
+export function preserveReadyCreationSession<T extends {
+  draftId: string
+  status?: string
+  resultDocumentPath?: string
+  resultDocument?: Record<string, unknown>
+  resultRegulation?: { regulationId?: string } | null
+}>(previous: T | null | undefined, next: T): T {
+  if (!previous || previous.draftId !== next.draftId) return next
+  if (isCreationSessionReady(next)) return next
+  if (!isCreationSessionReady(previous)) return next
+  return {
+    ...next,
+    status: previous.status === 'finalized' ? previous.status : next.status,
+    resultDocumentPath: previous.resultDocumentPath || next.resultDocumentPath,
+    resultDocument:
+      next.resultDocument && Object.keys(next.resultDocument).length > 0
+        ? next.resultDocument
+        : previous.resultDocument,
+    resultRegulation: previous.resultRegulation || next.resultRegulation
+  }
+}
+
