@@ -32,6 +32,8 @@ type RunCommand = {
   modelParams?: ModelParam[];
   cwd?: string;
   mode?: "design" | "run" | "interview";
+  writeDocument?: boolean;
+  useTools?: boolean;
   tools?: ToolSpec[];
   resumeAgentId?: string;
 };
@@ -66,6 +68,10 @@ function emit(payload: Record<string, unknown>): void {
   writeSync(stdout.fd, `${JSON.stringify(payload)}\n`);
 }
 
+const INTERVIEW_QUESTION_MODEL_PARAMS: ModelParam[] = [
+  { id: "effort", value: "low" },
+  { id: "fast", value: "true" },
+];
 const INTERVIEW_MODEL_PARAMS: ModelParam[] = [
   { id: "effort", value: "low" },
   { id: "fast", value: "true" },
@@ -73,7 +79,10 @@ const INTERVIEW_MODEL_PARAMS: ModelParam[] = [
 
 function modelParamsFor(command: RunCommand): ModelParam[] {
   const incoming = Array.isArray(command.modelParams) ? command.modelParams : null;
-  const raw = incoming !== null ? incoming : command.mode === "interview" ? INTERVIEW_MODEL_PARAMS : [];
+  const interviewDefault = command.writeDocument
+    ? INTERVIEW_MODEL_PARAMS
+    : INTERVIEW_QUESTION_MODEL_PARAMS;
+  const raw = incoming !== null ? incoming : command.mode === "interview" ? interviewDefault : [];
   return raw
     .map((item) => ({
       id: typeof item?.id === "string" ? item.id.trim() : "",
@@ -378,8 +387,15 @@ function playbookDraftReady(text: string): boolean {
 }
 
 function firstJsonObject(text: string): Record<string, unknown> | null {
+  return nextJsonObject(text, 0)?.data ?? null;
+}
+
+function nextJsonObject(
+  text: string,
+  from = 0,
+): { data: Record<string, unknown>; end: number } | null {
   const raw = text || "";
-  const start = raw.indexOf("{");
+  const start = raw.indexOf("{", from);
   if (start < 0) return null;
   let depth = 0;
   let inStr = false;
@@ -407,41 +423,60 @@ function firstJsonObject(text: string): Record<string, unknown> | null {
       depth -= 1;
       if (depth === 0) {
         try {
-          const data = JSON.parse(raw.slice(start, i + 1)) as unknown;
-          return data && typeof data === "object" && !Array.isArray(data)
-            ? (data as Record<string, unknown>)
-            : null;
+          const parsed = JSON.parse(raw.slice(start, i + 1)) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            return { data: parsed as Record<string, unknown>, end: i + 1 };
+          }
         } catch {
-          return null;
+          return nextJsonObject(raw, start + 1);
         }
+        return nextJsonObject(raw, start + 1);
       }
     }
   }
   return null;
 }
 
-function interviewDraftReady(text: string): boolean {
-  const data = firstJsonObject(text);
-  if (!data) return false;
-  const status = String(data.status || "");
+const INTERVIEW_QUESTION_STATUSES = new Set(["need_more", "question", "in_progress"]);
+
+function interviewQuestionText(data: Record<string, unknown>): string {
   const message = String(data.message || "").trim();
+  const next =
+    data.nextQuestion && typeof data.nextQuestion === "object"
+      ? String(
+          (data.nextQuestion as Record<string, unknown>).text ||
+            (data.nextQuestion as Record<string, unknown>).message ||
+            "",
+        ).trim()
+      : "";
+  return message || next;
+}
+
+function interviewJsonReady(data: Record<string, unknown>): boolean {
+  const status = String(data.status || "").trim().toLowerCase();
+  const question = interviewQuestionText(data);
   if (status === "ready") {
-    return Boolean(message || data.document);
+    return Boolean(question || data.document || data.interview);
   }
-  if (status === "need_more") {
-    // Do not stop on partial extraction payloads in thinking stream.
-    // Interview turn is ready only when there is an explicit next question/message.
-    if (message) return true;
-    const quick = Array.isArray(data.quickAnswers) ? data.quickAnswers : [];
-    if (quick.length > 0) return true;
-    const interview = data.interview;
-    if (!interview || typeof interview !== "object" || Array.isArray(interview)) return false;
-    const queued = (interview as Record<string, unknown>).queuedQuestion;
-    if (!queued || typeof queued !== "object" || Array.isArray(queued)) return false;
-    const queuedText = String((queued as Record<string, unknown>).text || "").trim();
-    return Boolean(queuedText);
+  if (INTERVIEW_QUESTION_STATUSES.has(status)) {
+    return Boolean(question || data.interview);
   }
-  return false;
+  return Boolean(question && (data.quickAnswers || data.nextQuestion));
+}
+
+function firstReadyInterviewJson(text: string): Record<string, unknown> | null {
+  let from = 0;
+  while (from < (text || "").length) {
+    const found = nextJsonObject(text, from);
+    if (!found) return null;
+    if (interviewJsonReady(found.data)) return found.data;
+    from = found.end;
+  }
+  return null;
+}
+
+function interviewDraftReady(text: string): boolean {
+  return Boolean(firstReadyInterviewJson(text));
 }
 
 async function settleRun(run: {
@@ -639,26 +674,47 @@ async function runAgent(command: RunCommand): Promise<void> {
   });
   const design = command.mode === "design";
   const interview = command.mode === "interview";
-  const customTools = buildCustomTools(command.tools || []);
+  const writeDocument = Boolean(command.writeDocument);
+  const useTools = Boolean(command.useTools) || writeDocument;
+  // Interview questions are text-only agent turns (tools: []). Plan mode waits
+  // for a plan confirmation UI we do not have in Electron. Tools stay only for
+  // reading uploaded files/images and for the final regulation document.
+  const interviewChat = interview && !useTools;
+  const interviewReadTools = ["read", "grep", "glob", "ls"];
+  const conversationMode = interview ? "agent" : undefined;
+  // Do not inject askQuestion into interview: it blocks up to 15 minutes and
+  // the regulation chat cannot answer that tool call.
+  const customTools = interview ? {} : buildCustomTools(command.tools || []);
   const customNames = Object.keys(customTools);
   emit({
     type: "status",
-    text: customNames.length
-      ? `Инструменты Constructor: ${customNames.slice(0, 24).join(", ")}${customNames.length > 24 ? ` (+${customNames.length - 24})` : ""}`
-      : "Инструменты Constructor пустые. Не ищи проектные MCP-серверы.",
+    text: interviewChat
+      ? "Agent: уточняющие вопросы, без инструментов."
+      : interview && useTools
+        ? writeDocument
+          ? "Agent: пишу итоговый регламент."
+          : "Agent: читаю приложенный документ."
+        : customNames.length
+          ? `Инструменты Constructor: ${customNames.slice(0, 24).join(", ")}${customNames.length > 24 ? ` (+${customNames.length - 24})` : ""}`
+          : "Инструменты Constructor пустые. Не ищи проектные MCP-серверы.",
   });
   let agent: Awaited<ReturnType<typeof Agent.create>> | undefined;
   try {
     const agentOptions = {
       apiKey,
       model: modelParams.length ? { id: model, params: modelParams } : { id: model },
+      ...(conversationMode ? { mode: conversationMode } : {}),
       // Ban the built-in mutating/exec tools so every write goes through a
       // Constructor customTool with HITL. Read-only built-ins (read/grep/glob/
-      // ls) stay for navigation, "mcp" keeps our customTools, askQuestion stays.
+      // ls) stay for navigation, "mcp" keeps our customTools.
       // Not persisted across resume, so it is re-applied on every create/resume.
       // Do not enable autoReview: it waits for the IDE classifier/UI we don't have,
       // and the feed stays on «Выполняется» forever.
-      disallowedTools: ["shell", "edit", "delete", "applyAgentDiff"],
+      ...(interviewChat
+        ? { tools: [] as string[] }
+        : interview
+          ? { tools: interviewReadTools }
+          : { disallowedTools: ["shell", "edit", "delete", "applyAgentDiff"] }),
       local: {
         cwd,
         customTools: customTools as never,
@@ -692,6 +748,7 @@ async function runAgent(command: RunCommand): Promise<void> {
     const agentId = readAgentId(agent, resumed ? command.resumeAgentId || "" : "");
     emit({ type: "agent", id, agentId, resumed });
     const sendOptions = {
+      ...(conversationMode ? { mode: conversationMode } : {}),
       local: {
         force: true,
         customTools: customTools as never,
@@ -719,7 +776,8 @@ async function runAgent(command: RunCommand): Promise<void> {
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
     const finishIfReady = async (draft: string): Promise<boolean> => {
       const designReady = design && playbookDraftReady(draft);
-      const interviewReady = interview && interviewDraftReady(draft);
+      const interviewJson = interview ? firstReadyInterviewJson(draft) : null;
+      const interviewReady = Boolean(interviewJson);
       // Only finish a run when the model has actually produced the structured
       // "## WORK_RESULT" block (ending in TESTS: PASS). A bare "TESTS: PASS"
       // mentioned mid-reasoning must NOT stop the run: doing so cut the model
@@ -729,7 +787,7 @@ async function runAgent(command: RunCommand): Promise<void> {
         !design && !interview && testsPassReady(draft) && hasWorkResult(draft);
       if (!designReady && !interviewReady && !demoReady) return false;
       const readyAnswer = interviewReady
-        ? JSON.stringify(firstJsonObject(draft) || {})
+        ? JSON.stringify(interviewJson || {})
         : demoReady
           ? stripToWorkResult(draft)
           : draft;

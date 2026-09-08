@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
-import { ApiError, type AgentEvent, type RegulationCreationSession, type RegulationCreationTurn, type RegulationQueuedQuestion } from '../api/types'
+import { ApiError, type AgentEvent, type RegulationCreationProgress, type RegulationCreationSession, type RegulationCreationTurn } from '../api/types'
 import wallpaperUrl from '../assets/chat/wallpaper.png'
 import programIcon from '../assets/logo.png'
 import iconAttention from '@agent-icons/agent-attention-animated.svg?raw'
@@ -13,7 +13,12 @@ import {
   attachmentNamesFromContent,
   extractInterviewAnswer,
   formatRegulationMessageTime,
+  hasSelectedProcessesText,
+  isProcessSelectText,
   isReplacementGarbage,
+  isCreationSessionReady,
+  preserveReadyCreationSession,
+  rewriteSelectAfterChoice,
   visibleAssistantText,
   visibleUserText
 } from '../utils/regulationChat'
@@ -77,8 +82,9 @@ interface RegulationChatPageProps {
   onReady: (session: RegulationCreationSession) => void | Promise<void>
   onBack: () => void
   onStopped?: () => void
-  onBusyChange?: (busy: boolean) => void
+  onBusyChange?: (busy: boolean, kind?: BusyKind) => void
   banner?: ReactNode
+  active?: boolean
 }
 
 interface PendingFile {
@@ -98,7 +104,7 @@ const FORCE_CREATE_PROMPT =
   'Создай регламент принудительно по текущей информации. ' +
   'Если каких-то данных не хватает, используй разумные типовые формулировки и явно отметь, что это предположение.'
 const WORKING_STATUS = 'Готовлю вопрос...'
-const PREFETCH_STATUS = 'Готовлю следующие вопросы...'
+const DOCUMENT_STATUS = 'Формирую регламент...'
 const COMPOSER_MIN_HEIGHT = 74
 // 15 строк по 25px line-height — дальше textarea прокручивается внутри.
 const COMPOSER_MAX_HEIGHT = 399
@@ -108,12 +114,13 @@ const STARTER_HINTS = [
   'Дальше ИИ уточнит только то, чего не нашёл в документах, и соберёт регламент по СТО-34-003.'
 ]
 
-type BusyKind = 'reading' | 'question'
+type BusyKind = 'reading' | 'question' | 'document'
 
 function busyHeadLabel(kind: BusyKind, fileCount: number): string {
   if (kind === 'reading') {
     return fileCount > 1 ? 'Читаю документы' : 'Читаю документ'
   }
+  if (kind === 'document') return 'Формирует регламент'
   return 'Готовит вопрос'
 }
 
@@ -121,8 +128,17 @@ function busyStatusLabel(kind: BusyKind, fileCount: number, prefetching: boolean
   if (kind === 'reading') {
     return fileCount > 1 ? 'Читаю документы...' : 'Читаю документ...'
   }
-  if (prefetching) return PREFETCH_STATUS
+  if (kind === 'document') return DOCUMENT_STATUS
   return WORKING_STATUS
+}
+
+function turnWritesDocument(
+  turn: { writeDocument?: boolean; forceCreate?: boolean },
+  session: RegulationCreationSession
+): boolean {
+  if (turn.writeDocument || turn.forceCreate) return true
+  const progress = session.progress
+  return Boolean(progress?.visible && Number(progress.remaining || 0) <= 0)
 }
 
 function fileCountLabel(count: number): string {
@@ -179,6 +195,145 @@ function quickAnswers(structured: Record<string, unknown>): string[] {
   const raw = structured.quickAnswers
   if (Array.isArray(raw)) return raw.map((x) => String(x)).filter(Boolean)
   return []
+}
+
+function InterviewProgressBar({
+  progress,
+  percent
+}: {
+  progress: RegulationCreationProgress
+  percent: number
+}): React.JSX.Element {
+  const processTitle = progress.currentProcessTitle || progress.currentProcessId
+  const processLine =
+    progress.processCount > 0 && progress.currentProcessIndex > 0
+      ? `Блок ${progress.currentProcessIndex} из ${progress.processCount}`
+      : ''
+  return (
+    <div className="regchat-progress" aria-label="Прогресс интервью">
+      {processTitle ? (
+        <div className="regchat-progress-current">
+          <span className="regchat-progress-current-label">Сейчас</span>
+          <span className="regchat-progress-current-title" title={processTitle}>
+            {processTitle}
+          </span>
+          {processLine ? <span className="regchat-progress-current-index">{processLine}</span> : null}
+        </div>
+      ) : null}
+      <div className="regchat-progress-meta">
+        <span>
+          Известно {progress.answered} фактов · уточнить ещё {progress.remaining}
+        </span>
+        <span className="regchat-progress-hint">
+          Это не число вопросов в чате: один ответ может закрыть факт или только уточнить его
+        </span>
+      </div>
+      <div className="regchat-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+        <div className="regchat-progress-fill" style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  )
+}
+
+interface ProcessChoice {
+  id: string
+  title: string
+  actor?: string
+}
+
+function asStructuredRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function normalizeProcessId(value: string): string {
+  const raw = value.trim()
+  const block = raw.match(/^b-(p\d+)$/i)
+  if (block) return block[1].toLowerCase()
+  if (/^p\d+$/i.test(raw)) return raw.toLowerCase()
+  return raw
+}
+
+function processChoices(structured: Record<string, unknown>): ProcessChoice[] {
+  const out: ProcessChoice[] = []
+  const seen = new Set<string>()
+  const add = (raw: unknown): void => {
+    const rec = asStructuredRecord(raw)
+    if (!rec) return
+    const id = normalizeProcessId(String(rec.processId || rec.id || ''))
+    const title = String(rec.title || rec.name || id).trim()
+    const actor = String(rec.actor || '').trim()
+    if (!id || seen.has(id)) return
+    seen.add(id)
+    out.push({ id, title, actor: actor || undefined })
+  }
+  if (Array.isArray(structured.processes)) structured.processes.forEach(add)
+  const pipeline = asStructuredRecord(structured.pipeline)
+  if (Array.isArray(pipeline?.blocks)) pipeline.blocks.forEach(add)
+  return out
+}
+
+function isProcessSelect(structured: Record<string, unknown>, content: string): boolean {
+  const pipeline = asStructuredRecord(structured.pipeline)
+  const selected = pipeline?.selectedProcessIds
+  if (Array.isArray(selected) && selected.length > 0) return false
+  if (String(pipeline?.stage || '').toLowerCase() === 'select') return true
+  const text = content.toLowerCase()
+  return /отметьте нужн|отметьте процесс|выберите процесс/.test(text) && processChoices(structured).length > 0
+}
+
+function hasSelectedProcesses(messages: RegulationCreationSession['messages']): boolean {
+  return messages.some((item) => item.role === 'user' && hasSelectedProcessesText(item.content || ''))
+}
+
+function selectedProcessIdsFromText(text: string): string[] {
+  const match = text.match(/^\s*выбраны процессы\s*:\s*(.+)$/im)
+  if (!match) return []
+  const first = match[1].split(/\n/)[0]
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const part of first.split(/[,;]/)) {
+    const token = normalizeProcessId((part.trim().split(/\s+/)[0] || '').replace(/[.:;]+$/, ''))
+    if (!token || seen.has(token)) continue
+    seen.add(token)
+    out.push(token)
+  }
+  return out
+}
+
+function selectedProcessIdsFromMessages(messages: RegulationCreationSession['messages']): string[] {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const item = messages[i]
+    if (item.role !== 'user') continue
+    const ids = selectedProcessIdsFromText(item.content || '')
+    if (ids.length) return ids
+  }
+  return []
+}
+
+function lastUserIsProcessSelection(messages: RegulationCreationSession['messages']): boolean {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const item = messages[i]
+    if (item.role !== 'user') continue
+    return hasSelectedProcessesText(item.content || '')
+  }
+  return false
+}
+
+function askAfterSelectPrompt(ids: string[]): string {
+  const listed = ids.length ? ids.join(', ') : 'уже выбранные'
+  return (
+    `Процессы уже выбраны: ${listed}. Этап выбора закрыт: не проси отметить процессы снова ` +
+    `и не повторяй список. Переходи к вопросам по каждому выбранному процессу: по одному за ход, ` +
+    `только факт, которого нет в тексте документа.`
+  )
+}
+
+function selectedProcessesMessage(choices: ProcessChoice[]): string {
+  const ids = choices.map((item) => item.id).join(', ')
+  const lines = choices.map((item) => `- ${item.id}: ${item.title}`)
+  return `Выбраны процессы: ${ids}\n${lines.join('\n')}`
 }
 
 function safeDownloadName(name: string): string {
@@ -518,7 +673,8 @@ export function RegulationChatPage({
   onBack,
   onStopped,
   onBusyChange,
-  banner
+  banner,
+  active = true
 }: RegulationChatPageProps): React.JSX.Element {
   const [input, setInput] = useState('')
   const [placeholder, setPlaceholder] = useState(DEFAULT_PLACEHOLDER)
@@ -530,188 +686,20 @@ export function RegulationChatPage({
   const [attachments, setAttachments] = useState<PendingFile[]>([])
   const [filesOpen, setFilesOpen] = useState(false)
   const [pickedProcessIds, setPickedProcessIds] = useState<string[]>([])
-  const [selectingProcesses, setSelectingProcesses] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const resumeKeyRef = useRef('')
-  const collectRecoverKeyRef = useRef('')
-  const assembleRecoverKeyRef = useRef('')
-  const idleRecoverKeyRef = useRef('')
-  const repeatRecoverKeyRef = useRef('')
+  const askAfterSelectRef = useRef('')
   const runIdRef = useRef('')
   const abortRef = useRef<AbortController | null>(null)
   const stoppedRef = useRef(false)
-  const queuedQuestionsRef = useRef<RegulationQueuedQuestion[]>([])
-  const prefetchRunRef = useRef(false)
-  const researchPrefetchRunRef = useRef(false)
-  const lastResearchPrefetchAtRef = useRef(0)
-  const backgroundSdkBusyRef = useRef(false)
-  const submittingRef = useRef(false)
-  const sdkRanRef = useRef(false)
-  const liveThinkingRef = useRef('')
-  const [optimisticQuestion, setOptimisticQuestion] = useState<RegulationQueuedQuestion | null>(null)
-  const [submitLocked, setSubmitLocked] = useState(false)
-  const [prefetching, setPrefetching] = useState(false)
-  const [liveThinking, setLiveThinking] = useState('')
-  const [savedThinkingBlocks, setSavedThinkingBlocks] = useState<Array<{ id: string; text: string }>>([])
+  const sessionRef = useRef(session)
+  sessionRef.current = session
 
-  function resetLiveThinking(): void {
-    liveThinkingRef.current = ''
-    setLiveThinking('')
+  function pushSession(next: RegulationCreationSession): void {
+    onSessionChange(preserveReadyCreationSession(sessionRef.current, next))
   }
-
-  function pushLiveThinkingEvent(event: AgentLiveEvent): void {
-    if (event.type === 'error' && event.text) {
-      setError(event.text)
-      return
-    }
-    setLiveThinking((prev) => {
-      const next = mergeLiveThinking(prev, event)
-      liveThinkingRef.current = next
-      return next
-    })
-    if (event.type === 'status' && event.text && event.text !== 'reading') {
-      setBusyKind('question')
-    }
-  }
-
-  function saveLiveThinkingSnapshot(): void {
-    const snapshot = liveThinkingRef.current.trim()
-    if (!isMeaningfulThinking(snapshot)) return
-    setSavedThinkingBlocks([{ id: `${Date.now()}`, text: snapshot }])
-    resetLiveThinking()
-  }
-
-  function syncQueueFromSession(next: RegulationCreationSession | RegulationCreationTurn): void {
-    const isTurn = 'session' in next
-    const sessionData = isTurn ? next.session : next
-    const queue = (isTurn ? next.questionQueue : undefined) ?? sessionData.questionQueue
-    const depth = (isTurn ? next.queueDepth : undefined) ?? sessionData.queueDepth ?? queue?.length ?? 0
-    const inProgress =
-      (isTurn ? next.prefetchInProgress : undefined) ?? sessionData.prefetchInProgress
-    if (queue?.length) {
-      queuedQuestionsRef.current = queue
-    } else if ((depth ?? 0) === 0) {
-      queuedQuestionsRef.current = []
-    }
-    setPrefetching(Boolean(inProgress) && (depth ?? 0) === 0)
-  }
-
-  async function prefetchQueue(): Promise<void> {
-    if (ready || needsProcessSelection || stoppedRef.current || busy) return
-    if (backgroundSdkBusyRef.current || prefetchRunRef.current) return
-    try {
-      backgroundSdkBusyRef.current = true
-      const turn = await api.peekRegulationCreationTurn(session.draftId)
-      syncQueueFromSession(turn)
-      const lastIsAssistant = session.messages[session.messages.length - 1]?.role === 'assistant'
-      if (
-        !turn.prefetchPrompt?.trim() ||
-        !lastIsAssistant ||
-        prefetchRunRef.current ||
-        typeof window.agent?.start !== 'function'
-      ) {
-        return
-      }
-      prefetchRunRef.current = true
-      setPrefetching(true)
-      const runId = agentClient.start({
-        kind: 'regulation_creation',
-        draftId: session.draftId,
-        prompt: turn.prefetchPrompt,
-        rules: turn.sdkRules,
-        interview: turn.interview,
-        resumeAgentId: turn.sdkAgentId || session.sdkAgentId
-      })
-      try {
-        const sdk = await waitForRegulationSdk(runId, () => undefined)
-        if (stoppedRef.current) return
-        const answer = extractInterviewAnswer(sdk.answer) || sdk.answer
-        if (!answer?.trim()) return
-        const updated = await api.applyRegulationCreationReply(session.draftId, answer, {
-          sdkAgentId: sdk.agentId || turn.sdkAgentId,
-          prefetchOnly: true
-        })
-        syncQueueFromSession(updated)
-        onSessionChange(updated)
-        void ensureCollectQuestionPosted(updated)
-      } finally {
-        prefetchRunRef.current = false
-        setPrefetching(false)
-      }
-    } catch {
-      prefetchRunRef.current = false
-      setPrefetching(false)
-    } finally {
-      backgroundSdkBusyRef.current = false
-    }
-  }
-
-  function scheduleBackgroundPrefetch(mode: 'queue' | 'research' | 'both' = 'both'): void {
-    if (ready || needsProcessSelection || stoppedRef.current || busy) return
-    const depth = effectiveQueueDepth(session, undefined, queuedQuestionsRef.current.length)
-    if (mode !== 'research' && depth < 3 && !prefetchRunRef.current) {
-      void prefetchQueue()
-    }
-    if (
-      mode !== 'queue' &&
-      session.dualWorkflow &&
-      depth < 4 &&
-      !researchPrefetchRunRef.current &&
-      Date.now() - lastResearchPrefetchAtRef.current > 90_000
-    ) {
-      void prefetchResearch()
-    }
-  }
-
-  async function prefetchResearch(): Promise<void> {
-    if (ready || needsProcessSelection || stoppedRef.current || busy) return
-    if (!session.dualWorkflow) return
-    if (backgroundSdkBusyRef.current || researchPrefetchRunRef.current) return
-    try {
-      backgroundSdkBusyRef.current = true
-      const turn = await api.peekRegulationCreationTurn(session.draftId)
-      if (!turn.researchPrompt?.trim() || researchPrefetchRunRef.current || typeof window.agent?.start !== 'function') {
-        return
-      }
-      researchPrefetchRunRef.current = true
-      const runId = agentClient.start({
-        kind: 'regulation_creation',
-        draftId: session.draftId,
-        prompt: turn.researchPrompt,
-        rules: turn.sdkRules,
-        interview: turn.interview,
-        resumeAgentId: turn.researchAgentId || '',
-        agentRole: 'research'
-      })
-      try {
-        const sdk = await waitForRegulationSdk(runId, () => undefined)
-        if (stoppedRef.current) return
-        const answer = extractInterviewAnswer(sdk.answer) || sdk.answer
-        if (!answer?.trim()) return
-        const updated = await api.applyRegulationCreationReply(session.draftId, answer, {
-          sdkAgentId: sdk.agentId || turn.researchAgentId,
-          researchOnly: true
-        })
-        syncQueueFromSession(updated)
-        onSessionChange(updated)
-        lastResearchPrefetchAtRef.current = Date.now()
-        void ensureCollectQuestionPosted(updated)
-      } finally {
-        researchPrefetchRunRef.current = false
-      }
-    } catch {
-      researchPrefetchRunRef.current = false
-    } finally {
-      backgroundSdkBusyRef.current = false
-    }
-  }
-
-  useEffect(() => {
-    setSavedThinkingBlocks([])
-    resetLiveThinking()
-  }, [session.messages.length, session.draftId])
 
   useEffect(() => {
     setError('')
@@ -724,31 +712,16 @@ export function RegulationChatPage({
     setPlaceholder(DEFAULT_PLACEHOLDER)
     setBusyKind('question')
     setReadingFileCount(0)
+    setPickedProcessIds([])
     stoppedRef.current = false
     abortRef.current = null
     runIdRef.current = ''
-    queuedQuestionsRef.current = session.questionQueue ?? []
-    setOptimisticQuestion(null)
-    setPrefetching(Boolean(session.prefetchInProgress) && (session.queueDepth ?? 0) === 0)
-    setSavedThinkingBlocks([])
-    resetLiveThinking()
-    resumeKeyRef.current = ''
-    collectRecoverKeyRef.current = ''
-    assembleRecoverKeyRef.current = ''
-    setSubmitLocked(false)
-    submittingRef.current = false
+    askAfterSelectRef.current = ''
   }, [session.draftId])
 
   useEffect(() => {
-    if (session.questionQueue?.length) {
-      queuedQuestionsRef.current = session.questionQueue
-    }
-    setPrefetching(Boolean(session.prefetchInProgress) && (session.queueDepth ?? 0) === 0)
-  }, [session.questionQueue, session.prefetchInProgress, session.queueDepth])
-
-  useEffect(() => {
-    onBusyChange?.(busy)
-  }, [busy, onBusyChange])
+    onBusyChange?.(busy, busyKind)
+  }, [busy, busyKind, onBusyChange])
 
   useEffect(() => {
     if (!pinnedRef.current) return
@@ -765,10 +738,22 @@ export function RegulationChatPage({
     node.style.overflowY = content > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden'
   }, [input])
 
-  const ready = Boolean(session.resultRegulation || session.resultDocumentPath)
-  const processChoices = processChoicesFromSession(session)
-  const pipelineSelectedIds = selectedProcessIds(session)
-  const needsProcessSelection = needsProcessSelectionForSession(session, ready)
+  useEffect(() => {
+    if (!active || busy || isCreationSessionReady(session)) return
+    let cancelled = false
+    void api
+      .getRegulationCreationSession(session.draftId)
+      .then((latest) => {
+        if (cancelled || !isCreationSessionReady(latest)) return
+        pushSession(latest)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [active, busy, session.draftId, session.status, session.resultDocumentPath])
+
+  const ready = isCreationSessionReady(session)
   const hasUserMessage = session.messages.some((m) => m.role === 'user')
   useEffect(() => {
     if (!needsProcessSelection) return
@@ -780,28 +765,12 @@ export function RegulationChatPage({
 
   const resultName = resultFileName(session)
   const phase: AgentPhase = ready ? 'completed' : busy ? 'working' : 'attention'
-  const stageLabel = stageCaption(session)
-  const queueDepthLabel =
-    !ready && !needsProcessSelection
-      ? effectiveQueueDepth(session, undefined, queuedQuestionsRef.current.length)
+  const progress = session.progress
+  const showProgress = Boolean(progress?.visible) && !ready
+  const progressPercent =
+    showProgress && progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.answered / progress.total) * 100))
       : 0
-  const remainingLabel = remainingEstimateLabel(session, queuedQuestionsRef.current.length)
-
-  useEffect(() => {
-    if (ready || needsProcessSelection || stoppedRef.current || busy) return
-    const depth = session.queueDepth ?? session.questionQueue?.length ?? queuedQuestionsRef.current.length
-    if (depth >= 3) return
-    void scheduleBackgroundPrefetch()
-  }, [
-    session.draftId,
-    ready,
-    needsProcessSelection,
-    busy,
-    session.queueDepth,
-    session.questionQueue?.length,
-    session.messages.length,
-    session.dualWorkflow
-  ])
 
   async function downloadResult(): Promise<void> {
     if (!ready) return
@@ -880,7 +849,11 @@ export function RegulationChatPage({
       queuedQuestionsRef.current = queuedQuestionsRef.current.slice(1)
     }
     setBusy(true)
-    setBusyKind(files.length > 0 ? 'reading' : 'question')
+    const forceCreate = message === FORCE_CREATE_PROMPT
+    const progressClosed = Boolean(session.progress?.visible && Number(session.progress.remaining || 0) <= 0)
+    setBusyKind(
+      files.length > 0 ? 'reading' : forceCreate || progressClosed ? 'document' : 'question'
+    )
     setReadingFileCount(files.length)
     resetLiveThinking()
     pinnedRef.current = true
@@ -899,13 +872,16 @@ export function RegulationChatPage({
         }
       ]
     }
-    onSessionChange(optimistic)
+    pushSession(optimistic)
     let persisted = false
     sdkRanRef.current = false
     try {
       const filePaths = files.map((f) => f.path)
-      const onStreamEvent = (type: string, text: string, tool?: string): void => {
-        pushLiveThinkingEvent({ type, text, tool })
+      const onStreamEvent = (type: string, text: string): void => {
+        if (type === 'error' && text) setError(text)
+        if ((type === 'status' && text && text !== 'reading') || (type === 'assistant' && text)) {
+          setBusyKind((prev) => (prev === 'document' || prev === 'reading' ? prev : 'question'))
+        }
       }
       if (typeof window.agent.start === 'function') {
         let turn: RegulationCreationTurn
@@ -925,34 +901,17 @@ export function RegulationChatPage({
           if (stoppedRef.current) throw new RegulationCancelledError()
           setAttachments([])
           setFilesOpen(false)
-          onSessionChange(updated)
+          pushSession(updated)
           return
         }
         persisted = true
         if (stoppedRef.current) throw new RegulationCancelledError()
         setAttachments([])
         setFilesOpen(false)
-        setBusyKind('question')
-        syncQueueFromSession(turn)
-        onSessionChange(turn.session)
-        setOptimisticQuestion(null)
-        if (shouldBlockSdkAgent(turn.session, turn)) {
-          resetLiveThinking()
-          const depth = Math.max(
-            turn.queueDepth ?? 0,
-            turn.questionQueue?.length ?? 0,
-            turn.session.queueDepth ?? 0,
-            turn.session.questionQueue?.length ?? 0
-          )
-          if (depth > 0) {
-            await ensureCollectQuestionPosted(turn.session)
-            void scheduleBackgroundPrefetch()
-          } else {
-            void scheduleBackgroundPrefetch()
-          }
-          return
-        }
-        sdkRanRef.current = true
+        pushSession(turn.session)
+        if (isCreationSessionReady(turn.session)) return
+        const writing = turnWritesDocument(turn, turn.session)
+        setBusyKind(writing ? 'document' : 'question')
         await runSdkAndApply(turn)
         await tryUnstickCollectTurn(turn.session)
       } else {
@@ -966,7 +925,7 @@ export function RegulationChatPage({
         if (stoppedRef.current) throw new RegulationCancelledError()
         setAttachments([])
         setFilesOpen(false)
-        onSessionChange(updated)
+        pushSession(updated)
       }
     } catch (err) {
       if (isRegulationCancelled(err) || stoppedRef.current) {
@@ -986,7 +945,7 @@ export function RegulationChatPage({
           /* keep the optimistic session with the user text and files */
         }
       }
-      onSessionChange(next)
+      pushSession(next)
     } finally {
       if (sdkRanRef.current) {
         saveLiveThinkingSnapshot()
@@ -1160,6 +1119,16 @@ export function RegulationChatPage({
     void send(answer, [])
   }
 
+  function toggleProcess(id: string): void {
+    setPickedProcessIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]))
+  }
+
+  function confirmProcesses(choices: ProcessChoice[]): void {
+    const picked = choices.filter((item) => pickedProcessIds.includes(item.id))
+    if (picked.length === 0 || busy) return
+    void send(selectedProcessesMessage(picked), [])
+  }
+
   async function pickFiles(): Promise<void> {
     if (busy) return
     const paths = await window.api.openFile({
@@ -1191,8 +1160,14 @@ export function RegulationChatPage({
   const visible = visibleChatMessages(session)
   const lastAssistantId = [...visible].reverse().find((item) => item.role === 'assistant')?.messageId || ''
   const lastVisible = visible[visible.length - 1]
-  const waitingForAssistant = awaitingAssistantReply(session)
-  const pendingUserId = pendingUserMessageId(session)
+
+  useEffect(() => {
+    setPickedProcessIds([])
+  }, [lastAssistantId])
+  const pendingUserId =
+    lastVisible?.role === 'user' && lastVisible.messageId !== 'local-pending'
+      ? lastVisible.messageId
+      : ''
 
   async function runSdkAndApply(turn: RegulationCreationTurn): Promise<void> {
     if (stoppedRef.current) throw new RegulationCancelledError()
@@ -1240,21 +1215,43 @@ export function RegulationChatPage({
     resetLiveThinking()
     const abort = new AbortController()
     abortRef.current = abort
+    const selectedIds = selectedProcessIdsFromMessages(session.messages)
+    const afterSelect = selectedIds.length ? askAfterSelectPrompt(selectedIds) : ''
+    const interview = afterSelect
+      ? { ...turn.interview, selectedProcessIds: selectedIds }
+      : turn.interview
+    const writing = turnWritesDocument(turn, session)
+    if (writing) setBusyKind('document')
     const runId = agentClient.start({
       kind: 'regulation_creation',
       draftId: session.draftId,
-      prompt: turn.sdkPrompt,
-      rules: turn.sdkRules,
-      interview: turn.interview,
-      resumeAgentId: turn.sdkAgentId || session.sdkAgentId
+      prompt: afterSelect ? `${turn.sdkPrompt}\n\n${afterSelect}` : turn.sdkPrompt,
+      rules: afterSelect ? `${turn.sdkRules}\n${afterSelect}` : turn.sdkRules,
+      interview,
+      resumeAgentId: turn.sdkAgentId || session.sdkAgentId,
+      writeDocument: turn.writeDocument || turn.forceCreate || writing,
+      useTools: turn.useTools || turn.writeDocument || turn.forceCreate || writing,
+      forceCreate: turn.forceCreate
     })
     runIdRef.current = runId
     try {
-      const sdk = await waitForRegulationSdk(runId, pushLiveThinkingEvent, abort.signal)
+      const sdk = await waitForRegulationSdk(
+        runId,
+        (type, text) => {
+          if (type === 'error' && text) setError(text)
+          if (type === 'assistant' && text) {
+            setBusyKind((prev) => (prev === 'document' || writing ? 'document' : 'question'))
+          }
+        },
+        abort.signal
+      )
       if (abort.signal.aborted || stoppedRef.current) {
         throw new RegulationCancelledError()
       }
-      const answer = extractInterviewAnswer(sdk.answer) || sdk.answer
+      const answer = rewriteSelectAfterChoice(
+        extractInterviewAnswer(sdk.answer) || sdk.answer,
+        selectedIds
+      )
       const visibleText = visibleAssistantText(answer) || answer
       if (!answer || answer.trim() === '{}' || isReplacementGarbage(visibleText)) {
         if (isCollectInterview(session)) {
@@ -1270,13 +1267,14 @@ export function RegulationChatPage({
       if (abort.signal.aborted || stoppedRef.current) {
         throw new RegulationCancelledError()
       }
-      syncQueueFromSession(updated)
-      setOptimisticQuestion(null)
-      onSessionChange(updated)
-      void scheduleBackgroundPrefetch()
-      await tryAdvanceAfterReply(updated)
-      await tryUnstickCollectTurn(updated)
-      await ensureCollectQuestionPosted(updated)
+      pushSession(updated)
+      if (!isCreationSessionReady(updated)) return
+      try {
+        const latest = await api.getRegulationCreationSession(session.draftId)
+        pushSession(latest)
+      } catch {
+        /* keep apply payload */
+      }
     } finally {
       if (abortRef.current === abort) abortRef.current = null
       if (runIdRef.current === runId) runIdRef.current = ''
@@ -1287,31 +1285,18 @@ export function RegulationChatPage({
     if (busy || ready || stoppedRef.current || needsProcessSelection || selectingProcesses) return
     setError('')
     setBusy(true)
-    setBusyKind('question')
-    resetLiveThinking()
-    sdkRanRef.current = false
+    setBusyKind(
+      session.progress?.visible && Number(session.progress.remaining || 0) <= 0
+        ? 'document'
+        : 'question'
+    )
     pinnedRef.current = true
     try {
       const turn = await api.peekRegulationCreationTurn(session.draftId)
       if (stoppedRef.current) throw new RegulationCancelledError()
-      if (shouldBlockSdkAgent(turn.session, turn)) {
-        syncQueueFromSession(turn)
-        onSessionChange(turn.session)
-        setOptimisticQuestion(null)
-        const queueLen = Math.max(
-          turn.queueDepth ?? 0,
-          turn.questionQueue?.length ?? 0,
-          turn.session.queueDepth ?? 0,
-          turn.session.questionQueue?.length ?? 0
-        )
-        if (queueLen > 0) {
-          await ensureCollectQuestionPosted(turn.session)
-        } else {
-          void scheduleBackgroundPrefetch()
-        }
-        return
-      }
-      sdkRanRef.current = true
+      pushSession(turn.session)
+      if (isCreationSessionReady(turn.session)) return
+      if (turnWritesDocument(turn, turn.session)) setBusyKind('document')
       await runSdkAndApply(turn)
     } catch (err) {
       if (isRegulationCancelled(err) || stoppedRef.current) return
@@ -1485,6 +1470,18 @@ export function RegulationChatPage({
     void continuePendingTurn()
   }, [session.draftId, pendingUserId, busy, ready, needsProcessSelection, selectingProcesses, session.pipeline])
 
+  useEffect(() => {
+    if (!active || busy || ready || stoppedRef.current || !window.agent?.start) return
+    if (!lastUserIsProcessSelection(session.messages)) return
+    const lastAssistant = [...session.messages].reverse().find((item) => item.role === 'assistant')
+    if (!lastAssistant || !isProcessSelectText(lastAssistant.content || '')) return
+    const key = `${session.draftId}:ask-after-select:${lastAssistant.messageId}`
+    if (askAfterSelectRef.current === key) return
+    askAfterSelectRef.current = key
+    const ids = selectedProcessIdsFromMessages(session.messages)
+    void send(askAfterSelectPrompt(ids), [])
+  }, [session.draftId, session.messages, busy, ready])
+
   return (
     <div className="regchat-page">
       <div className="regchat-head">
@@ -1506,15 +1503,7 @@ export function RegulationChatPage({
         <div className="regchat-subtitle">
           Ответьте на вопросы, и ИИ подготовит регламент в стиле ваших документов
         </div>
-        {!ready && (
-          <div className="regchat-stage-hint">
-            <span>{stageLabel}</span>
-            {remainingLabel ? <span className="regchat-remaining">{remainingLabel}</span> : null}
-            {queueDepthLabel > 0 && !remainingLabel.includes('В очереди') ? (
-              <span className="regchat-remaining">В очереди: {queueDepthLabel} вопросов</span>
-            ) : null}
-          </div>
-        )}
+        {showProgress && progress ? <InterviewProgressBar progress={progress} percent={progressPercent} /> : null}
       </div>
         {session.spawnedAgents && session.spawnedAgents.length > 0 ? (
           <div className="regchat-banner">
@@ -1533,9 +1522,9 @@ export function RegulationChatPage({
         <div className="regchat-feed-wrap">
             <div className="regchat-scroll" ref={scrollRef} onScroll={onScroll}>
               <div className="regchat-column">
-              {!hasUserMessage && !ready && !needsProcessSelection && (
+              {visible.length === 0 && !busy && (
                 <div className="regchat-row ai">
-                  <AgentAvatar phase="attention" uid="starter" frozen={visible.length > 0} />
+                  <AgentAvatar phase="attention" uid="starter" frozen={false} />
                   <div className="regchat-bubble-col">
                     <div className="regchat-starter">
                       <h3>С чего начать</h3>
@@ -1544,50 +1533,6 @@ export function RegulationChatPage({
                           <li key={hint}>{hint}</li>
                         ))}
                       </ul>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {needsProcessSelection && (
-                <div className="regchat-row ai">
-                  <AgentAvatar phase="attention" uid="process-select" frozen={false} />
-                  <div className="regchat-bubble-col">
-                    <div className="regchat-select-card">
-                      <h3>Выберите процессы для интервью</h3>
-                      <p>ИИ продолжит только по отмеченным процессам.</p>
-                      <div className="regchat-select-list">
-                        {processChoices.map((process) => {
-                          const checked = pickedProcessIds.includes(process.id)
-                          return (
-                            <label key={process.id} className="regchat-select-item">
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                disabled={selectingProcesses}
-                                onChange={(e) =>
-                                  setPickedProcessIds((prev) =>
-                                    e.target.checked
-                                      ? [...prev, process.id]
-                                      : prev.filter((id) => id !== process.id)
-                                  )
-                                }
-                              />
-                              <span className="regchat-select-title">{process.title}</span>
-                              {process.actor ? (
-                                <span className="regchat-select-actor">{process.actor}</span>
-                              ) : null}
-                            </label>
-                          )
-                        })}
-                      </div>
-                      <button
-                        type="button"
-                        className="regchat-select-submit"
-                        disabled={selectingProcesses || pickedProcessIds.length === 0}
-                        onClick={() => void submitProcessSelection()}
-                      >
-                        {selectingProcesses ? 'Сохраняю выбор...' : 'Продолжить по выбранным процессам'}
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -1603,6 +1548,15 @@ export function RegulationChatPage({
                 const text = isUser ? visibleUserText(m.content) : visibleAssistantText(m.content)
                 const timeLabel = formatRegulationMessageTime(m.createdAt)
                 const quicks = quickAnswers(m.structured)
+                const processes = processChoices(m.structured)
+                const showProcessPicker =
+                  !isUser &&
+                  !busy &&
+                  !ready &&
+                  m.messageId === lastAssistantId &&
+                  !hasSelectedProcesses(session.messages) &&
+                  isProcessSelect(m.structured, m.content) &&
+                  processes.length > 0
                 const isCurrentStage =
                   !isUser &&
                   !busy &&
@@ -1611,6 +1565,17 @@ export function RegulationChatPage({
                   !submitLocked &&
                   Boolean(lastAssistantId) &&
                   m.messageId === lastAssistantId
+                const blockLabel =
+                  isCurrentStage && showProgress && progress
+                    ? [
+                        progress.processCount > 0 && progress.currentProcessIndex > 0
+                          ? `Блок ${progress.currentProcessIndex} из ${progress.processCount}`
+                          : '',
+                        progress.currentProcessTitle || progress.currentProcessId
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')
+                    : ''
                 return (
                   <div key={m.messageId || index} className={isUser ? 'regchat-row user' : 'regchat-row ai'}>
                     {!isUser && (
@@ -1622,6 +1587,7 @@ export function RegulationChatPage({
                     )}
                     <div className="regchat-bubble-col">
                       <div className={isUser ? 'regchat-bubble user' : 'regchat-bubble ai'}>
+                        {blockLabel ? <div className="regchat-block-tag">{blockLabel}</div> : null}
                         {text ? <div className="regchat-bubble-text">{text}</div> : null}
                         {names.length > 0 && (
                           <div className="regchat-attach-list">
@@ -1639,7 +1605,7 @@ export function RegulationChatPage({
                       {timeLabel ? (
                         <div className={isUser ? 'regchat-time user' : 'regchat-time'}>{timeLabel}</div>
                       ) : null}
-                      {!isUser && isCurrentStage && quicks.length > 0 && !needsProcessSelection && (
+                      {!isUser && isCurrentStage && !showProcessPicker && quicks.length > 0 && (
                         <div className="regchat-quick-row">
                           {quicks.map((qa) => (
                             <button
@@ -1651,6 +1617,38 @@ export function RegulationChatPage({
                               {qa}
                             </button>
                           ))}
+                        </div>
+                      )}
+                      {showProcessPicker && (
+                        <div className="regchat-select-card">
+                          <h3>Выберите процессы для интервью</h3>
+                          <p>ИИ продолжит только по отмеченным процессам.</p>
+                          <div className="regchat-select-list">
+                            {processes.map((item) => {
+                              const checked = pickedProcessIds.includes(item.id)
+                              return (
+                                <label key={item.id} className="regchat-select-item">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => toggleProcess(item.id)}
+                                  />
+                                  <span className="regchat-select-title">{item.title}</span>
+                                  {item.actor ? (
+                                    <span className="regchat-select-actor">{item.actor}</span>
+                                  ) : null}
+                                </label>
+                              )
+                            })}
+                          </div>
+                          <button
+                            type="button"
+                            className="regchat-select-submit"
+                            disabled={pickedProcessIds.length === 0}
+                            onClick={() => confirmProcesses(processes)}
+                          >
+                            Продолжить по выбранным процессам
+                          </button>
                         </div>
                       )}
                     </div>

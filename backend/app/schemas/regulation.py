@@ -668,6 +668,17 @@ class RegulationCreationMessage(BaseModel):
     createdAt: datetime | None = None
 
 
+class RegulationCreationProgress(BaseModel):
+    answered: int = 0
+    remaining: int = 0
+    total: int = 0
+    currentProcessId: str = ""
+    currentProcessTitle: str = ""
+    currentProcessIndex: int = 0
+    processCount: int = 0
+    visible: bool = False
+
+
 class RegulationCreationSession(BaseModel):
     draftId: str
     status: RegulationCreationStatus = "collecting_positions"
@@ -679,14 +690,7 @@ class RegulationCreationSession(BaseModel):
     resultDocument: dict = Field(default_factory=dict)
     resultDocumentPath: str = ""
     sdkAgentId: str = ""
-    interview: dict = Field(default_factory=dict)
-    pipeline: dict = Field(default_factory=dict)
-    questionQueue: list[dict] = Field(default_factory=list)
-    prefetchInProgress: bool = False
-    queueDepth: int = 0
-    dualWorkflow: bool = False
-    materialReview: list[dict] = Field(default_factory=list)
-    spawnedAgents: list[dict] = Field(default_factory=list)
+    progress: RegulationCreationProgress = Field(default_factory=RegulationCreationProgress)
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
 
@@ -719,11 +723,5 @@ class RegulationCreationTurn(BaseModel):
     sdkRules: str = ""
     sdkAgentId: str = ""
     forceCreate: bool = False
-    prefetchedReply: str = ""
-    prefetchPrompt: str = ""
-    researchPrompt: str = ""
-    sdkAgentRole: str = "interview"
-    researchAgentId: str = ""
-    questionQueue: list[dict] = Field(default_factory=list)
-    prefetchInProgress: bool = False
-    queueDepth: int = 0
+    writeDocument: bool = False
+    useTools: bool = False

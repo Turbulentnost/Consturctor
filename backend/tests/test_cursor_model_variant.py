@@ -49,10 +49,11 @@ def test_regulation_creation_defaults_to_grok_medium_fast() -> None:
 
     settings = Settings()
     assert settings.cursor_regulation_creation_model == "grok-4.6"
-    assert settings.cursor_regulation_creation_effort == "medium"
-    assert settings.cursor_regulation_creation_finalize_effort == "high"
+    assert settings.cursor_regulation_creation_effort == "xhigh"
+    assert settings.cursor_regulation_creation_question_effort == "low"
     assert cursor_agent.settings.cursor_regulation_creation_model == "grok-4.6"
-    assert cursor_agent.settings.cursor_regulation_creation_effort == "medium"
+    assert cursor_agent.settings.cursor_regulation_creation_effort == "xhigh"
+    assert cursor_agent.settings.cursor_regulation_creation_question_effort == "low"
 
 
 def test_model_without_effort_uses_its_default_variant() -> None:

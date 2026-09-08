@@ -51,10 +51,8 @@ class Settings(BaseSettings):
     # Вариант модели: у grok-4.6 это Effort (low/medium/high/xhigh).
     cursor_workflow_model_effort: str = "high"
     cursor_regulation_creation_model: str = "grok-4.6"
-    # Интервью: medium — быстрые вопросы без долгого thinking.
-    # Финализация документа: high (см. cursor_regulation_creation_finalize_effort).
-    cursor_regulation_creation_effort: str = "medium"
-    cursor_regulation_creation_finalize_effort: str = "high"
+    cursor_regulation_creation_effort: str = "xhigh"
+    cursor_regulation_creation_question_effort: str = "low"
 
     # App Postgres (users, avatars, future agent data). Not ERP.
     database_url: str = (

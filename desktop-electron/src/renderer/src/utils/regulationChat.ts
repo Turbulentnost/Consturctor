@@ -67,19 +67,54 @@ export function attachmentNamesFromContent(text: string): string[] {
   return names
 }
 
-export function visibleAssistantText(text: string): string {
-  const value = (text || '').trim()
-  if (!value) return ''
-  if (value.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(value) as { message?: unknown }
-      return String(parsed.message || '').trim()
-    } catch {
-      const match = value.match(/"message"\s*:\s*"((?:\\.|[^"\\])*)"/)
-      return match ? match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"') : ''
+function unescapeJsonString(value: string): string {
+  return value.replace(/\\n/g, '\n').replace(/\\"/g, '"')
+}
+
+function messageFromJsonish(value: string): string {
+  const start = value.indexOf('{')
+  if (start < 0) return ''
+  const blob = value.slice(start)
+  try {
+    const parsed = JSON.parse(blob) as {
+      message?: unknown
+      nextQuestion?: { text?: unknown }
     }
+    const next =
+      parsed.nextQuestion && typeof parsed.nextQuestion === 'object'
+        ? String(parsed.nextQuestion.text || '').trim()
+        : ''
+    return next || String(parsed.message || '').trim()
+  } catch {
+    const message = blob.match(/"message"\s*:\s*"((?:\\.|[^"\\])*)"?/)
+    if (message) return unescapeJsonString(message[1]).trim()
+    const text = blob.match(/"text"\s*:\s*"((?:\\.|[^"\\])*)"?/)
+    return text ? unescapeJsonString(text[1]).trim() : ''
   }
-  return isProtocolChunk(value) ? '' : value
+}
+
+function leadingProse(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.startsWith('{') || trimmed.startsWith('[')) return ''
+  const fence = value.search(/\n\s*```(?:json)?\s*\n\s*\{/)
+  if (fence >= 0) {
+    const head = value.slice(0, fence).trim()
+    return isProtocolChunk(head) ? '' : head
+  }
+  const block = value.search(/\n\s*\{/)
+  if (block >= 0) {
+    const head = value.slice(0, block).trim()
+    return isProtocolChunk(head) ? '' : head
+  }
+  return isProtocolChunk(trimmed) ? '' : trimmed
+}
+
+export function visibleAssistantText(text: string): string {
+  const value = text || ''
+  if (!value.trim()) return ''
+  const prose = leadingProse(value)
+  if (prose) return prose
+  return messageFromJsonish(value)
 }
 
 export function formatRegulationMessageTime(value: string): string {
@@ -95,6 +130,53 @@ export function formatRegulationMessageTime(value: string): string {
   if (sameDay) return time
   const day = date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
   return `${day} ${time}`
+}
+
+export function isProcessSelectText(content: string): boolean {
+  const text = (content || '').toLowerCase()
+  return /отметьте нужн|отметьте процесс|выберите процесс|извлечены процессы/.test(text)
+}
+
+export function hasSelectedProcessesText(content: string): boolean {
+  return /^\s*выбраны процессы\s*:/im.test(content || '')
+}
+
+export function rewriteSelectAfterChoice(raw: string, selectedIds: string[]): string {
+  if (!selectedIds.length) return raw
+  const listed = selectedIds.join(', ')
+  const fallback = `По выбранному процессу (${listed}) уточните факт, которого нет в тексте документа.`
+  const blob = extractInterviewAnswer(raw) || raw.trim()
+  try {
+    const parsed = JSON.parse(blob) as Record<string, unknown>
+    const message = String(parsed.message || '')
+    const nextQuestion =
+      parsed.nextQuestion && typeof parsed.nextQuestion === 'object'
+        ? (parsed.nextQuestion as Record<string, unknown>)
+        : {}
+    const pipeline =
+      parsed.pipeline && typeof parsed.pipeline === 'object'
+        ? (parsed.pipeline as Record<string, unknown>)
+        : {}
+    const stage = String(pipeline.stage || '').toLowerCase()
+    if (!isProcessSelectText(message) && !isProcessSelectText(String(nextQuestion.text || '')) && stage !== 'select') {
+      return raw
+    }
+    parsed.status = 'need_more'
+    parsed.message = fallback
+    parsed.pipeline = {
+      ...pipeline,
+      stage: 'questions',
+      selectedProcessIds: selectedIds
+    }
+    parsed.nextQuestion = {
+      ...nextQuestion,
+      text: fallback,
+      processId: nextQuestion.processId || selectedIds[0]
+    }
+    return JSON.stringify(parsed)
+  } catch {
+    return isProcessSelectText(raw) ? fallback : raw
+  }
 }
 
 export function extractInterviewAnswer(raw: string): string {
@@ -130,7 +212,16 @@ export function extractInterviewAnswer(raw: string): string {
           try {
             const parsed = JSON.parse(blob) as { status?: unknown; message?: unknown }
             const status = String(parsed.status || '')
-            if (status !== 'need_more' && status !== 'ready') {
+            if (
+              status &&
+              status !== 'need_more' &&
+              status !== 'ready' &&
+              status !== 'question' &&
+              status !== 'in_progress'
+            ) {
+              break
+            }
+            if (!status && !String(parsed.message || '').trim()) {
               break
             }
             if (isReplacementGarbage(String(parsed.message || '')) || isReplacementGarbage(blob)) {
@@ -147,3 +238,36 @@ export function extractInterviewAnswer(raw: string): string {
   }
   return ''
 }
+
+export function isCreationSessionReady(session: {
+  status?: string
+  resultDocumentPath?: string
+  resultRegulation?: { regulationId?: string } | null
+}): boolean {
+  if (String(session.status || '').toLowerCase() === 'finalized') return true
+  if (String(session.resultDocumentPath || '').trim()) return true
+  return Boolean(session.resultRegulation?.regulationId)
+}
+
+export function preserveReadyCreationSession<T extends {
+  draftId: string
+  status?: string
+  resultDocumentPath?: string
+  resultDocument?: Record<string, unknown>
+  resultRegulation?: { regulationId?: string } | null
+}>(previous: T | null | undefined, next: T): T {
+  if (!previous || previous.draftId !== next.draftId) return next
+  if (isCreationSessionReady(next)) return next
+  if (!isCreationSessionReady(previous)) return next
+  return {
+    ...next,
+    status: previous.status === 'finalized' ? previous.status : next.status,
+    resultDocumentPath: previous.resultDocumentPath || next.resultDocumentPath,
+    resultDocument:
+      next.resultDocument && Object.keys(next.resultDocument).length > 0
+        ? next.resultDocument
+        : previous.resultDocument,
+    resultRegulation: previous.resultRegulation || next.resultRegulation
+  }
+}
+

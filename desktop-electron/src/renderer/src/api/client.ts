@@ -16,6 +16,7 @@ import {
   type QuestionChatSession,
   type RegulationCreationMessage,
   type RegulationCreationHistoryItem,
+  type RegulationCreationProgress,
   type RegulationCreationSession,
   type RegulationCreationTurn,
   type RegulationQueuedQuestion,
@@ -124,27 +125,19 @@ function parseUser(data: Record<string, unknown>): UserProfile {
   })
 }
 
-function parseQueuedQuestions(raw: unknown): RegulationQueuedQuestion[] {
-  if (!Array.isArray(raw)) return []
-  return raw
-    .filter((item) => item && typeof item === 'object')
-    .map((item) => {
-      const row = item as Record<string, unknown>
-      const optionsRaw = row.options ?? row.quickAnswers
-      const options = Array.isArray(optionsRaw)
-        ? optionsRaw.map((opt) => String(opt ?? '')).filter(Boolean)
-        : []
-      return {
-        id: String(row.id ?? ''),
-        processId: String(row.processId ?? row.process_id ?? row.functionId ?? ''),
-        field: String(row.field ?? ''),
-        text: String(row.text ?? row.message ?? ''),
-        options,
-        smartKey: String(row.smartKey ?? row.smart_key ?? ''),
-        source: String(row.source ?? '')
-      }
-    })
-    .filter((item) => item.text || item.id)
+function parseCreationProgress(raw: unknown): RegulationCreationProgress | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const item = raw as Record<string, unknown>
+  return {
+    answered: Number(item.answered ?? 0),
+    remaining: Number(item.remaining ?? 0),
+    total: Number(item.total ?? 0),
+    currentProcessId: String(item.currentProcessId ?? item.current_process_id ?? ''),
+    currentProcessTitle: String(item.currentProcessTitle ?? item.current_process_title ?? ''),
+    currentProcessIndex: Number(item.currentProcessIndex ?? item.current_process_index ?? 0),
+    processCount: Number(item.processCount ?? item.process_count ?? 0),
+    visible: Boolean(item.visible)
+  }
 }
 
 function parseCreationSession(data: Record<string, unknown>): RegulationCreationSession {
@@ -161,6 +154,7 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
     createdAt: String(item.createdAt ?? item.created_at ?? '')
   }))
   const resultRaw = data.resultRegulation
+  const progress = parseCreationProgress(data.progress)
   return {
     draftId: String(data.draftId ?? ''),
     status: String(data.status ?? ''),
@@ -175,24 +169,7 @@ function parseCreationSession(data: Record<string, unknown>): RegulationCreation
         : {},
     resultDocumentPath: String(data.resultDocumentPath ?? ''),
     sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? ''),
-    interview:
-      data.interview && typeof data.interview === 'object'
-        ? (data.interview as Record<string, unknown>)
-        : {},
-    pipeline:
-      data.pipeline && typeof data.pipeline === 'object'
-        ? (data.pipeline as Record<string, unknown>)
-        : {},
-    questionQueue: parseQueuedQuestions(data.questionQueue ?? data.question_queue),
-    prefetchInProgress: Boolean(data.prefetchInProgress ?? data.prefetch_in_progress),
-    queueDepth: Number(data.queueDepth ?? data.queue_depth ?? 0),
-    dualWorkflow: Boolean(data.dualWorkflow ?? data.dual_workflow),
-    materialReview: Array.isArray(data.materialReview ?? data.material_review)
-      ? ((data.materialReview ?? data.material_review) as Record<string, unknown>[])
-      : [],
-    spawnedAgents: Array.isArray(data.spawnedAgents ?? data.spawned_agents)
-      ? ((data.spawnedAgents ?? data.spawned_agents) as Record<string, unknown>[])
-      : []
+    ...(progress ? { progress } : {})
   }
 }
 
@@ -209,14 +186,8 @@ function parseCreationTurn(data: Record<string, unknown>): RegulationCreationTur
     sdkRules: String(data.sdkRules ?? data.sdk_rules ?? ''),
     sdkAgentId: String(data.sdkAgentId ?? data.sdk_agent_id ?? ''),
     forceCreate: Boolean(data.forceCreate ?? data.force_create),
-    prefetchedReply: String(data.prefetchedReply ?? data.prefetched_reply ?? ''),
-    prefetchPrompt: String(data.prefetchPrompt ?? data.prefetch_prompt ?? ''),
-    researchPrompt: String(data.researchPrompt ?? data.research_prompt ?? ''),
-    sdkAgentRole: String(data.sdkAgentRole ?? data.sdk_agent_role ?? 'interview'),
-    researchAgentId: String(data.researchAgentId ?? data.research_agent_id ?? ''),
-    questionQueue: parseQueuedQuestions(data.questionQueue ?? data.question_queue),
-    prefetchInProgress: Boolean(data.prefetchInProgress ?? data.prefetch_in_progress),
-    queueDepth: Number(data.queueDepth ?? data.queue_depth ?? 0)
+    writeDocument: Boolean(data.writeDocument ?? data.write_document),
+    useTools: Boolean(data.useTools ?? data.use_tools)
   }
 }
 

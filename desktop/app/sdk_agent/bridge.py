@@ -30,6 +30,10 @@ REGULATION_SDK_MODEL_PARAMS = (
     {"id": "effort", "value": "low"},
     {"id": "fast", "value": "true"},
 )
+REGULATION_SDK_QUESTION_PARAMS = (
+    {"id": "effort", "value": "low"},
+    {"id": "fast", "value": "true"},
+)
 LARGE_TOOL_RESULT_BYTES = 6_000
 ENVELOPE_LIST_MIN = 50
 EXTERNALIZED_NEXT_STEP = (
@@ -205,6 +209,8 @@ class CursorSdkBridge:
         cwd: str = "",
         mode: str = "run",
         tools: list[dict[str, Any]] | None = None,
+        write_document: bool = False,
+        use_tools: bool = False,
         resume_agent_id: str = "",
         on_event: SdkEventCallback | None = None,
         on_question: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
@@ -262,6 +268,8 @@ class CursorSdkBridge:
                     "modelParams": run_params,
                     "cwd": run_cwd,
                     "mode": "interview" if interview else "design" if mode == "design" else "run",
+                    "writeDocument": bool(write_document),
+                    "useTools": bool(use_tools or write_document),
                     "tools": sdk_tool_specs() if tools is None else tools,
                     "resumeAgentId": agent_id or None,
                     "workflowId": workflow_id,

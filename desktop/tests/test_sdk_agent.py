@@ -365,7 +365,14 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     )[0]
     assert 'type: "question"' not in tool_call_block
     assert "SDK_TOOLS" not in text
-    assert "tools: [" not in text
+    assert "interviewChat" in text
+    assert "interviewReadTools" in text
+    assert "conversationMode" in text
+    assert 'mode: conversationMode' in text
+    assert 'interview ? "agent"' in text
+    assert 'writeDocument ? "agent" : "plan"' not in text
+    assert "tools: []" in text
+    assert "interview ? {}" in text
     assert "Agent.resume" in text
     assert "force: true" in text
     assert "settleRun" in text
@@ -373,6 +380,8 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert "interviewDraftReady" in text
     assert "modelParamsFor" in text
     assert 'value: "xhigh"' in text
+    assert 'value: "low"' in text
+    assert "INTERVIEW_QUESTION_MODEL_PARAMS" in text
     assert "testsPassReady" in text
     assert "thought +=" in text
     assert "finishIfReady" in text
@@ -532,12 +541,18 @@ def test_node_version_parser() -> None:
 
 
 def test_default_sdk_model_is_grok_46() -> None:
-    from app.sdk_agent.bridge import REGULATION_SDK_MODEL, REGULATION_SDK_MODEL_PARAMS
+    from app.sdk_agent.bridge import (
+        REGULATION_SDK_MODEL,
+        REGULATION_SDK_MODEL_PARAMS,
+        REGULATION_SDK_QUESTION_PARAMS,
+    )
 
     assert DEFAULT_SDK_MODEL == "grok-4.6"
     assert REGULATION_SDK_MODEL == "grok-4.6"
     assert {"id": "effort", "value": "low"} in list(REGULATION_SDK_MODEL_PARAMS)
     assert {"id": "fast", "value": "true"} in list(REGULATION_SDK_MODEL_PARAMS)
+    assert {"id": "effort", "value": "low"} in list(REGULATION_SDK_QUESTION_PARAMS)
+    assert {"id": "fast", "value": "true"} in list(REGULATION_SDK_QUESTION_PARAMS)
 
 
 def test_turboproject_empty_call_is_sampled_for_agent() -> None:

@@ -177,14 +177,15 @@ export interface RegulationCreationMessage {
   createdAt: string
 }
 
-export interface RegulationQueuedQuestion {
-  id: string
-  processId: string
-  field: string
-  text: string
-  options?: string[]
-  smartKey?: string
-  source?: string
+export interface RegulationCreationProgress {
+  answered: number
+  remaining: number
+  total: number
+  currentProcessId: string
+  currentProcessTitle: string
+  currentProcessIndex: number
+  processCount: number
+  visible: boolean
 }
 
 export interface RegulationCreationSession {
@@ -195,14 +196,7 @@ export interface RegulationCreationSession {
   resultDocument: Record<string, unknown>
   resultDocumentPath: string
   sdkAgentId: string
-  interview: Record<string, unknown>
-  pipeline: Record<string, unknown>
-  questionQueue?: RegulationQueuedQuestion[]
-  prefetchInProgress?: boolean
-  queueDepth?: number
-  dualWorkflow?: boolean
-  materialReview?: Record<string, unknown>[]
-  spawnedAgents?: Record<string, unknown>[]
+  progress?: RegulationCreationProgress
 }
 
 export interface RegulationCreationHistoryItem {
@@ -224,14 +218,8 @@ export interface RegulationCreationTurn {
   sdkRules: string
   sdkAgentId: string
   forceCreate: boolean
-  prefetchedReply: string
-  prefetchPrompt?: string
-  researchPrompt?: string
-  sdkAgentRole?: string
-  researchAgentId?: string
-  questionQueue?: RegulationQueuedQuestion[]
-  prefetchInProgress?: boolean
-  queueDepth?: number
+  writeDocument: boolean
+  useTools: boolean
 }
 
 export interface MatchEvidence {
