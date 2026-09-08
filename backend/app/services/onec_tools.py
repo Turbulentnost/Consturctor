@@ -118,10 +118,58 @@ _ERP_TASK_TOOLS = frozenset(
     }
 )
 _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {"onec.docflow_tasks"}
+_ACCESS_TOOLS = frozenset(
+    {
+        "onec.odata_get",
+        "onec.odata_post",
+        "onec.odata_patch",
+        "onec.attach_file",
+        "onec.sql_query",
+    }
+)
 
 
 class OnecToolError(RuntimeError):
     pass
+
+
+def _access_action(tool: str) -> str:
+    if tool == "onec.sql_query":
+        return "sql"
+    if tool in ONEC_WRITE_TOOLS:
+        return "write"
+    return "read"
+
+
+def _enforce_actor_access(
+    tool: str,
+    args: dict[str, Any],
+    *,
+    actor_user_id: str,
+    actor_fio: str,
+):
+    from app.services.onec_access import (
+        OnecAccessDenied,
+        access_check_enabled,
+        enforce_actor_access,
+    )
+
+    if not access_check_enabled():
+        return None
+    # Stub answers are not privileged OData; live SQL still needs a rights check.
+    if tool != "onec.sql_query" and not odata_configured():
+        return None
+    if tool == "onec.sql_query" and not _erp_sql_ready() and not odata_configured():
+        return None
+    try:
+        return enforce_actor_access(
+            action=_access_action(tool),
+            entity=_entity_from_args(args) if tool != "onec.sql_query" else "",
+            user_id=actor_user_id,
+            fio=actor_fio,
+        )
+    except OnecAccessDenied as exc:
+        raise OnecToolError(str(exc)) from exc
 
 
 def odata_configured() -> bool:
@@ -167,9 +215,26 @@ def invoke_onec(
     if handler is None:
         raise OnecToolError(f"Неизвестный 1С-инструмент: {tool}")
     try:
+        access = None
+        if tool in _ACCESS_TOOLS and handler is REAL_HANDLERS.get(tool):
+            access = _enforce_actor_access(
+                tool,
+                args,
+                actor_user_id=actor_user_id,
+                actor_fio=actor_fio,
+            )
         if tool in _JWT_ONEC_TOOLS:
-            return handler(args, actor_fio=actor_fio, actor_user_id=actor_user_id)
-        return handler(args)
+            result = handler(args, actor_fio=actor_fio, actor_user_id=actor_user_id)
+        else:
+            result = handler(args)
+        if access is not None and tool == "onec.odata_get" and isinstance(result, dict):
+            from app.services.onec_access import OnecAccessDenied, filter_odata_result
+
+            try:
+                return filter_odata_result(result, access, _entity_from_args(args))
+            except OnecAccessDenied as exc:
+                raise OnecToolError(str(exc)) from exc
+        return result
     except OnecToolError:
         raise
     except ErpTaskError as exc:
