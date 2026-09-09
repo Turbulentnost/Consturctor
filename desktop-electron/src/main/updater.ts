@@ -2,7 +2,8 @@ import { app, BrowserWindow } from 'electron'
 import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
-import { finished } from 'node:stream/promises'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 
 export type UpdateState = 'idle' | 'available' | 'downloading' | 'installing' | 'error'
 
@@ -208,24 +209,24 @@ async function downloadInstaller(asset: GithubAsset, dest: string): Promise<void
   }
   const total = Number(response.headers.get('content-length') || asset.size || 0)
   const file = createWriteStream(dest)
-  const reader = response.body.getReader()
   let received = 0
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (!value || !value.length) continue
-      received += value.length
-      if (!file.write(Buffer.from(value))) {
-        await new Promise<void>((resolve) => file.once('drain', resolve))
-      }
+  const progress = new Transform({
+    transform(chunk, _encoding, callback) {
+      received += chunk.length
       const percent = total > 0 ? Math.max(1, Math.min(99, Math.round((received / total) * 100))) : 0
       setStatus({ state: 'downloading', percent, error: '' })
+      callback(null, chunk)
     }
-    file.end()
-    await finished(file)
+  })
+  try {
+    await pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), progress, file)
   } catch (err) {
-    file.destroy()
+    if (!file.destroyed) file.destroy()
+    try {
+      if (existsSync(dest)) unlinkSync(dest)
+    } catch {
+      /* leftover partial file is ok to keep */
+    }
     throw err
   }
   if (!existsSync(dest)) {

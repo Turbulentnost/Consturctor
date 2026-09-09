@@ -22,6 +22,7 @@ from app.services.regulation_creation.interview import (
     set_sdk_agent_id,
     document_has_full_text,
     followup_blocker,
+    is_process_select_message,
     is_replacement_garbage,
     merge_agent_payload,
     parse_selected_process_ids,
@@ -123,6 +124,14 @@ def test_local_sdk_prompt_omits_attachment_bodies() -> None:
     assert "duties.txt" in prompt
     assert "materials/" in prompt
     assert "Пользователь ведет календарь совещаний." not in prompt
+
+
+def test_process_select_message_accepts_mark_process_numbers() -> None:
+    assert is_process_select_message(
+        "Отметьте номера процессов, которые вы сами выполняете на этой должности"
+    )
+    assert is_process_select_message("Отметьте нужные процессы из списка")
+    assert not is_process_select_message("В какой системе вы готовите повестку?")
 
 
 def test_replacement_garbage_is_detected() -> None:

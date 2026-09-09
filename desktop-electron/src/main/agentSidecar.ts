@@ -230,6 +230,15 @@ export class AgentSidecar {
       const text = String(chunk).trim()
       if (text) console.error(`[agent-sidecar] ${text}`)
     })
+    // Windows pipes use fs WriteStream under the hood. A write after the
+    // child exits becomes ERR_STREAM_DESTROYED and kills the Electron main
+    // process unless these streams have an error listener.
+    const ignorePipeError = (err: Error): void => {
+      console.error(`[agent-sidecar] pipe: ${err.message}`)
+    }
+    child.stdin.on('error', ignorePipeError)
+    child.stdout.on('error', ignorePipeError)
+    child.stderr.on('error', ignorePipeError)
     child.on('error', (err) => {
       this.onEvent({
         type: 'error',
@@ -237,6 +246,11 @@ export class AgentSidecar {
       })
     })
     child.on('exit', (code) => {
+      try {
+        if (!child.stdin.destroyed) child.stdin.destroy()
+      } catch {
+        /* already closed */
+      }
       this.child = null
       this.isReady = false
       if (this.stopping) return
@@ -342,11 +356,16 @@ export class AgentSidecar {
     if (!this.child) {
       this.start()
     }
-    if (!this.isReady || !this.child || !this.child.stdin.writable) {
+    if (!this.isReady || !this.stdinOpen()) {
       this.enqueue(command)
       return true
     }
     return this.write(command)
+  }
+
+  private stdinOpen(): boolean {
+    const stdin = this.child?.stdin
+    return Boolean(stdin && stdin.writable && !stdin.destroyed && !stdin.writableEnded)
   }
 
   private enqueue(command: AgentSidecarMessage): void {
@@ -363,15 +382,22 @@ export class AgentSidecar {
   }
 
   private write(command: AgentSidecarMessage): boolean {
-    if (!this.child || !this.child.stdin.writable) {
+    if (!this.stdinOpen()) {
       this.enqueue(command)
       return true
     }
     try {
-      this.child.stdin.write(JSON.stringify(command) + '\n')
+      const stdin = this.child!.stdin
+      const line = JSON.stringify(command) + '\n'
+      stdin.write(line, (err) => {
+        if (err) console.error(`[agent-sidecar] stdin write failed: ${err.message}`)
+      })
       console.log(`[agent-sidecar] sent ${String(command.type || '')}`)
       return true
-    } catch {
+    } catch (err) {
+      console.error(
+        `[agent-sidecar] stdin write failed: ${err instanceof Error ? err.message : String(err)}`
+      )
       this.enqueue(command)
       return false
     }
@@ -413,13 +439,17 @@ export class AgentSidecar {
       this.restartTimer = null
     }
     if (this.child) {
+      const child = this.child
+      this.child = null
+      this.isReady = false
       try {
-        this.child.stdin.write(JSON.stringify({ type: 'shutdown' }) + '\n')
+        if (child.stdin.writable && !child.stdin.destroyed && !child.stdin.writableEnded) {
+          child.stdin.write(JSON.stringify({ type: 'shutdown' }) + '\n')
+          child.stdin.end()
+        }
       } catch {
         /* ignore */
       }
-      const child = this.child
-      this.child = null
       setTimeout(() => {
         if (!child.killed) child.kill()
       }, 500)

@@ -237,6 +237,23 @@ function registerWindowsLaunchers(): void {
   }
 }
 
+function isBenignStreamError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const code = String((err as { code?: string }).code || '')
+  return code === 'ERR_STREAM_DESTROYED' || code === 'EPIPE'
+}
+
+process.on('uncaughtException', (err) => {
+  if (isBenignStreamError(err)) {
+    console.error(
+      `Constructor ignored stream error: ${err instanceof Error ? err.message : String(err)}`
+    )
+    return
+  }
+  console.error(err)
+  dialog.showErrorBox('Error', err instanceof Error ? `${err.message}\n${err.stack || ''}` : String(err))
+})
+
 const isPrimaryInstance = app.requestSingleInstanceLock()
 if (!isPrimaryInstance) {
   app.quit()

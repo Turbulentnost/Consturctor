@@ -96,6 +96,8 @@ class Settings(BaseSettings):
     auth_bypass_user_id: str = ""
     onec_sql_allowlist: str = ""
     onec_odata_entity_allowlist: str = ""
+    # Before privileged OData, check the signed-in employee's BSP rights in erp_pm.
+    onec_enforce_user_access: bool = True
 
 
 settings = Settings()

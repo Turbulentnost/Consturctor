@@ -282,8 +282,7 @@ function isProcessSelect(structured: Record<string, unknown>, content: string): 
   const selected = pipeline?.selectedProcessIds
   if (Array.isArray(selected) && selected.length > 0) return false
   if (String(pipeline?.stage || '').toLowerCase() === 'select') return true
-  const text = content.toLowerCase()
-  return /отметьте нужн|отметьте процесс|выберите процесс/.test(text) && processChoices(structured).length > 0
+  return isProcessSelectText(content) && processChoices(structured).length > 0
 }
 
 function hasSelectedProcesses(messages: RegulationCreationSession['messages']): boolean {
