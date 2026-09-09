@@ -497,15 +497,18 @@ def parse_selected_process_ids(message: str) -> list[str]:
 
 def is_process_select_message(value: Any) -> bool:
     text = _fold(str(value or ""))
-    return any(
+    if any(
         marker in text
         for marker in (
             "отметьте нужн",
             "отметьте процесс",
+            "отметьте номера",
             "выберите процесс",
             "извлечены процессы",
         )
-    )
+    ):
+        return True
+    return "отметьте" in text and "процесс" in text
 
 
 def selected_process_ids(state: Any) -> list[str]:

@@ -353,7 +353,7 @@ def github_repo_slug() -> str:
     return "Turbulentnost/Consturctor"
 
 
-def installer_artifacts() -> list[Path]:
+def installer_artifacts(*, include_orchestrator: bool = True) -> list[Path]:
     release_dir = ELECTRON_ROOT / "release"
     names = (
         "Constructor-Setup.exe",
@@ -364,25 +364,26 @@ def installer_artifacts() -> list[Path]:
     setup = release_dir / "Constructor-Setup.exe"
     if not setup.is_file():
         raise RuntimeError(f"installer not found: {setup}")
-    for extra in (
-        ELECTRON_ROOT / "build" / "companion" / "Orchestrator-Setup.exe",
-        REPO_ROOT / "orchestrator" / "desktop-electron" / "release" / "Orchestrator-Setup.exe",
-    ):
-        if extra.is_file() and extra not in found:
-            found.append(extra)
-            break
+    if include_orchestrator:
+        for extra in (
+            ELECTRON_ROOT / "build" / "companion" / "Orchestrator-Setup.exe",
+            REPO_ROOT / "orchestrator" / "desktop-electron" / "release" / "Orchestrator-Setup.exe",
+        ):
+            if extra.is_file() and extra not in found:
+                found.append(extra)
+                break
     return found
 
 
-def publish_github_release() -> None:
+def publish_github_release(*, constructor_only: bool = False) -> None:
     gh = tool("gh")
     if not shutil.which(gh) and not shutil.which("gh.exe"):
         raise RuntimeError("GitHub CLI (gh) is not on PATH")
     version = read_package_version()
     tag = f"v{version}"
     repo = github_repo_slug()
-    files = installer_artifacts()
-    print(f"publishing {tag} to {repo}", flush=True)
+    files = installer_artifacts(include_orchestrator=not constructor_only)
+    print(f"publishing {tag} to {repo} constructor_only={constructor_only}", flush=True)
     env = build_env()
     view = subprocess.run(
         [gh, "release", "view", tag, "--repo", repo],
@@ -393,8 +394,47 @@ def publish_github_release() -> None:
         check=False,
     )
     paths = [str(path) for path in files]
+    if constructor_only:
+        title = f"Constructor {version}"
+        notes = (
+            f"Constructor {version} only. Orchestrator is not included and is not updated. "
+            "Constructor-Setup.exe installs Constructor."
+        )
+    else:
+        title = f"Constructor {version} + Orchestrator"
+        notes = (
+            f"Constructor {version} and Orchestrator {version}. "
+            "Constructor-Setup.exe installs both programs. "
+            "An update from either app installs both Constructor and Orchestrator. "
+            "Regulation creation now shows the process checklist after document parse. "
+            "Main process no longer crashes on a destroyed sidecar/update stream."
+        )
     if view.returncode == 0:
         run([gh, "release", "upload", tag, *paths, "--repo", repo, "--clobber"], cwd=REPO_ROOT, env=env)
+        run(
+            [
+                gh,
+                "release",
+                "edit",
+                tag,
+                "--repo",
+                repo,
+                "--title",
+                title,
+                "--notes",
+                notes,
+                "--draft=false",
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+        )
+        if constructor_only:
+            subprocess.run(
+                [gh, "release", "delete-asset", tag, "Orchestrator-Setup.exe", "--repo", repo, "--yes"],
+                cwd=str(REPO_ROOT),
+                env=env,
+                check=False,
+            )
         print(f"updated existing GitHub release {tag}", flush=True)
         return
     run(
@@ -407,16 +447,9 @@ def publish_github_release() -> None:
             "--repo",
             repo,
             "--title",
-            f"Constructor {version} + Orchestrator",
+            title,
             "--notes",
-            (
-                f"Constructor {version} and Orchestrator {version}. "
-                "Constructor-Setup.exe installs both programs. "
-                "An update from either app installs both Constructor and Orchestrator. "
-                "KPI uses a chess clock, writes off an explanation after a long wait, "
-                "and shows the evaluation badge. "
-                "History still shows WORK_RESULT and the meeting-plan mini calendar."
-            ),
+            notes,
         ],
         cwd=REPO_ROOT,
         env=env,
@@ -472,9 +505,9 @@ def write_installer_nsh(has_companion: bool) -> None:
     print(f"nsis include companion={has_companion}", flush=True)
 
 
-def build_electron(dir_only: bool) -> None:
+def build_electron(dir_only: bool, *, constructor_only: bool = False) -> None:
     companion = ELECTRON_ROOT / "build" / "companion" / "Orchestrator-Setup.exe"
-    write_installer_nsh(companion.is_file())
+    write_installer_nsh(companion.is_file() and not constructor_only)
     env = build_env()
     run([tool("npm", env=env), "run", "build"], cwd=ELECTRON_ROOT, env=env)
     cmd = [tool("npx", env=env), "electron-builder", "--publish", "never"]
@@ -497,6 +530,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Build Orchestrator first and bundle it into the Constructor installer",
     )
+    parser.add_argument(
+        "--constructor-only",
+        action="store_true",
+        help="Do not bundle or publish Orchestrator",
+    )
     parser.add_argument("--publish", action="store_true", help="Upload the built installer to GitHub Releases")
     parser.add_argument(
         "--publish-only",
@@ -505,8 +543,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.with_orchestrator and args.constructor_only:
+        raise RuntimeError("choose either --with-orchestrator or --constructor-only")
+
     if args.publish_only:
-        publish_github_release()
+        publish_github_release(constructor_only=args.constructor_only)
         return 0
 
     prepare_env(args.backend_url)
@@ -516,11 +557,11 @@ def main(argv: list[str] | None = None) -> int:
     prepare_node(args.skip_node, download_node=args.download_node)
     prepare_python(args.skip_python)
     prepare_playwright(args.skip_browsers)
-    build_electron(args.dir)
+    build_electron(args.dir, constructor_only=args.constructor_only)
     if args.publish:
         if args.dir:
             raise RuntimeError("refusing to publish a directory build; omit --dir")
-        publish_github_release()
+        publish_github_release(constructor_only=args.constructor_only)
     return 0
 
 

@@ -134,7 +134,10 @@ export function formatRegulationMessageTime(value: string): string {
 
 export function isProcessSelectText(content: string): boolean {
   const text = (content || '').toLowerCase()
-  return /отметьте нужн|отметьте процесс|выберите процесс|извлечены процессы/.test(text)
+  if (/отметьте нужн|отметьте процесс|отметьте номера|выберите процесс|извлечены процесс/.test(text)) {
+    return true
+  }
+  return /отметьте/.test(text) && /процесс/.test(text)
 }
 
 export function hasSelectedProcessesText(content: string): boolean {
