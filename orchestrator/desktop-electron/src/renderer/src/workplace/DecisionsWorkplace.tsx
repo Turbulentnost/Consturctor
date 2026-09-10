@@ -12,6 +12,7 @@ import { fileExt, formatSize } from '../pages/filesGrouping'
 import { isUserFacingResultFile } from './preparedDecisions'
 import {
   extractToolDecisions,
+  feedItemsToRunnerEvents,
   isDecisionTool,
   toolIntent,
   type ToolDecisionItem
@@ -507,6 +508,31 @@ export function DecisionsTab({
   const [notifyPrefs, setNotifyPrefs] = useState<Record<string, boolean>>(readNotifyPrefs)
 
   const agentKey = useMemo(() => agents.map((item) => item.workflowId).join('|'), [agents])
+  const [pollTick, setPollTick] = useState(0)
+
+  const runActivityKey = useMemo(
+    () =>
+      Object.entries(runs.entries)
+        .map(([wid, entry]) => {
+          const state = entry.state
+          return [
+            wid,
+            entry.backendRunId,
+            state.activeRunId,
+            state.running,
+            state.items.length,
+            state.status,
+            state.pendingHitl?.requestId || ''
+          ].join(':')
+        })
+        .join('|'),
+    [runs.entries]
+  )
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setPollTick((value) => value + 1), 30000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     if (!agentKey) {
@@ -526,8 +552,10 @@ export function DecisionsTab({
         status: string
         meetings: MiniMeeting[]
       }> = []
+      const seenRuns = new Set<string>()
       try {
         const collectedFiles: Record<string, WorkflowFileItem[]> = {}
+        const liveEntries = runs.entries
         const jobs = agentsRef.current.slice(0, 40).map(async (agent) => {
           const [history, workflowFiles] = await Promise.all([
             api.listAgentRuns(agent.workflowId).catch(() => [] as AgentRunHistoryItem[]),
@@ -535,10 +563,53 @@ export function DecisionsTab({
           ])
           const visibleFiles = workflowFiles.filter(isUserFacingResultFile)
           collectedFiles[agent.workflowId] = visibleFiles
+
+          const live = liveEntries[agent.workflowId]
+          if (live?.state.items.length) {
+            const liveEvents = feedItemsToRunnerEvents(live.state.items)
+            const liveRunId =
+              live.backendRunId || live.state.activeRunId || `live:${agent.workflowId}`
+            const liveAt = new Date(live.state.runningSinceMs || Date.now()).toISOString()
+            if (liveEvents.length) {
+              seenRuns.add(`${agent.workflowId}:${liveRunId}`)
+              const extracted = extractToolDecisions(liveEvents, {
+                workflowId: agent.workflowId,
+                agentName: agent.name,
+                runId: liveRunId,
+                at: liveAt,
+                runClosed: !live.state.running
+              })
+              for (const item of extracted) {
+                item.files = pickFilesForDecision(item, visibleFiles)
+              }
+              collectedTools.push(...extracted)
+            }
+            const cleaned = cleanRunResult({
+              answer: '',
+              events: liveEvents,
+              status: live.state.running ? 'running' : 'ok'
+            })
+            const meetings = meetingsFromEvents(liveEvents)
+            if (cleaned.text || meetings.length) {
+              collectedResults.push({
+                workflowId: agent.workflowId,
+                agentName: agent.name,
+                runId: liveRunId,
+                at: liveAt,
+                text: cleaned.text,
+                status: live.state.running ? 'running' : 'ok',
+                meetings
+              })
+            }
+          }
+
           const matched = history
             .filter((run) => inRange(runStamp(run), fromDay, toDay))
-            .slice(0, 5)
+            .slice(0, 10)
           for (const run of matched) {
+            const runKey = `${agent.workflowId}:${run.runId}`
+            if (seenRuns.has(runKey)) continue
+            seenRuns.add(runKey)
             const detail = await api.getAgentRunDetail(agent.workflowId, run.runId).catch(() => null)
             const events: AgentRunnerEvent[] = detail?.events || []
             const at = run.finishedAt || run.startedAt || ''
@@ -589,7 +660,7 @@ export function DecisionsTab({
     return () => {
       alive = false
     }
-  }, [agentKey, fromDay, toDay])
+  }, [agentKey, fromDay, toDay, runActivityKey, pollTick, runs.entries])
 
   const livePending = useMemo(() => {
     if (!inRange(new Date(), fromDay, toDay)) return []

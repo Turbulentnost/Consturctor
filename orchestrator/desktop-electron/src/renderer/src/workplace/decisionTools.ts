@@ -1,4 +1,5 @@
 import type { AgentRunnerEvent, WorkflowFileItem } from '../api/types'
+import type { FeedItem } from '../components/agentfeed/types'
 import { toolArgHint, toolLabel } from '../components/agentfeed/labels'
 
 const NEVER_CONFIRM = new Set(['notify.send', 'notify', 'code.write_python', 'code.run_python'])
@@ -24,6 +25,7 @@ const READ_EXACT = new Set([
   'onec.erp_subordinate_tasks',
   'onec.docflow_tasks',
   'onec.meeting_service_notes',
+  'onec.meeting_protocols',
   'agent.wait',
   'turboproject',
   'users.list',
@@ -151,6 +153,36 @@ export interface ToolDecisionItem {
 
 function eventTool(event: AgentRunnerEvent): string {
   return String(event.tool || toolFromText(String(event.text || event.message || ''))).trim()
+}
+
+/** Rebuild runner events from a live feed (for Решения while run is still open). */
+export function feedItemsToRunnerEvents(items: FeedItem[]): AgentRunnerEvent[] {
+  const events: AgentRunnerEvent[] = []
+  for (const item of items) {
+    if (item.kind !== 'tool') continue
+    events.push({
+      type: 'tool',
+      tool: item.tool,
+      title: item.title,
+      requestId: item.requestId,
+      arguments: item.arguments,
+      result: item.result,
+      error: item.error ? item.summary || item.statusText : undefined,
+      status: item.done ? (item.error ? 'error' : 'ok') : 'pending',
+      ok: item.done && !item.error
+    })
+    if (!item.done && item.requestId) {
+      events.push({
+        type: 'hitl',
+        tool: item.tool,
+        title: item.title,
+        requestId: item.requestId,
+        arguments: item.arguments,
+        confirmOnly: true
+      })
+    }
+  }
+  return events
 }
 
 export function extractToolDecisions(
