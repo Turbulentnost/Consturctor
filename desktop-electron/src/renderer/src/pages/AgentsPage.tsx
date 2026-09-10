@@ -62,13 +62,17 @@ interface AgentsPageProps {
   onOpenRun: (workflowId: string, runId: string, autoStart?: boolean) => void
   onFormDraftSuggestion: (draftId: string, agentId: string) => void
   onContinueDraft: (draftId: string) => void
+  onContinueForming?: (workflowId: string, title: string) => void
+  onOpenSchedule?: (workflowId: string, title: string) => void
 }
 
 export function AgentsPage({
   onCreateAgent,
   onOpenRun,
   onFormDraftSuggestion,
-  onContinueDraft
+  onContinueDraft,
+  onContinueForming,
+  onOpenSchedule
 }: AgentsPageProps): React.JSX.Element {
   const [board, setBoard] = useState<WorkflowBoard>(EMPTY_BOARD)
   const [drafts, setDrafts] = useState<AgentDraft[]>([])
@@ -178,6 +182,7 @@ export function AgentsPage({
   const createdTitles = useMemo(() => {
     const titles = new Set<string>()
     for (const item of workflowAgents) {
+      if (item.status === 'draft') continue
       if (item.title.trim()) titles.add(normalizeTitle(item.title))
     }
     return titles
@@ -197,7 +202,9 @@ export function AgentsPage({
   }
 
   const visibleAgents = useMemo(() => {
-    let items = [...board.agents]
+    let items = [...board.agents].sort(
+      (left, right) => Number(right.kind === 'draft') - Number(left.kind === 'draft')
+    )
     if (statusFilter === 'active') {
       items = items.filter(
         (item) => item.kind === 'workflow' && !item.paused && item.status !== 'draft'
@@ -208,7 +215,8 @@ export function AgentsPage({
       items = items.filter(
         (item) => item.status === 'needs_attention' || item.lastRunStatus === 'error'
       )
-    else if (statusFilter === 'draft') items = items.filter((item) => item.kind === 'draft')
+    else if (statusFilter === 'draft')
+      items = items.filter((item) => item.kind === 'draft' || item.status === 'draft')
     if (search.trim()) items = items.filter(matchesSearch)
     return items
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -242,6 +250,11 @@ export function AgentsPage({
   }
 
   function onSchedule(id: string): void {
+    const agent = board.agents.find((item) => item.id === id)
+    if (onOpenSchedule) {
+      onOpenSchedule(id, agent?.title || 'ИИ-агент')
+      return
+    }
     void runAction(async () => {
       await api.proposeScheduleDraft(id)
     }, 'Черновик расписания создан')
@@ -430,7 +443,11 @@ export function AgentsPage({
                     selected={agent.id === selectedAgentId}
                     onSelect={selectAgent}
                     onRun={(id) => onOpenRun(id, '', true)}
-                    onOpen={(id) => onOpenRun(id, '')}
+                    onOpen={(id, title) =>
+                      agent.status === 'draft' && onContinueForming
+                        ? onContinueForming(id, title)
+                        : onOpenRun(id, '')
+                    }
                     onHistory={(id, title) => void onHistory(id, title)}
                     onSchedule={onSchedule}
                     onPause={onPause}

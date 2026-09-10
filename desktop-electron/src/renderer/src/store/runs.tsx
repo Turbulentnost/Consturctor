@@ -41,6 +41,8 @@ interface StartRunOptions {
   shownMessage?: string
   filePaths?: string[]
   resumeAgentId?: string
+  /** Cancel the live run and start a new one instead of focusing it. */
+  forceRestart?: boolean
 }
 
 export interface RunStore {
@@ -151,11 +153,16 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
   }, [fillTitle])
 
   const startRun = useCallback((opts: StartRunOptions): string => {
-    const { workflowId, title, message, shownMessage, filePaths, resumeAgentId } = opts
+    const { workflowId, title, message, shownMessage, filePaths, resumeAgentId, forceRestart } = opts
     const existing = entriesRef.current[workflowId]
     if (existing && existing.state.running) {
-      // The same agent cannot run twice at once - focus the live run instead.
-      return existing.state.activeRunId || ''
+      if (!forceRestart) {
+        // The same agent cannot run twice at once - focus the live run instead.
+        return existing.state.activeRunId || ''
+      }
+      if (existing.state.activeRunId) {
+        agentClient.cancel(existing.state.activeRunId)
+      }
     }
     const resume = resumeAgentId || existing?.resumeAgentId || ''
     const runId = agentClient.start({
@@ -177,7 +184,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         pendingQuestion: null,
         pendingHitl: null,
         running: true,
-        status: 'Агент запускается…',
+        status: forceRestart ? 'Перезапускаю агент…' : 'Агент запускается…',
         activeRunId: runId
       }
       return {

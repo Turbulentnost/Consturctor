@@ -27,6 +27,12 @@ export interface RunCommand {
   triggerId?: string
   resumeAgentId?: string
   filePaths?: string[]
+  /** Snapshot of workplace UI state for the personal orchestrator agent. */
+  appContext?: string
+  /** One-shot eval: do not resume the live SDK agent or write history. */
+  fresh?: boolean
+  /** Replace an in-flight run for the same workflow (UI «Запуск агента»). */
+  forceRestart?: boolean
 }
 
 export interface CheckTriggerCommand {

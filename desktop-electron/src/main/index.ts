@@ -96,7 +96,7 @@ function loadConfig(): {
   const backendUrl = (
     process.env.BACKEND_URL ||
     env.BACKEND_URL ||
-    'http://127.0.0.1:7812'
+    'http://192.168.1.157:7812'
   ).replace(/\/+$/, '')
   const flag = (process.env.CONSTRUCTOR_TEST_USER || env.CONSTRUCTOR_TEST_USER || '')
     .trim()
@@ -384,6 +384,18 @@ function buildUrl(path: string, params?: RequestOptions['params']): string {
   return query ? `${base}?${query}` : base
 }
 
+function connectionErrorMessage(err: unknown): string {
+  const base = CONFIG.backendUrl
+  if (err instanceof Error && err.name === 'AbortError') {
+    return `Backend не ответил вовремя (${base}). Запустите orchestrator\\backend\\run_dev.bat и повторите вход.`
+  }
+  const cause = err instanceof Error ? err.message : String(err)
+  if (/ECONNREFUSED|ECONNRESET|fetch failed|Failed to fetch|NetworkError/i.test(cause)) {
+    return `Backend не запущен (${base}). Запустите orchestrator\\backend\\run_dev.bat и повторите вход.`
+  }
+  return `Не удалось подключиться к backend (${base})`
+}
+
 function extractDetail(status: number, data: unknown): string {
   if (data && typeof data === 'object') {
     const detail = (data as Record<string, unknown>).detail
@@ -447,10 +459,7 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
     }
     return { ok: true, status: response.status, data }
   } catch (err) {
-    const message =
-      err instanceof Error && err.name === 'AbortError'
-        ? 'Превышено время ожидания ответа backend'
-        : `Не удалось подключиться к backend (${CONFIG.backendUrl})`
+    const message = connectionErrorMessage(err)
     return { ok: false, status: 0, error: message }
   } finally {
     clearTimeout(timer)
@@ -495,10 +504,7 @@ async function handleUpload(_evt: unknown, opts: UploadOptions) {
     }
     return { ok: true, status: response.status, data }
   } catch (err) {
-    const message =
-      err instanceof Error && err.name === 'AbortError'
-        ? 'Превышено время ожидания ответа backend'
-        : `Не удалось подключиться к backend (${CONFIG.backendUrl})`
+    const message = connectionErrorMessage(err)
     return { ok: false, status: 0, error: message }
   } finally {
     clearTimeout(timer)
@@ -653,7 +659,7 @@ async function handleCreateWorkflow(
     }
     return { ok: true, status: response.status, data }
   } catch {
-    return { ok: false, status: 0, error: `Не удалось подключиться к backend (${CONFIG.backendUrl})` }
+    return { ok: false, status: 0, error: connectionErrorMessage(err) }
   }
 }
 
@@ -755,7 +761,7 @@ async function handleStream(
     }
     return { ok: true, status: 200, data: finalPayload }
   } catch {
-    return { ok: false, status: 0, error: `Не удалось подключиться к backend (${CONFIG.backendUrl})` }
+    return { ok: false, status: 0, error: connectionErrorMessage(err) }
   }
 }
 

@@ -151,6 +151,13 @@ def test_effective_run_status_success_needs_result() -> None:
     assert effective_run_status("started", "", in_flight=False) == "canceled"
     assert effective_run_status("error", SDK_DEAD_ANSWER) == "canceled"
     assert effective_run_status("error", "инструмент вернул 500") == "error"
+    assert (
+        effective_run_status(
+            "error",
+            "## WORK_RESULT\nУстный список совещаний\nTESTS: PASS",
+        )
+        == "ok"
+    )
 
 
 def test_slim_run_events_keeps_calendar_after_thinking_overflow() -> None:

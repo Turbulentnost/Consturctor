@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { ApiError, type LoginResult } from '../api/types'
 import { rememberPreference, savedFio, setRememberPreference } from '../store/session'
@@ -34,6 +34,16 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
   const [remember, setRemember] = useState(rememberPreference())
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [waitSec, setWaitSec] = useState(0)
+
+  useEffect(() => {
+    if (!busy) {
+      setWaitSec(0)
+      return
+    }
+    const timer = window.setInterval(() => setWaitSec((sec) => sec + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [busy])
 
   async function submit(): Promise<void> {
     setError('')
@@ -62,8 +72,8 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
     <div className="login-wrap">
       <div className="login-bg" />
       <div className="login-card">
-        <img className="login-logo" src={logoUrl} alt="Orchestrator" />
-        <div className="brand">Orchestrator</div>
+        <img className="login-logo" src={logoUrl} alt="Оркестратор" />
+        <div className="brand">Оркестратор</div>
         <div className="subtitle">Оркестратор должности</div>
         <div className="hint">Вход через учётную запись 1С · пилот · 2 агента</div>
 
@@ -127,7 +137,11 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
         <div className="error">{error}</div>
 
         <button className="btn-light" onClick={submit} disabled={busy}>
-          {busy ? 'Входим...' : 'Войти'}
+          {busy
+            ? waitSec >= 3
+              ? `Входим... ${waitSec}с, ждём erp_pm`
+              : 'Входим...'
+            : 'Войти'}
         </button>
       </div>
     </div>

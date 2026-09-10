@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Sidebar, type PageKey } from './components/Sidebar'
+import { APP_TITLE, PAGE_LABELS, Sidebar, type PageKey } from './components/Sidebar'
 import { UserMenu } from './components/UserMenu'
 import { LoginPage } from './pages/LoginPage'
 import { MessengerPage } from './pages/MessengerPage'
@@ -27,7 +27,7 @@ import { RunBannerCarousel, type BannerEntry } from './components/RunBannerCarou
 import { useRuns, deriveLatestOutput } from './store/runs'
 import { isInFlightRunStatus, isLiveRunState } from './store/liveRun'
 import { ChatDock } from './workplace/ChatDock'
-import { isPersonalAgentWorkflowId } from './workplace/personalAgent'
+import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import {
   DecisionsTab,
   DiagnosticsPage,
@@ -73,9 +73,9 @@ type View =
   | { kind: 'diagnostics' }
   | { kind: 'files'; workflowId?: string; title?: string }
   | { kind: 'passport'; workflowId: string; title: string; tab?: PassportTab }
-  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean }
+  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string }
   | { kind: 'history'; workflowId: string; title: string; runId?: string }
-  | { kind: 'schedule'; workflowId: string; title: string }
+  | { kind: 'schedule'; workflowId: string; title: string; published?: boolean }
 
 function fioKey(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -85,6 +85,20 @@ function fioEquals(left: string, right: string): boolean {
   const a = fioKey(left)
   const b = fioKey(right)
   return Boolean(a) && Boolean(b) && (a === b || a.startsWith(b) || b.startsWith(a))
+}
+
+function windowTitle(view: View, signedIn: boolean): string {
+  if (!signedIn) return APP_TITLE
+  if (view.kind === 'tab') return `${PAGE_LABELS[view.key]} — ${APP_TITLE}`
+  if (view.kind === 'chat') return `${view.thread.title || 'Чат'} — ${APP_TITLE}`
+  if (view.kind === 'tickets') return `Заявки — ${APP_TITLE}`
+  if (view.kind === 'diagnostics') return `Диагностика — ${APP_TITLE}`
+  if (view.kind === 'files') return `${view.title ? `${view.title}: файлы` : 'Файлы'} — ${APP_TITLE}`
+  if (view.kind === 'passport') return `Паспорт: ${view.title || 'агент'} — ${APP_TITLE}`
+  if (view.kind === 'agentrun') return `${view.title || 'Запуск'} — ${APP_TITLE}`
+  if (view.kind === 'history') return `История: ${view.title || 'агент'} — ${APP_TITLE}`
+  if (view.kind === 'schedule') return `Расписание: ${view.title || 'агент'} — ${APP_TITLE}`
+  return APP_TITLE
 }
 
 function findExistingChat(threads: ChatThread[], name: string, peerId?: string): ChatThread | undefined {
@@ -107,6 +121,10 @@ export function App(): React.JSX.Element {
   const kickedRef = useRef(false)
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
   const runs = useRuns()
+
+  useEffect(() => {
+    document.title = booting ? APP_TITLE : windowTitle(view, Boolean(user))
+  }, [booting, user, view])
 
   useEffect(() => {
     let done = false
@@ -236,6 +254,7 @@ export function App(): React.JSX.Element {
 
   async function resetToLogin(): Promise<void> {
     void window.api.stopNotifications?.()
+    runs.clearAll()
     clearSession(true)
     clearComCredentials()
     api.setToken(null)
@@ -243,6 +262,10 @@ export function App(): React.JSX.Element {
     setAvatarUrl(null)
     setView({ kind: 'tab', key: 'today' })
     setUser(null)
+  }
+
+  function onLogout(): void {
+    void resetToLogin()
   }
 
   function flash(text: string): void {
@@ -367,7 +390,7 @@ export function App(): React.JSX.Element {
     return (
       <div className="app-root boot-screen">
         <div className="spinner spinner-on-dark" />
-        <div className="boot-label">Загрузка Orchestrator...</div>
+        <div className="boot-label">Загрузка оркестратора...</div>
       </div>
     )
   }
@@ -392,7 +415,12 @@ export function App(): React.JSX.Element {
       return
     }
     if (isPersonalAgentWorkflowId(workflowId)) {
-      setView({ kind: 'agentrun', workflowId, title: title || 'Базовый агент', autoStart: false })
+      setView({
+        kind: 'agentrun',
+        workflowId,
+        title: title || 'Оркестратор',
+        autoStart: false
+      })
       return
     }
     const nextTitle = title || 'ИИ-агент'
@@ -402,7 +430,7 @@ export function App(): React.JSX.Element {
       return
     }
     if (runId) {
-      // Открываем историю сразу, чтобы кнопка "Открыть прогон" реагировала
+      // Открываем историю сразу, чтобы кнопка "Открыть запуск" реагировала
       // мгновенно даже при медленном backend. Детали проверим в фоне.
       setView({ kind: 'history', workflowId, title: nextTitle, runId })
       void (async () => {
@@ -472,6 +500,8 @@ export function App(): React.JSX.Element {
           workflowId={view.workflowId}
           title={view.title}
           autoStart={view.autoStart}
+          initialMessage={view.initialMessage}
+          appContext={view.appContext}
           onBack={() => setView({ kind: 'tab', key: lastTab })}
           onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
         />
@@ -507,6 +537,7 @@ export function App(): React.JSX.Element {
         <AgentSchedulePage
           workflowId={view.workflowId}
           title={view.title}
+          published={Boolean(view.published)}
           onBack={() => setView({ kind: 'tab', key: lastTab })}
           onNext={() => setView({ kind: 'tab', key: lastTab })}
         />
@@ -522,7 +553,9 @@ export function App(): React.JSX.Element {
             onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
             onFiles={(workflowId, title) => openAgentFiles(workflowId, title)}
             onHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
-            onSchedule={(workflowId, title) => setView({ kind: 'schedule', workflowId, title })}
+            onSchedule={(workflowId, title) =>
+              setView({ kind: 'schedule', workflowId, title, published: true })
+            }
           />
         )
       case 'calendar':
@@ -532,7 +565,9 @@ export function App(): React.JSX.Element {
             onOpenRun={(workflowId, runId, autoStart) =>
               void openAgentRun(workflowId, runId, Boolean(autoStart))
             }
-            onOpenSchedule={(workflowId, title) => setView({ kind: 'schedule', workflowId, title })}
+            onOpenSchedule={(workflowId, title) =>
+              setView({ kind: 'schedule', workflowId, title, published: true })
+            }
             onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
           />
         )
@@ -568,6 +603,18 @@ export function App(): React.JSX.Element {
             onOpenMetrics={() => setView({ kind: 'tab', key: 'metrics' })}
             onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
             onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
+            onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
+            onAskOrchestrator={(message, appContext) => {
+              const workflowId = personalAgentWorkflowId(activeUser.id || '')
+              setView({
+                kind: 'agentrun',
+                workflowId,
+                title: 'Оркестратор',
+                autoStart: false,
+                initialMessage: message,
+                appContext
+              })
+            }}
           />
         )
     }
@@ -592,9 +639,10 @@ export function App(): React.JSX.Element {
   }
 
   return (
-    <div className="app-root">
+    <div className={view.kind === 'tab' && view.key === 'today' ? 'app-root shell-today' : 'app-root'}>
       <Sidebar
         active={activeKey}
+        light={view.kind === 'tab' && view.key === 'today'}
         activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
         currentUserId={user.id || ''}
         onNavigate={(key) => {
@@ -613,7 +661,7 @@ export function App(): React.JSX.Element {
               avatarUrl={avatarUrl}
               unread={unread}
               onUnreadChange={setUnread}
-              onLogout={() => void resetToLogin()}
+              onLogout={onLogout}
               showLogout={showLogout}
               onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
             />

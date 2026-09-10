@@ -5,8 +5,8 @@ from __future__ import annotations
 import math
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session, load_only
 
 from app.models.agent_run import AgentRun
 from app.models.regulation import AgentDraft
@@ -31,6 +31,20 @@ def _stamp_iso(value: datetime | None) -> str:
 
 _MAX_SLOTS_PER_TRIGGER = 800
 _EVENT_HORIZON = timedelta(days=40)
+# Calendar never renders run events, so the heavy JSON column stays on the server.
+_RUN_BOARD_COLUMNS = (
+    AgentRun.id,
+    AgentRun.workflow_id,
+    AgentRun.message,
+    AgentRun.status,
+    AgentRun.answer,
+    AgentRun.source,
+    AgentRun.trigger_id,
+    AgentRun.trigger_kind,
+    AgentRun.trigger_reason,
+    AgentRun.started_at,
+    AgentRun.finished_at,
+)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -59,6 +73,44 @@ def _one_line(value: str, limit: int = 90) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _is_noisy_event_text(value: str) -> bool:
+    text = (value or "").strip()
+    if not text:
+        return True
+    folded = text.casefold()
+    if folded.startswith("{") or folded.startswith("["):
+        return True
+    if "errno" in folded or "traceback" in folded or '"verdict"' in folded:
+        return True
+    if "ответь только json" in folded:
+        return True
+    if folded.startswith("агент уже выполняется"):
+        return True
+    return False
+
+
+def _run_visible_on_board(run: AgentRun) -> bool:
+    from app.services.agent_runs import (
+        OVERLAP_CANCEL_ANSWER,
+        STALE_STARTED_ANSWER,
+        effective_run_status,
+        has_run_result,
+    )
+
+    answer = str(run.answer or "").strip()
+    folded = answer.casefold()
+    if folded.startswith(OVERLAP_CANCEL_ANSWER.casefold()):
+        return False
+    raw = (run.status or "").strip().lower()
+    in_flight = raw in {"started", "running"} and run.finished_at is None
+    effective = effective_run_status(run.status or "", answer, in_flight=in_flight)
+    if effective != "canceled":
+        return True
+    if folded.startswith(STALE_STARTED_ANSWER.casefold()):
+        return True
+    return has_run_result(answer)
+
+
 def _agent_description(row: Workflow) -> str:
     plan = row.plan_json if isinstance(row.plan_json, dict) else {}
     goal = str(plan.get("goal") or "").strip()
@@ -82,6 +134,8 @@ def _run_event_status(status: str) -> str:
         return "error"
     if raw in {"canceled", "cancelled"}:
         return "canceled"
+    if raw in {"waiting_human", "hitl", "waiting"}:
+        return "waiting_human"
     return "running"
 
 
@@ -220,7 +274,10 @@ def _event_from_run(
     trigger_id: str = "",
     is_future: bool = False,
 ) -> CalendarEvent:
-    subtitle = _one_line(run.answer or run.trigger_reason or run.message or "", 70)
+    subtitle = _one_line(run.trigger_reason or run.message or "", 70)
+    if not subtitle or _is_noisy_event_text(subtitle):
+        answer = _one_line(run.answer or "", 70)
+        subtitle = "" if _is_noisy_event_text(answer) else answer
     return CalendarEvent(
         id=event_id or f"run:{run.id}",
         workflow_id=workflow.id,
@@ -252,6 +309,42 @@ def _next_run_label(*, kind: str, next_at: datetime | None, paused: bool, condit
     return ""
 
 
+def _latest_runs(
+    db: Session, *, user_id: str, workflow_ids: list[str]
+) -> dict[str, AgentRun]:
+    """Latest run per workflow without loading the whole run history."""
+    if not workflow_ids:
+        return {}
+    stamps = db.execute(
+        select(AgentRun.workflow_id, func.max(AgentRun.started_at))
+        .where(AgentRun.user_id == user_id, AgentRun.workflow_id.in_(workflow_ids))
+        .group_by(AgentRun.workflow_id)
+    ).all()
+    if not stamps:
+        return {}
+    rows = (
+        db.execute(
+            select(AgentRun)
+            .options(load_only(*_RUN_BOARD_COLUMNS))
+            .where(
+                AgentRun.user_id == user_id,
+                or_(
+                    *(
+                        and_(AgentRun.workflow_id == wf_id, AgentRun.started_at == stamp)
+                        for wf_id, stamp in stamps
+                    )
+                ),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    latest: dict[str, AgentRun] = {}
+    for row in rows:
+        latest.setdefault(row.workflow_id, row)
+    return latest
+
+
 def get_workflow_board(
     db: Session,
     *,
@@ -261,7 +354,8 @@ def get_workflow_board(
     workflow_id: str = "",
 ) -> WorkflowBoard:
     now = datetime.now(timezone.utc)
-    fail_stale_started_runs(db, user_id=user_id)
+    # notify=False: pushing a live board here would recompute this very board.
+    fail_stale_started_runs(db, user_id=user_id, notify=False)
     from app.services.workflows.service import repair_deleted_workflows
 
     repair_deleted_workflows(db, user_id=user_id)
@@ -273,15 +367,27 @@ def get_workflow_board(
 
     workflows = (
         db.query(Workflow)
-        .filter(Workflow.user_id == user_id)
+        .filter(Workflow.user_id == user_id, Workflow.phase == "done")
         .order_by(Workflow.updated_at.desc())
         .all()
     )
-    published = [
+    forming = (
+        db.query(Workflow)
+        .filter(
+            Workflow.user_id == user_id,
+            Workflow.phase.in_(("document", "designed", "designing", "clarify")),
+        )
+        .order_by(Workflow.updated_at.desc())
+        .all()
+    )
+    forming = [
         row
-        for row in workflows
-        if (row.phase or "") == "done" and not workflow_is_deleted(row)
+        for row in forming
+        if not workflow_is_deleted(row)
+        and isinstance(row.local_run, dict)
+        and row.local_run.get("unformed")
     ]
+    published = [row for row in workflows if not workflow_is_deleted(row)]
     published_ids = [row.id for row in published]
     history_ids = published_ids
     wf_by_id = {row.id: row for row in published}
@@ -298,20 +404,27 @@ def get_workflow_board(
     for item in triggers:
         triggers_by_wf.setdefault(item.workflow_id, []).append(item)
 
+    scoped_ids = [wanted] if wanted and wanted in wf_by_id else (history_ids or ["__none__"])
+    # Calendar only needs runs inside the requested window.
     runs = list(
         db.execute(
             select(AgentRun)
+            .options(load_only(*_RUN_BOARD_COLUMNS))
             .where(
                 AgentRun.user_id == user_id,
-                AgentRun.workflow_id.in_(history_ids or ["__none__"]),
+                AgentRun.workflow_id.in_(scoped_ids),
+                AgentRun.started_at >= start,
+                AgentRun.started_at <= end,
             )
             .order_by(AgentRun.started_at.desc())
         ).scalars().all()
     )
-    last_run: dict[str, AgentRun] = {}
+    runs_by_wf: dict[str, list[AgentRun]] = {}
     for item in runs:
-        if item.workflow_id not in last_run:
-            last_run[item.workflow_id] = item
+        runs_by_wf.setdefault(item.workflow_id, []).append(item)
+    # «Последний запуск» on the card can be older than the window, so it is
+    # fetched separately instead of scanning the whole run history.
+    last_run = _latest_runs(db, user_id=user_id, workflow_ids=history_ids)
 
     agents: list[BoardAgent] = []
     events: list[CalendarEvent] = []
@@ -372,20 +485,16 @@ def get_workflow_board(
                 trigger_kind=kind,
                 paused=paused,
                 phase=row.phase or "",
+                document_name=(row.document_name or "").strip(),
             )
         )
 
         if wanted and wanted != row.id:
             continue
 
-        wf_runs: list[AgentRun] = []
-        for run in runs:
-            if run.workflow_id != row.id:
-                continue
-            stamp = _as_utc(run.started_at)
-            if stamp is None or stamp < start or stamp > end:
-                continue
-            wf_runs.append(run)
+        wf_runs = [
+            run for run in runs_by_wf.get(row.id, []) if _as_utc(run.started_at) is not None
+        ]
         used_run_ids: set[str] = set()
         for item in timed:
             interval = int(item.interval_seconds or 0)
@@ -432,15 +541,16 @@ def get_workflow_board(
                         pick = _pick_slot_run(group)
                         for run in group:
                             used_run_ids.add(run.id)
-                        events.append(
-                            _event_from_run(
-                                workflow=row,
-                                run=pick,
-                                start_at=stamp,
-                                event_id=f"slot:{item.id}:{int(stamp.timestamp())}",
-                                trigger_id=item.id,
+                        if _run_visible_on_board(pick):
+                            events.append(
+                                _event_from_run(
+                                    workflow=row,
+                                    run=pick,
+                                    start_at=stamp,
+                                    event_id=f"slot:{item.id}:{int(stamp.timestamp())}",
+                                    trigger_id=item.id,
+                                )
                             )
-                        )
                         continue
                     current_fire = _as_utc(item.fire_at)
                     pending = bool(
@@ -511,23 +621,43 @@ def get_workflow_board(
                 pick = _pick_slot_run(group)
                 for run in group:
                     used_run_ids.add(run.id)
-                events.append(
-                    _event_from_run(
-                        workflow=row,
-                        run=pick,
-                        start_at=slot_start,
-                        event_id=f"slot:{item.id}:{int(slot_start.timestamp())}",
-                        trigger_id=item.id,
+                if _run_visible_on_board(pick):
+                    events.append(
+                        _event_from_run(
+                            workflow=row,
+                            run=pick,
+                            start_at=slot_start,
+                            event_id=f"slot:{item.id}:{int(slot_start.timestamp())}",
+                            trigger_id=item.id,
+                        )
                     )
-                )
 
         for run in wf_runs:
             if run.id in used_run_ids:
+                continue
+            if not _run_visible_on_board(run):
                 continue
             stamp = _as_utc(run.started_at)
             if stamp is None:
                 continue
             events.append(_event_from_run(workflow=row, run=run, start_at=stamp))
+
+    for row in forming:
+        agents.insert(
+            0,
+            BoardAgent(
+                id=row.id,
+                kind="workflow",
+                title=row.title or "ИИ-агент",
+                description=_one_line((row.notes or row.document_text or "")[:200])
+                or "Не сформирован — ответьте на вопросы в студии",
+                status="draft",
+                next_run_label="Не сформирован",
+                trigger_summary="Откройте агента и ответьте на вопросы",
+                phase=row.phase or "document",
+                document_name=(row.document_name or "").strip(),
+            ),
+        )
 
     drafts = (
         db.query(AgentDraft)

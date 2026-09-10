@@ -39,16 +39,20 @@ class CalendarShowMeetingsTool(BaseTool):
                 name="calendar.show_meetings",
                 title="Показать план совещаний",
                 description=(
-                    "Рисует итоговый план совещаний отдельной мини-формой календаря "
-                    "в ответе агента (её можно раскрыть модальным окном). "
+                    "Рисует итоговый план совещаний карточкой для доклада "
+                    "(тема целиком, участники, кто кого замещает). "
                     "Не ставит совещания на общую вкладку «Календарь запусков». "
                     "mark=cancel или red - красным, рекомендовано отменить. "
                     "mark=add или green - зелёным, рекомендовано поставить. "
                     "mark=keep - уже запланированное. "
+                    "В каждом совещании передай attendees[] и substitutes[] "
+                    "(кто замещает кого: «Иванов замещает Петрова»). "
                     "Вызови при формировании результата, чтобы человек увидел план. "
                     "Инструмент только визуализирует и НИЧЕГО не двигает и не пишет в Outlook. "
-                    "Конфликты со встречами решает сам агент: сверяет календари участников "
-                    "и их загрузку, переносит нужное через outlook.create_event и отражает итог здесь."
+                    "Утро / контроль календаря ПСД: после карточки сегодняшних встреч "
+                    "(mark=keep) сразу ## WORK_RESULT, create_event не вызывай. "
+                    "Вечер: сначала карточка сдвигов (keep/add/cancel), "
+                    "outlook.create_event только после HITL."
                 ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.EXTERNAL_API,
@@ -59,11 +63,14 @@ class CalendarShowMeetingsTool(BaseTool):
                     "properties": {
                         "meetings": {
                             "type": "array",
-                            "description": "Список совещаний для календаря",
+                            "description": (
+                                "Список совещаний: title, start, end, mark, reason, "
+                                "organizer, attendees[], substitutes[] (кто замещает кого)"
+                            ),
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "title": {"type": "string", "description": "Тема совещания"},
+                                    "title": {"type": "string", "description": "Тема совещания целиком"},
                                     "start": {
                                         "type": "string",
                                         "description": "Начало ISO datetime",
@@ -79,6 +86,27 @@ class CalendarShowMeetingsTool(BaseTool):
                                     "reason": {
                                         "type": "string",
                                         "description": "Почему отменить или поставить",
+                                    },
+                                    "organizer": {
+                                        "type": "string",
+                                        "description": "Организатор или председатель",
+                                    },
+                                    "location": {
+                                        "type": "string",
+                                        "description": "Место или ссылка",
+                                    },
+                                    "attendees": {
+                                        "type": "array",
+                                        "description": "Участники: ФИО или почта",
+                                        "items": {"type": "string"},
+                                    },
+                                    "substitutes": {
+                                        "type": "array",
+                                        "description": (
+                                            "Кто кого замещает, например "
+                                            "«Иванов замещает Петрова»"
+                                        ),
+                                        "items": {"type": "string"},
                                     },
                                 },
                                 "required": ["title", "start"],
@@ -113,6 +141,10 @@ class CalendarShowMeetingsTool(BaseTool):
                         "end": input_data.get("end") or "",
                         "mark": input_data.get("mark") or "keep",
                         "reason": input_data.get("reason") or "",
+                        "organizer": input_data.get("organizer") or "",
+                        "location": input_data.get("location") or "",
+                        "attendees": input_data.get("attendees") or [],
+                        "substitutes": input_data.get("substitutes") or [],
                     }
                 ]
             else:
@@ -137,13 +169,37 @@ class CalendarShowMeetingsTool(BaseTool):
                 error_message=str(exc),
             )
         shown = data.get("meetings") if isinstance(data, dict) else None
+        # Overlay may still be an older API that strips people fields.
+        # Keep the agent's payload so the briefing card can show attendees.
+        payload_meetings = meetings if isinstance(meetings, list) else []
+        if isinstance(shown, list) and shown:
+            merged = []
+            for index, remote in enumerate(shown):
+                local = payload_meetings[index] if index < len(payload_meetings) else {}
+                if not isinstance(remote, dict):
+                    merged.append(local)
+                    continue
+                row = dict(remote)
+                if isinstance(local, dict):
+                    for key in (
+                        "organizer",
+                        "location",
+                        "attendees",
+                        "substitutes",
+                        "required_attendees",
+                        "optional_attendees",
+                    ):
+                        if not row.get(key) and local.get(key):
+                            row[key] = local[key]
+                merged.append(row)
+            payload_meetings = merged
         return ToolCallResult(
             ok=True,
             tool_name=self.definition.name,
             output_data={
                 "ok": True,
-                "shown": len(meetings) if isinstance(meetings, list) else 0,
-                "meetings": shown if isinstance(shown, list) and shown else meetings,
+                "shown": len(payload_meetings),
+                "meetings": payload_meetings,
             },
         )
 

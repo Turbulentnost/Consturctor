@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { ApiError, type LoginResult } from '../api/types'
 import { rememberPreference, savedFio, setRememberPreference } from '../store/session'
@@ -34,9 +34,43 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
   const [remember, setRemember] = useState(rememberPreference())
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [waitSec, setWaitSec] = useState(0)
+  const [backendHint, setBackendHint] = useState('')
+
+  useEffect(() => {
+    if (!busy) {
+      setWaitSec(0)
+      return
+    }
+    const timer = window.setInterval(() => setWaitSec((sec) => sec + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [busy])
+
+  useEffect(() => {
+    let alive = true
+    void window.api
+      .request({ method: 'GET', path: '/health', timeoutMs: 5000 })
+      .then((res) => {
+        if (!alive || res.ok) {
+          if (res.ok) setBackendHint('')
+          return
+        }
+        setBackendHint(
+          `Backend недоступен (${res.error || 'нет ответа'}). Запустите orchestrator\\backend\\run_dev.bat.`
+        )
+      })
+      .catch(() => {
+        if (!alive) return
+        setBackendHint('Backend недоступен. Запустите orchestrator\\backend\\run_dev.bat.')
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   async function submit(): Promise<void> {
     setError('')
+    setBackendHint('')
     if (!fio.trim() || !password) {
       setError('Введите ФИО и пароль')
       return
@@ -52,7 +86,14 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
       setRememberPreference(remember)
       onLoggedIn(result, remember, password)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Ошибка входа')
+      if (err instanceof ApiError && err.status === 503) {
+        setError(
+          err.message ||
+            'Сервис аутентификации 1С недоступен. Проверьте VPN и что backend запущен (run_dev.bat).'
+        )
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Ошибка входа')
+      }
     } finally {
       setBusy(false)
     }
@@ -124,10 +165,14 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
           Запомнить пользователя
         </label>
 
-        <div className="error">{error}</div>
+        <div className="error">{backendHint || error}</div>
 
         <button className="btn-light" onClick={submit} disabled={busy}>
-          {busy ? 'Входим...' : 'Войти'}
+          {busy
+            ? waitSec >= 3
+              ? `Входим... ${waitSec}с, ждём erp_pm`
+              : 'Входим...'
+            : 'Войти'}
         </button>
       </div>
     </div>

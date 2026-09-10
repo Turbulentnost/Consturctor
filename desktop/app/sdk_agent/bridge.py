@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from app.config import DESKTOP_ROOT
+from app.config import DESKTOP_ROOT, reload_cursor_api_key
 from app.sdk_agent.prompt import strip_to_work_result
 from app.sdk_agent.tool_adapter import (
     invoke_sdk_tool,
@@ -25,8 +25,9 @@ from app.tools import ToolHostError
 
 DEFAULT_SDK_MODEL = "grok-4.6"
 REGULATION_SDK_MODEL = "grok-4.6"
+REGULATION_PREFETCH_MODEL = "composer-2.5"
 REGULATION_SDK_MODEL_PARAMS = (
-    {"id": "effort", "value": "xhigh"},
+    {"id": "effort", "value": "low"},
     {"id": "fast", "value": "true"},
 )
 REGULATION_SDK_QUESTION_PARAMS = (
@@ -218,6 +219,7 @@ class CursorSdkBridge:
         should_stop: Callable[[], bool] | None = None,
         confirm_writes: bool = False,
     ) -> dict[str, Any]:
+        reload_cursor_api_key()
         self._ensure_ready()
         run_id = str(uuid.uuid4())
         cmd = self._command()
@@ -285,6 +287,31 @@ class CursorSdkBridge:
                 event_type = str(payload.get("type") or "")
                 if event_type == "ready":
                     continue
+                if should_stop is not None and should_stop():
+                    if event_type == "tool_request":
+                        self._handle_tool_request(
+                            process,
+                            payload,
+                            workflow_id=workflow_id,
+                            cwd=run_cwd,
+                            on_question=on_question,
+                            should_stop=should_stop,
+                            confirm_writes=confirm_writes,
+                        )
+                    try:
+                        self._send(process, {"type": "cancel", "id": run_id})
+                    except CursorSdkError:
+                        pass
+                    process.kill()
+                    collected = "\n\n".join(answer_parts).strip()
+                    if mode == "run":
+                        collected = strip_to_work_result(collected)
+                    return {
+                        "answer": collected,
+                        "status": "ok",
+                        "run_id": run_id,
+                        "agent_id": agent_id,
+                    }
                 if event_type == "tool_request":
                     # Do not block the stdout reader: Cursor can emit several
                     # tool_request lines at once. One hung tool must not stall
@@ -360,6 +387,7 @@ class CursorSdkBridge:
                 process.kill()
 
     def _ensure_ready(self) -> None:
+        reload_cursor_api_key()
         if not os.getenv("CURSOR_API_KEY", "").strip():
             raise CursorSdkUnavailable("CURSOR_API_KEY не задан в desktop/.env")
         if not self._runner.is_file():
@@ -414,6 +442,9 @@ class CursorSdkBridge:
 
     def _env(self) -> dict[str, str]:
         env = dict(os.environ)
+        key = reload_cursor_api_key()
+        if key:
+            env["CURSOR_API_KEY"] = key
         env.setdefault("NODE_NO_WARNINGS", "1")
         return env
 

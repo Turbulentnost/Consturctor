@@ -1,4 +1,5 @@
-const PLACEHOLDER = 'Агент анализирует задачу…'
+export const THINKING_PLACEHOLDER = 'Агент анализирует задачу…'
+const PLACEHOLDER = THINKING_PLACEHOLDER
 
 export function streamDelta(streamed: string, chunk: string): string {
   if (!chunk) return ''

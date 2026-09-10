@@ -1808,7 +1808,7 @@ class MainShell(QWidget):
         Thread(target=run, daemon=True).start()
 
     def show_live_agent(self, workflow_id: str) -> None:
-        """Открыть живой прогон агента, не историю и не новый чат."""
+        """Открыть живой запуск агента, не историю и не новый чат."""
         from app.tools.hitl import attach_pending_for
 
         wid = (workflow_id or "").strip()

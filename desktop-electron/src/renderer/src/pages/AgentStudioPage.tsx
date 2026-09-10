@@ -168,7 +168,7 @@ export function AgentStudioPage({
     if (session.pendingHitl) return 'Требуется подтверждение действия'
     if (busy) {
       if (session.status) return session.status
-      if (phase === 'executing') return 'Пробный прогон'
+      if (phase === 'executing') return 'Пробный запуск'
       return 'Планирование черновика'
     }
     if (demoDone || recordReadyToSave) return 'Пробный прогон прошёл — можно сохранить агента'
@@ -388,6 +388,21 @@ export function AgentStudioPage({
           {tab === 'stages' ? (
             <div className="wf-right-body">
               <StageStepper phase={phase} busy={busy} />
+              <div className="wf-actions">
+                {canDemo && !demoDone && (
+                  <button className="btn-primary" onClick={runDemo}>
+                    Пробный запуск
+                  </button>
+                )}
+                {demoDone && (
+                  <button
+                    className="btn-primary"
+                    onClick={() => onGoSchedule(workflowId, record?.title || title)}
+                  >
+                    Далее
+                  </button>
+                )}
+              </div>
               {designDraft && (
                 <div className="wf-result-card">
                   <div className="wf-result-title">Черновик агента</div>
@@ -396,7 +411,7 @@ export function AgentStudioPage({
               )}
               {(record?.lastResult || planMeetings.length > 0) && (
                 <div className="wf-result-card">
-                  <div className="wf-result-title">Результат пробного прогона</div>
+                  <div className="wf-result-title">Результат пробного запуска</div>
                   {planMeetings.length > 0 && (
                     <div className="wf-result-calendar">
                       <MiniCalendar meetings={planMeetings} />

@@ -39,9 +39,69 @@ def _iso(value: str) -> str:
     return stamp.astimezone(timezone.utc).isoformat()
 
 
-def normalize_meetings(raw: Any) -> list[dict[str, str]]:
+def _as_names(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = value.replace(";", "\n").replace(",", "\n").splitlines()
+        return [part.strip() for part in parts if part.strip()]
+    if isinstance(value, dict):
+        name = (
+            value.get("name")
+            or value.get("fio")
+            or value.get("full_name")
+            or value.get("email")
+            or value.get("title")
+        )
+        return [str(name).strip()] if name else []
+    if isinstance(value, list):
+        out: list[str] = []
+        for item in value:
+            out.extend(_as_names(item))
+        return out
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _as_substitutes(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.replace(";", "\n").splitlines() if part.strip()]
+    if isinstance(value, dict):
+        who = str(
+            value.get("who")
+            or value.get("deputy")
+            or value.get("substitute")
+            or value.get("name")
+            or value.get("fio")
+            or ""
+        ).strip()
+        instead = str(
+            value.get("instead_of")
+            or value.get("replaces")
+            or value.get("for")
+            or value.get("absent")
+            or value.get("original")
+            or ""
+        ).strip()
+        if who and instead:
+            return [f"{who} замещает {instead}"]
+        if who or instead:
+            return [who or instead]
+        return []
+    if isinstance(value, list):
+        out: list[str] = []
+        for item in value:
+            out.extend(_as_substitutes(item))
+        return out
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def normalize_meetings(raw: Any) -> list[dict[str, Any]]:
     items = raw if isinstance(raw, list) else []
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -51,15 +111,40 @@ def normalize_meetings(raw: Any) -> list[dict[str, str]]:
             continue
         end = _iso(str(item.get("end") or item.get("end_at") or ""))
         reason = str(item.get("reason") or item.get("note") or item.get("subtitle") or "").strip()
-        out.append(
-            {
-                "title": title,
-                "start": start,
-                "end": end,
-                "mark": _mark(str(item.get("mark") or item.get("color") or item.get("kind") or "")),
-                "reason": reason,
-            }
+        organizer = str(item.get("organizer") or item.get("owner") or item.get("chair") or "").strip()
+        location = str(item.get("location") or item.get("place") or item.get("room") or "").strip()
+        attendees = _as_names(
+            item.get("attendees")
+            or item.get("required_attendees")
+            or item.get("participants")
+            or item.get("people")
         )
+        optional = _as_names(item.get("optional_attendees"))
+        for name in optional:
+            if name not in attendees:
+                attendees.append(name)
+        substitutes = _as_substitutes(
+            item.get("substitutes")
+            or item.get("replacements")
+            or item.get("deputies")
+            or item.get("who_replaces")
+        )
+        row: dict[str, Any] = {
+            "title": title,
+            "start": start,
+            "end": end,
+            "mark": _mark(str(item.get("mark") or item.get("color") or item.get("kind") or "")),
+            "reason": reason,
+        }
+        if organizer:
+            row["organizer"] = organizer
+        if location:
+            row["location"] = location
+        if attendees:
+            row["attendees"] = attendees
+        if substitutes:
+            row["substitutes"] = substitutes
+        out.append(row)
     return out
 
 

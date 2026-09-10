@@ -87,6 +87,15 @@ async def lifespan(_app: FastAPI):
         from app.services.triggers.tick import tick_due_triggers
         from app.modules.chat.realtime import dispatch_event
 
+        def _erp_warmup() -> None:
+            try:
+                from app.clients.erp_sql import warmup
+
+                warmup()
+                logger.info("ERP SQL warmup ok")
+            except Exception:
+                logger.warning("ERP SQL warmup failed", exc_info=True)
+
         def _chat_outbound_loop() -> None:
             try:
                 from app.modules.chat.bus.outbound import consume_outbound
@@ -97,6 +106,7 @@ async def lifespan(_app: FastAPI):
 
         import threading
 
+        threading.Thread(target=_erp_warmup, name="erp-warmup", daemon=True).start()
         threading.Thread(target=_chat_outbound_loop, name="chat-outbound", daemon=True).start()
 
         async def trigger_scheduler() -> None:
@@ -108,10 +118,22 @@ async def lifespan(_app: FastAPI):
                     logger.exception("Trigger scheduler tick failed")
                 await asyncio.sleep(20)
 
+        async def kpi_scheduler() -> None:
+            from app.services.workflows.kpi_calc import run_due_kpi_calculations
+
+            await asyncio.sleep(15)
+            while True:
+                try:
+                    await asyncio.to_thread(run_due_kpi_calculations)
+                except Exception:
+                    logger.exception("KPI scheduler tick failed")
+                await asyncio.sleep(60)
+
         scheduler_tasks = [
             asyncio.create_task(notification_scheduler()),
             asyncio.create_task(board_live_subscriber()),
             asyncio.create_task(trigger_scheduler()),
+            asyncio.create_task(kpi_scheduler()),
         ]
     except Exception:
         logger.exception("Failed to initialize app Postgres")

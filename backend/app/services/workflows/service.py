@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from sqlalchemy.orm import Session, object_session
+from sqlalchemy.orm import Session, load_only, object_session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.clients import cursor as cursor_client
@@ -231,6 +231,7 @@ def repair_deleted_workflows(db: Session, *, user_id: str) -> int:
     """Finish a half-applied delete: JSON flag without phase, leftover triggers."""
     rows = (
         db.query(Workflow)
+        .options(load_only(Workflow.id, Workflow.phase, Workflow.local_run))
         .filter(Workflow.user_id == user_id)
         .all()
     )
@@ -421,15 +422,39 @@ def _validate_and_store_draft(
         validate_draft,
     )
 
+    from app.services.workflows.meeting_agent_config import apply_meeting_agent_config
+    from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_playbook_draft
+    from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_playbook_draft
+
     _fill_when_to_run_from_materials(row, draft)
     allow_web = regulation_allows_web(_regulation_blob(row))
     enriched = attach_tool_candidates(draft, allow_web=allow_web)
+    blob = _regulation_blob(row)
+    if is_rk_meeting_agent(row.title or "", row.notes or "", blob):
+        seed = rk_playbook_draft()
+        enriched = {
+            **seed,
+            **enriched,
+            "steps": enriched.get("steps") or seed["steps"],
+            "runtime": seed.get("runtime") or enriched.get("runtime"),
+        }
+        enriched = attach_tool_candidates(enriched, allow_web=allow_web)
+    elif is_sd_meeting_agent(row.title or "", row.notes or "", blob):
+        seed = sd_playbook_draft()
+        enriched = {
+            **seed,
+            **enriched,
+            "steps": enriched.get("steps") or seed["steps"],
+            "runtime": seed.get("runtime") or enriched.get("runtime"),
+        }
+        enriched = attach_tool_candidates(enriched, allow_web=allow_web)
     validation = validate_draft(
         enriched,
         allow_web=allow_web,
         materials=_schedule_materials(row, enriched),
     )
     local = dict(row.local_run or {})
+    local = apply_meeting_agent_config(local, title=row.title or "", notes=row.notes or "")
     local["playbook_draft"] = enriched
     local["draft_validation"] = validation.to_dict()
     row.local_run = local
@@ -556,7 +581,7 @@ def _blocked_before_demo_report(validation: Any, *, message: str = "") -> dict[s
         "status": "blocked_before_demo",
         "demo_started": False,
         "can_run_demo": False,
-        "message": message or "Пробный прогон не запущен: черновик не прошёл проверку.",
+        "message": message or "Пробный запуск не запущен: черновик не прошёл проверку.",
         "reasons": [item for item in reasons if item],
         "issues": issues,
     }
@@ -654,7 +679,7 @@ _DESIGN_TOPIC_HINTS = {
         "когда стартовать",
         "триггер",
     ),
-    "period": ("период", "контур", "за какой срок", "какие проект", "объем", "объём", "горизонт", "за один прогон"),
+    "period": ("период", "контур", "за какой срок", "какие проект", "объем", "объём", "горизонт", "за один запуск"),
     "recipient": ("кому", "получател", "кто получает", "кто получатель"),
     "success": (
         "критери",
@@ -835,7 +860,7 @@ def finish_local_design_workflow(
         row.phase = "designed"
         db.commit()
         db.refresh(row)
-        _emit(on_event, "decision", "Черновик принят. Запускаю пробный прогон по материалам.")
+        _emit(on_event, "decision", "Черновик принят. Запускаю пробный запуск по материалам.")
         return _to_schema(row)
 
     draft, validation = _validate_and_store_draft(db, row=row, draft=draft)
@@ -1023,11 +1048,11 @@ def _finish_design(
         _emit(
             on_event,
             "decision",
-            "Черновик не готов к пробному прогону — нужно исправить шаги и инструменты.",
+            "Черновик не готов к пробному запуску — нужно исправить шаги и инструменты.",
         )
     else:
         steps = len(draft.get("steps") or [])
-        _emit(on_event, "decision", f"Черновик инструкции готов: {steps} шагов. Запускаю пробный прогон.")
+        _emit(on_event, "decision", f"Черновик инструкции готов: {steps} шагов. Запускаю пробный запуск.")
     return _to_schema(row)
 
 
@@ -1083,7 +1108,7 @@ def demo_workflow(
         _emit(
             on_event,
             "decision",
-            "Пробный прогон не запущен: черновик не прошёл проверку.",
+            "Пробный запуск не запущен: черновик не прошёл проверку.",
         )
         row.phase = "designed"
         db.commit()
@@ -1105,7 +1130,7 @@ def demo_workflow(
         ),
         draft=draft,
     )
-    _emit(on_event, "decision", "Запускаю пробный прогон по описанию бизнес-процесса.")
+    _emit(on_event, "decision", "Запускаю пробный запуск по описанию бизнес-процесса.")
     _emit(on_event, "progress", "создаю агента Cursor")
     local_state = dict(row.local_run or {})
     reuse_agent = bool(row.exec_agent_id) and bool(local_state.get("demo_ok"))
@@ -1168,7 +1193,7 @@ def finish_local_demo_workflow(
     row.phase = "executing"
     db.commit()
     db.refresh(row)
-    _emit(on_event, "decision", "Локальный Cursor SDK пробный прогон завершён.")
+    _emit(on_event, "decision", "Локальный Cursor SDK пробный запуск завершён.")
     return _finish_demo_stream(db, row=row, phase=phase, on_event=on_event)
 
 
@@ -1542,7 +1567,7 @@ def execute_workflow(
                 _emit(
                     on_event,
                     "decision",
-                    "Тестовый прогон завершился без TESTS: PASS. "
+                    "Тестовый запуск завершился без TESTS: PASS. "
                     "Сохранение недоступно. Уточните в чате и перезапустите.",
                 )
         row.local_run = local
@@ -1550,7 +1575,7 @@ def execute_workflow(
         row.phase = "ready"
         local.update({"can_publish": False, "tests_status": "unknown"})
         row.local_run = local
-        _emit(on_event, "decision", "Тестовый прогон не завершён — можно запустить снова.")
+        _emit(on_event, "decision", "Тестовый запуск не завершён — можно запустить снова.")
     db.commit()
     db.refresh(row)
     return _to_schema(row)
@@ -1564,7 +1589,7 @@ def _require_verified_playbook(row: Workflow, playbook: dict[str, Any]) -> None:
         return
     if str(playbook.get("status") or "") != prompts.DRAFT_STATUS_VERIFIED:
         raise WorkflowError(
-            "Нельзя сохранить агента: инструкция ещё черновик, прогон её не подтвердил"
+            "Нельзя сохранить агента: инструкция ещё черновик, запуск её не подтвердил"
         )
     report = local.get("validation") if isinstance(local.get("validation"), dict) else {}
     if report and not report.get("ok", True):
@@ -1589,9 +1614,9 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     playbook = playbook_of(row)
     has_demo = bool(playbook.get("instructions") and playbook.get("demo_ok"))
     if row.phase not in {"tested", "ready", "done", "executing"}:
-        raise WorkflowError("Сначала завершите пробный прогон")
+        raise WorkflowError("Сначала завершите пробный запуск")
     if not row.exec_agent_id and not has_demo:
-        raise WorkflowError("Нет результата пробного прогона для публикации")
+        raise WorkflowError("Нет результата пробного запуска для публикации")
     _require_verified_playbook(row, playbook)
 
     local = dict(row.local_run or {})
@@ -1604,7 +1629,7 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
         raise WorkflowError("Нельзя сохранить агента: TESTS: FAIL")
     if tests != "pass" and not has_demo:
         raise WorkflowError(
-            "Нельзя сохранить агента без успешного пробного прогона"
+            "Нельзя сохранить агента без успешного пробного запуска"
         )
 
     # Published agents run only via in-app MCP runtime (no bat/terminal/code UI).
@@ -1620,6 +1645,18 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
         if goal and not (plan.goal or "").strip():
             plan.goal = goal
             row.plan_json = plan.to_dict()
+    from app.services.workflows.meeting_agent_config import (
+        apply_meeting_agent_config,
+        apply_meeting_plan_runtime,
+    )
+
+    row.plan_json = apply_meeting_plan_runtime(
+        row.plan_json if isinstance(row.plan_json, dict) else {},
+        title=row.title or "",
+        notes=row.notes or "",
+    )
+    plan = WorkflowPlan.from_dict(row.plan_json or {})
+    local = apply_meeting_agent_config(local, title=row.title or "", notes=row.notes or "")
     local.update(
         {
             "status": "published",
@@ -1704,6 +1741,7 @@ def generate_agent_kpi(
 
 def get_agent_kpi(db: Session, *, user_id: str, workflow_id: str):
     from app.services import agent_kpi
+    from app.services.workflows.kpi_calc import calculate_workflow_kpi
 
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     plan = WorkflowPlan.from_dict(row.plan_json or {})
@@ -1712,6 +1750,19 @@ def get_agent_kpi(db: Session, *, user_id: str, workflow_id: str):
     title = str(draft.get("name") or row.title or plan.title or "ИИ-агент")
     goal = str(draft.get("goal") or plan.goal or "")
     stored = local.get("kpi") if isinstance(local.get("kpi"), dict) else None
+    if not stored or not (stored.get("tiles") or []):
+        stored = agent_kpi.build_kpi_record(None, title=title, goal=goal, schedule=draft, status="draft")
+        local["kpi"] = stored
+        row.local_run = local
+        db.commit()
+        db.refresh(row)
+    tiles = [item for item in (stored.get("tiles") or []) if isinstance(item, dict)]
+    tile_ids = [str(item.get("id") or "") for item in tiles if str(item.get("id") or "").strip()]
+    if tile_ids:
+        calculate_workflow_kpi(db, row, tile_ids)
+        db.refresh(row)
+        local = dict(row.local_run or {})
+        stored = local.get("kpi") if isinstance(local.get("kpi"), dict) else stored
     if stored and (stored.get("tiles") or []):
         kpi = agent_kpi.build_kpi_record(
             stored,
@@ -1914,9 +1965,9 @@ def _finish_demo_stream(
     db.commit()
     db.refresh(row)
     if playbook.get("demo_ok"):
-        _emit(on_event, "decision", "Пробный прогон готов. Сохранил инструкцию для следующих запусков.")
+        _emit(on_event, "decision", "Пробный запуск готов. Сохранил инструкцию для следующих запусков.")
     else:
-        _emit(on_event, "decision", "Прогон завершился без устойчивой инструкции — можно запустить снова.")
+        _emit(on_event, "decision", "Запуск завершился без устойчивой инструкции — можно запустить снова.")
     return _to_schema(row)
 
 
@@ -2060,7 +2111,7 @@ def _continue_demo_after_answers(
         local["can_publish"] = False
         local["can_run_demo"] = False
         row.local_run = local
-        _emit(on_event, "decision", "Пробный прогон не запущен: черновик не прошёл проверку.")
+        _emit(on_event, "decision", "Пробный запуск не запущен: черновик не прошёл проверку.")
         row.phase = "designed"
         db.commit()
         db.refresh(row)
@@ -2077,8 +2128,8 @@ def _continue_demo_after_answers(
         ),
         draft=draft_of(row),
     )
-    _emit(on_event, "decision", "Учитываю ответы и продолжаю пробный прогон.")
-    _emit(on_event, "progress", "продолжаю прогон")
+    _emit(on_event, "decision", "Учитываю ответы и продолжаю пробный запуск.")
+    _emit(on_event, "progress", "продолжаю запуск")
     try:
         if row.exec_agent_id:
             run = cursor_client.create_run(row.exec_agent_id, prompt=prompt, mode="agent")
@@ -2122,7 +2173,7 @@ def _local_playbook(*, title: str, demo_text: str, tools: list[str], answered_sc
     )
     return {
         "instructions": instructions,
-        "example_run": summary or "Прогон завершён.",
+        "example_run": summary or "Запуск завершён.",
         "demo_ok": bool(summary or tools),
         "tools": list(tools),
         "name": title or "",
@@ -2175,7 +2226,7 @@ def _local_demo_ledger(draft: dict[str, Any], tools: list[str]) -> list[dict[str
 
 
 def _demo_validation_report(phase: PhaseResult, draft: dict[str, Any]) -> dict[str, Any]:
-    """Гейт итога: успешный прогон — это закрытый ledger, а не наличие текста."""
+    """Гейт итога: успешный запуск — это закрытый ledger, а не наличие текста."""
     ledger = [item for item in (phase.step_ledger or []) if isinstance(item, dict)]
     failed_marker = "FAILED_VALIDATION" in (phase.text or "").upper()
     unfinished = [
@@ -2255,7 +2306,7 @@ def _fail_demo_validation(
     report: dict[str, Any],
     on_event: WorkflowEventCallback | None = None,
 ) -> WorkflowSchema:
-    """Прогон не подтвердил данные: черновик остаётся, example_run не пишем."""
+    """Запуск не подтвердил данные: черновик остаётся, example_run не пишем."""
     stored = {
         **dict(report or {}),
         "ok": False,
@@ -2280,7 +2331,7 @@ def _fail_demo_validation(
     _emit(
         on_event,
         "decision",
-        "Прогон не подтвердил данные — инструкция осталась черновиком, пример не сохранён.",
+        "Запуск не подтвердил данные — инструкция осталась черновиком, пример не сохранён.",
     )
     return _to_schema(row)
 
@@ -2294,7 +2345,7 @@ def _refine_playbook(
     report: dict[str, Any],
     on_event: WorkflowEventCallback | None = None,
 ) -> dict[str, Any]:
-    """Правка черновика по фактам прогона, а не первое его создание."""
+    """Правка черновика по фактам запуска, а не первое его создание."""
     if not draft.get("steps"):
         playbook = _distill_playbook(row, demo_text=demo_text, tools=tools, on_event=on_event)
         playbook.setdefault("status", prompts.DRAFT_STATUS_VERIFIED if playbook.get("demo_ok") else prompts.DRAFT_STATUS_DRAFT)
@@ -2308,7 +2359,7 @@ def _refine_playbook(
     if not row.exec_agent_id:
         return playbook
 
-    _emit(on_event, "progress", "правлю черновик по итогам прогона")
+    _emit(on_event, "progress", "правлю черновик по итогам запуска")
     try:
         prompt = prompts.build_playbook_refine_prompt(
             draft=draft,
@@ -2358,7 +2409,7 @@ def _distill_playbook(
         return fallback
     if not row.exec_agent_id:
         return fallback
-    _emit(on_event, "progress", "пишу инструкцию по прогону")
+    _emit(on_event, "progress", "пишу инструкцию по запуску")
     try:
         prompt = prompts.build_playbook_prompt(
             title=row.title,
@@ -2437,6 +2488,9 @@ def _onec_domain_tools(blob: str) -> list[str]:
 
 def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
     """Pick MCP tools from plan domain — never force web_search for Outlook/meetings."""
+    from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_runtime_tools
+    from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_runtime_tools
+
     answered = " ".join(
         f"{q.question} {q.answer}" for q in (plan.answered_questions or []) if q.answer
     )
@@ -2453,6 +2507,12 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
         ]
     ).casefold()
     kind = str(getattr(plan.runtime, "kind", "") or "").casefold()
+
+    if kind == "revision_commission" or is_rk_meeting_agent(blob):
+        return rk_runtime_tools()
+
+    if kind == "board_meeting" or is_sd_meeting_agent(blob):
+        return sd_runtime_tools()
 
     if kind == "onec" or (
         any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm"))
@@ -3105,9 +3165,20 @@ def _iso(value: Any) -> str:
 
 
 def _to_schema(row: Workflow) -> WorkflowSchema:
+    from app.services.workflows.meeting_agent_config import refresh_meeting_agent_view
+
+    plan_json = dict(row.plan_json or {})
+    local_run = dict(row.local_run or {})
+    plan_json, local_run = refresh_meeting_agent_view(
+        plan_json,
+        local_run,
+        title=row.title or "",
+        notes=row.notes or "",
+        document_text=row.document_text or "",
+    )
     plan = None
-    if row.plan_json:
-        plan = WorkflowPlanSchema.model_validate(row.plan_json)
+    if plan_json:
+        plan = WorkflowPlanSchema.model_validate(plan_json)
     session = object_session(row)
     if session is not None:
         attachments = attachment_meta_for_workflow(session, row)
@@ -3126,7 +3197,7 @@ def _to_schema(row: Workflow) -> WorkflowSchema:
         document_text=row.document_text or "",
         plan=plan,
         attachments=attachments,
-        local_run=dict(row.local_run or {}),
+        local_run=local_run,
         plan_agent_id=row.plan_agent_id or "",
         plan_run_id=row.plan_run_id or "",
         exec_agent_id=row.exec_agent_id or "",

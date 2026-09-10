@@ -1,4 +1,4 @@
-import type { AgentRunnerEvent } from '../api/types'
+import type { AgentRunnerEvent, WorkflowFileItem } from '../api/types'
 import { toolArgHint, toolLabel } from '../components/agentfeed/labels'
 
 const NEVER_CONFIRM = new Set(['notify.send', 'notify', 'code.write_python', 'code.run_python'])
@@ -145,6 +145,8 @@ export interface ToolDecisionItem {
   requestId: string
   at: string
   live: boolean
+  arguments?: Record<string, unknown>
+  files?: WorkflowFileItem[]
 }
 
 function eventTool(event: AgentRunnerEvent): string {
@@ -174,7 +176,8 @@ export function extractToolDecisions(
     status,
     requestId: String(event.requestId || ''),
     at: meta.at,
-    live: false
+    live: false,
+    arguments: event.arguments && typeof event.arguments === 'object' ? event.arguments : {}
   })
 
   const findOpen = (tool: string, requestId: string): ToolDecisionItem | undefined => {

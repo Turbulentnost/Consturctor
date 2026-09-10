@@ -20,11 +20,10 @@ ONEC_COM32_RUNTIME = "com32"
 ONEC_COM32_TIMEOUT_SECONDS = com32_worker_timeout_seconds()
 ONEC_COM32_TOOLS = frozenset(
     {
-        "onec.search_documents",
-        "onec.get_document_card",
         "onec.search_tasks",
         "onec.get_task_card",
-        "onec.meeting_service_notes",
+        "onec.list_attachments",
+        "onec.read_attachment",
     }
 )
 
@@ -77,7 +76,7 @@ class OneCSearchDocumentsTool(OneCReadOnlyTool):
         super().__init__(
             _definition(
                 "onec.search_documents",
-                "Поиск документов 1С",
+                "Поиск документов 1С через OData (без COM)",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -100,7 +99,7 @@ class OneCGetDocumentCardTool(OneCReadOnlyTool):
         super().__init__(
             _definition(
                 "onec.get_document_card",
-                "Чтение карточки документа 1С",
+                "Чтение карточки документа 1С через OData (без COM)",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -161,6 +160,53 @@ class OneCGetTaskCardTool(OneCReadOnlyTool):
         )
 
 
+class OneCListAttachmentsTool(OneCReadOnlyTool):
+    """Список вложений документа/карточки 1С."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.list_attachments",
+                "Список вложений 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "metadata_name": {"type": "string", "description": "Имя метаданных документа из карточки 1С"},
+                        "number": {"type": "string", "description": "Номер документа 1С"},
+                        "owner_ref": {"type": "string", "description": "Ссылка владельца из карточки"},
+                        "document_ref": {"type": "string", "description": "Альтернатива owner_ref"},
+                        "kind": {"type": "string", "description": "document или catalog"},
+                        "max_results": {"type": "integer", "description": "Максимум вложений"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
+class OneCReadAttachmentTool(OneCReadOnlyTool):
+    """Прочитать вложение 1С (текст PDF/DOCX/XLSX)."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.read_attachment",
+                "Чтение вложения 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "metadata_name": {"type": "string", "description": "Имя метаданных документа"},
+                        "attachment_ref": {"type": "string", "description": "Ссылка вложения из list_attachments"},
+                        "filename": {"type": "string", "description": "Имя файла, если ref неизвестен"},
+                        "owner_ref": {"type": "string", "description": "Ссылка документа-владельца"},
+                        "number": {"type": "string", "description": "Номер документа-владельца"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
 class OneCMeetingServiceNotesTool(OneCReadOnlyTool):
     """Чтение служебных записок на организацию совещаний. Только SELECT."""
 
@@ -170,16 +216,16 @@ class OneCMeetingServiceNotesTool(OneCReadOnlyTool):
                 name="onec.meeting_service_notes",
                 title="Служебные записки на совещания",
                 description=(
-                    "Только чтение: служебные записки 1С с темой «организация совещаний». "
+                    "Только чтение через OData: служебные записки 1С с темой «организация совещаний». "
                     "Возвращает тему СЗ, тему совещания, место, желаемую дату/время, "
                     "длительность, руководителя, приоритет, периодичность, вид и признак ПСД. "
-                    "date или date_from/date_to (YYYY-MM-DD). Ничего не записывает в 1С."
+                    "date или date_from/date_to (YYYY-MM-DD). Без COM."
                 ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
-                timeout_seconds=ONEC_COM32_TIMEOUT_SECONDS,
-                runtime=ONEC_COM32_RUNTIME,
+                timeout_seconds=120,
+                runtime="odata",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -211,6 +257,8 @@ def register_onec_readonly_tools(
         OneCGetDocumentCardTool(worker),
         OneCSearchTasksTool(worker),
         OneCGetTaskCardTool(worker),
+        OneCListAttachmentsTool(worker),
+        OneCReadAttachmentTool(worker),
         OneCMeetingServiceNotesTool(worker),
     ]:
         if skip_existing and registry.has_tool(tool.definition.name):

@@ -11,7 +11,12 @@ from app.api_client import (
     WorkflowRecord,
 )
 from app.sdk_agent.bridge import DEFAULT_SDK_MODEL, CursorSdkBridge, CursorSdkUnavailable
-from app.sdk_agent.files import seed_agent_brief, seed_agents_md, seed_workflow_files
+from app.sdk_agent.files import (
+    _sanitize_prior_run_excerpt,
+    seed_agent_brief,
+    seed_agents_md,
+    seed_workflow_files,
+)
 from app.sdk_agent.prompt import (
     AGENTS_MD,
     build_demo_sdk_prompt,
@@ -20,6 +25,7 @@ from app.sdk_agent.prompt import (
     build_regulation_sdk_prompt,
     build_sdk_prompt,
     inferred_design_answers,
+    text_has_finished_work_result,
 )
 from app.sdk_agent.tool_adapter import (
     is_ask_question,
@@ -90,14 +96,14 @@ def test_demo_sdk_prompt_requires_playbook_and_tests() -> None:
         plan=WorkflowPlan(goal="Проверять сроки проектов"),
     )
     prompt = build_demo_sdk_prompt(record)
-    assert "пробный прогон" in prompt
+    assert "пробный запуск" in prompt
     assert "TESTS: PASS" in prompt
     assert "playbook" in prompt
     assert "AGENTS.md" in prompt
     assert "get_user_portfolio" not in prompt
     assert "limit 3-5" not in prompt
     followup = build_demo_sdk_prompt(record, resume=True)
-    assert followup.startswith("Сделай пробный прогон")
+    assert followup.startswith("Сделай пробный запуск")
     assert "на русском" in followup
     assert "AGENTS.md" not in followup
     assert "get_user_portfolio" in AGENTS_MD
@@ -318,7 +324,7 @@ def test_split_design_questions_breaks_numbered_bundle() -> None:
                 "1. Когда запускать агент?",
                 "- ежедневно утром",
                 "- только вручную",
-                "2. Какой период и контур проектов проверять за один прогон?",
+                "2. Какой период и контур проектов проверять за один запуск?",
                 "- все активные",
                 "- вехи на 7 дней",
                 "3. Кто получает отчёт?",
@@ -328,7 +334,7 @@ def test_split_design_questions_breaks_numbered_bundle() -> None:
     )
     assert [item[0] for item in parts] == [
         "Когда запускать агент?",
-        "Какой период и контур проектов проверять за один прогон?",
+        "Какой период и контур проектов проверять за один запуск?",
         "Кто получает отчёт?",
     ]
     assert parts[0][1] == ["ежедневно утром", "только вручную"]
@@ -398,6 +404,10 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert 'value: "low"' in text
     assert "INTERVIEW_QUESTION_MODEL_PARAMS" in text
     assert "testsPassReady" in text
+    assert "isFinishedWorkResult" in text
+    assert "stopState" in text
+    assert "WORK[ _]?RESULT" in text
+    assert "hasResultSections" in text
     assert "thought +=" in text
     assert "finishIfReady" in text
     assert "TESTS: PASS" in text
@@ -410,6 +420,20 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
 def test_question_feed_kind_is_separate_block() -> None:
     assert resolve_feed_kind(title="Уточнение") == "question"
     assert resolve_feed_kind(kind="question") == "question"
+
+
+def test_finished_work_result_accepts_files_actions_without_header() -> None:
+    body = (
+        "Проверены 93 карточки ТД_Поручения в 1С.\n"
+        "FILES\npredlozheniya.docx: итог\n"
+        "ACTIONS\nПрочитаны 93 документа\n"
+        "TESTS: PASS\n"
+    )
+    assert text_has_finished_work_result(body)
+    assert text_has_finished_work_result("## WORK_RESULT\nИтог\nTESTS: PASS")
+    assert text_has_finished_work_result("размышление## WORK_RESULT\nИтог\nTESTS: PASS")
+    assert not text_has_finished_work_result("Сейчас вызову 1С. TESTS: PASS потом.")
+    assert not text_has_finished_work_result("## WORK_RESULT\nИтог\nTESTS: FAIL")
 
 
 def test_sdk_design_tool_specs_include_constructor_tools() -> None:
@@ -565,7 +589,7 @@ def test_default_sdk_model_is_grok_46() -> None:
 
     assert DEFAULT_SDK_MODEL == "grok-4.6"
     assert REGULATION_SDK_MODEL == "grok-4.6"
-    assert {"id": "effort", "value": "xhigh"} in list(REGULATION_SDK_MODEL_PARAMS)
+    assert {"id": "effort", "value": "low"} in list(REGULATION_SDK_MODEL_PARAMS)
     assert {"id": "fast", "value": "true"} in list(REGULATION_SDK_MODEL_PARAMS)
     assert {"id": "effort", "value": "low"} in list(REGULATION_SDK_QUESTION_PARAMS)
     assert {"id": "fast", "value": "true"} in list(REGULATION_SDK_QUESTION_PARAMS)
@@ -999,3 +1023,37 @@ def test_server_catalog_exposes_both_worlds() -> None:
     # Local COM 1C must not be routed to the server.
     assert "onec.search_documents" not in SERVER_TOOL_NAMES
     assert "onec.download_artifact" in SERVER_TOOL_NAMES
+
+
+def test_meeting_run_prompt_skips_manifest_bulk_reads() -> None:
+    record = WorkflowRecord(
+        id="wf-rk",
+        title="Подготовка заседаний Ревизионной комиссии",
+        phase="done",
+        local_run={"runtime": {"kind": "revision_commission"}},
+    )
+    prompt = build_sdk_prompt(record, "запуск")
+    assert "только materials/agent.md" in prompt
+    assert "Не делай Glob" in prompt
+    assert "Outlook" in prompt
+
+
+def test_sanitize_prior_run_strips_work_result_markers() -> None:
+    raw = "## WORK_RESULT\nСтарый итог\nTESTS: PASS\nХвост"
+    cleaned = _sanitize_prior_run_excerpt(raw)
+    assert "WORK_RESULT" not in cleaned
+    assert "TESTS: PASS" not in cleaned
+    assert "прошлого запуска" in cleaned
+
+
+def test_seed_agent_brief_sanitizes_last_result(tmp_path: Path) -> None:
+    record = WorkflowRecord(
+        id="wf-1",
+        title="РК",
+        phase="done",
+        last_result="## WORK_RESULT\nПрошлый итог\nTESTS: PASS",
+    )
+    seed_agent_brief(str(tmp_path), record)
+    text = (tmp_path / "materials" / "agent.md").read_text(encoding="utf-8")
+    assert "WORK_RESULT" not in text
+    assert "TESTS: PASS" not in text

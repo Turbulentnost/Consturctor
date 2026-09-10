@@ -6,7 +6,7 @@ import { AgentFeed } from '../components/agentfeed'
 import type { FeedItem } from '../components/agentfeed/types'
 import { useRuns } from '../store/runs'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
-import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './filesGrouping'
+import { categoryOf, FILE_CATEGORY_LABELS, formatSize } from './filesGrouping'
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
 import { parseIso, sameDay } from '../utils/calendar'
 
@@ -14,6 +14,8 @@ interface AgentRunPageProps {
   workflowId: string
   title: string
   autoStart?: boolean
+  initialMessage?: string
+  appContext?: string
   onBack: () => void
   onOpenHistory?: (workflowId: string, title: string) => void
 }
@@ -24,8 +26,6 @@ const MAX_COMPOSER_LINES = 10
 function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
   const name = file.name || 'file'
   const size = formatSize(file.sizeBytes)
-  const when = formatFileWhen(file.createdAt)
-  const meta = [when, size].filter(Boolean).join(' · ')
   return (
     <li>
       <button
@@ -40,7 +40,7 @@ function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
           <span className="wf-file-name" title={name}>
             {name}
           </span>
-          {meta ? <span className="wf-file-meta">{meta}</span> : null}
+          {size ? <span className="wf-file-meta">{size}</span> : null}
         </div>
       </button>
     </li>
@@ -70,6 +70,9 @@ function FileSection({
 export function AgentRunPage({
   workflowId,
   title,
+  autoStart = false,
+  initialMessage = '',
+  appContext = '',
   onBack,
   onOpenHistory
 }: AgentRunPageProps): React.JSX.Element {
@@ -87,9 +90,11 @@ export function AgentRunPage({
   const dockRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const resumeAgentRef = useRef<string>(entry?.resumeAgentId || '')
+  const autoStartedRef = useRef(false)
+  const initialSentRef = useRef(false)
 
   const isTodayFile = useCallback((item: WorkflowFileItem): boolean => {
-    const stamp = parseIso(item.createdAt)
+    const stamp = parseIso(item.createdAt || '')
     if (!stamp) return false
     return sameDay(stamp, new Date())
   }, [])
@@ -154,12 +159,49 @@ export function AgentRunPage({
     void runs.attachHistoryFeed(workflowId)
   }, [running, workflowId, state?.items?.length, runs])
 
-  // Restore the last conversation. A new run starts only after the user sends
-  // a message. Skip when this page already owns a live sidecar session.
+  // On open, restore the latest known conversation for this exact agent.
+  // Play (autoStart) must start a new run, not reopen the last feed.
   useEffect(() => {
-    if (state?.activeRunId) return
+    if (autoStart || initialMessage.trim()) return
+    if ((state?.items?.length ?? 0) > 0) return
     void runs.attachHistoryFeed(workflowId)
-  }, [workflowId, runs, state?.activeRunId])
+  }, [workflowId, runs, state?.items?.length, autoStart, initialMessage])
+
+  // The "Запустить" play button opens this page with autoStart, so the agent
+  // starts immediately on its own playbook instead of waiting for a message.
+  useEffect(() => {
+    if (personalAgent) return
+    if (!autoStart || autoStartedRef.current) return
+    if (running) return
+    autoStartedRef.current = true
+    runs.startRun({
+      workflowId,
+      title,
+      message: '',
+      shownMessage: 'Запуск агента',
+      resumeAgentId: resumeAgentRef.current || undefined,
+      forceRestart: true
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, workflowId])
+
+  // Поле «Задать вопрос оркестратору» на Сегодня: сразу отправляем вопрос.
+  useEffect(() => {
+    const message = initialMessage.trim()
+    if (!message || initialSentRef.current) return
+    if (running) return
+    initialSentRef.current = true
+    runs.startRun({
+      workflowId,
+      title: title || 'Оркестратор',
+      message,
+      shownMessage: message,
+      resumeAgentId: resumeAgentRef.current || undefined,
+      forceRestart: true,
+      appContext: appContext || undefined
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflowId, initialMessage])
 
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({
@@ -192,7 +234,8 @@ export function AgentRunPage({
       shownMessage: shownMessage || message,
       filePaths: filePaths.length ? filePaths : undefined,
       resumeAgentId: resumeAgentRef.current || undefined,
-      forceRestart: running
+      forceRestart: running,
+      appContext: personalAgent ? appContext || undefined : undefined
     })
   }
 
@@ -266,7 +309,7 @@ export function AgentRunPage({
         kind: 'message',
         id: 'personal-greeting',
         role: 'agent',
-        text: 'Чем могу помочь?'
+        text: 'Я Оркестратор — базовый агент рабочего места. Задайте вопрос по процессам, решениям или задачам.'
       }
     ]
   }, [state?.items, personalAgent])
@@ -283,7 +326,10 @@ export function AgentRunPage({
         <button className="btn-ghost" onClick={onBack}>
           Назад
         </button>
-        <h1 className="wf-title">{title || 'Запуск агента'}</h1>
+        <div className="wf-title-block">
+          <h1 className="wf-title">{title || (personalAgent ? 'Оркестратор' : 'Запуск агента')}</h1>
+          {personalAgent ? <span className="wf-title-sub">Базовый агент</span> : null}
+        </div>
         <div className="wf-topbar-spacer" />
         {onOpenHistory && !personalAgent && (
           <button className="btn-ghost" onClick={() => onOpenHistory(workflowId, title)}>

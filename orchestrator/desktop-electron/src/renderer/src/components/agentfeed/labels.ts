@@ -27,9 +27,12 @@ export const TOOL_LABELS: Record<string, string> = {
   'onec.search_tasks': 'Поиск задач 1С',
   'onec.get_task_card': 'Карточка задачи 1С',
   'onec.meeting_service_notes': 'Служебные записки на совещания',
-  'onec.erp_assignments': 'Поручения 1С (АСТ00)',
-  'onec.erp_assignments_write': 'Запись поручения 1С',
-  'onec.erp_write_probe': 'Проба записи 1С',
+  'onec.meeting_protocols': 'Протоколы совещаний (OData)',
+  'onec.odata_get': 'Чтение 1С',
+  'onec.odata_post': 'Создание записи 1С',
+  'onec.odata_patch': 'Изменение записи 1С',
+  'onec.odata_catalog': 'Каталог сущностей 1С',
+  'onec.sql_query': 'Запрос 1С',
   'onec.erp_tasks_current': 'Текущие задачи 1С',
   'onec.erp_tasks_period': 'Задачи 1С за период',
   'onec.erp_subordinate_tasks': 'Задачи подчинённых 1С',
@@ -95,25 +98,22 @@ export function isTaskTool(tool: string): boolean {
   return name === 'task' || name === 'agent' || name === 'explore' || name === 'generalpurpose'
 }
 
-function compactToolName(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]/g, '')
-}
-
 export function toolLabel(tool: string): string {
   if (!tool) return 'внешний источник'
-  if (TOOL_LABELS[tool]) return TOOL_LABELS[tool]
-  if (SDK_TOOL_LABELS[tool]) return SDK_TOOL_LABELS[tool]
-  const compact = compactToolName(tool)
-  for (const [key, label] of Object.entries(TOOL_LABELS)) {
-    if (compactToolName(key) === compact) return label
-  }
-  return tool
+  return TOOL_LABELS[tool] || SDK_TOOL_LABELS[tool] || tool
 }
 
 export function toolArgHint(args: Record<string, unknown> | undefined): string {
   if (!args) return ''
   for (const key of [
+    'entity',
     'path',
+    'people',
+    'attendees',
+    'mailbox',
+    'filter',
+    'number',
+    'date_from',
     'file_path',
     'target_file',
     'targetFile',
@@ -128,6 +128,7 @@ export function toolArgHint(args: Record<string, unknown> | undefined): string {
     'description',
     'title',
     'name',
+    'filename',
     'subagent_type',
     'prompt'
   ]) {

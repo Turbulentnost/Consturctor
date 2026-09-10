@@ -155,4 +155,4 @@ def test_no_work_runs_keeps_empty_fact() -> None:
     _workflow(db, user_id, "wf-meet", "Развёртка плановых совещаний")
     snap = get_orchestrator(db, user_id=user_id, fio="Ильченко Екатерина Александровна")
     assert all(tile.fact.value is None for tile in snap.tiles)
-    assert "прогонов" in (snap.tiles[0].evidence or "")
+    assert "запусков" in (snap.tiles[0].evidence or "")

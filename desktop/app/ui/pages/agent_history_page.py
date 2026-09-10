@@ -404,7 +404,7 @@ def _events_for_run(item: AgentRunHistoryItem) -> list[dict]:
             }
         )
     if item.status == "error":
-        events.append({"type": "error", "message": item.answer.strip() or "Прогон завершился с ошибкой."})
+        events.append({"type": "error", "message": item.answer.strip() or "Запуск завершился с ошибкой."})
     elif item.answer.strip():
         events.append({"type": "agent_message", "text": item.answer.strip()})
     return events

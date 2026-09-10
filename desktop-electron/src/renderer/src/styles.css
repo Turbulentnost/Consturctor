@@ -2092,12 +2092,13 @@ input {
   background: #fff;
   border: 1px solid rgba(8, 116, 95, 0.16);
   color: var(--main-text);
-  border-top-left-radius: 4px;
+  border-top-left-radius: 6px;
+  min-width: min(100%, 320px);
 }
 .regchat-bubble.user {
   background: #08745f;
   color: #fff;
-  border-top-right-radius: 4px;
+  border-top-right-radius: 6px;
 }
 .regchat-bubble-text {
   white-space: pre-wrap;
@@ -2193,16 +2194,17 @@ input {
   gap: 8px;
 }
 .regchat-quick-chip {
-  background: #eef7f3;
+  background: #f1f8f5;
   color: #06483d;
-  border: 1px solid rgba(6, 72, 61, 0.14);
-  border-radius: 16px;
-  padding: 6px 14px;
-  font-size: 13px;
+  border: 1px solid rgba(8, 116, 95, 0.18);
+  border-radius: 18px;
+  padding: 8px 16px;
+  font-size: 14px;
   cursor: pointer;
 }
 .regchat-quick-chip:hover {
-  background: #dff5ec;
+  background: #e3f3ec;
+  border-color: #08745f;
 }
 .regchat-think {
   background: rgba(255, 255, 255, 0.85);
@@ -2222,20 +2224,29 @@ input {
   color: var(--content-muted);
   font-size: 12px;
   font-weight: 600;
+  text-align: left;
+}
+.regchat-think-head-static {
+  cursor: default;
+}
+.regchat-think-chevron {
+  width: 12px;
+  flex-shrink: 0;
+  color: #08745f;
 }
 .regchat-think-body {
   padding: 0 12px 10px;
   color: var(--content-muted);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 220px;
+  max-height: 320px;
   overflow-y: auto;
 }
 .regchat-status {
   color: var(--content-muted);
-  font-size: 13px;
+  font-size: 14px;
   padding: 4px 2px;
 }
 .regchat-composer {
@@ -4476,6 +4487,101 @@ button.feed-tool-head:hover {
 .feed-tool-head.static {
   cursor: default;
 }
+.feed-tool-request {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--content-muted, #5b7a99);
+  background: #fff;
+  border: 1px dashed var(--card-border, #d7e2ee);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  word-break: break-word;
+}
+.odata-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.odata-brief-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.odata-brief-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--content-strong, #10141a);
+  word-break: break-word;
+}
+.odata-brief-count,
+.odata-brief-more {
+  font-size: 12px;
+  color: var(--content-muted, #5b7a99);
+}
+.odata-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--card-border, #d7e2ee);
+  border-left: 3px solid #1f7a6c;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  cursor: pointer;
+}
+.odata-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.odata-card-title {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--content-strong, #10141a);
+}
+.odata-card-toggle {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1565c0;
+}
+.odata-card-sub,
+.odata-card-preview {
+  font-size: 12px;
+  color: var(--content-muted, #46617d);
+  line-height: 1.4;
+}
+.odata-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.odata-field-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--content-muted, #5b7a99);
+  margin-bottom: 2px;
+}
+.odata-field-value {
+  font-size: 13px;
+  color: var(--content-strong, #10141a);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.odata-people {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--content-strong, #10141a);
+}
 
 /* Mini calendar (calendar.show_meetings result) */
 .mini-cal {
@@ -4565,9 +4671,92 @@ button.feed-tool-head:hover {
 .mini-cal-title {
   font-size: 13px;
   color: var(--content-strong, #10141a);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow: visible;
+}
+.mini-cal-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mini-cal-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--card-border, #d7e2ee);
+  border-left-width: 3px;
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.mini-cal-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.mini-cal-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.mini-cal-card-time {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--content-muted, #46617d);
+}
+.mini-cal-card-toggle {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1565c0;
+}
+.mini-cal-card-title {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--content-strong, #10141a);
+  white-space: normal;
+}
+.mini-cal-card-preview,
+.mini-cal-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mini-cal-card-summary {
+  font-size: 11px;
+  color: var(--content-muted, #5b7a99);
+}
+.mini-cal-people {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mini-cal-people-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--content-muted, #5b7a99);
+}
+.mini-cal-people ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.mini-cal-people li,
+.mini-cal-people-text {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--content-strong, #10141a);
+  white-space: normal;
+}
+.mini-cal-empty-people {
+  font-size: 12px;
+  color: var(--content-muted, #5b7a99);
 }
 .mini-cal-chip {
   flex: none;
@@ -4588,7 +4777,7 @@ button.feed-tool-head:hover {
   white-space: normal;
 }
 .mini-cal-modal {
-  width: min(920px, 94vw);
+  width: min(720px, 94vw);
   max-height: 84vh;
 }
 .mini-cal-modal-head {
@@ -4628,7 +4817,8 @@ button.feed-tool-head:hover {
 /* ===== Mini calendar grid (time-axis view) ===== */
 .mini-cal-scroll {
   width: 100%;
-  overflow-x: auto;
+  max-height: 360px;
+  overflow: auto;
 }
 .mini-cal-grid {
   display: grid;

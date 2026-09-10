@@ -712,30 +712,25 @@ class RegulationCreationSession(BaseModel):
     updatedAt: datetime | None = None
 
 
-class RegulationCreationHistoryItem(BaseModel):
-    draftId: str
-    status: RegulationCreationStatus = "collecting_positions"
-    title: str = ""
-    preview: str = ""
-    messageCount: int = 0
-    hasResult: bool = False
-    canContinue: bool = False
-    createdAt: datetime | None = None
-    updatedAt: datetime | None = None
-
-
-class RegulationCreationHistoryResult(BaseModel):
-    items: list[RegulationCreationHistoryItem] = Field(default_factory=list)
-
-
 class RegulationCreationSendRequest(BaseModel):
     message: str
+
+
+class RegulationCreationSelectProcessesRequest(BaseModel):
+    processIds: list[str] = Field(default_factory=list)
+
+
+class RegulationCreationRoundAnswersRequest(BaseModel):
+    answers: list[dict] = Field(default_factory=list)
+    message: str = ""
 
 
 class RegulationCreationApplyRequest(BaseModel):
     answer: str
     sdkAgentId: str = ""
     forceCreate: bool = False
+    prefetchOnly: bool = False
+    researchOnly: bool = False
 
 
 class RegulationCreationTurn(BaseModel):

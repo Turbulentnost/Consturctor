@@ -47,6 +47,7 @@ import queue
 import re
 import sys
 import threading
+import time
 import traceback
 import uuid
 from dataclasses import asdict, is_dataclass
@@ -113,7 +114,13 @@ from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
 # which is not needed (and not always available) for a headless sidecar.
 # Level-1 autonomy: read tools auto-run, write tools need confirmation.
 _NEVER_CONFIRM = frozenset(
-    {"notify.send", "notify", "code.write_python", "code.run_python"}
+    {
+        "notify.send",
+        "notify",
+        "code.write_python",
+        "code.run_python",
+        "report.export_document",
+    }
 )
 _READ_EXACT = frozenset(
     {
@@ -131,13 +138,12 @@ _READ_EXACT = frozenset(
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
-        "onec.erp_assignments",
-        "onec.erp_write_probe",
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
         "onec.docflow_tasks",
         "onec.meeting_service_notes",
+        "onec.meeting_protocols",
         "agent.wait",
         "turboproject",
         "users.list",
@@ -151,14 +157,27 @@ _READ_PREFIXES = ("onec.search_", "onec.get_", "imap.", "turboproject.")
 
 
 def _is_read_tool(name: str) -> bool:
-    from app.tools.tool_names import matches_known_tool, resolve_tool_name
-
-    tool = resolve_tool_name((name or "").strip(), _READ_EXACT | _NEVER_CONFIRM)
+    tool = (name or "").strip()
     if tool in _NEVER_CONFIRM or tool in _READ_EXACT:
         return True
-    if matches_known_tool(tool, _READ_EXACT | _NEVER_CONFIRM):
-        return True
     return any(tool.startswith(prefix) for prefix in _READ_PREFIXES)
+
+
+_WORK_RESULT_DONE_RE = re.compile(r"#{0,6}[ \t]*WORK[ _]?RESULT\b", re.I)
+_FILES_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*FILES\b", re.I)
+_ACTIONS_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*ACTIONS\b", re.I)
+
+
+def _text_has_finished_work_result(text: str) -> bool:
+    raw = text or ""
+    upper = raw.upper()
+    if "TESTS: FAIL" in upper or "TESTS:FAIL" in upper:
+        return False
+    if "TESTS: PASS" not in upper and "TESTS:PASS" not in upper:
+        return False
+    if _WORK_RESULT_DONE_RE.search(raw):
+        return True
+    return bool(_FILES_SECTION_RE.search(raw) and _ACTIONS_SECTION_RE.search(raw))
 
 
 def needs_confirmation(name: str) -> bool:
@@ -195,8 +214,8 @@ def _stamp_run_event(
     if wf and not out.get("workflowId"):
         out["workflowId"] = wf
     folded = (kind or "").strip()
-    if folded == "run" and not out.get("kind"):
-        out["kind"] = "run"
+    if folded in {"run", "eval"} and not out.get("kind"):
+        out["kind"] = folded
     return out
 
 
@@ -310,6 +329,149 @@ _MEETING_TIPS = (
     "create_event",
 )
 
+_CALENDAR_CONTROL_TIPS = (
+    "подготовка псд",
+    "контроль календаря",
+    "устный список",
+    "без окон",
+    "окна в рабочее",
+    "на планёрку",
+    "на планерку",
+    "календаря псд",
+    "сдвиг уже стоящих",
+)
+
+_SERIES_SCHEDULE_TIPS = (
+    "плановые совещани",
+    "развёртк",
+    "развертк",
+    "запланируй",
+    "запиши встреч",
+)
+
+_RK_TIPS = (
+    "ревизионной комиссии",
+    "ревизионная комиссия",
+    "заседаний ревизион",
+    "заседания ревизион",
+    "пл-01-001",
+    "пл 01-001",
+)
+
+RK_RUN_HINT = (
+    "This is RK meeting prep (ПЛ-01-001), not calendar control. "
+    "One data pass only: do not restart outlook/1C/excel/network reads or say data is stale. "
+    "Exclude Constructor test probes from 1C (title/comment/number contains Constructor or "
+    "проба Constructor). "
+    "Network folder: one workspace.powershell_run attempt (dir/list only); on 90s timeout "
+    "continue with 1C and materials/attachments. "
+    "If Outlook has no Tuesday RK meeting, write «Недостаточно данных: дата заседания не найдена» "
+    "but still export partial lists via report.export_document. "
+    "Do not call outlook.search_mail or imap.*. "
+    "Call report.export_document with the agenda/lists BEFORE ## WORK_RESULT. "
+    "If the meeting date is unconfirmed, still export the file, then WORK_RESULT "
+    "with «Недостаточно данных». Finish with TESTS: PASS; no step narration in chat."
+)
+
+CALENDAR_CONTROL_HINT = (
+    "This is calendar control / morning briefing, not a meeting-series job. "
+    "Morning: users.current, outlook.read_calendar for today, outlook.search_mail once "
+    "(query отпуск), calendar.show_meetings, then ## WORK_RESULT and TESTS: PASS. "
+    "If search_mail returned 0 messages, absences are empty — do not call it again. "
+    "Do not ask what the agent should do. Do not call create_event in the morning. "
+    "Evening after 16:00 MSK: same reads for tomorrow, show keep/add/cancel, "
+    "create_event only after HITL to shift existing meetings. "
+    "After WORK_RESULT call no more tools."
+)
+
+_SD_MEETING_TIPS = (
+    "заседаний совета",
+    "заседания совета",
+    "подготовка заседаний совета",
+    "совета директоров",
+    "сд гк",
+    "пл-34-242",
+    "пл 34-242",
+    "пл34-242",
+)
+
+_RK_MEETING_TIPS = (
+    "ревизионной комиссии",
+    "ревизионная комиссия",
+    "заседаний ревизион",
+    "заседания ревизион",
+    "пл-01-001",
+    "пл 01-001",
+    "пл01-001",
+)
+
+_SD_MEETING_TOOLS = {
+    "outlook.read_calendar",
+    "calendar.show_meetings",
+    "onec.meeting_service_notes",
+    "onec.meeting_protocols",
+    "onec.search_documents",
+    "onec.get_document_card",
+    "onec.list_attachments",
+    "onec.read_attachment",
+    "onec.odata_catalog",
+    "onec.odata_get",
+    "onec.sql_query",
+    "onec.erp_tasks_current",
+    "onec.erp_tasks_period",
+    "onec.docflow_tasks",
+    "excel.list_files",
+    "excel.read_workbook",
+    "report.build_meeting_summary",
+    "report.export_document",
+    "users.current",
+}
+
+_RK_MEETING_TOOLS = {
+    "outlook.read_calendar",
+    "calendar.show_meetings",
+    "onec.meeting_protocols",
+    "onec.erp_tasks_current",
+    "onec.erp_tasks_period",
+    "onec.docflow_tasks",
+    "onec.search_documents",
+    "onec.get_document_card",
+    "onec.list_attachments",
+    "onec.read_attachment",
+    "onec.odata_get",
+    "onec.sql_query",
+    "excel.list_files",
+    "excel.read_workbook",
+    "report.build_task_report",
+    "report.build_meeting_summary",
+    "report.export_document",
+    "workspace.powershell_run",
+    "users.current",
+}
+
+SD_MEETING_HINT = (
+    "This is board-meeting completeness (SD / PL-34-242), not mail search and not "
+    "a meeting-series job. Find the meeting with ONE outlook.read_calendar "
+    "(or read the dumped calendar JSON once if COM already wrote it). "
+    "Then onec.meeting_service_notes (OData), onec.meeting_protocols (meeting_kind=sd, OData; "
+    "numbers ПСД_001_О_*, not manual odata_get with startswith СД/СПГ), "
+    "and onec.search_documents (OData) for «совет директоров по гк». Do not use COM 1C. "
+    "Do not call outlook.search_mail, imap.search, imap.list_unread, glob/grep loops, "
+    "onec.odata_get on Document_ТД_Протокол, or onec.odata_catalog without entity+filter. "
+    "If COM is down, one odata_catalog then onec.meeting_protocols; "
+    "if 1C is fully unavailable, record the gap in WORK_RESULT and stop. "
+    "After WORK_RESULT call no more tools."
+)
+
+RK_MEETING_HINT = (
+    "This is revision-commission prep (RK / PL-01-001), not mail search. "
+    "Use Outlook calendar, onec.meeting_protocols (meeting_kind=rk), 1C tasks/documents, "
+    "and the RK share folders. "
+    "Do not call outlook.search_mail or imap.*. "
+    "If a source is unavailable, record the gap and write ## WORK_RESULT. "
+    "After WORK_RESULT call no more tools."
+)
+
 
 def _is_keep_knowledge_file(name: str) -> bool:
     folded = (name or "").strip().casefold()
@@ -372,6 +534,16 @@ RUN_INPUTS_RUN_HINT = (
     "in materials/attachments, stop and ask via askQuestion with needsFile=true. "
     "Do not substitute another tool or system for a missing user file."
 )
+RUN_INPUT_WAIT_SECONDS = 30
+FILE_QUESTION_SKIP_ANSWER = (
+    "Файла нет. Продолжай без вложения: ищи данные в 1С, Outlook, Excel "
+    "и сетевых папках по playbook агента. Не спрашивай этот файл снова."
+)
+RUN_INPUT_SKIP_ANSWER = (
+    "Файла нет. Ищи план работ в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\8. Планы работ, "
+    "реестр в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\10. Секретарь РК\\РЕЕСТР ПОРУЧЕНИЙ "
+    "и поручения в 1С ERP. Не спрашивай файл снова."
+)
 _RUN_INPUT_GATE_HINTS = (
     "файл, который пользователь будет прикладывать",
     "прикладывать при каждом запуске",
@@ -379,11 +551,125 @@ _RUN_INPUT_GATE_HINTS = (
 )
 
 
+def _is_calendar_control_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    return any(tip in blob for tip in _CALENDAR_CONTROL_TIPS)
+
+
+def _is_rk_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    if any(hint in blob for hint in ("совета директоров", "пл-34-242", "пл 34-242")):
+        return False
+    return any(tip in blob for tip in _RK_TIPS)
+
+
+def _is_sd_meeting_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    return any(tip in blob for tip in _SD_MEETING_TIPS)
+
+
+def _workflow_text_parts(record: Any) -> list[Any]:
+    parts: list[Any] = [
+        getattr(record, "title", "") or "",
+        getattr(record, "notes", "") or "",
+    ]
+    local = getattr(record, "local_run", None) or {}
+    if isinstance(local, dict):
+        for key in ("playbook", "playbook_draft"):
+            raw = local.get(key)
+            if isinstance(raw, dict):
+                parts.extend(
+                    [
+                        str(raw.get("name") or ""),
+                        str(raw.get("instructions") or ""),
+                    ]
+                )
+    return parts
+
+
+def _is_sd_meeting_workflow(record: Any) -> bool:
+    return _is_sd_meeting_text(*_workflow_text_parts(record))
+
+
+def _is_rk_meeting_workflow(record: Any) -> bool:
+    return _is_rk_text(*_workflow_text_parts(record))
+
+
+def _is_calendar_control_workflow(record: Any) -> bool:
+    parts: list[Any] = [
+        getattr(record, "title", "") or "",
+        getattr(record, "notes", "") or "",
+    ]
+    local = getattr(record, "local_run", None) or {}
+    if isinstance(local, dict):
+        for key in ("playbook", "playbook_draft"):
+            raw = local.get(key)
+            if isinstance(raw, dict):
+                parts.extend(
+                    [
+                        str(raw.get("name") or ""),
+                        str(raw.get("instructions") or ""),
+                    ]
+                )
+    return _is_calendar_control_text(*parts)
+
+
+_CALENDAR_CONTROL_TOOLS = {
+    "users.current",
+    "outlook.read_calendar",
+    "outlook.search_mail",
+    "calendar.show_meetings",
+    "outlook.create_event",
+    "users.list",
+    "notify.send",
+}
+
+
+def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
+    """Limit specialized agents to their playbook tools; keep the full catalog otherwise."""
+    allowed: set[str] | None = None
+    if _is_calendar_control_workflow(record):
+        allowed = _CALENDAR_CONTROL_TOOLS
+    elif _is_sd_meeting_workflow(record):
+        allowed = _SD_MEETING_TOOLS
+    elif _is_rk_meeting_workflow(record):
+        allowed = _RK_MEETING_TOOLS
+    if allowed is None:
+        return None
+    return [
+        item
+        for item in sdk_tool_specs()
+        if str(item.get("name") or "") in allowed
+    ]
+
+
+def _is_outlook_series_prompt(prompt: str) -> bool:
+    blob = (prompt or "").casefold()
+    if _is_calendar_control_text(blob) or _is_sd_meeting_text(blob) or _is_rk_text(blob):
+        return False
+    return any(tip in blob for tip in _SERIES_SCHEDULE_TIPS)
+
+
 def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
-    parts = [KEEP_FILE_HINT, OUTLOOK_MEETING_HINT]
-    if (mode or "").strip().casefold() != "design":
-        parts.append(RUN_INPUTS_RUN_HINT)
+    folded = (mode or "").strip().casefold()
     text = (prompt or "").strip()
+    # KPI explain / other one-shot evals must not inherit playbook tool hints.
+    if folded == "eval":
+        return text
+    parts = [KEEP_FILE_HINT]
+    if _is_calendar_control_text(prompt):
+        parts.append(CALENDAR_CONTROL_HINT)
+    elif _is_sd_meeting_text(prompt):
+        parts.append(SD_MEETING_HINT)
+    elif _is_rk_text(prompt):
+        parts.append(RK_RUN_HINT)
+    elif _is_outlook_series_prompt(prompt):
+        parts.append(OUTLOOK_MEETING_HINT)
+    if folded == "design":
+        parts.append(WHEN_TO_RUN_HINT)
+        parts.append(RUN_INPUTS_HINT)
+    else:
+        parts.append(RUN_INPUTS_RUN_HINT)
     if text:
         parts.append(text)
     return "\n\n".join(parts)
@@ -398,6 +684,8 @@ def _meeting_blob(*parts: Any) -> str:
 
 
 def _is_meeting_text(*parts: Any) -> bool:
+    if _is_calendar_control_text(*parts) or _is_sd_meeting_text(*parts) or _is_rk_text(*parts):
+        return False
     blob = _meeting_blob(*parts)
     return any(tip in blob for tip in _MEETING_TIPS)
 
@@ -444,6 +732,9 @@ def _merge_outlook_rule_into_playbook(local_run: dict[str, Any] | None) -> dict[
         if not isinstance(raw, dict):
             continue
         current = str(raw.get("instructions") or "").strip()
+        name = str(raw.get("name") or "")
+        if _is_calendar_control_text(current, name) or _is_sd_meeting_text(current, name) or _is_rk_text(current, name):
+            continue
         if OUTLOOK_SERIES_MARKER in current:
             continue
         updated = dict(raw)
@@ -798,10 +1089,14 @@ class ElectronBridge(CursorSdkBridge):
         on_question: Any = None,
         should_stop: Any = None,
         confirm_writes: bool = False,
+        include_app_tools: bool = True,
     ) -> dict[str, Any]:
-        specs = list(tools) if tools is not None else list(sdk_tool_specs())
-        if not any(_is_keep_knowledge_file(str(item.get("name") or "")) for item in specs):
-            specs.append(dict(KEEP_KNOWLEDGE_FILE_SPEC))
+        if include_app_tools:
+            specs = list(tools) if tools is not None else list(sdk_tool_specs())
+            if not any(_is_keep_knowledge_file(str(item.get("name") or "")) for item in specs):
+                specs.append(dict(KEEP_KNOWLEDGE_FILE_SPEC))
+        else:
+            specs = list(tools) if tools is not None else []
         if workflow_id:
             self._knowledge_workflow_id = workflow_id
         if cwd:
@@ -936,6 +1231,7 @@ class HitlGate:
         self.qa_history: list[dict[str, str]] = []
         self._lock = threading.Lock()
         self._events: list[dict[str, Any]] | None = None
+        self.work_result_done = False
 
     def bind(self, *, workflow_id: str = "", kind: str = "") -> None:
         if workflow_id:
@@ -958,7 +1254,19 @@ class HitlGate:
             }
         )
 
+    def mark_work_result_done(self) -> None:
+        self.work_result_done = True
+        with self._lock:
+            pending = list(self._hitl.items())
+        for _request_id, box in pending:
+            try:
+                box.put_nowait(False)
+            except Exception:
+                continue
+
     def request(self, tool: str, args: dict[str, Any]) -> bool:
+        if self.work_result_done:
+            return False
         request_id = uuid.uuid4().hex
         box: queue.Queue[bool] = queue.Queue(maxsize=1)
         with self._lock:
@@ -1007,6 +1315,7 @@ class HitlGate:
         with self._lock:
             self._answers[request_id] = box
             self._needs_file[request_id] = needs_file
+        wait_s, skip_answer = _auto_continue_from_payload(payload)
         emit(
             _stamp_run_event(
                 {
@@ -1017,6 +1326,8 @@ class HitlGate:
                     "options": options,
                     "needsFile": needs_file,
                     "accept": accept,
+                    "autoContinueSeconds": wait_s or None,
+                    "autoContinueAnswer": skip_answer or None,
                 },
                 workflow_id=self._workflow_id,
                 kind=self._kind,
@@ -1024,6 +1335,7 @@ class HitlGate:
         )
         self._record_timing("human_wait", "question", request_id)
         reply: dict[str, Any] = {}
+        deadline = time.monotonic() + wait_s if wait_s > 0 else None
         try:
             while True:
                 if should_stop and should_stop():
@@ -1032,6 +1344,9 @@ class HitlGate:
                     reply = box.get(timeout=0.4)
                     break
                 except queue.Empty:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        reply = {"ok": True, "answer": skip_answer, "text": skip_answer}
+                        break
                     continue
         finally:
             with self._lock:
@@ -1169,6 +1484,34 @@ def _accept_extensions(raw: Any) -> list[str]:
     return out
 
 
+def _auto_continue_from_payload(payload: dict[str, Any]) -> tuple[float, str]:
+    args = _as_record(payload.get("arguments"))
+    nested = _as_record(args.get("arguments") or args.get("input") or args.get("properties"))
+    source = {**nested, **args, **payload}
+    raw = source.get("autoContinueSeconds")
+    if raw is None:
+        raw = source.get("auto_continue_seconds")
+    try:
+        wait_s = float(raw or 0)
+    except (TypeError, ValueError):
+        wait_s = 0.0
+    if wait_s < 0:
+        wait_s = 0.0
+    skip = str(
+        source.get("autoContinueAnswer")
+        or source.get("auto_continue_answer")
+        or ""
+    ).strip()
+    needs_file, _ = _file_request_from_payload(payload)
+    if needs_file and wait_s <= 0:
+        wait_s = float(RUN_INPUT_WAIT_SECONDS)
+    if needs_file and not skip:
+        skip = FILE_QUESTION_SKIP_ANSWER
+    elif wait_s > 0 and not skip:
+        skip = RUN_INPUT_SKIP_ANSWER
+    return wait_s, skip
+
+
 def _file_request_from_payload(payload: dict[str, Any]) -> tuple[bool, list[str]]:
     args = _as_record(payload.get("arguments"))
     nested = _as_record(args.get("arguments") or args.get("input") or args.get("properties"))
@@ -1268,6 +1611,88 @@ def _persist_run_outputs(
         return []
     _upload_run_outputs(api, workflow_id, paths, run_id=run_id)
     return paths
+
+
+_NAMED_RESULT_FILE_RE = re.compile(
+    r"(?im)^\s*([^\s:/\\]+\.(?:docx|xlsx|xls|pdf|md|txt))\s*:?\s*$"
+)
+
+
+def _files_named_in_answer(answer: str) -> list[str]:
+    raw = answer or ""
+    section = re.search(
+        r"(?is)\bFILES\b\s*:?\s*(.*?)(?:\n\s*(?:ACTIONS|NOTIFICATIONS|SCHEDULE|CLARIFY|TESTS)\b|\Z)",
+        raw,
+    )
+    blob = section.group(1) if section else raw
+    names: list[str] = []
+    for match in _NAMED_RESULT_FILE_RE.finditer(blob):
+        name = Path(match.group(1)).name
+        if name and name not in names:
+            names.append(name)
+    if names:
+        return names
+    for match in re.finditer(
+        r"([A-Za-zА-Яа-я0-9_.\-]+\.(?:docx|xlsx|xls|pdf|md|txt))",
+        blob,
+        flags=re.I,
+    ):
+        name = Path(match.group(1)).name
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _write_answer_document(cwd: str, filename: str, answer: str) -> Path | None:
+    folder = Path(cwd or "").expanduser()
+    if not folder.is_dir():
+        return None
+    name = Path(filename).name or "report.docx"
+    path = folder / name
+    body = (answer or "").strip() or name
+    try:
+        from docx import Document
+
+        document = Document()
+        document.add_heading(Path(name).stem.replace("_", " "), level=0)
+        for line in body.splitlines() or [body]:
+            document.add_paragraph(line)
+        if path.suffix.lower() != ".docx":
+            path = path.with_suffix(".docx")
+        document.save(path)
+        return path
+    except Exception:
+        fallback = path.with_suffix(".md")
+        fallback.write_text(body, encoding="utf-8")
+        return fallback
+
+
+def _ensure_result_files_from_answer(
+    api: ApiClient | None,
+    workflow_id: str,
+    run_cwd: str,
+    answer: str,
+    run_id: str = "",
+) -> list[str]:
+    if api is None or not (workflow_id or "").strip():
+        return []
+    names = _files_named_in_answer(answer)
+    if not names:
+        return []
+    created: list[str] = []
+    folder = Path(run_cwd) if run_cwd else None
+    for name in names:
+        existing = folder / name if folder else None
+        if existing is not None and existing.is_file():
+            created.append(str(existing))
+            continue
+        written = _write_answer_document(run_cwd, name, answer)
+        if written is not None and written.is_file():
+            created.append(str(written))
+    if not created:
+        return []
+    _upload_run_outputs(api, workflow_id, created, run_id=run_id)
+    return created
 
 
 def _upload_run_attachments(
@@ -1494,12 +1919,18 @@ def _with_run_journal_prompt(prompt: str, cwd: str, workflow_id: str) -> str:
     scoped = _run_journal_path(cwd, workflow_id)
     if scoped.is_file():
         rel = scoped.relative_to(Path(cwd).resolve()).as_posix()
-        hint = f"Read {rel} before acting; use it as the prior run route."
+        hint = (
+            f"Skim {rel} once (first ~50 lines, one Read). "
+            "Do not re-read it; then call Constructor tools."
+        )
         return f"{hint}\n\n{prompt}"
     legacy = _legacy_run_journal_path(cwd)
     if not legacy.is_file():
         return prompt
-    hint = "Read materials/run_journal.md before acting; use it as the prior run route."
+    hint = (
+        "Skim materials/run_journal.md once (first ~50 lines, one Read). "
+        "Do not re-read it; then call Constructor tools."
+    )
     return f"{hint}\n\n{prompt}"
 
 
@@ -1616,6 +2047,60 @@ def _is_trigger_command(command: dict[str, Any]) -> bool:
     return bool(str(command.get("triggerId") or command.get("trigger_id") or "").strip())
 
 
+def _command_flag(value: Any) -> bool:
+    if value is True:
+        return True
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def _is_eval_command(command: dict[str, Any]) -> bool:
+    source = str(command.get("source") or "").strip().lower()
+    if source in {"eval", "explain"}:
+        return True
+    return _command_flag(command.get("fresh"))
+
+
+EVAL_UI_PREFIX = "__bg_explain__"
+
+
+def _eval_ui_workflow_id(workflow_id: str) -> str:
+    wid = (workflow_id or "").strip()
+    if not wid or wid.startswith(EVAL_UI_PREFIX):
+        return wid
+    return f"{EVAL_UI_PREFIX}{wid}"
+
+
+def _payload_explain_verdict(payload: dict[str, Any]) -> bool:
+    """True when assistant text already contains a complete explain JSON object."""
+    text = " ".join(
+        str(payload.get(key) or "")
+        for key in ("text", "message", "answer", "content")
+    )
+    if '"verdict"' not in text:
+        return False
+    start = text.find("{")
+    while start >= 0:
+        depth = 0
+        for index in range(start, len(text)):
+            char = text[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth != 0:
+                    continue
+                chunk = text[start : index + 1]
+                try:
+                    data = json.loads(chunk)
+                except json.JSONDecodeError:
+                    break
+                if isinstance(data, dict) and str(data.get("verdict") or "").strip():
+                    return True
+                break
+        start = text.find("{", start + 1)
+    return False
+
+
 PERSONAL_AGENT_PREFIX = "personal-agent:"
 
 
@@ -1623,14 +2108,24 @@ def _is_personal_agent(workflow_id: str) -> bool:
     return (workflow_id or "").startswith(PERSONAL_AGENT_PREFIX)
 
 
-def _build_personal_agent_prompt(message: str) -> str:
+def _build_personal_agent_prompt(message: str, app_context: str = "") -> str:
     task = (message or "").strip() or "Помоги сотруднику по организационному вопросу."
+    context = (app_context or "").strip()
+    context_block = (
+        "\n\nКонтекст рабочего места (Сегодня / процессы / решения / KPI). "
+        "Опирайся на него и на инструменты приложения (users.*, board, 1С, почта, файлы):\n"
+        f"{context}\n"
+        if context
+        else "\n\nКонтекст рабочего места не передан — при необходимости получи факты инструментами приложения.\n"
+    )
     return (
-        "Ты персональный базовый агент сотрудника. "
-        "Ты не привязан к конкретной должности или процессу и помогаешь по организационным задачам. "
-        "Используй доступные инструменты, сначала получай факты, потом давай итог. "
-        "Весь ответ и вопросы пиши на русском.\n\n"
-        f"Задача:\n{task}"
+        "Ты — Оркестратор, базовый агент рабочего места сотрудника в приложении «Оркестратор». "
+        "Ты видишь и можешь использовать данные всего приложения: вкладки Сегодня, Процессы, Решения, "
+        "Показатели, История, Настройки, а также серверные инструменты (пользователь, board, 1С, почта, "
+        "Turbo Project, файлы). Сначала получай факты инструментами, потом давай итог. "
+        "Весь ответ и вопросы пиши на русском."
+        f"{context_block}\n"
+        f"Вопрос сотрудника:\n{task}"
     )
 
 
@@ -1662,15 +2157,16 @@ class Sidecar:
         # token. Without it they fail with "no user session" even if the UI is logged in.
         configure_runtime_api(token=token, base_url=self._api.base_url)
         # COM 1C workers read ERP_LOGIN / ERP_PASSWORD from the process env.
+        # ONEC_COM_USR in desktop/.env overrides session FIO for COM Usr=.
         login = str(command.get("login") or "").strip()
         password = str(command.get("password") or "")
-        if login:
-            os.environ["ERP_LOGIN"] = login
+        if login and not os.environ.get("ONEC_COM_USR", "").strip():
+            if not os.environ.get("ERP_LOGIN", "").strip():
+                os.environ["ERP_LOGIN"] = login
         if password:
             os.environ["ERP_PASSWORD"] = password
-        elif "password" in command:
+        elif "password" in command and not os.environ.get("ERP_PASSWORD", "").strip():
             os.environ.pop("ERP_PASSWORD", None)
-        self._sweep_dead_runs()
 
     def check_ready(self) -> None:
         try:
@@ -1698,48 +2194,24 @@ class Sidecar:
         ).strip()
         if kind in {"form_orchestrator", "calc_orchestrator"}:
             return kind
+        if kind == "run" and _is_eval_command(command):
+            return f"eval:{target}" if target else "eval"
         return f"{kind}:{target}" if target else ""
-
-    def _abort_active(self, active: "ActiveRun", answer: str) -> None:
-        active.stop.set()
-        try:
-            active.bridge.skip_tool("")
-        except Exception:
-            pass
-        process = getattr(active.bridge, "_process", None)
-        poll = getattr(process, "poll", None)
-        if process is not None and callable(poll) and poll() is None:
-            try:
-                process.terminate()
-            except Exception:
-                pass
-        self._finish_active_history(active, answer)
-        emit(
-            {
-                "type": "result",
-                "runId": active.run_id,
-                "kind": active.kind or "run",
-                "status": "canceled",
-                "workflowId": active.workflow_id,
-            }
-        )
-
-    def _sweep_dead_runs(self) -> None:
-        dead: list[ActiveRun] = []
-        with self._lock:
-            for active in list(self._active.values()):
-                if _sdk_run_alive(active):
-                    continue
-                self._active.pop(active.run_id, None)
-                dead.append(active)
-        for active in dead:
-            log("sweep dead run: " + _ascii(active.run_id))
-            self._abort_active(active, "Cursor SDK не отвечает")
 
     def start(self, kind: str, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or uuid.uuid4().hex)
         dedup_key = self._dedup_key(kind, command)
         replace_personal = dedup_key.startswith(f"run:{PERSONAL_AGENT_PREFIX}")
+        replace_eval = dedup_key.startswith("eval:")
+        is_manual_run = (
+            kind == "run"
+            and bool(dedup_key)
+            and not _is_trigger_command(command)
+            and not _is_eval_command(command)
+        )
+        force_restart = _command_flag(
+            command.get("forceRestart") or command.get("force_restart")
+        )
         overlap_run_id = ""
         skip_run_id = ""
         with self._lock:
@@ -1747,9 +2219,16 @@ class Sidecar:
                 for existing in list(self._active.values()):
                     if existing.dedup_key != dedup_key:
                         continue
-                    if replace_personal:
+                    replace = (
+                        force_restart
+                        or is_manual_run
+                        or replace_personal
+                        or replace_eval
+                        or not _sdk_run_alive(existing)
+                    )
+                    if replace:
                         log(
-                            "replace personal run: "
+                            "replace active run: "
                             + _ascii(f"{dedup_key} (active run {existing.run_id})")
                         )
                         existing.stop.set()
@@ -1759,26 +2238,31 @@ class Sidecar:
                             pass
                         self._active.pop(existing.run_id, None)
                         break
-                    if _sdk_run_alive(existing):
+                    if is_manual_run or force_restart:
+                        # Manual UI start must never adopt a stale sidecar slot.
+                        log(
+                            "force replace manual run: "
+                            + _ascii(f"{dedup_key} (active run {existing.run_id})")
+                        )
+                        existing.stop.set()
+                        try:
+                            existing.bridge.skip_tool("")
+                        except Exception:
+                            pass
+                        self._active.pop(existing.run_id, None)
+                        break
+                    if _is_trigger_command(command):
                         log(
                             "skip duplicate run: "
                             + _ascii(f"{dedup_key} (active run {existing.run_id})")
                         )
-                        if _is_trigger_command(command):
-                            overlap_run_id = existing.run_id
-                        else:
-                            skip_run_id = existing.run_id
+                        overlap_run_id = existing.run_id
                         break
                     log(
-                        "replace dead run: "
-                        + _ascii(f"{dedup_key} (stale run {existing.run_id})")
+                        "skip duplicate run: "
+                        + _ascii(f"{dedup_key} (active run {existing.run_id})")
                     )
-                    existing.stop.set()
-                    try:
-                        existing.bridge.skip_tool("")
-                    except Exception:
-                        pass
-                    self._active.pop(existing.run_id, None)
+                    skip_run_id = existing.run_id
                     break
             if not overlap_run_id and not skip_run_id:
                 gate = HitlGate(run_id)
@@ -1807,15 +2291,16 @@ class Sidecar:
         if skip_run_id:
             emit(
                 {
-                    "type": "event",
-                    "runId": skip_run_id,
-                    "payload": {
-                        "type": "status",
-                        "text": "Продолжаю текущий запуск агента.",
-                    },
+                    "type": "run_adopted",
+                    "runId": run_id,
+                    "linkedRunId": skip_run_id,
+                    "message": "Продолжаю текущий запуск агента.",
                 }
             )
             return
+        stamp_wf = str(command.get("workflowId") or "").strip()
+        if _is_eval_command(command):
+            stamp_wf = _eval_ui_workflow_id(stamp_wf)
         emit(
             _stamp_run_event(
                 {
@@ -1823,7 +2308,7 @@ class Sidecar:
                     "runId": run_id,
                     "payload": {"type": "status", "text": f"Запускаю агента ({kind})."},
                 },
-                workflow_id=str(command.get("workflowId") or ""),
+                workflow_id=stamp_wf,
                 kind=kind,
             )
         )
@@ -1908,19 +2393,40 @@ class Sidecar:
             if not isinstance(payload, dict):
                 return
             event_type = str(payload.get("type") or "")
+            if event_type in {"assistant", "thinking", "final", "status"}:
+                blob = " ".join(
+                    str(payload.get(key) or "")
+                    for key in ("text", "answer", "message")
+                )
+                if blob.strip() and event_type != "thinking":
+                    active.answer_buf = f"{active.answer_buf}{blob}"
+                if event_type in {"assistant", "final"} and (
+                    _text_has_finished_work_result(blob)
+                    or _text_has_finished_work_result(active.answer_buf)
+                ):
+                    active.gate.mark_work_result_done()
+                    active.stop.set()
             if event_type not in {"ready", "done"}:
                 events.append(_with_at(payload))
+            event_wf = (active.event_workflow_id or active.workflow_id or "").strip()
             # Interactive question/tool_request are handled via HITL gate.
             if event_type in {"question", "tool_request"}:
                 self._flush_run_events(active)
+                if active.kind == "eval":
+                    active.stop.set()
                 return
             emit(
                 _stamp_run_event(
                     {"type": "event", "runId": active.run_id, "payload": payload},
-                    workflow_id=active.workflow_id,
+                    workflow_id=event_wf,
                     kind=active.kind,
                 )
             )
+            if active.kind == "eval":
+                if event_type in {"tool_call", "tool_result"}:
+                    active.stop.set()
+                elif _payload_explain_verdict(payload):
+                    active.stop.set()
             run_ref = (active.history_run_id or "").strip()
             if (
                 run_ref
@@ -1965,6 +2471,9 @@ class Sidecar:
         if _is_meeting_workflow(record) or _is_meeting_text(design_prompt):
             _ensure_outlook_rule_in_brief(run_cwd)
         bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
+        # Ask for a per-run file sample before the designer writes the draft,
+        # so the SDK run can read it and ask follow-up questions.
+        self._ensure_run_input_sample_asked(active, workflow_id)
         events = active.events
         result = bridge.run(
             prompt=build_design_sdk_prompt(record, design_prompt),
@@ -1987,6 +2496,7 @@ class Sidecar:
             if exc.status_code not in {404, 405}:
                 raise
         self._ensure_outlook_rule_in_playbook(workflow_id)
+        self._ensure_when_to_run_asked(active, workflow_id)
         emit(
             {
                 "type": "result",
@@ -2050,6 +2560,10 @@ class Sidecar:
         if _is_meeting_workflow(record):
             _ensure_outlook_rule_in_brief(run_cwd)
         bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
+        # Trial run is still interactive: ask for a per-run sample if design
+        # skipped it, then for each declared run_input. Otherwise the model
+        # invents a substitute data source (for example another system).
+        self._ensure_run_input_sample_asked(active, workflow_id)
         try:
             record = self._api.get_workflow(workflow_id)
         except ApiError:
@@ -2065,6 +2579,7 @@ class Sidecar:
             workflow_id=workflow_id,
             cwd=run_cwd,
             resume_agent_id=resume_agent_id,
+            tools=_tool_specs_for_workflow(record),
             on_event=self._forward_events(active, events),
             on_question=active.gate.ask_question,
             should_stop=active.stop.is_set,
@@ -2096,6 +2611,9 @@ class Sidecar:
         workflow_id = str(command.get("workflowId") or "").strip()
         if not workflow_id:
             raise ValueError("run requires workflowId")
+        if _is_eval_command(command):
+            self._run_eval(command, active, workflow_id)
+            return
         if _is_personal_agent(workflow_id):
             self._run_personal_agent(command, active, workflow_id)
             return
@@ -2190,6 +2708,7 @@ class Sidecar:
                     workflow_id=workflow_id,
                     cwd=run_cwd,
                     resume_agent_id=resume_agent_id,
+                    tools=_tool_specs_for_workflow(workflow),
                     on_event=self._forward_events(active, events),
                     on_question=active.gate.ask_question,
                     should_stop=active.stop.is_set,
@@ -2204,6 +2723,7 @@ class Sidecar:
                         workflow_id=workflow_id,
                         cwd=run_cwd,
                         resume_agent_id="",
+                        tools=_tool_specs_for_workflow(workflow),
                         on_event=self._forward_events(active, events),
                         on_question=active.gate.ask_question,
                         should_stop=active.stop.is_set,
@@ -2214,6 +2734,15 @@ class Sidecar:
             answer = str(result.get("answer") or "").strip()
             agent_id = str(result.get("agent_id") or resume_agent_id).strip()
             self._store_agent_id(workflow_id, agent_id)
+            if status == "ok" and not _text_has_finished_work_result(answer):
+                status = "error"
+                tail = answer.strip()
+                answer = (
+                    "Запуск завершился без ## WORK_RESULT и TESTS: PASS — "
+                    "агент остановился после подготовительных шагов."
+                )
+                if tail:
+                    answer = f"{answer}\n\n{tail}"
         except Exception as exc:  # noqa: BLE001
             status = "error"
             answer = str(exc)
@@ -2251,6 +2780,13 @@ class Sidecar:
                 run_cwd,
                 run_id=str(run_ref or active.run_id).strip(),
             )
+            _ensure_result_files_from_answer(
+                self._api,
+                workflow_id,
+                run_cwd,
+                answer,
+                run_id=str(run_ref or active.run_id).strip(),
+            )
         except Exception as exc:  # noqa: BLE001
             log("run output sweep failed: " + repr(exc))
         try:
@@ -2279,6 +2815,82 @@ class Sidecar:
             }
         )
 
+    def _run_eval(
+        self,
+        command: dict[str, Any],
+        active: ActiveRun,
+        workflow_id: str,
+    ) -> None:
+        """One-shot JSON eval (KPI explain). Isolated from the live agent thread."""
+        message = str(command.get("message") or "").strip()
+        if not message:
+            raise ValueError("eval requires message")
+        active.workflow_id = workflow_id
+        active.kind = "eval"
+        active.event_workflow_id = _eval_ui_workflow_id(workflow_id)
+        active.gate.bind(workflow_id=workflow_id, kind="eval")
+        bridge = active.bridge
+        bridge.check_ready()
+        eval_cwd_id = f"eval-{workflow_id}"
+        run_cwd = bridge.workspace_cwd(eval_cwd_id)
+        active.run_cwd = run_cwd
+        bridge.bind_knowledge(None, "", run_cwd, active.run_id)
+
+        def _reject_question(payload: dict[str, Any], should_stop: Any = None) -> dict[str, Any]:
+            del payload, should_stop
+            active.stop.set()
+            return {"ok": False, "answer": "", "text": ""}
+
+        events = active.events
+        status = "ok"
+        answer = ""
+        try:
+            result = bridge.run(
+                prompt=message,
+                workflow_id=eval_cwd_id,
+                cwd=run_cwd,
+                mode="eval",
+                tools=[],
+                resume_agent_id="",
+                on_event=self._forward_events(active, events),
+                on_question=_reject_question,
+                should_stop=active.stop.is_set,
+                confirm_writes=False,
+                include_app_tools=False,
+            )
+            answer = str(result.get("answer") or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            if active.stop.is_set() and events:
+                status = "ok"
+                for event in reversed(events):
+                    text = str(event.get("text") or event.get("message") or event.get("answer") or "").strip()
+                    if text:
+                        answer = text
+                        break
+            else:
+                status = "error"
+                answer = str(exc)
+                emit(
+                    {
+                        "type": "error",
+                        "runId": active.run_id,
+                        "kind": "eval",
+                        "workflowId": active.event_workflow_id,
+                        "message": _exc_text(exc, "Фоновая оценка не завершилась"),
+                    }
+                )
+                return
+        emit(
+            {
+                "type": "result",
+                "runId": active.run_id,
+                "kind": "run",
+                "workflowId": active.event_workflow_id,
+                "status": status,
+                "answer": answer,
+            }
+        )
+
     def _run_personal_agent(
         self,
         command: dict[str, Any],
@@ -2289,6 +2901,7 @@ class Sidecar:
         active.kind = "run"
         active.gate.bind(workflow_id=workflow_id, kind="run")
         message = str(command.get("message") or "").strip()
+        app_context = str(command.get("appContext") or command.get("app_context") or "").strip()
         source = str(command.get("source") or "chat").strip() or "chat"
         autonomous = source == "trigger"
         resume_agent_id = str(command.get("resumeAgentId") or "").strip()
@@ -2298,12 +2911,22 @@ class Sidecar:
         bridge.check_ready()
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
-        # Personal agent is not bound to backend workflow knowledge.
+        # Personal agent is not bound to a single workflow playbook.
         bridge.bind_knowledge(None, "", run_cwd, active.run_id)
+        if app_context:
+            try:
+                materials = Path(run_cwd) / "materials"
+                materials.mkdir(parents=True, exist_ok=True)
+                (materials / "orchestrator_context.md").write_text(
+                    "# Контекст рабочего места\n\n" + app_context + "\n",
+                    encoding="utf-8",
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("orchestrator context write failed: " + repr(exc))
         file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
         attachment_paths = _copy_attachments(run_cwd, file_paths)
         events = active.events
-        prompt = _build_personal_agent_prompt(message)
+        prompt = _build_personal_agent_prompt(message, app_context)
         note = _attachments_note(attachment_paths)
         if note:
             prompt = prompt + "\n\n" + note
@@ -2752,26 +3375,27 @@ class Sidecar:
             name = spec.get("name") or "файл"
             description = spec.get("description") or ""
             accept = spec.get("accept") or ""
-            question = "Если для этого запуска нужен файл, прикрепите: " + name
+            question = "Прикрепите файл для этого запуска: " + name
             if description:
                 question = question + ". " + description
-            question = question + ". Можно нажать Далее без файла."
             reply = active.gate.ask_question(
                 {
                     "question": question,
                     "options": [],
                     "needsFile": True,
                     "accept": accept,
+                    "autoContinueSeconds": RUN_INPUT_WAIT_SECONDS,
+                    "autoContinueAnswer": RUN_INPUT_SKIP_ANSWER,
                     "why": (
                         "Это временный файл только для текущего запуска, "
-                        "он не сохраняется в базу знаний."
+                        "он не сохраняется в базу знаний. "
+                        "Через 30 секунд агент продолжит сам: 1С и папки РК."
                     ),
                 },
                 should_stop=active.stop.is_set,
             )
-            answer = str(reply.get("answer") or "").strip()
-            if answer:
-                notes.append(answer)
+            answer = str(reply.get("answer") or "").strip() or RUN_INPUT_SKIP_ANSWER
+            notes.append(answer)
         return notes
 
     def _ensure_outlook_rule_in_playbook(
@@ -2915,17 +3539,28 @@ class Sidecar:
     def cancel(self, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or "")
         workflow_id = str(command.get("workflowId") or "").strip()
-        stopped: list[ActiveRun] = []
-        with self._lock:
-            for active in list(self._active.values()):
-                if run_id and active.run_id != run_id:
+        dedup_key = f"run:{workflow_id}" if workflow_id else ""
+        remove_ids: list[str] = []
+        for active in list(self._active.values()):
+            ui_id = (active.event_workflow_id or "").strip()
+            by_run = bool(run_id) and active.run_id == run_id
+            by_workflow = bool(workflow_id) and (
+                active.workflow_id == workflow_id or ui_id == workflow_id
+            )
+            by_dedup = bool(dedup_key) and active.dedup_key == dedup_key
+            if run_id or workflow_id:
+                if not by_run and not by_workflow and not by_dedup:
                     continue
-                if workflow_id and active.workflow_id != workflow_id:
-                    continue
-                self._active.pop(active.run_id, None)
-                stopped.append(active)
-        for active in stopped:
-            self._abort_active(active, "Остановлено пользователем")
+            active.stop.set()
+            try:
+                active.bridge.skip_tool("")
+            except Exception:
+                pass
+            remove_ids.append(active.run_id)
+        if remove_ids:
+            with self._lock:
+                for rid in remove_ids:
+                    self._active.pop(rid, None)
 
     def shutdown(self) -> None:
         with self._lock:
@@ -2958,6 +3593,8 @@ class ActiveRun:
         self.dedup_key: str = ""
         self.history_run_id: str = ""
         self.history_finished: bool = False
+        self.answer_buf: str = ""
+        self.event_workflow_id: str = ""
         self.events: list[dict[str, Any]] = []
         gate.bind_events(self.events)
 

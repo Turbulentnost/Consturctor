@@ -86,14 +86,14 @@ export function WorkflowPage({
       {record && questions.length === 0 && record.phase !== 'tested' && record.phase !== 'done' && (
         <div className="review-actions">
           <button className="btn-primary" style={{ maxWidth: 280 }} onClick={onDemo} disabled={busy}>
-            {busy ? 'Идёт пробный прогон...' : 'Пробный прогон'}
+            {busy ? 'Идёт пробный запуск...' : 'Пробный запуск'}
           </button>
         </div>
       )}
 
       {record?.lastResult && (
         <div className="option-card" style={{ alignItems: 'stretch', marginTop: 16 }}>
-          <h3 style={{ textAlign: 'left' }}>Результат прогона</h3>
+          <h3 style={{ textAlign: 'left' }}>Результат запуска</h3>
           <pre className="result-pre">{record.lastResult}</pre>
         </div>
       )}

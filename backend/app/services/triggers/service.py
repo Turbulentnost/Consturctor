@@ -4,6 +4,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
@@ -605,6 +606,22 @@ def create_trigger_from_spec(
     )
 
 
+def _trigger_spec_key(spec: ScheduleTriggerSpec) -> tuple[Any, ...]:
+    kind = (spec.kind or "").strip().casefold()
+    if kind == "interval":
+        return (
+            kind,
+            interval_seconds_from_spec(spec),
+            tuple(sorted(int(day) for day in (spec.weekdays or []))),
+            (spec.window_start or "").strip(),
+            (spec.window_end or "").strip(),
+            (spec.message or "").strip().casefold(),
+        )
+    if kind == "event":
+        return (kind, (spec.condition or "").strip().casefold(), bool(spec.once))
+    return (kind, (spec.at or "").strip(), bool(spec.once))
+
+
 def sync_recurring_triggers_from_draft(
     db: Session,
     *,
@@ -615,13 +632,19 @@ def sync_recurring_triggers_from_draft(
     local = workflow.local_run if isinstance(workflow.local_run, dict) else {}
     draft = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
     specs: list[ScheduleTriggerSpec] = []
+    seen_specs: set[tuple[Any, ...]] = set()
     for item in draft.get("triggers") or []:
         if not isinstance(item, dict):
             continue
         try:
-            specs.append(ScheduleTriggerSpec.model_validate(item))
+            spec = ScheduleTriggerSpec.model_validate(item)
         except (TypeError, ValueError):
             continue
+        key = _trigger_spec_key(spec)
+        if key in seen_specs:
+            continue
+        seen_specs.add(key)
+        specs.append(spec)
     rows = list(
         db.execute(
             select(AgentTrigger).where(
@@ -746,12 +769,19 @@ def claim_due_trigger(db: Session, trigger_id: str, *, now: datetime | None = No
 
 
 def claim_due_agent_jobs(db: Session, *, user_id: str | None = None) -> list[AgentTrigger]:
+    """Claim at most one due trigger per workflow per tick."""
     claimed: list[AgentTrigger] = []
+    claimed_workflows: set[str] = set()
     for row in due_commands(db, user_id=user_id):
+        workflow_id = (row.workflow_id or "").strip()
+        if workflow_id and workflow_id in claimed_workflows:
+            continue
         if consume_skipped_due(db, row):
             continue
         if claim_due_trigger(db, row.id):
             claimed.append(row)
+            if workflow_id:
+                claimed_workflows.add(workflow_id)
     return claimed
 
 

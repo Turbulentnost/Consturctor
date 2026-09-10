@@ -10,6 +10,7 @@ export interface DayTask {
   source: TaskSource
   due: string
   status: DayTaskStatus
+  runId?: string
 }
 
 export interface RunStage {
@@ -28,7 +29,7 @@ export interface PreparedSolution {
 
 export const TASK_SOURCE_LABEL: Record<TaskSource, string> = {
   onec: 'Задача 1С',
-  agent: 'Прогон агента',
+  agent: 'Автоматически',
   human: 'Решение человека'
 }
 

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../api/client'
 import type {
   IntervalUnit,
@@ -39,7 +40,7 @@ function goalFromWorkflow(record: WorkflowRecord): string {
 
 const WEEKDAY_LABELS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
 
-function emptyTrigger(kind: TriggerKind): ScheduleTriggerSpec {
+export function emptyTrigger(kind: TriggerKind): ScheduleTriggerSpec {
   return {
     kind,
     message: '',
@@ -322,18 +323,109 @@ function TriggerEditModal({
   )
 }
 
+function newDatetimeTrigger(): ScheduleTriggerSpec {
+  return { ...emptyTrigger('datetime'), at: '12:00', once: false }
+}
+
+export function ScheduleTriggerEditor({
+  triggers,
+  onChange
+}: {
+  triggers: ScheduleTriggerSpec[]
+  onChange: (next: ScheduleTriggerSpec[]) => void
+}): React.JSX.Element {
+  const [editIndex, setEditIndex] = useState<number | null>(null)
+  const [creating, setCreating] = useState<ScheduleTriggerSpec | null>(null)
+
+  const removeTrigger = (index: number): void => {
+    onChange(triggers.filter((_, i) => i !== index))
+  }
+
+  const saveEdited = (spec: ScheduleTriggerSpec): void => {
+    if (creating) {
+      onChange([...triggers, spec])
+      setCreating(null)
+      return
+    }
+    if (editIndex === null) return
+    onChange(triggers.map((t, i) => (i === editIndex ? spec : t)))
+    setEditIndex(null)
+  }
+
+  const closeEditor = (): void => {
+    setCreating(null)
+    setEditIndex(null)
+  }
+
+  const editingSpec = creating ?? (editIndex !== null ? triggers[editIndex] : null)
+
+  return (
+    <>
+      <div className="passport-triggers">
+        {triggers.length === 0 && (
+          <div className="passport-empty">Триггеров нет — агент запускается только вручную.</div>
+        )}
+        {triggers.map((spec, index) => (
+          <div
+            key={index}
+            className="passport-chip"
+            onClick={() => {
+              setCreating(null)
+              setEditIndex(index)
+            }}
+            role="button"
+          >
+            <span className="passport-chip-label">{triggerChipLabel(spec)}</span>
+            <button
+              className="passport-chip-close"
+              onClick={(e) => {
+                e.stopPropagation()
+                removeTrigger(index)
+              }}
+              title="Убрать"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="passport-add-wrap">
+        <button
+          className="btn-ghost"
+          type="button"
+          onClick={() => {
+            setEditIndex(null)
+            setCreating(newDatetimeTrigger())
+          }}
+        >
+          + Добавить триггер
+        </button>
+      </div>
+      {editingSpec
+        ? createPortal(
+            <TriggerEditModal initial={editingSpec} onSave={saveEdited} onCancel={closeEditor} />,
+            document.body
+          )
+        : null}
+    </>
+  )
+}
+
+interface AgentSchedulePagePropsExtended extends AgentSchedulePageProps {
+  published?: boolean
+}
+
 export function AgentSchedulePage({
   workflowId,
   title,
+  published = false,
   onBack,
   onNext
-}: AgentSchedulePageProps): React.JSX.Element {
+}: AgentSchedulePagePropsExtended): React.JSX.Element {
   const [name, setName] = useState(title || 'ИИ-агент')
   const [goal, setGoal] = useState('')
   const [triggers, setTriggers] = useState<ScheduleTriggerSpec[]>([])
   const [suggestion, setSuggestion] = useState('')
-  const [editIndex, setEditIndex] = useState<number | null>(null)
-  const [addOpen, setAddOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const loadedRef = useRef(false)
@@ -369,30 +461,6 @@ export function AgentSchedulePage({
     }
   }, [workflowId])
 
-  const editingSpec = useMemo(
-    () => (editIndex !== null ? triggers[editIndex] : null),
-    [editIndex, triggers]
-  )
-
-  const addPreset = (spec: ScheduleTriggerSpec, edit = false): void => {
-    setTriggers((prev) => {
-      const next = [...prev, spec]
-      if (edit) setEditIndex(next.length - 1)
-      return next
-    })
-    setAddOpen(false)
-  }
-
-  const removeTrigger = (index: number): void => {
-    setTriggers((prev) => prev.filter((_, i) => i !== index))
-  }
-
-  const saveEdited = (spec: ScheduleTriggerSpec): void => {
-    if (editIndex === null) return
-    setTriggers((prev) => prev.map((t, i) => (i === editIndex ? spec : t)))
-    setEditIndex(null)
-  }
-
   const validate = (): string => {
     for (const spec of triggers) {
       if (spec.kind === 'interval' && spec.intervalValue <= 0) return 'Укажите интервал больше нуля.'
@@ -418,10 +486,20 @@ export function AgentSchedulePage({
     setSaving(true)
     setError('')
     try {
-      await api.persistScheduleDraft(workflowId, draft)
+      if (published) {
+        await api.applyPublishedSchedule(workflowId, draft)
+      } else {
+        await api.persistScheduleDraft(workflowId, draft)
+      }
       onNext(draft)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось сохранить паспорт агента')
+      setError(
+        err instanceof Error
+          ? err.message
+          : published
+            ? 'Не удалось сохранить расписание'
+            : 'Не удалось сохранить паспорт агента'
+      )
     } finally {
       setSaving(false)
     }
@@ -466,72 +544,7 @@ export function AgentSchedulePage({
             />
 
             <label className="passport-field-label">Когда запускается</label>
-            <div className="passport-triggers">
-              {triggers.length === 0 && (
-                <div className="passport-empty">Триггеров нет — агент запускается только вручную.</div>
-              )}
-              {triggers.map((spec, index) => (
-                <div
-                  key={index}
-                  className="passport-chip"
-                  onClick={() => setEditIndex(index)}
-                  role="button"
-                >
-                  <span className="passport-chip-label">{triggerChipLabel(spec)}</span>
-                  <button
-                    className="passport-chip-close"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      removeTrigger(index)
-                    }}
-                    title="Убрать"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            <div className="passport-add-wrap">
-              <button className="btn-ghost" onClick={() => setAddOpen((v) => !v)}>
-                + Добавить триггер
-              </button>
-              {addOpen && (
-                <div className="passport-add-menu">
-                  <button
-                    onClick={() =>
-                      addPreset({
-                        ...emptyTrigger('interval'),
-                        intervalValue: 15,
-                        intervalUnit: 'minutes'
-                      })
-                    }
-                  >
-                    Каждые 15 мин
-                  </button>
-                  <button
-                    onClick={() =>
-                      addPreset({ ...emptyTrigger('datetime'), at: '12:00', once: false })
-                    }
-                  >
-                    Ежедневно в 12:00
-                  </button>
-                  <button
-                    onClick={() =>
-                      addPreset(
-                        {
-                          ...emptyTrigger('event'),
-                          condition: 'изменён файл или получено сообщение'
-                        },
-                        true
-                      )
-                    }
-                  >
-                    По событию
-                  </button>
-                </div>
-              )}
-            </div>
+            <ScheduleTriggerEditor triggers={triggers} onChange={setTriggers} />
           </div>
 
           {error && (
@@ -542,19 +555,11 @@ export function AgentSchedulePage({
 
           <div className="feed-clarify-actions" style={{ marginTop: 16 }}>
             <button className="btn-primary" disabled={saving} onClick={goNext}>
-              {saving ? 'Сохраняем…' : 'Далее к KPI'}
+              {saving ? 'Сохраняем…' : published ? 'Сохранить' : 'Далее к KPI'}
             </button>
           </div>
         </div>
       </div>
-
-      {editingSpec && (
-        <TriggerEditModal
-          initial={editingSpec}
-          onSave={saveEdited}
-          onCancel={() => setEditIndex(null)}
-        />
-      )}
     </div>
   )
 }

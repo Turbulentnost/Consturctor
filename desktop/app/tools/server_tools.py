@@ -310,6 +310,26 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         ),
     ),
     (
+        "onec.meeting_protocols",
+        (
+            "Протоколы Document_ТД_Протокол через OData (desktop, фильтр локально). "
+            "meeting_kind rk - РК (номер «РК*»), sd - СД («ПСД*», также «СПГ*»/«СД*»). "
+            "По умолчанию черновики на проверку. date или date_from/date_to."
+        ),
+        _schema(
+            {
+                "meeting_kind": _prop("string", "rk или sd"),
+                "date": _prop("string", "Один день YYYY-MM-DD"),
+                "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
+                "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
+                "number": _prop("string", "Точный номер протокола"),
+                "review_only": _prop("boolean", "Только на проверку", default=True),
+                "max_results": _prop("integer", "Максимум протоколов"),
+            },
+            ["meeting_kind"],
+        ),
+    ),
+    (
         "users.current",
         (
             "Текущий пользователь сессии Constructor: id, ФИО, должность, подразделение. "
@@ -363,7 +383,19 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
 ]
 
 
-SERVER_TOOL_NAMES: frozenset[str] = frozenset(name for name, _desc, _schema_ in _SERVER_TOOL_DEFS)
+# Tools with server-like schemas that run locally (e.g. when backend is not redeployed yet).
+LOCAL_BACKEND_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "onec.meeting_protocols",
+        "onec.meeting_service_notes",
+        "onec.search_documents",
+        "onec.get_document_card",
+    }
+)
+
+SERVER_TOOL_NAMES: frozenset[str] = frozenset(
+    name for name, _desc, _schema_ in _SERVER_TOOL_DEFS if name not in LOCAL_BACKEND_TOOL_NAMES
+)
 SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     "onec.download_artifact": 300,
 }
@@ -384,11 +416,12 @@ def list_server_tools() -> list[dict[str, Any]]:
     """Server tool specs for the SDK catalog (execution=server)."""
     tools: list[dict[str, Any]] = []
     for name, description, schema in _SERVER_TOOL_DEFS:
+        execution = "desktop" if name in LOCAL_BACKEND_TOOL_NAMES else "server"
         item: dict[str, Any] = {
             "name": name,
             "description": description,
             "inputSchema": schema,
-            "execution": "server",
+            "execution": execution,
         }
         timeout = SERVER_TOOL_TIMEOUTS.get(name)
         if timeout:

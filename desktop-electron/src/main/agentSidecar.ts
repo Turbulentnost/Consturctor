@@ -1,7 +1,87 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { delimiter, dirname, join, resolve } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { app } from 'electron'
+
+const CURSOR_ENV_KEYS = ['CURSOR_API_KEY', 'CURSOR_API_BASE_URL', 'CURSOR_SDK_MODEL'] as const
+
+function parseEnvFile(path: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!existsSync(path)) return out
+  const text = readFileSync(path, 'utf-8')
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const eq = line.indexOf('=')
+    if (eq < 0) continue
+    const key = line.slice(0, eq).trim()
+    let value = line.slice(eq + 1).trim()
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1)
+    }
+    out[key] = value
+  }
+  return out
+}
+
+function isDesktopRoot(path: string): boolean {
+  return existsSync(join(path, 'app', 'config.py'))
+}
+
+function walkParents(start: string, depth = 6): string[] {
+  const rows: string[] = []
+  let current = resolve(start)
+  for (let i = 0; i < depth; i += 1) {
+    rows.push(current)
+    const parent = resolve(current, '..')
+    if (parent === current) break
+    current = parent
+  }
+  return rows
+}
+
+function collectDesktopCandidates(starts: string[]): string[] {
+  const rows: string[] = []
+  const push = (value: string): void => {
+    const path = resolve(value)
+    if (!rows.includes(path)) rows.push(path)
+  }
+  for (const start of starts) {
+    push(resolve(start, '..', 'desktop'))
+    push(resolve(start, '..', '..', 'desktop'))
+    push(resolve(start, 'desktop'))
+  }
+  return rows.filter((path) => isDesktopRoot(path))
+}
+
+function resolveDesktopRoot(starts: string[], fallback: string): string {
+  const envDesktop = process.env.CONSTRUCTOR_DESKTOP_ROOT
+  if (envDesktop && isDesktopRoot(envDesktop)) return envDesktop
+  const found = collectDesktopCandidates(starts)
+  return found[0] || fallback
+}
+
+function cursorEnvFromDesktop(desktopRoot: string): Record<string, string> {
+  const appData = process.env.APPDATA || ''
+  const files = [
+    appData ? join(appData, 'constructor-desktop-electron', '.env') : '',
+    appData ? join(appData, 'Orchestrator', '.env') : '',
+    join(process.cwd(), '.env'),
+    join(desktopRoot, '.env'),
+    ...walkParents(desktopRoot).map((root) => join(root, 'backend', '.env'))
+  ].filter(Boolean)
+  const out: Record<string, string> = {}
+  for (const file of files) {
+    const parsed = parseEnvFile(file)
+    for (const key of CURSOR_ENV_KEYS) {
+      if (!out[key] && parsed[key]?.trim()) out[key] = parsed[key].trim()
+    }
+  }
+  return out
+}
 
 export type AgentSidecarMessage = Record<string, unknown>
 
@@ -70,22 +150,7 @@ export class AgentSidecar {
     if (!sidecar) {
       sidecar = join(appPath, 'pybridge', 'agent_sidecar.py')
     }
-    let desktopRoot = envDesktop || ''
-    if (!desktopRoot) {
-      for (const base of candidates) {
-        const guesses = [resolve(base, 'desktop'), resolve(base, '..', 'desktop')]
-        for (const guess of guesses) {
-          if (existsSync(join(guess, 'app', 'config.py'))) {
-            desktopRoot = guess
-            break
-          }
-        }
-        if (desktopRoot) break
-      }
-    }
-    if (!desktopRoot) {
-      desktopRoot = resolve(appPath, '..', 'desktop')
-    }
+    let desktopRoot = resolveDesktopRoot(candidates, envDesktop || resolve(appPath, '..', 'desktop'))
     return { sidecar, desktopRoot }
   }
 
@@ -104,14 +169,28 @@ export class AgentSidecar {
     const nodeDir = existsSync(node) ? dirname(node) : ''
     const pathParts = [nodeDir, process.env.PATH || process.env.Path || ''].filter(Boolean)
     const browsersPath = join(desktopRoot, 'ms-playwright')
+    const cursorEnv = cursorEnvFromDesktop(desktopRoot)
     const pythonPathParts = [desktopRoot, process.env.PYTHONPATH].filter(Boolean)
+    const localAppData = process.env.LOCALAPPDATA || process.env.APPDATA || ''
+    const orchestratorWorkspacesRoot = localAppData
+      ? join(localAppData, 'Orchestrator', 'agent_workspaces')
+      : ''
+    if (!cursorEnv.CURSOR_API_KEY) {
+      console.error('[agent-sidecar] CURSOR_API_KEY не найден в desktop/.env или backend/.env')
+    } else {
+      console.log(`[agent-sidecar] desktop root: ${desktopRoot}`)
+    }
     return {
       ...process.env,
+      ...cursorEnv,
       PYTHONUNBUFFERED: '1',
       PYTHONIOENCODING: 'utf-8',
       PYTHONPATH: pythonPathParts.join(delimiter),
       CONSTRUCTOR_SIDECAR: sidecar,
       CONSTRUCTOR_DESKTOP_ROOT: desktopRoot,
+      CONSTRUCTOR_INSTANCE: process.env.CONSTRUCTOR_INSTANCE || 'orchestrator',
+      CONSTRUCTOR_AGENT_WORKSPACES_ROOT:
+        process.env.CONSTRUCTOR_AGENT_WORKSPACES_ROOT || orchestratorWorkspacesRoot,
       CONSTRUCTOR_PYTHON: this.pythonCommand(),
       CONSTRUCTOR_NODE: node,
       PLAYWRIGHT_BROWSERS_PATH:
@@ -247,6 +326,14 @@ export class AgentSidecar {
   }
 
   private stampRunMeta(message: AgentSidecarMessage): AgentSidecarMessage {
+    if (message.type === 'run_adopted') {
+      const requested = String(message.runId || '')
+      const linked = String(message.linkedRunId || '')
+      if (requested && linked) {
+        const meta = this.runMeta.get(requested)
+        if (meta) this.runMeta.set(linked, meta)
+      }
+    }
     const runId = String(message.runId || message.id || '')
     const meta = runId ? this.runMeta.get(runId) : undefined
     if (!meta) return message

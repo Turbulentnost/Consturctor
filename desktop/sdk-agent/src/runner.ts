@@ -73,7 +73,7 @@ const INTERVIEW_QUESTION_MODEL_PARAMS: ModelParam[] = [
   { id: "fast", value: "true" },
 ];
 const INTERVIEW_MODEL_PARAMS: ModelParam[] = [
-  { id: "effort", value: "xhigh" },
+  { id: "effort", value: "low" },
   { id: "fast", value: "true" },
 ];
 
@@ -235,7 +235,15 @@ function questionPayload(args: Record<string, unknown>): { question: string; opt
   return { question, options };
 }
 
-async function executeAskQuestion(args: Record<string, JsonValue>): Promise<JsonValue> {
+async function executeAskQuestion(
+  args: Record<string, JsonValue>,
+  stopState?: { done: boolean },
+): Promise<JsonValue> {
+  if (stopState?.done) {
+    return {
+      content: [{ type: "text", text: "Запуск уже завершён (WORK_RESULT). Вопрос не задан." }],
+    };
+  }
   const { question, options } = questionPayload(args as Record<string, unknown>);
   const requestId = randomUUID();
   emit({
@@ -278,7 +286,10 @@ async function executeAskQuestion(args: Record<string, JsonValue>): Promise<Json
   };
 }
 
-function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
+function buildCustomTools(
+  specs: ToolSpec[],
+  stopState?: { done: boolean },
+): Record<string, unknown> {
   const tools: Record<string, unknown> = {};
   for (const spec of specs) {
     const name = normalizeToolName(spec.name);
@@ -287,7 +298,7 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
       tools.askQuestion = {
         description: spec.description || "Задать вопрос пользователю на рабочем столе и дождаться ответа.",
         inputSchema: spec.inputSchema || ASK_QUESTION_SCHEMA,
-        execute: executeAskQuestion,
+        execute: (args: Record<string, JsonValue>) => executeAskQuestion(args, stopState),
       };
       continue;
     }
@@ -295,6 +306,16 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
       description: spec.description || name,
       inputSchema: spec.inputSchema || { type: "object", properties: {} },
       async execute(args: Record<string, JsonValue>) {
+        if (stopState?.done) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Запуск уже завершён (WORK_RESULT). Инструмент не вызван.",
+              },
+            ],
+          };
+        }
         const requestId = randomUUID();
         emit({
           type: "tool_call",
@@ -340,7 +361,7 @@ function buildCustomTools(specs: ToolSpec[]): Record<string, unknown> {
     tools.askQuestion = {
       description: "Ask the desktop user a question and wait for the answer.",
       inputSchema: ASK_QUESTION_SCHEMA,
-      execute: executeAskQuestion,
+      execute: (args: Record<string, JsonValue>) => executeAskQuestion(args, stopState),
     };
   }
   return tools;
@@ -356,10 +377,23 @@ function testsPassReady(text: string): boolean {
 
 // Matches the "## WORK_RESULT" header the run answer must start with.
 // Mirrors strip_to_work_result in desktop/app/sdk_agent/prompt.py.
-const WORK_RESULT_RE = /^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\b.*$/im;
+const WORK_RESULT_RE = /#{0,6}[ \t]*WORK[ _]?RESULT\b/i;
+const FILES_SECTION_RE = /(?:^|[\n\r])[ \t]*FILES\b/i;
+const ACTIONS_SECTION_RE = /(?:^|[\n\r])[ \t]*ACTIONS\b/i;
 
 function hasWorkResult(text: string): boolean {
   return WORK_RESULT_RE.test(text || "");
+}
+
+function hasResultSections(text: string): boolean {
+  const raw = text || "";
+  return FILES_SECTION_RE.test(raw) && ACTIONS_SECTION_RE.test(raw);
+}
+
+// A finished work block: TESTS: PASS plus either the official header or the
+// FILES/ACTIONS sections the model often emits without "## WORK_RESULT".
+function isFinishedWorkResult(text: string): boolean {
+  return testsPassReady(text) && (hasWorkResult(text) || hasResultSections(text));
 }
 
 // Keep only the final "## WORK_RESULT" block; drop the reasoning narration
@@ -684,7 +718,8 @@ async function runAgent(command: RunCommand): Promise<void> {
   const conversationMode = interview ? "agent" : undefined;
   // Do not inject askQuestion into interview: it blocks up to 15 minutes and
   // the regulation chat cannot answer that tool call.
-  const customTools = interview ? {} : buildCustomTools(command.tools || []);
+  const stopState = { done: false };
+  const customTools = interview ? {} : buildCustomTools(command.tools || [], stopState);
   const customNames = Object.keys(customTools);
   emit({
     type: "status",
@@ -778,14 +813,12 @@ async function runAgent(command: RunCommand): Promise<void> {
       const designReady = design && playbookDraftReady(draft);
       const interviewJson = interview ? firstReadyInterviewJson(draft) : null;
       const interviewReady = Boolean(interviewJson);
-      // Only finish a run when the model has actually produced the structured
-      // "## WORK_RESULT" block (ending in TESTS: PASS). A bare "TESTS: PASS"
-      // mentioned mid-reasoning must NOT stop the run: doing so cut the model
-      // off before it wrote the result / called visualization tools and dumped
-      // the whole reasoning monologue into the answer.
-      const demoReady =
-        !design && !interview && testsPassReady(draft) && hasWorkResult(draft);
+      // Finish when the structured result is in: "## WORK_RESULT" + PASS, or
+      // FILES/ACTIONS + PASS (models often omit the header). A lone
+      // "TESTS: PASS" in reasoning must not stop the run.
+      const demoReady = !design && !interview && isFinishedWorkResult(draft);
       if (!designReady && !interviewReady && !demoReady) return false;
+      stopState.done = true;
       const readyAnswer = interviewReady
         ? JSON.stringify(interviewJson || {})
         : demoReady
@@ -796,8 +829,8 @@ async function runAgent(command: RunCommand): Promise<void> {
         text: interviewReady
           ? "Вопрос интервью готов. Останавливаю этот ход."
           : designReady
-            ? "Черновик готов. Останавливаю этот ход и перехожу к пробному прогону."
-            : "Пробный прогон завершен (TESTS: PASS). Останавливаю этот ход.",
+            ? "Черновик готов. Останавливаю этот ход и перехожу к пробному запуску."
+            : "Пробный запуск завершен (TESTS: PASS). Останавливаю этот ход.",
       });
       emit({ type: "final", id, status: "ok", answer: readyAnswer });
       emit({ type: "done", id, status: "ok", answer: readyAnswer });
@@ -818,9 +851,19 @@ async function runAgent(command: RunCommand): Promise<void> {
       } else if (event.type === "thinking" && event.text) {
         thought += event.text;
         emit({ type: "thinking", text: event.text });
-        if ((await finishIfReady(thought)) || (await finishIfReady(answer))) return;
+        // Run mode: never finish from thinking — the model quotes materials/agent.md
+        // (including prior WORK_RESULT blocks) while reading the workspace.
+        if (interview && (await finishIfReady(thought))) return;
+        if (design && (await finishIfReady(thought))) return;
       } else if (event.type === "tool_call") {
-        // Model went back to work: everything said so far was intermediate.
+        // WORK_RESULT + TESTS: PASS already means the run is over. Do not keep
+        // the stream open for more write tools (HITL) after the final block.
+        const runReady = !design && !interview && (await finishIfReady(answer));
+        const designReady = design && ((await finishIfReady(thought)) || (await finishIfReady(answer)));
+        const interviewReady = interview && ((await finishIfReady(thought)) || (await finishIfReady(answer)));
+        if (stopState.done || runReady || designReady || interviewReady) {
+          return;
+        }
         lastAssistant = "";
         emitSdkToolCall(event as unknown as Record<string, unknown>);
       } else if (event.type === "task") {

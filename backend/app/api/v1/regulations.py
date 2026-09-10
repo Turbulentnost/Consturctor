@@ -475,13 +475,14 @@ def create_passport_draft(
 
 
 @router.post("/passport/draft-from-suggestion", response_model=PassportResponse)
-def create_passport_draft_from_suggestion(
+async def create_passport_draft_from_suggestion(
     body: DraftPassportFromSuggestionRequest,
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PassportResponse:
     try:
-        built = draft_passport_from_function(
+        built = await asyncio.to_thread(
+            draft_passport_from_function,
             db,
             user_id=auth.user_id,
             regulation_id=body.regulationId,
@@ -509,44 +510,49 @@ def create_passport_draft_from_suggestion(
 
 
 @router.post("/passport/complete", response_model=PassportResponse)
-def complete_passport_draft(
+async def complete_passport_draft(
     body: CompletePassportRequest,
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PassportResponse:
     current = passport_from_dict(body.passport.model_dump())
     functions = _to_extracted(body.functions) if body.functions else []
-    passport = complete_passport(
-        current,
-        answers=body.answers,
-        field_updates=body.field_updates,
-        bp_name=body.bp_name,
-        excerpt=body.excerpt,
-        functions=functions or None,
-    )
-    draft = passport_persist.resolve_draft(
-        db,
-        user_id=auth.user_id,
-        draft_id=body.draftId,
-        regulation_id=body.regulationId,
-        role_match_run_id=body.roleMatchRunId,
-    )
-    draft_id = draft.id if draft is not None else ""
-    if draft is not None:
-        passport_persist.save_session(
-            db,
-            draft,
-            function_id=body.functionId,
-            agent_id=body.agentId,
-            payload=passport_persist.session_payload(
-                passport,
-                excerpt=body.excerpt,
-                functions=functions,
-                bp_name=body.bp_name,
-                qa_history=body.qaHistory,
-            ),
+
+    def _finish():
+        passport = complete_passport(
+            current,
+            answers=body.answers,
+            field_updates=body.field_updates,
+            bp_name=body.bp_name,
+            excerpt=body.excerpt,
+            functions=functions or None,
         )
-        draft_id = draft.id
+        draft = passport_persist.resolve_draft(
+            db,
+            user_id=auth.user_id,
+            draft_id=body.draftId,
+            regulation_id=body.regulationId,
+            role_match_run_id=body.roleMatchRunId,
+        )
+        draft_id = draft.id if draft is not None else ""
+        if draft is not None:
+            passport_persist.save_session(
+                db,
+                draft,
+                function_id=body.functionId,
+                agent_id=body.agentId,
+                payload=passport_persist.session_payload(
+                    passport,
+                    excerpt=body.excerpt,
+                    functions=functions,
+                    bp_name=body.bp_name,
+                    qa_history=body.qaHistory,
+                ),
+            )
+            draft_id = draft.id
+        return passport, draft_id
+
+    passport, draft_id = await asyncio.to_thread(_finish)
     return _passport_response(
         passport,
         bp_name=body.bp_name,

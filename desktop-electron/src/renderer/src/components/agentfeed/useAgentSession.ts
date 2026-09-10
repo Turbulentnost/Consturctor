@@ -62,6 +62,19 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
 
   useEffect(() => {
     const unsubscribe = agentClient.onEvent((event: AgentEvent) => {
+      if (event.type === 'run_adopted' && event.linkedRunId) {
+        activeRunRef.current = event.linkedRunId
+        if (lastCommandRef.current) {
+          lastCommandRef.current = { ...lastCommandRef.current, id: event.linkedRunId }
+        }
+        setState((s) => ({
+          ...s,
+          activeRunId: event.linkedRunId ?? s.activeRunId,
+          status: event.message || 'Агент работает…',
+          items: pushSystem(s.items, event.message || 'Продолжаю текущий запуск агента.')
+        }))
+        return
+      }
       const runId = event.runId
       const matches = activeRunRef.current !== null && (!runId || runId === activeRunRef.current)
       if (!matches) return

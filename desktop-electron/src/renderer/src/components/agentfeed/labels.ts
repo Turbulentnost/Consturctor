@@ -31,6 +31,12 @@ export const TOOL_LABELS: Record<string, string> = {
   'onec.erp_assignments_write': 'Запись поручения 1С',
   'onec.download_artifact': 'Скачать файл 1С',
   'onec.erp_write_probe': 'Проба записи 1С',
+  'onec.meeting_protocols': 'Протоколы совещаний (OData)',
+  'onec.odata_get': 'Чтение 1С',
+  'onec.odata_post': 'Создание записи 1С',
+  'onec.odata_patch': 'Изменение записи 1С',
+  'onec.odata_catalog': 'Каталог сущностей 1С',
+  'onec.sql_query': 'Запрос 1С',
   'onec.erp_tasks_current': 'Текущие задачи 1С',
   'onec.erp_tasks_period': 'Задачи 1С за период',
   'onec.erp_subordinate_tasks': 'Задачи подчинённых 1С',
@@ -114,7 +120,14 @@ export function toolLabel(tool: string): string {
 export function toolArgHint(args: Record<string, unknown> | undefined): string {
   if (!args) return ''
   for (const key of [
+    'entity',
     'path',
+    'people',
+    'attendees',
+    'mailbox',
+    'filter',
+    'number',
+    'date_from',
     'file_path',
     'target_file',
     'targetFile',

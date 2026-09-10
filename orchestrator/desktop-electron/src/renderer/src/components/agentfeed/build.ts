@@ -1,5 +1,6 @@
 import type { AgentRunnerEvent } from '../../api/types'
 import { isTaskTool, toolArgHint, toolCardTitle } from './labels'
+import { summarizeToolResult } from './resultSummary'
 import { appendThinkingText } from './thinkingText'
 import type { FeedItem, ToolItem } from './types'
 
@@ -38,21 +39,7 @@ function normalizeResult(raw: unknown): Record<string, unknown> | null {
 }
 
 function summarizeResult(result: Record<string, unknown> | null): string {
-  if (!result || typeof result !== 'object') return 'Данные получены.'
-  const summary = result.summary
-  if (typeof summary === 'string' && summary.trim()) return summary.trim()
-  if (typeof result.result_file === 'string' && result.result_file.trim()) {
-    return `Файл: ${result.result_file}`
-  }
-  if (result.skipped) return 'Пропущено пользователем'
-  if (result.rejected) return 'Отклонено пользователем'
-  for (const key of ['items', 'rows', 'results', 'messages', 'events', 'files', 'records', 'documents', 'tasks']) {
-    const value = result[key]
-    if (Array.isArray(value)) return `Получено записей: ${value.length}`
-  }
-  if (typeof result.text === 'string' && result.text.trim()) return result.text.trim().slice(0, 200)
-  if (typeof result.value === 'string' && result.value.trim()) return result.value.trim().slice(0, 200)
-  return 'Данные получены.'
+  return summarizeToolResult(result)
 }
 
 const _DONE_STATUS = new Set([

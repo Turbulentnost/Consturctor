@@ -11,6 +11,8 @@ import type {
 interface AgentSchedulePageProps {
   workflowId: string
   title: string
+  /** Published agent from «Мои агенты»: save triggers immediately, skip KPI step. */
+  published?: boolean
   onBack: () => void
   onNext: (draft: ScheduleDraft) => void
 }
@@ -325,6 +327,7 @@ function TriggerEditModal({
 export function AgentSchedulePage({
   workflowId,
   title,
+  published = false,
   onBack,
   onNext
 }: AgentSchedulePageProps): React.JSX.Element {
@@ -418,10 +421,20 @@ export function AgentSchedulePage({
     setSaving(true)
     setError('')
     try {
-      await api.persistScheduleDraft(workflowId, draft)
+      if (published) {
+        await api.applyPublishedSchedule(workflowId, draft)
+      } else {
+        await api.persistScheduleDraft(workflowId, draft)
+      }
       onNext(draft)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось сохранить паспорт агента')
+      setError(
+        err instanceof Error
+          ? err.message
+          : published
+            ? 'Не удалось сохранить расписание'
+            : 'Не удалось сохранить паспорт агента'
+      )
     } finally {
       setSaving(false)
     }
@@ -542,7 +555,7 @@ export function AgentSchedulePage({
 
           <div className="feed-clarify-actions" style={{ marginTop: 16 }}>
             <button className="btn-primary" disabled={saving} onClick={goNext}>
-              {saving ? 'Сохраняем…' : 'Далее к KPI'}
+              {saving ? 'Сохраняем…' : published ? 'Сохранить' : 'Далее к KPI'}
             </button>
           </div>
         </div>

@@ -36,7 +36,7 @@ export function RegulationResultView({
         </div>
         <p style={{ marginTop: 16, color: 'var(--content-muted)' }}>
           Следующие шаги конструктора (проверка регламента, подбор функций по должности,
-          готовность, паспорт агента, формирование и пробный прогон) переносятся поэтапно.
+          готовность, паспорт агента, формирование и пробный запуск) переносятся поэтапно.
         </p>
       </div>
       <button className="btn-primary" style={{ maxWidth: 200, marginTop: 20 }} onClick={onBack}>

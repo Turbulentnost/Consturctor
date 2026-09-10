@@ -6,6 +6,7 @@ import { comCredentials } from './session'
 import { buildFeedItems, settleOpenFeedTools } from '../components/agentfeed/build'
 import {
   applyAgentEvent,
+  cancelPendingTools,
   createRunState,
   deriveLatestOutput,
   pushSystem,
@@ -48,6 +49,11 @@ interface StartRunOptions {
   forceRestart?: boolean
   /** Run without chat UI / active-agent banner. */
   background?: boolean
+  /** Workplace snapshot for personal/orchestrator agent. */
+  appContext?: string
+  /** One-shot KPI/eval run: sidecar must not resume the live agent. */
+  source?: string
+  fresh?: boolean
 }
 
 function backgroundEntryKey(workflowId: string): string {
@@ -114,6 +120,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
   entriesRef.current = entries
   const indexRef = useRef<Record<string, string>>({})
   const cancelledRunIdsRef = useRef<Record<string, boolean>>({})
+  const forceRestartRef = useRef<Record<string, boolean>>({})
 
   const fillTitle = useCallback((workflowId: string) => {
     void api
@@ -134,6 +141,49 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     const unsubscribe = agentClient.onEvent((event: AgentEvent) => {
       const kind = String(event.kind || '')
       if (kind === 'design' || kind === 'demo' || kind === 'readiness') return
+      if (event.type === 'run_adopted' && event.linkedRunId) {
+        const requested = String(event.runId || '')
+        const linked = String(event.linkedRunId || '')
+        if (cancelledRunIdsRef.current[linked] || cancelledRunIdsRef.current[requested]) {
+          return
+        }
+        const workflowId =
+          (requested && indexRef.current[requested]) ||
+          eventWorkflowId(event) ||
+          (linked && indexRef.current[linked]) ||
+          ''
+        if (workflowId) forceRestartRef.current[workflowId] = false
+        if (requested) delete indexRef.current[requested]
+        delete indexRef.current[linked]
+        if (!workflowId) return
+        // Sidecar kept a zombie slot — no new SDK run, so no tools/files/search happen.
+        setEntries((prev) => {
+          const entry = prev[workflowId]
+          if (!entry) return prev
+          return {
+            ...prev,
+            [workflowId]: {
+              ...entry,
+              state: {
+                ...entry.state,
+                running: false,
+                runningSinceMs: null,
+                activeRunId: null,
+                status: '',
+                pendingQuestion: null,
+                pendingHitl: null,
+                timing: closeTiming(entry.state.timing || EMPTY_TIMING),
+                items: pushSystem(
+                  entry.state.items,
+                  'Запуск не выполнен: sidecar удерживает зависший сеанс без действий. Нажмите «Запуск агента» ещё раз.',
+                  'error'
+                )
+              }
+            }
+          }
+        })
+        return
+      }
       const runId = event.runId
       if (!runId) return
       if (cancelledRunIdsRef.current[runId]) {
@@ -144,8 +194,24 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         return
       }
       let workflowId = indexRef.current[runId]
+      const stampedWf = eventWorkflowId(event)
+      if (kind === 'eval' || stampedWf.startsWith('__bg_explain__')) {
+        const bgKey = stampedWf.startsWith('__bg_explain__')
+          ? stampedWf
+          : stampedWf
+            ? backgroundEntryKey(stampedWf)
+            : workflowId?.startsWith('__bg_explain__')
+              ? workflowId
+              : workflowId
+                ? backgroundEntryKey(workflowId)
+                : ''
+        if (bgKey) {
+          workflowId = bgKey
+          indexRef.current[runId] = bgKey
+        }
+      }
       if (!workflowId) {
-        workflowId = eventWorkflowId(event)
+        workflowId = stampedWf
         if (!workflowId) return
         if (!shouldTrackLiveRun(event)) return
         indexRef.current[runId] = workflowId
@@ -183,7 +249,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
           ...entry,
           background: isBackground || entry.background,
           backendRunId: backendRunId || entry.backendRunId,
-          resumeAgentId: outcome.result?.agentId || entry.resumeAgentId,
+          resumeAgentId: isBackground ? entry.resumeAgentId : outcome.result?.agentId || entry.resumeAgentId,
           state
         }
         return { ...prev, [workflowId]: next }
@@ -202,7 +268,19 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
   }, [fillTitle])
 
   const startRun = useCallback((opts: StartRunOptions): string => {
-    const { workflowId, title, message, shownMessage, filePaths, resumeAgentId, forceRestart, background } = opts
+    const {
+      workflowId,
+      title,
+      message,
+      shownMessage,
+      filePaths,
+      resumeAgentId,
+      forceRestart,
+      background,
+      appContext,
+      source,
+      fresh
+    } = opts
     const entryKey = background ? backgroundEntryKey(workflowId) : workflowId
     const existing = entriesRef.current[entryKey]
     if (existing && existing.state.running) {
@@ -210,9 +288,12 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         // The same agent cannot run twice at once - focus the live run instead.
         return existing.state.activeRunId || ''
       }
-      if (existing.state.activeRunId) {
-        agentClient.cancel(existing.state.activeRunId)
-      }
+    }
+    // Sidecar may still track a run after UI cancel — always clear by workflow id
+    // (activeRunId in UI can point to a fresh request id, not the sidecar slot).
+    if (!background) {
+      if (forceRestart) forceRestartRef.current[entryKey] = true
+      agentClient.cancel('', workflowId)
     }
     const token = api.getToken()
     const creds = comCredentials()
@@ -221,12 +302,17 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       .catch(() => undefined)
     // Background evaluations always start a fresh thread (no resume / no chat).
     const resume = background ? '' : resumeAgentId || existing?.resumeAgentId || ''
+    const evalRun = Boolean(background || fresh || source === 'eval' || source === 'explain')
     const runId = agentClient.start({
       kind: 'run',
       workflowId,
       message,
-      resumeAgentId: resume || undefined,
-      filePaths: filePaths && filePaths.length ? filePaths : undefined
+      source: evalRun ? 'eval' : source,
+      fresh: evalRun || undefined,
+      forceRestart: forceRestart || undefined,
+      resumeAgentId: evalRun ? undefined : resume || undefined,
+      filePaths: filePaths && filePaths.length ? filePaths : undefined,
+      appContext: appContext || undefined
     })
     indexRef.current[runId] = entryKey
     setEntries((prev) => {
@@ -319,17 +405,17 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
   const cancel = useCallback((workflowId: string) => {
     const entry = entriesRef.current[workflowId]
     const runId = entry?.state.activeRunId
+    const sidecarWorkflowId = entry?.workflowId || workflowId
+    forceRestartRef.current[workflowId] = false
     if (runId) {
       cancelledRunIdsRef.current[runId] = true
       delete indexRef.current[runId]
-      agentClient.cancel(runId, workflowId)
-    } else {
-      agentClient.cancel('', workflowId)
     }
+    agentClient.cancel(runId || '', sidecarWorkflowId)
     const backendRunId = entry?.backendRunId || ''
     if (backendRunId) {
       void api
-        .finishLocalAgentRun(workflowId, backendRunId, {
+        .finishLocalAgentRun(sidecarWorkflowId, backendRunId, {
           status: 'canceled',
           answer: 'Остановлено пользователем'
         })
@@ -351,7 +437,11 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             pendingHitl: null,
             activeRunId: null,
             timing: closeTiming(current.state.timing || EMPTY_TIMING),
-            items: pushSystem(current.state.items, 'Запуск остановлен.', 'info')
+            items: pushSystem(
+              cancelPendingTools(current.state.items),
+              'Запуск остановлен.',
+              'info'
+            )
           }
         }
       }

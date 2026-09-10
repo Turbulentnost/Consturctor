@@ -95,7 +95,7 @@ CLARIFY:
 
 def test_parse_clarify_numbered_prose() -> None:
     text = (
-        "Прогон без ответов на CLARIFY: выданы принятые решения из паспорта "
+        "Запуск без ответов на CLARIFY: выданы принятые решения из паспорта "
         "и 4 вопроса —\n"
         "(1) проекты: все сектора / где пользователь руководитель / один проект / иной критерий\n"
         "(2) запуск: только триггеры / периодически / ручной\n"
@@ -151,7 +151,7 @@ def test_parse_clarify_fallback_scope_question() -> None:
 def test_parse_clarify_ignores_finished_report() -> None:
     text = (
         "Нашёл 3 просрочки в проекте Альфа и отправил сводку руководителю. "
-        "Прогон готов."
+        "Запуск готов."
     )
     assert parse_clarify_from_text(text) == []
 

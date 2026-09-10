@@ -12,6 +12,7 @@ from app.services.erp_tasks import (
     actor_from_jwt,
     build_subordinate_task_tree,
     from_1c_datetime,
+    is_constructor_test_probe,
     list_org_subordinates,
     merge_task_lists,
     parse_date,
@@ -374,3 +375,9 @@ def test_invoke_docflow_stub(monkeypatch) -> None:
     assert result["source"] == "stub"
     assert result["fio"] == "Сидоров С.С."
     assert result["count"] == 0
+
+
+def test_constructor_test_probes_detected() -> None:
+    assert is_constructor_test_probe({"number": "96", "title": "тестовая проба Constructor"})
+    assert is_constructor_test_probe({"title": "проба Constructor", "comment": ""})
+    assert not is_constructor_test_probe({"number": "12", "title": "Поручение РК по аудиту"})

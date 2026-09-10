@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -10,6 +10,10 @@ from app.db.base import Base
 
 class AgentTrigger(Base):
     __tablename__ = "agent_triggers"
+    __table_args__ = (
+        # Board loads triggers of one owner scoped to published agents.
+        Index("ix_agent_triggers_owner_wf", "owner_user_id", "workflow_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     owner_user_id: Mapped[str] = mapped_column(

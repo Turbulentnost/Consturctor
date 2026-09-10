@@ -20,7 +20,16 @@ import {
   type HumanDelayExplainRecord,
   type HumanDelayVerdict
 } from '../workplace/humanDelayExplain'
+import { humanResponseDelayBand, humanResponseDelayColor } from '../workplace/humanResponseColor'
 import { liveTotals } from '../workplace/runTiming'
+import {
+  buildKpiCsv,
+  buildKpiPdfHtml,
+  buildKpiXlsx,
+  bytesToBase64,
+  type KpiExportRow
+} from './kpiExport'
+import { formatKpiRangeLabel, KpiRangePicker, type KpiRangeShortcut } from './KpiRangePicker'
 
 const EXPLAIN_EVAL_TIMEOUT_MS = 3 * 60 * 1000
 
@@ -41,7 +50,6 @@ function extractExplainAnswerFromFeed(items: FeedItem[] | undefined): string {
   return deriveLatestOutput(items)
 }
 
-const iconCalendar = new URL('../../../temp/KPI/calendar.png', import.meta.url).href
 const iconActive = new URL('../../../temp/KPI/ChatGPT Image 26 авг. 2026 г., 11_22_41.png', import.meta.url).href
 const iconRuns = new URL('../../../temp/KPI/ChatGPT Image 26 авг. 2026 г., 11_23_18.png', import.meta.url).href
 const iconSuccess = new URL('../../../temp/KPI/ChatGPT Image 26 авг. 2026 г., 11_23_35.png', import.meta.url).href
@@ -54,8 +62,8 @@ const robotRed = new URL('../../../temp/KPI/59561baa-bbdc-4f74-8cf4-d78179bae59d
 const HISTORY_KEY = 'constructor.kpi.snapshots'
 
 type TabKey = 'overview' | 'agents' | 'interaction'
-type RangeKey = '7' | '30' | '90'
-type PeriodKind = 'range' | 'date' | 'month'
+type RangeKey = KpiRangeShortcut
+type PeriodKind = 'range' | 'date' | 'month' | 'custom'
 type AgentFilter = 'all' | 'deviations' | 'critical'
 type DynamicsMode = 'runs' | 'success'
 
@@ -64,6 +72,9 @@ interface PeriodState {
   range: RangeKey
   date: string
   month: string
+  /** Inclusive ISO dates `YYYY-MM-DD` — source of truth for `kind: 'custom'`. */
+  from: string
+  to: string
 }
 
 interface AgentKpiView {
@@ -112,8 +123,25 @@ function monthKey(timestamp = Date.now()): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
 }
 
+function rollingRangeKeys(days: number): { from: string; to: string } {
+  const end = new Date()
+  end.setHours(0, 0, 0, 0)
+  const start = new Date(end)
+  start.setDate(start.getDate() - (days - 1))
+  return { from: dayKey(start.getTime()), to: dayKey(end.getTime()) }
+}
+
 function defaultPeriod(): PeriodState {
-  return { kind: 'range', range: '30', date: todayKey(), month: monthKey() }
+  const today = todayKey()
+  const rolling = rollingRangeKeys(30)
+  return {
+    kind: 'range',
+    range: '30',
+    date: today,
+    month: monthKey(),
+    from: rolling.from,
+    to: rolling.to
+  }
 }
 
 function isSuccess(status: string): boolean {
@@ -164,7 +192,20 @@ function enumerateDays(from: number, to: number): string[] {
   return out
 }
 
+function inclusiveDayWindow(fromKey: string, toKey: string): { from: number; to: number; days: string[] } {
+  const start = new Date(`${fromKey}T00:00:00`)
+  const end = new Date(`${toKey}T23:59:59.999`)
+  const from = Number.isNaN(start.getTime()) ? Date.now() : start.getTime()
+  const to = Number.isNaN(end.getTime()) ? from + 86400000 - 1 : end.getTime()
+  const lo = Math.min(from, to)
+  const hi = Math.max(from, to)
+  return { from: lo, to: hi, days: enumerateDays(lo, hi) }
+}
+
 function periodWindow(period: PeriodState): { from: number; to: number; days: string[] } {
+  if (period.kind === 'custom') {
+    return inclusiveDayWindow(period.from, period.to)
+  }
   if (period.kind === 'date') {
     const start = new Date(`${period.date}T00:00:00`)
     const from = Number.isNaN(start.getTime()) ? Date.now() : start.getTime()
@@ -217,11 +258,19 @@ function Sparkline({
   )
 }
 
-function RateBar({ value, tone = 'green' }: { value: number; tone?: 'green' | 'orange' | 'red' }): React.JSX.Element {
+function RateBar({
+  value,
+  tone = 'green',
+  color
+}: {
+  value: number
+  tone?: 'green' | 'orange' | 'red'
+  color?: string
+}): React.JSX.Element {
   const normalized = Math.max(0, Math.min(100, value))
   return (
-    <span className={`kpi-rate ${tone}`}>
-      <span style={{ width: `${normalized}%` }} />
+    <span className={`kpi-rate ${color ? '' : tone}`.trim()}>
+      <span style={{ width: `${normalized}%`, ...(color ? { background: color } : {}) }} />
     </span>
   )
 }
@@ -293,26 +342,6 @@ function averageResponseMinutes(values: number[]): number {
   if (!values.length) return 0
   return averageMinutesFromMs(values)
 }
-
-function isZhalybinUser(userId: string, fio: string): boolean {
-  const id = (userId || '').toUpperCase()
-  const name = (fio || '').toLowerCase()
-  return id.includes('ZHALYBIN') || name.includes('жалыбин')
-}
-
-function isSmartAssignmentAgent(title: string): boolean {
-  const value = (title || '').toLowerCase()
-  return value.includes('smart') && (value.includes('формулиров') || value.includes('поручен'))
-}
-
-/** Demo offset: +N мин к среднему времени ответа на каждом агенте. */
-const HUMAN_RESPONSE_OFFSET_MIN = 70
-
-/** Жалыбин Максим — минимум среднего времени ответа по каждому агенту. */
-const ZHALYBIN_HUMAN_DELAY_MIN = 70
-
-/** Demo / acceptance: Жалыбин · SMART-агент — среднее время ответа человека > 1 часа. */
-const SMART_ZHALYBIN_HUMAN_DELAY_MIN = 75
 
 function isAutomatedRun(run: AgentRunHistoryItem): boolean {
   const source = (run.source || '').toLowerCase()
@@ -459,7 +488,7 @@ function computeTileFact(
   const finished = runs.filter((run) => isSuccess(run.status) || isErrorStatus(run.status))
   if (kind === 'runs_count') {
     if (!runs.length) return null
-    return { value: runs.length, evidence: `прогонов: ${runs.length}` }
+    return { value: runs.length, evidence: `запусков: ${runs.length}` }
   }
   if (kind === 'fail_count') {
     if (!finished.length) return null
@@ -672,6 +701,14 @@ export function KpiPage({
   const [userFio, setUserFio] = useState('')
   const [explainRecord, setExplainRecord] = useState<HumanDelayExplainRecord | null>(null)
   const [explainToast, setExplainToast] = useState('')
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportBusy, setExportBusy] = useState(false)
+  const [exportNote, setExportNote] = useState('')
+  const exportMenuRef = useRef<HTMLDivElement | null>(null)
+  const [draftProcessId, setDraftProcessId] = useState('')
+  const [draftRegulation, setDraftRegulation] = useState('')
+  const [processFilter, setProcessFilter] = useState('')
+  const [regulationFilter, setRegulationFilter] = useState('')
 
   useEffect(() => {
     let alive = true
@@ -835,7 +872,6 @@ export function KpiPage({
   }, [rows, agents, bounds.days])
 
   const interactionRows = useMemo(() => {
-    const zhalybin = isZhalybinUser(userId, userFio)
     return rows
       .map((row) => {
         const runs = row.runs
@@ -858,7 +894,6 @@ export function KpiPage({
         // Chess clocks only — recover agent via wall residual inside effectiveRunTiming.
         const agentMsAll = timings.map((item) => Math.max(0, item.agentMs))
         const humanMsAll = timings.map((item) => Math.max(0, item.humanMs))
-        const automatedRuns = runs.filter((run) => isAutomatedRun(run)).length
         let approvalCount = runs.filter((run) => runRequiredApproval(run, nowTick)).length
         if (
           !approvalCount &&
@@ -869,17 +904,10 @@ export function KpiPage({
         const successTile = row.kpi ? findTile(row.kpi, 'success_rate') : undefined
         const planFromKpi = successTile ? Number(successTile.plan?.value) : NaN
         const factFromKpi = successTile ? tileNumber(successTile) : null
-        const automation = runs.length ? Math.round((automatedRuns / runs.length) * 100) : 0
         const fact = factFromKpi != null ? Math.round(factFromKpi) : null
         const plan = Number.isFinite(planFromKpi) && planFromKpi > 0 ? Math.round(planFromKpi) : null
         const agentDelayMinutes = averageResponseMinutes(agentMsAll)
-        let humanDelayMinutes = averageResponseMinutes(humanMsAll) + HUMAN_RESPONSE_OFFSET_MIN
-        if (zhalybin) {
-          humanDelayMinutes = Math.max(humanDelayMinutes, ZHALYBIN_HUMAN_DELAY_MIN)
-          if (isSmartAssignmentAgent(row.agent.title)) {
-            humanDelayMinutes = Math.max(humanDelayMinutes, SMART_ZHALYBIN_HUMAN_DELAY_MIN)
-          }
-        }
+        let humanDelayMinutes = averageResponseMinutes(humanMsAll)
         // «Допустимо» — полное списание задержек ответа по всем агентам.
         if (
           explainRecord?.writtenOff ||
@@ -887,10 +915,18 @@ export function KpiPage({
         ) {
           humanDelayMinutes = 0
         }
+        // Автоматизация = kpi / (kpi + human_delay / 10), kpi = план/факт (%).
+        const kpiValue = fact ?? row.successRate
+        const automation =
+          kpiValue > 0
+            ? Math.round((100 * kpiValue) / (kpiValue + humanDelayMinutes / 10))
+            : 0
         const trend = bounds.days.map((day) => runs.filter((run) => dayKey(runTime(run)) === day).length)
+        const regulation = localizeStatusText((row.agent.phase || '').trim()) || 'Без регламента'
         return {
           agentId: row.agent.id,
           title: row.agent.title,
+          regulation,
           plan,
           fact,
           agentDelayMinutes,
@@ -901,20 +937,53 @@ export function KpiPage({
           trend
         }
       })
+      .filter((row) => {
+        if (processFilter && row.agentId !== processFilter) return false
+        if (regulationFilter && row.regulation !== regulationFilter) return false
+        return true
+      })
       .sort((a, b) => (b.fact ?? -1) - (a.fact ?? -1) || a.humanDelayMinutes - b.humanDelayMinutes)
-  }, [rows, bounds.days, nowTick, userId, userFio, explainRecord, liveRuns.entries])
+  }, [
+    rows,
+    bounds.days,
+    nowTick,
+    explainRecord,
+    liveRuns.entries,
+    processFilter,
+    regulationFilter
+  ])
+
+  const processOptions = useMemo(
+    () => rows.map((row) => ({ id: row.agent.id, title: row.agent.title })),
+    [rows]
+  )
+
+  const regulationOptions = useMemo(() => {
+    const values = new Set(
+      rows.map((row) => localizeStatusText((row.agent.phase || '').trim()) || 'Без регламента')
+    )
+    return [...values].sort((a, b) => a.localeCompare(b, 'ru'))
+  }, [rows])
+
+  const periodKeys = useMemo(() => {
+    const from = bounds.days[0] || period.from
+    const to = bounds.days[bounds.days.length - 1] || period.to
+    return { from, to }
+  }, [bounds.days, period.from, period.to])
 
   const periodKey = useMemo(() => {
+    if (period.kind === 'custom') return `custom:${period.from}:${period.to}`
     if (period.kind === 'range') return `range:${period.range}`
     if (period.kind === 'date') return `date:${period.date}`
     return `month:${period.month}`
   }, [period])
 
   const periodLabel = useMemo(() => {
+    if (periodKeys.from && periodKeys.to) return formatKpiRangeLabel(periodKeys.from, periodKeys.to)
     if (period.kind === 'range') return RANGE_LABELS[period.range]
     if (period.kind === 'date') return period.date
     return period.month
-  }, [period])
+  }, [period, periodKeys])
 
   useEffect(() => {
     const loaded = loadEffectiveExplainRecord(userId, periodKey)
@@ -932,6 +1001,35 @@ export function KpiPage({
   }, [userId, periodKey])
 
   useEffect(() => {
+    if (!exportOpen) return
+    const onDoc = (event: MouseEvent): void => {
+      if (!exportMenuRef.current?.contains(event.target as Node)) setExportOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [exportOpen])
+
+  useEffect(() => {
+    if (!exportNote) return
+    const id = window.setTimeout(() => setExportNote(''), 4000)
+    return () => window.clearTimeout(id)
+  }, [exportNote])
+
+  const exportRows = useMemo<KpiExportRow[]>(
+    () =>
+      interactionRows.map((row) => ({
+        title: row.title,
+        plan: row.plan,
+        fact: row.fact,
+        agentDelayMinutes: row.agentDelayMinutes,
+        humanDelayMinutes: row.humanDelayMinutes,
+        automation: row.automation,
+        sla: row.sla
+      })),
+    [interactionRows]
+  )
+
+  useEffect(() => {
     if (!explainToast) return
     const id = window.setTimeout(() => setExplainToast(''), 6000)
     return () => window.clearTimeout(id)
@@ -942,12 +1040,69 @@ export function KpiPage({
     const plan = averageKnown(interactionRows.map((row) => row.plan))
     const agentDelay = averageNumber(interactionRows.map((row) => row.agentDelayMinutes))
     const humanDelay = averageNumber(interactionRows.map((row) => row.humanDelayMinutes))
+    const automation = averageNumber(interactionRows.map((row) => row.automation))
     let attention = interactionRows.reduce((sum, row) => sum + row.approvalCount, 0)
     if (explainRecord?.status === 'done' && explainRecord.verdict === 'rejected' && !explainRecord.writtenOff) {
       attention += 1
     }
-    return { plan, fact, agentDelay, humanDelay, attention }
+    return { plan, fact, agentDelay, humanDelay, automation, attention }
   }, [interactionRows, explainRecord])
+
+  const runExport = async (kind: 'xlsx' | 'csv' | 'pdf'): Promise<void> => {
+    if (exportBusy) return
+    setExportBusy(true)
+    setExportOpen(false)
+    try {
+      const stamp = new Date().toISOString().slice(0, 10)
+      const base = `pokazateli-${stamp}`
+      if (kind === 'csv') {
+        const text = buildKpiCsv(exportRows, periodLabel)
+        const res = await window.api.saveLocalFile({
+          defaultName: `${base}.csv`,
+          text,
+          filters: [{ name: 'CSV', extensions: ['csv'] }]
+        })
+        if (res.canceled) return
+        if (!res.ok) throw new Error(res.error || 'Ошибка сохранения')
+        setExportNote('CSV сохранён')
+        return
+      }
+      if (kind === 'xlsx') {
+        const bytes = buildKpiXlsx(exportRows, periodLabel)
+        const res = await window.api.saveLocalFile({
+          defaultName: `${base}.xlsx`,
+          base64: bytesToBase64(bytes),
+          filters: [{ name: 'Excel', extensions: ['xlsx'] }]
+        })
+        if (res.canceled) return
+        if (!res.ok) throw new Error(res.error || 'Ошибка сохранения')
+        setExportNote('XLSX сохранён')
+        return
+      }
+      const html = buildKpiPdfHtml(exportRows, periodLabel, {
+        fact: interactionSummary.fact,
+        agentDelay: interactionSummary.agentDelay,
+        humanDelay: interactionSummary.humanDelay,
+        automation: interactionSummary.automation
+      })
+      const res = await window.api.exportPdf({
+        html,
+        defaultName: `${base}.pdf`
+      })
+      if (res.canceled) return
+      if (!res.ok) throw new Error(res.error || 'Ошибка PDF')
+      setExportNote('PDF-отчёт сохранён')
+    } catch (error) {
+      setExportNote(error instanceof Error ? error.message : 'Не удалось экспортировать')
+    } finally {
+      setExportBusy(false)
+    }
+  }
+
+  const applyFilters = (): void => {
+    setProcessFilter(draftProcessId)
+    setRegulationFilter(draftRegulation)
+  }
 
   const filteredAgents = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -974,16 +1129,32 @@ export function KpiPage({
       }
     : { up: 0, down: 0, same: selected ? 1 : 0 }
 
-  const setKind = (kind: PeriodKind | RangeKey): void => {
-    if (kind === '7' || kind === '30' || kind === '90') {
-      setPeriod((prev) => ({ ...prev, kind: 'range', range: kind }))
-      return
-    }
-    setPeriod((prev) => ({ ...prev, kind }))
+  const applyCustomRange = (next: { from: string; to: string }): void => {
+    setPeriod((prev) => ({
+      ...prev,
+      kind: 'custom',
+      from: next.from,
+      to: next.to,
+      date: next.to,
+      month: next.from.slice(0, 7)
+    }))
+  }
+
+  const applyRangeShortcut = (range: RangeKey): void => {
+    const rolling = rollingRangeKeys(Number(range))
+    setPeriod((prev) => ({
+      ...prev,
+      kind: 'range',
+      range,
+      from: rolling.from,
+      to: rolling.to,
+      date: rolling.to,
+      month: rolling.from.slice(0, 7)
+    }))
   }
 
   const jumpToDate = (date: string): void => {
-    setPeriod((prev) => ({ ...prev, kind: 'date', date }))
+    setPeriod((prev) => ({ ...prev, kind: 'date', date, from: date, to: date }))
     setHistoryOpen(false)
   }
 
@@ -1057,10 +1228,85 @@ export function KpiPage({
     <div className="kpi-page">
       <div className="kpi-head">
         <div>
-          <h1 className="page-title">KPI агентов</h1>
-          <p className="page-subtitle">Контроль эффективности и качества работы всех ИИ-агентов</p>
+          <h1 className="page-title">Показатели</h1>
+          <p className="page-subtitle">Сводка и детализация по процессам</p>
         </div>
       </div>
+
+      <div className="kpi-filter-bar">
+        <div className="kpi-filter-bar-left">
+          <KpiRangePicker
+            from={periodKeys.from}
+            to={periodKeys.to}
+            shortcut={period.kind === 'range' ? period.range : null}
+            onApply={applyCustomRange}
+            onShortcut={applyRangeShortcut}
+          />
+          <select
+            className="kpi-filter-select"
+            value={draftProcessId}
+            onChange={(event) => setDraftProcessId(event.target.value)}
+            aria-label="Процесс"
+          >
+            <option value="">Процесс: Все</option>
+            {processOptions.map((item) => (
+              <option key={item.id} value={item.id}>
+                Процесс: {item.title}
+              </option>
+            ))}
+          </select>
+          <select
+            className="kpi-filter-select"
+            value={draftRegulation}
+            onChange={(event) => setDraftRegulation(event.target.value)}
+            aria-label="Регламент"
+          >
+            <option value="">Регламент: Все</option>
+            {regulationOptions.map((item) => (
+              <option key={item} value={item}>
+                Регламент: {item}
+              </option>
+            ))}
+          </select>
+          <button className="btn-primary kpi-apply-btn" type="button" onClick={applyFilters}>
+            Применить
+          </button>
+        </div>
+
+        <div className="kpi-export" ref={exportMenuRef}>
+          <button
+            className="btn-primary kpi-export-btn"
+            type="button"
+            disabled={exportBusy}
+            onClick={() => setExportOpen((value) => !value)}
+          >
+            <span className="kpi-export-ico" aria-hidden>
+              ↓
+            </span>
+            {exportBusy ? 'Экспорт…' : 'Экспорт'}
+            <span className="kpi-export-caret" aria-hidden>
+              ▾
+            </span>
+          </button>
+          {exportOpen ? (
+            <div className="kpi-export-menu" role="menu">
+              <button type="button" role="menuitem" onClick={() => void runExport('xlsx')}>
+                <span>XLSX — для аналитики</span>
+                <em className="kpi-export-badge">Рекомендуется</em>
+              </button>
+              <button type="button" role="menuitem" onClick={() => void runExport('csv')}>
+                <span>CSV — исходные данные</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => void runExport('pdf')}>
+                <span>PDF — отчёт</span>
+                <em className="kpi-export-badge muted">После MVP</em>
+              </button>
+              <p className="kpi-export-hint">Экспорт учитывает фильтры и права доступа</p>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      {exportNote ? <div className="kpi-export-note">{exportNote}</div> : null}
 
       <div className="kpi-toolbar">
         <div className="kpi-tabs">
@@ -1083,37 +1329,6 @@ export function KpiPage({
             >
               {recalcBusy ? 'Пересчитываем...' : 'Пересчитать все KPI'}
             </button>
-          )}
-          <label className="kpi-period">
-            <img src={iconCalendar} alt="" />
-            <select
-              value={period.kind === 'range' ? period.range : period.kind}
-              onChange={(event) => setKind(event.target.value as PeriodKind | RangeKey)}
-            >
-              {Object.entries(RANGE_LABELS).map(([key, label]) => (
-                <option key={key} value={key}>
-                  {label}
-                </option>
-              ))}
-              <option value="date">Конкретная дата</option>
-              <option value="month">Конкретный месяц</option>
-            </select>
-          </label>
-          {period.kind === 'date' && (
-            <input
-              className="kpi-date-input"
-              type="date"
-              value={period.date}
-              onChange={(event) => setPeriod((prev) => ({ ...prev, date: event.target.value }))}
-            />
-          )}
-          {period.kind === 'month' && (
-            <input
-              className="kpi-date-input"
-              type="month"
-              value={period.month}
-              onChange={(event) => setPeriod((prev) => ({ ...prev, month: event.target.value }))}
-            />
           )}
         </div>
       </div>
@@ -1226,6 +1441,7 @@ function InteractionPane({
     fact: number | null
     agentDelay: number
     humanDelay: number
+    automation: number
     attention: number
   }
   periodKey: string
@@ -1275,7 +1491,7 @@ function InteractionPane({
         ? 'red'
         : explainRecord?.status === 'evaluating'
           ? 'orange'
-          : delayTone(summary.humanDelay)
+          : humanResponseDelayBand(summary.humanDelay)
 
   function finishExplainEvaluation(
     source: HumanDelayExplainRecord,
@@ -1576,6 +1792,12 @@ function InteractionPane({
     (explainRecord?.status === 'done' && explainRecord.verdict === 'acceptable')
       ? 0
       : summary.humanDelay
+  const humanDelayValueColor =
+    explainRecord?.status === 'done' && explainRecord.verdict === 'rejected'
+      ? humanResponseDelayColor(60)
+      : explainRecord?.status === 'evaluating'
+        ? humanResponseDelayColor(30)
+        : humanResponseDelayColor(Math.max(1, humanDelayDisplay || 1))
 
   return (
     <div className="kpi-interaction">
@@ -1631,7 +1853,7 @@ function InteractionPane({
         >
           <div>
             <span>Среднее время ответа</span>
-            <strong>{formatMinutes(humanDelayDisplay)}</strong>
+            <strong style={{ color: humanDelayValueColor }}>{formatMinutes(humanDelayDisplay)}</strong>
             <em>{humanDelayCardLabel(explainRecord, humanDelayDisplay, banRemaining)}</em>
           </div>
         </article>
@@ -1659,7 +1881,7 @@ function InteractionPane({
         <div className="kpi-card-head">
           <div>
             <h3>Показатели по процессам</h3>
-            <p>Срез по взаимодействию агента и человека за выбранный период. Время ответа — среднее по прогонам агента (без задержки = 0 мин).</p>
+            <p>Срез по взаимодействию агента и человека за выбранный период. Время ответа — среднее по запускам агента (без задержки = 0 мин).</p>
           </div>
           {loading && <span className="kpi-loading">Обновляем...</span>}
         </div>
@@ -1669,7 +1891,8 @@ function InteractionPane({
               <span>Процесс</span>
               <span>План / факт</span>
               <span>Задержка агента</span>
-              <span>Среднее время ответа</span>
+              <span>Задержка человека</span>
+              <span>Автоматизация</span>
               <span>SLA статус</span>
               <span>Динамика</span>
             </div>
@@ -1688,11 +1911,17 @@ function InteractionPane({
                   />
                 </span>
                 <span className="kpi-rate-cell">
-                  {formatMinutes(row.humanDelayMinutes)}
+                  <span style={{ color: humanResponseDelayColor(row.humanDelayMinutes), fontWeight: 700 }}>
+                    {formatMinutes(row.humanDelayMinutes)}
+                  </span>
                   <RateBar
                     value={Math.min(100, Math.round((row.humanDelayMinutes / 60) * 100))}
-                    tone={delayTone(row.humanDelayMinutes)}
+                    color={humanResponseDelayColor(row.humanDelayMinutes)}
                   />
+                </span>
+                <span className="kpi-rate-cell">
+                  {`${row.automation}%`}
+                  <RateBar value={row.automation} tone={rowTone(row.automation)} />
                 </span>
                 <span className={`kpi-badge ${row.sla === 'В норме' ? 'ok' : row.sla === 'Внимание' ? 'warn' : 'danger'}`}>
                   {row.sla}
@@ -1749,7 +1978,13 @@ function InteractionPane({
                       <i className="agent" style={{ width: agentWidth }}>
                         {row.agentDelayMinutes > 0 ? row.agentDelayMinutes : ''}
                       </i>
-                      <i className="human" style={{ width: humanWidth }}>
+                      <i
+                        className="human"
+                        style={{
+                          width: humanWidth,
+                          background: humanResponseDelayColor(row.humanDelayMinutes)
+                        }}
+                      >
                         {row.humanDelayMinutes > 0 ? row.humanDelayMinutes : ''}
                       </i>
                     </div>
@@ -1779,7 +2014,7 @@ function InteractionPane({
             {criticalRows.length ? (
               <ul className="kpi-explain-processes">
                 {criticalRows.map((row) => (
-                  <li key={row.agentId}>
+                  <li key={row.agentId} style={{ color: humanResponseDelayColor(row.humanDelayMinutes) }}>
                     {row.title}: {formatMinutes(row.humanDelayMinutes)}
                   </li>
                 ))}

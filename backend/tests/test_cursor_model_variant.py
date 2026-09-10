@@ -43,7 +43,7 @@ def test_effort_picks_xhigh_variant() -> None:
     assert _effort_params(_GROK, "xhigh") == _GROK_XHIGH
 
 
-def test_regulation_creation_defaults_to_grok_xhigh_fast() -> None:
+def test_regulation_creation_defaults_to_grok_medium_fast() -> None:
     from app.config import Settings
     from app.services.regulation_creation import cursor_agent
 

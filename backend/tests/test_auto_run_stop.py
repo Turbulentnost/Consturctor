@@ -168,7 +168,7 @@ def test_delete_flag_survives_stale_local_run_write() -> None:
     assert row is not None
     stale = dict(row.local_run or {})
     stale.pop("deleted", None)
-    stale["work_result"] = {"text": "старый прогон"}
+    stale["work_result"] = {"text": "старый запуск"}
     db.refresh(row)
     current = dict(row.local_run or {})
     if not current.get("deleted"):

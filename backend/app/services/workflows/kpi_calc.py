@@ -58,6 +58,34 @@ def calculate_workflow_kpi(db: Session, row: Workflow, tile_ids: list[str]) -> N
     )
 
 
+def maybe_recalc_kpi_after_run(db: Session, row: Workflow) -> None:
+    """Refresh KPI facts after a run finishes so the board is not stuck on dashes."""
+    local = dict(row.local_run or {})
+    kpi = local.get("kpi") if isinstance(local.get("kpi"), dict) else None
+    if not kpi or not (kpi.get("tiles") or []):
+        from app.services import agent_kpi
+
+        draft = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+        plan = row.plan_json if isinstance(row.plan_json, dict) else {}
+        kpi = agent_kpi.build_kpi_record(
+            None,
+            title=str(draft.get("name") or row.title or plan.get("title") or ""),
+            goal=str(draft.get("goal") or plan.get("goal") or ""),
+            schedule=draft,
+            status="draft",
+        )
+        local["kpi"] = kpi
+        row.local_run = local
+        db.commit()
+    tile_ids = [
+        str(item.get("id") or "")
+        for item in (kpi.get("tiles") or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
+    if tile_ids:
+        calculate_workflow_kpi(db, row, tile_ids)
+
+
 def run_due_kpi_calculations() -> int:
     db = SessionLocal()
     try:

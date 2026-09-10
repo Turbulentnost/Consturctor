@@ -688,7 +688,7 @@ def search_mail(input_data: dict) -> dict:
             item.pop("datetime_sort", None)
 
         _log_progress("step=done ok")
-        return {
+        payload = {
             "messages": results,
             "count": len(results),
             "scanned_count": scanned_count,
@@ -698,6 +698,12 @@ def search_mail(input_data: dict) -> dict:
             "range_start": start_at.isoformat(),
             "range_end": end_at.isoformat(),
         }
+        if not results:
+            payload["hint"] = (
+                "Писем по этому query нет. Не повторяй поиск с другими словами "
+                "и не подставляй список ФИО в query."
+            )
+        return payload
 
     return _run_com_read(_read, "Ошибка доступа к Outlook или MAPI")
 

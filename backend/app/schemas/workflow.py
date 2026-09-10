@@ -142,6 +142,7 @@ class BoardAgent(BaseModel):
     paused: bool = False
     phase: str = ""
     draft_id: str = ""
+    document_name: str = ""
 
 
 class CalendarEvent(BaseModel):

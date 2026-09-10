@@ -91,6 +91,21 @@ def write_workspace_note(cwd: str, relative: str, text: str) -> str:
     return Path(relative).as_posix()
 
 
+def _sanitize_prior_run_excerpt(text: str) -> str:
+    """Drop WORK_RESULT blocks so reading agent.md does not end the SDK run early."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    cleaned = re.sub(
+        r"#{0,6}[ \t]*WORK[ _]?RESULT\b[\s\S]*?(?=(?:\n#{1,6}\s|\Z))",
+        "[итог прошлого запуска — см. историю запусков]",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"TESTS:\s*PASS\b.*", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()[:8000]
+
+
 def seed_agent_brief(cwd: str, workflow: WorkflowRecord, *, extra: str = "") -> str:
     """Write passport, plan, and optional design brief into materials/agent.md."""
     title = (workflow.title or "агент").strip() or "агент"
@@ -134,9 +149,9 @@ def seed_agent_brief(cwd: str, workflow: WorkflowRecord, *, extra: str = "") -> 
             parts.extend(f"- {item}" for item in plan.test_criteria if str(item).strip())
         if plan.raw_text:
             parts.extend(["", "Исходный паспорт:", plan.raw_text.strip()])
-    last = (workflow.last_result or "").strip()
+    last = _sanitize_prior_run_excerpt(workflow.last_result or "")
     if last:
-        parts.extend(["", "## Последний успешный прогон", last[:12000]])
+        parts.extend(["", "## Последний успешный запуск (кратко)", last])
     extra_text = (extra or "").strip()
     if extra_text:
         parts.extend(["", "## Бриф проектирования", extra_text])

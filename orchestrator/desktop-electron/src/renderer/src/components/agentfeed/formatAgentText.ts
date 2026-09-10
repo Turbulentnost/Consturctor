@@ -31,24 +31,78 @@ function asList(value: unknown): string[] {
 }
 
 export function extractJsonObject(text: string): { data: Record<string, unknown>; prefix: string } | null {
+  const objects = extractJsonObjects(text)
+  if (!objects.length) return null
+  return { data: objects[0].data, prefix: objects[0].prefix }
+}
+
+function extractJsonObjects(
+  text: string
+): { data: Record<string, unknown>; prefix: string; start: number; end: number }[] {
   const raw = text || ''
   const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw)
-  let blob = fence ? fence[1].trim() : ''
-  let prefix = fence ? raw.slice(0, fence.index).trim() : ''
-  if (!blob) {
-    const start = raw.indexOf('{')
-    const end = raw.lastIndexOf('}')
-    if (start < 0 || end <= start) return null
-    blob = raw.slice(start, end + 1)
-    prefix = raw.slice(0, start).trim()
+  const source = fence ? fence[1] : raw
+  const prefix = fence ? raw.slice(0, fence.index).trim() : ''
+  const found: { data: Record<string, unknown>; prefix: string; start: number; end: number }[] = []
+  let i = 0
+  while (i < source.length) {
+    const start = source.indexOf('{', i)
+    if (start < 0) break
+    let depth = 0
+    let inStr = false
+    let esc = false
+    let closed = -1
+    for (let j = start; j < source.length; j += 1) {
+      const ch = source[j]
+      if (inStr) {
+        if (esc) esc = false
+        else if (ch === '\\') esc = true
+        else if (ch === '"') inStr = false
+        continue
+      }
+      if (ch === '"') {
+        inStr = true
+        continue
+      }
+      if (ch === '{') depth += 1
+      else if (ch === '}') {
+        depth -= 1
+        if (depth === 0) {
+          closed = j
+          break
+        }
+      }
+    }
+    if (closed < 0) break
+    try {
+      const parsed = JSON.parse(source.slice(start, closed + 1)) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        found.push({
+          data: parsed as Record<string, unknown>,
+          prefix: found.length === 0 ? (fence ? prefix : source.slice(0, start).trim()) : '',
+          start,
+          end: closed
+        })
+      }
+    } catch {
+      /* skip invalid */
+    }
+    i = closed + 1
   }
-  try {
-    const data = JSON.parse(blob) as unknown
-    if (!data || typeof data !== 'object' || Array.isArray(data)) return null
-    return { data: data as Record<string, unknown>, prefix }
-  } catch {
-    return null
+  return found
+}
+
+function formatVerdictMarkdown(data: Record<string, unknown>): string | null {
+  const verdict = asText(data.verdict).toLowerCase()
+  if (!verdict) return null
+  const reason = asText(data.reason)
+  if (verdict === 'acceptable') {
+    return reason ? `**Допустимо.** ${reason}` : '**Допустимо.**'
   }
+  if (verdict === 'rejected' || verdict === 'escalate' || verdict === 'denied') {
+    return reason ? `**Отказано.** ${reason}` : '**Отказано.**'
+  }
+  return null
 }
 
 function isDesignDraft(data: Record<string, unknown>): boolean {
@@ -132,8 +186,15 @@ export function draftToMarkdown(draft: DesignDraft): string {
 }
 
 export function presentAgentText(text: string): string {
-  const extracted = extractJsonObject(text)
-  if (!extracted) return text
+  const objects = extractJsonObjects(text)
+  if (!objects.length) return text
+  const verdicts = objects.map((item) => formatVerdictMarkdown(item.data))
+  if (verdicts.every(Boolean)) {
+    const body = verdicts.join('\n\n')
+    const prefix = objects[0].prefix
+    return prefix ? `${prefix}\n\n${body}` : body
+  }
+  const extracted = objects[0]
   const draft = parseDesignDraft(extracted.data)
   if (!draft) return text
   const decoded = draftToMarkdown(draft)

@@ -83,12 +83,19 @@ def upsert_app_user(
             db.add(user)
             logger.info("Created app user id=%s", user_id)
         else:
+            changed = (user.fio or "") != fio
             user.fio = fio
             # Keep app department and position as source of truth after first login.
             if not (user.department or "").strip() and department:
                 user.department = department
+                changed = True
             if not (user.position or "").strip() and position:
                 user.position = position
+                changed = True
+            if not changed:
+                # /auth/me runs on every app open; skip the write when nothing moved.
+                db.expunge(user)
+                return user
             logger.info("Updated app user id=%s", user_id)
         db.commit()
         db.refresh(user)
@@ -110,7 +117,13 @@ def find_app_user_by_fio(fio: str) -> AppUser | None:
     if not needle:
         return None
     with SessionLocal() as db:
-        user = db.execute(select(AppUser).where(AppUser.fio == needle)).scalar_one_or_none()
+        exact_matches = db.execute(
+            select(AppUser).where(AppUser.fio == needle).order_by(AppUser.updated_at.desc()).limit(2)
+        ).scalars().all()
+        user = exact_matches[0] if len(exact_matches) == 1 else None
+        if len(exact_matches) > 1:
+            logger.warning("Multiple app users with exact FIO %r; using latest", needle)
+            user = exact_matches[0]
         if user is None:
             matches = db.execute(
                 select(AppUser).where(AppUser.fio.ilike(f"%{needle}%")).limit(3)

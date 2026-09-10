@@ -51,10 +51,15 @@ export function PassportPage({
   const ready = Boolean(passport?.name.trim()) && missing.length === 0
 
   useEffect(() => {
-    if (prompt && prompt !== lastPromptRef.current) {
-      lastPromptRef.current = prompt
-      setMessages((prev) => [...prev, { role: 'ai', text: prompt }])
-    }
+    if (!prompt) return
+    const prev = lastPromptRef.current
+    if (prompt === prev) return
+    lastPromptRef.current = prompt
+    setMessages((prevMsgs) => {
+      const last = prevMsgs[prevMsgs.length - 1]
+      if (last?.role === 'ai' && last.text.trim() === prompt.trim()) return prevMsgs
+      return [...prevMsgs, { role: 'ai', text: prompt }]
+    })
   }, [prompt])
 
   useEffect(() => {
@@ -79,14 +84,18 @@ export function PassportPage({
         <h1 className="page-title" style={{ fontSize: 28 }}>
           {suggestion.title || 'Паспорт ИИ-агента'}
         </h1>
-        <p className="page-subtitle">Карточка обновляется после каждого ответа в чате</p>
+        <p className="page-subtitle">Опрос локальный, без Cursor Cloud API. Карточка обновляется после ответа</p>
       </div>
 
       <div className="passport-grid">
         <div className="chat-col">
           <div className="passport-chat-scroll" ref={scrollRef}>
             {!session && !messages.length && (
-              <div className="chat-hint">Собираю черновик паспорта агента…</div>
+              <div className="chat-hint">
+                {busy
+                  ? 'Собираю паспорт локально…'
+                  : 'Собираю паспорт агента…'}
+              </div>
             )}
             {messages.map((message, index) => (
               <div key={index} className={`bubble ${message.role}`}>

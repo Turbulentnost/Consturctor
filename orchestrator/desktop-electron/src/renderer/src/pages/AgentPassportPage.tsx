@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, parseScheduleDraft } from '../api/client'
+import { api, kpiFromRecord, parseScheduleDraft } from '../api/client'
 import type {
   AgentKpi,
   AgentRunHistoryItem,
   AgentRunnerEvent,
   ScheduleDraft,
+  ScheduleTriggerSpec,
   WorkflowFileItem,
   WorkflowRecord
 } from '../api/types'
 import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
 import { MiniCalendar, meetingsForHistoryRun } from '../components/agentfeed/MiniCalendar'
 import { cleanRunResult } from '../utils/cleanRunResult'
-import { triggerChipLabel } from './AgentSchedulePage'
+import { ScheduleTriggerEditor, triggerChipLabel } from './AgentSchedulePage'
 import { formatSize } from './filesGrouping'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { localizeStatusText } from '../utils/statusText'
@@ -89,6 +90,14 @@ function trimLongText(value: string, maxLength = 220): string {
   return `${source.slice(0, maxLength).trimEnd()}...`
 }
 
+function cloneTriggers(items: ScheduleTriggerSpec[] | undefined): ScheduleTriggerSpec[] {
+  return (items || []).map((item) => ({ ...item, weekdays: [...(item.weekdays || [])] }))
+}
+
+function triggersEqual(left: ScheduleTriggerSpec[], right: ScheduleTriggerSpec[]): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
 export function AgentPassportPage({
   workflowId,
   title,
@@ -106,10 +115,14 @@ export function AgentPassportPage({
   const [runAnswer, setRunAnswer] = useState('')
   const [runEvents, setRunEvents] = useState<AgentRunnerEvent[]>([])
   const [loading, setLoading] = useState(true)
+  const [filesLoading, setFilesLoading] = useState(false)
+  const [runsLoading, setRunsLoading] = useState(false)
+  const [kpiLoading, setKpiLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [editTriggers, setEditTriggers] = useState<ScheduleTriggerSpec[]>([])
   const [form, setForm] = useState<PassportFormState>({
     name: '',
     goal: '',
@@ -132,19 +145,17 @@ export function AgentPassportPage({
     let alive = true
     setLoading(true)
     setError('')
-    void Promise.all([
-      api.getWorkflow(workflowId).catch(() => null),
-      api.getWorkflowKpi(workflowId).catch(() => null),
-      api.listWorkflowFiles(workflowId).catch(() => [] as WorkflowFileItem[]),
-      api.listAgentRuns(workflowId).catch(() => [] as AgentRunHistoryItem[])
-    ])
-      .then(([nextRecord, nextKpi, nextFiles, nextRuns]) => {
+    setRecord(null)
+    setKpi(null)
+    setFiles([])
+    setRuns([])
+    setSelectedRun('')
+    void api
+      .getWorkflow(workflowId)
+      .then((nextRecord) => {
         if (!alive) return
         setRecord(nextRecord)
-        setKpi(nextKpi)
-        setFiles(nextFiles)
-        setRuns(nextRuns)
-        if (nextRuns.length) setSelectedRun(nextRuns[0].runId)
+        setKpi(kpiFromRecord(nextRecord))
       })
       .catch((err) => {
         if (alive) setError(err instanceof Error ? err.message : 'Не удалось загрузить паспорт агента')
@@ -158,7 +169,68 @@ export function AgentPassportPage({
   }, [workflowId])
 
   useEffect(() => {
-    if (!selectedRun) {
+    if (loading || tab !== 'info' || !record) return
+    if (kpi?.tiles?.length) return
+    let alive = true
+    setKpiLoading(true)
+    void api
+      .getWorkflowKpi(workflowId)
+      .then((nextKpi) => {
+        if (alive && nextKpi) setKpi(nextKpi)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setKpiLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [loading, tab, workflowId, record, kpi?.tiles?.length])
+
+  useEffect(() => {
+    if (loading || tab !== 'files' || files.length) return
+    let alive = true
+    setFilesLoading(true)
+    void api
+      .listWorkflowFiles(workflowId)
+      .then((nextFiles) => {
+        if (alive) setFiles(nextFiles)
+      })
+      .catch(() => {
+        if (alive) setFiles([])
+      })
+      .finally(() => {
+        if (alive) setFilesLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [loading, tab, workflowId, files.length])
+
+  useEffect(() => {
+    if (loading || tab !== 'results' || runs.length) return
+    let alive = true
+    setRunsLoading(true)
+    void api
+      .listAgentRuns(workflowId)
+      .then((nextRuns) => {
+        if (!alive) return
+        setRuns(nextRuns)
+        if (nextRuns.length) setSelectedRun(nextRuns[0].runId)
+      })
+      .catch(() => {
+        if (alive) setRuns([])
+      })
+      .finally(() => {
+        if (alive) setRunsLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [loading, tab, workflowId, runs.length])
+
+  useEffect(() => {
+    if (tab !== 'results' || !selectedRun) {
       setRunAnswer('')
       setRunEvents([])
       return
@@ -192,6 +264,10 @@ export function AgentPassportPage({
   }, [workflowId, selectedRun])
 
   const draft = useMemo(() => draftFromRecord(record), [record])
+  useEffect(() => {
+    if (editing) return
+    setEditTriggers(cloneTriggers(draft?.triggers))
+  }, [draft?.triggers, editing])
   const sourceForm = useMemo<PassportFormState>(() => {
     const local = asRecord(record?.localRun ?? {})
     const profile = asRecord(local.agent_passport_profile)
@@ -213,7 +289,7 @@ export function AgentPassportPage({
     setForm(sourceForm)
   }, [sourceForm, editing])
   const displayTitle = (form.name || sourceForm.name || 'ИИ-агент').trim()
-  const triggers = draft?.triggers || []
+  const triggers = editing ? editTriggers : draft?.triggers || []
   const selected = runs.find((item) => item.runId === selectedRun)
   const cleaned = cleanRunResult({
     answer: runAnswer,
@@ -231,6 +307,17 @@ export function AgentPassportPage({
     setForm((prev) => ({ ...prev, [key]: value }))
   }
 
+  function beginEditing(): void {
+    setForm(sourceForm)
+    setEditTriggers(cloneTriggers(draft?.triggers))
+    setEditing(true)
+  }
+
+  function resetEditing(): void {
+    setForm(sourceForm)
+    setEditTriggers(cloneTriggers(draft?.triggers))
+  }
+
   async function savePassport(): Promise<void> {
     if (!record) return
     setSaving(true)
@@ -246,12 +333,21 @@ export function AgentPassportPage({
       const nextDraft: ScheduleDraft = {
         ...baseDraft,
         name: (form.name || sourceForm.name || title || 'ИИ-агент').trim(),
-        goal: form.goal.trim()
+        goal: form.goal.trim(),
+        triggers: editTriggers
       }
       const draftChanged =
         text(baseDraft.name) !== text(nextDraft.name) ||
-        text(baseDraft.goal) !== text(nextDraft.goal)
-      if (draftChanged) nextRecord = await api.persistScheduleDraft(workflowId, nextDraft)
+        text(baseDraft.goal) !== text(nextDraft.goal) ||
+        !triggersEqual(baseDraft.triggers || [], editTriggers)
+      if (draftChanged) {
+        if (String(record.phase || '') === 'done') {
+          await api.applyPublishedSchedule(workflowId, nextDraft)
+          nextRecord = (await api.getWorkflow(workflowId)) || nextRecord
+        } else {
+          nextRecord = await api.persistScheduleDraft(workflowId, nextDraft)
+        }
+      }
 
       const currentLocal = asRecord(nextRecord.localRun)
       const currentProfile = asRecord(currentLocal.agent_passport_profile)
@@ -329,7 +425,7 @@ export function AgentPassportPage({
               <div className="passport-actions">
                 {editing ? (
                   <>
-                    <button className="btn-ghost" type="button" onClick={() => setForm(sourceForm)} disabled={saving}>
+                    <button className="btn-ghost" type="button" onClick={resetEditing} disabled={saving}>
                       Сбросить
                     </button>
                     <button className="btn-ghost" type="button" onClick={() => setEditing(false)} disabled={saving}>
@@ -340,14 +436,14 @@ export function AgentPassportPage({
                     </button>
                   </>
                 ) : (
-                  <button className="btn-ghost-dark" type="button" onClick={() => setEditing(true)}>
+                  <button className="btn-ghost-dark" type="button" onClick={beginEditing}>
                     Редактировать
                   </button>
                 )}
               </div>
             </div>
             <dl className="passport-view-dl">
-              <div>
+              <div className="passport-view-field-stack">
                 <dt>Название</dt>
                 <dd>
                   {editing ? (
@@ -357,52 +453,74 @@ export function AgentPassportPage({
                       onChange={(event) => updateForm('name', event.target.value)}
                     />
                   ) : (
-                    displayTitle
+                    <span className="passport-field-value">{displayTitle}</span>
                   )}
                 </dd>
               </div>
-              <div>
+              <div className="passport-view-field-stack">
                 <dt>Цель</dt>
                 <dd>
                   {editing ? (
                     <textarea
                       className="passport-textarea"
-                      rows={3}
+                      rows={4}
                       value={form.goal}
                       onChange={(event) => updateForm('goal', event.target.value)}
                     />
                   ) : (
-                    form.goal || 'Цель ещё не заполнена'
+                    <span className="passport-field-value">{form.goal || 'Цель ещё не заполнена'}</span>
                   )}
                 </dd>
               </div>
-              <div>
+              <div className="passport-view-field-stack passport-view-field-inline">
                 <dt>Статус</dt>
                 <dd>{localizeStatusText(record?.phase || '', 'Опубликован')}</dd>
               </div>
-              <div>
-                <dt>Когда запускается</dt>
+              <div className="passport-view-field-stack">
+                <dt>
+                  Когда запускается
+                  {!editing && triggers.length ? (
+                    <button className="passport-inline-edit" type="button" onClick={beginEditing}>
+                      Изменить
+                    </button>
+                  ) : null}
+                </dt>
                 <dd>
-                  {triggers.length ? (
+                  {editing ? (
+                    <>
+                      <p className="passport-field-hint">Нажмите на триггер, чтобы изменить время и дни.</p>
+                      <ScheduleTriggerEditor triggers={editTriggers} onChange={setEditTriggers} />
+                    </>
+                  ) : triggers.length ? (
                     <div className="passport-triggers">
                       {triggers.map((spec, index) => (
-                        <span key={`${spec.kind}-${index}`} className="passport-chip">
+                        <button
+                          key={`${spec.kind}-${index}`}
+                          type="button"
+                          className="passport-chip passport-chip-readonly"
+                          onClick={beginEditing}
+                        >
                           <span className="passport-chip-label">{triggerChipLabel(spec)}</span>
-                        </span>
+                        </button>
                       ))}
                     </div>
                   ) : (
-                    'Только вручную'
+                    <span className="passport-field-value">
+                      Только вручную
+                      <button className="passport-inline-edit" type="button" onClick={beginEditing}>
+                        Настроить
+                      </button>
+                    </span>
                   )}
                 </dd>
               </div>
-              <div>
+              <div className="passport-view-field-stack">
                 <dt>Описание и контекст</dt>
                 <dd>
                   {editing ? (
                     <textarea
                       className="passport-textarea"
-                      rows={5}
+                      rows={8}
                       value={form.notes}
                       onChange={(event) => updateForm('notes', event.target.value)}
                     />
@@ -416,12 +534,13 @@ export function AgentPassportPage({
 
           <section className="passport-card">
             <h3>Показатели</h3>
-            {kpi?.tiles?.length ? (
+            {kpiLoading ? <p className="passport-empty">Загружаем KPI…</p> : null}
+            {!kpiLoading && kpi?.tiles?.length ? (
               <dl className="passport-view-dl">
                 {kpi.tiles.map((tile) => {
                   const kind = tile.measure?.kind || tile.id || ''
                   const label =
-                    kind === 'runs_count' || tile.name === 'Число прогонов'
+                    kind === 'runs_count' || tile.name === 'Число запусков'
                       ? 'Запусков всего'
                       : tile.name
                   return (
@@ -436,9 +555,9 @@ export function AgentPassportPage({
                   )
                 })}
               </dl>
-            ) : (
+            ) : !kpiLoading ? (
               <p className="passport-empty">KPI этого агента ещё не посчитаны.</p>
-            )}
+            ) : null}
           </section>
 
           <section className="passport-card">
@@ -471,9 +590,10 @@ export function AgentPassportPage({
 
       {!loading && tab === 'files' ? (
         <div className="passport-view-body">
-          {!files.length ? (
+          {filesLoading ? <div className="wf-files-empty">Загружаем файлы…</div> : null}
+          {!filesLoading && !files.length ? (
             <div className="wp-card">У агента пока нет файлов.</div>
-          ) : (
+          ) : !filesLoading ? (
             <div className="files-table-wrap">
               <table className="files-table">
                 <thead>
@@ -513,14 +633,15 @@ export function AgentPassportPage({
                 </tbody>
               </table>
             </div>
-          )}
+          ) : null}
         </div>
       ) : null}
 
       {!loading && tab === 'results' ? (
         <div className="passport-view-results">
           <aside className="passport-view-runs">
-            {!runs.length ? <div className="agent-side-card">Запусков пока нет.</div> : null}
+            {runsLoading ? <div className="agent-side-card">Загружаем запуски…</div> : null}
+            {!runsLoading && !runs.length ? <div className="agent-side-card">Запусков пока нет.</div> : null}
             {runs.map((run) => (
               <button
                 key={run.runId}

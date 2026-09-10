@@ -80,7 +80,12 @@ def save_run_events(db: Session, *, run_id: str, events: list[dict[str, Any]]) -
     db.commit()
 
 
-def fail_stale_started_runs(db: Session, *, user_id: str) -> int:
+def fail_stale_started_runs(db: Session, *, user_id: str, notify: bool = True) -> int:
+    """Close runs abandoned by a crashed desktop.
+
+    Read endpoints call this before serving, where `notify=False` avoids a live
+    board push that would recompute the very board being built.
+    """
     cutoff = datetime.now(timezone.utc) - STALE_STARTED
     rows = (
         db.execute(
@@ -101,6 +106,7 @@ def fail_stale_started_runs(db: Session, *, user_id: str) -> int:
             answer=STALE_STARTED_ANSWER,
             events=row.events_json if isinstance(row.events_json, list) else [],
             message=row.message or "",
+            notify=notify,
         )
     return len(rows)
 
@@ -130,14 +136,30 @@ def has_run_result(answer: str) -> bool:
     return bool((answer or "").strip()) and not _is_incomplete_answer(answer)
 
 
+def is_successful_work_answer(answer: str) -> bool:
+    text = (answer or "").strip()
+    if not text or _is_incomplete_answer(text):
+        return False
+    folded = text.casefold()
+    if "work_result" in folded:
+        return True
+    if "tests: pass" in folded.replace(" ", ""):
+        return True
+    return False
+
+
 def effective_run_status(status: str, answer: str = "", *, in_flight: bool = False) -> str:
     """Success only when the run produced a result. Incomplete or canceled -> canceled."""
     raw = (status or "").strip().lower()
     if raw in {"started", "running"} and in_flight:
         return "started"
+    if _is_incomplete_answer(answer):
+        return "canceled"
+    if is_successful_work_answer(answer):
+        return "ok"
     if raw in {"canceled", "cancelled"}:
         return "canceled"
-    if raw == "error" and (answer or "").strip() and not _is_incomplete_answer(answer):
+    if raw == "error":
         return "error"
     if has_run_result(answer):
         return "ok"
@@ -188,18 +210,22 @@ def cancel_overlapping_slot(
             select(AgentRun).where(
                 AgentRun.workflow_id == trigger.workflow_id,
                 AgentRun.user_id == user_id,
-                AgentRun.trigger_id == trigger.id,
                 AgentRun.status == "canceled",
             )
         ).scalars()
     )
     for row in existing:
+        if not _is_incomplete_answer(row.answer or ""):
+            continue
         started = row.started_at
         if started is None:
             continue
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
         if abs((started - slot).total_seconds()) <= 120:
+            interval = int(trigger.interval_seconds or 0)
+            if interval > 0:
+                mark_skipped(db, user_id=user_id, trigger_id=trigger.id, evidence=note, advance=True)
             return row
     kind, reason = describe_trigger_reason(trigger, evidence=note)
     row = AgentRun(
@@ -247,6 +273,7 @@ def finish_agent_run(
     answer: str = "",
     events: list[dict[str, Any]] | None = None,
     message: str = "",
+    notify: bool = True,
 ) -> None:
     row = db.get(AgentRun, run_id)
     if row is None:
@@ -263,17 +290,27 @@ def finish_agent_run(
         stored.insert(0, {"type": "user_message", "text": message.strip()[:8000]})
     row.events_json = stored
     db.commit()
-    _notify_board(
-        db,
-        user_id=row.user_id,
-        workflow_id=row.workflow_id,
-        run_id=row.id,
-        status=row.status,
-    )
+    try:
+        from app.models.workflow import Workflow
+        from app.services.workflows.kpi_calc import maybe_recalc_kpi_after_run
+
+        workflow = db.get(Workflow, row.workflow_id)
+        if workflow is not None:
+            maybe_recalc_kpi_after_run(db, workflow)
+    except Exception:  # noqa: BLE001
+        logger.debug("KPI refresh after run failed workflow=%s", row.workflow_id, exc_info=True)
+    if notify:
+        _notify_board(
+            db,
+            user_id=row.user_id,
+            workflow_id=row.workflow_id,
+            run_id=row.id,
+            status=row.status,
+        )
 
 
 def list_agent_runs(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRunOut]:
-    fail_stale_started_runs(db, user_id=user_id)
+    fail_stale_started_runs(db, user_id=user_id, notify=False)
     _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True)
     rows = (
         db.execute(
@@ -289,7 +326,7 @@ def list_agent_runs(db: Session, *, user_id: str, workflow_id: str) -> list[Agen
 
 
 def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -> AgentRunOut:
-    fail_stale_started_runs(db, user_id=user_id)
+    fail_stale_started_runs(db, user_id=user_id, notify=False)
     _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True)
     row = db.get(AgentRun, run_id)
     if row is None or row.workflow_id != workflow_id or row.user_id != user_id:

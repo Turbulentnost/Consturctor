@@ -19,6 +19,7 @@ import {
   type RegulationCreationProgress,
   type RegulationCreationSession,
   type RegulationCreationTurn,
+  type RegulationQueuedQuestion,
   type FragmentEntityTag,
   type RegulationEntityLegendItem,
   type RegulationFragment,
@@ -1077,7 +1078,8 @@ export class ApiClient {
   // ---------- Auth ----------
   async login(fio: string, password: string): Promise<LoginResult> {
     const data = await this.request<Record<string, unknown>>('POST', '/api/v1/auth/login', {
-      body: { fio, password, client: 'constructor' }
+      body: { fio, password, client: 'constructor' },
+      timeoutMs: 120_000
     })
     const token = String(data.access_token ?? '')
     this.token = token
@@ -1185,6 +1187,15 @@ export class ApiClient {
     return parseCreationTurn(data)
   }
 
+  async advanceRegulationCreationQuestion(draftId: string): Promise<RegulationCreationSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulation-creation/sessions/${draftId}/advance-question`,
+      { timeoutMs: 60_000 }
+    )
+    return parseCreationSession(data)
+  }
+
   async persistRegulationCreationTurn(
     draftId: string,
     message: string,
@@ -1207,7 +1218,7 @@ export class ApiClient {
   async applyRegulationCreationReply(
     draftId: string,
     answer: string,
-    opts: { sdkAgentId?: string; forceCreate?: boolean } = {}
+    opts: { sdkAgentId?: string; forceCreate?: boolean; prefetchOnly?: boolean; researchOnly?: boolean } = {}
   ): Promise<RegulationCreationSession> {
     const data = await this.request<Record<string, unknown>>(
       'POST',
@@ -1216,10 +1227,24 @@ export class ApiClient {
         body: {
           answer,
           sdkAgentId: opts.sdkAgentId || '',
-          forceCreate: Boolean(opts.forceCreate)
+          forceCreate: Boolean(opts.forceCreate),
+          prefetchOnly: Boolean(opts.prefetchOnly),
+          researchOnly: Boolean(opts.researchOnly)
         },
         timeoutMs: 180_000
       }
+    )
+    return parseCreationSession(data)
+  }
+
+  async selectRegulationCreationProcesses(
+    draftId: string,
+    processIds: string[]
+  ): Promise<RegulationCreationSession> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulation-creation/sessions/${draftId}/select-processes`,
+      { body: { processIds }, timeoutMs: 120_000 }
     )
     return parseCreationSession(data)
   }
@@ -1307,6 +1332,38 @@ export class ApiClient {
 
   async cancelTrigger(triggerId: string): Promise<void> {
     await this.request('POST', `/api/v1/triggers/${triggerId}/cancel`, { timeoutMs: 30_000 })
+  }
+
+  async listTriggers(): Promise<
+    Array<{ id: string; workflowId: string; enabled: boolean }>
+  > {
+    const data = await this.request<{ items?: Record<string, unknown>[] }>('GET', '/api/v1/triggers', {
+      timeoutMs: 30_000
+    })
+    return (data.items ?? [])
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => ({
+        id: String(item.id ?? ''),
+        workflowId: String(item.workflow_id ?? item.workflowId ?? ''),
+        enabled: item.enabled !== false
+      }))
+      .filter((item) => item.id)
+  }
+
+  /** Persist passport draft and replace live triggers (published agents board). */
+  async applyPublishedSchedule(workflowId: string, draft: ScheduleDraft): Promise<void> {
+    await this.persistScheduleDraft(workflowId, draft)
+    const existing = await this.listTriggers()
+    for (const item of existing) {
+      if (item.workflowId !== workflowId || !item.enabled) continue
+      await this.cancelTrigger(item.id)
+    }
+    for (const spec of draft.triggers) {
+      await this.createTriggerFromSpec(workflowId, {
+        ...spec,
+        message: (spec.message || draft.goal || '').trim()
+      })
+    }
   }
 
   async skipTriggerSlot(triggerId: string, at: string): Promise<void> {
@@ -1417,6 +1474,35 @@ export class ApiClient {
     return parseDraft(data)
   }
 
+  async answerReadinessQuestion(
+    regulationId: string,
+    readinessRunId: string,
+    questionId: string,
+    answer: string
+  ): Promise<AgentReadinessResult> {
+    const data = await this.request<Record<string, unknown>>(
+      'POST',
+      `/api/v1/regulations/${regulationId}/readiness/${readinessRunId}/answers`,
+      { body: { questionId, answer }, timeoutMs: 120_000 }
+    )
+    return parseReadiness(data)
+  }
+
+  async decideReadinessChange(
+    regulationId: string,
+    readinessRunId: string,
+    changeId: string,
+    status: 'accepted' | 'rejected' | 'edited' | 'unchanged' | 'not_required',
+    after = ''
+  ): Promise<AgentReadinessResult> {
+    const data = await this.request<Record<string, unknown>>(
+      'PATCH',
+      `/api/v1/regulations/${regulationId}/readiness/${readinessRunId}/changes/${changeId}`,
+      { body: { status, after }, timeoutMs: 60_000 }
+    )
+    return parseReadiness(data)
+  }
+
   async updateAgentDraftStatus(draftId: string, status: string): Promise<AgentDraft> {
     const data = await this.request<Record<string, unknown>>(
       'PATCH',
@@ -1525,8 +1611,8 @@ export class ApiClient {
       {
         body: {
           passport: passportToApi(session.passport),
-          answers,
-          field_updates: {},
+          answers: {},
+          field_updates: answers,
           bp_name: session.bpName,
           excerpt: session.excerpt,
           functions: session.functions.map((item) => ({

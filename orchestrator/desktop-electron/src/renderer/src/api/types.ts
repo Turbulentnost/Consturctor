@@ -82,6 +82,7 @@ export interface WorkflowListItem {
   id: string
   title: string
   phase: string
+  documentName?: string
   updatedAt?: string
 }
 
@@ -129,6 +130,7 @@ export interface BoardAgent {
   paused: boolean
   phase: string
   draftId: string
+  documentName?: string
 }
 
 export interface CalendarEvent {
@@ -567,13 +569,17 @@ export interface AgentEvent {
     | 'sidecar_exit'
     | 'log'
     | 'files_updated'
+    | 'run_adopted'
   runId?: string
+  linkedRunId?: string
   requestId?: string
   payload?: AgentRunnerEvent
   question?: string
   options?: string[]
   needsFile?: boolean
   accept?: string[]
+  autoContinueSeconds?: number
+  autoContinueAnswer?: string
   tool?: string
   arguments?: Record<string, unknown>
   kind?: 'design' | 'readiness' | 'demo' | 'run' | 'trigger' | 'form_orchestrator' | 'calc_orchestrator'

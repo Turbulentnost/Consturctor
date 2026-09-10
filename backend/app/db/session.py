@@ -34,6 +34,29 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
+    _ensure_indexes()
+
+
+# create_all() only adds indexes together with a new table, so existing
+# deployments need them created explicitly.
+_HOT_PATH_INDEXES = (
+    ("ix_agent_runs_user_wf_started", "agent_runs", "(user_id, workflow_id, started_at DESC)"),
+    ("ix_agent_runs_user_status", "agent_runs", "(user_id, status)"),
+    ("ix_workflows_user_phase_updated", "workflows", "(user_id, phase, updated_at DESC)"),
+    ("ix_agent_triggers_owner_wf", "agent_triggers", "(owner_user_id, workflow_id)"),
+)
+
+
+def _ensure_indexes() -> None:
+    for name, table, columns in _HOT_PATH_INDEXES:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} {columns}")
+                )
+        except Exception:  # noqa: BLE001
+            # A missing table or a concurrent creation must not block startup.
+            continue
 
 
 def _ensure_columns() -> None:

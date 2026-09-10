@@ -83,11 +83,22 @@ function acceptList(raw: unknown): string[] {
   return out
 }
 
+function asSeconds(value: unknown): number {
+  const num = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(num) && num > 0 ? num : 0
+}
+
+export const FILE_QUESTION_WAIT_SECONDS = 30
+export const FILE_QUESTION_SKIP_ANSWER =
+  'Файла нет. Продолжай без вложения: ищи данные в 1С, Outlook, Excel и сетевых папках по playbook агента. Не спрашивай этот файл снова.'
+
 export function parseQuestionArgs(raw: unknown): {
   question: string
   options: string[]
   needsFile: boolean
   accept: string[]
+  autoContinueSeconds: number
+  autoContinueAnswer: string
 } {
   const args = asRecord(raw)
   const nested = asRecord(args.arguments || args.input || args.properties)
@@ -106,7 +117,17 @@ export function parseQuestionArgs(raw: unknown): {
   if (!options.length) options = asOptions(source.answers)
   if (!options.length) options = asOptions(source.variants)
   if (!options.length && question && !needsFile) options = optionsFromText(question)
-  return { question, options, needsFile, accept }
+  let autoContinueSeconds = asSeconds(
+    source.autoContinueSeconds ?? source.auto_continue_seconds
+  )
+  let autoContinueAnswer = asText(
+    source.autoContinueAnswer ?? source.auto_continue_answer
+  )
+  if (needsFile) {
+    if (autoContinueSeconds <= 0) autoContinueSeconds = FILE_QUESTION_WAIT_SECONDS
+    if (!autoContinueAnswer) autoContinueAnswer = FILE_QUESTION_SKIP_ANSWER
+  }
+  return { question, options, needsFile, accept, autoContinueSeconds, autoContinueAnswer }
 }
 
 export function isAskQuestion(name: string): boolean {

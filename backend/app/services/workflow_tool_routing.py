@@ -26,8 +26,53 @@ _ONEC_TOOLS = [
     "onec.erp_assignments_write",
     "onec.download_artifact",
     "onec.odata_catalog",
+    "onec.list_attachments",
+    "onec.read_attachment",
     "onec.odata_get",
     "onec.sql_query",
+]
+_RK_TOOLS = [
+    "outlook.read_calendar",
+    "calendar.show_meetings",
+    "onec.erp_tasks_current",
+    "onec.erp_tasks_period",
+    "onec.docflow_tasks",
+    "onec.meeting_protocols",
+    "onec.search_documents",
+    "onec.get_document_card",
+    "onec.list_attachments",
+    "onec.read_attachment",
+    "onec.odata_catalog",
+    "onec.odata_get",
+    "onec.sql_query",
+    "excel.list_files",
+    "excel.read_workbook",
+    "report.build_task_report",
+    "report.build_meeting_summary",
+    "report.export_document",
+    "workspace.powershell_run",
+    "users.current",
+]
+_SD_TOOLS = [
+    "outlook.read_calendar",
+    "calendar.show_meetings",
+    "onec.meeting_service_notes",
+    "onec.meeting_protocols",
+    "onec.search_documents",
+    "onec.get_document_card",
+    "onec.list_attachments",
+    "onec.read_attachment",
+    "onec.odata_catalog",
+    "onec.odata_get",
+    "onec.sql_query",
+    "onec.erp_tasks_current",
+    "onec.erp_tasks_period",
+    "onec.docflow_tasks",
+    "excel.list_files",
+    "excel.read_workbook",
+    "report.build_meeting_summary",
+    "report.export_document",
+    "users.current",
 ]
 _SITE_SEARCH_TOOLS = ["site_browser", "web_search"]
 _BROWSER_TOOLS = ["site_browser", "web_search"]
@@ -158,8 +203,24 @@ def infer_kind_from_tools(tools: list[str]) -> str:
     return ""
 
 
+def _is_board_meeting_blob(blob: str) -> bool:
+    from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent
+
+    return is_sd_meeting_agent(blob)
+
+
+def _is_revision_commission_blob(blob: str) -> bool:
+    from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent
+
+    return is_rk_meeting_agent(blob)
+
+
 def infer_kind_from_blob(blob: str) -> str:
     low = blob.casefold()
+    if _is_revision_commission_blob(low):
+        return "revision_commission"
+    if _is_board_meeting_blob(low):
+        return "board_meeting"
     has_onec = any(tip in low for tip in ("1с", "1c", "onec", "odata"))
     has_outlook = any(
         tip in low
@@ -195,6 +256,10 @@ def _extract_site_url_from_blob(blob: str) -> str:
 
 def default_tools_for_kind(kind: str, *, blob: str = "") -> list[str]:
     low = blob.casefold()
+    if kind == "revision_commission":
+        return list(_RK_TOOLS)
+    if kind == "board_meeting":
+        return list(_SD_TOOLS)
     if kind == "onec":
         return list(_ONEC_TOOLS)
     if kind == "outlook_calendar":
@@ -675,6 +740,10 @@ def select_candidates(
         if "onec.erp_assignments_write" in names:
             preferred.append("onec.erp_assignments_write")
         names = preferred + [name for name in names if name not in preferred]
+    if entity == "protocol" and "onec.meeting_protocols" in names:
+        names = ["onec.meeting_protocols"] + [
+            name for name in names if name != "onec.meeting_protocols"
+        ]
     return names
 
 

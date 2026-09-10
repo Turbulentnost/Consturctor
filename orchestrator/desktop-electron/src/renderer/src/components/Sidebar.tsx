@@ -16,20 +16,21 @@ export type PageKey =
   | 'history'
   | 'settings'
 
-interface NavItem {
-  key: PageKey
-  label: string
+export const APP_TITLE = 'Оркестратор'
+
+export const PAGE_LABELS: Record<PageKey, string> = {
+  today: 'Рабочее место',
+  processes: 'Процессы',
+  calendar: 'Календарь',
+  decisions: 'Решения',
+  metrics: 'Показатели',
+  history: 'История',
+  settings: 'Настройки'
 }
 
-const ITEMS: NavItem[] = [
-  { key: 'today', label: 'Сегодня' },
-  { key: 'processes', label: 'Процессы' },
-  { key: 'calendar', label: 'Календарь' },
-  { key: 'decisions', label: 'Решения' },
-  { key: 'metrics', label: 'Показатели' },
-  { key: 'history', label: 'История' },
-  { key: 'settings', label: 'Настройки' }
-]
+const ITEMS: { key: PageKey; label: string }[] = (
+  Object.entries(PAGE_LABELS) as [PageKey, string][]
+).map(([key, label]) => ({ key, label }))
 
 function NavIcon({ page }: { page: PageKey }): React.JSX.Element {
   if (page === 'today') {
@@ -145,6 +146,7 @@ const IDLE_UPDATE: UpdateStatus = {
 
 interface SidebarProps {
   active: PageKey | null
+  light?: boolean
   activeThreadId?: string
   currentUserId?: string
   onNavigate: (key: PageKey) => void
@@ -155,6 +157,7 @@ interface SidebarProps {
 
 export function Sidebar({
   active,
+  light = false,
   activeThreadId = '',
   currentUserId = '',
   onNavigate,
@@ -193,9 +196,11 @@ export function Sidebar({
       }
     }
     void load()
+    // Live updates come from onChatEvent below; this is only a slow safety net
+    // for a dropped websocket.
     const timer = window.setInterval(() => {
       void load()
-    }, 20000)
+    }, 120_000)
     return () => {
       alive = false
       window.clearInterval(timer)
@@ -231,15 +236,19 @@ export function Sidebar({
     return () => unsubscribe?.()
   }, [currentUserId])
 
+  // Unread/preview pushes rebuild the peers array; avatars must not refetch
+  // unless a peer or its avatar actually changed.
+  const peerAvatarKey = peers
+    .map((peer) => `${peer.id}\u0000${peer.peerId || peer.id}\u0000${peer.avatarUrl || ''}`)
+    .join('\u0001')
   useEffect(() => {
     let alive = true
+    const entries = peerAvatarKey ? peerAvatarKey.split('\u0001') : []
     void Promise.all(
-      peers.map(async (peer) => {
-        const url = await loadUserAvatar({
-          id: peer.peerId || peer.id,
-          avatarUrl: peer.avatarUrl
-        })
-        return [peer.id, url] as const
+      entries.map(async (entry) => {
+        const [threadId, userId, avatarUrl] = entry.split('\u0000')
+        const url = await loadUserAvatar({ id: userId, avatarUrl })
+        return [threadId, url] as const
       })
     ).then((pairs) => {
       if (!alive) return
@@ -252,7 +261,7 @@ export function Sidebar({
     return () => {
       alive = false
     }
-  }, [peers])
+  }, [peerAvatarKey])
 
   function expandForSearch(): void {
     if (collapsed) setCollapsed(false)
@@ -261,8 +270,8 @@ export function Sidebar({
   return (
     <aside className={collapsed ? 'sidebar collapsed' : 'sidebar'}>
       <div className="sidebar-brand">
-        <img className="sidebar-logo" src={logoUrl} alt="Orchestrator" />
-        {!collapsed && <div className="sidebar-title">Orchestrator</div>}
+        <img className="sidebar-logo" src={logoUrl} alt={APP_TITLE} />
+        {!collapsed && <div className="sidebar-title">{APP_TITLE.toUpperCase()}</div>}
       </div>
 
       <div className="sidebar-search" onClick={expandForSearch} title={collapsed ? 'ФИО' : undefined}>
@@ -277,7 +286,7 @@ export function Sidebar({
             }}
             placeholder="ФИО"
             inputClassName="sidebar-search-input"
-            variant="dark"
+            variant={light ? 'light' : 'dark'}
           />
         )}
       </div>
@@ -334,7 +343,7 @@ export function Sidebar({
           ) : (
             <button
               className="sidebar-update-btn"
-              title={update.error || 'Установить обновление Constructor и Orchestrator'}
+              title={update.error || 'Установить обновление Конструктора и Оркестратора'}
               onClick={() => {
                 void window.api.installUpdate?.()
               }}

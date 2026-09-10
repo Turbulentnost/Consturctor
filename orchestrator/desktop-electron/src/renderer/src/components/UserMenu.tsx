@@ -40,6 +40,31 @@ export function UserMenu({
     return () => document.removeEventListener('mousedown', onDocClick)
   }, [])
 
+  useEffect(() => {
+    function onOpenFromSettings(): void {
+      setMenuOpen(false)
+      setInboxOpen(true)
+      setLoading(true)
+      void (async () => {
+        try {
+          const list = await api.listNotifications()
+          setItems(list)
+          if (list.some((item) => item.unread) || unread > 0) {
+            await api.markAllNotificationsRead()
+            setItems((current) => current.map((item) => ({ ...item, unread: false })))
+            onUnreadChange(0)
+          }
+        } catch {
+          setItems([])
+        } finally {
+          setLoading(false)
+        }
+      })()
+    }
+    window.addEventListener('orchestrator:open-notifications', onOpenFromSettings)
+    return () => window.removeEventListener('orchestrator:open-notifications', onOpenFromSettings)
+  }, [unread, onUnreadChange])
+
   async function openInbox(): Promise<void> {
     const next = !inboxOpen
     setInboxOpen(next)

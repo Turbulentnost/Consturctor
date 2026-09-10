@@ -63,31 +63,49 @@ function collectDesktopCandidates(starts: string[]): string[] {
     const path = resolve(value)
     if (!rows.includes(path)) rows.push(path)
   }
+  for (const start of starts) {
+    // Prefer in-repo orchestrator/desktop (desktop-electron is nested under orchestrator/).
+    push(resolve(start, '..', 'desktop'))
+    push(resolve(start, '..', '..', 'desktop'))
+    push(resolve(start, 'desktop'))
+  }
   const constructorDesktop = findConstructorDesktop(starts)
   if (constructorDesktop) push(constructorDesktop)
   for (const start of starts) {
-    push(resolve(start, '..', 'desktop'))
-    push(resolve(start, 'desktop'))
     push(resolve(start, '..', 'Consturctor', 'desktop'))
     push(resolve(start, '..', '..', 'Consturctor', 'desktop'))
   }
   return rows.filter((path) => isDesktopRoot(path))
 }
 
+function isOrchestratorRepoDesktop(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/').toLowerCase()
+  return (
+    normalized.endsWith('/orchestrator/desktop') ||
+    /\/orchestrator\/(?:orchestrator\/)?desktop$/i.test(normalized)
+  )
+}
+
 function resolveDesktopRoot(starts: string[], fallback: string): string {
   const envDesktop = process.env.CONSTRUCTOR_DESKTOP_ROOT
   if (envDesktop && isDesktopRoot(envDesktop)) return envDesktop
   const found = collectDesktopCandidates(starts)
+  const local = found.find((path) => isOrchestratorRepoDesktop(path))
+  if (local) return local
   return found.find((path) => hasCursorKey(path)) || found[0] || fallback
 }
 
 function cursorEnvFromDesktop(desktopRoot: string): Record<string, string> {
+  const appData = process.env.APPDATA || ''
   const files = [
+    appData ? join(appData, 'constructor-desktop-electron', '.env') : '',
+    appData ? join(appData, 'Orchestrator', '.env') : '',
+    join(process.cwd(), '.env'),
     join(desktopRoot, '.env'),
     ...walkParents(desktopRoot).map((root) => join(root, 'Consturctor', 'desktop', '.env')),
     ...walkParents(desktopRoot).map((root) => join(root, 'backend', '.env')),
     ...walkParents(desktopRoot).map((root) => join(root, 'Consturctor', 'backend', '.env'))
-  ]
+  ].filter(Boolean)
   const out: Record<string, string> = {}
   for (const file of files) {
     const parsed = parseEnvFile(file)
@@ -114,6 +132,15 @@ const START_TYPES = new Set([
 
 function isStartCommand(command: AgentSidecarMessage): boolean {
   return START_TYPES.has(String(command.type || ''))
+}
+
+function isForceRestart(command: AgentSidecarMessage): boolean {
+  const value = command.forceRestart ?? command.force_restart
+  if (value === true) return true
+  const text = String(value ?? '')
+    .trim()
+    .toLowerCase()
+  return text === '1' || text === 'true' || text === 'yes'
 }
 
 /**
@@ -326,6 +353,14 @@ export class AgentSidecar {
   }
 
   private stampRunMeta(message: AgentSidecarMessage): AgentSidecarMessage {
+    if (message.type === 'run_adopted') {
+      const requested = String(message.runId || '')
+      const linked = String(message.linkedRunId || '')
+      if (requested && linked) {
+        const meta = this.runMeta.get(requested)
+        if (meta) this.runMeta.set(linked, meta)
+      }
+    }
     const runId = String(message.runId || message.id || '')
     const meta = runId ? this.runMeta.get(runId) : undefined
     if (!meta) return message
@@ -340,8 +375,47 @@ export class AgentSidecar {
     return next
   }
 
+  /** Kill the Python sidecar so stale in-memory runs cannot block a fresh launch. */
+  private hardRestartSidecar(reason: string): void {
+    console.log(`[agent-sidecar] hard restart: ${reason}`)
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer)
+      this.restartTimer = null
+    }
+    this.isReady = false
+    this.runMeta.clear()
+    const child = this.child
+    this.child = null
+    if (!child) return
+    try {
+      if (child.stdin.writable) {
+        child.stdin.write(JSON.stringify({ type: 'shutdown' }) + '\n')
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      child.kill('SIGTERM')
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private sendForceRun(command: AgentSidecarMessage): boolean {
+    this.hardRestartSidecar('forceRestart run')
+    this.pending = []
+    this.enqueue(command)
+    this.start()
+    return true
+  }
+
   send(command: AgentSidecarMessage): boolean {
     const type = String(command.type || '')
+    if (type === 'run' && isForceRestart(command)) {
+      this.lastStart = command
+      this.rememberRunMeta(command)
+      return this.sendForceRun(command)
+    }
     if (isStartCommand(command)) {
       this.lastStart = command
       this.rememberRunMeta(command)

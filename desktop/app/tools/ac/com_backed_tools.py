@@ -68,7 +68,12 @@ class OutlookSearchMailComTool(ComBackedTool):
             ToolDefinition(
                 name="outlook.search_mail",
                 title="Поиск писем Outlook",
-                description="Ищет письма Outlook через COM Worker.",
+                description=(
+                    "Ищет письма Outlook через COM. Для отсутствий один вызов: "
+                    "query=отпуск, folder=Inbox, date=сегодня. "
+                    "count=0 значит писем нет — не повторять с другими словами. "
+                    "query — короткая подстрока темы/отправителя, не список ФИО."
+                ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
@@ -103,7 +108,8 @@ class OutlookReadCalendarComTool(ComBackedTool):
                 name="outlook.read_calendar",
                 title="Чтение календаря Outlook",
                 description=(
-                    "Встречи Outlook за период. Без дат - год вперёд. "
+                    "Встречи Outlook за период. Без дат — год вперёд, так не делай на планёрке. "
+                    "Утро: date=сегодня. Вечер: date=завтра. "
                     "people[] — календари этих сотрудников (ФИО как в Outlook), если есть доступ. "
                     "Без people — свой календарь. В ответе events, calendars и free_slots."
                 ),

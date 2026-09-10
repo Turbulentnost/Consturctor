@@ -399,7 +399,7 @@ def validate_draft(
     allow_web: bool = False,
     materials: str = "",
 ) -> DraftValidation:
-    """Проверить черновик до прогона. Инструменты уже должны быть подобраны."""
+    """Проверить черновик до запуска. Инструменты уже должны быть подобраны."""
     issues: list[DraftIssue] = []
     if not draft or not (draft.get("steps") or []):
         issues.append(

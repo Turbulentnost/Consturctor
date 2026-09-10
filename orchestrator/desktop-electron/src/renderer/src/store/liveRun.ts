@@ -6,6 +6,7 @@ const FORMATION_KINDS = new Set(['design', 'demo', 'readiness'])
 export function shouldTrackLiveRun(event: AgentEvent): boolean {
   const kind = String(event.kind || '')
   if (FORMATION_KINDS.has(kind)) return false
+  if (kind === 'eval') return false
   if (!String(event.workflowId || '').trim()) return false
   if (kind === 'run') return true
   if (event.type === 'question' || event.type === 'hitl') return true

@@ -26,9 +26,9 @@ BUNDLE_ROOT = _bundle_root()
 REPO_ROOT = DESKTOP_ROOT.parent if not getattr(sys, "frozen", False) else DESKTOP_ROOT
 
 # Prefer .env beside the exe / desktop folder.
-load_env_file(DESKTOP_ROOT / ".env")
+load_env_file(DESKTOP_ROOT / ".env", override=True)
 if getattr(sys, "frozen", False):
-    load_env_file(DESKTOP_ROOT / ".env", override=False)
+    load_env_file(DESKTOP_ROOT / ".env", override=True)
     _bundled_browsers = DESKTOP_ROOT / "ms-playwright"
     if _bundled_browsers.is_dir() and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_bundled_browsers)
@@ -51,42 +51,37 @@ def _env_value(path: Path, name: str) -> str:
     return ""
 
 
-def _load_missing_cursor_env() -> None:
-    missing = [name for name in _CURSOR_ENV_KEYS if not os.getenv(name, "").strip()]
-    if not missing:
-        return
+def _cursor_env_candidates() -> list[Path]:
+    appdata = Path(os.environ.get("APPDATA") or "")
     workspace = REPO_ROOT.parent if not getattr(sys, "frozen", False) else DESKTOP_ROOT
-    constructor_desktop = None
-    here = DESKTOP_ROOT
-    for _ in range(6):
-        guess = here / "Consturctor" / "desktop" / ".env"
-        if guess.is_file():
-            constructor_desktop = guess
-            break
-        if here.parent == here:
-            break
-        here = here.parent
-    candidates = (
-        constructor_desktop,
-        workspace / "Consturctor" / "desktop" / ".env",
-        REPO_ROOT.parent / "Consturctor" / "desktop" / ".env",
+    return [
+        appdata / "constructor-desktop-electron" / ".env",
+        appdata / "Orchestrator" / ".env",
+        DESKTOP_ROOT / ".env",
         REPO_ROOT / "backend" / ".env",
+        workspace / "Consturctor" / "desktop" / ".env",
         workspace / "Consturctor" / "backend" / ".env",
-        DESKTOP_ROOT / "backend" / ".env",
-    )
-    for path in candidates:
-        if path is None:
-            continue
-        for name in list(missing):
-            value = _env_value(path, name)
-            if value:
-                os.environ[name] = value
-        missing = [name for name in _CURSOR_ENV_KEYS if not os.getenv(name, "").strip()]
-        if not missing:
-            return
+    ]
 
 
-_load_missing_cursor_env()
+def reload_cursor_api_key() -> str:
+    """Перечитать CURSOR_* из .env перед каждым запуском SDK (не кешировать старый ключ)."""
+    for path in _cursor_env_candidates():
+        key = _env_value(path, "CURSOR_API_KEY")
+        if key:
+            os.environ["CURSOR_API_KEY"] = key
+            for name in _CURSOR_ENV_KEYS:
+                if name == "CURSOR_API_KEY":
+                    continue
+                extra = _env_value(path, name)
+                if extra:
+                    os.environ[name] = extra
+            return key
+    return os.getenv("CURSOR_API_KEY", "").strip()
+
+
+_load_missing_cursor_env = reload_cursor_api_key
+reload_cursor_api_key()
 
 
 def _env_flag(name: str) -> bool:
@@ -114,7 +109,7 @@ def erp_password() -> str:
 
 
 def backend_url() -> str:
-    return os.getenv("BACKEND_URL", "http://127.0.0.1:7812").rstrip("/")
+    return os.getenv("BACKEND_URL", "http://192.168.1.157:7812").rstrip("/")
 
 
 def repo_root() -> Path:
