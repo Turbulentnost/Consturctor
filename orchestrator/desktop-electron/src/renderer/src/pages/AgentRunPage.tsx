@@ -6,7 +6,7 @@ import { AgentFeed } from '../components/agentfeed'
 import type { FeedItem } from '../components/agentfeed/types'
 import { useRuns } from '../store/runs'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
-import { categoryOf, FILE_CATEGORY_LABELS, formatSize } from './filesGrouping'
+import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './filesGrouping'
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
 import { parseIso, sameDay } from '../utils/calendar'
 
@@ -24,6 +24,8 @@ const MAX_COMPOSER_LINES = 10
 function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
   const name = file.name || 'file'
   const size = formatSize(file.sizeBytes)
+  const when = formatFileWhen(file.createdAt)
+  const meta = [when, size].filter(Boolean).join(' · ')
   return (
     <li>
       <button
@@ -38,7 +40,7 @@ function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
           <span className="wf-file-name" title={name}>
             {name}
           </span>
-          {size ? <span className="wf-file-meta">{size}</span> : null}
+          {meta ? <span className="wf-file-meta">{meta}</span> : null}
         </div>
       </button>
     </li>
@@ -68,7 +70,6 @@ function FileSection({
 export function AgentRunPage({
   workflowId,
   title,
-  autoStart = false,
   onBack,
   onOpenHistory
 }: AgentRunPageProps): React.JSX.Element {
@@ -86,7 +87,6 @@ export function AgentRunPage({
   const dockRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const resumeAgentRef = useRef<string>(entry?.resumeAgentId || '')
-  const autoStartedRef = useRef(false)
 
   const isTodayFile = useCallback((item: WorkflowFileItem): boolean => {
     const stamp = parseIso(item.createdAt)
@@ -154,31 +154,12 @@ export function AgentRunPage({
     void runs.attachHistoryFeed(workflowId)
   }, [running, workflowId, state?.items?.length, runs])
 
-  // On open, restore the latest known conversation for this exact agent.
-  // Play (autoStart) must start a new run, not reopen the last feed.
+  // Restore the last conversation. A new run starts only after the user sends
+  // a message. Skip when this page already owns a live sidecar session.
   useEffect(() => {
-    if (autoStart) return
-    if ((state?.items?.length ?? 0) > 0) return
+    if (state?.activeRunId) return
     void runs.attachHistoryFeed(workflowId)
-  }, [workflowId, runs, state?.items?.length, autoStart])
-
-  // The "Запустить" play button opens this page with autoStart, so the agent
-  // starts immediately on its own playbook instead of waiting for a message.
-  useEffect(() => {
-    if (personalAgent) return
-    if (!autoStart || autoStartedRef.current) return
-    if (running) return
-    autoStartedRef.current = true
-    runs.startRun({
-      workflowId,
-      title,
-      message: '',
-      shownMessage: 'Запуск агента',
-      resumeAgentId: resumeAgentRef.current || undefined,
-      forceRestart: true
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoStart, workflowId])
+  }, [workflowId, runs, state?.activeRunId])
 
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({

@@ -69,8 +69,67 @@ function asBool(value: unknown): boolean {
   return text === '1' || text === 'true' || text === 'yes'
 }
 
+export const IMAGE_FILE_ACCEPT = [
+  'png',
+  'jpg',
+  'jpeg',
+  'webp',
+  'gif',
+  'bmp',
+  'tif',
+  'tiff',
+  'heic',
+  'heif'
+]
+
+export const DEFAULT_FILE_ACCEPT = [
+  'docx',
+  'doc',
+  'pdf',
+  'xlsx',
+  'xlsm',
+  'xls',
+  ...IMAGE_FILE_ACCEPT,
+  'txt',
+  'md',
+  'csv'
+]
+
+function uniqueExts(items: string[]): string[] {
+  const out: string[] = []
+  for (const item of items) {
+    const ext = String(item || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^\./, '')
+    if (ext && !out.includes(ext)) out.push(ext)
+  }
+  return out
+}
+
+/** Agent accept is a hint, never a lock: images and common docs stay pickable. */
+export function mergedFileAccept(preferred?: string[]): string[] {
+  return uniqueExts([...(preferred || []), ...DEFAULT_FILE_ACCEPT, ...IMAGE_FILE_ACCEPT])
+}
+
+export function fileDialogFilters(preferred?: string[]): { name: string; extensions: string[] }[] {
+  const recommended = uniqueExts(preferred || [])
+  const filters: { name: string; extensions: string[] }[] = [
+    { name: 'Документы и изображения', extensions: mergedFileAccept(preferred) },
+    { name: 'Изображения', extensions: IMAGE_FILE_ACCEPT }
+  ]
+  if (recommended.length) {
+    filters.push({ name: 'Рекомендуемые', extensions: recommended })
+  }
+  filters.push({ name: 'Все файлы', extensions: ['*'] })
+  return filters
+}
+
+export function fileInputAccept(preferred?: string[]): string {
+  return ['image/*', ...mergedFileAccept(preferred).map((ext) => `.${ext}`)].join(',')
+}
+
 function acceptList(raw: unknown): string[] {
-  const allowed = new Set(['xlsx', 'xlsm', 'docx'])
   const items = Array.isArray(raw) ? raw : raw ? [raw] : []
   const out: string[] = []
   for (const item of items) {
@@ -78,7 +137,8 @@ function acceptList(raw: unknown): string[] {
       .trim()
       .toLowerCase()
       .replace(/^\./, '')
-    if (allowed.has(ext) && !out.includes(ext)) out.push(ext)
+    if (ext === '*' || ext === 'any' || ext === 'all') return []
+    if (/^[a-z0-9]{1,8}$/.test(ext) && !out.includes(ext)) out.push(ext)
   }
   return out
 }
@@ -88,6 +148,8 @@ export function parseQuestionArgs(raw: unknown): {
   options: string[]
   needsFile: boolean
   accept: string[]
+  context: string
+  blockTitle: string
 } {
   const args = asRecord(raw)
   const nested = asRecord(args.arguments || args.input || args.properties)
@@ -99,14 +161,19 @@ export function parseQuestionArgs(raw: unknown): {
     asText(source.message) ||
     asText(source.text)
   const needsFile = asBool(source.needsFile ?? source.needs_file ?? source.expectFile)
-  let accept = acceptList(source.accept || source.allowedExtensions)
-  if (needsFile && !accept.length) accept = ['xlsx', 'xlsm', 'docx']
+  const accept = acceptList(source.accept || source.allowedExtensions)
   let options = asOptions(source.options)
   if (!options.length) options = asOptions(source.choices)
   if (!options.length) options = asOptions(source.answers)
   if (!options.length) options = asOptions(source.variants)
   if (!options.length && question && !needsFile) options = optionsFromText(question)
-  return { question, options, needsFile, accept }
+  const blockTitle =
+    asText(source.blockTitle) ||
+    asText(source.block_title) ||
+    asText(source.functionTitle) ||
+    asText(source.function_title)
+  const context = asText(source.context)
+  return { question, options, needsFile, accept, context, blockTitle }
 }
 
 export function isAskQuestion(name: string): boolean {

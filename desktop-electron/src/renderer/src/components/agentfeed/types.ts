@@ -39,6 +39,11 @@ export interface ResultItem {
   text: string
 }
 
+export interface ResultFileLink {
+  name: string
+  downloadUrl?: string
+}
+
 export type FeedItem = ThinkingItem | MessageItem | SystemItem | ToolItem | ResultItem
 
 export interface PendingQuestion {
@@ -47,6 +52,8 @@ export interface PendingQuestion {
   options: string[]
   needsFile?: boolean
   accept?: string[]
+  context?: string
+  blockTitle?: string
 }
 
 export interface PendingHitl {

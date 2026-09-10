@@ -3,7 +3,7 @@ import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { AgentEvent, CalendarEvent } from '../api/types'
 import { comCredentials } from './session'
-import { buildFeedItems } from '../components/agentfeed/build'
+import { buildFeedItems, settleOpenFeedTools } from '../components/agentfeed/build'
 import {
   applyAgentEvent,
   createRunState,
@@ -147,7 +147,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       if (!workflowId) {
         workflowId = eventWorkflowId(event)
         if (!workflowId) return
-        if (!shouldTrackLiveRun(event) && !entriesRef.current[workflowId]) return
+        if (!shouldTrackLiveRun(event)) return
         indexRef.current[runId] = workflowId
         if (!entriesRef.current[workflowId]?.title) fillTitle(workflowId)
       }
@@ -410,8 +410,8 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         return
       }
       const detail = await api.getAgentRunDetail(wid, runId)
-      const historyItems = buildFeedItems(detail.events)
       const inFlight = isInFlightRunStatus(detail.item.status)
+      const historyItems = buildFeedItems(detail.events, { live: inFlight })
       const startedAt = Date.parse(detail.item.startedAt || '')
       const startedMs = Number.isFinite(startedAt) ? startedAt : null
       const hung =
@@ -446,6 +446,11 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             'Запуск по расписанию. Ход появится, когда локальный агент начнёт работу.'
           )
         }
+        const locallyOwned = Boolean(entry.state.activeRunId)
+        const live = inFlight && !hung && locallyOwned
+        if (!live) {
+          nextItems = settleOpenFeedTools(nextItems)
+        }
         return {
           ...prev,
           [wid]: {
@@ -454,10 +459,12 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             state: {
               ...entry.state,
               items: nextItems,
-              running: inFlight && !hung,
-              runningSinceMs: inFlight && !hung ? startedMs || entry.state.runningSinceMs || Date.now() : null,
-              status: inFlight && !hung ? entry.state.status || 'Агент работает…' : '',
-              error: hung ? SDK_DEAD_ANSWER : entry.state.error
+              running: live,
+              runningSinceMs: live ? startedMs || entry.state.runningSinceMs || Date.now() : null,
+              status: live ? entry.state.status || 'Агент работает…' : '',
+              error: hung ? SDK_DEAD_ANSWER : entry.state.error,
+              pendingQuestion: live ? entry.state.pendingQuestion : null,
+              pendingHitl: live ? entry.state.pendingHitl : null
             }
           }
         }

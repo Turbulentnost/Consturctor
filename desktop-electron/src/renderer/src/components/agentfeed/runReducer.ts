@@ -245,7 +245,9 @@ function handleToolCall(state: RunState, payload: AgentRunnerEvent): RunState {
         question,
         options,
         needsFile: parsed.needsFile || state.pendingQuestion?.needsFile,
-        accept: parsed.accept.length ? parsed.accept : state.pendingQuestion?.accept
+        accept: parsed.accept.length ? parsed.accept : state.pendingQuestion?.accept,
+        context: parsed.context || state.pendingQuestion?.context,
+        blockTitle: parsed.blockTitle || state.pendingQuestion?.blockTitle
       },
       status: 'Нужен ваш ответ'
     }
@@ -478,7 +480,9 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
               ? parsed.accept
               : event.accept?.length
                 ? event.accept
-                : state.pendingQuestion?.accept
+                : state.pendingQuestion?.accept,
+            context: parsed.context || event.context || state.pendingQuestion?.context,
+            blockTitle: parsed.blockTitle || event.blockTitle || state.pendingQuestion?.blockTitle
           },
           status: 'Нужен ваш ответ'
         }

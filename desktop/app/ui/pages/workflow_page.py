@@ -348,10 +348,11 @@ def _local_design_prompt_for_record(record: WorkflowRecord) -> str:
         "Думай, спрашивай и пиши черновик, playbook и любые файлы только на русском.\n"
         "Закрывай через askQuestion каждый пробел логики: фильтр, объём, получателя, "
         "правило решения, критерий успеха. Задавай столько вопросов, сколько реальных пробелов.\n"
-        "Триггер запуска (когда запускать агента) спрашивай всегда, если его нет в материалах — "
-        "этот вопрос пропускать нельзя. Он не заменяет остальные вопросы.\n"
-        "Если не задан итоговый выходной результат агента (что он должен выдать в конце: "
-        "формат и содержание), обязательно спроси это.\n"
+        "Если материалы уже говорят, когда идёт процесс, запиши это в when_to_run "
+        "и не спрашивай, когда запускать агента: он стартует так же, как написано.\n"
+        "Если материалы уже называют результат процесса, это и есть выход агента. "
+        "Не спрашивай «в каком виде» и не добавляй акт, Word или Excel, если этого нет в тексте. "
+        "Спрашивай выход только если нет ни содержания, ни получателя.\n"
         "Сформируй план, как агент будет достигать цели, и верни финальный JSON-черновик.\n"
         "Бизнес-задачу сейчас не выполняй: только проектирование инструкции.\n"
         "Верни JSON-объект с полями goal, inputs, required_clarifications, result, "
@@ -776,16 +777,6 @@ def apply_sdk_answers_to_draft(draft: dict, qa: list[tuple[str, str]]) -> dict:
 
 WHEN_TO_RUN_QUESTION_ID = "when-to-run"
 WHEN_TO_RUN_QUESTION = "Когда запускать этого агента?"
-WHEN_TO_RUN_OPTIONS = ["вручную из чата", "ежедневно утром", "по событию из материалов"]
-
-
-def when_to_run_question() -> WorkflowOpenQuestion:
-    return WorkflowOpenQuestion(
-        id=WHEN_TO_RUN_QUESTION_ID,
-        question=WHEN_TO_RUN_QUESTION,
-        why="Без триггера агента нельзя поставить на расписание.",
-        options=list(WHEN_TO_RUN_OPTIONS),
-    )
 
 
 def draft_when_to_run(record: WorkflowRecord | None) -> str:
@@ -845,22 +836,16 @@ def record_ready_for_sdk_demo(record: WorkflowRecord) -> WorkflowRecord:
     local["validation"] = validation
     local["can_run_demo"] = True
     plan = record.plan
-    if not when_to_run_known(replace(record, local_run=local, plan=plan)):
-        validation["can_run_demo"] = False
-        local["can_run_demo"] = False
-        local["validation"] = validation
-        question = when_to_run_question()
-        if plan is None:
-            plan = WorkflowPlan(open_questions=[question])
-        else:
-            existing = [
+    if plan is not None:
+        plan = replace(
+            plan,
+            open_questions=[
                 item
                 for item in (plan.open_questions or [])
-                if item.id == WHEN_TO_RUN_QUESTION_ID or "when" in question_topics(item.question)
-            ]
-            plan = replace(plan, open_questions=existing or [question])
-    elif plan is not None:
-        plan = replace(plan, open_questions=[])
+                if item.id != WHEN_TO_RUN_QUESTION_ID
+                and "when" not in question_topics(item.question)
+            ],
+        )
     phase = "designed" if record.phase in {"document", "new", "designing", "clarify", ""} else record.phase
     return replace(record, phase=phase, local_run=local, plan=plan)
 
@@ -2631,8 +2616,6 @@ class WorkflowPage(QWidget):
         current = record or self._record
         if current is None or self._demo_already_ran(current) or demo_run_passed(current):
             return False
-        if not when_to_run_known(current):
-            return False
         return design_ready_for_demo(current)
 
     def _draft_blocker_text(self, record: WorkflowRecord) -> str:
@@ -4144,9 +4127,6 @@ class WorkflowPage(QWidget):
             self._tests_ok = True
             self._show_demo_result(result)
             return
-        if not when_to_run_known(result):
-            self._ask_when_to_run(result)
-            return
         if self._can_run_demo(result):
             self._on_execute()
             return
@@ -4155,19 +4135,6 @@ class WorkflowPage(QWidget):
             self._show_demo_result(result)
             return
         self._show_demo_result(result)
-
-    def _ask_when_to_run(self, result: WorkflowRecord) -> None:
-        ready = record_ready_for_sdk_demo(result)
-        self._record = ready
-        self._execute_started = False
-        plan = ready.plan or WorkflowPlan(open_questions=[when_to_run_question()])
-        unanswered = plan.unanswered()
-        question = unanswered[0] if unanswered else when_to_run_question()
-        self._push_question_if_new(question.question)
-        self._sync_question_state(plan)
-        self._agent_status.setText("● Нужно указать, когда запускать агента")
-        self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
-        self._render_all()
 
     def _apply_when_to_run_answer(self, text: str) -> None:
         if self._record is None:
@@ -4784,6 +4751,14 @@ class WorkflowPage(QWidget):
             bridge = CursorSdkBridge()
             bridge.check_ready()
             record = self._api.get_workflow(workflow_id)
+            try:
+                record = self._api.prepare_demo_writes(workflow_id)
+            except ApiError as exc:
+                if exc.status_code not in {404, 405}:
+                    self._stream_event.emit(
+                        "decision",
+                        f"Проба записи 1С не запустилась: {exc}",
+                    )
             resume_agent_id = str((record.local_run or {}).get("sdk_agent_id") or "").strip()
 
             def on_sdk_event(payload: dict) -> None:

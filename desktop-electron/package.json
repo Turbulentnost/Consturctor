@@ -30,7 +30,7 @@
     "files": [
       "out/**/*"
     ],
-    "afterSign": "scripts/afterSign.cjs",
+    "afterPack": "scripts/afterSign.cjs",
     "win": {
       "icon": "build/icon.ico",
       "target": [
@@ -42,6 +42,10 @@
       {
         "from": "build/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "../desktop/.env",
+        "to": "desktop/.env"
       }
     ],
     "nsis": {
@@ -52,7 +56,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Constructor",
-      "include": "installer.nsh"
+      "include": "build/installer.nsh"
     },
     "protocols": [
       {

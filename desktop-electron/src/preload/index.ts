@@ -73,6 +73,7 @@ const api = {
     filters?: { name: string; extensions: string[] }[]
     properties?: string[]
   }): Promise<string[]> => ipcRenderer.invoke('dialog:openFile', options),
+  saveClipboardImage: (): Promise<string> => ipcRenderer.invoke('clipboard:saveImage'),
   startNotifications: (token: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('notifications:start', token),
   stopNotifications: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('notifications:stop'),

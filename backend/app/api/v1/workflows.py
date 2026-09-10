@@ -65,6 +65,7 @@ from app.services.workflows import (
     list_artifacts_for_workflow,
     list_workflows,
     plan_workflow,
+    prepare_demo_writes,
     publish_workflow,
     resume_auto_run,
     stop_auto_run,
@@ -728,6 +729,19 @@ async def resume_workflow_auto_run(
 ) -> AutoRunStopResult:
     try:
         return resume_auto_run(db, user_id=auth.user_id, workflow_id=workflow_id)
+    except WorkflowError as exc:
+        _raise(exc)
+        raise
+
+
+@router.post("/{workflow_id}/demo/prepare-writes", response_model=WorkflowSchema)
+async def prepare_demo_writes_endpoint(
+    workflow_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WorkflowSchema:
+    try:
+        return prepare_demo_writes(db, user_id=auth.user_id, workflow_id=workflow_id)
     except WorkflowError as exc:
         _raise(exc)
         raise

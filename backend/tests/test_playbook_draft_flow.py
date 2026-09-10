@@ -86,6 +86,38 @@ def test_regulation_allows_web_only_on_explicit_hint() -> None:
     assert not regulation_allows_web("Собрать задачи из 1С за месяц")
 
 
+def test_assignment_entity_uses_erp_assignments() -> None:
+    names = select_candidates(
+        {"system": "onec", "entity": "поручения", "operation": "list"}
+    )
+    assert names[0] == "onec.erp_assignments"
+
+
+def test_task_entity_about_assignments_does_not_use_current_user_tasks() -> None:
+    names = select_candidates(
+        {
+            "system": "onec",
+            "entity": "task",
+            "operation": "list",
+            "title": "Открытые поручения АСТ00 заказчика",
+            "data_expectation": "журнал поручений Action Tracker",
+        }
+    )
+    assert names[0] == "onec.erp_assignments"
+    assert "onec.erp_tasks_current" not in names
+
+
+def test_generic_task_word_does_not_force_1c_user_tasks() -> None:
+    from app.services.workflow_tool_routing import wants_user_1c_tasks
+    from app.services.workflows.service import _onec_domain_tools
+
+    blob = "бизнес-задача агента: контроль сроков и сформировать отчёт"
+    assert not wants_user_1c_tasks(blob)
+    tools = _onec_domain_tools("1с erp " + blob)
+    assert "onec.erp_assignments" in tools
+    assert "onec.erp_tasks_current" not in tools
+
+
 def test_unknown_entity_and_operation_leave_no_candidates() -> None:
     assert select_candidates(_onec_step(entity="unicorn", operation="teleport")) == []
 
@@ -343,7 +375,7 @@ def test_valid_draft_has_no_issues() -> None:
     assert validation.ok
 
 
-def test_missing_schedule_in_materials_is_clarify() -> None:
+def test_missing_schedule_in_materials_is_not_hardcoded_clarify() -> None:
     from app.services.workflows.schedule_draft import WHEN_TO_RUN_QUESTION
 
     validation = validate_draft(
@@ -351,7 +383,7 @@ def test_missing_schedule_in_materials_is_clarify() -> None:
         materials="контролирует сроки, качество и риски проектов. Не допускать нарушения SLA.",
     )
 
-    assert any(issue.message == WHEN_TO_RUN_QUESTION for issue in validation.clarifications)
+    assert all(issue.message != WHEN_TO_RUN_QUESTION for issue in validation.clarifications)
 
 
 def test_explicit_schedule_in_materials_skips_when_question() -> None:
@@ -888,6 +920,9 @@ def test_draft_prompt_asks_for_json_only_without_transport_lecture() -> None:
     assert "додумывать логику" in prompt
     assert "service_note" in prompt
     assert "6.4" in prompt
+    assert "assignment" in prompt
+    assert "на всякий случай" in prompt
+    assert "CONSTRUCTOR_PROBE" in prompt
 
 
 def test_draft_prompt_interactive_asks_gaps_before_json() -> None:

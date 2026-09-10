@@ -217,6 +217,121 @@ def test_document_row_maps_meeting_fields() -> None:
     assert doc["meeting"]["priority"] == "Высокий"
 
 
+def test_task_search_query_is_select_only() -> None:
+    from app.tools.ac.workers.onec_com_actions import (
+        build_performer_tasks_query_latin,
+        build_task_card_query_latin,
+        task_from_com32_row,
+    )
+
+    query, columns = build_performer_tasks_query_latin(
+        limit=10,
+        query="протокол",
+        mine_only=True,
+        done_only=False,
+    )
+    assert_select_only(query)
+    assert columns[0:3] == ["Number", "Description", "Date"]
+    assert "DueDate" in columns
+    assert "Executor" in columns
+    assert "ПолноеИмяПользователя()" in query
+    assert "ИмяПользователя()" in query
+    assert "ПОДОБНО" in query
+    assert "записать" not in query.casefold()
+    like_query, _ = build_performer_tasks_query_latin(
+        limit=5,
+        mine_only=True,
+        executor_like="Комарькова Анастасия Эдуардовна",
+    )
+    assert_select_only(like_query)
+    assert "ПОДОБНО" in like_query
+    assert "ПолноеИмяПользователя()" not in like_query
+    card_query, card_columns = build_task_card_query_latin(number='00"01')
+    assert_select_only(card_query)
+    assert 'Т.Номер = "00""01"' in card_query
+    assert "Author" in card_columns
+    task = task_from_com32_row(
+        {
+            "Number": "000012345",
+            "Description": "Подготовить протокол",
+            "Date": "02.09.2026 0:00:00",
+            "DueDate": "04.09.2026",
+            "Executor": "Комарькова Анастасия Эдуардовна",
+            "Done": "Нет",
+        },
+        source="erp_задача_исполнителя",
+    )
+    assert task["number"] == "000012345"
+    assert task["task_ref"] == "000012345"
+    assert task["title"] == "Подготовить протокол"
+    assert task["responsible"].startswith("Комарькова")
+    assert task["status"] == "В работе"
+
+
+def test_com32_dispatch_search_tasks_and_card(monkeypatch) -> None:
+    from app.tools.ac.workers.models import WorkerTask
+    from app.tools.ac.workers.onec_com_actions import _dispatch_via_com32
+
+    def fake_select(attempts, timeout=None):
+        _ = timeout
+        assert attempts
+        first_query = attempts[0][0]
+        if "ПЕРВЫЕ 1" in first_query or "Author" in "".join(attempts[0][1]):
+            return (
+                [
+                    {
+                        "Number": "000012345",
+                        "Description": "Подготовить протокол",
+                        "Date": "02.09.2026",
+                        "DueDate": "04.09.2026",
+                        "Executor": "Комарькова Анастасия Эдуардовна",
+                        "Author": "Ильченко Екатерина Александровна",
+                        "Done": "Ложь",
+                        "Details": "Черновик протокола СД",
+                    }
+                ],
+                0,
+            )
+        return (
+            [
+                {
+                    "Number": "000012345",
+                    "Description": "Подготовить протокол",
+                    "Date": "02.09.2026",
+                    "DueDate": "04.09.2026",
+                    "Executor": "Комарькова Анастасия Эдуардовна",
+                }
+            ],
+            0,
+        )
+
+    monkeypatch.setattr(
+        "app.tools.ac.workers.onec_com32_helper.run_select_first",
+        fake_select,
+    )
+    search = _dispatch_via_com32(
+        WorkerTask(
+            task_id="t1",
+            tool_name="onec.search_tasks",
+            input_data={"query": "протокол", "max_results": 5},
+        )
+    )
+    assert search["source"] == "onec_com32"
+    assert search["count"] == 1
+    assert search["tasks"][0]["number"] == "000012345"
+    assert search["tasks"][0]["title"].startswith("Подготовить")
+    card = _dispatch_via_com32(
+        WorkerTask(
+            task_id="t2",
+            tool_name="onec.get_task_card",
+            input_data={"task_ref": "000012345"},
+        )
+    )
+    assert card["source"] == "onec_com32"
+    assert card["task"]["number"] == "000012345"
+    assert card["task"]["author"].startswith("Ильченко")
+
+
 def test_com32_dispatch_search_and_card(monkeypatch) -> None:
     from app.tools.ac.workers.models import WorkerTask
     from app.tools.ac.workers.onec_com_actions import _dispatch_via_com32
@@ -311,3 +426,17 @@ def test_meeting_notes_timeout_is_connection_error(monkeypatch) -> None:
     assert "не ответила" in text
     assert "cscript" not in text
     assert "run.vbs" not in text
+
+
+def test_assignment_com_search_query() -> None:
+    from app.tools.ac.workers.onec_com_actions import _assignment_search_query_com32
+
+    text, columns = _assignment_search_query_com32(
+        query="АСТ00-00093",
+        limit=5,
+        exact_number=True,
+    )
+    assert "Документ.ТД_Поручения" in text
+    assert 'Д.Номер = "АСТ00-00093"' in text
+    assert "ОЧем" in text
+    assert columns == ["Number", "DocDate", "Theme", "Status", "Customer"]

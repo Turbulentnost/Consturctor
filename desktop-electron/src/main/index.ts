@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, clipboard, type IpcMainInvokeEvent } from 'electron'
 import { execFileSync } from 'node:child_process'
 import { join, basename, dirname, extname } from 'node:path'
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -856,10 +856,47 @@ app.whenReady().then(() => {
     showToast(payload || { title: '' })
     return { ok: true }
   })
-  ipcMain.handle('dialog:openFile', async (_evt, options: Electron.OpenDialogOptions) => {
-    const win = BrowserWindow.getFocusedWindow()
-    const result = await dialog.showOpenDialog(win!, options)
+  ipcMain.handle('dialog:openFile', async (evt, options: Electron.OpenDialogOptions) => {
+    const win = BrowserWindow.fromWebContents(evt.sender) || BrowserWindow.getFocusedWindow()
+    const filters = (options?.filters || [])
+      .map((item) => ({
+        name: item.name || 'Files',
+        extensions: (item.extensions || [])
+          .map((ext) => String(ext || '').replace(/^\./, ''))
+          .filter(Boolean)
+      }))
+      .filter((item) => item.extensions.length)
+    const dialogOptions: Electron.OpenDialogOptions = {
+      ...options,
+      filters: filters.length ? filters : undefined
+    }
+    const result = win
+      ? await dialog.showOpenDialog(win, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
     return result.canceled ? [] : result.filePaths
+  })
+  ipcMain.handle('clipboard:saveImage', async () => {
+    try {
+      const items = await clipboard.read()
+      for (const item of items) {
+        const mime = item.types.find((type) => type.toLowerCase().startsWith('image/'))
+        if (!mime) continue
+        const payload = await item.getType(mime)
+        if (!(payload instanceof Blob)) continue
+        const buffer = Buffer.from(await payload.arrayBuffer())
+        if (!buffer.length) continue
+        const subtype = mime.split('/')[1]?.split(';')[0] || 'png'
+        const ext = subtype === 'jpeg' ? 'jpg' : subtype.replace(/[^a-z0-9]/g, '') || 'png'
+        const dir = join(app.getPath('temp'), 'constructor-pastes')
+        mkdirSync(dir, { recursive: true })
+        const file = join(dir, `screenshot-${Date.now()}.${ext}`)
+        writeFileSync(file, buffer)
+        return file
+      }
+    } catch {
+      return ''
+    }
+    return ''
   })
   ipcMain.handle('updater:getStatus', () => getUpdateStatus())
   ipcMain.handle('updater:install', () => installAvailableUpdate())

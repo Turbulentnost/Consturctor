@@ -135,6 +135,8 @@ _READ_EXACT = frozenset(
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
+        "onec.erp_assignments",
+        "onec.erp_write_probe",
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
@@ -424,10 +426,7 @@ _RUN_INPUT_GATE_HINTS = (
 
 def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
     parts = [KEEP_FILE_HINT, OUTLOOK_MEETING_HINT]
-    if (mode or "").strip().casefold() == "design":
-        parts.append(WHEN_TO_RUN_HINT)
-        parts.append(RUN_INPUTS_HINT)
-    else:
+    if (mode or "").strip().casefold() != "design":
         parts.append(RUN_INPUTS_RUN_HINT)
     text = (prompt or "").strip()
     if text:
@@ -1899,9 +1898,6 @@ class Sidecar:
         if _is_meeting_workflow(record) or _is_meeting_text(design_prompt):
             _ensure_outlook_rule_in_brief(run_cwd)
         bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
-        # Ask for a per-run file sample before the designer writes the draft,
-        # so the SDK run can read it and ask follow-up questions.
-        self._ensure_run_input_sample_asked(active, workflow_id)
         events: list[dict[str, Any]] = []
         result = bridge.run(
             prompt=build_design_sdk_prompt(record, design_prompt),
@@ -1924,7 +1920,6 @@ class Sidecar:
             if exc.status_code not in {404, 405}:
                 raise
         self._ensure_outlook_rule_in_playbook(workflow_id)
-        self._ensure_when_to_run_asked(active, workflow_id)
         emit(
             {
                 "type": "result",
@@ -2063,10 +2058,6 @@ class Sidecar:
         if _is_meeting_workflow(record):
             _ensure_outlook_rule_in_brief(run_cwd)
         bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
-        # Trial run is still interactive: ask for a per-run sample if design
-        # skipped it, then for each declared run_input. Otherwise the model
-        # invents a substitute data source (for example another system).
-        self._ensure_run_input_sample_asked(active, workflow_id)
         try:
             record = self._api.get_workflow(workflow_id)
         except ApiError:

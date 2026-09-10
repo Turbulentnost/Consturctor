@@ -51,9 +51,14 @@ class PreparedWorkflowFile:
     sha256: str
 
 
-def prepare_workflow_file(original_name: str, raw: bytes) -> PreparedWorkflowFile:
+def prepare_workflow_file(
+    original_name: str,
+    raw: bytes,
+    *,
+    ocr: bool = True,
+) -> PreparedWorkflowFile:
     try:
-        loaded = load_attachment_bytes(original_name, raw)
+        loaded = load_attachment_bytes(original_name, raw, ocr=ocr)
     except DocumentError as exc:
         raise WorkflowFileError(str(exc)) from exc
     return PreparedWorkflowFile(
@@ -65,8 +70,12 @@ def prepare_workflow_file(original_name: str, raw: bytes) -> PreparedWorkflowFil
     )
 
 
-def prepare_workflow_files(files: list[tuple[str, bytes]]) -> list[PreparedWorkflowFile]:
-    return [prepare_workflow_file(name, raw) for name, raw in files]
+def prepare_workflow_files(
+    files: list[tuple[str, bytes]],
+    *,
+    ocr: bool = True,
+) -> list[PreparedWorkflowFile]:
+    return [prepare_workflow_file(name, raw, ocr=ocr) for name, raw in files]
 
 
 def _find_existing_file(
@@ -180,7 +189,8 @@ def register_run_attachments(
     origin: str = ORIGIN_RUN_ATTACHMENT,
 ) -> list[WorkflowFile]:
     """Store temporary per-run user attachments (not permanent knowledge)."""
-    prepared = prepare_workflow_files(files)
+    # Sidecar already OCRs into the workspace; skip a second VLM pass here.
+    prepared = prepare_workflow_files(files, ocr=False)
     if not prepared:
         return []
     rows = save_prepared_files(

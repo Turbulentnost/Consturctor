@@ -266,6 +266,7 @@ class AgentDraft:
     agent_suggestions: list[AgentSuggestion] | None = None
     updated_at: datetime | None = None
     created_at: datetime | None = None
+    sdk_readiness: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1418,12 +1419,39 @@ class ApiClient:
         *,
         answer: str,
         events: list[dict] | None = None,
+        qa: list[dict] | None = None,
+        sdk_agent_id: str = "",
     ) -> AgentDraft:
         data = self._request(
             "POST",
             f"/api/v1/agents/drafts/{draft_id}/sdk-readiness",
-            json={"answer": answer, "events": events or []},
+            json={
+                "answer": answer,
+                "events": events or [],
+                "qa": qa or [],
+                "complete": True,
+                "sdkAgentId": sdk_agent_id,
+            },
             timeout=max(self._timeout, 120.0),
+        )
+        return self._parse_agent_draft(data)
+
+    def save_sdk_readiness_progress(
+        self,
+        draft_id: str,
+        *,
+        qa: list[dict],
+        sdk_agent_id: str = "",
+    ) -> AgentDraft:
+        data = self._request(
+            "POST",
+            f"/api/v1/agents/drafts/{draft_id}/sdk-readiness",
+            json={
+                "qa": qa,
+                "complete": False,
+                "sdkAgentId": sdk_agent_id,
+            },
+            timeout=max(self._timeout, 60.0),
         )
         return self._parse_agent_draft(data)
 
@@ -1792,6 +1820,16 @@ class ApiClient:
         )
         if not isinstance(data, dict):
             raise ApiError("Backend не вернул итоговый workflow")
+        return self._parse_workflow(data)
+
+    def prepare_demo_writes(self, workflow_id: str) -> WorkflowRecord:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/demo/prepare-writes",
+            timeout=120.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Backend не вернул пробу записи 1С")
         return self._parse_workflow(data)
 
     def stream_demo_workflow(
@@ -3149,6 +3187,7 @@ class ApiClient:
             for item in data.get("agentSuggestions") or []
             if isinstance(item, dict)
         ]
+        sdk_raw = data.get("sdkReadiness")
         return AgentDraft(
             draft_id=str(data.get("draftId") or ""),
             regulation_id=str(data.get("regulationId") or ""),
@@ -3163,6 +3202,7 @@ class ApiClient:
             agent_suggestions=suggestions,
             updated_at=updated_at,
             created_at=created_at,
+            sdk_readiness=sdk_raw if isinstance(sdk_raw, dict) else None,
         )
 
     @staticmethod

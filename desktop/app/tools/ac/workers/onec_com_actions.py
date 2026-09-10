@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from app.tools.ac.workers.models import WorkerResult, WorkerTask
@@ -18,10 +20,17 @@ from app.tools.ac.workers.onec_meeting_notes import (
     MEETING_FIELDS,
     assert_select_only,
     build_meeting_notes_query,
+    clean_onec_value,
     default_addressee,
+    like_escape,
     meeting_params_from_row,
     parse_note_period,
     pick_document_name,
+)
+
+TASK_METADATA_CANDIDATES = (
+    "Задача.ЗадачаИсполнителя",
+    "Задача.Задача",
 )
 
 FORBIDDEN_COM_METHOD_PARTS = (
@@ -161,6 +170,10 @@ def _dispatch_via_com32(task: WorkerTask) -> dict[str, Any]:
         return _search_documents_com32(task.input_data)
     if task.tool_name == "onec.get_document_card":
         return _get_document_card_com32(task.input_data)
+    if task.tool_name == "onec.search_tasks":
+        return _search_tasks_com32(task.input_data)
+    if task.tool_name == "onec.get_task_card":
+        return _get_task_card_com32(task.input_data)
     raise OneCConnectionError(
         f"Инструмент {task.tool_name} ещё не переведён на 32-bit COMConnector (cscript). "
         "32-bit Python (py -3.12-32) для этого не нужен."
@@ -318,6 +331,41 @@ def _list_meeting_service_notes_com32(
     }
 
 
+def _assignment_search_query_com32(
+    *,
+    query: str,
+    limit: int,
+    exact_number: bool,
+) -> tuple[str, list[str]]:
+    """SELECT Document.TD_Porucheniya. Read-only."""
+    from app.tools.ac.workers.onec_meeting_notes import like_escape
+
+    limit = max(1, min(200, int(limit or 10)))
+    needle = like_escape(query)
+    conditions = ["НЕ Д.ПометкаУдаления"]
+    if exact_number and query:
+        safe = str(query).replace('"', '""')
+        conditions.append(f'Д.Номер = "{safe}"')
+    elif needle:
+        conditions.append(
+            f'(Д.Номер ПОДОБНО "%{needle}%" ИЛИ Д.ОЧем ПОДОБНО "%{needle}%")'
+        )
+    text = "\n".join(
+        [
+            f"ВЫБРАТЬ ПЕРВЫЕ {limit}",
+            "        Д.Номер КАК Number",
+            "        , Д.Дата КАК DocDate",
+            "        , Д.ОЧем КАК Theme",
+            "        , Д.Статус КАК Status",
+            "        , ПРЕДСТАВЛЕНИЕ(Д.Руководитель) КАК Customer",
+            "        ИЗ Документ.ТД_Поручения КАК Д",
+            "        ГДЕ " + " И ".join(conditions),
+            "        УПОРЯДОЧИТЬ ПО Д.Дата УБЫВ",
+        ]
+    )
+    return text, ["Number", "DocDate", "Theme", "Status", "Customer"]
+
+
 def _search_documents_com32(
     input_data: dict[str, Any],
     *,
@@ -340,6 +388,18 @@ def _search_documents_com32(
     limit = int(args.get("max_results") or args.get("limit") or 10)
     exact_number = bool(str(args.get("number") or "").strip()) or _looks_like_document_number(query)
     specs: list[tuple[str, list[str], str, str]] = []
+    document_type = str(args.get("document_type") or "").casefold()
+    assignment_hint = any(
+        token in (query.casefold() + " " + document_type)
+        for token in ("аст", "act00", "поруч", "td_поруч", "тд_поруч")
+    )
+    if assignment_hint or not query:
+        text, columns = _assignment_search_query_com32(
+            query=query,
+            limit=limit,
+            exact_number=exact_number and bool(query),
+        )
+        specs.append((text, columns, "ТД_Поручения", "Поручение"))
     for document_name in ("ТД_СлужебнаяЗаписка", "СлужебнаяЗаписка"):
         if exact_number and query:
             text, columns = build_document_search_query_latin(
@@ -457,6 +517,277 @@ def _get_document_card_com32(
     if raw.get("error"):
         result["error"] = raw["error"]
     return result
+
+
+def _task_number_from_input(input_data: dict[str, Any]) -> str:
+    args = input_data if isinstance(input_data, dict) else {}
+    return str(
+        args.get("number")
+        or args.get("task_number")
+        or args.get("task_ref")
+        or args.get("ref")
+        or ""
+    ).strip()
+
+
+def _status_means_done(status: str) -> bool:
+    text = str(status or "").strip().casefold()
+    return any(marker in text for marker in ("выполн", "закрыт", "done", "completed", "closed"))
+
+
+def _com_session_login() -> str:
+    login = os.environ.get(ENV_LOGIN, "").strip()
+    if login:
+        return login
+    conn = os.environ.get(ENV_CONNECTION_STRING, "").strip()
+    match = re.search(r"Usr=(\"[^\"]+\"|[^;]+)", conn)
+    if match:
+        return match.group(1).strip('"').strip()
+    return ""
+
+
+def build_performer_tasks_query_latin(
+    *,
+    limit: int = 10,
+    query: str = "",
+    mine_only: bool = True,
+    done_only: bool = False,
+    metadata: str = "Задача.ЗадачаИсполнителя",
+    include_due: bool = True,
+    executor_like: str = "",
+) -> tuple[str, list[str]]:
+    """SELECT задач исполнителя. Только чтение, латинские алиасы для cscript."""
+    meta = str(metadata or "").strip() or "Задача.ЗадачаИсполнителя"
+    limit = max(1, min(100, int(limit or 10)))
+    needle = like_escape(query)
+    columns = ["Number", "Description", "Date"]
+    select = [
+        "Т.Номер КАК Number",
+        "Т.Наименование КАК Description",
+        "Т.Дата КАК Date",
+    ]
+    if include_due:
+        select.append("Т.СрокИсполнения КАК DueDate")
+        columns.append("DueDate")
+    select.append("ПРЕДСТАВЛЕНИЕ(Т.Исполнитель) КАК Executor")
+    columns.append("Executor")
+    conditions = ["Т.Выполнена" if done_only else "НЕ Т.Выполнена"]
+    like_name = str(executor_like or "").strip()
+    if like_name:
+        like = like_escape(like_name)
+        conditions.append(f"Т.Исполнитель.Наименование ПОДОБНО \"%{like}%\"")
+    elif mine_only:
+        conditions.append(
+            "("
+            "Т.Исполнитель.Наименование = ПолноеИмяПользователя() "
+            "ИЛИ Т.Исполнитель.Наименование = ИмяПользователя() "
+            "ИЛИ ПРЕДСТАВЛЕНИЕ(Т.Исполнитель) = ПолноеИмяПользователя() "
+            "ИЛИ ПРЕДСТАВЛЕНИЕ(Т.Исполнитель) = ИмяПользователя()"
+            ")"
+        )
+    if needle:
+        conditions.append(
+            f"(Т.Номер ПОДОБНО \"%{needle}%\" ИЛИ Т.Наименование ПОДОБНО \"%{needle}%\")"
+        )
+    query_text = "\n".join(
+        [
+            f"ВЫБРАТЬ ПЕРВЫЕ {limit}",
+            "        " + ",\n        ".join(select),
+            f"        ИЗ {meta} КАК Т",
+            "        ГДЕ " + " И ".join(conditions),
+            "        УПОРЯДОЧИТЬ ПО Т.Дата УБЫВ",
+        ]
+    )
+    return assert_select_only(query_text), columns
+
+
+def build_task_card_query_latin(
+    *,
+    number: str,
+    metadata: str = "Задача.ЗадачаИсполнителя",
+    include_optional: bool = True,
+) -> tuple[str, list[str]]:
+    """SELECT карточки задачи по номеру. Только чтение."""
+    meta = str(metadata or "").strip() or "Задача.ЗадачаИсполнителя"
+    safe_number = str(number or "").replace('"', '""')
+    select = [
+        "Т.Номер КАК Number",
+        "Т.Наименование КАК Description",
+        "Т.Дата КАК Date",
+        "Т.СрокИсполнения КАК DueDate",
+        "ПРЕДСТАВЛЕНИЕ(Т.Исполнитель) КАК Executor",
+    ]
+    columns = ["Number", "Description", "Date", "DueDate", "Executor"]
+    if include_optional:
+        select.extend(
+            [
+                "ПРЕДСТАВЛЕНИЕ(Т.Автор) КАК Author",
+                "Т.Выполнена КАК Done",
+                "Т.РезультатВыполнения КАК Result",
+                "Т.Описание КАК Details",
+                "ПРЕДСТАВЛЕНИЕ(Т.Предмет) КАК Subject",
+            ]
+        )
+        columns.extend(["Author", "Done", "Result", "Details", "Subject"])
+    query_text = "\n".join(
+        [
+            "ВЫБРАТЬ ПЕРВЫЕ 1",
+            "        " + ",\n        ".join(select),
+            f"        ИЗ {meta} КАК Т",
+            f'        ГДЕ Т.Номер = "{safe_number}"',
+        ]
+    )
+    return assert_select_only(query_text), columns
+
+
+def task_from_com32_row(row: dict[str, Any], *, source: str) -> dict[str, Any]:
+    number = clean_onec_value(row.get("Number"))
+    title = clean_onec_value(row.get("Description"))
+    executor = clean_onec_value(row.get("Executor"))
+    due_date = clean_onec_value(row.get("DueDate"), as_date=True) or clean_onec_value(row.get("DueDate"))
+    done_raw = str(row.get("Done") or "").strip()
+    done = done_raw.casefold() in {"true", "истина", "1", "да", "yes"}
+    return {
+        "ref": number,
+        "task_ref": number,
+        "number": number,
+        "title": title,
+        "description": title,
+        "date": clean_onec_value(row.get("Date"), as_date=True) or clean_onec_value(row.get("Date")),
+        "due_date": due_date,
+        "executor": executor,
+        "responsible": executor,
+        "author": clean_onec_value(row.get("Author")),
+        "status": "Выполнена" if done else "В работе",
+        "done": done,
+        "result": clean_onec_value(row.get("Result")),
+        "details": clean_onec_value(row.get("Details")),
+        "subject": clean_onec_value(row.get("Subject")),
+        "source": source,
+        "fields": {key: clean_onec_value(value) for key, value in row.items()},
+    }
+
+
+def _search_tasks_com32(
+    input_data: dict[str, Any],
+    *,
+    timeout: int | None = None,
+) -> dict[str, Any]:
+    """Поиск задач исполнителя через 32-bit SELECT. Без записи."""
+    args = input_data if isinstance(input_data, dict) else {}
+    query = str(args.get("query") or args.get("number") or "").strip()
+    limit = int(args.get("max_results") or args.get("limit") or 10)
+    mine_only = bool(args.get("mine_only", True))
+    done_only = _status_means_done(str(args.get("status") or ""))
+    specs: list[tuple[str, list[str], str]] = []
+    session_login = _com_session_login() if mine_only else ""
+    for metadata in TASK_METADATA_CANDIDATES:
+        if session_login:
+            text, columns = build_performer_tasks_query_latin(
+                limit=limit,
+                query=query,
+                mine_only=True,
+                done_only=done_only,
+                metadata=metadata,
+                include_due=True,
+                executor_like=session_login,
+            )
+            specs.append((text, columns, "erp_задача_исполнителя"))
+        for include_due in (True, False):
+            text, columns = build_performer_tasks_query_latin(
+                limit=limit,
+                query=query,
+                mine_only=mine_only,
+                done_only=done_only,
+                metadata=metadata,
+                include_due=include_due,
+            )
+            source = "erp_задача_исполнителя" if mine_only else "erp_задача_исполнителя_all"
+            specs.append((text, columns, source))
+        if mine_only:
+            text, columns = build_performer_tasks_query_latin(
+                limit=limit,
+                query=query,
+                mine_only=False,
+                done_only=done_only,
+                metadata=metadata,
+                include_due=True,
+            )
+            specs.append((text, columns, "erp_задача_исполнителя_all"))
+    try:
+        rows, chosen = _com32_select(
+            [(text, columns) for text, columns, _source in specs],
+            timeout=timeout,
+        )
+    except OneCConnectionError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc).strip()
+        return {
+            "tasks": [],
+            "count": 0,
+            "source": "onec_com32",
+            "task_source": "",
+            "method": "select_performer_tasks_com32",
+            "query": query,
+            "readonly": True,
+            "error": message or "32-bit COM не вернул задачи",
+        }
+    source = specs[chosen][2]
+    tasks = [task_from_com32_row(row, source=source) for row in rows]
+    return {
+        "tasks": tasks,
+        "count": len(tasks),
+        "source": "onec_com32",
+        "task_source": source,
+        "method": "select_performer_tasks_com32",
+        "query": query,
+        "readonly": True,
+        "mine_only": mine_only,
+    }
+
+
+def _get_task_card_com32(
+    input_data: dict[str, Any],
+    *,
+    timeout: int | None = None,
+) -> dict[str, Any]:
+    """Карточка задачи 1С через 32-bit SELECT. Без записи."""
+    number = _task_number_from_input(input_data)
+    if not number:
+        raise OneCConnectionError("Для get_task_card нужен number, task_number или task_ref")
+    specs: list[tuple[str, list[str]]] = []
+    for metadata in TASK_METADATA_CANDIDATES:
+        for include_optional in (True, False):
+            specs.append(
+                build_task_card_query_latin(
+                    number=number,
+                    metadata=metadata,
+                    include_optional=include_optional,
+                )
+            )
+    try:
+        rows, _chosen = _com32_select(specs, timeout=timeout)
+    except OneCConnectionError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc).strip()
+        return {
+            "task": {},
+            "source": "onec_com32",
+            "method": "select_task_card_com32",
+            "readonly": True,
+            "number": number,
+            "error": message or "32-bit COM не вернул карточку задачи",
+        }
+    task = task_from_com32_row(rows[0], source="erp_задача_исполнителя") if rows else {}
+    return {
+        "task": task,
+        "source": "onec_com32",
+        "method": "select_task_card_com32",
+        "readonly": True,
+        "number": number,
+    }
 
 
 def _connect_session() -> Any:
@@ -589,7 +920,7 @@ def _dispatch_tool(session: Any, task: WorkerTask) -> dict[str, Any]:
             "method": "query_performer_tasks",
         }
     if task.tool_name == "onec.get_task_card":
-        number = str(task.input_data.get("number") or task.input_data.get("task_number") or "").strip()
+        number = _task_number_from_input(task.input_data)
         if not number:
             raise OneCConnectionError("Для get_task_card нужен номер задачи")
         raw = get_task_details(session, number=number)
@@ -774,10 +1105,176 @@ def _is_browse_query(query: str, candidate_name: str, candidate_synonym: str) ->
     return overlap >= max(1, round(len(query_stems) * 0.6))
 
 
+_LOCAL_SNAPSHOT_CACHE: tuple[float, list[str]] | None = None
+
+
+def _local_odata_snapshot_path() -> Path | None:
+    env = (
+        os.environ.get("ONEC_ODATA_LOCAL_CATALOG")
+        or os.environ.get("ODATA_LOCAL_CATALOG_PATH")
+        or ""
+    ).strip()
+    candidates: list[Path] = []
+    if env:
+        candidates.append(Path(env))
+    here = Path(__file__).resolve()
+    if len(here.parents) > 5:
+        candidates.append(
+            here.parents[5] / "backend" / "app" / "data" / "odata_document_structures.json"
+        )
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _odata_metadata_name(entity: str) -> str:
+    text = str(entity or "").strip()
+    for prefix in ("Document_", "Catalog_"):
+        if text.startswith(prefix):
+            return text[len(prefix) :]
+    return text
+
+
+def _local_document_metadata_names() -> list[str]:
+    global _LOCAL_SNAPSHOT_CACHE
+    path = _local_odata_snapshot_path()
+    if path is None:
+        return []
+    mtime = path.stat().st_mtime
+    if _LOCAL_SNAPSHOT_CACHE and _LOCAL_SNAPSHOT_CACHE[0] == mtime:
+        return _LOCAL_SNAPSHOT_CACHE[1]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return []
+    documents = data.get("documents") if isinstance(data, dict) else None
+    if not isinstance(documents, dict):
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for key in documents:
+        meta = _odata_metadata_name(str(key))
+        if not meta or meta in seen:
+            continue
+        seen.add(meta)
+        names.append(meta)
+    _LOCAL_SNAPSHOT_CACHE = (mtime, names)
+    return names
+
+
+def _compact_label(text: str) -> str:
+    return re.sub(r"[^0-9A-Za-zА-Яа-яЁё]+", "", str(text or "")).casefold()
+
+
+def _score_local_metadata_name(query: str, name: str) -> int:
+    needle = str(query or "").strip()
+    entity = str(name or "").strip()
+    if not needle or not entity:
+        return 0
+    q = needle.casefold()
+    n = entity.casefold()
+    compact_q = _compact_label(needle)
+    compact_n = _compact_label(entity)
+    if q == n or compact_q == compact_n:
+        return 1000
+    if q in n or (compact_q and compact_q in compact_n):
+        return 80
+    tokens = [token for token in re.split(r"[^0-9A-Za-zА-Яа-яЁё]+", q) if len(token) >= 2]
+    if tokens and all(token in compact_n or token in n for token in tokens):
+        return 50
+    return 0
+
+
+def _lookup_metadata_item(metadata_root: Any, name: str) -> tuple[Any, str, str] | None:
+    for collection_name in METADATA_COLLECTION_NAMES:
+        try:
+            collection = getattr(metadata_root, collection_name)
+        except Exception:
+            continue
+        try:
+            item = getattr(collection, name)
+        except Exception:
+            item = None
+        if item is None:
+            continue
+        return item, collection_name, _metadata_collection_kind(collection_name)
+    return None
+
+
+def _candidate_from_metadata_item(
+    item: Any,
+    *,
+    collection_name: str,
+    kind: str,
+    name: str,
+    score: int,
+    query: str,
+) -> dict[str, Any]:
+    synonym = _metadata_synonym(item)
+    label_text = _normalize_search_text(f"{name} {synonym}")
+    return {
+        "collection_name": collection_name,
+        "kind": kind,
+        "name": name,
+        "synonym": synonym,
+        "label": synonym or name or label_text,
+        "item": item,
+        "score": score,
+        "browse_only": _is_browse_query(query, name, synonym),
+        "requisites": _metadata_requisite_names(item),
+        "tabular_sections": _metadata_tabular_sections(item),
+        "from_local_snapshot": True,
+    }
+
+
+def _candidates_from_local_snapshot(
+    session: Any,
+    query: str,
+    document_type: str | None = None,
+) -> list[dict[str, Any]]:
+    metadata_root = _get_metadata_root(session)
+    if metadata_root is None:
+        return []
+    needle = str(document_type or query or "").strip()
+    if not needle or not any(char.isalpha() for char in needle):
+        return []
+    scored: list[tuple[int, str]] = []
+    for name in _local_document_metadata_names():
+        score = _score_local_metadata_name(needle, name)
+        if score <= 0 and document_type:
+            score = _score_local_metadata_name(document_type, name)
+        if score > 0:
+            scored.append((score, name))
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    candidates: list[dict[str, Any]] = []
+    for score, name in scored[:12]:
+        found = _lookup_metadata_item(metadata_root, name)
+        if found is None:
+            continue
+        item, collection_name, kind = found
+        candidates.append(
+            _candidate_from_metadata_item(
+                item,
+                collection_name=collection_name,
+                kind=kind,
+                name=name,
+                score=score,
+                query=_normalize_search_text(needle),
+            )
+        )
+    candidates.sort(key=lambda candidate: candidate["score"], reverse=True)
+    return candidates
+
+
 def _discover_metadata_candidates(session: Any, query: str, document_type: str | None = None) -> list[dict[str, Any]]:
     metadata_root = _get_metadata_root(session)
     if metadata_root is None:
         return []
+
+    local_candidates = _candidates_from_local_snapshot(session, query, document_type)
+    if local_candidates:
+        return local_candidates
 
     normalized_query = _normalize_search_text(document_type or query)
     query_stems = _stem_set(normalized_query)

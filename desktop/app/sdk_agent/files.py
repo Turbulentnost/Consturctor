@@ -148,6 +148,47 @@ def seed_agent_brief(cwd: str, workflow: WorkflowRecord, *, extra: str = "") -> 
     instructions = str(playbook.get("instructions") or "").strip()
     if instructions:
         parts.extend(["", "## Инструкция запуска", instructions])
+    write_recipe = {}
+    if isinstance(workflow.local_run, dict):
+        raw_recipe = workflow.local_run.get("write_recipe")
+        if isinstance(raw_recipe, dict):
+            write_recipe = raw_recipe
+        elif isinstance(playbook.get("write_recipe"), dict):
+            write_recipe = playbook["write_recipe"]
+    if write_recipe:
+        parts.extend(["", "## Проверенная запись в 1С"])
+        if write_recipe.get("ok"):
+            parts.append(
+                "Конструктор уже создал тестовые объекты CONSTRUCTOR_PROBE, "
+                "проверил нужные изменения и удалил их. Боевые карточки не трогай."
+            )
+            recipes = write_recipe.get("recipes") if isinstance(write_recipe.get("recipes"), list) else []
+            if not recipes:
+                recipes = [
+                    write_recipe.get("recipe")
+                    if isinstance(write_recipe.get("recipe"), dict)
+                    else write_recipe
+                ]
+            for recipe in recipes:
+                if not isinstance(recipe, dict):
+                    continue
+                tool = str(recipe.get("tool") or "")
+                entity = str(recipe.get("entity") or "")
+                update = recipe.get("update") if isinstance(recipe.get("update"), dict) else {}
+                status = (
+                    recipe.get("update_status")
+                    if isinstance(recipe.get("update_status"), dict)
+                    else {}
+                )
+                field = str(update.get("field") or status.get("field") or "")
+                bit = ", ".join(part for part in (entity, tool, field) if part)
+                if bit:
+                    parts.append(f"Рабочий вызов: {bit}.")
+        else:
+            parts.append(
+                "Проба записи в 1С не удалась: "
+                + str(write_recipe.get("error") or write_recipe.get("summary") or "нет механизма")
+            )
     from app.sdk_agent.prompt import known_design_facts
 
     facts = known_design_facts(workflow)
