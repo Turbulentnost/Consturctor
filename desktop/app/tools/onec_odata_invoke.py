@@ -7,15 +7,24 @@ from typing import Any
 
 def fetch_odata_list(
     *,
-    entity: str,
+    entity: str = "",
     odata_filter: str = "",
     top: int = 30,
     number: str = "",
     ref_key: str = "",
+    path: str = "",
 ) -> dict[str, Any]:
     from app.tools import runtime_api
 
-    args: dict[str, Any] = {"entity": entity, "top": max(1, min(200, int(top or 30)))}
+    args: dict[str, Any] = {"top": max(1, min(200, int(top or 30)))}
+    if path:
+        args["path"] = path
+        if entity:
+            args["entity"] = entity
+    elif entity:
+        args["entity"] = entity
+    else:
+        raise ValueError("entity or path required")
     if odata_filter:
         args["filter"] = odata_filter
     if number:

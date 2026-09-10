@@ -248,45 +248,6 @@ def _raw_tools() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "onec.odata_post",
-            "description": "Создание объекта через 1С OData (сервер).",
-            "execution": "server",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "entity": _prop("string", "Имя EntitySet из onec.odata_catalog"),
-                    "body": _prop("object", "Поля нового объекта 1С, как в OData"),
-                },
-                "required": ["entity"],
-            },
-        },
-        {
-            "name": "onec.odata_patch",
-            "description": "Обновление объекта через 1С OData (сервер).",
-            "execution": "server",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "entity": _prop("string", "Имя EntitySet из onec.odata_catalog"),
-                    "ref_key": _prop("string", "GUID объекта, который меняем"),
-                    "body": _prop("object", "Только поля, которые нужно изменить"),
-                },
-                "required": ["entity", "ref_key"],
-            },
-        },
-        {
-            "name": "onec.attach_file",
-            "description": "Прикрепление файла к документу 1С (пока не реализовано).",
-            "execution": "server",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "document_ref_key": _prop("string", "GUID документа 1С"),
-                    "filename": _prop("string", "Имя файла в папке агента"),
-                },
-            },
-        },
-        {
             "name": "onec.sql_query",
             "description": "Только SELECT к ERP SQL (allowlist таблиц, сервер).",
             "execution": "server",
@@ -1102,23 +1063,6 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         ["meeting_kind"],
         ["protocols"],
         "count",
-    ),
-    "onec.odata_post": ("onec", "odata_entity", "create", ["entity"], ["ref_key"], "none"),
-    "onec.odata_patch": (
-        "onec",
-        "odata_entity",
-        "update",
-        ["entity", "ref_key"],
-        ["ref_key"],
-        "none",
-    ),
-    "onec.attach_file": (
-        "onec",
-        "file",
-        "create",
-        ["document_ref_key", "filename"],
-        [],
-        "none",
     ),
     "onec.sql_query": ("onec", "sql_table", "search", ["sql"], ["rows"], "count"),
     "onec.erp_tasks_current": ("onec", "task", "list", [], ["tasks"], "count"),

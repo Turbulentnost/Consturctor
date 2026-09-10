@@ -139,9 +139,6 @@ ONEC_TOOLS = frozenset(
     {
         "onec.odata_catalog",
         "onec.odata_get",
-        "onec.odata_post",
-        "onec.odata_patch",
-        "onec.attach_file",
         "onec.sql_query",
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
@@ -154,14 +151,14 @@ ONEC_TOOLS = frozenset(
         "onec.meeting_protocols",
     }
 )
-ONEC_WRITE_TOOLS = frozenset(
+ONEC_ODATA_WRITE_TOOLS = frozenset(
     {
         "onec.odata_post",
         "onec.odata_patch",
         "onec.attach_file",
-        "onec.erp_assignments_write",
     }
 )
+ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset({"onec.erp_assignments_write"})
 _ERP_TASK_TOOLS = frozenset(
     {
         "onec.erp_tasks_current",
@@ -247,6 +244,12 @@ def _erp_sql_ready() -> bool:
     )
 
 
+_ONEC_WRITE_DISABLED_MSG = (
+    "Запись в 1С отключена для агентов Constructor. "
+    "Используйте только read-only инструменты (onec.odata_get, onec.meeting_* и т.д.)."
+)
+
+
 def invoke_onec(
     tool: str,
     arguments: dict[str, Any] | None = None,
@@ -257,7 +260,9 @@ def invoke_onec(
     from app.services.tool_names import resolve_tool_name
 
     args = arguments if isinstance(arguments, dict) else {}
-    tool = resolve_tool_name(tool, ONEC_TOOLS) or (tool or "").strip()
+    tool = resolve_tool_name(tool, ONEC_TOOLS | ONEC_WRITE_TOOLS) or (tool or "").strip()
+    if tool in ONEC_ODATA_WRITE_TOOLS:
+        raise OnecToolError(_ONEC_WRITE_DISABLED_MSG)
     handlers = REAL_HANDLERS if odata_configured() else STUB_HANDLERS
     # sql_query / задачи работают от ERP SQL даже без OData URL
     if _erp_sql_ready() and not odata_configured():
@@ -399,6 +404,26 @@ def _build_list_path(entity: str, top: int, *, skip: int = 0) -> str:
     if skip > 0:
         path = f"{path}&$skip={skip}"
     return path
+
+
+def _is_tabular_document_entity(entity: str) -> bool:
+    """True for OData tabular rows like Document_ТД_Протокол_Решения (no Date field)."""
+    cleaned = str(entity or "").strip().lstrip("/").split("?", 1)[0].split("(", 1)[0]
+    if not cleaned.startswith("Document_"):
+        return False
+    try:
+        from app.services.odata_local_catalog import load_snapshot
+
+        index = load_snapshot()
+        if cleaned in index.get("tabular_names", set()):
+            return True
+        if cleaned in index.get("documents", {}):
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    # Document_<Main>_<TabularSection>
+    tail = cleaned[len("Document_") :]
+    return "_" in tail and tail.count("_") >= 1
 
 
 def _ensure_odata_query(
@@ -563,23 +588,51 @@ def _fetch_related_tabular_parts(
 ) -> dict[str, list[dict[str, Any]]]:
     if not entity or not _GUID_RE.match(ref_key):
         return {}
+    creds = {
+        key: value
+        for key, value in args.items()
+        if key not in {"path", "entity", "top", "skip", "filter"}
+    }
+    parts: dict[str, list[dict[str, Any]]] = {}
+
+    def _store_rows(label: str, payload: Any) -> None:
+        rows = _normalize_odata_rows(payload)
+        if rows and label not in parts:
+            parts[label] = rows
+
+    try:
+        from app.services.odata_local_catalog import get_structure
+
+        structure = get_structure(entity) or {}
+        tabular = structure.get("tabular")
+        if isinstance(tabular, dict):
+            for section_name, section in tabular.items():
+                if not isinstance(section, dict):
+                    continue
+                label = str(section.get("entity") or section_name).strip()
+                nav_path = (
+                    f"{entity}(guid'{ref_key}')/{section_name}?$format=json&$top=50"
+                )
+                try:
+                    raw = _odata_get({"path": nav_path, **creds})
+                    payload = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+                    _store_rows(label, payload)
+                except Exception:  # noqa: BLE001
+                    continue
+    except Exception:  # noqa: BLE001
+        pass
+
     prefix = f"{entity}_"
     names = [name for name in sorted(_cached_catalog_names()) if name.startswith(prefix)]
-    parts: dict[str, list[dict[str, Any]]] = {}
     filter_expr = quote(f"Ref_Key eq guid'{ref_key}'", safe="=,'")
     for name in names[:12]:
+        if name in parts:
+            continue
         try:
             path = _append_odata_query(name, **{"$format": "json", "$top": "50", "$filter": filter_expr})
-            raw = _odata_get(
-                {
-                    **{key: value for key, value in args.items() if key not in {"path", "entity", "top", "skip", "filter"}},
-                    "path": path,
-                }
-            )
+            raw = _odata_get({"path": path, **creds})
             payload = raw.get("data") if isinstance(raw.get("data"), dict) else raw
-            rows = _normalize_odata_rows(payload)
-            if rows:
-                parts[name] = rows
+            _store_rows(name, payload)
         except Exception:  # noqa: BLE001
             continue
     return parts
@@ -737,7 +790,12 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
                 odata_path,
                 **{"$filter": quote(" and ".join(filters), safe="=,'")},
             )
-        if (number or extra_filter) and entity.startswith("Document_") and "$orderby" not in odata_path.lower():
+        if (
+            (number or extra_filter)
+            and entity.startswith("Document_")
+            and not _is_tabular_document_entity(entity)
+            and "$orderby" not in odata_path.lower()
+        ):
             odata_path = _append_odata_query(odata_path, **{"$orderby": "Date%20desc"})
 
     if not settings.odata_base_url:

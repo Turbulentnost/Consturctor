@@ -49,6 +49,7 @@ import queue
 import re
 import sys
 import threading
+import time
 import traceback
 import uuid
 from dataclasses import asdict, is_dataclass
@@ -91,6 +92,7 @@ from app.api_client import ApiClient, ApiError  # noqa: E402
 from app.orchestrator.json_blob import extract_json_object  # noqa: E402
 from app.sdk_agent.bridge import (  # noqa: E402
     REGULATION_SDK_MODEL,
+    REGULATION_PREFETCH_MODEL,
     REGULATION_SDK_MODEL_PARAMS,
     REGULATION_SDK_QUESTION_PARAMS,
     CursorSdkBridge,
@@ -110,14 +112,20 @@ from app.sdk_agent.prompt import (  # noqa: E402
     build_regulation_sdk_prompt,
     build_sdk_prompt,
 )
-from app.sdk_agent.tool_adapter import ASK_QUESTION_SPEC, sdk_tool_specs  # noqa: E402
+from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
 
 # HITL classification replicated from app.tools.hitl.needs_confirmation.
 # We do NOT import that module because it pulls in PySide6/Qt at import time,
 # which is not needed (and not always available) for a headless sidecar.
 # Level-1 autonomy: read tools auto-run, write tools need confirmation.
 _NEVER_CONFIRM = frozenset(
-    {"notify.send", "notify", "code.write_python", "code.run_python"}
+    {
+        "notify.send",
+        "notify",
+        "code.write_python",
+        "code.run_python",
+        "report.export_document",
+    }
 )
 _READ_EXACT = frozenset(
     {
@@ -136,14 +144,12 @@ _READ_EXACT = frozenset(
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
-        "onec.erp_assignments",
-        "onec.download_artifact",
-        "onec.erp_write_probe",
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
         "onec.docflow_tasks",
         "onec.meeting_service_notes",
+        "onec.meeting_protocols",
         "agent.wait",
         "turboproject",
         "users.list",
@@ -157,14 +163,27 @@ _READ_PREFIXES = ("onec.search_", "onec.get_", "imap.", "turboproject.")
 
 
 def _is_read_tool(name: str) -> bool:
-    from app.tools.tool_names import matches_known_tool, resolve_tool_name
-
-    tool = resolve_tool_name((name or "").strip(), _READ_EXACT | _NEVER_CONFIRM)
+    tool = (name or "").strip()
     if tool in _NEVER_CONFIRM or tool in _READ_EXACT:
         return True
-    if matches_known_tool(tool, _READ_EXACT | _NEVER_CONFIRM):
-        return True
     return any(tool.startswith(prefix) for prefix in _READ_PREFIXES)
+
+
+_WORK_RESULT_DONE_RE = re.compile(r"#{0,6}[ \t]*WORK[ _]?RESULT\b", re.I)
+_FILES_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*FILES\b", re.I)
+_ACTIONS_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*ACTIONS\b", re.I)
+
+
+def _text_has_finished_work_result(text: str) -> bool:
+    raw = text or ""
+    upper = raw.upper()
+    if "TESTS: FAIL" in upper or "TESTS:FAIL" in upper:
+        return False
+    if "TESTS: PASS" not in upper and "TESTS:PASS" not in upper:
+        return False
+    if _WORK_RESULT_DONE_RE.search(raw):
+        return True
+    return bool(_FILES_SECTION_RE.search(raw) and _ACTIONS_SECTION_RE.search(raw))
 
 
 def needs_confirmation(name: str) -> bool:
@@ -332,7 +351,8 @@ OUTLOOK_MEETING_HINT = (
     "outlook.create_event has no recurrence field: pass events[] with one item per "
     "occurrence (about 8 weeks weekly, 6 months monthly). "
     "Wait for HITL approval. Done only after create_event returns ok. "
-    "To show the plan on the Calendar tab call calendar.show_meetings: "
+    "To show the briefing card call calendar.show_meetings with full title, "
+    "attendees[] and substitutes[] (who substitutes whom): "
     "cancel/red to drop, add/green to add."
 )
 
@@ -348,7 +368,8 @@ OUTLOOK_MEETING_RULE = (
     "Повторяемости в outlook.create_event нет: передай events[] — отдельную встречу "
     "на каждую дату серии (около 8 недель для еженедельных, 6 месяцев для ежемесячных). "
     "Дождись подтверждения записи. Задача выполнена только после ok от create_event. "
-    "Чтобы показать план на вкладке Календарь, вызови calendar.show_meetings: "
+    "Чтобы показать карточку для доклада, вызови calendar.show_meetings "
+    "с полной темой, attendees[] и substitutes[] (кто кого замещает): "
     "cancel/red - красным отменить, add/green - зеленым поставить."
 )
 
@@ -361,6 +382,126 @@ _MEETING_TIPS = (
     "create_event",
 )
 
+_CALENDAR_CONTROL_TIPS = (
+    "подготовка псд",
+    "контроль календаря",
+    "устный список",
+    "без окон",
+    "окна в рабочее",
+    "на планёрку",
+    "на планерку",
+    "календаря псд",
+    "сдвиг уже стоящих",
+)
+
+_SERIES_SCHEDULE_TIPS = (
+    "плановые совещани",
+    "развёртк",
+    "развертк",
+    "запланируй",
+    "запиши встреч",
+)
+
+_RK_TIPS = (
+    "ревизионной комиссии",
+    "ревизионная комиссия",
+    "заседаний ревизион",
+    "заседания ревизион",
+    "пл-01-001",
+    "пл 01-001",
+)
+
+RK_RUN_HINT = (
+    "This is RK meeting prep (ПЛ-01-001), not calendar control. "
+    "One data pass only: do not restart outlook/1C/excel/network reads or say data is stale. "
+    "Exclude Constructor test probes from 1C (title/comment/number contains Constructor or "
+    "проба Constructor). "
+    "Network folder: one workspace.powershell_run attempt (dir/list only); on 90s timeout "
+    "continue with 1C and materials/attachments. "
+    "If Outlook has no Tuesday RK meeting, write «Недостаточно данных: дата заседания не найдена» "
+    "but still export partial lists via report.export_document. "
+    "Do not call outlook.search_mail or imap.*. "
+    "Call report.export_document with the agenda/lists BEFORE ## WORK_RESULT. "
+    "If the meeting date is unconfirmed, still export the file, then WORK_RESULT "
+    "with «Недостаточно данных». Finish with TESTS: PASS; no step narration in chat."
+)
+
+CALENDAR_CONTROL_HINT = (
+    "This is calendar control / morning briefing, not a meeting-series job. "
+    "Morning: users.current, outlook.read_calendar for today, outlook.search_mail once "
+    "(query отпуск), calendar.show_meetings, then ## WORK_RESULT and TESTS: PASS. "
+    "If search_mail returned 0 messages, absences are empty — do not call it again. "
+    "Do not ask what the agent should do. Do not call create_event in the morning. "
+    "Evening after 16:00 MSK: same reads for tomorrow, show keep/add/cancel, "
+    "create_event only after HITL to shift existing meetings. "
+    "After WORK_RESULT call no more tools."
+)
+
+_SD_MEETING_TIPS = (
+    "заседаний совета",
+    "заседания совета",
+    "подготовка заседаний совета",
+    "совета директоров",
+    "сд гк",
+    "пл-34-242",
+    "пл 34-242",
+    "пл34-242",
+)
+
+_SD_MEETING_TOOLS = {
+    "outlook.read_calendar",
+    "calendar.show_meetings",
+    "onec.meeting_service_notes",
+    "onec.meeting_protocols",
+    "onec.search_documents",
+    "onec.get_document_card",
+    "onec.list_attachments",
+    "onec.read_attachment",
+    "onec.odata_catalog",
+    "onec.odata_get",
+    "onec.sql_query",
+    "onec.erp_tasks_current",
+    "onec.erp_tasks_period",
+    "onec.docflow_tasks",
+    "excel.list_files",
+    "excel.read_workbook",
+    "report.build_meeting_summary",
+    "report.export_document",
+    "users.current",
+}
+
+_RK_MEETING_TOOLS = {
+    "outlook.read_calendar",
+    "calendar.show_meetings",
+    "onec.meeting_protocols",
+    "onec.erp_tasks_current",
+    "onec.erp_tasks_period",
+    "onec.docflow_tasks",
+    "onec.search_documents",
+    "onec.get_document_card",
+    "onec.list_attachments",
+    "onec.read_attachment",
+    "onec.odata_get",
+    "onec.sql_query",
+    "excel.list_files",
+    "excel.read_workbook",
+    "report.build_task_report",
+    "report.build_meeting_summary",
+    "report.export_document",
+    "workspace.powershell_run",
+    "users.current",
+}
+
+SD_MEETING_HINT = (
+    "This is board-meeting completeness (SD / PL-34-242), not mail search and not "
+    "a meeting-series job. Find the meeting with ONE outlook.read_calendar "
+    "(or read the dumped calendar JSON once if COM already wrote it). "
+    "Do not call outlook.search_mail, imap.search, imap.list_unread, glob/grep loops, "
+    "or onec.odata_catalog without an entity+filter. "
+    "If 1C COM is down, record the gap and write ## WORK_RESULT. "
+    "After WORK_RESULT call no more tools."
+)
+
 
 def _is_keep_knowledge_file(name: str) -> bool:
     folded = (name or "").strip().casefold()
@@ -368,6 +509,22 @@ def _is_keep_knowledge_file(name: str) -> bool:
 
 
 WHEN_TO_RUN_QUESTION = "Когда запускать этого агента?"
+WHEN_TO_RUN_OPTIONS = [
+    "только вручную из чата",
+    "каждый час",
+    "раз в день",
+    "при конкретном событии — напишу каком",
+]
+WHEN_TO_RUN_WHY = (
+    "Это расписание запуска агента, не расписание совещаний в Outlook. "
+    "Без ответа агент после публикации не стартует сам."
+)
+WHEN_TO_RUN_HINT = (
+    "Always ask via askQuestion: when to run THIS agent. "
+    "Options: only from chat; every hour; once a day; on an event I will name. "
+    "Outlook meeting cadence (weekly or monthly plannerka) is not the agent trigger. "
+    "Write the answer to when_to_run. Do not skip this question."
+)
 _WHEN_TO_RUN_HINTS = (
     "когда запуска",
     "как часто",
@@ -380,8 +537,6 @@ _AGENT_WHEN_LABELS = (
     "расписание агента",
     "запуск агента",
     "триггер агента",
-    "триггер",
-    "условия",
 )
 
 RUN_INPUTS_QUESTION = (
@@ -389,10 +544,35 @@ RUN_INPUTS_QUESTION = (
 )
 RUN_INPUTS_YES = "Да — сейчас прикреплю образец, чтобы проанализировать"
 RUN_INPUTS_NO = "Нет — все данные агент берёт из систем"
+RUN_INPUTS_SAMPLE_QUESTION = "Прикрепите образец временного файла"
+RUN_INPUTS_WHY = (
+    "Если агенту на каждый запуск нужен свежий файл пользователя, образец "
+    "нужен сейчас: проектировщик прочитает его и задаст уточнения. "
+    "Файл временный, в базу знаний не попадает."
+)
+RUN_INPUTS_HINT = (
+    "If the future agent needs a user file on EVERY run (a table, export, or "
+    "document that changes each time), you MUST call askQuestion with needsFile=true "
+    "NOW, then read the sample, then ask follow-up questions about its structure. "
+    "Do not invent the file and do not replace a missing user file with another "
+    "tool or system. Record confirmed inputs into playbook_draft.run_inputs as "
+    "{name, description, accept}. These stay temporary: never keepKnowledgeFile. "
+    "If no per-run file is required, leave run_inputs empty."
+)
 RUN_INPUTS_RUN_HINT = (
     "If playbook.run_inputs lists a required per-run file and it is not already "
     "in materials/attachments, stop and ask via askQuestion with needsFile=true. "
     "Do not substitute another tool or system for a missing user file."
+)
+RUN_INPUT_WAIT_SECONDS = 30
+FILE_QUESTION_SKIP_ANSWER = (
+    "Файла нет. Продолжай без вложения: ищи данные в 1С, Outlook, Excel "
+    "и сетевых папках по playbook агента. Не спрашивай этот файл снова."
+)
+RUN_INPUT_SKIP_ANSWER = (
+    "Файла нет. Ищи план работ в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\8. Планы работ, "
+    "реестр в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\10. Секретарь РК\\РЕЕСТР ПОРУЧЕНИЙ "
+    "и поручения в 1С ERP. Не спрашивай файл снова."
 )
 _RUN_INPUT_GATE_HINTS = (
     "файл, который пользователь будет прикладывать",
@@ -401,14 +581,121 @@ _RUN_INPUT_GATE_HINTS = (
 )
 
 
+def _is_calendar_control_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    return any(tip in blob for tip in _CALENDAR_CONTROL_TIPS)
+
+
+def _is_rk_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    if any(hint in blob for hint in ("совета директоров", "пл-34-242", "пл 34-242")):
+        return False
+    return any(tip in blob for tip in _RK_TIPS)
+
+
+def _is_sd_meeting_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    return any(tip in blob for tip in _SD_MEETING_TIPS)
+
+
+def _workflow_text_parts(record: Any) -> list[Any]:
+    parts: list[Any] = [
+        getattr(record, "title", "") or "",
+        getattr(record, "notes", "") or "",
+    ]
+    local = getattr(record, "local_run", None) or {}
+    if isinstance(local, dict):
+        for key in ("playbook", "playbook_draft"):
+            raw = local.get(key)
+            if isinstance(raw, dict):
+                parts.extend(
+                    [
+                        str(raw.get("name") or ""),
+                        str(raw.get("instructions") or ""),
+                    ]
+                )
+    return parts
+
+
+def _is_sd_meeting_workflow(record: Any) -> bool:
+    return _is_sd_meeting_text(*_workflow_text_parts(record))
+
+
+def _is_rk_meeting_workflow(record: Any) -> bool:
+    return _is_rk_text(*_workflow_text_parts(record))
+
+
+def _is_calendar_control_workflow(record: Any) -> bool:
+    parts: list[Any] = [
+        getattr(record, "title", "") or "",
+        getattr(record, "notes", "") or "",
+    ]
+    local = getattr(record, "local_run", None) or {}
+    if isinstance(local, dict):
+        for key in ("playbook", "playbook_draft"):
+            raw = local.get(key)
+            if isinstance(raw, dict):
+                parts.extend(
+                    [
+                        str(raw.get("name") or ""),
+                        str(raw.get("instructions") or ""),
+                    ]
+                )
+    return _is_calendar_control_text(*parts)
+
+
+_CALENDAR_CONTROL_TOOLS = {
+    "users.current",
+    "outlook.read_calendar",
+    "outlook.search_mail",
+    "calendar.show_meetings",
+    "outlook.create_event",
+    "users.list",
+    "notify.send",
+}
+
+
+def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
+    """Limit specialized agents to their playbook tools; keep the full catalog otherwise."""
+    allowed: set[str] | None = None
+    if _is_calendar_control_workflow(record):
+        allowed = _CALENDAR_CONTROL_TOOLS
+    elif _is_sd_meeting_workflow(record):
+        allowed = _SD_MEETING_TOOLS
+    elif _is_rk_meeting_workflow(record):
+        allowed = _RK_MEETING_TOOLS
+    if allowed is None:
+        return None
+    return [
+        item
+        for item in sdk_tool_specs()
+        if str(item.get("name") or "") in allowed
+    ]
+
+
+def _is_outlook_series_prompt(prompt: str) -> bool:
+    blob = (prompt or "").casefold()
+    if _is_calendar_control_text(blob) or _is_sd_meeting_text(blob) or _is_rk_text(blob):
+        return False
+    return any(tip in blob for tip in _SERIES_SCHEDULE_TIPS)
+
+
 def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
-    folded = (mode or "").strip().casefold()
-    text = (prompt or "").strip()
-    if folded in {"readiness", "interview"}:
-        return text
-    parts = [KEEP_FILE_HINT, OUTLOOK_MEETING_HINT]
-    if folded != "design":
+    parts = [KEEP_FILE_HINT]
+    if _is_calendar_control_text(prompt):
+        parts.append(CALENDAR_CONTROL_HINT)
+    elif _is_sd_meeting_text(prompt):
+        parts.append(SD_MEETING_HINT)
+    elif _is_rk_text(prompt):
+        parts.append(RK_RUN_HINT)
+    elif _is_outlook_series_prompt(prompt):
+        parts.append(OUTLOOK_MEETING_HINT)
+    if (mode or "").strip().casefold() == "design":
+        parts.append(WHEN_TO_RUN_HINT)
+        parts.append(RUN_INPUTS_HINT)
+    else:
         parts.append(RUN_INPUTS_RUN_HINT)
+    text = (prompt or "").strip()
     if text:
         parts.append(text)
     return "\n\n".join(parts)
@@ -423,6 +710,8 @@ def _meeting_blob(*parts: Any) -> str:
 
 
 def _is_meeting_text(*parts: Any) -> bool:
+    if _is_calendar_control_text(*parts) or _is_sd_meeting_text(*parts) or _is_rk_text(*parts):
+        return False
     blob = _meeting_blob(*parts)
     return any(tip in blob for tip in _MEETING_TIPS)
 
@@ -469,6 +758,9 @@ def _merge_outlook_rule_into_playbook(local_run: dict[str, Any] | None) -> dict[
         if not isinstance(raw, dict):
             continue
         current = str(raw.get("instructions") or "").strip()
+        name = str(raw.get("name") or "")
+        if _is_calendar_control_text(current, name):
+            continue
         if OUTLOOK_SERIES_MARKER in current:
             continue
         updated = dict(raw)
@@ -513,34 +805,6 @@ def _labeled_agent_when(text: str) -> str:
     return ""
 
 
-def _schedule_from_blob(text: str) -> str:
-    """Process cadence from materials is the agent trigger."""
-    for line in (text or "").splitlines():
-        stripped = line.strip(" -\t")
-        if not stripped:
-            continue
-        folded = stripped.casefold().replace("ё", "е")
-        if re.search(r"каждый час|раз в час|ежечасн|каждые\s+\d+", folded):
-            return stripped
-        if re.search(r"(утром|вечером|к)\s+\d{1,2}[:.]\d{2}", folded):
-            return stripped
-        if re.search(r"(ежедневн|каждый день|раз в день).{0,20}\d{1,2}[:.]\d{2}", folded):
-            return stripped
-    return ""
-
-
-def _when_blob(record: Any) -> str:
-    return "\n".join(
-        part
-        for part in (
-            getattr(record, "notes", "") or "",
-            getattr(record, "document_text", "") or "",
-            getattr(record, "title", "") or "",
-        )
-        if str(part or "").strip()
-    )
-
-
 def _when_to_run_from_local(local: dict[str, Any] | None) -> str:
     data = local if isinstance(local, dict) else {}
     for key in ("playbook", "playbook_draft"):
@@ -562,12 +826,26 @@ def _when_to_run_from_local(local: dict[str, Any] | None) -> str:
 def _when_to_run_known(record: Any) -> bool:
     if _when_to_run_from_local(getattr(record, "local_run", None)):
         return True
-    blob = _when_blob(record)
-    return bool(_labeled_agent_when(blob) or _schedule_from_blob(blob))
+    blob = "\n".join(
+        part
+        for part in (
+            getattr(record, "notes", "") or "",
+            getattr(record, "document_text", "") or "",
+            getattr(record, "title", "") or "",
+        )
+        if str(part or "").strip()
+    )
+    return bool(_labeled_agent_when(blob))
 
 
 def _when_to_run_user_answered(record: Any) -> bool:
-    """True if the user answered or materials already name the cadence."""
+    """True only if the trigger was genuinely answered or is in materials.
+
+    Unlike _when_to_run_known, an LLM-invented playbook_draft.when_to_run does
+    NOT count. Used to decide whether we still owe the user the explicit
+    trigger question, so a model that never called askQuestion cannot suppress
+    it.
+    """
     local = getattr(record, "local_run", None) or {}
     for item in local.get("design_answers") or []:
         if (
@@ -576,8 +854,16 @@ def _when_to_run_user_answered(record: Any) -> bool:
             and str(item.get("answer") or "").strip()
         ):
             return True
-    blob = _when_blob(record)
-    return bool(_labeled_agent_when(blob) or _schedule_from_blob(blob))
+    blob = "\n".join(
+        part
+        for part in (
+            getattr(record, "notes", "") or "",
+            getattr(record, "document_text", "") or "",
+            getattr(record, "title", "") or "",
+        )
+        if str(part or "").strip()
+    )
+    return bool(_labeled_agent_when(blob))
 
 
 def _merge_when_to_run(local_run: dict[str, Any] | None, answer: str) -> dict[str, Any] | None:
@@ -968,6 +1254,7 @@ class HitlGate:
         self._needs_file: dict[str, bool] = {}
         self.qa_history: list[dict[str, str]] = []
         self._lock = threading.Lock()
+        self.work_result_done = False
 
     def bind(self, *, workflow_id: str = "", kind: str = "") -> None:
         if workflow_id:
@@ -975,7 +1262,19 @@ class HitlGate:
         if kind:
             self._kind = kind
 
+    def mark_work_result_done(self) -> None:
+        self.work_result_done = True
+        with self._lock:
+            pending = list(self._hitl.items())
+        for _request_id, box in pending:
+            try:
+                box.put_nowait(False)
+            except Exception:
+                continue
+
     def request(self, tool: str, args: dict[str, Any]) -> bool:
+        if self.work_result_done:
+            return False
         request_id = uuid.uuid4().hex
         box: queue.Queue[bool] = queue.Queue(maxsize=1)
         with self._lock:
@@ -1022,7 +1321,7 @@ class HitlGate:
         with self._lock:
             self._answers[request_id] = box
             self._needs_file[request_id] = needs_file
-        block_title, context = _block_context_from_payload(payload)
+        wait_s, skip_answer = _auto_continue_from_payload(payload)
         emit(
             _stamp_run_event(
                 {
@@ -1033,14 +1332,15 @@ class HitlGate:
                     "options": options,
                     "needsFile": needs_file,
                     "accept": accept,
-                    "blockTitle": block_title,
-                    "context": context,
+                    "autoContinueSeconds": wait_s or None,
+                    "autoContinueAnswer": skip_answer or None,
                 },
                 workflow_id=self._workflow_id,
                 kind=self._kind,
             )
         )
         reply: dict[str, Any] = {}
+        deadline = time.monotonic() + wait_s if wait_s > 0 else None
         try:
             while True:
                 if should_stop and should_stop():
@@ -1049,6 +1349,9 @@ class HitlGate:
                     reply = box.get(timeout=0.4)
                     break
                 except queue.Empty:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        reply = {"ok": True, "answer": skip_answer, "text": skip_answer}
+                        break
                     continue
         finally:
             with self._lock:
@@ -1165,131 +1468,7 @@ def _question_from_payload(payload: dict[str, Any]) -> tuple[str, list[str]]:
     return question, options
 
 
-def _block_context_from_payload(payload: dict[str, Any]) -> tuple[str, str]:
-    args = _as_record(payload.get("arguments"))
-    nested = _as_record(args.get("arguments") or args.get("input") or args.get("properties"))
-    source = {**nested, **args, **payload}
-    title = (
-        _as_text(source.get("blockTitle"))
-        or _as_text(source.get("block_title"))
-        or _as_text(source.get("functionTitle"))
-        or _as_text(source.get("function_title"))
-    )
-    context = _as_text(source.get("context"))
-    return title, context
-
-
-def _readiness_block_titles(draft: Any) -> list[str]:
-    titles: list[str] = []
-    for item in getattr(draft, "agent_suggestions", None) or []:
-        title = str(getattr(item, "title", "") or "").strip()
-        if title:
-            titles.append(title)
-    return titles
-
-
-def _match_readiness_title(text: str, titles: list[str]) -> str:
-    blob = (text or "").casefold()
-    matched = [title for title in titles if title and title.casefold() in blob]
-    if not matched:
-        return ""
-    return max(matched, key=len)
-
-
-def _label_readiness_question(question: str, titles: list[str]) -> tuple[str, str]:
-    text = (question or "").strip()
-    if not titles:
-        return text, ""
-    current = _match_readiness_title(text, titles) or titles[0]
-    if current.casefold() in text.casefold():
-        return text, current
-    rest = text
-    if rest[:1].isupper() and (len(rest) < 2 or not rest[1:2].isupper()):
-        rest = rest[:1].lower() + rest[1:]
-    return f"По агенту «{current}»: {rest}", current
-
-
-def _sdk_readiness_from_draft(draft: Any) -> dict[str, Any]:
-    raw = getattr(draft, "sdk_readiness", None)
-    if isinstance(raw, dict):
-        return raw
-    data = getattr(draft, "result_json", None)
-    if isinstance(data, dict) and isinstance(data.get("sdkReadiness"), dict):
-        return data["sdkReadiness"]
-    return {}
-
-
-def _readiness_qa_items(readiness: dict[str, Any] | None) -> list[dict[str, str]]:
-    items: list[dict[str, str]] = []
-    raw = readiness if isinstance(readiness, dict) else {}
-    for row in raw.get("qa") or []:
-        if not isinstance(row, dict):
-            continue
-        question = str(row.get("question") or "").strip()
-        answer = str(row.get("answer") or "").strip()
-        title = str(row.get("blockTitle") or row.get("block_title") or "").strip()
-        if question or answer:
-            items.append({"question": question, "answer": answer, "blockTitle": title})
-    if items:
-        return items
-    previous = str(raw.get("answer") or "").strip()
-    if previous and previous != "Ответов пользователя пока нет.":
-        items.append({"question": "", "answer": previous, "blockTitle": ""})
-    return items
-
-
-def _readiness_qa_from_draft(draft: Any) -> list[dict[str, str]]:
-    return _readiness_qa_items(_sdk_readiness_from_draft(draft))
-
-
-def _format_readiness_answers_md(qa: list[dict[str, str]]) -> str:
-    if not qa:
-        return "Ответов пользователя пока нет.\n"
-    lines = [
-        "# Ответы пользователя",
-        "",
-        "Эти ответы уже даны. Не спрашивай их снова.",
-        "Продолжай с первого блока, по которому ещё нет ответа.",
-        "",
-    ]
-    current = None
-    for item in qa:
-        title = str(item.get("blockTitle") or "").strip()
-        if title and title != current:
-            lines.extend([f"## {title}", ""])
-            current = title
-        question = str(item.get("question") or "").strip()
-        answer = str(item.get("answer") or "").strip()
-        if question:
-            lines.append(f"- Вопрос: {question}")
-            lines.append(f"  Ответ: {answer or '(нет ответа)'}")
-        elif answer:
-            lines.append(f"- Ответ: {answer}")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _annotate_readiness_question(payload: dict[str, Any], titles: list[str]) -> dict[str, Any]:
-    data = dict(payload)
-    question, _options = _question_from_payload(data)
-    labeled, title = _label_readiness_question(question, titles)
-    index = titles.index(title) + 1 if title and title in titles else 0
-    context = f"Агент {index} из {len(titles)}" if title and index else (f"Агент: {title}" if title else "")
-    data["question"] = labeled
-    data["blockTitle"] = title
-    data["context"] = context
-    args = data.get("arguments")
-    if isinstance(args, dict):
-        next_args = dict(args)
-        next_args["question"] = labeled
-        if title:
-            next_args["blockTitle"] = title
-            next_args["context"] = context
-        data["arguments"] = next_args
-    return data
-
-
-_ACCEPT_EXT_RE = re.compile(r"^[a-z0-9]{1,8}$")
+_KB_ACCEPT = ("xlsx", "xlsm", "docx")
 
 
 def _as_bool(value: Any) -> bool:
@@ -1304,11 +1483,37 @@ def _accept_extensions(raw: Any) -> list[str]:
     out: list[str] = []
     for item in items:
         ext = str(item or "").strip().lower().lstrip(".")
-        if ext in {"*", "any", "all"}:
-            return []
-        if _ACCEPT_EXT_RE.match(ext) and ext not in out:
+        if ext and ext not in out:
             out.append(ext)
     return out
+
+
+def _auto_continue_from_payload(payload: dict[str, Any]) -> tuple[float, str]:
+    args = _as_record(payload.get("arguments"))
+    nested = _as_record(args.get("arguments") or args.get("input") or args.get("properties"))
+    source = {**nested, **args, **payload}
+    raw = source.get("autoContinueSeconds")
+    if raw is None:
+        raw = source.get("auto_continue_seconds")
+    try:
+        wait_s = float(raw or 0)
+    except (TypeError, ValueError):
+        wait_s = 0.0
+    if wait_s < 0:
+        wait_s = 0.0
+    skip = str(
+        source.get("autoContinueAnswer")
+        or source.get("auto_continue_answer")
+        or ""
+    ).strip()
+    needs_file, _ = _file_request_from_payload(payload)
+    if needs_file and wait_s <= 0:
+        wait_s = float(RUN_INPUT_WAIT_SECONDS)
+    if needs_file and not skip:
+        skip = FILE_QUESTION_SKIP_ANSWER
+    elif wait_s > 0 and not skip:
+        skip = RUN_INPUT_SKIP_ANSWER
+    return wait_s, skip
 
 
 def _file_request_from_payload(payload: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -1410,6 +1615,88 @@ def _persist_run_outputs(
     return paths
 
 
+_NAMED_RESULT_FILE_RE = re.compile(
+    r"(?im)^\s*([^\s:/\\]+\.(?:docx|xlsx|xls|pdf|md|txt))\s*:?\s*$"
+)
+
+
+def _files_named_in_answer(answer: str) -> list[str]:
+    raw = answer or ""
+    section = re.search(
+        r"(?is)\bFILES\b\s*:?\s*(.*?)(?:\n\s*(?:ACTIONS|NOTIFICATIONS|SCHEDULE|CLARIFY|TESTS)\b|\Z)",
+        raw,
+    )
+    blob = section.group(1) if section else raw
+    names: list[str] = []
+    for match in _NAMED_RESULT_FILE_RE.finditer(blob):
+        name = Path(match.group(1)).name
+        if name and name not in names:
+            names.append(name)
+    if names:
+        return names
+    for match in re.finditer(
+        r"([A-Za-zА-Яа-я0-9_.\-]+\.(?:docx|xlsx|xls|pdf|md|txt))",
+        blob,
+        flags=re.I,
+    ):
+        name = Path(match.group(1)).name
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _write_answer_document(cwd: str, filename: str, answer: str) -> Path | None:
+    folder = Path(cwd or "").expanduser()
+    if not folder.is_dir():
+        return None
+    name = Path(filename).name or "report.docx"
+    path = folder / name
+    body = (answer or "").strip() or name
+    try:
+        from docx import Document
+
+        document = Document()
+        document.add_heading(Path(name).stem.replace("_", " "), level=0)
+        for line in body.splitlines() or [body]:
+            document.add_paragraph(line)
+        if path.suffix.lower() != ".docx":
+            path = path.with_suffix(".docx")
+        document.save(path)
+        return path
+    except Exception:
+        fallback = path.with_suffix(".md")
+        fallback.write_text(body, encoding="utf-8")
+        return fallback
+
+
+def _ensure_result_files_from_answer(
+    api: ApiClient | None,
+    workflow_id: str,
+    run_cwd: str,
+    answer: str,
+    run_id: str = "",
+) -> list[str]:
+    if api is None or not (workflow_id or "").strip():
+        return []
+    names = _files_named_in_answer(answer)
+    if not names:
+        return []
+    created: list[str] = []
+    folder = Path(run_cwd) if run_cwd else None
+    for name in names:
+        existing = folder / name if folder else None
+        if existing is not None and existing.is_file():
+            created.append(str(existing))
+            continue
+        written = _write_answer_document(run_cwd, name, answer)
+        if written is not None and written.is_file():
+            created.append(str(written))
+    if not created:
+        return []
+    _upload_run_outputs(api, workflow_id, created, run_id=run_id)
+    return created
+
+
 def _upload_run_attachments(
     api: ApiClient,
     workflow_id: str,
@@ -1502,38 +1789,22 @@ READINESS_AGENTS_MD = """\
 Инструменты Constructor уже подключены как customTools. Не ищи проектный MCP или mcp.json.
 Работай только на русском.
 
-Твоя задача - закрыть пробелы логики по одному функциональному блоку за ход.
-Не анализируй все блоки сразу и не готовь пачку вопросов.
+Твоя задача - закрыть пробелы логики регламента перед созданием ИИ-агентов.
+Сначала прочитай materials/regulation.md, materials/functions.md, materials/answers.md и materials/manifest.json.
 
-Старт:
-- прочитай только materials/functions.md и materials/answers.md;
-- не читай materials/regulation.md целиком;
-- возьми первый незакрытый блок сверху вниз.
-
-По текущему блоку:
-- опирайся на его карточку в functions.md и цитату;
-- если цитаты мало, прочитай в regulation.md только заголовок с его sourceBlockId;
-- проверь, понятны ли входы, старт, условия, система, действие, результат;
-- не спрашивай входы, результат, сроки и систему, если они уже есть в карточке или цитате;
-- не спрашивай «в каком виде» уже названный результат и не выдумывай акт или файл;
-- как только нашёл первый пробел, которого нет в материалах, сразу вызови askQuestion и жди ответ.
+Иди по каждому функциональному блоку из materials/functions.md.
+Для каждого блока проверь, понятны ли: входы, стартовое событие, условия, система, конкретное действие,
+ветвления, результат, получатель, контроль выполнения, ошибки и эскалация.
+Если без ответа будущий агент будет угадывать, вызови askQuestion.
 
 Правила вопросов:
-- один ход = один блок = один askQuestion;
-- не вызывай askQuestion второй раз, пока не получен ответ;
-- не переходи к следующему блоку, пока текущий не закрыт;
-- в каждом вопросе назови точное название текущего блока из functions.md;
-- пиши так: По агенту «Контроль календаря ПСД»: когда его запускать?;
-- не пиши «этого агента» без названия блока;
-- не спрашивай общее расписание запуска, пока не назван блок;
-- всегда передай 2-6 конкретных вариантов в options;
+- один пробел - один вопрос;
+- в вопросе называй функциональный блок простыми словами;
+- всегда передай 2-6 конкретных вариантов ответа в options;
 - не вызывай askQuestion без options;
-- не спрашивай то, что уже есть в карточке блока, цитате регламента или в answers.md;
-- после ответа продолжай тот же блок или переходи к следующему;
-- если пользователь прикрепил файлы, считай их обязательными материалами.
-- если в answers.md уже есть вопросы и ответы, не начинай интервью заново;
-- не задавай повторно вопрос, на который уже есть ответ;
-- возьми первый блок сверху, по которому ещё нет ответа, либо тот же блок, если остался пробел.
+- не спрашивай то, что уже есть в материалах или в ответах пользователя;
+- после ответа продолжай с учетом этого ответа, не начинай заново;
+- если пользователь упомянул прикрепленные файлы, считай их обязательными материалами.
 
 Когда все блоки закрыты, напиши строго JSON без markdown:
 {
@@ -1594,34 +1865,26 @@ def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> None:
         function_lines.append("Функциональные блоки не найдены в черновике. Сначала уточни общий процесс.")
     _write_text(cwd, "materials/functions.md", "\n".join(function_lines).strip() + "\n")
 
-    qa = _readiness_qa_from_draft(draft)
-    _write_text(cwd, "materials/answers.md", _format_readiness_answers_md(qa))
+    data = getattr(draft, "result_json", None)
+    if not isinstance(data, dict):
+        data = {}
+    readiness = data.get("sdkReadiness") if isinstance(data.get("sdkReadiness"), dict) else {}
+    previous = str(readiness.get("answer") or "").strip()
+    _write_text(
+        cwd,
+        "materials/answers.md",
+        (previous or "Ответов пользователя пока нет.") + "\n",
+    )
     _write_text(cwd, "materials/manifest.json", json.dumps({"files": []}, ensure_ascii=False, indent=2) + "\n")
 
 
-def _build_readiness_prompt(*, has_answers: bool = False) -> str:
-    prompt = (
-        "Прочитай AGENTS.md, затем только materials/functions.md и materials/answers.md. "
-        "Не читай regulation.md целиком. Возьми первый незакрытый блок и сразу задай "
-        "один askQuestion по его первому пробелу. Один ход = один блок = один вопрос. "
-        "К следующему блоку переходи только после ответа. "
-        "В каждом askQuestion назови точное название текущего блока из functions.md, "
-        "например: По агенту «Контроль календаря ПСД»: когда его запускать? "
-        "Не пиши «этого агента» без названия. "
-        "Не спрашивай входы и результат, если они уже есть в functions.md. "
-        "Не спрашивай «в каком виде» уже названный результат. "
-        "В askQuestion передай 2-6 конкретных вариантов в options. "
-        "Когда все блоки закрыты, верни JSON readiness и остановись."
+def _build_readiness_prompt() -> str:
+    return (
+        "Прочитай AGENTS.md и все файлы в materials. "
+        "Закрой через askQuestion пробелы логики по каждому функциональному блоку. "
+        "В каждом askQuestion передай 2-6 конкретных вариантов в options. "
+        "Когда все пробелы закрыты, верни JSON readiness и остановись."
     )
-    if has_answers:
-        prompt += (
-            " В materials/answers.md уже есть ответы прошлого запуска."
-            " Не начинай с первого блока, если по нему уже есть ответы."
-            " Не задавай те же вопросы повторно."
-            " Возьми первый блок сверху, по которому ещё нет ответа,"
-            " либо тот же блок, если остался незакрытый пробел."
-        )
-    return prompt
 
 
 RUN_JOURNAL_RELATIVE = "materials/run_journal.md"
@@ -1639,7 +1902,10 @@ def _run_journal_path(cwd: str) -> Path:
 def _with_run_journal_prompt(prompt: str, cwd: str) -> str:
     if not _run_journal_path(cwd).is_file():
         return prompt
-    hint = "Read materials/run_journal.md before acting; use it as the prior run route."
+    hint = (
+        "Skim materials/run_journal.md once (first ~50 lines, one Read). "
+        "Do not re-read it; then call Constructor tools."
+    )
     return f"{hint}\n\n{prompt}"
 
 
@@ -1755,6 +2021,19 @@ def _is_trigger_command(command: dict[str, Any]) -> bool:
     return bool(str(command.get("triggerId") or command.get("trigger_id") or "").strip())
 
 
+def _command_flag(value: Any) -> bool:
+    if value is True:
+        return True
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def _is_eval_command(command: dict[str, Any]) -> bool:
+    source = str(command.get("source") or "").strip().lower()
+    if source in {"eval", "explain"}:
+        return True
+    return _command_flag(command.get("fresh"))
+
+
 def _sdk_run_alive(active: "ActiveRun") -> bool:
     thread = active.thread
     if thread is None or not thread.is_alive():
@@ -1790,7 +2069,6 @@ class Sidecar:
             os.environ["ERP_PASSWORD"] = password
         elif "password" in command:
             os.environ.pop("ERP_PASSWORD", None)
-        self._sweep_dead_runs()
 
     def check_ready(self) -> None:
         try:
@@ -1818,47 +2096,28 @@ class Sidecar:
         ).strip()
         if kind in {"form_orchestrator", "calc_orchestrator"}:
             return kind
+        if kind == "regulation_creation":
+            role = str(command.get("agentRole") or "interview").strip().lower()
+            prompt = str(command.get("prompt") or "")
+            if role == "research" or "materials/*.txt" in prompt:
+                return f"{kind}:{target}:research"
+            if "Фоновая подготовка" in prompt:
+                return f"{kind}:{target}:prefetch"
+            return f"{kind}:{target}:main"
         return f"{kind}:{target}" if target else ""
-
-    def _abort_active(self, active: "ActiveRun", answer: str) -> None:
-        active.stop.set()
-        try:
-            active.bridge.skip_tool("")
-        except Exception:
-            pass
-        process = getattr(active.bridge, "_process", None)
-        poll = getattr(process, "poll", None)
-        if process is not None and callable(poll) and poll() is None:
-            try:
-                process.terminate()
-            except Exception:
-                pass
-        self._finish_active_history(active, answer)
-        emit(
-            {
-                "type": "result",
-                "runId": active.run_id,
-                "kind": active.kind or "run",
-                "status": "canceled",
-                "workflowId": active.workflow_id,
-            }
-        )
-
-    def _sweep_dead_runs(self) -> None:
-        dead: list[ActiveRun] = []
-        with self._lock:
-            for active in list(self._active.values()):
-                if _sdk_run_alive(active):
-                    continue
-                self._active.pop(active.run_id, None)
-                dead.append(active)
-        for active in dead:
-            log("sweep dead run: " + _ascii(active.run_id))
-            self._abort_active(active, "Cursor SDK не отвечает")
 
     def start(self, kind: str, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or uuid.uuid4().hex)
         dedup_key = self._dedup_key(kind, command)
+        is_manual_run = (
+            kind == "run"
+            and bool(dedup_key)
+            and not _is_trigger_command(command)
+            and not _is_eval_command(command)
+        )
+        force_restart = _command_flag(
+            command.get("forceRestart") or command.get("force_restart")
+        )
         overlap_run_id = ""
         skip_run_id = ""
         with self._lock:
@@ -1866,26 +2125,35 @@ class Sidecar:
                 for existing in list(self._active.values()):
                     if existing.dedup_key != dedup_key:
                         continue
-                    if _sdk_run_alive(existing):
+                    replace = (
+                        force_restart
+                        or is_manual_run
+                        or not _sdk_run_alive(existing)
+                    )
+                    if replace:
+                        log(
+                            "replace active run: "
+                            + _ascii(f"{dedup_key} (active run {existing.run_id})")
+                        )
+                        existing.stop.set()
+                        try:
+                            existing.bridge.skip_tool("")
+                        except Exception:
+                            pass
+                        self._active.pop(existing.run_id, None)
+                        break
+                    if _is_trigger_command(command):
                         log(
                             "skip duplicate run: "
                             + _ascii(f"{dedup_key} (active run {existing.run_id})")
                         )
-                        if _is_trigger_command(command):
-                            overlap_run_id = existing.run_id
-                        else:
-                            skip_run_id = existing.run_id
+                        overlap_run_id = existing.run_id
                         break
                     log(
-                        "replace dead run: "
-                        + _ascii(f"{dedup_key} (stale run {existing.run_id})")
+                        "skip duplicate run: "
+                        + _ascii(f"{dedup_key} (active run {existing.run_id})")
                     )
-                    existing.stop.set()
-                    try:
-                        existing.bridge.skip_tool("")
-                    except Exception:
-                        pass
-                    self._active.pop(existing.run_id, None)
+                    skip_run_id = existing.run_id
                     break
             if not overlap_run_id and not skip_run_id:
                 gate = HitlGate(run_id)
@@ -1912,12 +2180,14 @@ class Sidecar:
             )
             return
         if skip_run_id:
-            payload = {
-                "type": "status",
-                "text": "Продолжаю текущий запуск агента.",
-            }
-            for target in {skip_run_id, run_id}:
-                emit({"type": "event", "runId": target, "payload": payload})
+            emit(
+                {
+                    "type": "run_adopted",
+                    "runId": run_id,
+                    "linkedRunId": skip_run_id,
+                    "message": "Продолжаю текущий запуск агента.",
+                }
+            )
             return
         emit(
             _stamp_run_event(
@@ -2013,6 +2283,22 @@ class Sidecar:
             if not isinstance(payload, dict):
                 return
             event_type = str(payload.get("type") or "")
+            if event_type in {"assistant", "thinking", "final", "status"}:
+                blob = " ".join(
+                    str(payload.get(key) or "")
+                    for key in ("text", "answer", "message")
+                )
+                if blob.strip() and event_type != "thinking":
+                    # Stream deltas must concatenate; a newline between tokens
+                    # splits WORK_RESULT / FILES / ACTIONS headers.
+                    active.answer_buf = f"{active.answer_buf}{blob}"
+                # Do not stop on thinking: models quote agent.md with old WORK_RESULT.
+                if event_type in {"assistant", "final"} and (
+                    _text_has_finished_work_result(blob)
+                    or _text_has_finished_work_result(active.answer_buf)
+                ):
+                    active.gate.mark_work_result_done()
+                    active.stop.set()
             if event_type not in {"ready", "done"}:
                 events.append(payload)
             # Interactive question/tool_request are handled via HITL gate.
@@ -2075,6 +2361,9 @@ class Sidecar:
         if _is_meeting_workflow(record) or _is_meeting_text(design_prompt):
             _ensure_outlook_rule_in_brief(run_cwd)
         bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
+        # Ask for a per-run file sample before the designer writes the draft,
+        # so the SDK run can read it and ask follow-up questions.
+        self._ensure_run_input_sample_asked(active, workflow_id)
         events: list[dict[str, Any]] = []
         result = bridge.run(
             prompt=build_design_sdk_prompt(record, design_prompt),
@@ -2097,7 +2386,7 @@ class Sidecar:
             if exc.status_code not in {404, 405}:
                 raise
         self._ensure_outlook_rule_in_playbook(workflow_id)
-        self._persist_when_to_run_from_materials(workflow_id)
+        self._ensure_when_to_run_asked(active, workflow_id)
         emit(
             {
                 "type": "result",
@@ -2118,56 +2407,20 @@ class Sidecar:
         draft = self._api.get_agent_draft(draft_id)
         run_cwd = bridge.workspace_cwd(f"draft-{draft_id}")
         active.run_cwd = run_cwd
-        titles = _readiness_block_titles(draft)
-        qa = list(_readiness_qa_from_draft(draft))
         _prepare_readiness_workspace(self._api, draft, run_cwd)
         events: list[dict[str, Any]] = []
-
-        def persist_progress() -> None:
-            try:
-                self._api.save_sdk_readiness_progress(draft_id, qa=qa)
-            except Exception as exc:
-                log(f"readiness progress save failed: {exc}")
-            _write_text(run_cwd, "materials/answers.md", _format_readiness_answers_md(qa))
-
-        def on_question(payload: dict[str, Any], should_stop: Any = None) -> dict[str, Any]:
-            labeled = _annotate_readiness_question(
-                payload if isinstance(payload, dict) else {},
-                titles,
-            )
-            reply = active.gate.ask_question(labeled, should_stop)
-            answer_text = str(reply.get("answer") or reply.get("text") or "").strip()
-            if answer_text:
-                qa.append(
-                    {
-                        "question": str(labeled.get("question") or "").strip(),
-                        "answer": answer_text,
-                        "blockTitle": str(labeled.get("blockTitle") or "").strip(),
-                    }
-                )
-                persist_progress()
-            return reply
-
         result = bridge.run(
-            prompt=_build_readiness_prompt(has_answers=bool(qa)),
+            prompt=_build_readiness_prompt(),
             workflow_id=f"draft-{draft_id}",
             cwd=run_cwd,
-            mode="readiness",
-            model=REGULATION_SDK_MODEL,
-            model_params=[dict(item) for item in REGULATION_SDK_QUESTION_PARAMS],
-            tools=[dict(ASK_QUESTION_SPEC)],
+            mode="design",
             on_event=self._forward_events(active, events),
-            on_question=on_question,
+            on_question=active.gate.ask_question,
             should_stop=active.stop.is_set,
             confirm_writes=True,
         )
         answer = str(result.get("answer") or "").strip()
-        updated = self._api.finish_sdk_readiness(
-            draft_id,
-            answer=answer,
-            events=events,
-            qa=qa,
-        )
+        updated = self._api.finish_sdk_readiness(draft_id, answer=answer, events=events)
         emit(
             {
                 "type": "result",
@@ -2194,6 +2447,7 @@ class Sidecar:
             interview=command.get("interview") if isinstance(command.get("interview"), dict) else {},
         )
         events: list[dict[str, Any]] = []
+        agent_role = str(command.get("agentRole") or "interview").strip().lower()
         agent_id = str(command.get("resumeAgentId") or "").strip()
         interview_payload = (
             command.get("interview") if isinstance(command.get("interview"), dict) else {}
@@ -2223,10 +2477,17 @@ class Sidecar:
                 }
             )
 
+        prompt_text = str(command.get("prompt") or "")
+        is_background = (
+            agent_role == "research"
+            or "Фоновая подготовка" in prompt_text
+            or "materials/*.txt" in prompt_text
+        )
+        run_model = os.getenv("CURSOR_REGULATION_PREFETCH_MODEL", REGULATION_PREFETCH_MODEL) if is_background else os.getenv("CURSOR_REGULATION_SDK_MODEL", REGULATION_SDK_MODEL)
         try:
             result = CursorSdkBridge.run(
                 bridge,
-                prompt=build_regulation_sdk_prompt(str(command.get("prompt") or "")),
+                prompt=build_regulation_sdk_prompt(prompt_text),
                 workflow_id=workspace_id,
                 cwd=str(run_cwd),
                 model=REGULATION_SDK_MODEL,
@@ -2278,10 +2539,6 @@ class Sidecar:
         bridge = active.bridge
         bridge.check_ready()
         record = self._api.get_workflow(workflow_id)
-        try:
-            record = self._api.prepare_demo_writes(workflow_id)
-        except ApiError:
-            pass
         resume_agent_id = str((record.local_run or {}).get("sdk_agent_id") or "").strip()
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
@@ -2293,6 +2550,10 @@ class Sidecar:
         if _is_meeting_workflow(record):
             _ensure_outlook_rule_in_brief(run_cwd)
         bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
+        # Trial run is still interactive: ask for a per-run sample if design
+        # skipped it, then for each declared run_input. Otherwise the model
+        # invents a substitute data source (for example another system).
+        self._ensure_run_input_sample_asked(active, workflow_id)
         try:
             record = self._api.get_workflow(workflow_id)
         except ApiError:
@@ -2308,6 +2569,7 @@ class Sidecar:
             workflow_id=workflow_id,
             cwd=run_cwd,
             resume_agent_id=resume_agent_id,
+            tools=_tool_specs_for_workflow(record),
             on_event=self._forward_events(active, events),
             on_question=active.gate.ask_question,
             should_stop=active.stop.is_set,
@@ -2428,6 +2690,7 @@ class Sidecar:
                 workflow_id=workflow_id,
                 cwd=run_cwd,
                 resume_agent_id=resume_agent_id,
+                tools=_tool_specs_for_workflow(workflow),
                 on_event=self._forward_events(active, events),
                 on_question=active.gate.ask_question,
                 should_stop=active.stop.is_set,
@@ -2436,6 +2699,15 @@ class Sidecar:
             answer = str(result.get("answer") or "").strip()
             agent_id = str(result.get("agent_id") or resume_agent_id).strip()
             self._store_agent_id(workflow_id, agent_id)
+            if status == "ok" and not _text_has_finished_work_result(answer):
+                status = "error"
+                tail = answer.strip()
+                answer = (
+                    "Запуск завершился без ## WORK_RESULT и TESTS: PASS — "
+                    "агент остановился после подготовительных шагов."
+                )
+                if tail:
+                    answer = f"{answer}\n\n{tail}"
         except Exception as exc:  # noqa: BLE001
             status = "error"
             answer = str(exc)
@@ -2470,6 +2742,13 @@ class Sidecar:
                 self._api,
                 workflow_id,
                 run_cwd,
+                run_id=str(run_ref or active.run_id).strip(),
+            )
+            _ensure_result_files_from_answer(
+                self._api,
+                workflow_id,
+                run_cwd,
+                answer,
                 run_id=str(run_ref or active.run_id).strip(),
             )
         except Exception as exc:  # noqa: BLE001
@@ -2716,20 +2995,27 @@ class Sidecar:
         except ApiError:
             pass
 
-    def _persist_when_to_run_from_materials(self, workflow_id: str) -> None:
-        wid = (workflow_id or "").strip()
-        if not wid:
+    def _ensure_when_to_run_asked(self, active: ActiveRun, workflow_id: str) -> None:
+        if active.stop.is_set():
             return
         try:
-            record = self._api.get_workflow(wid)
+            record = self._api.get_workflow(workflow_id)
         except ApiError:
             return
-        if _when_to_run_from_local(getattr(record, "local_run", None)):
+        if _when_to_run_user_answered(record):
             return
-        blob = _when_blob(record)
-        found = _labeled_agent_when(blob) or _schedule_from_blob(blob)
-        if found:
-            self._persist_when_to_run(wid, found)
+        reply = active.gate.ask_question(
+            {
+                "question": WHEN_TO_RUN_QUESTION,
+                "options": list(WHEN_TO_RUN_OPTIONS),
+                "why": WHEN_TO_RUN_WHY,
+            },
+            should_stop=active.stop.is_set,
+        )
+        answer = str(reply.get("answer") or "").strip()
+        if not answer or active.stop.is_set():
+            return
+        self._persist_when_to_run(workflow_id, answer)
 
     def _persist_run_input_gate(self, workflow_id: str, answer: str) -> None:
         wid = (workflow_id or "").strip()
@@ -2770,6 +3056,51 @@ class Sidecar:
         except ApiError:
             pass
 
+    def _ensure_run_input_sample_asked(self, active: ActiveRun, workflow_id: str) -> None:
+        if active.stop.is_set():
+            return
+        try:
+            record = self._api.get_workflow(workflow_id)
+        except ApiError:
+            return
+        if _run_inputs_user_answered(record):
+            return
+        local = dict(getattr(record, "local_run", None) or {})
+        gate = _run_input_gate_from_local(local)
+        if not gate:
+            reply = active.gate.ask_question(
+                {
+                    "question": RUN_INPUTS_QUESTION,
+                    "options": [RUN_INPUTS_YES, RUN_INPUTS_NO],
+                    "why": RUN_INPUTS_WHY,
+                },
+                should_stop=active.stop.is_set,
+            )
+            gate = str(reply.get("answer") or "").strip()
+            if not gate or active.stop.is_set():
+                return
+            self._persist_run_input_gate(workflow_id, gate)
+            if _is_run_input_no(gate):
+                return
+        sample = active.gate.ask_question(
+            {
+                "question": RUN_INPUTS_SAMPLE_QUESTION,
+                "options": [],
+                "needsFile": True,
+                "why": (
+                    "Образец нужен проектировщику, чтобы прочитать структуру "
+                    "и задать уточнения. Файл временный, в базу знаний не попадает."
+                ),
+            },
+            should_stop=active.stop.is_set,
+        )
+        if active.stop.is_set():
+            return
+        specs = _run_inputs_from_answer(str(sample.get("answer") or ""))
+        if not specs:
+            return
+        self._persist_run_inputs(workflow_id, specs, gate_answer=gate or RUN_INPUTS_YES)
+
     def _ensure_run_inputs_provided(
         self,
         active: ActiveRun,
@@ -2794,26 +3125,27 @@ class Sidecar:
             name = spec.get("name") or "файл"
             description = spec.get("description") or ""
             accept = spec.get("accept") or ""
-            question = "Если для этого запуска нужен файл, прикрепите: " + name
+            question = "Прикрепите файл для этого запуска: " + name
             if description:
                 question = question + ". " + description
-            question = question + ". Можно нажать Далее без файла."
             reply = active.gate.ask_question(
                 {
                     "question": question,
                     "options": [],
                     "needsFile": True,
                     "accept": accept,
+                    "autoContinueSeconds": RUN_INPUT_WAIT_SECONDS,
+                    "autoContinueAnswer": RUN_INPUT_SKIP_ANSWER,
                     "why": (
                         "Это временный файл только для текущего запуска, "
-                        "он не сохраняется в базу знаний."
+                        "он не сохраняется в базу знаний. "
+                        "Через 30 секунд агент продолжит сам: 1С и папки РК."
                     ),
                 },
                 should_stop=active.stop.is_set,
             )
-            answer = str(reply.get("answer") or "").strip()
-            if answer:
-                notes.append(answer)
+            answer = str(reply.get("answer") or "").strip() or RUN_INPUT_SKIP_ANSWER
+            notes.append(answer)
         return notes
 
     def _ensure_outlook_rule_in_playbook(
@@ -2881,17 +3213,28 @@ class Sidecar:
     def cancel(self, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or "")
         workflow_id = str(command.get("workflowId") or "").strip()
-        stopped: list[ActiveRun] = []
-        with self._lock:
-            for active in list(self._active.values()):
-                if run_id and active.run_id != run_id:
+        dedup_key = f"run:{workflow_id}" if workflow_id else ""
+        remove_ids: list[str] = []
+        for active in list(self._active.values()):
+            ui_id = (active.event_workflow_id or "").strip()
+            by_run = bool(run_id) and active.run_id == run_id
+            by_workflow = bool(workflow_id) and (
+                active.workflow_id == workflow_id or ui_id == workflow_id
+            )
+            by_dedup = bool(dedup_key) and active.dedup_key == dedup_key
+            if run_id or workflow_id:
+                if not by_run and not by_workflow and not by_dedup:
                     continue
-                if workflow_id and active.workflow_id != workflow_id:
-                    continue
-                self._active.pop(active.run_id, None)
-                stopped.append(active)
-        for active in stopped:
-            self._abort_active(active, "Остановлено пользователем")
+            active.stop.set()
+            try:
+                active.bridge.skip_tool("")
+            except Exception:
+                pass
+            remove_ids.append(active.run_id)
+        if remove_ids:
+            with self._lock:
+                for rid in remove_ids:
+                    self._active.pop(rid, None)
 
     def shutdown(self) -> None:
         with self._lock:
@@ -2924,6 +3267,7 @@ class ActiveRun:
         self.dedup_key: str = ""
         self.history_run_id: str = ""
         self.history_finished: bool = False
+        self.answer_buf: str = ""
 
 
 def _ascii(text: str) -> str:
@@ -2959,25 +3303,7 @@ def _copy_attachments(run_cwd: str, file_paths: list[str]) -> list[str]:
             log("attachment copy failed: " + repr(exc))
             continue
         relative.append(target.relative_to(root).as_posix())
-        extracted = _write_attachment_text(target)
-        if extracted:
-            try:
-                relative.append(Path(extracted).relative_to(root).as_posix())
-            except ValueError:
-                relative.append(extracted)
     return relative
-
-
-def _write_attachment_text(target: Path) -> str:
-    try:
-        from app.attachment_text import write_extracted_sidecar
-    except ImportError:
-        return ""
-    try:
-        return write_extracted_sidecar(target)
-    except Exception as exc:  # noqa: BLE001
-        log("attachment ocr failed: " + _ascii(repr(exc)))
-        return ""
 
 
 def _selected_process_ids(interview: dict[str, Any]) -> list[str]:
@@ -3008,6 +3334,8 @@ def _selected_process_ids(interview: dict[str, Any]) -> list[str]:
 
 
 def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[str, Any]) -> None:
+    import hashlib
+
     run_cwd.mkdir(parents=True, exist_ok=True)
     payload = dict(interview or {})
     selected = _selected_process_ids(payload)
@@ -3038,7 +3366,13 @@ def _prepare_regulation_workspace(run_cwd: Path, *, rules: str, interview: dict[
         if not text:
             continue
         safe = Path(_safe_filename(name)).stem or "file"
-        (materials / f"{safe}.txt").write_text(text, encoding="utf-8")
+        target = materials / f"{safe}.txt"
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        marker = target.with_suffix(target.suffix + ".hash")
+        if marker.is_file() and marker.read_text(encoding="utf-8") == digest and target.is_file():
+            continue
+        target.write_text(text, encoding="utf-8")
+        marker.write_text(digest, encoding="utf-8")
 
 
 def _attachments_note(relative_paths: list[str]) -> str:
@@ -3046,8 +3380,7 @@ def _attachments_note(relative_paths: list[str]) -> str:
         return ""
     listing = ", ".join(relative_paths)
     return (
-        "Прикреплённые файлы (прочитай их из рабочей области; "
-        "для сканов и фото смотри соседний .txt после OCR): "
+        "Прикреплённые файлы (прочитай их из рабочей области): "
         + listing
     )
 

@@ -124,39 +124,6 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         ),
     ),
     (
-        "onec.odata_post",
-        "Создание объекта через 1С OData (сервер). Требует подтверждения человека.",
-        _schema(
-            {
-                "entity": _prop("string", "Имя EntitySet из onec.odata_catalog"),
-                "body": _prop("object", "Поля нового объекта 1С, как в OData"),
-            },
-            ["entity"],
-        ),
-    ),
-    (
-        "onec.odata_patch",
-        "Обновление объекта через 1С OData (сервер). Требует подтверждения человека.",
-        _schema(
-            {
-                "entity": _prop("string", "Имя EntitySet из onec.odata_catalog"),
-                "ref_key": _prop("string", "GUID объекта, который меняем"),
-                "body": _prop("object", "Только поля, которые нужно изменить"),
-            },
-            ["entity", "ref_key"],
-        ),
-    ),
-    (
-        "onec.attach_file",
-        "Прикрепление файла к документу 1С (сервер). Требует подтверждения человека.",
-        _schema(
-            {
-                "document_ref_key": _prop("string", "GUID документа 1С"),
-                "filename": _prop("string", "Имя файла в папке агента"),
-            }
-        ),
-    ),
-    (
         "onec.sql_query",
         "Только SELECT к ERP SQL (allowlist таблиц, сервер).",
         _schema(

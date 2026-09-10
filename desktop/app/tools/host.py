@@ -35,8 +35,23 @@ def _ensure_path(subdir: str) -> Path:
     return root
 
 
+_ONEC_WRITE_TOOLS = frozenset(
+    {
+        "onec.odata_post",
+        "onec.odata_patch",
+        "onec.attach_file",
+    }
+)
+
+
 def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     args = arguments if isinstance(arguments, dict) else {}
+
+    if name in _ONEC_WRITE_TOOLS:
+        raise ToolHostError(
+            "Запись в 1С отключена для агентов Constructor. "
+            "Доступны только read-only инструменты (onec.odata_get, onec.meeting_* и т.д.)."
+        )
 
     # Server-executed tools (1C OData/SQL, IMAP, users, notify) are proxied to the
     # Constructor backend. Everything else runs on this desktop by default, so no

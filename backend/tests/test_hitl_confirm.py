@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from app.services.onec_tools import ONEC_WRITE_TOOLS
+import pytest
+
+from app.services.onec_tools import ONEC_TOOLS, ONEC_WRITE_TOOLS, OnecToolError, invoke_onec
 from app.services.tool_bridge import CONFIRM_TIMEOUT_S
 from app.services.workflows.cursor_tools import (
     clear_tool_context,
@@ -53,93 +55,26 @@ def test_write_probe_does_not_wait_confirm(monkeypatch) -> None:
     assert result["ok"] is True
 
 
-def test_odata_post_waits_confirm_only_then_writes(monkeypatch) -> None:
-    events: list[tuple] = []
-    order: list[str] = []
+def test_odata_write_tools_not_in_public_catalog() -> None:
+    from app.services.onec_tools import ONEC_ODATA_WRITE_TOOLS
 
-    def on_event(event_type: str, text: str = "", extra: dict | None = None) -> None:
-        events.append((event_type, extra or {}))
+    assert ONEC_ODATA_WRITE_TOOLS.isdisjoint(ONEC_TOOLS)
+    assert "onec.erp_assignments_write" in ONEC_TOOLS
 
-    monkeypatch.setattr(
-        "app.services.workflows.cursor_tools.tool_bridge.new_request_id",
-        lambda: "req-confirm",
-    )
-    monkeypatch.setattr(
-        "app.services.workflows.cursor_tools.tool_bridge.begin_wait",
-        lambda **kwargs: order.append("wait"),
-    )
 
-    def fake_await(**kwargs):
-        order.append("confirmed")
-        assert kwargs.get("timeout_s") == CONFIRM_TIMEOUT_S
-        return {"ok": True, "result": {"confirmed": True}}
+def test_odata_post_is_blocked() -> None:
+    with pytest.raises(OnecToolError, match="отключена"):
+        invoke_onec("onec.odata_post", {"entity": "Document_Foo"})
 
-    monkeypatch.setattr(
-        "app.services.workflows.cursor_tools.tool_bridge.await_result",
-        fake_await,
-    )
 
-    def fake_onec(tool, args, user_id=""):
-        order.append("write")
-        assert order[:2] == ["wait", "confirmed"]
-        return {"ok": True, "id": "doc-1"}
-
-    monkeypatch.setattr("app.services.agent_runtime._invoke_onec_server", fake_onec)
-
-    set_tool_context("run-1", "user-1")
-    try:
-        result = invoke_creation_tool(
+def test_invoke_creation_tool_blocks_odata_post() -> None:
+    with pytest.raises(RuntimeError, match="отключена"):
+        invoke_creation_tool(
             tool="onec.odata_post",
             arguments={"entitySet": "Catalog_Foo"},
-            on_event=on_event,
+            on_event=None,
             workflow_id="wf-1",
         )
-    finally:
-        clear_tool_context()
-
-    assert order == ["wait", "confirmed", "write"]
-    request = next(extra for typ, extra in events if typ == "tool_request")
-    assert request["confirm_only"] is True
-    assert request["tool"] == "onec.odata_post"
-    assert request["request_id"] == "req-confirm"
-    assert result == {"ok": True, "id": "doc-1"}
-
-
-def test_odata_post_rejected_does_not_write(monkeypatch) -> None:
-    written = {"ok": False}
-
-    monkeypatch.setattr(
-        "app.services.workflows.cursor_tools.tool_bridge.new_request_id",
-        lambda: "req-reject",
-    )
-    monkeypatch.setattr(
-        "app.services.workflows.cursor_tools.tool_bridge.begin_wait",
-        lambda **kwargs: None,
-    )
-    monkeypatch.setattr(
-        "app.services.workflows.cursor_tools.tool_bridge.await_result",
-        lambda **kwargs: {"ok": False, "error": "отклонено человеком"},
-    )
-    monkeypatch.setattr(
-        "app.services.agent_runtime._invoke_onec_server",
-        lambda *args, **kwargs: written.__setitem__("ok", True) or {"ok": True},
-    )
-
-    set_tool_context("run-1", "user-1")
-    try:
-        try:
-            invoke_creation_tool(
-                tool="onec.odata_post",
-                arguments={"entitySet": "Catalog_Foo"},
-                on_event=None,
-                workflow_id="wf-1",
-            )
-            raise AssertionError("expected reject")
-        except RuntimeError as exc:
-            assert "отклонено" in str(exc)
-    finally:
-        clear_tool_context()
-    assert not written["ok"]
 
 
 def test_odata_get_does_not_wait_confirm(monkeypatch) -> None:
@@ -191,42 +126,18 @@ def test_notify_send_skips_hitl(monkeypatch) -> None:
     assert result["ok"] is True
 
 
-def test_runtime_write_emits_confirm_only(monkeypatch) -> None:
-    from app.services.agent_runtime import _request_desktop_tool
+def test_runtime_write_is_blocked() -> None:
+    from app.services.agent_runtime import AgentRuntimeError, _request_desktop_tool
 
-    events: list[dict] = []
-    order: list[str] = []
-
-    monkeypatch.setattr(
-        "app.services.agent_runtime.tool_bridge.new_request_id",
-        lambda: "req-rt",
-    )
-    monkeypatch.setattr(
-        "app.services.agent_runtime.tool_bridge.begin_wait",
-        lambda **kwargs: order.append("wait"),
-    )
-    monkeypatch.setattr(
-        "app.services.agent_runtime.tool_bridge.await_result",
-        lambda **kwargs: order.append("confirmed") or {"ok": True, "result": {"confirmed": True}},
-    )
-    monkeypatch.setattr(
-        "app.services.agent_runtime._invoke_onec_server",
-        lambda tool, arguments, user_id="": order.append("write") or {"ok": True},
-    )
-
-    result = _request_desktop_tool(
-        events.append,
-        run_id="run-1",
-        user_id="user-1",
-        tool="onec.odata_patch",
-        arguments={"entitySet": "Catalog_Foo"},
-        workflow_id="wf-1",
-    )
-    assert order == ["wait", "confirmed", "write"]
-    request = next(item for item in events if item.get("type") == "tool_request")
-    assert request["confirm_only"] is True
-    assert request["tool"] == "onec.odata_patch"
-    assert result == {"ok": True}
+    with pytest.raises(AgentRuntimeError, match="отключена"):
+        _request_desktop_tool(
+            lambda _event: None,
+            run_id="run-1",
+            user_id="user-1",
+            tool="onec.odata_patch",
+            arguments={"entitySet": "Catalog_Foo"},
+            workflow_id="wf-1",
+        )
 
 
 def test_published_prompt_notify_is_not_gated_on_hitl() -> None:

@@ -9,7 +9,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.models.workflow import Workflow
 from app.services.local_mcp import list_tools
 from app.services.onec_tools import ONEC_TOOLS as _ONEC_TOOLS
-from app.services.onec_tools import ONEC_WRITE_TOOLS as _ONEC_WRITE_TOOLS
+from app.services.onec_tools import ONEC_ODATA_WRITE_TOOLS as _ONEC_ODATA_WRITE_TOOLS
 from app.services.tool_names import resolve_tool_name
 from app.services.plan_run import (
     PlanRunError,
@@ -444,17 +444,14 @@ def _request_desktop_tool(
         arguments.setdefault("workflow_id", workflow_id)
         arguments.setdefault("agent_id", workflow_id)
     tool = resolve_tool_name(tool, _ONEC_TOOLS | _IMAP_TOOLS | _TURBOPROJECT_TOOLS) or tool
+    if tool in _ONEC_ODATA_WRITE_TOOLS:
+        raise AgentRuntimeError(
+            "Запись в 1С отключена для агентов Constructor. "
+            "Используйте только read-only инструменты (onec.odata_get, onec.meeting_* и т.д.)."
+        )
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, arguments)
     if tool in _ONEC_TOOLS:
-        if tool in _ONEC_WRITE_TOOLS:
-            _await_human_confirm_runtime(
-                emit,
-                run_id=run_id,
-                user_id=user_id,
-                tool=tool,
-                arguments=arguments,
-            )
         return _invoke_onec_server(tool, arguments, user_id=user_id)
     if tool in _TURBOPROJECT_TOOLS or tool.startswith("turboproject"):
         return _invoke_turboproject_server(tool, arguments)

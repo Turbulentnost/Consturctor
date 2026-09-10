@@ -750,7 +750,13 @@ export function DecisionsTab({
   }, [livePending, tools, query, processId, status, priority, attachmentsOnly, due, sort, today])
 
   const pending = visibleTools.filter((item) => item.status === 'pending')
-  const history = visibleTools.filter((item) => item.status !== 'pending')
+  const awaitingMe = visibleTools.filter((item) => decisionStatusBucket(item) === 'pending')
+  const underReview = visibleTools.filter((item) => decisionStatusBucket(item) === 'review')
+  const confirmedToday = visibleTools.filter((item) => {
+    if (decisionStatusBucket(item) !== 'confirmed') return false
+    const stamp = parseIso(item.at)
+    return stamp ? dayKey(stamp) === todayKey() : false
+  })
   const returned = visibleTools.filter((item) => decisionStatusBucket(item) === 'returned')
   const selected = visibleTools.find((item) => item.id === selectedId) || null
   const selectedFiles = selected
@@ -940,8 +946,22 @@ export function DecisionsTab({
             !
           </div>
           <div>
-            <p>Ждут подтверждения</p>
-            <strong>{pending.length}</strong>
+            <p>Ожидают меня</p>
+            <strong>{awaitingMe.length}</strong>
+          </div>
+        </article>
+        <article className="wp-decisions-kpi-card review">
+          <div className="wp-decisions-kpi-icon nf-review" aria-hidden>
+            <svg viewBox="0 0 24 24" width="20" height="20" focusable="false">
+              <path
+                fill="currentColor"
+                d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"
+              />
+            </svg>
+          </div>
+          <div>
+            <p>На рассмотрении</p>
+            <strong>{underReview.length}</strong>
           </div>
         </article>
         <article className="wp-decisions-kpi-card done">
@@ -949,17 +969,8 @@ export function DecisionsTab({
             ✓
           </div>
           <div>
-            <p>История за период</p>
-            <strong>{history.length}</strong>
-          </div>
-        </article>
-        <article className="wp-decisions-kpi-card review">
-          <div className="wp-decisions-kpi-icon" aria-hidden>
-            ●
-          </div>
-          <div>
-            <p>Результаты агентов</p>
-            <strong>{visibleResults.length}</strong>
+            <p>Подтверждено сегодня</p>
+            <strong>{confirmedToday.length}</strong>
           </div>
         </article>
         <article className="wp-decisions-kpi-card returned">

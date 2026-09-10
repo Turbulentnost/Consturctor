@@ -63,6 +63,17 @@ def test_normalize_protocol_row_needs_review() -> None:
     assert item["meeting_topic"] == "Совет директоров по ГК"
 
 
+def test_build_protocol_list_path_has_expand() -> None:
+    from app.services.meeting_protocols import build_protocol_list_path
+
+    path = build_protocol_list_path(
+        odata_filter="DeletionMark eq false",
+        limit=10,
+    )
+    assert path.startswith("Document_ТД_Протокол?")
+    assert "$expand=ТемаСовещания" in path
+
+
 def test_list_meeting_protocols_odata(monkeypatch) -> None:
     sample = {
         "Ref_Key": "e72f4680-aa87-11f1-987a-6cb31113810e",
@@ -75,8 +86,9 @@ def test_list_meeting_protocols_odata(monkeypatch) -> None:
 
     def fake_fetch(args: dict) -> dict:
         assert args["entity"] == PROTOCOL_ENTITY
-        assert "startswith(Number,'РК')" in args["filter"]
-        return {"value": [sample], "path": PROTOCOL_ENTITY, "summary": "ok"}
+        path = str(args.get("path") or "")
+        assert "startswith" in path and "Number" in path
+        return {"value": [sample], "path": path or PROTOCOL_ENTITY, "summary": "ok"}
 
     monkeypatch.setattr("app.services.onec_tools._fetch_odata_list", fake_fetch)
     result = list_meeting_protocols({"meeting_kind": "rk", "date": "2026-09-08"})

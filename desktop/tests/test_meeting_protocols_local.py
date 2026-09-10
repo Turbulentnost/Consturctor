@@ -51,7 +51,10 @@ def test_invoke_meeting_protocols_via_odata_get() -> None:
     assert call_args[0][1] == "/api/v1/tools/onec.odata_get/invoke"
     body = call_args[1]["json"]["arguments"]
     assert body["entity"] == "Document_ТД_Протокол"
-    assert "startswith(Number,'ПСД')" in body["filter"]
+    assert "path" in body
+    assert "Document_ТД_Протокол" in body["path"]
+    assert "startswith" in body["path"] and "Number" in body["path"]
+    assert "$expand=ТемаСовещания" in body["path"]
 
     assert result["count"] == 1
     assert result["protocols"][0]["number"] == "ПСД_001_О_225"

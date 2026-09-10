@@ -8,8 +8,15 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Any
+from urllib.parse import quote
 
 PROTOCOL_ENTITY = "Document_ТД_Протокол"
+
+PROTOCOL_TABULAR_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("Решения", "Document_ТД_Протокол_Решения"),
+    ("ПовесткаСовещания", "Document_ТД_Протокол_ПовесткаСовещания"),
+    ("ПланЗадачНаПериод", "Document_ТД_Протокол_ПланЗадачНаПериод"),
+)
 
 _KIND_ALIASES = {
     "rk": "rk",
@@ -78,6 +85,13 @@ def _number_prefix_filter(kind: str) -> str:
     return "(" + " or ".join(parts) + ")"
 
 
+def protocol_navigation_path(ref_key: str, section: str) -> str:
+    key = (ref_key or "").strip()
+    if not key:
+        raise ValueError("ref_key required")
+    return f"{PROTOCOL_ENTITY}(guid'{key}')/{section.strip()}"
+
+
 def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
     filters: list[str] = ["DeletionMark eq false"]
     number = str(args.get("number") or args.get("Number") or "").strip()
@@ -102,6 +116,34 @@ def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
     if end:
         filters.append(f"Date le {_odata_datetime(end, end_of_day=True)}")
     return " and ".join(filters)
+
+
+def build_protocol_list_path(*, odata_filter: str, limit: int) -> str:
+    filt = quote(odata_filter, safe="=,'")
+    return (
+        f"{PROTOCOL_ENTITY}?$format=json&$top={limit}"
+        f"&$filter={filt}&$orderby=Date%20desc&$expand=ТемаСовещания"
+    )
+
+
+def _relaxed_protocol_filters(args: dict[str, Any], *, kind: str) -> list[str]:
+    strict = build_protocol_filter(args, kind=kind)
+    parts: list[str] = ["DeletionMark eq false"]
+    number = str(args.get("number") or args.get("Number") or "").strip()
+    if number:
+        parts.append(f"Number eq '{_escape_odata_string(number)}'")
+    else:
+        parts.append(_number_prefix_filter(kind))
+    start, end = _period(args)
+    if start:
+        parts.append(f"Date ge {_odata_datetime(start)}")
+    if end:
+        parts.append(f"Date le {_odata_datetime(end, end_of_day=True)}")
+    relaxed: list[str] = []
+    for candidate in (" and ".join([*parts, "Posted eq false"]), " and ".join(parts)):
+        if candidate != strict and candidate not in relaxed:
+            relaxed.append(candidate)
+    return relaxed
 
 
 def _topic_from_row(row: dict[str, Any]) -> str:
@@ -136,30 +178,64 @@ def normalize_protocol_row(row: dict[str, Any], *, kind: str) -> dict[str, Any]:
     }
 
 
-def invoke_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
-    from app.tools import runtime_api
+def _fetch_protocol_rows(args: dict[str, Any], *, kind: str, limit: int) -> tuple[dict[str, Any], str, str]:
+    from app.tools.onec_odata_invoke import fetch_odata_list
 
+    odata_filter = build_protocol_filter(args, kind=kind)
+    path = build_protocol_list_path(odata_filter=odata_filter, limit=limit)
+    raw = fetch_odata_list(entity=PROTOCOL_ENTITY, path=path, top=limit)
+    rows = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
+    if rows:
+        return raw, odata_filter, ""
+
+    for fallback_filter in _relaxed_protocol_filters(args, kind=kind):
+        fallback_path = build_protocol_list_path(odata_filter=fallback_filter, limit=limit)
+        try:
+            raw = fetch_odata_list(entity=PROTOCOL_ENTITY, path=fallback_path, top=limit)
+        except RuntimeError:
+            continue
+        rows = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
+        if rows:
+            note = (
+                "Строгий фильтр «на проверку» не дал строк — применён ослабленный фильтр. "
+                f"Было: {odata_filter}. Стало: {fallback_filter}."
+            )
+            return {**raw, "filter_relaxed": True}, fallback_filter, note
+    return raw, odata_filter, ""
+
+
+def _attach_protocol_sections(protocol: dict[str, Any]) -> None:
+    from app.tools.onec_odata_invoke import fetch_odata_list, odata_rows
+
+    ref_key = str(protocol.get("ref_key") or "").strip()
+    if not ref_key:
+        return
+    sections: dict[str, list[dict[str, Any]]] = {}
+    for section_name, entity_name in PROTOCOL_TABULAR_SECTIONS:
+        nav_path = f"{protocol_navigation_path(ref_key, section_name)}?$format=json&$top=50"
+        try:
+            raw = fetch_odata_list(entity=PROTOCOL_ENTITY, path=nav_path, top=50)
+            rows = odata_rows(raw)
+        except RuntimeError:
+            continue
+        if rows:
+            sections[entity_name] = rows
+    if sections:
+        protocol["tabular_parts"] = sections
+        protocol["sections_path_prefix"] = f"{PROTOCOL_ENTITY}(guid'{ref_key}')/"
+
+
+def invoke_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
     kind = _normalize_kind(str(args.get("meeting_kind") or args.get("kind") or ""))
     limit = max(1, min(100, int(args.get("max_results") or args.get("limit") or 30)))
-    odata_filter = build_protocol_filter(args, kind=kind)
+    include_sections = bool(args.get("include_sections") or args.get("with_sections"))
     start, end = _period(args)
     review_only = args.get("review_only")
     if review_only is None:
         review_only = True
 
     try:
-        data = runtime_api.request(
-            "POST",
-            "/api/v1/tools/onec.odata_get/invoke",
-            json={
-                "arguments": {
-                    "entity": PROTOCOL_ENTITY,
-                    "filter": odata_filter,
-                    "top": limit,
-                }
-            },
-            timeout=180.0,
-        )
+        raw, odata_filter, filter_note = _fetch_protocol_rows(args, kind=kind, limit=limit)
     except RuntimeError as exc:
         return {
             "protocols": [],
@@ -169,7 +245,7 @@ def invoke_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
             "meeting_kind": kind,
             "entity": PROTOCOL_ENTITY,
             "method": "odata_meeting_protocols",
-            "filter": odata_filter,
+            "filter": build_protocol_filter(args, kind=kind),
             "date_from": start.isoformat() if start else "",
             "date_to": end.isoformat() if end else "",
             "error": str(exc),
@@ -179,18 +255,13 @@ def invoke_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
             ),
         }
 
-    if isinstance(data, dict) and "result" in data:
-        raw = data.get("result")
-        if not isinstance(raw, dict):
-            raw = {"value": raw}
-    elif isinstance(data, dict):
-        raw = data
-    else:
-        raw = {"value": data}
-
     rows = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
     protocols = [normalize_protocol_row(row, kind=kind) for row in rows[:limit]]
-    return {
+    if include_sections:
+        for protocol in protocols:
+            _attach_protocol_sections(protocol)
+
+    result: dict[str, Any] = {
         "protocols": protocols,
         "count": len(protocols),
         "source": "odata",
@@ -205,4 +276,13 @@ def invoke_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
         "date_to": end.isoformat() if end else "",
         "method": "odata_meeting_protocols",
         "summary": raw.get("summary") or f"найдено {len(protocols)} протоколов ({kind})",
+        "tabular_hint": (
+            "Для строк протокола читайте табличные части полным OData-путём "
+            f"{PROTOCOL_ENTITY}(guid'<Ref_Key>')/<Раздел>, например …/Решения, …/ПовесткаСовещания."
+        ),
     }
+    if filter_note:
+        result["filter_note"] = filter_note
+    if raw.get("filter_relaxed"):
+        result["filter_relaxed"] = True
+    return result

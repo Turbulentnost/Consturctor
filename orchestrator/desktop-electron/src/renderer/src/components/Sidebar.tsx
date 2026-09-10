@@ -19,7 +19,7 @@ export type PageKey =
 export const APP_TITLE = 'Оркестратор'
 
 export const PAGE_LABELS: Record<PageKey, string> = {
-  today: 'Рабочее место',
+  today: 'Сегодня',
   processes: 'Процессы',
   calendar: 'Календарь',
   decisions: 'Решения',

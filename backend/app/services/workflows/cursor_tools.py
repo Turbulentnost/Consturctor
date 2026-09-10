@@ -608,7 +608,7 @@ def invoke_creation_tool(
         _invoke_imap_server,
         _invoke_onec_server,
     )
-    from app.services.onec_tools import ONEC_WRITE_TOOLS
+    from app.services.onec_tools import ONEC_ODATA_WRITE_TOOLS, ONEC_WRITE_TOOLS
     from app.services.tool_names import resolve_tool_name
 
     args = dict(arguments or {})
@@ -616,6 +616,11 @@ def invoke_creation_tool(
     if workflow_id:
         args.setdefault("workflow_id", workflow_id)
         args.setdefault("agent_id", workflow_id)
+    if tool in ONEC_ODATA_WRITE_TOOLS:
+        raise RuntimeError(
+            "Запись в 1С отключена для агентов Constructor. "
+            "Используйте только read-only инструменты (onec.odata_get, onec.meeting_* и т.д.)."
+        )
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, args)
     if tool in _ONEC_TOOLS:

@@ -1852,29 +1852,60 @@ function InteractionPane({
           }}
         >
           <div>
-            <span>Среднее время ответа</span>
+            <span>Задержка человека</span>
             <strong style={{ color: humanDelayValueColor }}>{formatMinutes(humanDelayDisplay)}</strong>
             <em>{humanDelayCardLabel(explainRecord, humanDelayDisplay, banRemaining)}</em>
           </div>
         </article>
-        <article
-          className={`kpi-metric-card ${summary.attention ? 'orange' : 'green'} clickable`}
-          role="button"
-          tabIndex={0}
-          onClick={() => activateCard(() => onOpenDecisions?.())}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault()
-              onOpenDecisions?.()
-            }
-          }}
-        >
-          <div>
-            <span>Требуют согласования</span>
-            <strong>{summary.attention}</strong>
-            <em>{summary.attention ? 'Нужен контроль' : 'Отклонений нет'}</em>
-          </div>
-        </article>
+        <div className="kpi-metric-automation-wrap">
+          <article
+            className={`kpi-metric-card ${summary.attention ? 'orange' : 'green'} clickable`}
+            role="button"
+            tabIndex={0}
+            onClick={() => activateCard(() => onOpenDecisions?.())}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                onOpenDecisions?.()
+              }
+            }}
+          >
+            <div>
+              <span>Автоматизация</span>
+              <strong>
+                {summary.automation != null ? `${summary.automation}%` : '—'}
+              </strong>
+              <em>{summary.attention ? 'Нужен контроль' : 'Отклонений нет'}</em>
+            </div>
+          </article>
+          <aside className="kpi-automation-thresholds" aria-label="Пороги автоматизации">
+            <strong>Предлагаемые пороги автоматизации</strong>
+            <ul>
+              <li>
+                <span className="kpi-threshold-label">
+                  <i className="kpi-threshold-dot ok" aria-hidden />
+                  ≥ 90%
+                </span>
+                <span>норма</span>
+              </li>
+              <li>
+                <span className="kpi-threshold-label">
+                  <i className="kpi-threshold-dot warn" aria-hidden />
+                  80–89%
+                </span>
+                <span>внимание</span>
+              </li>
+              <li>
+                <span className="kpi-threshold-label">
+                  <i className="kpi-threshold-dot danger" aria-hidden />
+                  &lt; 80%
+                </span>
+                <span>отклонение</span>
+              </li>
+            </ul>
+            <p>Пороги настраиваются по процессу</p>
+          </aside>
+        </div>
       </div>
 
       <section className="kpi-card">
@@ -1978,13 +2009,7 @@ function InteractionPane({
                       <i className="agent" style={{ width: agentWidth }}>
                         {row.agentDelayMinutes > 0 ? row.agentDelayMinutes : ''}
                       </i>
-                      <i
-                        className="human"
-                        style={{
-                          width: humanWidth,
-                          background: humanResponseDelayColor(row.humanDelayMinutes)
-                        }}
-                      >
+                      <i className="human" style={{ width: humanWidth }}>
                         {row.humanDelayMinutes > 0 ? row.humanDelayMinutes : ''}
                       </i>
                     </div>

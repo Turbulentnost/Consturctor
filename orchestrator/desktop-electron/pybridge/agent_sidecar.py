@@ -360,6 +360,7 @@ _RK_TIPS = (
 
 RK_RUN_HINT = (
     "This is RK meeting prep (ПЛ-01-001), not calendar control. "
+    "1C is read-only: never call onec.odata_post, onec.odata_patch, or onec.attach_file. "
     "One data pass only: do not restart outlook/1C/excel/network reads or say data is stale. "
     "Exclude Constructor test probes from 1C (title/comment/number contains Constructor or "
     "проба Constructor). "
@@ -451,7 +452,8 @@ _RK_MEETING_TOOLS = {
 
 SD_MEETING_HINT = (
     "This is board-meeting completeness (SD / PL-34-242), not mail search and not "
-    "a meeting-series job. Find the meeting with ONE outlook.read_calendar "
+    "a meeting-series job. 1C is read-only: never call onec.odata_post, onec.odata_patch, "
+    "or onec.attach_file. Find the meeting with ONE outlook.read_calendar "
     "(or read the dumped calendar JSON once if COM already wrote it). "
     "Then onec.meeting_service_notes (OData), onec.meeting_protocols (meeting_kind=sd, OData; "
     "numbers ПСД_001_О_*, not manual odata_get with startswith СД/СПГ), "
@@ -465,6 +467,7 @@ SD_MEETING_HINT = (
 
 RK_MEETING_HINT = (
     "This is revision-commission prep (RK / PL-01-001), not mail search. "
+    "1C is read-only: never call onec.odata_post, onec.odata_patch, or onec.attach_file. "
     "Use Outlook calendar, onec.meeting_protocols (meeting_kind=rk), 1C tasks/documents, "
     "and the RK share folders. "
     "Do not call outlook.search_mail or imap.*. "
