@@ -53,6 +53,7 @@ from app.services.regulation_creation.interview import (
     document_from_interview,
     document_has_body,
     document_has_full_text,
+    interview_facts_closed,
     interview_progress,
     interview_sdk_agent_id,
     interview_snapshot,
@@ -61,6 +62,7 @@ from app.services.regulation_creation.interview import (
     leading_question_text,
     is_process_select_message,
     is_replacement_garbage,
+    match_source_heading,
     merge_agent_payload,
     question_for_selected_processes,
     selected_process_ids,
@@ -68,8 +70,11 @@ from app.services.regulation_creation.interview import (
     normalize_process_id,
     ready_blocker,
     remember_assistant_question,
+    rename_tz_to_regulation,
     set_interview_position,
     set_sdk_agent_id,
+    source_docx_path,
+    source_fact_inserts,
 )
 from app.services.workflows.document import DocumentError, load_attachment_bytes
 
@@ -212,13 +217,13 @@ def _rebuild_creation_docx(draft: RegulationCreationDraft) -> Path | None:
     if not document_has_body(document):
         title = str((document or {}).get("title") or "").strip()
         document = document_from_interview(draft.interview_json, title)
-    if not document_has_body(document):
+    if not document_has_body(document) and not _source_docx_bytes(draft):
         return None
     output_dir = settings.regulation_storage_dir / "created" / draft.id
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / _safe_filename(str(document.get("title") or "created-regulation"))
     path = path.with_suffix(".docx")
-    _write_docx(path, document)
+    _write_creation_docx(path, draft, document)
     return path
 
 
@@ -237,6 +242,7 @@ def persist_creation_turn(
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     if draft.status == "finalized":
         return _turn_payload(db, draft, message="", force_create=False, new_attachments=False)
+    attachments = _store_creation_sources(draft.id, attachments)
     force_create = _is_force_create_message(message)
     display_message = _display_user_message(message, attachments)
     draft.interview_json = append_user_turn(draft.interview_json, message, attachments)
@@ -402,6 +408,7 @@ def send_creation_message(
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     if draft.status == "finalized":
         return _session(db, draft)
+    attachments = _store_creation_sources(draft.id, attachments)
     force_create = _is_force_create_message(message)
     display_message = _display_user_message(message, attachments)
     draft.interview_json = append_user_turn(draft.interview_json, message, attachments)
@@ -470,6 +477,7 @@ def stream_creation_message(
         yield {"type": "session", "session": _session(db, draft).model_dump(mode="json")}
         return
 
+    attachments = _store_creation_sources(draft.id, attachments)
     force_create = _is_force_create_message(message)
     display_message = _display_user_message(message, attachments)
     draft.interview_json = append_user_turn(draft.interview_json, message, attachments)
@@ -575,13 +583,16 @@ def _apply_agent_reply(
         parsed["status"] = "need_more"
     draft.interview_json = merge_agent_payload(draft.interview_json, parsed)
     chosen_ids = selected_process_ids(draft.interview_json)
-    if chosen_ids and (
+    facts_closed = interview_facts_closed(draft.interview_json)
+    if facts_closed and not force_create and str(parsed.get("status") or "") != "ready":
+        parsed["status"] = "ready"
+    if chosen_ids and not facts_closed and (
         is_process_select_message(parsed.get("message"))
         or is_process_select_message(_message_content(parsed, raw))
         or str((parsed.get("pipeline") or {}).get("stage") or "").lower() == "select"
     ):
         _force_gap_question(parsed, draft)
-    if chosen_ids and str(parsed.get("status") or "") == "need_more":
+    if chosen_ids and not facts_closed and str(parsed.get("status") or "") == "need_more":
         current_id = current_interview_process_id(draft.interview_json)
         next_question = parsed.get("nextQuestion") if isinstance(parsed.get("nextQuestion"), dict) else {}
         process_blob = parsed.get("process") if isinstance(parsed.get("process"), dict) else {}
@@ -626,12 +637,26 @@ def _apply_agent_reply(
     has_full_document = document_has_full_text(document)
     if wants_document and not has_full_document and not force_create:
         state = draft.interview_json if isinstance(draft.interview_json, dict) else {}
-        draft.interview_json = {**state, "document_write_required": True}
-        draft.status = "interview"
-        if positions := parsed.get("positions"):
-            draft.positions_json = [str(item) for item in positions if str(item).strip()]
-        db.add(draft)
-        return
+        if not facts_closed:
+            draft.interview_json = {**state, "document_write_required": True}
+            draft.status = "interview"
+            if positions := parsed.get("positions"):
+                draft.positions_json = [str(item) for item in positions if str(item).strip()]
+            db.add(draft)
+            return
+        attempts = int(state.get("document_write_attempts") or 0) + 1
+        draft.interview_json = {
+            **state,
+            "document_write_required": True,
+            "document_write_attempts": attempts,
+        }
+        if attempts < 2:
+            draft.status = "interview"
+            if positions := parsed.get("positions"):
+                draft.positions_json = [str(item) for item in positions if str(item).strip()]
+            db.add(draft)
+            return
+        force_create = True
     if wants_document and force_create and not document_has_body(document):
         title = str((document or {}).get("title") or "").strip()
         document = document_from_interview(draft.interview_json, title)
@@ -697,7 +722,7 @@ def _finalize_document(
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / _safe_filename(str(document.get("title") or "created-regulation"))
     path = path.with_suffix(".docx")
-    _write_docx(path, document)
+    _write_creation_docx(path, draft, document)
     regulation_id = new_regulation_id()
     stored = save_upload(regulation_id=regulation_id, filename=path.name, data=path.read_bytes())
     result = _result_from_created_document(
@@ -800,6 +825,233 @@ def _stub_document(parsed: dict, *, title: str) -> dict:
             }
         ],
     }
+
+
+def _write_creation_docx(path: Path, draft: RegulationCreationDraft, document: dict) -> None:
+    source = _source_docx_bytes(draft)
+    if source:
+        _write_completed_source_docx(path, source, draft.interview_json)
+        return
+    _write_docx(path, document)
+
+
+def _source_docx_bytes(draft: RegulationCreationDraft) -> bytes:
+    path = source_docx_path(draft.interview_json)
+    if path:
+        file_path = Path(path)
+        if file_path.is_file():
+            return file_path.read_bytes()
+    root = settings.regulation_storage_dir / "creation-sources" / draft.id
+    if not root.is_dir():
+        return b""
+    files = sorted(item for item in root.glob("*.docx") if item.is_file())
+    if not files:
+        return b""
+    return files[0].read_bytes()
+
+
+def _store_creation_sources(draft_id: str, attachments: list[dict]) -> list[dict]:
+    if not attachments:
+        return attachments
+    root = settings.regulation_storage_dir / "creation-sources" / draft_id
+    stored: list[dict] = []
+    for item in attachments:
+        out = {key: value for key, value in item.items() if key != "raw"}
+        raw = item.get("raw")
+        name = Path(str(item.get("name") or "file.bin")).name or "file.bin"
+        suffix = Path(name).suffix.lower()
+        if isinstance(raw, (bytes, bytearray)) and raw and suffix in {".docx", ".pdf", ".txt", ".md"}:
+            root.mkdir(parents=True, exist_ok=True)
+            dest = _unique_source_path(root, name)
+            dest.write_bytes(bytes(raw))
+            out["source_path"] = str(dest)
+            logger.info(
+                "reg_create source stored draft=%s name=%s bytes=%s",
+                ascii(draft_id),
+                ascii(name),
+                len(raw),
+            )
+        stored.append(out)
+    return stored
+
+
+def _unique_source_path(root: Path, name: str) -> Path:
+    dest = root / name
+    if not dest.exists():
+        return dest
+    stem = dest.stem
+    suffix = dest.suffix
+    index = 2
+    while True:
+        candidate = root / f"{stem}-{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def _write_completed_source_docx(path: Path, source: bytes, interview: object) -> None:
+    try:
+        from io import BytesIO
+
+        from docx import Document
+    except ImportError as exc:
+        raise RegulationCreationError("Для создания DOCX требуется python-docx", status_code=500) from exc
+    try:
+        doc = Document(BytesIO(source))
+    except Exception as exc:  # noqa: BLE001
+        raise RegulationCreationError(f"Не удалось открыть исходный DOCX: {exc}", status_code=500) from exc
+    if doc.core_properties.title:
+        doc.core_properties.title = rename_tz_to_regulation(str(doc.core_properties.title))
+    _rename_docx_container(doc)
+    for section in doc.sections:
+        _rename_docx_container(section.header)
+        _rename_docx_container(section.footer)
+        if section.different_first_page_header_footer:
+            _rename_docx_container(section.first_page_header)
+            _rename_docx_container(section.first_page_footer)
+    inserts = source_fact_inserts(interview)
+    if inserts:
+        _insert_facts_into_source_docx(doc, inserts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(path))
+
+
+def _rename_docx_container(container: object) -> None:
+    for paragraph in getattr(container, "paragraphs", []) or []:
+        _rename_docx_paragraph(paragraph)
+    for table in getattr(container, "tables", []) or []:
+        for row in table.rows:
+            for cell in row.cells:
+                _rename_docx_container(cell)
+
+
+def _rename_docx_paragraph(paragraph: object) -> None:
+    original = str(getattr(paragraph, "text", "") or "")
+    updated = rename_tz_to_regulation(original)
+    if updated == original:
+        return
+    runs = list(getattr(paragraph, "runs", []) or [])
+    if runs:
+        runs[0].text = updated
+        for run in runs[1:]:
+            run.text = ""
+        return
+    paragraph.add_run(updated)
+
+
+def _docx_heading_level(paragraph: object) -> int:
+    style_name = ""
+    try:
+        style = getattr(paragraph, "style", None)
+        if style is not None:
+            style_name = str(style.name or "")
+    except Exception:
+        style_name = ""
+    if style_name.startswith("Heading"):
+        tail = style_name.replace("Heading", "").strip()
+        if not tail:
+            return 1
+        try:
+            return int(tail.split()[0])
+        except ValueError:
+            return 1
+    text = str(getattr(paragraph, "text", "") or "").strip()
+    match = re.match(r"^(\d+(?:\.\d+)*)(?:\.)?\s+\S", text)
+    if match:
+        return match.group(1).count(".") + 1
+    return 0
+
+
+def _docx_body_items(doc: object) -> list[tuple[str, object, object | None]]:
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+
+    items: list[tuple[str, object, object | None]] = []
+    body = doc.element.body
+    for child in list(body):
+        if child.tag == qn("w:p"):
+            items.append(("p", child, Paragraph(child, doc)))
+        elif child.tag == qn("w:tbl"):
+            items.append(("tbl", child, None))
+    return items
+
+
+def _section_end_element(
+    items: list[tuple[str, object, object | None]],
+    heading_index: int,
+) -> object:
+    last_el = items[heading_index][1]
+    heading = items[heading_index][2]
+    level = _docx_heading_level(heading) if heading is not None else 1
+    for kind, element, para in items[heading_index + 1 :]:
+        if kind == "p" and para is not None:
+            next_level = _docx_heading_level(para)
+            if next_level and next_level <= level:
+                break
+        last_el = element
+    return last_el
+
+
+def _mark_added_run(run: object) -> None:
+    from docx.enum.text import WD_COLOR_INDEX
+    from docx.shared import RGBColor
+
+    run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+    run.font.color.rgb = RGBColor(0x1F, 0x4E, 0x79)
+
+
+def _add_highlighted_paragraph(container: object, text: str) -> object:
+    paragraph = container.add_paragraph()
+    run = paragraph.add_run(text)
+    _mark_added_run(run)
+    return paragraph
+
+
+def _insert_paragraphs_after(element: object, texts: list[str], parent: object) -> None:
+    from docx.oxml import OxmlElement
+    from docx.text.paragraph import Paragraph
+
+    current = element
+    for text in texts:
+        new_p = OxmlElement("w:p")
+        current.addnext(new_p)
+        paragraph = Paragraph(new_p, parent)
+        run = paragraph.add_run(text)
+        _mark_added_run(run)
+        current = new_p
+
+
+def _insert_facts_into_source_docx(doc: object, inserts: list[dict]) -> None:
+    existing = "\n".join(str(item.text or "") for item in doc.paragraphs)
+    for item in inserts:
+        title = str(item.get("title") or "").strip()
+        paragraphs = [
+            str(para).strip()
+            for para in (item.get("paragraphs") or [])
+            if str(para).strip() and str(para).strip() not in existing
+        ]
+        if not paragraphs:
+            continue
+        items = _docx_body_items(doc)
+        headings = [
+            (index, str(para.text or "").strip())
+            for index, (kind, _element, para) in enumerate(items)
+            if kind == "p" and para is not None and _docx_heading_level(para)
+        ]
+        matched = match_source_heading([heading for _index, heading in headings], title)
+        if not matched:
+            if title:
+                heading = doc.add_heading(title, level=2)
+                for run in heading.runs:
+                    _mark_added_run(run)
+            for para in paragraphs:
+                _add_highlighted_paragraph(doc, para)
+                existing = f"{existing}\n{para}"
+            continue
+        heading_index = next(index for index, heading in headings if heading == matched)
+        end = _section_end_element(items, heading_index)
+        _insert_paragraphs_after(end, paragraphs, doc)
+        existing = f"{existing}\n" + "\n".join(paragraphs)
 
 
 def _write_docx(path: Path, document: dict) -> None:
@@ -908,6 +1160,7 @@ def _load_creation_attachments(files: list[tuple[str, bytes]]) -> list[dict]:
                     "mime_type": "application/octet-stream",
                     "data_b64": "",
                     "read_error": str(exc),
+                    "raw": raw,
                 }
             )
             continue
@@ -923,6 +1176,7 @@ def _load_creation_attachments(files: list[tuple[str, bytes]]) -> list[dict]:
             item["text"] = text[:remain] + "\n...[текст файла обрезан]"
             text = str(item["text"])
         total_chars += len(text)
+        item["raw"] = raw
         loaded.append(item)
         if total_chars >= _MAX_ATTACH_CHARS:
             break
