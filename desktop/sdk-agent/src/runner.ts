@@ -241,7 +241,7 @@ async function executeAskQuestion(
 ): Promise<JsonValue> {
   if (stopState?.done) {
     return {
-      content: [{ type: "text", text: "Прогон уже завершён (WORK_RESULT). Вопрос не задан." }],
+      content: [{ type: "text", text: "Запуск уже завершён (WORK_RESULT). Вопрос не задан." }],
     };
   }
   const { question, options } = questionPayload(args as Record<string, unknown>);
@@ -311,7 +311,7 @@ function buildCustomTools(
             content: [
               {
                 type: "text",
-                text: "Прогон уже завершён (WORK_RESULT). Инструмент не вызван.",
+                text: "Запуск уже завершён (WORK_RESULT). Инструмент не вызван.",
               },
             ],
           };
@@ -829,8 +829,8 @@ async function runAgent(command: RunCommand): Promise<void> {
         text: interviewReady
           ? "Вопрос интервью готов. Останавливаю этот ход."
           : designReady
-            ? "Черновик готов. Останавливаю этот ход и перехожу к пробному прогону."
-            : "Пробный прогон завершен (TESTS: PASS). Останавливаю этот ход.",
+            ? "Черновик готов. Останавливаю этот ход и перехожу к пробному запуску."
+            : "Пробный запуск завершен (TESTS: PASS). Останавливаю этот ход.",
       });
       emit({ type: "final", id, status: "ok", answer: readyAnswer });
       emit({ type: "done", id, status: "ok", answer: readyAnswer });
@@ -851,11 +851,17 @@ async function runAgent(command: RunCommand): Promise<void> {
       } else if (event.type === "thinking" && event.text) {
         thought += event.text;
         emit({ type: "thinking", text: event.text });
-        if (!interview && ((await finishIfReady(thought)) || (await finishIfReady(answer)))) return;
+        // Run mode: never finish from thinking — the model quotes materials/agent.md
+        // (including prior WORK_RESULT blocks) while reading the workspace.
+        if (interview && (await finishIfReady(thought))) return;
+        if (design && (await finishIfReady(thought))) return;
       } else if (event.type === "tool_call") {
         // WORK_RESULT + TESTS: PASS already means the run is over. Do not keep
         // the stream open for more write tools (HITL) after the final block.
-        if (stopState.done || (!interview && ((await finishIfReady(thought)) || (await finishIfReady(answer))))) {
+        const runReady = !design && !interview && (await finishIfReady(answer));
+        const designReady = design && ((await finishIfReady(thought)) || (await finishIfReady(answer)));
+        const interviewReady = interview && ((await finishIfReady(thought)) || (await finishIfReady(answer)));
+        if (stopState.done || runReady || designReady || interviewReady) {
           return;
         }
         lastAssistant = "";

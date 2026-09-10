@@ -72,7 +72,7 @@ SUPPORTED_SUFFIXES = {
 _STAGES = [
     ("document", "Материалы", "Файлы загружены", "Добавляем материалы"),
     ("designed", "Черновик", "Черновик готов", "Проектируем инструкцию по регламенту"),
-    ("executing", "Пробный прогон", "Задача выполнена", "Агент делает задачу как Cursor"),
+    ("executing", "Пробный запуск", "Задача выполнена", "Агент делает задачу как Cursor"),
     ("tested", "Инструкция", "Инструкция готова", "Пишем правило для следующих запусков"),
     ("done", "Готово", "Агент сохранён", "Можно запускать агента"),
 ]
@@ -215,7 +215,7 @@ def _quick_answers_for_question(question: WorkflowOpenQuestion) -> list[str]:
 
 
 def _demo_already_ran_state(validation: dict | None) -> bool:
-    """Прогон уже был: это не «черновик готов, сейчас сам стартую»."""
+    """Запуск уже был: это не «черновик готов, сейчас сам стартую»."""
     state = validation if isinstance(validation, dict) else {}
     if state.get("demo_started") is True:
         return True
@@ -583,7 +583,7 @@ _QUESTION_TOPIC_HINTS = {
         "объем",
         "объём",
         "горизонт",
-        "за один прогон",
+        "за один запуск",
         "какой период",
     ),
     "recipient": (
@@ -1471,7 +1471,7 @@ def _question_from_blocker(
         )
 
     return (
-        "Тестовый прогон не завершён. Выберите режим проверки — без пароля и URL OData.",
+        "Тестовый запуск не завершён. Выберите режим проверки — без пароля и URL OData.",
         [
             "Пока только fixtures, live отложить",
             "Перезапустить live на этой машине",
@@ -2534,7 +2534,7 @@ class WorkflowPage(QWidget):
                 )
         if record.last_result:
             self._events.append(
-                FeedEvent("Результат тестового прогона", record.last_result, self._now())
+                FeedEvent("Результат тестового запуска", record.last_result, self._now())
             )
         for ev in self._events:
             if not ev.event_key:
@@ -2641,7 +2641,7 @@ class WorkflowPage(QWidget):
         reasons = [str(item).strip() for item in (validation.get("reasons") or []) if str(item).strip()]
         if reasons:
             message = (message + "\n\n" if message else "") + "\n".join(f"• {item}" for item in reasons[:6])
-        return message or "Пробный прогон не запускался: нужно исправить черновик."
+        return message or "Пробный запуск не запускался: нужно исправить черновик."
 
     def _update_run_button(self, *, plan, unanswered: bool) -> None:
         del plan, unanswered
@@ -2651,7 +2651,7 @@ class WorkflowPage(QWidget):
             return
         if self._busy:
             self._run_btn.setEnabled(False)
-            self._run_btn.setText("Идёт прогон…" if self._execute_started else "Проектирую…")
+            self._run_btn.setText("Идёт запуск…" if self._execute_started else "Проектирую…")
             return
         if self._tests_ok or demo_run_passed(self._record):
             self._run_btn.setVisible(False)
@@ -2673,7 +2673,7 @@ class WorkflowPage(QWidget):
         if self._record and self._record.exec_agent_id:
             return True
         return any(
-            ev.title in {"Результат тестового прогона", "Тестовый прогон"}
+            ev.title in {"Результат тестового запуска", "Тестовый запуск"}
             or (
                 ev.title == "Сборка workflow"
                 and "реализац" in (ev.body or "").casefold()
@@ -2735,19 +2735,19 @@ class WorkflowPage(QWidget):
             self._agent_status.setText("● Черновик требует исправления — нажмите «Исправить черновик»")
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
         elif self._record and self._record.phase == "designed" and self._demo_already_ran():
-            self._agent_status.setText("● Пробный прогон не дал устойчивый результат — можно запустить снова")
+            self._agent_status.setText("● Пробный запуск не дал устойчивый результат — можно запустить снова")
             self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
         elif self._record and self._record.phase == "designed":
-            self._agent_status.setText("● Черновик готов — запускаю пробный прогон")
+            self._agent_status.setText("● Черновик готов — запускаю пробный запуск")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         elif self._record and self._record.phase in {"ready", "tested", "executing"}:
-            self._agent_status.setText("● Можно запустить пробный прогон снова")
+            self._agent_status.setText("● Можно запустить пробный запуск снова")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         elif unanswered:
             self._agent_status.setText("● Нужен ответ по смыслу задачи — без этого неясен объём работы")
             self._agent_status.setStyleSheet("color: #C47E00; background: transparent;")
         elif plan and not unanswered:
-            self._agent_status.setText("● Можно запускать пробный прогон")
+            self._agent_status.setText("● Можно запускать пробный запуск")
             self._agent_status.setStyleSheet("color: #08745F; background: transparent;")
         else:
             self._agent_status.setText("● Готов к работе")
@@ -3851,7 +3851,7 @@ class WorkflowPage(QWidget):
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
             return
         if incoming.strip() and (
-            "запускаю пробный прогон" in incoming.casefold()
+            "запускаю пробный запуск" in incoming.casefold()
             or "запускаю задачу по описанию" in incoming.casefold()
         ):
             self._planning_stream = False
@@ -4096,7 +4096,7 @@ class WorkflowPage(QWidget):
                 action="Исправить черновик",
                 action_key="run_plan",
             )
-            self._agent_status.setText("● Пробный прогон не запускался — нужно исправить черновик")
+            self._agent_status.setText("● Пробный запуск не запускался — нужно исправить черновик")
             self._agent_status.setStyleSheet("color: #B00020; background: transparent;")
             return
         work = (result.local_run or {}).get("work_result") or {}
@@ -4134,7 +4134,7 @@ class WorkflowPage(QWidget):
             self._execute_started = False
             self._push_event(
                 "Агент",
-                "Пробный прогон не дал устойчивый результат. Можно запустить снова.",
+                "Пробный запуск не дал устойчивый результат. Можно запустить снова.",
                 action="Запустить снова",
                 action_key="run_demo",
             )
@@ -4195,7 +4195,7 @@ class WorkflowPage(QWidget):
             self._record = replace(saved, plan=plan, phase="designed", local_run=local)
         except ApiError:
             pass
-        self._push_event("Агент", "Принял, когда запускать агента. Запускаю пробный прогон.")
+        self._push_event("Агент", "Принял, когда запускать агента. Запускаю пробный запуск.")
         if self._can_run_demo():
             self._on_execute()
             return
@@ -4735,7 +4735,7 @@ class WorkflowPage(QWidget):
                     self._sdk_bridge = None
             self._stream_event.emit(
                 "decision",
-                "Проектирование завершено. Продолжаю тем же Cursor SDK агентом для пробного прогона.",
+                "Проектирование завершено. Продолжаю тем же Cursor SDK агентом для пробного запуска.",
             )
             answer = str(result.get("answer") or "").strip()
             record = self._store_sdk_agent_id(
@@ -4912,11 +4912,11 @@ class WorkflowPage(QWidget):
         self._last_stream_error = ""
         self._next_btn.setVisible(False)
         self._run_btn.setEnabled(False)
-        self._run_btn.setText("Идёт прогон…")
-        self._push_event("Пробный прогон", "Запускаю задачу по описанию бизнес-процесса…")
+        self._run_btn.setText("Идёт запуск…")
+        self._push_event("Пробный запуск", "Запускаю задачу по описанию бизнес-процесса…")
         workflow_id = self._record.id
         self._run_async(
-            "Пробный прогон",
+            "Пробный запуск",
             lambda: self._demo_with_sdk(workflow_id),
         )
 
@@ -4944,10 +4944,10 @@ class WorkflowPage(QWidget):
             elif dest_dir and not files:
                 body += "\nФайлы результата не найдены в artifacts/."
             self._tests_ok = False
-            self._push_event("Результат тестового прогона", body)
+            self._push_event("Результат тестового запуска", body)
             self._render_all()
             return
-        self._push_event("Результат тестового прогона", combined)
+        self._push_event("Результат тестового запуска", combined)
         self._evaluate_tests(list(files))
         self._render_all()
 
@@ -5043,7 +5043,7 @@ class WorkflowPage(QWidget):
         if not run_finished:
             self._push_event(
                 "Тесты",
-                "Тестовый прогон не завершён — сохранение недоступно. Перезапустите сборку.",
+                "Тестовый запуск не завершён — сохранение недоступно. Перезапустите сборку.",
             )
             self._render_all()
             return
@@ -5082,8 +5082,8 @@ class WorkflowPage(QWidget):
         if not (self._tests_ok or demo_run_passed(self._record)):
             QMessageBox.information(
                 self,
-                "Прогон",
-                "Сначала дождитесь успешного пробного прогона.",
+                "Запуск",
+                "Сначала дождитесь успешного пробного запуска.",
             )
             return
         self.schedule_requested.emit(self._record)

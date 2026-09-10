@@ -31,6 +31,8 @@ export interface RunCommand {
   appContext?: string
   /** One-shot eval: do not resume the live SDK agent or write history. */
   fresh?: boolean
+  /** Replace an in-flight run for the same workflow (UI «Запуск агента»). */
+  forceRestart?: boolean
 }
 
 export interface CheckTriggerCommand {

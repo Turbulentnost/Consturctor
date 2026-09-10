@@ -233,7 +233,7 @@ def _run_with_playbook(
             title=workflow.title or "",
         )
     )
-    emit({"type": "status", "text": "Запускаю Cursor по инструкции и примеру прогона…"})
+    emit({"type": "status", "text": "Запускаю Cursor по инструкции и примеру запуска…"})
 
     def on_event(event_type: str, text: str = "", extra: dict[str, Any] | None = None) -> None:
         payload: dict[str, Any] = {"type": event_type}
@@ -287,7 +287,7 @@ def _run_with_playbook(
         clear_tool_context()
 
     work = prompts.parse_work_result(phase.text or "")
-    answer = (work.get("text") or "").strip() or "Прогон завершён."
+    answer = (work.get("text") or "").strip() or "Запуск завершён."
     emit(
         {
             "type": "work_result",

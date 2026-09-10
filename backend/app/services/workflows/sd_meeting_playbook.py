@@ -7,8 +7,9 @@ from typing import Any
 _SD_TITLE_HINTS = (
     "заседаний совета",
     "заседания совета",
+    "подготовка заседаний совета",
     "совета директоров",
-    "совет директоров",
+    "сд гк",
     "пл-34-242",
     "пл 34-242",
     "пл34-242",
@@ -42,6 +43,7 @@ def sd_runtime_tools() -> list[str]:
         "outlook.read_calendar",
         "calendar.show_meetings",
         "onec.meeting_service_notes",
+        "onec.meeting_protocols",
         "onec.search_documents",
         "onec.get_document_card",
         "onec.list_attachments",
@@ -118,6 +120,15 @@ def sd_playbook_draft() -> dict[str, Any]:
                 "done_when": "Собраны темы/карточки «Совет директоров по ГК» и связанные СЗ.",
             },
             {
+                "id": "s2b",
+                "title": "Протоколы СД на проверку",
+                "system": "onec",
+                "entity": "protocol",
+                "operation": "list",
+                "required_params": ["meeting_kind"],
+                "done_when": "Найдены протоколы Document_ТД_Протокол с префиксом ПСД/СПГ/СД за период заседания.",
+            },
+            {
                 "id": "s3",
                 "title": "Вложения 1С к карточкам",
                 "system": "onec",
@@ -170,16 +181,29 @@ def sd_playbook_instructions() -> str:
         "`outlook.read_calendar`, при необходимости `calendar.show_meetings`.\n"
         "2. 1С: служебные записки — `onec.meeting_service_notes`; карточки тем/документов СД — "
         "`onec.search_documents` + `onec.get_document_card` (запрос «совет директоров по гк»).\n"
-        "3. Вложения 1С: для каждой найденной карточки — `onec.list_attachments`, "
+        "3. Протоколы на проверку: только `onec.meeting_protocols` с meeting_kind=sd и датой "
+        "заседания (или date_from/date_to). Номера СД ГК: префикс ПСД_001_О_* (не только СПГ/СД). "
+        "Не собирай фильтр вручную через onec.odata_get. Карточку — `onec.odata_get` по ref_key "
+        "из ответа meeting_protocols.\n"
+        "4. Вложения 1С: для каждой найденной карточки — `onec.list_attachments`, "
         "затем `onec.read_attachment` для PDF/DOCX/XLSX (сканы PDF читаются через OCR).\n"
-        "4. Материалы запуска: `excel.list_files` → `excel.read_workbook` для повестки и таблицы "
+        "5. Материалы запуска: `excel.list_files` → `excel.read_workbook` для повестки и таблицы "
         "комплектности в materials/attachments; Word-расшифровку читай как .docx.\n"
-        "5. Сверь обязательный пакет п. 6.4 ПЛ-34-242:\n"
+        "6. Сверь обязательный пакет п. 6.4 ПЛ-34-242:\n"
         f"{checklist}\n"
-        "6. Если пункта нет — зафиксируй пробел, не выдумывай. Без Word-расшифровки "
+        "7. Если пункта нет — зафиксируй пробел, не выдумывай. Без Word-расшифровки "
         "не готовь протокол, Decision Log и Action Tracker.\n"
-        "7. Результат: сводка комплектности + `report.export_document` "
-        "(при расшифровке — протокол и таблицы решений/поручений). Материалы не утверждай."
+        "8. Результат: сводка комплектности + `report.export_document` "
+        "(при расшифровке — протокол и таблицы решений/поручений). Материалы не утверждай.\n"
+        "9. Почту не ищи: не вызывай outlook.search_mail и imap.*. "
+        "Заседание — один вызов outlook.read_calendar; если календарь уже выгружен в JSON — "
+        "прочитай этот файл один раз и не ищи его снова.\n"
+        "10. Протоколы ищи только через `onec.meeting_protocols` (ПСД/СПГ/СД), "
+        "не через произвольный odata_get с фильтром startswith(Number,'СД'). "
+        "1С только через OData (meeting_service_notes, meeting_protocols, search_documents) — "
+        "не крути onec.odata_catalog без сущности и фильтра "
+        "и не повторяй тот же поиск. Зафиксируй пробел и сразу ## WORK_RESULT. "
+        "После WORK_RESULT инструменты не вызывай."
     )
 
 
@@ -221,12 +245,14 @@ def apply_sd_plan_runtime(plan_data: dict[str, Any] | None, *, title: str, notes
     plan = dict(plan_data or {})
     if not is_sd_meeting_agent(title, notes, plan.get("goal") or ""):
         return plan
+    seed = sd_playbook_draft()
     runtime = dict(plan.get("runtime") or {})
     runtime["kind"] = "board_meeting"
     runtime["tools"] = sd_runtime_tools()
     plan["runtime"] = runtime
+    plan["steps"] = seed["steps"]
     if not (plan.get("goal") or "").strip():
-        plan["goal"] = sd_playbook_draft()["goal"]
+        plan["goal"] = seed["goal"]
     if not (plan.get("title") or "").strip():
-        plan["title"] = title or sd_playbook_draft()["title"]
+        plan["title"] = title or seed["title"]
     return plan

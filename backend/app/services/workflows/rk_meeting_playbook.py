@@ -46,6 +46,7 @@ def rk_runtime_tools() -> list[str]:
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
         "onec.docflow_tasks",
+        "onec.meeting_protocols",
         "onec.search_documents",
         "onec.get_document_card",
         "onec.list_attachments",
@@ -145,6 +146,15 @@ def rk_playbook_draft() -> dict[str, Any]:
                 "done_when": "Собраны открытые поручения, просрочки и задачи документооборота из 1С.",
             },
             {
+                "id": "s2b",
+                "title": "Протоколы РК на проверку",
+                "system": "onec",
+                "entity": "protocol",
+                "operation": "list",
+                "required_params": ["meeting_kind"],
+                "done_when": "Найдены протоколы Document_ТД_Протокол с префиксом РК за период заседания.",
+            },
+            {
                 "id": "s3",
                 "title": "Документы и вложения 1С по РК",
                 "system": "onec",
@@ -201,17 +211,28 @@ def rk_playbook_instructions() -> str:
         "   • `onec.erp_tasks_period` — за период (date_from/date_to);\n"
         "   • `onec.docflow_tasks` — документооборот;\n"
         "   • при необходимости `onec.search_documents` / `onec.get_document_card` по РК.\n"
-        "3. Вложения 1С: `onec.list_attachments` → `onec.read_attachment`.\n"
-        "4. Excel-реестр: сначала `excel.list_files` + `excel.read_workbook` из "
+        "3. Протоколы на проверку: `onec.meeting_protocols` с meeting_kind=rk и датой заседания "
+        "(или date_from/date_to). Карточку — `onec.odata_get` по ref_key из ответа.\n"
+        "4. Вложения 1С: `onec.list_attachments` → `onec.read_attachment`.\n"
+        "5. Excel-реестр: сначала `excel.list_files` + `excel.read_workbook` из "
         "materials/attachments; если файла нет — `workspace.powershell_run` только "
         f"для чтения/копирования из {_RK_REGISTRY_HINT} или {_RK_SHARE_HINT} "
         "(без записи в сеть и без правки Excel).\n"
-        "5. Сверь чек-лист ТЗ §15:\n"
+        "6. Сверь чек-лист ТЗ §15:\n"
         f"{checklist}\n"
-        "6. Расхождение 1С/Excel — покажи оба срока, Excel не правь. Нет пункта — пробел, "
+        "7. Расхождение 1С/Excel — покажи оба срока, Excel не правь. Нет пункта — пробел, "
         "не подставляй. Без Word-расшифровки протокол не готовь.\n"
-        "7. Итог: `report.build_task_report` / `report.export_document` — проект повестки "
-        "и перечни. Повестку и протокол не утверждай."
+        "8. Исключи из повестки тестовые пробы Constructor в 1С (номер/тема/комментарий "
+        "содержит «Constructor», «проба Constructor», «тестовая проба»).\n"
+        "9. Сбор данных — один проход: не перезапускай outlook/1С/Excel/сеть повторно "
+        "и не пиши «данные устарели, собираю заново». Сетевую папку читай одной попыткой "
+        "(лёгкий список файлов); при таймауте 90 с продолжай с 1С и materials/attachments.\n"
+        "10. Если в Outlook нет вторничного заседания РК — в итоге явно «Недостаточно данных: "
+        "дата заседания не найдена», но перечни по 1С/Excel всё равно выпусти.\n"
+        "11. Сначала `report.export_document` (проект повестки и перечни), потом один блок "
+        "## WORK_RESULT. Если даты вторника нет — файл всё равно выпусти, в итоге "
+        "«Недостаточно данных». Промежуточный ход — только в thinking. "
+        "Повестку и протокол не утверждай."
     )
 
 
@@ -254,12 +275,14 @@ def apply_rk_plan_runtime(plan_data: dict[str, Any] | None, *, title: str, notes
     plan = dict(plan_data or {})
     if not is_rk_meeting_agent(title, notes, plan.get("goal") or ""):
         return plan
+    seed = rk_playbook_draft()
     runtime = dict(plan.get("runtime") or {})
     runtime["kind"] = "revision_commission"
     runtime["tools"] = rk_runtime_tools()
     plan["runtime"] = runtime
+    plan["steps"] = seed["steps"]
     if not (plan.get("goal") or "").strip():
-        plan["goal"] = rk_playbook_draft()["goal"]
+        plan["goal"] = seed["goal"]
     if not (plan.get("title") or "").strip():
-        plan["title"] = title or rk_playbook_draft()["title"]
+        plan["title"] = title or seed["title"]
     return plan

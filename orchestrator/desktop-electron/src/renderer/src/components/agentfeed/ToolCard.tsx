@@ -19,7 +19,8 @@ const ODATA_TOOLS = new Set([
   'onec.odata_catalog',
   'onec.search_documents',
   'onec.get_document_card',
-  'onec.meeting_service_notes'
+  'onec.meeting_service_notes',
+  'onec.meeting_protocols'
 ])
 
 function pretty(value: Record<string, unknown>): string {

@@ -68,14 +68,13 @@ def test_pick_preferred_document() -> None:
 
 def test_tool_is_readonly_and_registered() -> None:
     assert "onec.meeting_service_notes" in ALLOWED_ONEC_TOOLS
-    assert "onec.meeting_service_notes" in ONEC_COM32_TOOLS
+    assert "onec.meeting_service_notes" not in ONEC_COM32_TOOLS
     assert not needs_confirmation("onec.meeting_service_notes")
     stub = type("W", (), {"execute": lambda *_a, **_k: None})()
     tool = OneCMeetingServiceNotesTool(stub)
     assert tool.definition.requires_human_approval is False
-    assert "не записывает" in (tool.definition.description or "").casefold()
-    assert tool.definition.runtime == ONEC_COM32_RUNTIME
-    assert tool.definition.timeout_seconds >= 360
+    assert "odata" in (tool.definition.description or "").casefold()
+    assert tool.definition.runtime == "odata"
 
 
 def test_latin_query_has_ascii_aliases() -> None:

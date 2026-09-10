@@ -20,11 +20,8 @@ ONEC_COM32_RUNTIME = "com32"
 ONEC_COM32_TIMEOUT_SECONDS = com32_worker_timeout_seconds()
 ONEC_COM32_TOOLS = frozenset(
     {
-        "onec.search_documents",
-        "onec.get_document_card",
         "onec.search_tasks",
         "onec.get_task_card",
-        "onec.meeting_service_notes",
         "onec.list_attachments",
         "onec.read_attachment",
     }
@@ -79,7 +76,7 @@ class OneCSearchDocumentsTool(OneCReadOnlyTool):
         super().__init__(
             _definition(
                 "onec.search_documents",
-                "Поиск документов 1С",
+                "Поиск документов 1С через OData (без COM)",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -102,7 +99,7 @@ class OneCGetDocumentCardTool(OneCReadOnlyTool):
         super().__init__(
             _definition(
                 "onec.get_document_card",
-                "Чтение карточки документа 1С",
+                "Чтение карточки документа 1С через OData (без COM)",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -214,16 +211,16 @@ class OneCMeetingServiceNotesTool(OneCReadOnlyTool):
                 name="onec.meeting_service_notes",
                 title="Служебные записки на совещания",
                 description=(
-                    "Только чтение: служебные записки 1С с темой «организация совещаний». "
+                    "Только чтение через OData: служебные записки 1С с темой «организация совещаний». "
                     "Возвращает тему СЗ, тему совещания, место, желаемую дату/время, "
                     "длительность, руководителя, приоритет, периодичность, вид и признак ПСД. "
-                    "date или date_from/date_to (YYYY-MM-DD). Ничего не записывает в 1С."
+                    "date или date_from/date_to (YYYY-MM-DD). Без COM."
                 ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
-                timeout_seconds=ONEC_COM32_TIMEOUT_SECONDS,
-                runtime=ONEC_COM32_RUNTIME,
+                timeout_seconds=120,
+                runtime="odata",
                 input_schema={
                     "type": "object",
                     "properties": {

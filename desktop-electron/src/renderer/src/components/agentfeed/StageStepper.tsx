@@ -16,7 +16,7 @@ export const FORMATION_STAGES: Stage[] = [
   },
   {
     id: 'executing',
-    label: 'Пробный прогон',
+    label: 'Пробный запуск',
     doneHint: 'Задача выполнена',
     activeHint: 'Агент делает задачу как Cursor'
   },

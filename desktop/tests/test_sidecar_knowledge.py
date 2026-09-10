@@ -22,6 +22,7 @@ from agent_sidecar import (  # noqa: E402
     RUN_INPUTS_QUESTION,
     RUN_INPUTS_RUN_HINT,
     RUN_INPUTS_YES,
+    FILE_QUESTION_SKIP_ANSWER,
     RUN_INPUT_SKIP_ANSWER,
     RUN_INPUT_WAIT_SECONDS,
     WHEN_TO_RUN_HINT,
@@ -117,6 +118,11 @@ def test_run_input_auto_continues_in_30_seconds() -> None:
     none_wait, none_skip = _auto_continue_from_payload({"question": "Когда запускать?"})
     assert none_wait == 0
     assert none_skip == ""
+    file_wait, file_skip = _auto_continue_from_payload(
+        {"arguments": {"question": "Prilozhite komplekt", "needsFile": True}}
+    )
+    assert file_wait == 30
+    assert file_skip == FILE_QUESTION_SKIP_ANSWER
 
 
 def test_persist_xlsx_uploads_and_seeds_manifest(tmp_path: Path) -> None:

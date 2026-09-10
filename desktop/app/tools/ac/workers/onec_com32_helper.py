@@ -18,6 +18,7 @@ ENV_SERVER = "ONEC_COM_SERVER"
 ENV_REF = "ONEC_COM_REF"
 ENV_LOGIN = "ERP_LOGIN"
 ENV_PASSWORD = "ERP_PASSWORD"
+ENV_COM_USR = "ONEC_COM_USR"
 DEFAULT_PROGID = "V83.COMConnector"
 # CONNECT к erp_pm часто 60–90 с; 150 с обрывало живой сеанс и уходило в чат как mismatch.
 COM32_SELECT_TIMEOUT = 180
@@ -172,7 +173,7 @@ def connection_string() -> str:
     if not server or not ref:
         return ""
     parts = [f"Srvr={_quote(server)}", f"Ref={_quote(ref)}"]
-    login = os.environ.get(ENV_LOGIN, "").strip()
+    login = os.environ.get(ENV_COM_USR, "").strip() or os.environ.get(ENV_LOGIN, "").strip()
     password = os.environ.get(ENV_PASSWORD, "").strip()
     if login and password:
         parts.append(f"Usr={_quote(login)}")

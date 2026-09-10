@@ -291,10 +291,10 @@ def bucket_for_tile(tile: dict[str, Any]) -> str:
 
 def _evidence(items: list[WorkItem], *, ok: int, total: int, extra: str = "") -> str:
     if total <= 0:
-        return "Нет рабочих прогонов агентов за 90 дней (инфраструктурные ошибки не считаем)."
+        return "Нет рабочих запусков агентов за 90 дней (инфраструктурные ошибки не считаем)."
     codes = _sz_codes(items)
     parts = [
-        f"По запускам и выводам ИИ-агентов: {ok} успешных из {total} рабочих прогонов."
+        f"По запускам и выводам ИИ-агентов: {ok} успешных из {total} рабочих запусков."
     ]
     if codes:
         parts.append("В выводах служебные записки: " + ", ".join(codes[:8]) + ".")
@@ -316,30 +316,30 @@ def compute_tile_updates(tiles: list[dict[str, Any]], items: list[WorkItem]) -> 
         if bucket == "package":
             chosen = _pick(items, "package", "meeting")
             ok, total = _success_counts(chosen)
-            extra = "Пакет/совещания: успех рабочего прогона агента."
+            extra = "Пакет/совещания: успех рабочего запуска агента."
         elif bucket == "protocol":
             chosen = _pick(items, "protocol", fallback=("meeting", "package"))
             ok, total = _success_counts(chosen)
             if not any("protocol" in item.tags for item in chosen):
-                extra = "Отдельных протоколов в выводах нет, считаем по прогонам агентов совещаний."
+                extra = "Отдельных протоколов в выводах нет, считаем по запускам агентов совещаний."
             else:
-                extra = "Протокол: успех рабочего прогона, где есть вывод про протокол."
+                extra = "Протокол: успех рабочего запуска, где есть вывод про протокол."
         elif bucket == "instructions":
             chosen = _pick(items, "instructions", fallback=("meeting", "package"))
             late = [item for item in chosen if _is_late(item)]
             ok = sum(1 for item in chosen if item.status == "ok" and item not in late)
             total = len(chosen)
-            extra = "Поручения/СЗ: успешный прогон и нет признака просрочки в выводе."
+            extra = "Поручения/СЗ: успешный запуск и нет признака просрочки в выводе."
         elif bucket == "quality":
             chosen = _pick(items, "package", "protocol", "meeting") or list(items)
             returned = [item for item in chosen if _has_return(item)]
             ok = sum(1 for item in chosen if item.status == "ok" and item not in returned)
             total = len(chosen)
-            extra = "Качество: рабочий прогон без возврата и без ошибки."
+            extra = "Качество: рабочий запуск без возврата и без ошибки."
         else:
             chosen = list(items)
             ok, total = _success_counts(chosen)
-            extra = "Факт по успешности рабочих прогонов агентов сотрудника."
+            extra = "Факт по успешности рабочих запусков агентов сотрудника."
         value = _ratio(ok, total)
         updates.append(
             {

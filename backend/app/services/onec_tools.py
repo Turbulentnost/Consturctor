@@ -27,6 +27,11 @@ from app.services.erp_tasks import (
     stub_period as _stub_erp_tasks_period,
     stub_subordinate_tasks as _stub_erp_subordinate_tasks,
 )
+from app.services.meeting_protocols import (
+    PROTOCOL_ENTITY,
+    list_meeting_protocols as _list_meeting_protocols,
+    stub_meeting_protocols as _stub_meeting_protocols,
+)
 from app.services.onec_security import (
     default_odata_entities,
     looks_like_odata_entity,
@@ -101,6 +106,7 @@ ONEC_TOOLS = frozenset(
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
         "onec.docflow_tasks",
+        "onec.meeting_protocols",
     }
 )
 ONEC_WRITE_TOOLS = frozenset(
@@ -125,6 +131,7 @@ _ACCESS_TOOLS = frozenset(
         "onec.odata_patch",
         "onec.attach_file",
         "onec.sql_query",
+        "onec.meeting_protocols",
     }
 )
 
@@ -217,13 +224,18 @@ def invoke_onec(
     try:
         access = None
         if tool in _ACCESS_TOOLS and handler is REAL_HANDLERS.get(tool):
+            access_args = args
+            if tool == "onec.meeting_protocols":
+                access_args = {**args, "entity": PROTOCOL_ENTITY}
             access = _enforce_actor_access(
                 tool,
-                args,
+                access_args,
                 actor_user_id=actor_user_id,
                 actor_fio=actor_fio,
             )
-        if tool in _JWT_ONEC_TOOLS:
+        if tool == "onec.meeting_protocols":
+            result = handler(args, access=access)
+        elif tool in _JWT_ONEC_TOOLS:
             result = handler(args, actor_fio=actor_fio, actor_user_id=actor_user_id)
         else:
             result = handler(args)
@@ -1170,6 +1182,7 @@ STUB_HANDLERS = {
     "onec.erp_tasks_period": _stub_erp_tasks_period,
     "onec.erp_subordinate_tasks": _stub_erp_subordinate_tasks,
     "onec.docflow_tasks": _stub_docflow_tasks,
+    "onec.meeting_protocols": _stub_meeting_protocols,
 }
 
 REAL_HANDLERS = {
@@ -1183,4 +1196,5 @@ REAL_HANDLERS = {
     "onec.erp_tasks_period": _erp_tasks_period,
     "onec.erp_subordinate_tasks": _erp_subordinate_tasks,
     "onec.docflow_tasks": _docflow_tasks,
+    "onec.meeting_protocols": _list_meeting_protocols,
 }

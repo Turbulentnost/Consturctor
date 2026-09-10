@@ -619,9 +619,10 @@ export function ProcessesWorkplace({
             </option>
           ))}
         </select>
-        <label className="wp-toggle">
+        <label className="wp-switch">
           <input type="checkbox" checked={devOnly} onChange={(e) => setDevOnly(e.target.checked)} />
-          Только с отклонениями
+          <span className="wp-switch-track" aria-hidden />
+          <span>Только с отклонениями</span>
         </label>
         <select className="wp-select" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
           <option value="action">Сначала требующие действия</option>

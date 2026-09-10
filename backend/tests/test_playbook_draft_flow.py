@@ -788,13 +788,13 @@ def test_gate_blocks_when_no_step_confirmed() -> None:
 def test_refine_parser_keeps_draft_steps_when_model_omits_them() -> None:
     draft = attach_tool_candidates(_draft())
     text = json.dumps(
-        {"name": "Отчёт", "instructions": "шаги", "example_run": "прогон"},
+        {"name": "Отчёт", "instructions": "шаги", "example_run": "запуск"},
         ensure_ascii=False,
     )
 
     parsed = prompts.parse_playbook_refine(text, draft=draft)
 
-    assert parsed["example_run"] == "прогон"
+    assert parsed["example_run"] == "запуск"
     assert parsed["steps"] == draft["steps"]
 
 
@@ -803,7 +803,7 @@ def test_refine_parser_takes_corrected_steps() -> None:
     text = json.dumps(
         {
             "instructions": "шаги",
-            "example_run": "прогон",
+            "example_run": "запуск",
             "steps": [_onec_step(id="s1", title="Точный вызов onec.erp_tasks_period")],
         },
         ensure_ascii=False,

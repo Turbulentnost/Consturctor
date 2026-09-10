@@ -27,7 +27,7 @@ KPI_KINDS = frozenset(
         "fail_count",
     }
 )
-NO_RUNS_LABEL = "ещё нет прогонов"
+NO_RUNS_LABEL = "ещё нет запусков"
 DEFAULT_GREEN_MIN = 90.0
 DEFAULT_YELLOW_MIN = 70.0
 MIN_INTERVAL_SECONDS = 5 * 60
@@ -107,12 +107,12 @@ def default_tiles(*, title: str = "", goal: str = "", schedule: dict[str, Any] |
                     "label": "Факт",
                     "value": None,
                     "unit": "мин",
-                    "description": "Средний интервал между фактическими прогонами.",
+                    "description": "Средний интервал между фактическими запусками.",
                 },
                 "measure": {
                     "kind": "expected_interval",
                     "params": {},
-                    "formula": "Средний промежуток между started_at соседних прогонов",
+                    "formula": "Средний промежуток между started_at соседних запусков",
                 },
             }
         )
@@ -130,19 +130,19 @@ def default_tiles(*, title: str = "", goal: str = "", schedule: dict[str, Any] |
                     "label": "Факт",
                     "value": None,
                     "unit": "%",
-                    "description": "Доля trigger-прогонов в допустимом окне относительно интервала.",
+                    "description": "Доля trigger-запусков в допустимом окне относительно интервала.",
                 },
                 "measure": {
                     "kind": "on_schedule_rate",
                     "params": {},
-                    "formula": "trigger-прогоны с интервалом в пределах ±20% от плана / все trigger-прогоны",
+                    "formula": "trigger-запуски с интервалом в пределах ±20% от плана / все trigger-запуски",
                 },
             }
         )
     tiles.append(
         {
             "id": "runs_count",
-            "name": "Число прогонов",
+            "name": "Число запусков",
             "plan": {
                 "label": "План",
                 "value": _expected_runs_per_day(minutes),
@@ -162,7 +162,7 @@ def default_tiles(*, title: str = "", goal: str = "", schedule: dict[str, Any] |
             "measure": {
                 "kind": "runs_count",
                 "params": {},
-                "formula": "Количество записей в истории прогонов",
+                "formula": "Количество записей в истории запусков",
             },
         }
     )
@@ -174,13 +174,13 @@ def default_tiles(*, title: str = "", goal: str = "", schedule: dict[str, Any] |
                 "label": "План",
                 "value": 100,
                 "unit": "%",
-                "description": "Какая доля прогонов должна завершаться без ошибки.",
+                "description": "Какая доля запусков должна завершаться без ошибки.",
             },
             "fact": {
                 "label": "Факт",
                 "value": None,
                 "unit": "%",
-                "description": "Доля прогонов со статусом ok.",
+                "description": "Доля запусков со статусом ok.",
             },
             "measure": {
                 "kind": "success_rate",
@@ -197,18 +197,18 @@ def default_tiles(*, title: str = "", goal: str = "", schedule: dict[str, Any] |
                 "label": "План",
                 "value": 0,
                 "unit": "шт",
-                "description": "Сколько прогонов может завершиться ошибкой.",
+                "description": "Сколько запусков может завершиться ошибкой.",
             },
             "fact": {
                 "label": "Факт",
                 "value": None,
                 "unit": "шт",
-                "description": "Число прогонов со статусом error.",
+                "description": "Число запусков со статусом error.",
             },
             "measure": {
                 "kind": "fail_count",
                 "params": {},
-                "formula": "Количество прогонов со статусом error",
+                "formula": "Количество запусков со статусом error",
             },
         }
     )
@@ -538,7 +538,7 @@ def compute_fact(
     if kind == "runs_count":
         if not meaningful:
             return None, NO_RUNS_LABEL
-        return float(len(meaningful)), "число прогонов"
+        return float(len(meaningful)), "число запусков"
     if kind == "fail_count":
         if not finished:
             return None, NO_RUNS_LABEL
@@ -835,7 +835,7 @@ def _human_seconds(seconds: int) -> str:
 def _default_name(kind: str) -> str:
     return {
         "expected_interval": "Частота запусков",
-        "runs_count": "Число прогонов",
+        "runs_count": "Число запусков",
         "success_rate": "Успешность",
         "on_schedule_rate": "Своевременность запусков",
         "fail_count": "Ошибки",
@@ -854,12 +854,12 @@ def _default_unit(kind: str) -> str:
 
 def _default_how(kind: str) -> str:
     return {
-        "expected_interval": "Средний промежуток между started_at соседних прогонов в минутах.",
-        "on_schedule_rate": "Доля trigger-прогонов, чей интервал укладывается в ±20% от плана.",
-        "runs_count": "Число записей в истории прогонов агента.",
-        "success_rate": "Доля прогонов со статусом ok среди завершённых (ok + error).",
-        "fail_count": "Число прогонов со статусом error.",
-    }.get(kind, "По истории прогонов агента и методике плитки.")
+        "expected_interval": "Средний промежуток между started_at соседних запусков в минутах.",
+        "on_schedule_rate": "Доля trigger-запусков, чей интервал укладывается в ±20% от плана.",
+        "runs_count": "Число записей в истории запусков агента.",
+        "success_rate": "Доля запусков со статусом ok среди завершённых (ok + error).",
+        "fail_count": "Число запусков со статусом error.",
+    }.get(kind, "По истории запусков агента и методике плитки.")
 
 
 def _default_plan_explanation(kind: str) -> str:
@@ -904,11 +904,11 @@ def _default_fact_explanation(kind: str) -> str:
             "Факт — сколько в среднем проходит времени между соседними запусками агента. "
             "Берём историю запусков, выстраиваем их по времени и смотрим промежутки. "
             "Если запусков ещё не было или их слишком мало, факт не считается — "
-            "на плитке будет «ещё нет прогонов»."
+            "на плитке будет «ещё нет запусков»."
         ),
         "on_schedule_rate": (
             "Факт показывает, какая доля запусков произошла вовремя. "
-            "В истории запусков каждый прогон сопоставляем с событием, которое его вызвало "
+            "В истории запусков каждый запуск сопоставляем с событием, которое его вызвало "
             "(например, номер служебной записки). "
             "Считаем, сколько минут прошло от события до запуска. "
             "Если это время не больше плана — запуск вовремя. "

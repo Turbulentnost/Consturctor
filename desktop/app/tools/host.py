@@ -39,15 +39,18 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str,
     # Server-executed tools (1C OData/SQL, IMAP, users, notify) are proxied to the
     # Constructor backend. Everything else runs on this desktop by default, so no
     # locally written tool can leak to the server.
-    from app.tools.server_tools import SERVER_TOOL_NAMES
+    from app.tools.server_tools import LOCAL_BACKEND_TOOL_NAMES, SERVER_TOOL_NAMES
 
+    if name in LOCAL_BACKEND_TOOL_NAMES:
+        return _invoke_local_backend_tool(name, args)
     if name in SERVER_TOOL_NAMES:
         return _invoke_server_tool(name, args)
     if name == "data.process":
         raise ToolHostError(
-            "Инструмент data.process доступен только в серверном прогоне, не на desktop."
+            "Инструмент data.process доступен только в серверном запуске, не на desktop."
         )
 
+    # 1C document tools below run via OData proxy, not COM (see LOCAL_BACKEND_TOOL_NAMES).
     handler = _HANDLERS.get(name)
     if handler is not None:
         return handler(args)
@@ -57,6 +60,29 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str,
         return invoke_ac_tool(name, args)
     except AcToolError as exc:
         raise ToolHostError(str(exc)) from exc
+
+
+def _invoke_local_backend_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        if name == "onec.meeting_protocols":
+            from app.tools.meeting_protocols_local import invoke_meeting_protocols
+
+            return invoke_meeting_protocols(args)
+        if name == "onec.meeting_service_notes":
+            from app.tools.onec_documents_odata_local import invoke_meeting_service_notes
+
+            return invoke_meeting_service_notes(args)
+        if name == "onec.search_documents":
+            from app.tools.onec_documents_odata_local import invoke_search_documents
+
+            return invoke_search_documents(args)
+        if name == "onec.get_document_card":
+            from app.tools.onec_documents_odata_local import invoke_get_document_card
+
+            return invoke_get_document_card(args)
+    except ValueError as exc:
+        raise ToolHostError(str(exc)) from exc
+    raise ToolHostError(f"Локальный backend-инструмент не реализован: {name}")
 
 
 def _invoke_server_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:

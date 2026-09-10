@@ -27,6 +27,7 @@ export const TOOL_LABELS: Record<string, string> = {
   'onec.search_tasks': 'Поиск задач 1С',
   'onec.get_task_card': 'Карточка задачи 1С',
   'onec.meeting_service_notes': 'Служебные записки на совещания',
+  'onec.meeting_protocols': 'Протоколы совещаний (OData)',
   'onec.odata_get': 'Чтение 1С',
   'onec.odata_post': 'Создание записи 1С',
   'onec.odata_patch': 'Изменение записи 1С',

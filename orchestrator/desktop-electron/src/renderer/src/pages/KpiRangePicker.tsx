@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { addDays, DAYS_SHORT, mondayOf, MONTH_TITLE } from '../utils/calendar'
 
 const iconCalendar = new URL('../../../temp/KPI/calendar.png', import.meta.url).href
@@ -87,22 +88,57 @@ export function KpiRangePicker({
   showShortcuts?: boolean
 }): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const popRef = useRef<HTMLDivElement | null>(null)
   const [open, setOpen] = useState(false)
   const [view, setView] = useState(() => parseDayKey(to) || new Date())
   const [draftFrom, setDraftFrom] = useState(from)
   const [draftTo, setDraftTo] = useState(to)
   const [hoverKey, setHoverKey] = useState('')
+  const [popPos, setPopPos] = useState({ top: 0, left: 0 })
 
   const pickingEnd = Boolean(draftFrom) && !draftTo
   const label = formatKpiRangeLabel(from, to)
 
+  const placePop = (): void => {
+    const box = buttonRef.current?.getBoundingClientRect()
+    if (!box) return
+    const width = 276
+    const left = Math.min(Math.max(8, box.left), window.innerWidth - width - 8)
+    const top = box.bottom + 6
+    setPopPos({ top, left })
+  }
+
   useEffect(() => {
     if (!open) return
-    const onDoc = (event: MouseEvent): void => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    placePop()
+    const onMove = (): void => placePop()
+    window.addEventListener('resize', onMove)
+    document.addEventListener('scroll', onMove, true)
+    return () => {
+      window.removeEventListener('resize', onMove)
+      document.removeEventListener('scroll', onMove, true)
     }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const inside = (event: MouseEvent): boolean => {
+      const target = event.target as Node | null
+      if (!target) return false
+      if (buttonRef.current?.contains(target) || popRef.current?.contains(target)) return true
+      const path = event.composedPath()
+      return path.includes(buttonRef.current as EventTarget) || path.includes(popRef.current as EventTarget)
+    }
+    const onDoc = (event: MouseEvent): void => {
+      if (!inside(event)) setOpen(false)
+    }
+    // Skip the opening click so the same mousedown does not close the pop.
+    const timer = window.setTimeout(() => document.addEventListener('mousedown', onDoc), 0)
+    return () => {
+      window.clearTimeout(timer)
+      document.removeEventListener('mousedown', onDoc)
+    }
   }, [open])
 
   useEffect(() => {
@@ -158,6 +194,7 @@ export function KpiRangePicker({
   return (
     <div className="kpi-range-picker" ref={rootRef}>
       <button
+        ref={buttonRef}
         type="button"
         className={`kpi-range-picker-btn${open ? ' open' : ''}`}
         aria-haspopup="dialog"
@@ -168,8 +205,16 @@ export function KpiRangePicker({
         <img src={iconCalendar} alt="" />
         <span>{label}</span>
       </button>
-      {open ? (
-        <div className="kpi-range-picker-pop" role="dialog" aria-label="Выбор периода">
+      {open
+        ? createPortal(
+            <div
+              ref={popRef}
+              className="kpi-range-picker-pop"
+              role="dialog"
+              aria-label="Выбор периода"
+              style={{ top: popPos.top, left: popPos.left }}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
           <div className="kpi-range-picker-nav">
             <button type="button" className="kpi-range-picker-nav-btn" onClick={() => shiftMonth(-1)} aria-label="Предыдущий месяц">
               ‹
@@ -233,8 +278,10 @@ export function KpiRangePicker({
             </div>
           ) : null}
           <div className="kpi-range-picker-draft">{draftLabel}</div>
-        </div>
-      ) : null}
+        </div>,
+            document.body
+          )
+        : null}
     </div>
   )
 }

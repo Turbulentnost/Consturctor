@@ -41,7 +41,7 @@ JSON-черновик пиши после закрытых пробелов, н�
 required_clarifications: только незакрытые пробелы.
 Схема JSON и правила проектирования в materials/agent.md.
 
-## Прогон
+## Запуск
 
 Сначала вызови инструменты и получи реальные данные, только потом делай выводы.
 Если в run_inputs есть обязательный файл и его нет в materials/attachments, остановись и спроси через askQuestion с needsFile=true. Не подменяй отсутствующий файл пользователя другим источником.
@@ -53,7 +53,7 @@ required_clarifications: только незакрытые пробелы.
 Не создавай файлы, которые пересказывают задание, план или твои намерения. Такой файл не является результатом.
 Ход работы, план и промежуточные комментарии (сначала прочту то-то, потом посчитаю) пиши только в размышления (thinking). В ответ в чат их не выводи.
 Ответ в чат должен начинаться строкой ## WORK_RESULT и содержать только финальный блок: WORK_RESULT, FILES, ACTIONS, NOTIFICATIONS, SCHEDULE и в конце TESTS: PASS или TESTS: FAIL. Ничего до строки ## WORK_RESULT не пиши.
-Строку TESTS: PASS или TESTS: FAIL пиши ровно один раз, в самом конце блока WORK_RESULT. Никогда не упоминай TESTS: PASS в размышлениях или в прозе до блока: это сигнал завершения, преждевременное упоминание обрывает прогон.
+Строку TESTS: PASS или TESTS: FAIL пиши ровно один раз, в самом конце блока WORK_RESULT. Никогда не упоминай TESTS: PASS в размышлениях или в прозе до блока: это сигнал завершения, преждевременное упоминание обрывает запуск.
 Даже если ты уже что-то рассуждал в чате, всё равно заверши ответ полноценным блоком ## WORK_RESULT. Все инструменты (в т.ч. визуализацию, например calendar.show_meetings) вызывай до блока, а не описывай словами вместо вызова.
 Шаблон ответа в чат (замени на реальные данные, пустые разделы пропусти):
 
@@ -199,13 +199,49 @@ def build_design_sdk_prompt(workflow: WorkflowRecord, design_prompt: str) -> str
     )
 
 
+def _is_meeting_run_agent(workflow: WorkflowRecord) -> bool:
+    local = workflow.local_run if isinstance(workflow.local_run, dict) else {}
+    runtime = local.get("runtime") if isinstance(local.get("runtime"), dict) else {}
+    kind = str(runtime.get("kind") or "").casefold()
+    if kind in {"revision_commission", "board_meeting", "sd_meeting"}:
+        return True
+    blob = "\n".join(
+        str(part or "")
+        for part in (
+            workflow.title,
+            workflow.notes,
+            (local.get("playbook") or {}).get("instructions")
+            if isinstance(local.get("playbook"), dict)
+            else "",
+        )
+    ).casefold()
+    return any(
+        hint in blob
+        for hint in (
+            "ревизионной комиссии",
+            "ревизионная комиссия",
+            "совета директоров",
+            "пл-01-001",
+            "пл-34-242",
+        )
+    )
+
+
 def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
     title = (workflow.title or "").strip()
     task = (user_message or "").strip() or "Выполни задачу агента из materials/agent.md."
     prefix = f"Агент: {title}\n\n" if title else ""
+    if _is_meeting_run_agent(workflow):
+        read_hint = (
+            "Прочитай только materials/agent.md (один Read). "
+            "Не делай Glob по materials/ и не читай manifest подряд — регламент уже в agent.md. "
+            "Сразу после agent.md вызывай инструменты Constructor (Outlook, 1С, Excel, отчёт). "
+            "Заверши ## WORK_RESULT и TESTS: PASS."
+        )
+    else:
+        read_hint = "Прочитай AGENTS.md и materials/agent.md."
     return (
-        f"{prefix}"
-        "Прочитай AGENTS.md и materials/agent.md. "
+        f"{prefix}{read_hint} "
         "Думай и пиши только на русском.\n\n"
         f"Задача:\n{task}"
     )
@@ -213,12 +249,12 @@ def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
 
 def build_demo_sdk_prompt(workflow: WorkflowRecord, *, resume: bool = False) -> str:
     task = (
-        "Сделай пробный прогон этого агента на реальных доступных инструментах. "
+        "Сделай пробный запуск этого агента на реальных доступных инструментах. "
         "Сначала вызови инструменты и получи данные, только потом пиши итог. "
         "Ход работы и планы держи в размышлениях (thinking). "
         "Ответ в чат начни строкой ## WORK_RESULT и выведи только финальный блок: "
         "WORK_RESULT, использованные инструменты, TESTS: PASS или TESTS: FAIL и короткий "
-        "playbook следующего прогона. Ничего до ## WORK_RESULT в ответ не пиши. "
+        "playbook следующего запуска. Ничего до ## WORK_RESULT в ответ не пиши. "
         "Файл создавай, только если согласованный итоговый результат это документ "
         "или пользователь просит файл: тогда сформируй его инструментами Constructor "
         "(excel.create_workbook / excel.edit_workbook / report.export_document) с реальными "

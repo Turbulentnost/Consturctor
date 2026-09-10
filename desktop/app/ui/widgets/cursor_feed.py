@@ -93,7 +93,7 @@ def resolve_feed_kind(*, role: str = "", title: str = "", kind: str = "") -> str
     folded = (title or "").strip().casefold()
     if folded in {"план", "шаги плана"}:
         return "plan"
-    if folded in {"результат", "результат тестового прогона"}:
+    if folded in {"результат", "результат тестового запуска"}:
         return "result"
     if folded == "ошибка":
         return "error"

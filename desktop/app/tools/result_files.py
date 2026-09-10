@@ -231,7 +231,7 @@ def publish_answer_files(
     arguments: dict | None = None,
     tool: str = "",
 ) -> None:
-    """Прикрепить документы ответа: Excel/файлы прогона и текстовый итог."""
+    """Прикрепить документы ответа: Excel/файлы запуска и текстовый итог."""
     wid = (workflow_id or "").strip()
     payload = dict(work or {})
     if arguments:

@@ -114,7 +114,13 @@ from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
 # which is not needed (and not always available) for a headless sidecar.
 # Level-1 autonomy: read tools auto-run, write tools need confirmation.
 _NEVER_CONFIRM = frozenset(
-    {"notify.send", "notify", "code.write_python", "code.run_python"}
+    {
+        "notify.send",
+        "notify",
+        "code.write_python",
+        "code.run_python",
+        "report.export_document",
+    }
 )
 _READ_EXACT = frozenset(
     {
@@ -137,6 +143,7 @@ _READ_EXACT = frozenset(
         "onec.erp_subordinate_tasks",
         "onec.docflow_tasks",
         "onec.meeting_service_notes",
+        "onec.meeting_protocols",
         "agent.wait",
         "turboproject",
         "users.list",
@@ -342,6 +349,30 @@ _SERIES_SCHEDULE_TIPS = (
     "запиши встреч",
 )
 
+_RK_TIPS = (
+    "ревизионной комиссии",
+    "ревизионная комиссия",
+    "заседаний ревизион",
+    "заседания ревизион",
+    "пл-01-001",
+    "пл 01-001",
+)
+
+RK_RUN_HINT = (
+    "This is RK meeting prep (ПЛ-01-001), not calendar control. "
+    "One data pass only: do not restart outlook/1C/excel/network reads or say data is stale. "
+    "Exclude Constructor test probes from 1C (title/comment/number contains Constructor or "
+    "проба Constructor). "
+    "Network folder: one workspace.powershell_run attempt (dir/list only); on 90s timeout "
+    "continue with 1C and materials/attachments. "
+    "If Outlook has no Tuesday RK meeting, write «Недостаточно данных: дата заседания не найдена» "
+    "but still export partial lists via report.export_document. "
+    "Do not call outlook.search_mail or imap.*. "
+    "Call report.export_document with the agenda/lists BEFORE ## WORK_RESULT. "
+    "If the meeting date is unconfirmed, still export the file, then WORK_RESULT "
+    "with «Недостаточно данных». Finish with TESTS: PASS; no step narration in chat."
+)
+
 CALENDAR_CONTROL_HINT = (
     "This is calendar control / morning briefing, not a meeting-series job. "
     "Morning: users.current, outlook.read_calendar for today, outlook.search_mail once "
@@ -350,6 +381,94 @@ CALENDAR_CONTROL_HINT = (
     "Do not ask what the agent should do. Do not call create_event in the morning. "
     "Evening after 16:00 MSK: same reads for tomorrow, show keep/add/cancel, "
     "create_event only after HITL to shift existing meetings. "
+    "After WORK_RESULT call no more tools."
+)
+
+_SD_MEETING_TIPS = (
+    "заседаний совета",
+    "заседания совета",
+    "подготовка заседаний совета",
+    "совета директоров",
+    "сд гк",
+    "пл-34-242",
+    "пл 34-242",
+    "пл34-242",
+)
+
+_RK_MEETING_TIPS = (
+    "ревизионной комиссии",
+    "ревизионная комиссия",
+    "заседаний ревизион",
+    "заседания ревизион",
+    "пл-01-001",
+    "пл 01-001",
+    "пл01-001",
+)
+
+_SD_MEETING_TOOLS = {
+    "outlook.read_calendar",
+    "calendar.show_meetings",
+    "onec.meeting_service_notes",
+    "onec.meeting_protocols",
+    "onec.search_documents",
+    "onec.get_document_card",
+    "onec.list_attachments",
+    "onec.read_attachment",
+    "onec.odata_catalog",
+    "onec.odata_get",
+    "onec.sql_query",
+    "onec.erp_tasks_current",
+    "onec.erp_tasks_period",
+    "onec.docflow_tasks",
+    "excel.list_files",
+    "excel.read_workbook",
+    "report.build_meeting_summary",
+    "report.export_document",
+    "users.current",
+}
+
+_RK_MEETING_TOOLS = {
+    "outlook.read_calendar",
+    "calendar.show_meetings",
+    "onec.meeting_protocols",
+    "onec.erp_tasks_current",
+    "onec.erp_tasks_period",
+    "onec.docflow_tasks",
+    "onec.search_documents",
+    "onec.get_document_card",
+    "onec.list_attachments",
+    "onec.read_attachment",
+    "onec.odata_get",
+    "onec.sql_query",
+    "excel.list_files",
+    "excel.read_workbook",
+    "report.build_task_report",
+    "report.build_meeting_summary",
+    "report.export_document",
+    "workspace.powershell_run",
+    "users.current",
+}
+
+SD_MEETING_HINT = (
+    "This is board-meeting completeness (SD / PL-34-242), not mail search and not "
+    "a meeting-series job. Find the meeting with ONE outlook.read_calendar "
+    "(or read the dumped calendar JSON once if COM already wrote it). "
+    "Then onec.meeting_service_notes (OData), onec.meeting_protocols (meeting_kind=sd, OData; "
+    "numbers ПСД_001_О_*, not manual odata_get with startswith СД/СПГ), "
+    "and onec.search_documents (OData) for «совет директоров по гк». Do not use COM 1C. "
+    "Do not call outlook.search_mail, imap.search, imap.list_unread, glob/grep loops, "
+    "onec.odata_get on Document_ТД_Протокол, or onec.odata_catalog without entity+filter. "
+    "If COM is down, one odata_catalog then onec.meeting_protocols; "
+    "if 1C is fully unavailable, record the gap in WORK_RESULT and stop. "
+    "After WORK_RESULT call no more tools."
+)
+
+RK_MEETING_HINT = (
+    "This is revision-commission prep (RK / PL-01-001), not mail search. "
+    "Use Outlook calendar, onec.meeting_protocols (meeting_kind=rk), 1C tasks/documents, "
+    "and the RK share folders. "
+    "Do not call outlook.search_mail or imap.*. "
+    "If a source is unavailable, record the gap and write ## WORK_RESULT. "
     "After WORK_RESULT call no more tools."
 )
 
@@ -416,6 +535,10 @@ RUN_INPUTS_RUN_HINT = (
     "Do not substitute another tool or system for a missing user file."
 )
 RUN_INPUT_WAIT_SECONDS = 30
+FILE_QUESTION_SKIP_ANSWER = (
+    "Файла нет. Продолжай без вложения: ищи данные в 1С, Outlook, Excel "
+    "и сетевых папках по playbook агента. Не спрашивай этот файл снова."
+)
 RUN_INPUT_SKIP_ANSWER = (
     "Файла нет. Ищи план работ в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\8. Планы работ, "
     "реестр в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\10. Секретарь РК\\РЕЕСТР ПОРУЧЕНИЙ "
@@ -431,6 +554,45 @@ _RUN_INPUT_GATE_HINTS = (
 def _is_calendar_control_text(*parts: Any) -> bool:
     blob = _meeting_blob(*parts)
     return any(tip in blob for tip in _CALENDAR_CONTROL_TIPS)
+
+
+def _is_rk_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    if any(hint in blob for hint in ("совета директоров", "пл-34-242", "пл 34-242")):
+        return False
+    return any(tip in blob for tip in _RK_TIPS)
+
+
+def _is_sd_meeting_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    return any(tip in blob for tip in _SD_MEETING_TIPS)
+
+
+def _workflow_text_parts(record: Any) -> list[Any]:
+    parts: list[Any] = [
+        getattr(record, "title", "") or "",
+        getattr(record, "notes", "") or "",
+    ]
+    local = getattr(record, "local_run", None) or {}
+    if isinstance(local, dict):
+        for key in ("playbook", "playbook_draft"):
+            raw = local.get(key)
+            if isinstance(raw, dict):
+                parts.extend(
+                    [
+                        str(raw.get("name") or ""),
+                        str(raw.get("instructions") or ""),
+                    ]
+                )
+    return parts
+
+
+def _is_sd_meeting_workflow(record: Any) -> bool:
+    return _is_sd_meeting_text(*_workflow_text_parts(record))
+
+
+def _is_rk_meeting_workflow(record: Any) -> bool:
+    return _is_rk_text(*_workflow_text_parts(record))
 
 
 def _is_calendar_control_workflow(record: Any) -> bool:
@@ -464,19 +626,26 @@ _CALENDAR_CONTROL_TOOLS = {
 
 
 def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
-    """Limit calendar-control runs to Outlook tools; keep the full catalog otherwise."""
-    if not _is_calendar_control_workflow(record):
+    """Limit specialized agents to their playbook tools; keep the full catalog otherwise."""
+    allowed: set[str] | None = None
+    if _is_calendar_control_workflow(record):
+        allowed = _CALENDAR_CONTROL_TOOLS
+    elif _is_sd_meeting_workflow(record):
+        allowed = _SD_MEETING_TOOLS
+    elif _is_rk_meeting_workflow(record):
+        allowed = _RK_MEETING_TOOLS
+    if allowed is None:
         return None
     return [
         item
         for item in sdk_tool_specs()
-        if str(item.get("name") or "") in _CALENDAR_CONTROL_TOOLS
+        if str(item.get("name") or "") in allowed
     ]
 
 
 def _is_outlook_series_prompt(prompt: str) -> bool:
     blob = (prompt or "").casefold()
-    if _is_calendar_control_text(blob):
+    if _is_calendar_control_text(blob) or _is_sd_meeting_text(blob) or _is_rk_text(blob):
         return False
     return any(tip in blob for tip in _SERIES_SCHEDULE_TIPS)
 
@@ -490,6 +659,10 @@ def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
     parts = [KEEP_FILE_HINT]
     if _is_calendar_control_text(prompt):
         parts.append(CALENDAR_CONTROL_HINT)
+    elif _is_sd_meeting_text(prompt):
+        parts.append(SD_MEETING_HINT)
+    elif _is_rk_text(prompt):
+        parts.append(RK_RUN_HINT)
     elif _is_outlook_series_prompt(prompt):
         parts.append(OUTLOOK_MEETING_HINT)
     if folded == "design":
@@ -511,7 +684,7 @@ def _meeting_blob(*parts: Any) -> str:
 
 
 def _is_meeting_text(*parts: Any) -> bool:
-    if _is_calendar_control_text(*parts):
+    if _is_calendar_control_text(*parts) or _is_sd_meeting_text(*parts) or _is_rk_text(*parts):
         return False
     blob = _meeting_blob(*parts)
     return any(tip in blob for tip in _MEETING_TIPS)
@@ -560,7 +733,7 @@ def _merge_outlook_rule_into_playbook(local_run: dict[str, Any] | None) -> dict[
             continue
         current = str(raw.get("instructions") or "").strip()
         name = str(raw.get("name") or "")
-        if _is_calendar_control_text(current, name):
+        if _is_calendar_control_text(current, name) or _is_sd_meeting_text(current, name) or _is_rk_text(current, name):
             continue
         if OUTLOOK_SERIES_MARKER in current:
             continue
@@ -1329,7 +1502,12 @@ def _auto_continue_from_payload(payload: dict[str, Any]) -> tuple[float, str]:
         or source.get("auto_continue_answer")
         or ""
     ).strip()
-    if wait_s > 0 and not skip:
+    needs_file, _ = _file_request_from_payload(payload)
+    if needs_file and wait_s <= 0:
+        wait_s = float(RUN_INPUT_WAIT_SECONDS)
+    if needs_file and not skip:
+        skip = FILE_QUESTION_SKIP_ANSWER
+    elif wait_s > 0 and not skip:
         skip = RUN_INPUT_SKIP_ANSWER
     return wait_s, skip
 
@@ -1433,6 +1611,88 @@ def _persist_run_outputs(
         return []
     _upload_run_outputs(api, workflow_id, paths, run_id=run_id)
     return paths
+
+
+_NAMED_RESULT_FILE_RE = re.compile(
+    r"(?im)^\s*([^\s:/\\]+\.(?:docx|xlsx|xls|pdf|md|txt))\s*:?\s*$"
+)
+
+
+def _files_named_in_answer(answer: str) -> list[str]:
+    raw = answer or ""
+    section = re.search(
+        r"(?is)\bFILES\b\s*:?\s*(.*?)(?:\n\s*(?:ACTIONS|NOTIFICATIONS|SCHEDULE|CLARIFY|TESTS)\b|\Z)",
+        raw,
+    )
+    blob = section.group(1) if section else raw
+    names: list[str] = []
+    for match in _NAMED_RESULT_FILE_RE.finditer(blob):
+        name = Path(match.group(1)).name
+        if name and name not in names:
+            names.append(name)
+    if names:
+        return names
+    for match in re.finditer(
+        r"([A-Za-zА-Яа-я0-9_.\-]+\.(?:docx|xlsx|xls|pdf|md|txt))",
+        blob,
+        flags=re.I,
+    ):
+        name = Path(match.group(1)).name
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _write_answer_document(cwd: str, filename: str, answer: str) -> Path | None:
+    folder = Path(cwd or "").expanduser()
+    if not folder.is_dir():
+        return None
+    name = Path(filename).name or "report.docx"
+    path = folder / name
+    body = (answer or "").strip() or name
+    try:
+        from docx import Document
+
+        document = Document()
+        document.add_heading(Path(name).stem.replace("_", " "), level=0)
+        for line in body.splitlines() or [body]:
+            document.add_paragraph(line)
+        if path.suffix.lower() != ".docx":
+            path = path.with_suffix(".docx")
+        document.save(path)
+        return path
+    except Exception:
+        fallback = path.with_suffix(".md")
+        fallback.write_text(body, encoding="utf-8")
+        return fallback
+
+
+def _ensure_result_files_from_answer(
+    api: ApiClient | None,
+    workflow_id: str,
+    run_cwd: str,
+    answer: str,
+    run_id: str = "",
+) -> list[str]:
+    if api is None or not (workflow_id or "").strip():
+        return []
+    names = _files_named_in_answer(answer)
+    if not names:
+        return []
+    created: list[str] = []
+    folder = Path(run_cwd) if run_cwd else None
+    for name in names:
+        existing = folder / name if folder else None
+        if existing is not None and existing.is_file():
+            created.append(str(existing))
+            continue
+        written = _write_answer_document(run_cwd, name, answer)
+        if written is not None and written.is_file():
+            created.append(str(written))
+    if not created:
+        return []
+    _upload_run_outputs(api, workflow_id, created, run_id=run_id)
+    return created
 
 
 def _upload_run_attachments(
@@ -1659,12 +1919,18 @@ def _with_run_journal_prompt(prompt: str, cwd: str, workflow_id: str) -> str:
     scoped = _run_journal_path(cwd, workflow_id)
     if scoped.is_file():
         rel = scoped.relative_to(Path(cwd).resolve()).as_posix()
-        hint = f"Read {rel} before acting; use it as the prior run route."
+        hint = (
+            f"Skim {rel} once (first ~50 lines, one Read). "
+            "Do not re-read it; then call Constructor tools."
+        )
         return f"{hint}\n\n{prompt}"
     legacy = _legacy_run_journal_path(cwd)
     if not legacy.is_file():
         return prompt
-    hint = "Read materials/run_journal.md before acting; use it as the prior run route."
+    hint = (
+        "Skim materials/run_journal.md once (first ~50 lines, one Read). "
+        "Do not re-read it; then call Constructor tools."
+    )
     return f"{hint}\n\n{prompt}"
 
 
@@ -1891,13 +2157,15 @@ class Sidecar:
         # token. Without it they fail with "no user session" even if the UI is logged in.
         configure_runtime_api(token=token, base_url=self._api.base_url)
         # COM 1C workers read ERP_LOGIN / ERP_PASSWORD from the process env.
+        # ONEC_COM_USR in desktop/.env overrides session FIO for COM Usr=.
         login = str(command.get("login") or "").strip()
         password = str(command.get("password") or "")
-        if login:
-            os.environ["ERP_LOGIN"] = login
+        if login and not os.environ.get("ONEC_COM_USR", "").strip():
+            if not os.environ.get("ERP_LOGIN", "").strip():
+                os.environ["ERP_LOGIN"] = login
         if password:
             os.environ["ERP_PASSWORD"] = password
-        elif "password" in command:
+        elif "password" in command and not os.environ.get("ERP_PASSWORD", "").strip():
             os.environ.pop("ERP_PASSWORD", None)
 
     def check_ready(self) -> None:
@@ -1935,6 +2203,15 @@ class Sidecar:
         dedup_key = self._dedup_key(kind, command)
         replace_personal = dedup_key.startswith(f"run:{PERSONAL_AGENT_PREFIX}")
         replace_eval = dedup_key.startswith("eval:")
+        is_manual_run = (
+            kind == "run"
+            and bool(dedup_key)
+            and not _is_trigger_command(command)
+            and not _is_eval_command(command)
+        )
+        force_restart = _command_flag(
+            command.get("forceRestart") or command.get("force_restart")
+        )
         overlap_run_id = ""
         skip_run_id = ""
         with self._lock:
@@ -1942,9 +2219,16 @@ class Sidecar:
                 for existing in list(self._active.values()):
                     if existing.dedup_key != dedup_key:
                         continue
-                    if replace_personal or replace_eval:
+                    replace = (
+                        force_restart
+                        or is_manual_run
+                        or replace_personal
+                        or replace_eval
+                        or not _sdk_run_alive(existing)
+                    )
+                    if replace:
                         log(
-                            "replace personal run: "
+                            "replace active run: "
                             + _ascii(f"{dedup_key} (active run {existing.run_id})")
                         )
                         existing.stop.set()
@@ -1954,19 +2238,25 @@ class Sidecar:
                             pass
                         self._active.pop(existing.run_id, None)
                         break
-                    if _is_trigger_command(command) and _sdk_run_alive(existing):
+                    if is_manual_run or force_restart:
+                        # Manual UI start must never adopt a stale sidecar slot.
+                        log(
+                            "force replace manual run: "
+                            + _ascii(f"{dedup_key} (active run {existing.run_id})")
+                        )
+                        existing.stop.set()
+                        try:
+                            existing.bridge.skip_tool("")
+                        except Exception:
+                            pass
+                        self._active.pop(existing.run_id, None)
+                        break
+                    if _is_trigger_command(command):
                         log(
                             "skip duplicate run: "
                             + _ascii(f"{dedup_key} (active run {existing.run_id})")
                         )
                         overlap_run_id = existing.run_id
-                        break
-                    if _is_trigger_command(command) and not _sdk_run_alive(existing):
-                        log(
-                            "replace dead run: "
-                            + _ascii(f"{dedup_key} (stale run {existing.run_id})")
-                        )
-                        self._active.pop(existing.run_id, None)
                         break
                     log(
                         "skip duplicate run: "
@@ -2001,12 +2291,10 @@ class Sidecar:
         if skip_run_id:
             emit(
                 {
-                    "type": "event",
-                    "runId": skip_run_id,
-                    "payload": {
-                        "type": "status",
-                        "text": "Продолжаю текущий запуск агента.",
-                    },
+                    "type": "run_adopted",
+                    "runId": run_id,
+                    "linkedRunId": skip_run_id,
+                    "message": "Продолжаю текущий запуск агента.",
                 }
             )
             return
@@ -2110,10 +2398,11 @@ class Sidecar:
                     str(payload.get(key) or "")
                     for key in ("text", "answer", "message")
                 )
-                if blob.strip():
+                if blob.strip() and event_type != "thinking":
                     active.answer_buf = f"{active.answer_buf}{blob}"
-                if _text_has_finished_work_result(blob) or _text_has_finished_work_result(
-                    active.answer_buf
+                if event_type in {"assistant", "final"} and (
+                    _text_has_finished_work_result(blob)
+                    or _text_has_finished_work_result(active.answer_buf)
                 ):
                     active.gate.mark_work_result_done()
                     active.stop.set()
@@ -2445,6 +2734,15 @@ class Sidecar:
             answer = str(result.get("answer") or "").strip()
             agent_id = str(result.get("agent_id") or resume_agent_id).strip()
             self._store_agent_id(workflow_id, agent_id)
+            if status == "ok" and not _text_has_finished_work_result(answer):
+                status = "error"
+                tail = answer.strip()
+                answer = (
+                    "Запуск завершился без ## WORK_RESULT и TESTS: PASS — "
+                    "агент остановился после подготовительных шагов."
+                )
+                if tail:
+                    answer = f"{answer}\n\n{tail}"
         except Exception as exc:  # noqa: BLE001
             status = "error"
             answer = str(exc)
@@ -2480,6 +2778,13 @@ class Sidecar:
                 self._api,
                 workflow_id,
                 run_cwd,
+                run_id=str(run_ref or active.run_id).strip(),
+            )
+            _ensure_result_files_from_answer(
+                self._api,
+                workflow_id,
+                run_cwd,
+                answer,
                 run_id=str(run_ref or active.run_id).strip(),
             )
         except Exception as exc:  # noqa: BLE001
@@ -3234,19 +3539,28 @@ class Sidecar:
     def cancel(self, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or "")
         workflow_id = str(command.get("workflowId") or "").strip()
+        dedup_key = f"run:{workflow_id}" if workflow_id else ""
+        remove_ids: list[str] = []
         for active in list(self._active.values()):
-            if run_id:
-                if active.run_id != run_id:
+            ui_id = (active.event_workflow_id or "").strip()
+            by_run = bool(run_id) and active.run_id == run_id
+            by_workflow = bool(workflow_id) and (
+                active.workflow_id == workflow_id or ui_id == workflow_id
+            )
+            by_dedup = bool(dedup_key) and active.dedup_key == dedup_key
+            if run_id or workflow_id:
+                if not by_run and not by_workflow and not by_dedup:
                     continue
-                active.stop.set()
-                continue
-            if workflow_id:
-                ui_id = (active.event_workflow_id or "").strip()
-                if active.workflow_id != workflow_id and ui_id != workflow_id:
-                    continue
-                active.stop.set()
-                continue
             active.stop.set()
+            try:
+                active.bridge.skip_tool("")
+            except Exception:
+                pass
+            remove_ids.append(active.run_id)
+        if remove_ids:
+            with self._lock:
+                for rid in remove_ids:
+                    self._active.pop(rid, None)
 
     def shutdown(self) -> None:
         with self._lock:

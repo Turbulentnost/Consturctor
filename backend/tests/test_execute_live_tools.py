@@ -42,7 +42,7 @@ def test_required_live_tools_from_plan_turboproject() -> None:
 
 def test_vm_backend_url_fail_without_live_is_unknown() -> None:
     text = (
-        "Тестовый прогон не завершён. На Cloud VM нет BACKEND_URL. TESTS: FAIL"
+        "Тестовый запуск не завершён. На Cloud VM нет BACKEND_URL. TESTS: FAIL"
     )
     assert _tests_status_from_text(text, live_tools_ok=False) == "unknown"
 

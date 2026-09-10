@@ -155,11 +155,11 @@ export function AgentStudioPage({
     if (session.pendingHitl) return 'Требуется подтверждение действия'
     if (busy) {
       if (session.status) return session.status
-      if (phase === 'executing') return 'Пробный прогон'
+      if (phase === 'executing') return 'Пробный запуск'
       return 'Планирование черновика'
     }
-    if (demoDone) return 'Пробный прогон завершён — можно перейти к расписанию'
-    if (designDone) return 'Черновик готов — запускаю пробный прогон'
+    if (demoDone) return 'Пробный запуск завершён — можно перейти к расписанию'
+    if (designDone) return 'Черновик готов — запускаю пробный запуск'
     return 'Готов к работе'
   }, [session.pendingQuestion, session.pendingHitl, session.status, busy, phase, demoDone, designDone])
 
@@ -353,7 +353,7 @@ export function AgentStudioPage({
               <div className="wf-actions">
                 {canDemo && !demoDone && (
                   <button className="btn-primary" onClick={runDemo}>
-                    Пробный прогон
+                    Пробный запуск
                   </button>
                 )}
                 {demoDone && (
@@ -373,7 +373,7 @@ export function AgentStudioPage({
               )}
               {(record?.lastResult || planMeetings.length > 0) && (
                 <div className="wf-result-card">
-                  <div className="wf-result-title">Результат пробного прогона</div>
+                  <div className="wf-result-title">Результат пробного запуска</div>
                   {planMeetings.length > 0 && (
                     <div className="wf-result-calendar">
                       <MiniCalendar meetings={planMeetings} />

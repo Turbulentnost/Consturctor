@@ -20,6 +20,9 @@ import {
   runDecisionId,
   writeVerdict
 } from './preparedDecisions'
+import { buildProcessKpiMetrics, latestAgentRun } from './kpiMetrics'
+import type { AgentRunHistoryItem } from '../api/types'
+import { isLiveRunState } from '../store/liveRun'
 import {
   STATUS_LABEL,
   TASK_STATUS_LABEL,
@@ -109,7 +112,7 @@ function taskTitleFromEvent(event: CalendarEvent, agentName: string): string {
     if (!text || text === agent || isTechnicalTaskText(text)) continue
     return text
   }
-  return 'Прогон агента'
+  return 'Запуск агента'
 }
 
 function eventToTask(event: CalendarEvent, processId: string, agentName: string): DayTask {
@@ -187,7 +190,7 @@ function runStagePack(agent: BoardAgent, lastEvent?: CalendarEvent): { current: 
       { id: 'start', label: 'Запуск', hint: startHint, at: started ? startHint : undefined },
       {
         id: 'agent',
-        label: 'Ход прогона',
+        label: 'Ход запуска',
         hint: last ? `статус: ${last}` : agent.triggerSummary || 'Нет активного этапа'
       },
       {
@@ -198,7 +201,7 @@ function runStagePack(agent: BoardAgent, lastEvent?: CalendarEvent): { current: 
       {
         id: 'next',
         label: 'Следующий этап',
-        hint: current >= 3 ? 'Можно запускать следующий прогон' : 'Доступен после подтверждения'
+        hint: current >= 3 ? 'Можно запустить снова' : 'Доступен после подтверждения'
       }
     ]
   }
@@ -292,7 +295,7 @@ export function buildWorkplaceAgents(board: WorkflowBoard, personal?: PersonalAg
       stage,
       owner: '',
       due: agent.nextRunLabel || (agent.nextRunAt ? formatDue(agent.nextRunAt) : 'нет слота'),
-      sla: agent.lastRunStatus || 'нет прогона',
+      sla: agent.lastRunStatus || 'нет запуска',
       paused: agent.paused,
       workflowId: agent.id,
       boardAgent: agent,
@@ -687,19 +690,12 @@ export function ProcessStepper({
         </li>
       </ol>
       {waiting ? (
-        <p className="wp-step-note">Сначала подтвердите решение или разберите ошибку в прогоне.</p>
+        <p className="wp-step-note">Сначала подтвердите решение или разберите ошибку в запуске.</p>
       ) : paused ? (
         <p className="wp-step-note">Агент на паузе — возобновите автозапуск в карточке процесса.</p>
       ) : null}
     </section>
   )
-}
-
-function kpiScore(kpi: AgentKpi | null): number | null {
-  const tiles = kpi?.tiles || []
-  const scores = tiles.map((tile) => tile.scorePercent).filter((value): value is number => value != null)
-  if (!scores.length) return null
-  return Math.round(scores.reduce((acc, value) => acc + value, 0) / scores.length)
 }
 
 function formatMinutes(value: number | null): string {
@@ -852,7 +848,7 @@ function PreparedSolutionsRail({
         </div>
       </header>
       {!featured ? (
-        <p className="wp-rail-empty">Пока нет подготовленных решений. Они появятся после прогонов агентов.</p>
+        <p className="wp-rail-empty">Пока нет подготовленных решений. Они появятся после запусков агентов.</p>
       ) : (
         <article className="wp-solution-card">
           <div className="wp-solution-ico" aria-hidden>
@@ -1184,6 +1180,8 @@ export function TodayWorkplace({
   const [askText, setAskText] = useState('')
   const [recentFilesByWorkflow, setRecentFilesByWorkflow] = useState<Record<string, WorkflowFileItem[]>>({})
   const [kpiByWorkflow, setKpiByWorkflow] = useState<Record<string, AgentKpi | null>>({})
+  const [latestRunByWorkflow, setLatestRunByWorkflow] = useState<Record<string, AgentRunHistoryItem | null>>({})
+  const [boardTick, setBoardTick] = useState(0)
   const [decisionTick, setDecisionTick] = useState(0)
   const [busySolutionId, setBusySolutionId] = useState('')
   const [actionNote, setActionNote] = useState('')
@@ -1300,7 +1298,19 @@ export function TodayWorkplace({
     setBusySolutionId(item.id)
     setActionNote('')
     try {
-      const pending = await findPendingToolRequest(item.workflowId, item.requestId)
+      if (item.kind === 'file' && item.fileId) {
+        writeVerdict(item.workflowId, item.fileId, 'confirmed')
+        if (item.runId) {
+          writeVerdict(item.workflowId, runDecisionId(item.runId), 'confirmed')
+        }
+        setDecisionTick((value) => value + 1)
+        await refreshWorkflowKpi(item.workflowId)
+        return
+      }
+      const pending =
+        item.kind === 'waiting' || item.requestId
+          ? await findPendingToolRequest(item.workflowId, item.requestId)
+          : null
       if (pending?.requestId) {
         runs.respondHitl(item.workflowId, pending.requestId, true)
         setActionNote('Действие подтверждено — агент продолжит работу.')
@@ -1313,14 +1323,6 @@ export function TodayWorkplace({
         setDecisionTick((value) => value + 1)
         await refreshWorkflowKpi(item.workflowId)
         await reload()
-        setActionNote(`Результат «${item.title}» подтверждён и учтён в KPI.`)
-        return
-      }
-      if (item.kind === 'file' && item.fileId) {
-        writeVerdict(item.workflowId, item.fileId, 'confirmed')
-        setDecisionTick((value) => value + 1)
-        await refreshWorkflowKpi(item.workflowId)
-        setActionNote(`Результат «${item.title}» подтверждён и учтён в KPI.`)
         return
       }
       onOpenDecisions()
@@ -1335,17 +1337,23 @@ export function TodayWorkplace({
     setBusySolutionId(item.id)
     setActionNote('')
     try {
-      const pending = await findPendingToolRequest(item.workflowId, item.requestId)
+      if (item.kind === 'file' && item.fileId) {
+        writeVerdict(item.workflowId, item.fileId, 'returned')
+        if (item.runId) {
+          writeVerdict(item.workflowId, runDecisionId(item.runId), 'returned')
+        }
+        setDecisionTick((value) => value + 1)
+        setActionNote(`Результат «${item.title}» возвращён на доработку.`)
+        return
+      }
+      const pending =
+        item.kind === 'waiting' || item.requestId
+          ? await findPendingToolRequest(item.workflowId, item.requestId)
+          : null
       if (pending?.requestId) {
         runs.respondHitl(item.workflowId, pending.requestId, false)
         setActionNote('Действие возвращено — агент получит отказ.')
         await reload()
-        return
-      }
-      if (item.kind === 'file' && item.fileId) {
-        writeVerdict(item.workflowId, item.fileId, 'returned')
-        setDecisionTick((value) => value + 1)
-        setActionNote(`Результат «${item.title}» возвращён на доработку.`)
         return
       }
       onOpenDecisions()
@@ -1357,28 +1365,28 @@ export function TodayWorkplace({
   }
 
   const kpiRows = useMemo((): ProcessKpiRow[] => {
+    const now = Date.now()
     return visible
       .filter((agent) => !agent.standalone)
       .slice(0, 8)
       .map((agent) => {
-        const score = kpiScore(kpiByWorkflow[agent.workflowId] || null)
-        const humanDelay =
-          agent.status === 'WAITING_HUMAN' ? 25 : agent.status === 'ERROR' ? 40 : score != null ? 12 : null
-        const agentDelay = score != null ? Math.max(5, Math.round((100 - score) / 4)) : null
-        const automation =
-          score != null && humanDelay != null
-            ? Math.round((100 * score) / (score + humanDelay / 10))
-            : score
+        const live = runs.entries[agent.workflowId]
+        const liveActive = Boolean(live && isLiveRunState(live.state))
+        const metrics = buildProcessKpiMetrics(
+          agent,
+          kpiByWorkflow[agent.workflowId] || null,
+          latestRunByWorkflow[agent.workflowId] || null,
+          live?.state.timing,
+          liveActive,
+          now
+        )
         return {
           id: agent.id,
           name: agent.name,
-          planFact: score,
-          agentDelay,
-          humanDelay,
-          automation
+          ...metrics
         }
       })
-  }, [visible, kpiByWorkflow])
+  }, [visible, kpiByWorkflow, latestRunByWorkflow, runs.entries, boardTick])
 
   useEffect(() => {
     const targets = agents
@@ -1414,29 +1422,43 @@ export function TodayWorkplace({
   }, [agents])
 
   useEffect(() => {
-    const targets = visible
+    const unsubscribe = window.api.onBoardUpdated?.(() => setBoardTick((value) => value + 1))
+    return () => unsubscribe?.()
+  }, [])
+
+  useEffect(() => {
+    const targets = agents
       .map((agent) => agent.workflowId)
       .filter((workflowId) => workflowId && !workflowId.startsWith('personal-agent:'))
     if (!targets.length) {
       setKpiByWorkflow({})
+      setLatestRunByWorkflow({})
       return
     }
     let alive = true
     void Promise.all(
       targets.map(async (workflowId) => {
-        const kpi = await api.getWorkflowKpi(workflowId).catch(() => null)
-        return [workflowId, kpi] as const
+        const kpi =
+          (await api.calculateWorkflowKpi(workflowId).catch(() => null)) ||
+          (await api.getWorkflowKpi(workflowId).catch(() => null))
+        const history = await api.listAgentRuns(workflowId).catch(() => [] as AgentRunHistoryItem[])
+        return [workflowId, kpi, latestAgentRun(history)] as const
       })
-    ).then((pairs) => {
+    ).then((rows) => {
       if (!alive) return
-      const next: Record<string, AgentKpi | null> = {}
-      for (const [workflowId, kpi] of pairs) next[workflowId] = kpi
-      setKpiByWorkflow(next)
+      const nextKpi: Record<string, AgentKpi | null> = {}
+      const nextRuns: Record<string, AgentRunHistoryItem | null> = {}
+      for (const [workflowId, kpi, latestRun] of rows) {
+        nextKpi[workflowId] = kpi
+        nextRuns[workflowId] = latestRun
+      }
+      setKpiByWorkflow(nextKpi)
+      setLatestRunByWorkflow(nextRuns)
     })
     return () => {
       alive = false
     }
-  }, [visible])
+  }, [agents, boardTick, decisionTick])
 
   const removeAgent = async (workflowId: string, title: string): Promise<void> => {
     if (!workflowId || workflowId.startsWith('personal-agent:')) return
@@ -1471,16 +1493,6 @@ export function TodayWorkplace({
         onOpenAttention={onOpenDecisions}
         onOpenMetrics={onOpenMetrics}
       />
-
-      <div className="wp-info-banner">
-        <span className="wp-info-ico" aria-hidden>
-          i
-        </span>
-        <p>
-          В пилоте работают агенты должности: они готовят материалы, а решения человека подтверждаются на вкладке
-          «Решения».
-        </p>
-      </div>
 
       <div className="wp-filters-row wp-filters-row-today">
         <select className="wp-select" value={status} onChange={(e) => setStatus(e.target.value as ProcessStatus | '')}>
@@ -1655,7 +1667,7 @@ function buildOrchestratorContext(opts: {
 }): string {
   const lines: string[] = [
     `Сотрудник: ${opts.userFio || '—'}`,
-    `Сводка сегодня: активных агентов ${opts.stats.activeAgents}, прогонов ${opts.stats.runsToday}, ошибок ${opts.stats.errorsToday}, требуют внимания ${opts.stats.needsAttention}.`,
+    `Сводка сегодня: активных агентов ${opts.stats.activeAgents}, запусков ${opts.stats.runsToday}, ошибок ${opts.stats.errorsToday}, требуют внимания ${opts.stats.needsAttention}.`,
     `Выбранный процесс на экране: ${opts.selectedName || 'не выбран'}.`,
     '',
     'Процессы / агенты:'
@@ -1684,8 +1696,8 @@ function buildOrchestratorContext(opts: {
   }
   lines.push(
     '',
-    'Доступные вкладки UI: Сегодня, Процессы, Решения, Показатели, История, Настройки.',
-    'Можно открывать прогоны, подтверждать решения, смотреть KPI и историю через инструменты API.'
+    'Доступные вкладки UI: Рабочее место, Процессы, Календарь, Решения, Показатели, История, Настройки.',
+    'Можно открывать запуски, подтверждать решения, смотреть KPI и историю через инструменты API.'
   )
   return lines.join('\n')
 }

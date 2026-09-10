@@ -16,20 +16,21 @@ export type PageKey =
   | 'history'
   | 'settings'
 
-interface NavItem {
-  key: PageKey
-  label: string
+export const APP_TITLE = 'Оркестратор'
+
+export const PAGE_LABELS: Record<PageKey, string> = {
+  today: 'Рабочее место',
+  processes: 'Процессы',
+  calendar: 'Календарь',
+  decisions: 'Решения',
+  metrics: 'Показатели',
+  history: 'История',
+  settings: 'Настройки'
 }
 
-const ITEMS: NavItem[] = [
-  { key: 'today', label: 'Сегодня' },
-  { key: 'processes', label: 'Процессы' },
-  { key: 'calendar', label: 'Календарь' },
-  { key: 'decisions', label: 'Решения' },
-  { key: 'metrics', label: 'Показатели' },
-  { key: 'history', label: 'История' },
-  { key: 'settings', label: 'Настройки' }
-]
+const ITEMS: { key: PageKey; label: string }[] = (
+  Object.entries(PAGE_LABELS) as [PageKey, string][]
+).map(([key, label]) => ({ key, label }))
 
 function NavIcon({ page }: { page: PageKey }): React.JSX.Element {
   if (page === 'today') {
@@ -269,8 +270,8 @@ export function Sidebar({
   return (
     <aside className={collapsed ? 'sidebar collapsed' : 'sidebar'}>
       <div className="sidebar-brand">
-        <img className="sidebar-logo" src={logoUrl} alt="Orchestrator" />
-        {!collapsed && <div className="sidebar-title">{light ? 'ОРКЕСТРАТОР' : 'Orchestrator'}</div>}
+        <img className="sidebar-logo" src={logoUrl} alt={APP_TITLE} />
+        {!collapsed && <div className="sidebar-title">{APP_TITLE.toUpperCase()}</div>}
       </div>
 
       <div className="sidebar-search" onClick={expandForSearch} title={collapsed ? 'ФИО' : undefined}>
@@ -342,7 +343,7 @@ export function Sidebar({
           ) : (
             <button
               className="sidebar-update-btn"
-              title={update.error || 'Установить обновление Constructor и Orchestrator'}
+              title={update.error || 'Установить обновление Конструктора и Оркестратора'}
               onClick={() => {
                 void window.api.installUpdate?.()
               }}

@@ -323,7 +323,7 @@ export function SettingsWorkplace({
           </section>
           <section className="set-card">
             <h2>Обновления</h2>
-            <p className="set-muted">Одно обновление ставит и Constructor, и Orchestrator.</p>
+            <p className="set-muted">Одно обновление ставит и Конструктор, и Оркестратор.</p>
             <div className="wp-actions">
               <button
                 className="btn-primary"
@@ -339,7 +339,7 @@ export function SettingsWorkplace({
           <section className="set-card">
             <h2>Файлы агентов</h2>
             <p className="set-muted">
-              Файлы агентов, KPI и прогоны те же. Создать нового агента можно только в Constructor.
+              Файлы агентов, KPI и запуски те же. Создать нового агента можно только в Constructor.
             </p>
             <div className="wp-actions">
               <button className="btn-primary" type="button" onClick={onFiles}>
@@ -651,14 +651,14 @@ export function SettingsWorkplace({
           <header className="set-head">
             <div>
               <h1 className="page-title">Диагностика</h1>
-              <p className="set-sub">Состояние backend, инструментов и проблемных прогонов</p>
+              <p className="set-sub">Состояние backend, инструментов и проблемных запусков</p>
             </div>
           </header>
           <section className="set-card">
             <h2>Полный отчёт</h2>
             <p className="set-muted">
               Откройте диагностический режим, чтобы снять health backend, статусы 1С / почты / Turbo и список
-              проблемных прогонов.
+              проблемных запусков.
             </p>
             <div className="wp-actions">
               <button className="btn-primary" type="button" onClick={onDiagnostics}>

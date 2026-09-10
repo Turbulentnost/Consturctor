@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { AgentRunHistoryItem, AgentRunnerEvent } from '../api/types'
+import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowFileItem } from '../api/types'
 import { FilterBar } from './FilterBar'
 import { useWorkplaceData } from './WorkplaceBoard'
 import { humanWhen, parseIso } from '../utils/calendar'
 import { MiniCalendar, meetingsFromEvents, type MiniMeeting } from '../components/agentfeed/MiniCalendar'
 import { cleanRunResult } from '../utils/cleanRunResult'
 import { useRuns } from '../store/runs'
+import { fileTypeIconSrc } from '../utils/fileTypeIcon'
+import { fileExt, formatSize } from '../pages/filesGrouping'
+import { isUserFacingResultFile } from './preparedDecisions'
 import {
   extractToolDecisions,
   isDecisionTool,
@@ -113,15 +116,348 @@ function itemPriority(item: ToolDecisionItem): PriorityFilter {
   return 'low'
 }
 
+const DECISION_SLA_MS = 60 * 60 * 1000
+const NOTIFY_BEFORE_MS = 10 * 60 * 1000
+const NOTIFY_STORAGE = 'orchestrator.decisionNotify.v1'
+
 function itemHasAttachment(item: ToolDecisionItem): boolean {
+  if ((item.files || []).length > 0) return true
   const blob = `${item.tool} ${item.title} ${item.intent} ${item.result}`.toLowerCase()
-  return /attach|влож|файл|file|document|xlsx|docx|pdf/.test(blob)
+  return /attach|влож|файл|file|document|xlsx|docx|pdf/.test(blob) || attachmentNames(item).length > 0
+}
+
+function mentionedFileNames(item: ToolDecisionItem): Set<string> {
+  return new Set(attachmentNames(item).map((name) => name.toLowerCase()))
+}
+
+function uniqueFiles(items: WorkflowFileItem[]): WorkflowFileItem[] {
+  const seen = new Set<string>()
+  const out: WorkflowFileItem[] = []
+  for (const file of items) {
+    const key = file.id || `${file.runId || ''}:${file.name}`
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    out.push(file)
+  }
+  return out
+}
+
+function pickFilesForDecision(item: ToolDecisionItem, pool: WorkflowFileItem[]): WorkflowFileItem[] {
+  const facing = pool.filter(isUserFacingResultFile)
+  const mentioned = mentionedFileNames(item)
+  const byName = facing.filter((file) => mentioned.has((file.name || '').toLowerCase()))
+  const byRun = facing.filter((file) => {
+    const rid = (file.runId || '').trim()
+    return Boolean(item.runId) && Boolean(rid) && (rid === item.runId || rid === 'local')
+  })
+  const runAttach = facing.filter(
+    (file) => file.scope === 'run_attachment' && (!file.runId || file.runId === item.runId)
+  )
+  const picked = uniqueFiles([...byName, ...byRun, ...runAttach])
+  if (picked.length) return picked
+  return facing
+    .slice()
+    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+    .slice(0, 8)
+}
+
+function fileTypeLabel(name: string): string {
+  return (fileExt(name) || '').toUpperCase()
+}
+
+async function downloadDecisionFiles(files: WorkflowFileItem[]): Promise<void> {
+  for (const file of files) {
+    if (!file.downloadUrl) continue
+    await api.download(file.downloadUrl, file.name || 'file')
+  }
+}
+
+function clockLabel(stamp: Date): string {
+  return `${pad(stamp.getHours())}:${pad(stamp.getMinutes())}`
+}
+
+function createdLabel(stamp: Date | null): string {
+  if (!stamp) return ''
+  const prefix = dayKey(stamp) === todayKey() ? 'сегодня' : humanWhen(stamp)
+  return `${prefix}, ${clockLabel(stamp)}`
+}
+
+function dueStamp(item: ToolDecisionItem): number {
+  const start = parseIso(item.at) || new Date(item.at)
+  return start.getTime() + DECISION_SLA_MS
+}
+
+function priorityLabel(item: ToolDecisionItem): string {
+  const key = itemPriority(item)
+  return key ? PRIORITY_FILTER_LABEL[key] : 'Средний'
+}
+
+function recommendedText(item: ToolDecisionItem): string {
+  if (item.status === 'rejected') return 'Вернуть на доработку — решение уже отклонено.'
+  if (item.status === 'confirmed' || item.status === 'done') {
+    return item.result || item.title
+  }
+  return item.title
+}
+
+const FIRST_SEEN_STORAGE = 'orchestrator.decisionFirstSeen.v1'
+
+function readFirstSeen(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(FIRST_SEEN_STORAGE)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function stampFirstSeen(store: Record<string, string>, key: string, fallback?: string): string {
+  if (store[key]) return store[key]
+  const value = fallback || new Date().toISOString()
+  store[key] = value
+  try {
+    localStorage.setItem(FIRST_SEEN_STORAGE, JSON.stringify(store))
+  } catch {
+    /* ignore */
+  }
+  return value
+}
+
+function remainingLabel(ms: number): string {
+  if (ms <= 0) {
+    const late = Math.max(1, Math.round(-ms / 60_000))
+    return `Просрочено на ${late} мин`
+  }
+  const minutes = Math.max(1, Math.round(ms / 60_000))
+  if (minutes < 60) return `До срока ${minutes} мин`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest ? `До срока ${hours} ч ${rest} мин` : `До срока ${hours} ч`
+}
+
+function deadlineInfo(item: ToolDecisionItem, now: number): {
+  due: Date
+  remainingMs: number
+  ratio: number
+  critical: boolean
+  overdue: boolean
+  label: string
+  dueClock: string
+} {
+  const start = parseIso(item.at) || new Date(item.at)
+  const due = new Date(start.getTime() + DECISION_SLA_MS)
+  const remainingMs = due.getTime() - now
+  const ratio = Math.max(0, Math.min(1, remainingMs / DECISION_SLA_MS))
+  return {
+    due,
+    remainingMs,
+    ratio,
+    critical: remainingMs <= DECISION_SLA_MS,
+    overdue: remainingMs <= 0,
+    label: remainingLabel(remainingMs),
+    dueClock: clockLabel(due)
+  }
+}
+
+function attachmentNames(item: ToolDecisionItem): string[] {
+  const names: string[] = []
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      const base = value.split(/[\\/]/).pop() || value
+      if (/\.(xlsx|xls|xlsm|docx|pdf|pptx|csv|png|jpe?g|zip)$/i.test(base)) names.push(base)
+      return
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit)
+      return
+    }
+    if (value && typeof value === 'object') {
+      Object.values(value as Record<string, unknown>).forEach(visit)
+    }
+  }
+  visit(item.arguments || {})
+  return Array.from(new Set(names))
+}
+
+function sourceChips(item: ToolDecisionItem): string[] {
+  const chips = [item.tool, item.agentName].filter(Boolean)
+  const args = item.arguments || {}
+  for (const key of ['subject', 'path', 'file', 'filename', 'query', 'entity', 'number', 'title']) {
+    const value = args[key]
+    if (typeof value === 'string' && value.trim()) chips.push(value.trim())
+  }
+  return Array.from(new Set(chips)).slice(0, 6)
+}
+
+function readNotifyPrefs(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(NOTIFY_STORAGE)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, boolean>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeNotifyPref(id: string, on: boolean): void {
+  const next = { ...readNotifyPrefs(), [id]: on }
+  try {
+    localStorage.setItem(NOTIFY_STORAGE, JSON.stringify(next))
+  } catch {
+    /* ignore */
+  }
 }
 
 function decisionStatusBucket(item: ToolDecisionItem): Exclude<DecisionStatusFilter, ''> {
   if (item.status === 'pending') return item.live ? 'pending' : 'review'
   if (item.status === 'rejected') return 'returned'
   return 'confirmed'
+}
+
+function DecisionDetail({
+  item,
+  now,
+  process,
+  files,
+  notify,
+  onNotify,
+  onConfirm,
+  onReturn,
+  onOpen
+}: {
+  item: ToolDecisionItem
+  now: number
+  process: { name: string; code: string }
+  files: WorkflowFileItem[]
+  notify: boolean
+  onNotify: (on: boolean) => void
+  onConfirm: () => void
+  onReturn: () => void
+  onOpen: () => void
+}): React.JSX.Element {
+  const due = deadlineInfo(item, now)
+  const created = createdLabel(parseIso(item.at) || new Date(item.at))
+  const sources = sourceChips(item)
+  const pending = item.status === 'pending'
+  const dueTone = !pending ? 'ok' : due.overdue ? 'overdue' : 'warn'
+  const barWidth = pending ? `${Math.round(due.ratio * 100)}%` : '100%'
+
+  return (
+    <>
+      <div className="wp-decision-detail-head">
+        <div>
+          <h2>{item.title}</h2>
+          <p className="wp-decision-detail-meta">
+            Подготовлено агентом {process.code}
+            {' · '}
+            Процесс: {process.name}
+            {created ? ` · Создано: ${created}` : ''}
+          </p>
+        </div>
+        <span className={`wp-decision-state ${pending ? 'wait' : item.status === 'rejected' ? 'warn' : 'ok'}`}>
+          {toolStatusLabel(item)}
+        </span>
+      </div>
+      <div className={`wp-decision-due ${dueTone}`}>
+        <div className="wp-decision-due-row">
+          <strong>{pending ? due.label : item.status === 'rejected' ? 'Возвращено на доработку' : 'Срок соблюдён'}</strong>
+          <span>Срок {due.dueClock}</span>
+        </div>
+        <div className="wp-decision-due-bar" aria-hidden>
+          <i style={{ width: barWidth }} />
+        </div>
+        <p className="wp-decision-due-hint">Критическое окно подтверждения — 60 минут.</p>
+      </div>
+      <div className="wp-decision-block">
+        <strong>Краткое описание</strong>
+        <p>{item.intent}</p>
+      </div>
+      <div className="wp-decision-block wp-decision-recommend">
+        <strong>Рекомендуемое решение</strong>
+        <p>{recommendedText(item)}</p>
+      </div>
+      <div className="wp-decision-block">
+        <strong>Основания и источники</strong>
+        <div className="wp-chip-row">
+          {sources.map((chip) => (
+            <span key={chip} className="wp-decision-chip">
+              <span>{chip}</span>
+            </span>
+          ))}
+        </div>
+        {item.result ? <p className="wp-decisions-result">{item.result}</p> : null}
+      </div>
+      <div className="wp-decision-block">
+        <div className="wp-decision-attach-head">
+          <strong>Вложения{files.length ? ` (${files.length})` : ''}</strong>
+          {files.length > 1 ? (
+            <button
+              className="btn-ghost wp-decision-download-all"
+              type="button"
+              onClick={() => void downloadDecisionFiles(files)}
+            >
+              Скачать все
+            </button>
+          ) : null}
+        </div>
+        {files.length ? (
+          <div className="wp-decision-files">
+            {files.map((file) => {
+              const name = file.name || 'file'
+              const type = fileTypeLabel(name)
+              const size = formatSize(file.sizeBytes)
+              return (
+                <button
+                  key={file.id || name}
+                  type="button"
+                  className="wp-decision-file"
+                  disabled={!file.downloadUrl}
+                  onClick={() => {
+                    if (file.downloadUrl) void api.download(file.downloadUrl, name)
+                  }}
+                >
+                  <img className="files-type-icon" src={fileTypeIconSrc(name)} alt="" />
+                  <span>
+                    <b>{name}</b>
+                    <i>{[type, size].filter(Boolean).join(' · ')}</i>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        ) : (
+          <p className="wp-decision-time">Файлы в запросе не указаны.</p>
+        )}
+      </div>
+      <label className="wp-decision-notify">
+        <input
+          type="checkbox"
+          checked={notify}
+          disabled={!pending}
+          onChange={(e) => onNotify(e.target.checked)}
+        />
+        <span>Уведомить за 10 минут до срока</span>
+      </label>
+      <div className="wp-actions wp-decision-actions">
+        {item.live && item.requestId && pending ? (
+          <>
+            <button className="btn-primary" type="button" onClick={onConfirm}>
+              Подтвердить
+            </button>
+            <button className="btn-ghost wp-decision-return" type="button" onClick={onReturn}>
+              Вернуть на доработку
+            </button>
+          </>
+        ) : null}
+        <button className="btn-ghost" type="button" onClick={onOpen}>
+          Открыть материалы
+        </button>
+      </div>
+    </>
+  )
 }
 
 export function DecisionsTab({
@@ -145,6 +481,7 @@ export function DecisionsTab({
     return new Date(now.getFullYear(), now.getMonth(), 1)
   })
   const [loadingDetails, setLoadingDetails] = useState(false)
+  const [filesByWorkflow, setFilesByWorkflow] = useState<Record<string, WorkflowFileItem[]>>({})
   const [tools, setTools] = useState<ToolDecisionItem[]>([])
   const [results, setResults] = useState<
     Array<{
@@ -161,10 +498,21 @@ export function DecisionsTab({
   const runs = useRuns()
   const agentsRef = useRef(agents)
   agentsRef.current = agents
+  const firstSeenRef = useRef<Record<string, string>>(readFirstSeen())
+  const notifiedRef = useRef<Set<string>>(new Set())
+  const pickListRef = useRef<HTMLDivElement>(null)
+  const loadingFilesRef = useRef<Set<string>>(new Set())
+  const [selectedId, setSelectedId] = useState('')
+  const [now, setNow] = useState(() => Date.now())
+  const [notifyPrefs, setNotifyPrefs] = useState<Record<string, boolean>>(readNotifyPrefs)
 
   const agentKey = useMemo(() => agents.map((item) => item.workflowId).join('|'), [agents])
 
   useEffect(() => {
+    if (!agentKey) {
+      setLoadingDetails(false)
+      return
+    }
     let alive = true
     setLoadingDetails(true)
     void (async () => {
@@ -178,53 +526,65 @@ export function DecisionsTab({
         status: string
         meetings: MiniMeeting[]
       }> = []
-      const jobs = agentsRef.current.slice(0, 40).map(async (agent) => {
-        const history = await api.listAgentRuns(agent.workflowId).catch(() => [] as AgentRunHistoryItem[])
-        const matched = history
-          .filter((run) => inRange(runStamp(run), fromDay, toDay))
-          .slice(0, 5)
-        for (const run of matched) {
-          const detail = await api.getAgentRunDetail(agent.workflowId, run.runId).catch(() => null)
-          const events: AgentRunnerEvent[] = detail?.events || []
-          const at = run.finishedAt || run.startedAt || ''
-          collectedTools.push(
-            ...extractToolDecisions(events, {
+      try {
+        const collectedFiles: Record<string, WorkflowFileItem[]> = {}
+        const jobs = agentsRef.current.slice(0, 40).map(async (agent) => {
+          const [history, workflowFiles] = await Promise.all([
+            api.listAgentRuns(agent.workflowId).catch(() => [] as AgentRunHistoryItem[]),
+            api.listWorkflowFiles(agent.workflowId).catch(() => [] as WorkflowFileItem[])
+          ])
+          const visibleFiles = workflowFiles.filter(isUserFacingResultFile)
+          collectedFiles[agent.workflowId] = visibleFiles
+          const matched = history
+            .filter((run) => inRange(runStamp(run), fromDay, toDay))
+            .slice(0, 5)
+          for (const run of matched) {
+            const detail = await api.getAgentRunDetail(agent.workflowId, run.runId).catch(() => null)
+            const events: AgentRunnerEvent[] = detail?.events || []
+            const at = run.finishedAt || run.startedAt || ''
+            const extracted = extractToolDecisions(events, {
               workflowId: agent.workflowId,
               agentName: agent.name,
               runId: run.runId,
               at,
               runClosed: !isOpenRun(run.status)
             })
-          )
-          const cleaned = cleanRunResult({
-            answer: detail?.item.answer || run.answer,
-            summary: run.summary,
-            events,
-            status: run.status
-          })
-          const meetings = meetingsFromEvents(events)
-          const storedMeetings = detail?.item.calendarMeetings || []
-          const plan = meetings.length ? meetings : storedMeetings
-          if (cleaned.text || plan.length) {
-            collectedResults.push({
-              workflowId: agent.workflowId,
-              agentName: agent.name,
-              runId: run.runId,
-              at,
-              text: cleaned.text,
-              status: run.status,
-              meetings: plan
+            for (const item of extracted) {
+              item.files = pickFilesForDecision(item, visibleFiles)
+            }
+            collectedTools.push(...extracted)
+            const cleaned = cleanRunResult({
+              answer: detail?.item.answer || run.answer,
+              summary: run.summary,
+              events,
+              status: run.status
             })
+            const meetings = meetingsFromEvents(events)
+            const storedMeetings = detail?.item.calendarMeetings || []
+            const plan = meetings.length ? meetings : storedMeetings
+            if (cleaned.text || plan.length) {
+              collectedResults.push({
+                workflowId: agent.workflowId,
+                agentName: agent.name,
+                runId: run.runId,
+                at,
+                text: cleaned.text,
+                status: run.status,
+                meetings: plan
+              })
+            }
           }
-        }
-      })
-      await Promise.all(jobs)
-      if (!alive) return
-      collectedTools.sort((left, right) => String(right.at).localeCompare(String(left.at)))
-      collectedResults.sort((left, right) => String(right.at).localeCompare(String(left.at)))
-      setTools(collectedTools)
-      setResults(collectedResults)
-      setLoadingDetails(false)
+        })
+        await Promise.all(jobs)
+        if (!alive) return
+        collectedTools.sort((left, right) => String(right.at).localeCompare(String(left.at)))
+        collectedResults.sort((left, right) => String(right.at).localeCompare(String(left.at)))
+        setTools(collectedTools)
+        setResults(collectedResults)
+        setFilesByWorkflow((prev) => ({ ...prev, ...collectedFiles }))
+      } finally {
+        if (alive) setLoadingDetails(false)
+      }
     })()
     return () => {
       alive = false
@@ -239,7 +599,8 @@ export function DecisionsTab({
       if (!hitl) continue
       const tool = String(hitl.tool || '')
       if (!isDecisionTool(tool, true)) continue
-      items.push({
+      const seenKey = `${entry.workflowId}:${hitl.requestId}`
+      const item: ToolDecisionItem = {
         id: `live:${entry.workflowId}:${hitl.requestId}`,
         workflowId: entry.workflowId,
         agentName: entry.title,
@@ -250,12 +611,15 @@ export function DecisionsTab({
         result: '',
         status: 'pending',
         requestId: hitl.requestId,
-        at: new Date().toISOString(),
-        live: true
-      })
+        at: stampFirstSeen(firstSeenRef.current, seenKey),
+        live: true,
+        arguments: hitl.arguments && typeof hitl.arguments === 'object' ? hitl.arguments : {}
+      }
+      item.files = pickFilesForDecision(item, filesByWorkflow[entry.workflowId] || [])
+      items.push(item)
     }
     return items
-  }, [runs.entries, fromDay, toDay])
+  }, [runs.entries, fromDay, toDay, filesByWorkflow])
 
   const processOptions = useMemo(
     () =>
@@ -298,8 +662,7 @@ export function DecisionsTab({
         if (!stamp || dayKey(stamp) !== today) continue
       }
       if (due === 'overdue') {
-        const stamp = parseIso(item.at)
-        if (!stamp || dayKey(stamp) >= today || item.status !== 'pending') continue
+        if (item.status !== 'pending' || dueStamp(item) > Date.now()) continue
       }
       merged.push(item)
     }
@@ -308,9 +671,9 @@ export function DecisionsTab({
       if (sort === 'status') {
         return decisionStatusBucket(left).localeCompare(decisionStatusBucket(right), 'ru')
       }
-      const leftAt = left.at || ''
-      const rightAt = right.at || ''
-      return sort === 'due_desc' ? rightAt.localeCompare(leftAt) : leftAt.localeCompare(rightAt)
+      const leftDue = dueStamp(left)
+      const rightDue = dueStamp(right)
+      return sort === 'due_desc' ? rightDue - leftDue : leftDue - rightDue
     })
     return merged
   }, [livePending, tools, query, processId, status, priority, attachmentsOnly, due, sort, today])
@@ -318,6 +681,87 @@ export function DecisionsTab({
   const pending = visibleTools.filter((item) => item.status === 'pending')
   const history = visibleTools.filter((item) => item.status !== 'pending')
   const returned = visibleTools.filter((item) => decisionStatusBucket(item) === 'returned')
+  const selected = visibleTools.find((item) => item.id === selectedId) || null
+  const selectedFiles = selected
+    ? (() => {
+        const fromPool = uniqueFiles([
+          ...(selected.files || []),
+          ...pickFilesForDecision(selected, filesByWorkflow[selected.workflowId] || [])
+        ])
+        const have = new Set(fromPool.map((file) => (file.name || '').toLowerCase()))
+        const extras = attachmentNames(selected)
+          .filter((name) => !have.has(name.toLowerCase()))
+          .map((name) => ({ id: `name:${name}`, name, sizeBytes: 0 }))
+        return [...fromPool, ...extras]
+      })()
+    : []
+
+  useEffect(() => {
+    const ids = new Set<string>()
+    if (selected?.workflowId) ids.add(selected.workflowId)
+    for (const item of livePending) ids.add(item.workflowId)
+    for (const id of ids) {
+      if (!id || filesByWorkflow[id] || loadingFilesRef.current.has(id)) continue
+      loadingFilesRef.current.add(id)
+      void api
+        .listWorkflowFiles(id)
+        .catch(() => [] as WorkflowFileItem[])
+        .then((files) => {
+          setFilesByWorkflow((prev) => ({ ...prev, [id]: files.filter(isUserFacingResultFile) }))
+        })
+        .finally(() => {
+          loadingFilesRef.current.delete(id)
+        })
+    }
+  }, [selected?.workflowId, livePending, filesByWorkflow])
+
+  useEffect(() => {
+    if (visibleTools.some((item) => item.id === selectedId)) return
+    const first = visibleTools.find((item) => item.status === 'pending') || visibleTools[0]
+    setSelectedId(first?.id || '')
+  }, [visibleTools, selectedId])
+
+  useEffect(() => {
+    const node = pickListRef.current?.querySelector<HTMLElement>('.wp-decision-pick.selected')
+    node?.scrollIntoView({ block: 'nearest' })
+  }, [selectedId])
+
+  useEffect(() => {
+    if (!pending.length) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [pending.length])
+
+  useEffect(() => {
+    for (const item of pending) {
+      if (!notifyPrefs[item.id] || notifiedRef.current.has(item.id)) continue
+      const info = deadlineInfo(item, now)
+      if (info.remainingMs > NOTIFY_BEFORE_MS || info.remainingMs <= 0) continue
+      notifiedRef.current.add(item.id)
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        new Notification('Срок решения', { body: `${item.title}: осталось менее 10 минут` })
+      }
+    }
+  }, [now, pending, notifyPrefs])
+
+  function processFor(item: ToolDecisionItem): { name: string; code: string } {
+    const agent = agents.find((entry) => entry.workflowId === item.workflowId)
+    return {
+      name: agent?.name || item.agentName,
+      code: agent?.code || item.agentName
+    }
+  }
+
+  function toggleNotify(id: string, on: boolean): void {
+    setNotifyPrefs((prev) => {
+      const next = { ...prev, [id]: on }
+      writeNotifyPref(id, on)
+      return next
+    })
+    if (on && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      void Notification.requestPermission()
+    }
+  }
   const visibleResults = useMemo(() => {
     const q = query.trim().toLowerCase()
     return results
@@ -593,89 +1037,86 @@ export function DecisionsTab({
         </section>
       ) : null}
       {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
-      {loading || loadingDetails ? <article className="wp-card">Собираем подтверждения и результаты…</article> : null}
-      {!loading && !loadingDetails ? (
-        <div className="wp-decisions-columns">
-          <section className="wp-card wp-decisions-col">
-            <h2>Подтверждение инструментов</h2>
-            <p>
-              По умолчанию за {formatRange(fromDay, toDay)}. Только инструменты на запись или с
-              подтверждением. Уже подтверждённые не нужно подтверждать снова.
-            </p>
-            <div className="wp-decisions-col-list">
-              {!pending.length && !history.length ? (
-                <article className="wp-card wp-decisions-mini">За выбранный период таких инструментов нет.</article>
-              ) : null}
-              {pending.map((item) => (
-                <article key={item.id} className="wp-card wp-decision-rich">
-                  <div className="wp-decision-rich-head">
-                    <div>
-                      <h3>{item.title}</h3>
-                      <div className="wp-code">{item.agentName}</div>
-                    </div>
-                    <span className="wp-decision-state warn">{toolStatusLabel(item)}</span>
-                  </div>
-                  <div className="wp-decision-block">
-                    <strong>Что должен сделать</strong>
-                    <p>{item.intent}</p>
-                  </div>
-                  <div className="wp-actions wp-decision-actions">
-                    {item.live && item.requestId ? (
-                      <>
-                        <button
-                          className="btn-primary"
-                          type="button"
-                          onClick={() => runs.respondHitl(item.workflowId, item.requestId, true)}
-                        >
-                          Подтвердить
-                        </button>
-                        <button
-                          className="btn-ghost"
-                          type="button"
-                          onClick={() => runs.respondHitl(item.workflowId, item.requestId, false)}
-                        >
-                          Отклонить
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        className="btn-primary"
-                        type="button"
-                        onClick={() => onOpenRun(item.workflowId, item.agentName, item.runId)}
-                      >
-                        Открыть прогон
-                      </button>
-                    )}
-                  </div>
+      <div className="wp-decisions-columns wp-decisions-master">
+            <section className="wp-card wp-decisions-col">
+              <h2>Подтверждение инструментов</h2>
+              <p>
+                {loading || loadingDetails
+                  ? 'Собираем подтверждения… список появится по мере загрузки.'
+                  : visibleTools.length
+                    ? `Решения (${visibleTools.length}). Критический срок — 60 минут с появления запроса.`
+                    : `За ${formatRange(fromDay, toDay)} запросов на подтверждение нет.`}
+              </p>
+              <div ref={pickListRef} className="wp-decisions-col-list wp-decision-pick-list">
+                {!visibleTools.length ? (
+                  <article className="wp-card wp-decisions-mini">За выбранный период таких инструментов нет.</article>
+                ) : null}
+                {visibleTools.map((item) => {
+                  const process = processFor(item)
+                  const due = deadlineInfo(item, now)
+                  const selectedItem = item.id === selectedId
+                  const stateTone =
+                    item.status === 'pending' ? 'wait' : item.status === 'rejected' ? 'warn' : 'ok'
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`wp-decision-pick${selectedItem ? ' selected' : ''}${due.overdue && item.status === 'pending' ? ' overdue' : ''}`}
+                      onClick={() => setSelectedId(item.id)}
+                    >
+                      <span className={`wp-decision-pick-radio${selectedItem ? ' on' : ''}`} aria-hidden />
+                      <span className="wp-decision-pick-body">
+                        <span className="wp-decision-pick-head">
+                          <strong>{item.title}</strong>
+                          <span className={`wp-decision-state ${stateTone}`}>{toolStatusLabel(item)}</span>
+                        </span>
+                        <span className="wp-decision-pick-process">Процесс: {process.name}</span>
+                        <span className="wp-decision-pick-foot">
+                          <span>
+                            {priorityLabel(item)}
+                            {' · '}
+                            {item.status === 'pending'
+                              ? due.overdue
+                                ? `Просрочено · ${Math.max(1, Math.round(-due.remainingMs / 60_000))} мин`
+                                : `до ${due.dueClock} · ${Math.max(1, Math.round(due.remainingMs / 60_000))} мин`
+                              : createdLabel(parseIso(item.at) || new Date(item.at))}
+                          </span>
+                          <span className="wp-code">{process.code}</span>
+                        </span>
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            </section>
+            <section className="wp-card wp-decisions-col wp-decision-detail">
+              {!selected ? (
+                <article className="wp-decisions-mini">
+                  Выберите решение слева, чтобы увидеть срок и материалы.
                 </article>
-              ))}
-              {pending.length > 0 && history.length > 0 ? (
-                <h3 className="wp-decisions-sub">История подтверждений</h3>
-              ) : null}
-              {history.map((item) => (
-                <article key={item.id} className="wp-card wp-decision-rich">
-                  <div className="wp-decision-rich-head">
-                    <div>
-                      <h3>{item.title}</h3>
-                      <div className="wp-code">{item.agentName}</div>
-                    </div>
-                    <span className={`wp-decision-state ${item.status === 'rejected' ? 'warn' : 'ok'}`}>
-                      {toolStatusLabel(item)}
-                    </span>
-                  </div>
-                  <div className="wp-decision-block">
-                    <strong>Что нужно было подтвердить</strong>
-                    <p>{item.intent}</p>
-                  </div>
-                  <div className="wp-decision-block">
-                    <strong>Результат инструмента</strong>
-                    <p className="wp-decisions-result">{item.result || 'Результат не сохранился.'}</p>
-                  </div>
-                  <p className="wp-decision-time">{item.at ? humanWhen(parseIso(item.at) || new Date(item.at)) : ''}</p>
-                </article>
-              ))}
-            </div>
-          </section>
+              ) : (
+                <DecisionDetail
+                  item={selected}
+                  now={now}
+                  process={processFor(selected)}
+                  files={selectedFiles}
+                  notify={Boolean(notifyPrefs[selected.id])}
+                  onNotify={(on) => toggleNotify(selected.id, on)}
+                  onConfirm={() => {
+                    if (selected.live && selected.requestId) {
+                      runs.respondHitl(selected.workflowId, selected.requestId, true)
+                    }
+                  }}
+                  onReturn={() => {
+                    if (selected.live && selected.requestId) {
+                      runs.respondHitl(selected.workflowId, selected.requestId, false)
+                    }
+                  }}
+                  onOpen={() => onOpenRun(selected.workflowId, selected.agentName, selected.runId)}
+                />
+              )}
+            </section>
+          </div>
           <section className="wp-card wp-decisions-col">
             <h2>Результаты агентов</h2>
             <p>Итог работы, без хода выполнения.</p>
@@ -717,8 +1158,6 @@ export function DecisionsTab({
               ))}
             </div>
           </section>
-        </div>
-      ) : null}
     </div>
   )
 }

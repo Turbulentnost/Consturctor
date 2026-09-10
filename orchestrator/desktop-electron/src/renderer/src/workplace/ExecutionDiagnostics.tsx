@@ -348,7 +348,7 @@ export function ExecutionDiagnostics({
   }, [selectedRun, selectedKey, errorCode, fullPayload])
 
   const logsText = useMemo(() => {
-    if (!events.length) return 'Событий прогона нет.'
+    if (!events.length) return 'Событий запуска нет.'
     const lines = events.map((item, idx) => {
       const parts = [
         `#${idx + 1}`,

@@ -33,6 +33,7 @@ _RK_TOOLS = [
     "onec.erp_tasks_current",
     "onec.erp_tasks_period",
     "onec.docflow_tasks",
+    "onec.meeting_protocols",
     "onec.search_documents",
     "onec.get_document_card",
     "onec.list_attachments",
@@ -52,6 +53,7 @@ _SD_TOOLS = [
     "outlook.read_calendar",
     "calendar.show_meetings",
     "onec.meeting_service_notes",
+    "onec.meeting_protocols",
     "onec.search_documents",
     "onec.get_document_card",
     "onec.list_attachments",
@@ -442,6 +444,10 @@ def select_candidates(
     if entity == "service_note" and "onec.meeting_service_notes" in names:
         names = ["onec.meeting_service_notes"] + [
             name for name in names if name != "onec.meeting_service_notes"
+        ]
+    if entity == "protocol" and "onec.meeting_protocols" in names:
+        names = ["onec.meeting_protocols"] + [
+            name for name in names if name != "onec.meeting_protocols"
         ]
     return names
 

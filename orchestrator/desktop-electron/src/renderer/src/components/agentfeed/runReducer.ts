@@ -186,6 +186,23 @@ export function pushSystem(items: FeedItem[], text: string, tone: 'info' | 'erro
   return [...items, { kind: 'system', id: nextId('sys'), text: value, tone }]
 }
 
+/** Mark in-flight tool cards as cancelled when the user stops a run. */
+export function cancelPendingTools(items: FeedItem[]): FeedItem[] {
+  let changed = false
+  const next = items.map((item) => {
+    if (item.kind !== 'tool' || item.done) return item
+    changed = true
+    return {
+      ...item,
+      done: true,
+      error: false,
+      summary: 'Отменено',
+      statusText: 'Отменено'
+    }
+  })
+  return changed ? next : items
+}
+
 export function pushUserMessage(items: FeedItem[], text: string): FeedItem[] {
   const value = (text || '').trim()
   if (!value) return items

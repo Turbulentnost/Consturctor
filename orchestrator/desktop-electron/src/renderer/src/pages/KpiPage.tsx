@@ -488,7 +488,7 @@ function computeTileFact(
   const finished = runs.filter((run) => isSuccess(run.status) || isErrorStatus(run.status))
   if (kind === 'runs_count') {
     if (!runs.length) return null
-    return { value: runs.length, evidence: `прогонов: ${runs.length}` }
+    return { value: runs.length, evidence: `запусков: ${runs.length}` }
   }
   if (kind === 'fail_count') {
     if (!finished.length) return null
@@ -1881,7 +1881,7 @@ function InteractionPane({
         <div className="kpi-card-head">
           <div>
             <h3>Показатели по процессам</h3>
-            <p>Срез по взаимодействию агента и человека за выбранный период. Время ответа — среднее по прогонам агента (без задержки = 0 мин).</p>
+            <p>Срез по взаимодействию агента и человека за выбранный период. Время ответа — среднее по запускам агента (без задержки = 0 мин).</p>
           </div>
           {loading && <span className="kpi-loading">Обновляем...</span>}
         </div>

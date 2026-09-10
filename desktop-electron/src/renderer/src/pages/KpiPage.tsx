@@ -297,7 +297,7 @@ function computeTileFact(
   const finished = runs.filter((run) => isSuccess(run.status) || isErrorStatus(run.status))
   if (kind === 'runs_count') {
     if (!runs.length) return null
-    return { value: runs.length, evidence: `прогонов: ${runs.length}` }
+    return { value: runs.length, evidence: `запусков: ${runs.length}` }
   }
   if (kind === 'fail_count') {
     if (!finished.length) return null

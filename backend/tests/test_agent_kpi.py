@@ -147,7 +147,7 @@ def test_apply_calc_updates_only_due_tiles() -> None:
                 "id": first_id,
                 "fact": {"value": 80, "unit": "%"},
                 "score_percent": 80,
-                "evidence": "3 прогона ok из 4",
+                "evidence": "3 запуска ok из 4",
             },
             {"id": "unknown", "fact": {"value": 1}, "score_percent": 1},
         ],
@@ -159,7 +159,7 @@ def test_apply_calc_updates_only_due_tiles() -> None:
     assert by_id[first_id]["score_percent"] == 80
     assert by_id[first_id]["color"] == "yellow"
     assert by_id[first_id]["updated_at"] == now.isoformat()
-    assert by_id[first_id]["evidence"] == "3 прогона ok из 4"
+    assert by_id[first_id]["evidence"] == "3 запуска ok из 4"
     assert by_id[second_id]["fact"]["value"] is None
     assert by_id[second_id]["calc_failures"] == 1
 
@@ -172,7 +172,7 @@ def test_apply_calc_empty_evidence_when_no_runs() -> None:
         [{"id": tile_id, "fact": {"value": None}, "score_percent": None}],
         due_ids={tile_id},
     )
-    assert applied["tiles"][0]["evidence"] == "ещё нет прогонов"
+    assert applied["tiles"][0]["evidence"] == "ещё нет запусков"
 
 
 def test_parse_calc_payload() -> None:

@@ -540,7 +540,7 @@ export function AgentPassportPage({
                 {kpi.tiles.map((tile) => {
                   const kind = tile.measure?.kind || tile.id || ''
                   const label =
-                    kind === 'runs_count' || tile.name === 'Число прогонов'
+                    kind === 'runs_count' || tile.name === 'Число запусков'
                       ? 'Запусков всего'
                       : tile.name
                   return (

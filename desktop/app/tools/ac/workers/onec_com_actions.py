@@ -43,6 +43,7 @@ ENV_SERVER = "ONEC_COM_SERVER"
 ENV_REF = "ONEC_COM_REF"
 ENV_LOGIN = "ERP_LOGIN"
 ENV_PASSWORD = "ERP_PASSWORD"
+ENV_COM_USR = "ONEC_COM_USR"
 ENV_SEARCH_METHOD = "ONEC_COM_SEARCH_METHOD"
 ENV_GET_DOCUMENT_CARD_METHOD = "ONEC_COM_GET_DOCUMENT_CARD_METHOD"
 ENV_SEARCH_TASKS_METHOD = "ONEC_COM_SEARCH_TASKS_METHOD"
@@ -499,7 +500,7 @@ def _connection_string() -> str:
     if not server or not ref:
         return ""
     parts = [f"Srvr={_quote_conn_value(server)}", f"Ref={_quote_conn_value(ref)}"]
-    login = os.environ.get(ENV_LOGIN, "").strip()
+    login = os.environ.get(ENV_COM_USR, "").strip() or os.environ.get(ENV_LOGIN, "").strip()
     password = os.environ.get(ENV_PASSWORD, "").strip()
     if login and password:
         parts.append(f"Usr={_quote_conn_value(login)}")

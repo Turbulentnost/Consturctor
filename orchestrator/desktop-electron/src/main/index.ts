@@ -607,7 +607,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#0D3B73',
-    title: 'Orchestrator',
+    title: 'Оркестратор',
     icon: APP_ICON || undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -620,7 +620,7 @@ function createWindow(): void {
     mainWindow.setAppDetails({
       appId: 'com.orchestrator.desktop',
       appIconPath: APP_ICON,
-      relaunchDisplayName: 'Orchestrator'
+      relaunchDisplayName: 'Оркестратор'
     })
   }
 

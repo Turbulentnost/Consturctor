@@ -99,7 +99,7 @@ _PLACEHOLDER_TITLES = {
 
 _RESULT_HINT = (
     "Сначала пойми, зачем этот агент нужен и чем заканчивается его работа.\n"
-    "В конце прогона всегда верни предметный результат — не «Готово» и не JSON инструмента.\n"
+    "В конце запуска всегда верни предметный результат — не «Готово» и не JSON инструмента.\n"
     "Формат (текст обязателен):\n"
     "RESULT:\n"
     "<3–12 предложений: что проверил, что нашёл, что сделал, кому сообщил>\n"
@@ -261,7 +261,7 @@ _DEMO_EXECUTE_DRAFT_HINT = (
     "Если слот пересекается с существующей встречей в Outlook — реши сам: "
     "посмотри календари участников и их загрузку, выбери перенос, сам перенеси через outlook.create_event, "
     "и отрази итог в calendar.show_meetings. "
-    "Пункт CLARIFY ниже к этому прогону не применяется.\n"
+    "Пункт CLARIFY ниже к этому запуску не применяется.\n"
 )
 
 
@@ -335,7 +335,7 @@ def build_demo_prompt(
         "Делай только то, что явно сказано. Не составляй план-JSON и не переписывай черновик.\n"
         f"{_demo_scope_hint(draft)}"
         "Когда человек ответил или решение уже есть в ТЗ — "
-        "один реальный прогон на живых данных.\n"
+        "один реальный запуск на живых данных.\n"
         f"{_VALIDATION_RULES}\n"
         f"{_draft_block(draft)}"
         f"{_RESULT_HINT}\n"
@@ -359,7 +359,7 @@ def build_demo_continue_prompt(
     body = _clip_demo_materials(document_text=document_text, notes=notes)
     answers = _answered_scope_lines(plan)
     return (
-        "Человек ответил на содержательные вопросы. Продолжи пробный прогон.\n"
+        "Человек ответил на содержательные вопросы. Продолжи пробный запуск.\n"
         "Делай только указанный объём: не бери «все» объекты, если выбрали конкретные.\n"
         f"{_demo_scope_hint(draft)}"
         "Если после ответов смысл ясен — вызывай разрешённые инструменты и дай результат.\n"
@@ -443,7 +443,7 @@ def build_playbook_draft_prompt(
             "Если не задан итоговый выходной результат агента (что он должен выдать в конце: "
             "формат и содержание), обязательно спроси это.\n"
             "Бизнес-задачу сейчас не решай и итоговый отчёт не пиши: данные возьмёт "
-            "пробный прогон по этому черновику.\n"
+            "пробный запуск по этому черновику.\n"
         )
         clarify = (
             "Перед JSON закрой через askQuestion пробелы, без которых будущий агент "
@@ -463,7 +463,7 @@ def build_playbook_draft_prompt(
             "Думай и пиши черновик только на русском.\n"
             "Твоя единственная задача — вернуть JSON черновика. "
             "Бизнес-задачу сейчас не решай и итоговый отчёт не пиши: данные возьмёт "
-            "пробный прогон по этому черновику.\n"
+            "пробный запуск по этому черновику.\n"
         )
         clarify = (
             "В required_clarifications пиши только те бизнес-правила, которых нет в материалах, "
@@ -662,7 +662,7 @@ def build_playbook_repair_prompt(
 
 
 def draft_summary_text(draft: dict[str, Any]) -> str:
-    """Компактный черновик для промптов прогона."""
+    """Компактный черновик для промптов запуска."""
     if not draft:
         return ""
     lines = [f"Цель: {draft.get('goal') or '—'}"]
@@ -716,12 +716,12 @@ def build_playbook_prompt(
         else ""
     )
     return (
-        "По только что выполненному прогону составь инструкцию для СЕБЯ на следующие запуски.\n"
+        "По только что выполненному запуску составь инструкцию для СЕБЯ на следующие запуски.\n"
         "Верни ТОЛЬКО один JSON-объект (можно в ```json):\n"
         "{\n"
         '  "name": "короткое человеческое имя агента, не имя файла",\n'
         '  "instructions": "кратко: цель, какой объём, откуда данные, какой результат, какие tools",\n'
-        '  "example_run": "сжатый пример успешного прогона: вызовы и итог",\n'
+        '  "example_run": "сжатый пример успешного запуска: вызовы и итог",\n'
         '  "expected_result": "что отдавать в следующий раз: текст, файлы, уведомления",\n'
         '  "triggers": [\n'
         "    {\n"
@@ -764,7 +764,7 @@ def build_published_run_prompt(
         "Работай как Cursor: tools через ```constructor_tool, потом понятный ответ.\n"
         "Не ищи MCP Constructor, OIDC, BACKEND_URL и не делай curl с Cloud VM — "
         "серверные инструменты вызываются блоком constructor_tool, backend выполнит их сам.\n"
-        "Следуй инструкции. Пример прогона — образец, не догма: "
+        "Следуй инструкции. Пример запуска — образец, не догма: "
         "если задача чуть другая, адаптируй вызовы.\n"
         "Если в инструкции и задаче сейчас не сказано, какие объекты брать "
         "(проекты, люди, период) — спроси человека блоком CLARIFY и остановись. "
@@ -779,7 +779,7 @@ def build_published_run_prompt(
         "===== ИНСТРУКЦИЯ =====\n"
         f"{(instructions or '').strip() or 'Выполни задачу по смыслу бизнес-процесса.'}\n"
         "===== КОНЕЦ ИНСТРУКЦИИ =====\n\n"
-        "===== ПРИМЕР УСПЕШНОГО ПРОГОНА =====\n"
+        "===== ПРИМЕР УСПЕШНОГО ЗАПУСКА =====\n"
         f"{(example_run or '').strip() or '—'}\n"
         "===== КОНЕЦ ПРИМЕРА =====\n\n"
         "===== ЗАДАЧА СЕЙЧАС =====\n"
@@ -814,14 +814,14 @@ def build_playbook_refine_prompt(
     title: str = "",
     tools: list[str] | None = None,
 ) -> str:
-    """После удачного прогона черновик правится, а не пишется заново."""
+    """После удачного запуска черновик правится, а не пишется заново."""
     trace = (demo_trace or "").strip()
     if len(trace) > 12_000:
         trace = trace[:12_000] + "\n[...]"
     ledger = json.dumps(validation or {}, ensure_ascii=False, indent=2)
     tools_line = ", ".join(tools or []) or "—"
     return (
-        "Прогон прошёл проверку данных. Доработай ЧЕРНОВИК инструкции по фактам прогона — "
+        "Запуск прошёл проверку данных. Доработай ЧЕРНОВИК инструкции по фактам запуска — "
         "не пиши инструкцию с нуля.\n"
         "Что уточнить: точные имена инструментов (например onec.*), рабочие параметры вызовов, "
         "обработку пустого ответа, формат результата и получателя.\n"
@@ -830,7 +830,7 @@ def build_playbook_refine_prompt(
         "{\n"
         '  "name": "название агента",\n'
         '  "instructions": "инструкция для следующих запусков, по шагам",\n'
-        '  "example_run": "что именно было сделано в этом прогоне и с каким результатом",\n'
+        '  "example_run": "что именно было сделано в этом запуске и с каким результатом",\n'
         '  "expected_result": "что человек получает на выходе",\n'
         '  "triggers": [],\n'
         '  "steps": [ ...тот же формат шагов, что в черновике, с исправлениями... ]\n'
@@ -841,7 +841,7 @@ def build_playbook_refine_prompt(
         f"{json.dumps(draft, ensure_ascii=False, indent=2)}\n"
         "===== ЖУРНАЛ ШАГОВ =====\n"
         f"{ledger}\n"
-        "===== ПРОГОН =====\n"
+        "===== ЗАПУСК =====\n"
         f"{trace}\n"
         "===== END ====="
     )
@@ -1045,7 +1045,7 @@ def _parse_clarify_fallback(text: str) -> list[OpenQuestion]:
     if not blob or len(blob) > 1200:
         return []
     low = blob.casefold()
-    if any(hint in low for hint in ("tests: pass", "tests:pass", "прогон готов")):
+    if any(hint in low for hint in ("tests: pass", "tests:pass", "запуск готов")):
         return []
     items: list[OpenQuestion] = []
     for raw in blob.splitlines():
@@ -1197,7 +1197,7 @@ ARTIFACTS_INSTRUCTION = (
 )
 
 LIVE_TOOLS_TEST_INSTRUCTION = (
-    "Тестовый прогон (обязательно):\n"
+    "Тестовый запуск (обязательно):\n"
     "- ```constructor_tool — это НЕ инструмент Cursor и НЕ HTTP с VM. "
     "Это markdown-блок в твоём сообщении. Constructor перехватывает блок и "
     "сам вызывает tool на сервере. Писать «не могу вызвать constructor_tool» запрещено.\n"
@@ -1219,7 +1219,7 @@ LIVE_TOOLS_TEST_INSTRUCTION = (
 RESULT_STATUS_INSTRUCTION = (
     "Статус в RESULT.md и финальном ответе:\n"
     "- Не пиши «агент сформирован», «реализация завершена», «можно сохранить», "
-    "пока нет `TESTS: PASS` по полному прогону.\n"
+    "пока нет `TESTS: PASS` по полному запуску.\n"
     "- Если в плане есть live-источник — вызови его через ```constructor_tool. "
     "`TESTS: PASS` без вызова tool и без предметного вывода в RESULT.md запрещён.\n"
     "- Нет `BACKEND_URL` на Cloud VM — ожидаемо, не FAIL. Не ходи в 1С/TurboProject "
@@ -1229,7 +1229,7 @@ RESULT_STATUS_INSTRUCTION = (
     "- `TESTS: FAIL` только после ошибки Constructor tool (повторы исчерпаны) "
     "или если инструмента нет в каталоге. Не за сеть Cloud VM, не за INVOKER, "
     "не за отсутствие URL в чате.\n"
-    "- При настоящем FAIL: заголовок «Тестовый прогон не завершён», почему "
+    "- При настоящем FAIL: заголовок «Тестовый запуск не завершён», почему "
     "цель недостижима. Не делай раздел «Что сделано», будто агент готов."
 )
 
@@ -1239,22 +1239,35 @@ RK_MEETING_RUNTIME_INSTRUCTION = (
     "Дату заседания бери из Outlook (`outlook.read_calendar`, тема: ревизион / РК).\n"
     "- Поручения 1С без фильтра по статусам ТЗ: `onec.erp_tasks_current`, "
     "`onec.erp_tasks_period`, `onec.docflow_tasks`; документы — `onec.search_documents`, "
+    "протоколы на проверку — `onec.meeting_protocols` (meeting_kind=rk, дата заседания), "
     "вложения — `onec.list_attachments` / `onec.read_attachment`.\n"
+    "- Исключай тестовые пробы Constructor (тема/комментарий/номер с «Constructor», "
+    "«проба Constructor»).\n"
     "- Excel-реестр: `excel.read_workbook` из materials/attachments; при отсутствии — "
-    "только чтение сетевой папки через `workspace.powershell_run`, Excel не править.\n"
+    "одна попытка чтения сетевой папки через `workspace.powershell_run` (список файлов), "
+    "Excel не править; при таймауте — продолжай с 1С.\n"
+    "- Один проход сбора: не вызывай те же инструменты повторно и не перезапускай сбор.\n"
     "- Сверь чек-лист §15; расхождения 1С/Excel показывай обеими датами. "
     "Без Word-расшифровки протокол не готовь.\n"
-    "- Итог: проект повестки и перечни + `report.export_document`."
+    "- Нет заседания в Outlook → «Недостаточно данных: дата не найдена», но перечни выпусти.\n"
+    "- Итог: ## WORK_RESULT + проект повестки и перечни + `report.export_document`."
 )
 
 SD_MEETING_RUNTIME_INSTRUCTION = (
     "Заседания Совета директоров (ПЛ-34-242 v03):\n"
     "- Сначала календарь Outlook (`outlook.read_calendar`), затем 1С: "
-    "`onec.meeting_service_notes` и карточки «совет директоров по гк» через "
-    "`onec.search_documents` + `onec.get_document_card`.\n"
+    "`onec.meeting_service_notes`, протоколы на проверку — только `onec.meeting_protocols` "
+    "(meeting_kind=sd, дата заседания). Номера протоколов СД ГК: префикс «ПСД_001_О_*» "
+    "(не собирай фильтр startswith(Number,'СД') вручную через odata_get). "
+    "Карточки «совет директоров по гк» — `onec.search_documents` + `onec.get_document_card`.\n"
+    "- ЗАПРЕЩЕНО: `outlook.search_mail`, `imap.*`, произвольный `onec.odata_get` "
+    "по Document_ТД_Протокол, повторные циклы OData/почты и Glob/Grep по materials/.\n"
+    "- 1С только через OData: `onec.meeting_service_notes`, `onec.meeting_protocols`, "
+    "`onec.search_documents`, `onec.get_document_card` — без COM.\n"
     "- Вложения 1С: `onec.list_attachments` → `onec.read_attachment` для каждого файла; "
     "сканы PDF без текстового слоя читаются через OCR на сервере при загрузке.\n"
     "- Материалы запуска: `excel.list_files` и `excel.read_workbook` из materials/attachments.\n"
+    "- Если и OData недоступен — зафиксируй пробел и заверши ## WORK_RESULT.\n"
     "- Сверь пакет п. 6.4 ПЛ-34-242; пробелы не заполняй. Без Word-расшифровки "
     "не готовь протокол, Decision Log и Action Tracker.\n"
     "- Итог: сводка комплектности + `report.export_document`."
@@ -1267,7 +1280,7 @@ TESTS_USER_CLARIFY_INSTRUCTION = (
     "Не пиши блок CLARIFY по доступу к 1С/почте/API — бери рекомендованный путь сам.\n"
     "- Рекомендовано для 1С: служебные записки на организацию совещаний, "
     "направленные текущему пользователю — первым делом `onec.meeting_service_notes` "
-    "(COM, только чтение; date или date_from/date_to; в ответе тема СЗ, "
+    "(OData, только чтение; date или date_from/date_to; в ответе тема СЗ, "
     "тема совещания, место и остальные параметры блока «Организация совещания»). "
     "Не ищи такие СЗ через `onec.search_documents`. "
     "Правила из паспорта (`document_text`, например п. 6.4) не ищи в 1С. "
@@ -1295,12 +1308,12 @@ TESTS_USER_CLARIFY_INSTRUCTION = (
 )
 
 RUNTIME_NETWORK_INSTRUCTION = (
-    "Сеть и прогоны:\n"
+    "Сеть и запуски:\n"
     "- Cloud VM часто НЕ достучится до закрытых площадок — это ожидаемо. "
     "Не ставь FAIL и не останавливайся: live идёт через ```constructor_tool, "
     "не через сеть VM и не через BACKEND_URL.\n"
     "- Реализуй ДВА режима в коде агента: `--fixtures` (офлайн/CI) и `--live` (боевой). "
-    "Тестовый прогон в конструкторе = live через Constructor tools, не fixtures вместо tool.\n"
+    "Тестовый запуск в конструкторе = live через Constructor tools, не fixtures вместо tool.\n"
     "- Live-режим должен соответствовать ДОМЕНУ плана, а не универсальному web_search:\n"
     "  • совещания / Outlook / календарь → CLI/фикстуры / COM Outlook / Graph, "
     "если пользователь так указал в ответах; "
@@ -1363,6 +1376,19 @@ def _meeting_runtime_block(*, plan: WorkflowPlan, document_text: str) -> str:
     return ""
 
 
+def _tests_instruction_for_plan(*, plan: WorkflowPlan, document_text: str) -> str:
+    if _meeting_runtime_block(plan=plan, document_text=document_text):
+        return (
+            "Тесты и тупики (заседание СД/РК):\n"
+            "- Не вызывай `outlook.search_mail`, `imap.*` и не уходи в циклы OData/почты.\n"
+            "- COM недоступен → `onec.odata_catalog` один раз, затем `onec.odata_get` "
+            "с entity и фильтром; без сущности каталог не крути.\n"
+            "- Если 1С недоступна полностью → пробел в WORK_RESULT и завершение.\n"
+            "- CLARIFY только по смыслу задачи, не по инфраструктуре.\n"
+        )
+    return TESTS_USER_CLARIFY_INSTRUCTION
+
+
 def build_execute_prompt(
     *,
     plan: WorkflowPlan,
@@ -1389,7 +1415,7 @@ def build_execute_prompt(
         f"{RESULT_STATUS_INSTRUCTION}\n\n"
         f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
         f"{_meeting_runtime_block(plan=plan, document_text=doc)}"
-        f"{TESTS_USER_CLARIFY_INSTRUCTION}\n\n"
+        f"{_tests_instruction_for_plan(plan=plan, document_text=doc)}\n\n"
         f"{ARTIFACTS_INSTRUCTION}\n"
         f"{answers_section}"
         "===== PLAN JSON =====\n"
@@ -1433,7 +1459,7 @@ def build_reexecute_prompt(
         f"{RESULT_STATUS_INSTRUCTION}\n\n"
         f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
         f"{_meeting_runtime_block(plan=plan, document_text='')}"
-        f"{TESTS_USER_CLARIFY_INSTRUCTION}\n\n"
+        f"{_tests_instruction_for_plan(plan=plan, document_text='')}\n\n"
         f"{ARTIFACTS_INSTRUCTION}\n"
         f"{answers_section}"
         f"{clarify_block}\n"
@@ -1598,7 +1624,7 @@ def build_kpi_curator_prompt(
         "fact_explanation": "простыми словами: как считается факт, какие запуски смотрим, с чем сравниваем. Без формул и символов.",
         "score_explanation": "простыми словами: как получается оценка в процентах и что значат зелёный, жёлтый и красный.",
         "system": "техническая инструкция для фонового расчёта: что брать из истории, как считать план, факт и процент. Формулы здесь можно.",
-        "how": "технически: как считать факт по истории прогонов",
+        "how": "технически: как считать факт по истории запусков",
         "when": "только периодичность пересчёта, без окна данных и без повторов",
         "plan_update": "когда обновлять план",
         "fact_update": "когда обновлять факт",
@@ -1628,7 +1654,7 @@ def build_kpi_curator_prompt(
 - schedule.kind: interval (повторять каждые interval_seconds) или at (однократно в at ISO).
 - План — норма работы (частота, 100% успешности, 0 ошибок).
 - fact.value и score_percent всегда null: значения посчитает фоновый агент по методике.
-- Если запусков ещё нет, факт читается как «ещё нет прогонов».
+- Если запусков ещё нет, факт читается как «ещё нет запусков».
 - Не выдумывай поля TurboProject и не пиши произвольный код.
 - Не вызывай constructor_tool и не ходи в HTTP — только JSON.
 """.strip()
@@ -1662,7 +1688,7 @@ def build_kpi_calc_prompt(
 Краткий план агента:
 {plan_text or "—"}
 
-Контекст (плитки к расчёту и история прогонов):
+Контекст (плитки к расчёту и история запусков):
 {context}
 
 Верни ТОЛЬКО один JSON-объект (можно в блоке ```json), без текста вокруг.
@@ -1674,7 +1700,7 @@ def build_kpi_calc_prompt(
       "plan": {{"value": 30, "unit": "мин", "description": ""}},
       "fact": {{"value": 28, "unit": "мин", "description": ""}},
       "score_percent": 93.3,
-      "evidence": "какие прогоны, интервалы и статусы вошли в расчёт"
+      "evidence": "какие запуски, интервалы и статусы вошли в расчёт"
     }}
   ]
 }}
@@ -1684,8 +1710,8 @@ def build_kpi_calc_prompt(
 - Следуй method.system, method.how, method.percent_formula, method.plan_update и method.fact_update.
 - plan_explanation, fact_explanation и score_explanation не меняй и не используй для расчёта — это текст для человека.
 - score_percent — KPI в процентах 0–100 по percent_formula.
-- evidence — кратко, по каким данным получились план, факт и процент (id/время/статусы прогонов, интервалы).
-- Если прогонов нет или данных недостаточно: fact.value = null, score_percent = null, evidence = «ещё нет прогонов».
+- evidence — кратко, по каким данным получились план, факт и процент (id/время/статусы запусков, интервалы).
+- Если запусков нет или данных недостаточно: fact.value = null, score_percent = null, evidence = «ещё нет запусков».
 - Не вызывай constructor_tool и не ходи в HTTP — только JSON.
 """.strip()
 

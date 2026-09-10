@@ -4720,9 +4720,9 @@ button.feed-tool-head:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   min-width: 0;
-  overflow-x: auto;
+  overflow: visible;
 }
 .kpi-filter-select {
   height: 38px;
@@ -4879,10 +4879,8 @@ button.feed-tool-head:hover {
   border-color: rgba(16, 20, 26, 0.2);
 }
 .kpi-range-picker-pop {
-  position: absolute;
-  left: 0;
-  top: calc(100% + 6px);
-  z-index: 30;
+  position: fixed;
+  z-index: 80;
   width: 276px;
   background: #fff;
   border: 1px solid rgba(13, 59, 115, 0.14);
@@ -8572,6 +8570,249 @@ button.feed-tool-head:hover {
   gap: 12px;
   align-items: start;
 }
+.wp-decisions-columns.wp-decisions-master {
+  grid-template-columns: minmax(320px, 0.92fr) minmax(0, 1.2fr);
+}
+.wp-decision-pick-list {
+  --pick-h: 78px;
+  --pick-gap: 8px;
+  max-height: calc(8 * var(--pick-h) + 7 * var(--pick-gap));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  background: #f6f8fb;
+  scrollbar-gutter: stable;
+}
+.wp-decision-pick-list .wp-decision-pick {
+  height: var(--pick-h);
+  min-height: var(--pick-h);
+  flex-shrink: 0;
+  padding: 10px 12px;
+  box-sizing: border-box;
+}
+.wp-decision-pick {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--card-border);
+  background: #fff;
+  border-radius: 14px;
+  padding: 12px 14px;
+  cursor: pointer;
+  color: inherit;
+}
+.wp-decision-pick:hover {
+  border-color: #9ec0ea;
+  background: #f7fbff;
+}
+.wp-decision-pick.selected {
+  border-color: #1a60d8;
+  box-shadow: 0 0 0 2px rgba(26, 96, 216, 0.12);
+  background: #f4f8ff;
+}
+.wp-decision-pick.overdue:not(.selected) {
+  border-color: #f2cdca;
+}
+.wp-decision-pick-radio {
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  border-radius: 999px;
+  border: 2px solid #9aa8bd;
+  flex-shrink: 0;
+  background: #fff;
+}
+.wp-decision-pick-radio.on {
+  border-color: #1a60d8;
+  box-shadow: inset 0 0 0 3px #1a60d8;
+}
+.wp-decision-pick-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.wp-decision-pick-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+.wp-decision-pick-head strong {
+  font-size: 14px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wp-decision-pick-process,
+.wp-decision-pick-foot {
+  font-size: 12px;
+  color: var(--content-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wp-decision-pick-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.wp-decision-pick-foot > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wp-decision-detail {
+  gap: 12px;
+}
+.wp-decision-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.wp-decision-detail-head h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  line-height: 1.25;
+}
+.wp-decision-detail-meta {
+  margin: 0;
+  font-size: 13px;
+  color: var(--content-muted);
+}
+.wp-decision-due {
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wp-decision-due.warn {
+  background: #fff1ef;
+  color: #c73f3f;
+}
+.wp-decision-due.overdue {
+  background: #fde8e6;
+  color: #b42318;
+}
+.wp-decision-due.ok {
+  background: #edf9f3;
+  color: #08745f;
+}
+.wp-decision-due-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.wp-decision-due-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  overflow: hidden;
+}
+.wp-decision-due.warn .wp-decision-due-bar,
+.wp-decision-due.overdue .wp-decision-due-bar {
+  background: #fde8e6;
+}
+.wp-decision-due.ok .wp-decision-due-bar {
+  background: #d8f3e5;
+}
+.wp-decision-due-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #e24b4b;
+}
+.wp-decision-due.ok .wp-decision-due-bar > i {
+  background: #0c8e53;
+}
+.wp-decision-due-hint {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.8;
+}
+.wp-decision-attach-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.wp-decision-download-all {
+  width: auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.wp-decision-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wp-decision-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 280px;
+  text-align: left;
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  background: #fff;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: inherit;
+}
+.wp-decision-file:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+.wp-decision-file:not(:disabled):hover {
+  border-color: #9ec0ea;
+  background: #f7fbff;
+}
+.wp-decision-file span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.wp-decision-file b {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wp-decision-file i {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--content-muted);
+}
+.wp-decision-notify {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--content-muted);
+}
+.wp-decision-return {
+  color: #c73f3f;
+  border-color: #f2cdca;
+}
+.wp-decision-state.wait {
+  background: #fff6e8;
+  color: #b36b00;
+  border-color: #f3d7a6;
+}
 .wp-range-field {
   display: inline-flex;
   align-items: center;
@@ -8755,6 +8996,11 @@ button.feed-tool-head:hover {
   color: #c73f3f;
   border-color: #f2cdca;
 }
+.wp-decision-state.wait {
+  background: #fff6e8;
+  color: #b36b00;
+  border-color: #f3d7a6;
+}
 .wp-decision-deadline {
   border-radius: 10px;
   padding: 8px 12px;
@@ -8779,8 +9025,8 @@ button.feed-tool-head:hover {
   gap: 6px;
 }
 .wp-decision-recommend {
-  background: #f2f8ff;
-  border: 1px solid #d8e7fa;
+  background: #edf9f3;
+  border: 1px solid #cae8d6;
   border-radius: 10px;
   padding: 10px 12px;
 }

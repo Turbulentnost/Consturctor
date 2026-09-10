@@ -200,6 +200,37 @@ def _raw_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "onec.meeting_protocols",
+            "description": (
+                "Протоколы Document_ТД_Протокол через OData (сервер, только чтение). "
+                "Логика списка как в форме 1С: РК — номера с префиксом «РК», "
+                "СД — «ПСД» (основной), также «СПГ»/«СД». По умолчанию — черновики на проверку "
+                "(Posted=false или Статус=«Подготовлен»). "
+                "meeting_kind: rk или sd. date или date_from/date_to — период."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "meeting_kind": _prop(
+                        "string",
+                        "rk — Ревизионная комиссия; sd — Совет директоров по ГК",
+                    ),
+                    "date": _prop("string", "Один день YYYY-MM-DD"),
+                    "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
+                    "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
+                    "number": _prop("string", "Точный номер протокола, например РК__001_О_037"),
+                    "review_only": _prop(
+                        "boolean",
+                        "Только на проверку (Posted=false или Подготовлен). По умолчанию true",
+                        default=True,
+                    ),
+                    "max_results": _prop("integer", "Максимум протоколов, не больше 100"),
+                },
+                "required": ["meeting_kind"],
+            },
+        },
+        {
             "name": "onec.odata_post",
             "description": "Создание объекта через 1С OData (сервер).",
             "execution": "server",
@@ -730,13 +761,13 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "direction": _prop("string", "down или up"),
             "pixels": _prop("integer", "На сколько пикселей прокрутить"),
         }),
-        ("onec.search_documents", "Поиск документов 1С (desktop, 32-bit COMConnector через cscript, не 32-bit Python).", {
+        ("onec.search_documents", "Поиск документов 1С через OData (desktop, без COM).", {
             "document_type": _prop("string", "Вид документа 1С, если известен"),
             "number": _prop("string", "Номер документа"),
             "query": _prop("string", "Подстрока в номере или названии, не фраза-ТЗ"),
             "max_results": _prop("integer", "Максимум документов"),
         }),
-        ("onec.get_document_card", "Карточка документа 1С на desktop (32-bit COMConnector через cscript).", {
+        ("onec.get_document_card", "Карточка документа 1С через OData (desktop, без COM).", {
             "document_ref": _prop("string", "Ссылка или номер из onec.search_documents / onec.meeting_service_notes"),
             "number": _prop("string", "Номер документа, например 000013243"),
             "query": _prop("string", "Номер или подстрока, если ссылки нет"),
@@ -775,7 +806,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ),
         (
             "onec.meeting_service_notes",
-            "Только чтение COM через 32-bit V83.COMConnector (cscript), без py -3.12-32. "
+            "Только чтение через OData (desktop, без COM). "
             "Служебные записки 1С с темой «организация совещаний». "
             "В ответе: тема СЗ, тема совещания, место, желаемые дата/время/длительность, "
             "руководитель, приоритет, периодичность, вид, ПСД. date или date_from/date_to. "
@@ -936,6 +967,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     "imap.fetch_attachments": ("imap", "mail_attachment", "list", ["uid"], ["files"], "none"),
     "onec.odata_catalog": ("onec", "metadata", "list", [], ["entities"], "count"),
     "onec.odata_get": ("onec", "odata_entity", "read", ["entity"], ["rows", "value"], "cursor"),
+    "onec.meeting_protocols": (
+        "onec",
+        "protocol",
+        ("list", "search", "read"),
+        ["meeting_kind"],
+        ["protocols"],
+        "count",
+    ),
     "onec.odata_post": ("onec", "odata_entity", "create", ["entity"], ["ref_key"], "none"),
     "onec.odata_patch": (
         "onec",
@@ -1216,7 +1255,7 @@ def design_context_tools() -> list[dict[str, Any]]:
 
 
 def helper_tools() -> list[dict[str, Any]]:
-    """Вспомогательные tools прогона: обработка набора, не шаг черновика."""
+    """Вспомогательные tools запуска: обработка набора, не шаг черновика."""
     return [tool for tool in list_tools() if tool.get("helper")]
 
 

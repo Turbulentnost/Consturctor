@@ -72,8 +72,8 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
     <div className="login-wrap">
       <div className="login-bg" />
       <div className="login-card">
-        <img className="login-logo" src={logoUrl} alt="Orchestrator" />
-        <div className="brand">Orchestrator</div>
+        <img className="login-logo" src={logoUrl} alt="Оркестратор" />
+        <div className="brand">Оркестратор</div>
         <div className="subtitle">Оркестратор должности</div>
         <div className="hint">Вход через учётную запись 1С · пилот · 2 агента</div>
 

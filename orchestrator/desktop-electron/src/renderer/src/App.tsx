@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Sidebar, type PageKey } from './components/Sidebar'
+import { APP_TITLE, PAGE_LABELS, Sidebar, type PageKey } from './components/Sidebar'
 import { UserMenu } from './components/UserMenu'
 import { LoginPage } from './pages/LoginPage'
 import { MessengerPage } from './pages/MessengerPage'
@@ -87,6 +87,20 @@ function fioEquals(left: string, right: string): boolean {
   return Boolean(a) && Boolean(b) && (a === b || a.startsWith(b) || b.startsWith(a))
 }
 
+function windowTitle(view: View, signedIn: boolean): string {
+  if (!signedIn) return APP_TITLE
+  if (view.kind === 'tab') return `${PAGE_LABELS[view.key]} — ${APP_TITLE}`
+  if (view.kind === 'chat') return `${view.thread.title || 'Чат'} — ${APP_TITLE}`
+  if (view.kind === 'tickets') return `Заявки — ${APP_TITLE}`
+  if (view.kind === 'diagnostics') return `Диагностика — ${APP_TITLE}`
+  if (view.kind === 'files') return `${view.title ? `${view.title}: файлы` : 'Файлы'} — ${APP_TITLE}`
+  if (view.kind === 'passport') return `Паспорт: ${view.title || 'агент'} — ${APP_TITLE}`
+  if (view.kind === 'agentrun') return `${view.title || 'Запуск'} — ${APP_TITLE}`
+  if (view.kind === 'history') return `История: ${view.title || 'агент'} — ${APP_TITLE}`
+  if (view.kind === 'schedule') return `Расписание: ${view.title || 'агент'} — ${APP_TITLE}`
+  return APP_TITLE
+}
+
 function findExistingChat(threads: ChatThread[], name: string, peerId?: string): ChatThread | undefined {
   if (peerId) {
     const byPeer = threads.find((item) => item.kind !== 'support' && item.peerId === peerId)
@@ -107,6 +121,10 @@ export function App(): React.JSX.Element {
   const kickedRef = useRef(false)
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
   const runs = useRuns()
+
+  useEffect(() => {
+    document.title = booting ? APP_TITLE : windowTitle(view, Boolean(user))
+  }, [booting, user, view])
 
   useEffect(() => {
     let done = false
@@ -372,7 +390,7 @@ export function App(): React.JSX.Element {
     return (
       <div className="app-root boot-screen">
         <div className="spinner spinner-on-dark" />
-        <div className="boot-label">Загрузка Orchestrator...</div>
+        <div className="boot-label">Загрузка оркестратора...</div>
       </div>
     )
   }
@@ -412,7 +430,7 @@ export function App(): React.JSX.Element {
       return
     }
     if (runId) {
-      // Открываем историю сразу, чтобы кнопка "Открыть прогон" реагировала
+      // Открываем историю сразу, чтобы кнопка "Открыть запуск" реагировала
       // мгновенно даже при медленном backend. Детали проверим в фоне.
       setView({ kind: 'history', workflowId, title: nextTitle, runId })
       void (async () => {

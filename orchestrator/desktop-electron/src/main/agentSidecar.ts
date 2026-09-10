@@ -134,6 +134,15 @@ function isStartCommand(command: AgentSidecarMessage): boolean {
   return START_TYPES.has(String(command.type || ''))
 }
 
+function isForceRestart(command: AgentSidecarMessage): boolean {
+  const value = command.forceRestart ?? command.force_restart
+  if (value === true) return true
+  const text = String(value ?? '')
+    .trim()
+    .toLowerCase()
+  return text === '1' || text === 'true' || text === 'yes'
+}
+
 /**
  * Manages the Python agent sidecar process that drives the local Cursor SDK.
  * It reuses the existing desktop code and speaks newline-delimited JSON on
@@ -344,6 +353,14 @@ export class AgentSidecar {
   }
 
   private stampRunMeta(message: AgentSidecarMessage): AgentSidecarMessage {
+    if (message.type === 'run_adopted') {
+      const requested = String(message.runId || '')
+      const linked = String(message.linkedRunId || '')
+      if (requested && linked) {
+        const meta = this.runMeta.get(requested)
+        if (meta) this.runMeta.set(linked, meta)
+      }
+    }
     const runId = String(message.runId || message.id || '')
     const meta = runId ? this.runMeta.get(runId) : undefined
     if (!meta) return message
@@ -358,8 +375,47 @@ export class AgentSidecar {
     return next
   }
 
+  /** Kill the Python sidecar so stale in-memory runs cannot block a fresh launch. */
+  private hardRestartSidecar(reason: string): void {
+    console.log(`[agent-sidecar] hard restart: ${reason}`)
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer)
+      this.restartTimer = null
+    }
+    this.isReady = false
+    this.runMeta.clear()
+    const child = this.child
+    this.child = null
+    if (!child) return
+    try {
+      if (child.stdin.writable) {
+        child.stdin.write(JSON.stringify({ type: 'shutdown' }) + '\n')
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      child.kill('SIGTERM')
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private sendForceRun(command: AgentSidecarMessage): boolean {
+    this.hardRestartSidecar('forceRestart run')
+    this.pending = []
+    this.enqueue(command)
+    this.start()
+    return true
+  }
+
   send(command: AgentSidecarMessage): boolean {
     const type = String(command.type || '')
+    if (type === 'run' && isForceRestart(command)) {
+      this.lastStart = command
+      this.rememberRunMeta(command)
+      return this.sendForceRun(command)
+    }
     if (isStartCommand(command)) {
       this.lastStart = command
       this.rememberRunMeta(command)

@@ -569,7 +569,9 @@ export interface AgentEvent {
     | 'sidecar_exit'
     | 'log'
     | 'files_updated'
+    | 'run_adopted'
   runId?: string
+  linkedRunId?: string
   requestId?: string
   payload?: AgentRunnerEvent
   question?: string

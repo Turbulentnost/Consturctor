@@ -42,12 +42,12 @@ export function filesForHistoryRun(
   const mentioned = mentionedOutputNames(answer, events)
   const wanted = (runId || '').trim()
   return files.filter((file) => {
+    const name = (file.name || '').toLowerCase()
+    if (mentioned.has(name)) return true
     if (!isAgentOutput(file)) return false
     const rid = (file.runId || '').trim()
-    if (wanted && rid && rid !== wanted && rid !== 'local') {
-      return mentioned.has((file.name || '').toLowerCase())
-    }
+    if (wanted && rid && rid !== wanted && rid !== 'local') return false
     if (wanted && rid === wanted) return true
-    return mentioned.has((file.name || '').toLowerCase())
+    return false
   })
 }

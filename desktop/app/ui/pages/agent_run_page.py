@@ -260,7 +260,7 @@ class AgentRunPage(QWidget):
         # Без хардкода конкретной площадки — задача из цели агента.
         return (
             f"Выполни рабочую задачу агента «{title}» по инструкции "
-            "и примеру тестового прогона. Покажи понятный результат."
+            "и примеру тестового запуска. Покажи понятный результат."
         )
 
     def _run_default_task(self) -> None:
@@ -477,7 +477,7 @@ class AgentRunPage(QWidget):
         if text and not already:
             self._append_event(_work_result_event(work, text))
         elif not text:
-            self._append_event({"type": "system", "text": "Прогон завершён. Результат не получен."})
+            self._append_event({"type": "system", "text": "Запуск завершён. Результат не получен."})
         self._append_event({"type": "system", "text": "Можно дать следующую задачу."})
 
     def _show_error(self, message: str) -> None:

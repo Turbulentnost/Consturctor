@@ -360,8 +360,8 @@ export function DiagnosticsPage({
         </div>
       </section>
       <section className="wp-card">
-        <h2>Проблемные прогоны</h2>
-        {!filtered.length && !loading ? <p>В выбранном окне нет проблемных прогонов.</p> : null}
+        <h2>Проблемные запуски</h2>
+        {!filtered.length && !loading ? <p>В выбранном окне нет проблемных запусков.</p> : null}
         <div className="wp-list">
           {filtered.map((item) => (
             <article key={`${item.workflowId}-${item.runId}-${item.at}`} className="wp-card">
@@ -376,7 +376,7 @@ export function DiagnosticsPage({
                   type="button"
                   onClick={() => onOpenRun(item.workflowId, item.title, item.runId)}
                 >
-                  Открыть прогон
+                  Открыть запуск
                 </button>
               </div>
             </article>

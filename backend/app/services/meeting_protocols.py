@@ -1,0 +1,230 @@
+"""OData search for Document_ТД_Протокол (list-form logic for RK / SD agents).
+
+Mirrors Документ.ТД_Протокол.Форма.ФормаСписка selection rules discovered via live OData:
+- RK (Ревизионная комиссия): Number starts with «РК» (e.g. РК__001_О_037)
+- SD (Совет директоров по ГК): Number starts with «ПСД» (e.g. ПСД_001_О_225),
+  also legacy «СПГ» and «СД»/«СДП»
+- Exclude deletion mark
+- «На проверку»: Posted=false or Статус=«Подготовлен» (draft before posting)
+- OData: startswith(Number,...) works; contains() is not supported on this ERP
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from typing import Any
+
+PROTOCOL_ENTITY = "Document_ТД_Протокол"
+
+_KIND_ALIASES = {
+    "rk": "rk",
+    "ревизион": "rk",
+    "ревизионная": "rk",
+    "ревизионной": "rk",
+    "рк": "rk",
+    "sd": "sd",
+    "совет": "sd",
+    "сд": "sd",
+    "board": "sd",
+}
+
+_NUMBER_PREFIXES: dict[str, tuple[str, ...]] = {
+    "rk": ("РК",),
+    # ПСД — текущий формат протоколов заседания СД ГК; СПГ/СД — старые серии.
+    "sd": ("ПСД", "СПГ", "СД"),
+}
+
+_REVIEW_STATUSES = frozenset({"Подготовлен"})
+
+
+def _normalize_kind(raw: str) -> str:
+    key = (raw or "").strip().casefold()
+    kind = _KIND_ALIASES.get(key)
+    if not kind:
+        raise ValueError(
+            "meeting_kind обязателен: rk (Ревизионная комиссия) или sd (Совет директоров)"
+        )
+    return kind
+
+
+def _parse_iso_date(raw: str) -> date | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if "T" in text:
+        text = text.split("T", 1)[0]
+    return date.fromisoformat(text[:10])
+
+
+def _period(args: dict[str, Any]) -> tuple[date | None, date | None]:
+    single = _parse_iso_date(str(args.get("date") or ""))
+    start = _parse_iso_date(str(args.get("date_from") or ""))
+    end = _parse_iso_date(str(args.get("date_to") or ""))
+    if single:
+        return single, single
+    if start or end:
+        return start, end or start
+    return None, None
+
+
+def _odata_datetime(value: date, *, end_of_day: bool = False) -> str:
+    if end_of_day:
+        return f"datetime'{value.isoformat()}T23:59:59'"
+    return f"datetime'{value.isoformat()}T00:00:00'"
+
+
+def _escape_odata_string(value: str) -> str:
+    return (value or "").replace("'", "''")
+
+
+def _number_prefix_filter(kind: str) -> str:
+    parts = [f"startswith(Number,'{prefix}')" for prefix in _NUMBER_PREFIXES[kind]]
+    if len(parts) == 1:
+        return parts[0]
+    return "(" + " or ".join(parts) + ")"
+
+
+def build_protocol_filter(args: dict[str, Any], *, kind: str) -> str:
+    """Build OData $filter for Document_ТД_Протокол list selection."""
+    filters: list[str] = ["DeletionMark eq false"]
+    number = str(args.get("number") or args.get("Number") or "").strip()
+    if number:
+        filters.append(f"Number eq '{_escape_odata_string(number)}'")
+    else:
+        filters.append(_number_prefix_filter(kind))
+
+    review_only = args.get("review_only")
+    if review_only is None:
+        review_only = True
+    if review_only:
+        filters.append("(Posted eq false or Статус eq 'Подготовлен')")
+    else:
+        include_closed = bool(args.get("include_closed"))
+        if not include_closed:
+            filters.append("Статус ne 'Закрыт'")
+
+    start, end = _period(args)
+    if start:
+        filters.append(f"Date ge {_odata_datetime(start)}")
+    if end:
+        filters.append(f"Date le {_odata_datetime(end, end_of_day=True)}")
+    return " and ".join(filters)
+
+
+def _topic_from_row(row: dict[str, Any]) -> str:
+    theme = row.get("ТемаСовещания")
+    if isinstance(theme, dict):
+        return str(theme.get("Description") or theme.get("Наименование") or "").strip()
+    for key in ("ТемаСовещания", "ТемаСовещания_Name", "Description"):
+        value = str(row.get(key) or "").strip()
+        if value and not value.endswith("_Key"):
+            return value
+    return ""
+
+
+def normalize_protocol_row(row: dict[str, Any], *, kind: str) -> dict[str, Any]:
+    status = str(row.get("Статус") or "").strip()
+    posted = bool(row.get("Posted"))
+    needs_review = (not posted) or status in _REVIEW_STATUSES
+    return {
+        "ref_key": str(row.get("Ref_Key") or "").strip(),
+        "number": str(row.get("Number") or "").strip(),
+        "date": str(row.get("Date") or "").strip(),
+        "posted": posted,
+        "status": status,
+        "needs_review": needs_review,
+        "meeting_topic": _topic_from_row(row),
+        "meeting_kind": kind,
+        "meeting_kind_label": "Ревизионная комиссия" if kind == "rk" else "Совет директоров",
+        "meeting_type": str(row.get("ВидСовещания") or "").strip(),
+        "responsible_key": str(row.get("Ответственный_Key") or "").strip(),
+        "department_key": str(row.get("Подразделение_Key") or "").strip(),
+        "comment": str(row.get("Комментарий") or "").strip(),
+    }
+
+
+def list_meeting_protocols(
+    args: dict[str, Any],
+    *,
+    access: Any | None = None,
+) -> dict[str, Any]:
+    from app.services.onec_access import OnecAccessDenied, filter_odata_result
+    from app.services.onec_tools import OnecToolError, _fetch_odata_list
+
+    kind = _normalize_kind(str(args.get("meeting_kind") or args.get("kind") or ""))
+    limit = max(1, min(100, int(args.get("max_results") or args.get("limit") or 30)))
+    odata_filter = build_protocol_filter(args, kind=kind)
+    try:
+        raw = _fetch_odata_list(
+            {
+                "entity": PROTOCOL_ENTITY,
+                "filter": odata_filter,
+                "top": limit,
+            }
+        )
+    except OnecToolError as exc:
+        start, end = _period(args)
+        return {
+            "protocols": [],
+            "count": 0,
+            "source": "odata",
+            "readonly": True,
+            "meeting_kind": kind,
+            "entity": PROTOCOL_ENTITY,
+            "method": "odata_meeting_protocols",
+            "filter": odata_filter,
+            "date_from": start.isoformat() if start else "",
+            "date_to": end.isoformat() if end else "",
+            "error": str(exc),
+            "hint": (
+                "Document_ТД_Протокол недоступен через OData или фильтр не поддерживается. "
+                "Проверьте права учётки OData и meeting_kind (rk/sd)."
+            ),
+        }
+
+    rows = [row for row in (raw.get("value") or []) if isinstance(row, dict)]
+    if access is not None:
+        try:
+            rows = filter_odata_result({"value": rows}, access, PROTOCOL_ENTITY).get("value") or []
+        except OnecAccessDenied as exc:
+            raise OnecToolError(str(exc)) from exc
+    protocols = [normalize_protocol_row(row, kind=kind) for row in rows[:limit]]
+    start, end = _period(args)
+    review_only = args.get("review_only")
+    if review_only is None:
+        review_only = True
+    return {
+        "protocols": protocols,
+        "count": len(protocols),
+        "source": "odata",
+        "readonly": True,
+        "meeting_kind": kind,
+        "meeting_kind_label": "Ревизионная комиссия" if kind == "rk" else "Совет директоров",
+        "entity": PROTOCOL_ENTITY,
+        "path": raw.get("path"),
+        "filter": odata_filter,
+        "review_only": bool(review_only),
+        "date_from": start.isoformat() if start else "",
+        "date_to": end.isoformat() if end else "",
+        "method": "odata_meeting_protocols",
+        "summary": raw.get("summary") or f"найдено {len(protocols)} протоколов ({kind})",
+    }
+
+
+def stub_meeting_protocols(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        kind = _normalize_kind(str(args.get("meeting_kind") or args.get("kind") or "rk"))
+    except ValueError:
+        kind = "rk"
+    start, end = _period(args)
+    return {
+        "protocols": [],
+        "count": 0,
+        "source": "stub",
+        "readonly": True,
+        "meeting_kind": kind,
+        "entity": PROTOCOL_ENTITY,
+        "date_from": start.isoformat() if start else "",
+        "date_to": end.isoformat() if end else "",
+        "note": "OData 1С не настроена — протоколы Document_ТД_Протокол не прочитаны.",
+    }

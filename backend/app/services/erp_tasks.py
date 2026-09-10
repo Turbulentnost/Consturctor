@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, Sequence
 
@@ -14,6 +15,21 @@ _TASK_TABLES = ("dbo._Task39X1", "dbo._Task39")
 
 class ErpTaskError(RuntimeError):
     pass
+
+
+_CONSTRUCTOR_PROBE_RE = re.compile(
+    r"constructor|проб[аы]\s+constructor|тестов\w*\s+проб",
+    re.IGNORECASE,
+)
+
+
+def is_constructor_test_probe(task: dict[str, Any]) -> bool:
+    """Drop Constructor integration test tasks from RK and production reports."""
+    blob = " ".join(
+        str(task.get(key) or "")
+        for key in ("number", "title", "comment", "approval")
+    )
+    return bool(_CONSTRUCTOR_PROBE_RE.search(blob))
 
 
 def from_1c_datetime(value: datetime | None) -> datetime | None:
@@ -334,23 +350,24 @@ def _query_tasks(
             comment = " ".join(str(data.get("comment") or "").split())
             approval = " ".join(str(data.get("approval") or "").split())
             late = task_is_late(done=done, completed_at=completed, due_at=due)
-            items.append(
-                {
-                    "number": number,
-                    "title": " ".join(str(data.get("title") or "").split()),
-                    "status": "выполнена" if done else "открыта",
-                    "done": done,
-                    "late": late,
-                    "created_at": created.isoformat(sep=" ") if created else "",
-                    "due_at": due.isoformat(sep=" ") if due else "",
-                    "completed_at": completed.isoformat(sep=" ") if completed else "",
-                    "comment": comment,
-                    "approval": approval or ("завершена" if done else "не согласовано"),
-                    "exported_at": exported_at,
-                    "performer": str(data.get("performer") or "").strip(),
-                    "source": "erp_pm",
-                }
-            )
+            row = {
+                "number": number,
+                "title": " ".join(str(data.get("title") or "").split()),
+                "status": "выполнена" if done else "открыта",
+                "done": done,
+                "late": late,
+                "created_at": created.isoformat(sep=" ") if created else "",
+                "due_at": due.isoformat(sep=" ") if due else "",
+                "completed_at": completed.isoformat(sep=" ") if completed else "",
+                "comment": comment,
+                "approval": approval or ("завершена" if done else "не согласовано"),
+                "exported_at": exported_at,
+                "performer": str(data.get("performer") or "").strip(),
+                "source": "erp_pm",
+            }
+            if is_constructor_test_probe(row):
+                continue
+            items.append(row)
         return items
     except ErpSqlError:
         raise

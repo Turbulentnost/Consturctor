@@ -90,12 +90,25 @@ def _is_noisy_event_text(value: str) -> bool:
 
 
 def _run_visible_on_board(run: AgentRun) -> bool:
-    from app.services.agent_runs import effective_run_status
+    from app.services.agent_runs import (
+        OVERLAP_CANCEL_ANSWER,
+        STALE_STARTED_ANSWER,
+        effective_run_status,
+        has_run_result,
+    )
 
+    answer = str(run.answer or "").strip()
+    folded = answer.casefold()
+    if folded.startswith(OVERLAP_CANCEL_ANSWER.casefold()):
+        return False
     raw = (run.status or "").strip().lower()
     in_flight = raw in {"started", "running"} and run.finished_at is None
-    effective = effective_run_status(run.status or "", run.answer or "", in_flight=in_flight)
-    return effective != "canceled"
+    effective = effective_run_status(run.status or "", answer, in_flight=in_flight)
+    if effective != "canceled":
+        return True
+    if folded.startswith(STALE_STARTED_ANSWER.casefold()):
+        return True
+    return has_run_result(answer)
 
 
 def _agent_description(row: Workflow) -> str:

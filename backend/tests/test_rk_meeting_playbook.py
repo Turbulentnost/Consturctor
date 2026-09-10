@@ -4,6 +4,7 @@ from app.models.workflow import Workflow
 from app.services.workflow_tool_routing import default_tools_for_kind, infer_kind_from_blob
 from app.services.workflows.rk_meeting_playbook import (
     apply_rk_config,
+    apply_rk_plan_runtime,
     is_rk_meeting_agent,
     rk_runtime_tools,
     rk_schedule_draft,
@@ -42,6 +43,19 @@ def test_apply_rk_config_sets_schedule_and_tools() -> None:
     assert local.get("schedule_draft", {}).get("triggers")
     assert "onec.docflow_tasks" in (local.get("tools") or [])
     assert local.get("playbook", {}).get("steps")
+
+
+def test_apply_rk_plan_runtime_includes_protocol_step() -> None:
+    plan = apply_rk_plan_runtime(
+        {"steps": []},
+        title="Подготовка заседаний Ревизионной комиссии",
+        notes="ПЛ-01-001",
+    )
+    steps = plan.get("steps") or []
+    protocol = next((step for step in steps if step.get("entity") == "protocol"), None)
+    assert protocol is not None
+    assert protocol.get("title") == "Протоколы РК на проверку"
+    assert "onec.meeting_protocols" in (plan.get("runtime") or {}).get("tools", [])
 
 
 def test_tools_for_published_rk_agent() -> None:

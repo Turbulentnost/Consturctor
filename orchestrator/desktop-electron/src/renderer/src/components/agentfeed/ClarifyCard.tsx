@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { FILE_QUESTION_SKIP_ANSWER, FILE_QUESTION_WAIT_SECONDS } from './questionArgs'
 import type { PendingQuestion } from './types'
 
 interface ClarifyCardProps {
@@ -17,7 +18,11 @@ export function ClarifyCard({
   const [custom, setCustom] = useState('')
   const [filePaths, setFilePaths] = useState<string[]>([])
   const [held, setHeld] = useState(false)
-  const [left, setLeft] = useState(question.autoContinueSeconds || 0)
+  const needsFile = Boolean(question.needsFile)
+  const autoWaitSeconds = needsFile
+    ? question.autoContinueSeconds || FILE_QUESTION_WAIT_SECONDS
+    : question.autoContinueSeconds || 0
+  const [left, setLeft] = useState(autoWaitSeconds)
   const cardRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const submittedRef = useRef(false)
@@ -30,14 +35,12 @@ export function ClarifyCard({
     }
     cardRef.current?.focus()
   }, [useCustom, question.requestId])
-
-  const needsFile = Boolean(question.needsFile)
   const accept = question.accept?.length ? question.accept : []
   const canAttach = allowFiles || needsFile
   const skipText =
     question.autoContinueAnswer?.trim() ||
-    'Файла нет. Ищи данные в 1С и папках, не спрашивай файл снова.'
-  const canAuto = (question.autoContinueSeconds || 0) > 0
+    (needsFile ? FILE_QUESTION_SKIP_ANSWER : 'Файла нет. Ищи данные в 1С и папках, не спрашивай файл снова.')
+  const canAuto = autoWaitSeconds > 0
   const hasAnswer = needsFile
     ? filePaths.length > 0 || Boolean(useCustom ? custom.trim() : selected) || canAuto
     : Boolean(useCustom ? custom.trim() || filePaths.length : selected)
@@ -62,8 +65,8 @@ export function ClarifyCard({
   useEffect(() => {
     submittedRef.current = false
     setHeld(false)
-    setLeft(question.autoContinueSeconds || 0)
-  }, [question.requestId, question.autoContinueSeconds])
+    setLeft(autoWaitSeconds)
+  }, [question.requestId, question.autoContinueSeconds, question.needsFile, autoWaitSeconds])
 
   useEffect(() => {
     if (!canAuto || held || filePaths.length > 0) return
