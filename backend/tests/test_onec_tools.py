@@ -42,8 +42,9 @@ def test_onec_odata_catalog_lists_kinds() -> None:
     assert isinstance(result.get("entities"), list)
     kinds = {item.get("kind") for item in result["entities"]}
     assert kinds & {"document", "catalog", "register"}
-    if not odata_configured():
-        assert result.get("source") == "stub"
+    assert result.get("source") in {"local", "odata", "stub"}
+    if result.get("source") == "local":
+        assert result.get("snapshot_documents", 0) >= 1
 
 
 def test_odata_get_accepts_catalog_entity() -> None:

@@ -69,8 +69,33 @@ function asBool(value: unknown): boolean {
   return text === '1' || text === 'true' || text === 'yes'
 }
 
-function acceptList(raw: unknown): string[] {
-  const items = Array.isArray(raw) ? raw : raw ? [raw] : []
+export const IMAGE_FILE_ACCEPT = [
+  'png',
+  'jpg',
+  'jpeg',
+  'webp',
+  'gif',
+  'bmp',
+  'tif',
+  'tiff',
+  'heic',
+  'heif'
+]
+
+export const DEFAULT_FILE_ACCEPT = [
+  'docx',
+  'doc',
+  'pdf',
+  'xlsx',
+  'xlsm',
+  'xls',
+  ...IMAGE_FILE_ACCEPT,
+  'txt',
+  'md',
+  'csv'
+]
+
+function uniqueExts(items: string[]): string[] {
   const out: string[] = []
   for (const item of items) {
     const ext = String(item || '')
@@ -82,22 +107,49 @@ function acceptList(raw: unknown): string[] {
   return out
 }
 
-function asSeconds(value: unknown): number {
-  const num = typeof value === 'number' ? value : Number(value)
-  return Number.isFinite(num) && num > 0 ? num : 0
+/** Agent accept is a hint, never a lock: images and common docs stay pickable. */
+export function mergedFileAccept(preferred?: string[]): string[] {
+  return uniqueExts([...(preferred || []), ...DEFAULT_FILE_ACCEPT, ...IMAGE_FILE_ACCEPT])
 }
 
-export const FILE_QUESTION_WAIT_SECONDS = 30
-export const FILE_QUESTION_SKIP_ANSWER =
-  'Файла нет. Продолжай без вложения: ищи данные в 1С, Outlook, Excel и сетевых папках по playbook агента. Не спрашивай этот файл снова.'
+export function fileDialogFilters(preferred?: string[]): { name: string; extensions: string[] }[] {
+  const recommended = uniqueExts(preferred || [])
+  const filters: { name: string; extensions: string[] }[] = [
+    { name: 'Документы и изображения', extensions: mergedFileAccept(preferred) },
+    { name: 'Изображения', extensions: IMAGE_FILE_ACCEPT }
+  ]
+  if (recommended.length) {
+    filters.push({ name: 'Рекомендуемые', extensions: recommended })
+  }
+  filters.push({ name: 'Все файлы', extensions: ['*'] })
+  return filters
+}
+
+export function fileInputAccept(preferred?: string[]): string {
+  return ['image/*', ...mergedFileAccept(preferred).map((ext) => `.${ext}`)].join(',')
+}
+
+function acceptList(raw: unknown): string[] {
+  const items = Array.isArray(raw) ? raw : raw ? [raw] : []
+  const out: string[] = []
+  for (const item of items) {
+    const ext = String(item || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^\./, '')
+    if (ext === '*' || ext === 'any' || ext === 'all') return []
+    if (/^[a-z0-9]{1,8}$/.test(ext) && !out.includes(ext)) out.push(ext)
+  }
+  return out
+}
 
 export function parseQuestionArgs(raw: unknown): {
   question: string
   options: string[]
   needsFile: boolean
   accept: string[]
-  autoContinueSeconds: number
-  autoContinueAnswer: string
+  context: string
+  blockTitle: string
 } {
   const args = asRecord(raw)
   const nested = asRecord(args.arguments || args.input || args.properties)
@@ -109,24 +161,19 @@ export function parseQuestionArgs(raw: unknown): {
     asText(source.message) ||
     asText(source.text)
   const needsFile = asBool(source.needsFile ?? source.needs_file ?? source.expectFile)
-  let accept = acceptList(source.accept || source.allowedExtensions)
-  if (needsFile && !accept.length) accept = []
+  const accept = acceptList(source.accept || source.allowedExtensions)
   let options = asOptions(source.options)
   if (!options.length) options = asOptions(source.choices)
   if (!options.length) options = asOptions(source.answers)
   if (!options.length) options = asOptions(source.variants)
   if (!options.length && question && !needsFile) options = optionsFromText(question)
-  let autoContinueSeconds = asSeconds(
-    source.autoContinueSeconds ?? source.auto_continue_seconds
-  )
-  let autoContinueAnswer = asText(
-    source.autoContinueAnswer ?? source.auto_continue_answer
-  )
-  if (needsFile) {
-    if (autoContinueSeconds <= 0) autoContinueSeconds = FILE_QUESTION_WAIT_SECONDS
-    if (!autoContinueAnswer) autoContinueAnswer = FILE_QUESTION_SKIP_ANSWER
-  }
-  return { question, options, needsFile, accept, autoContinueSeconds, autoContinueAnswer }
+  const blockTitle =
+    asText(source.blockTitle) ||
+    asText(source.block_title) ||
+    asText(source.functionTitle) ||
+    asText(source.function_title)
+  const context = asText(source.context)
+  return { question, options, needsFile, accept, context, blockTitle }
 }
 
 export function isAskQuestion(name: string): boolean {

@@ -126,8 +126,10 @@ def _raw_tools() -> list[dict[str, Any]]:
         {
             "name": "onec.odata_catalog",
             "description": (
-                "Список доступных сущностей 1С OData: документы, справочники/таблицы и регистры. "
-                "Сначала вызови этот инструмент, затем onec.odata_get с entity из ответа. "
+                "Каталог сущностей 1С OData. Сначала ищет в локальном снимке метаданных ERP "
+                "(имена и структура полей/ТЧ), без обращения к живой 1С. "
+                "Потом onec.odata_get с entity из ответа. "
+                "Живая 1С ($metadata) только если сущности нет в снимке или refresh=true. "
                 "Исполняется на сервере."
             ),
             "execution": "server",
@@ -142,13 +144,28 @@ def _raw_tools() -> list[dict[str, Any]]:
                     },
                     "search": {
                         "type": "string",
-                        "description": "Подстрока в имени сущности (Document_, Catalog_, *Register_)",
+                        "description": (
+                            "Имя или смысл сущности: поручение, служебная записка, "
+                            "Document_ТД_Протокол"
+                        ),
+                    },
+                    "entity": {
+                        "type": "string",
+                        "description": "Точное или почти точное имя EntitySet, вернёт и структуру",
+                    },
+                    "include_structure": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": (
+                            "Вернуть поля, navigation и табличные части. "
+                            "По умолчанию включено, если задан search/entity"
+                        ),
                     },
                     "limit": _prop("integer", "Максимум сущностей в списке", default=400),
                     "refresh": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Сбросить кэш и заново прочитать service document / $metadata",
+                        "description": "Пропустить снимок и прочитать живую 1С ($metadata)",
                     },
                 },
             },
@@ -285,6 +302,7 @@ def _raw_tools() -> list[dict[str, Any]]:
             "name": "onec.erp_tasks_current",
             "description": (
                 "Текущие (открытые) задачи пользователя из базы 1С erp_pm. "
+                "Не журнал АСТ00 и не поиск задачи «Проверить поручение». "
                 "ФИО берётся из JWT сессии Constructor; fio/user_id в аргументах не обязательны. "
                 "Исполняется на сервере."
             ),
@@ -384,6 +402,116 @@ def _raw_tools() -> list[dict[str, Any]]:
                         "default": True,
                         "description": "Включить руководителя (себя) отдельной строкой",
                     },
+                },
+            },
+        },
+        {
+            "name": "onec.erp_assignments",
+            "description": (
+                "Журнал поручений 1С ERP (Document_ТД_Поручения, серия АСТ00). "
+                "Это и есть проверка поручений: агент сам читает журнал, "
+                "задачи 1С «Проверить поручение» нет. "
+                "Заказчик в 1С — реквизит Руководитель, не текущий пользователь. "
+                "action=list: открытые + за сегодня, фильтр customer=ФИО. "
+                "action=get: карточка по number (АСТ00-00093) со строками и файлами. "
+                "action=files / download / tasks / protocols. "
+                "Содержимое файла: onec.download_artifact с file_id из action=files. "
+                "Не выдумывай ACT латиницей — номер кириллический АСТ. "
+                "Сервер, OData."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": _prop(
+                        "string",
+                        "list | get | files | download | tasks | protocols",
+                        default="list",
+                    ),
+                    "customer": _prop("string", "ФИО заказчика (Руководитель), например Амураль Игорь Борисович"),
+                    "number": _prop("string", "Номер АСТ00-.... Не латиница ACT"),
+                    "ref_key": _prop("string", "GUID документа"),
+                    "query": _prop("string", "Подстрока в ОЧем или в задаче"),
+                    "date_from": _prop("string", "YYYY-MM-DD"),
+                    "date_to": _prop("string", "YYYY-MM-DD"),
+                    "only_open": _prop("boolean", "Только статусы Создано/ВРаботе"),
+                    "include_last_day": _prop(
+                        "boolean",
+                        "По умолчанию открытые плюс все за сегодня",
+                        default=True,
+                    ),
+                    "include_files": _prop("boolean", "Для list сразу вернуть файлы", default=False),
+                    "file_id": _prop("string", "GUID вложения для action=download"),
+                    "limit": _prop("integer", "Максимум записей", default=40),
+                    "performer": _prop("string", "ФИО исполнителя задачи, для action=tasks"),
+                },
+            },
+        },
+        {
+            "name": "onec.erp_assignments_write",
+            "description": (
+                "Запись в журнал поручений 1С. Требует подтверждения человека. "
+                "action=create: новая карточка АСТ00. "
+                "action=update: статус, срок, строки, исполнитель. "
+                "action=comment_task: комментарий в задачу исполнителя (возврат)."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": _prop("string", "create | update | comment_task", default="update"),
+                    "number": _prop("string", "Номер АСТ00-... для update"),
+                    "ref_key": _prop("string", "GUID документа для update"),
+                    "topic": _prop("string", "ОЧем / текст поручения"),
+                    "basis": _prop("string", "Основание"),
+                    "customer": _prop("string", "ФИО заказчика (Руководитель)"),
+                    "status": _prop("string", "Создано | ВРаботе | Принято"),
+                    "due": _prop("string", "Срок YYYY-MM-DD"),
+                    "lines": _prop("array", "Строки: text, due, executor, priority"),
+                    "comment": _prop("string", "Комментарий возврата в задачу"),
+                    "task_ref_key": _prop("string", "GUID задачи исполнителя для comment_task"),
+                },
+            },
+        },
+        {
+            "name": "onec.download_artifact",
+            "description": (
+                "Скачать приложенный файл 1С по GUID из вкладки «Файлы». "
+                "file_id бери из onec.erp_assignments action=files (ref_key файла). "
+                "Ищет Catalog_ТД_ПорученияПрисоединенныеФайлы и "
+                "Catalog_ТД_ПротоколПрисоединенныеФайлы. "
+                "Байты: OData Base64, том на диске, hs/dtw/files или UNC. "
+                "В ответе filename, saved_path и content_base64. Сервер, только чтение."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_id": _prop("string", "GUID вложения 1С (Ref_Key файла)"),
+                    "file_ref_key": _prop("string", "То же, что file_id"),
+                    "entity": _prop(
+                        "string",
+                        "Необязательно: Catalog_ТД_ПорученияПрисоединенныеФайлы или Catalog_ТД_ПротоколПрисоединенныеФайлы",
+                    ),
+                },
+                "required": ["file_id"],
+            },
+        },
+        {
+            "name": "onec.erp_write_probe",
+            "description": (
+                "Проба записи конструктора для любой сущности 1С: создаёт тестовый "
+                "объект CONSTRUCTOR_PROBE, проверяет нужное изменение, запоминает "
+                "рабочий вызов и удаляет тест. Не для боевых карточек и не для "
+                "опубликованного агента. Сервер."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "customer": _prop("string", "ФИО для тестовой карточки. Пусто — пользователь сессии"),
+                    "workflow_id": _prop("string", "id черновика, чтобы пометить тест"),
+                    "intents": _prop("array", "Какие сущности и поля проверить"),
                 },
             },
         },
@@ -1003,6 +1131,38 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         "count",
     ),
     "onec.erp_subordinate_tasks": ("onec", "task", "list", [], ["tree"], "count"),
+    "onec.erp_assignments": (
+        "onec",
+        "assignment",
+        ("list", "search", "read"),
+        [],
+        ["assignments", "assignment", "files", "tasks", "protocols"],
+        "count",
+    ),
+    "onec.download_artifact": (
+        "onec",
+        "file",
+        "read",
+        ["file_id"],
+        ["filename", "saved_path", "content_base64"],
+        "none",
+    ),
+    "onec.erp_assignments_write": (
+        "onec",
+        "assignment",
+        ("create", "update"),
+        [],
+        ["ref_key"],
+        "none",
+    ),
+    "onec.erp_write_probe": (
+        "onec",
+        "odata_entity",
+        "execute",
+        [],
+        ["recipe"],
+        "none",
+    ),
     "onec.docflow_tasks": ("onec", "task", "list", [], ["tasks"], "count"),
     "onec.search_documents": ("onec", "document", "search", [], ["documents"], "count"),
     "onec.get_document_card": (

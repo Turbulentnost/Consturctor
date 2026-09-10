@@ -64,8 +64,26 @@ function isErrorStatus(status: string): boolean {
   return value === 'error' || value === 'failed'
 }
 
+/** Mark leftover tool cards as finished so a restored chat does not look live. */
+export function settleOpenFeedTools(items: FeedItem[]): FeedItem[] {
+  let changed = false
+  const next = items.map((item) => {
+    if (item.kind !== 'tool' || item.done) return item
+    changed = true
+    return {
+      ...item,
+      done: true,
+      statusText: item.error ? item.summary || 'Ошибка' : item.summary || 'Готово'
+    }
+  })
+  return changed ? next : items
+}
+
 /** Build a static feed from persisted runner events (history view). */
-export function buildFeedItems(events: AgentRunnerEvent[]): FeedItem[] {
+export function buildFeedItems(
+  events: AgentRunnerEvent[],
+  options?: { live?: boolean }
+): FeedItem[] {
   const items: FeedItem[] = []
   const pushSystem = (text: string, tone: 'info' | 'error' | 'success' = 'info'): void => {
     const value = (text || '').trim()
@@ -262,5 +280,5 @@ export function buildFeedItems(events: AgentRunnerEvent[]): FeedItem[] {
         break
     }
   }
-  return items
+  return options?.live ? items : settleOpenFeedTools(items)
 }

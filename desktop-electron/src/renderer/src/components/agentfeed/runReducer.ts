@@ -1,6 +1,5 @@
 import type { AgentEvent, AgentRunnerEvent } from '../../api/types'
 import { isTaskTool, resolveToolName, toolArgHint, toolCardTitle, toolLabel } from './labels'
-import { summarizeToolResult } from './resultSummary'
 import { isAskQuestion, parseQuestionArgs } from './questionArgs'
 import { appendThinkingText, streamDelta } from './thinkingText'
 import type { FeedItem, PendingHitl, PendingQuestion, ToolItem } from './types'
@@ -83,7 +82,24 @@ function normalizeResult(raw: unknown): Record<string, unknown> | null {
 
 /** Mirror desktop compact_tool_result: only the tool OUTPUT, summarized. */
 function summarizeResult(result: Record<string, unknown> | null): string {
-  return summarizeToolResult(result)
+  if (!result || typeof result !== 'object') return 'Данные получены.'
+  const summary = result.summary
+  if (typeof summary === 'string' && summary.trim()) return summary.trim()
+  if (typeof result.result_file === 'string' && result.result_file.trim()) {
+    return `Файл: ${result.result_file}`
+  }
+  if (result.externalized && typeof result.result_file === 'string') {
+    return `Файл: ${result.result_file}`
+  }
+  if (result.skipped) return 'Пропущено пользователем'
+  if (result.rejected) return 'Отклонено пользователем'
+  for (const key of ['items', 'rows', 'results', 'messages', 'events', 'files', 'records', 'documents', 'tasks']) {
+    const value = result[key]
+    if (Array.isArray(value)) return `Получено записей: ${value.length}`
+  }
+  if (typeof result.text === 'string' && result.text.trim()) return result.text.trim().slice(0, 200)
+  if (typeof result.value === 'string' && result.value.trim()) return result.value.trim().slice(0, 200)
+  return 'Данные получены.'
 }
 
 const _DONE_STATUS = new Set([
@@ -230,9 +246,8 @@ function handleToolCall(state: RunState, payload: AgentRunnerEvent): RunState {
         options,
         needsFile: parsed.needsFile || state.pendingQuestion?.needsFile,
         accept: parsed.accept.length ? parsed.accept : state.pendingQuestion?.accept,
-        autoContinueSeconds:
-          parsed.autoContinueSeconds || state.pendingQuestion?.autoContinueSeconds,
-        autoContinueAnswer: parsed.autoContinueAnswer || state.pendingQuestion?.autoContinueAnswer
+        context: parsed.context || state.pendingQuestion?.context,
+        blockTitle: parsed.blockTitle || state.pendingQuestion?.blockTitle
       },
       status: 'Нужен ваш ответ'
     }
@@ -466,14 +481,8 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
               : event.accept?.length
                 ? event.accept
                 : state.pendingQuestion?.accept,
-            autoContinueSeconds:
-              parsed.autoContinueSeconds ||
-              event.autoContinueSeconds ||
-              state.pendingQuestion?.autoContinueSeconds,
-            autoContinueAnswer:
-              parsed.autoContinueAnswer ||
-              event.autoContinueAnswer ||
-              state.pendingQuestion?.autoContinueAnswer
+            context: parsed.context || event.context || state.pendingQuestion?.context,
+            blockTitle: parsed.blockTitle || event.blockTitle || state.pendingQuestion?.blockTitle
           },
           status: 'Нужен ваш ответ'
         }
@@ -536,18 +545,9 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
     }
     case 'ready_state':
       if (!event.ok && event.message) {
-        return {
-          state: {
-            ...state,
-            running: false,
-            status: '',
-            error: event.message,
-            items: pushSystem(state.items, `Локальный Cursor SDK недоступен: ${event.message}`, 'error')
-          },
-          error: event.message
-        }
+        return { state: { ...state, items: pushSystem(state.items, `Локальный Cursor SDK недоступен: ${event.message}`, 'error') } }
       }
-      return { state: { ...state, status: 'Агент работает…' } }
+      return { state }
     case 'sidecar_exit':
       return { state: { ...state, items: pushSystem(state.items, 'Процесс агента завершился. Перезапуск…', 'error') } }
     default:

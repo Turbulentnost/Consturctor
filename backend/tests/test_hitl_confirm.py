@@ -18,7 +18,39 @@ def test_onec_write_tools_are_create_update() -> None:
     assert "onec.odata_post" in ONEC_WRITE_TOOLS
     assert "onec.odata_patch" in ONEC_WRITE_TOOLS
     assert "onec.attach_file" in ONEC_WRITE_TOOLS
+    assert "onec.erp_assignments_write" in ONEC_WRITE_TOOLS
     assert "onec.odata_get" not in ONEC_WRITE_TOOLS
+    assert "onec.erp_assignments" not in ONEC_WRITE_TOOLS
+    assert "onec.erp_write_probe" not in ONEC_WRITE_TOOLS
+
+
+def test_write_probe_does_not_wait_confirm(monkeypatch) -> None:
+    order: list[str] = []
+
+    def fake_await(**kwargs):
+        order.append("confirmed")
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "app.services.workflows.cursor_tools.tool_bridge.await_result",
+        fake_await,
+    )
+    monkeypatch.setattr(
+        "app.services.agent_runtime._invoke_onec_server",
+        lambda *args, **kwargs: {"ok": True, "recipe": {"tool": "onec.erp_assignments_write"}},
+    )
+    set_tool_context("run-1", "user-1")
+    try:
+        result = invoke_creation_tool(
+            tool="onec.erp_write_probe",
+            arguments={"workflow_id": "wf-1"},
+            on_event=None,
+            workflow_id="wf-1",
+        )
+    finally:
+        clear_tool_context()
+    assert "confirmed" not in order
+    assert result["ok"] is True
 
 
 def test_odata_post_waits_confirm_only_then_writes(monkeypatch) -> None:

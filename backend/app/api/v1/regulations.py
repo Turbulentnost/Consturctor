@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.regulation import RegulationRevision
 from app.schemas.regulation import (
     AgentDraftDetail,
@@ -60,16 +60,35 @@ from app.services.agent_passport.types import ExtractedFunction
 router = APIRouter(prefix="/regulations", tags=["regulations"])
 
 
+def _parse_upload_job(
+    *,
+    user_id: str,
+    filename: str,
+    content_type: str,
+    data: bytes,
+) -> RegulationParseResult:
+    db = SessionLocal()
+    try:
+        return parse_upload(
+            db,
+            user_id=user_id,
+            filename=filename,
+            content_type=content_type,
+            data=data,
+        )
+    finally:
+        db.close()
+
+
 @router.post("/upload", response_model=RegulationParseResult)
 async def upload_regulation(
     auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db),
     file: UploadFile = File(...),
 ) -> RegulationParseResult:
     data = await file.read()
     try:
-        return parse_upload(
-            db,
+        return await asyncio.to_thread(
+            _parse_upload_job,
             user_id=auth.user_id,
             filename=file.filename or "regulation",
             content_type=file.content_type or "",
@@ -113,19 +132,38 @@ async def create_role_matches(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
+def _extract_functions_job(
+    *,
+    user_id: str,
+    regulation_id: str,
+    position: str,
+    department: str,
+) -> RoleMatchResult:
+    db = SessionLocal()
+    try:
+        return create_cursor_function_extraction(
+            db,
+            user_id=user_id,
+            regulation_id=regulation_id,
+            position=position,
+            department=department,
+        )
+    finally:
+        db.close()
+
+
 @router.post("/{regulation_id}/function-extraction", response_model=RoleMatchResult)
 async def extract_function_blocks(
     regulation_id: str,
     request: RoleMatchRequest,
     auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ) -> RoleMatchResult:
     user = get_app_user(auth.user_id)
     position = (request.position or "").strip() or ((user.position if user else "") or "").strip()
     department = (request.department or "").strip() or ((user.department if user else "") or "").strip()
     try:
-        return create_cursor_function_extraction(
-            db,
+        return await asyncio.to_thread(
+            _extract_functions_job,
             user_id=auth.user_id,
             regulation_id=regulation_id,
             position=position,

@@ -127,6 +127,8 @@ def test_design_sdk_prompt_is_short_and_points_to_materials() -> None:
     assert "required_clarifications" in AGENTS_MD
     assert "Триггер не заменяет остальные вопросы" in AGENTS_MD
     assert "Задавай столько вопросов, сколько реальных пробелов" in AGENTS_MD
+    assert "это и есть выход агента" in AGENTS_MD
+    assert "Не спрашивай «в каком виде»" in AGENTS_MD
     assert "не ищи его в MCP" in AGENTS_MD
     assert "Не пиши, что MCP не найден" in AGENTS_MD
     assert "расписания, периода, получателя или критерия успеха" not in prompt
@@ -189,6 +191,19 @@ def test_design_sdk_prompt_does_not_infer_schedule_from_process_wording() -> Non
     assert inferred_design_answers(record) == []
     prompt = build_design_sdk_prompt(record, "Верни JSON")
     assert "не спрашивай расписание" not in prompt
+
+
+def test_design_sdk_prompt_infers_process_cadence() -> None:
+    record = WorkflowRecord(
+        id="wf-1",
+        title="Контроль поручений",
+        phase="new",
+        notes="Условия: каждое рабочее утро к 07:50; днём раз в час с 08:00 до 17:00",
+    )
+    answers = inferred_design_answers(record)
+    assert answers
+    assert answers[0][0] == "Когда запускать агента?"
+    assert "раз в час" in answers[0][1]
 
 
 def test_design_stream_finishes_only_on_json_or_done() -> None:
@@ -450,6 +465,8 @@ def test_tool_timeout_seconds_for_wait_matches_requested_pause() -> None:
     assert tool_timeout_seconds("agent.wait", {"seconds": 0}) == 60
     assert tool_timeout_seconds("outlook.read_calendar") >= 180
     assert tool_timeout_seconds("askQuestion") >= 900
+    assert tool_timeout_seconds("onec.download_artifact") >= 300
+    assert tool_timeout_seconds("onecdownload_artifact") >= 300
 
 
 def test_record_ready_for_sdk_demo_clears_server_clarify_gate() -> None:
@@ -477,9 +494,8 @@ def test_record_ready_for_sdk_demo_clears_server_clarify_gate() -> None:
     assert ready.phase == "designed"
     assert ready.plan is not None
     unanswered = ready.plan.unanswered()
-    assert unanswered
-    assert "Когда запускать" in unanswered[0].question
-    assert ready.local_run["can_run_demo"] is False
+    assert unanswered == []
+    assert ready.local_run["can_run_demo"] is True
     assert design_ready_for_demo(ready) is True
 
     known = WorkflowRecord(
@@ -775,6 +791,57 @@ def test_bridge_keeps_waiting_until_tool_limit(monkeypatch, tmp_path: Path) -> N
     assert sent[0]["result"]["waited"] is True
 
 
+def test_bridge_starts_tool_requests_in_parallel(monkeypatch, tmp_path: Path) -> None:
+    import json
+    import threading
+    import time
+
+    barrier = threading.Barrier(2)
+    started: list[str] = []
+
+    def fake_invoke(tool: str, args: dict) -> dict:
+        started.append(tool)
+        barrier.wait(timeout=2)
+        return {"tool": tool}
+
+    monkeypatch.setattr("app.sdk_agent.bridge.invoke_sdk_tool", fake_invoke)
+    sent: list[dict] = []
+
+    class _Stdin:
+        def write(self, raw: str) -> None:
+            sent.append(json.loads(raw))
+
+        def flush(self) -> None:
+            return None
+
+    class _Proc:
+        stdin = _Stdin()
+
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+    process = _Proc()
+    started_at = time.monotonic()
+    bridge._start_tool_request(
+        process,  # type: ignore[arg-type]
+        {"requestId": "req-a", "tool": "onec.odata_catalog", "arguments": {}},
+        workflow_id="wf-1",
+        cwd=str(tmp_path),
+    )
+    bridge._start_tool_request(
+        process,  # type: ignore[arg-type]
+        {"requestId": "req-b", "tool": "users.subordinates", "arguments": {}},
+        workflow_id="wf-1",
+        cwd=str(tmp_path),
+    )
+    assert time.monotonic() - started_at < 0.5
+
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and len(sent) < 2:
+        time.sleep(0.05)
+    assert {item.get("requestId") for item in sent} == {"req-a", "req-b"}
+    assert all(item.get("ok") is True for item in sent)
+    assert set(started) == {"onec.odata_catalog", "users.subordinates"}
+
+
 def test_bridge_timeout_message_uses_tool_limit(monkeypatch, tmp_path: Path) -> None:
     import json
     import time
@@ -948,11 +1015,14 @@ def test_server_catalog_exposes_both_worlds() -> None:
 
     names = {str(t.get("name")) for t in sdk_tool_specs()}
     # Server-executed tools are offered to the local SDK agent.
-    assert {"onec.odata_get", "imap.list_unread", "users.current"} <= names
+    assert {"onec.odata_get", "imap.list_unread", "users.current", "onec.download_artifact"} <= names
+    download = next(item for item in sdk_tool_specs() if item.get("name") == "onec.download_artifact")
+    assert int(download.get("timeoutSeconds") or 0) >= 300
     # Local COM tools stay in the catalog too.
     assert "onec.search_documents" in names
     # Local COM 1C must not be routed to the server.
     assert "onec.search_documents" not in SERVER_TOOL_NAMES
+    assert "onec.download_artifact" in SERVER_TOOL_NAMES
 
 
 def test_meeting_run_prompt_skips_manifest_bulk_reads() -> None:

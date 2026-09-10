@@ -589,8 +589,22 @@ class AgentDraftSummary(BaseModel):
     createdAt: datetime | None = None
 
 
+class AgentDraftSdkQaItem(BaseModel):
+    question: str = ""
+    answer: str = ""
+    blockTitle: str = ""
+
+
+class AgentDraftSdkReadinessState(BaseModel):
+    answer: str = ""
+    qa: list[AgentDraftSdkQaItem] = Field(default_factory=list)
+    sdkAgentId: str = ""
+    complete: bool = False
+
+
 class AgentDraftDetail(AgentDraftSummary):
     readiness: AgentReadinessResult | None = None
+    sdkReadiness: AgentDraftSdkReadinessState | None = None
 
 
 class AgentDraftListResult(BaseModel):
@@ -622,6 +636,9 @@ class AgentDraftFilesResponse(BaseModel):
 class AgentDraftSdkReadinessRequest(BaseModel):
     answer: str = ""
     events: list[dict] = Field(default_factory=list)
+    qa: list[AgentDraftSdkQaItem] = Field(default_factory=list)
+    complete: bool = True
+    sdkAgentId: str = ""
 
 
 class QuestionChatMessageResult(BaseModel):

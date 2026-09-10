@@ -48,6 +48,9 @@ _READ_EXACT = frozenset(
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
+        "onec.erp_assignments",
+        "onec.download_artifact",
+        "onec.erp_write_probe",
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
@@ -107,8 +110,12 @@ def never_confirm(name: str) -> bool:
 
 
 def is_read_tool(name: str) -> bool:
-    tool = (name or "").strip()
+    from app.tools.tool_names import matches_known_tool, resolve_tool_name
+
+    tool = resolve_tool_name((name or "").strip(), _READ_EXACT | _NEVER_CONFIRM)
     if tool in _NEVER_CONFIRM or tool in _READ_EXACT:
+        return True
+    if matches_known_tool(tool, _READ_EXACT | _NEVER_CONFIRM):
         return True
     return any(tool.startswith(prefix) for prefix in _READ_PREFIXES)
 
@@ -143,6 +150,10 @@ _TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
     "onec.attach_file": (
         "Файл в 1С",
         "Прикрепляет файл из папки агента к документу в 1С.",
+    ),
+    "onec.erp_assignments_write": (
+        "Запись поручения 1С",
+        "Создаёт или меняет карточку журнала АСТ00, либо пишет комментарий исполнителю.",
     ),
     "outlook.send_mail": (
         "Отправка письма",

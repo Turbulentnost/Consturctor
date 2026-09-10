@@ -1,0 +1,17 @@
+---
+description: Constructor always proves 1C writes on a throwaway object, then deletes it.
+alwaysApply: true
+---
+
+# Constructor write probe
+
+Whenever an agent must change a 1C entity (any draft, any document: status, field, new card, comment), construction itself:
+
+1. Creates a test object marked `CONSTRUCTOR_PROBE`
+2. Discovers the working write call
+3. Stores the recipe in `local_run.write_recipe` / playbook
+4. Deletes the test and sweeps leftovers
+
+Do not invent write calls. Do not patch live business cards during formation. Published agents still confirm writes (`onec.erp_assignments_write`, `onec.odata_post`, `onec.odata_patch`) via HITL.
+
+The probe tool is `onec.erp_write_probe`. Detection is `collect_write_intents` — any 1C create/update step, not one playbook and not only assignment status.

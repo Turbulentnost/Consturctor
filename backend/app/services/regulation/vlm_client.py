@@ -19,16 +19,31 @@ class VlmError(RuntimeError):
     pass
 
 
-def recognize_pages(images: list[tuple[int, Path]]) -> list[ExtractedBlock]:
+REGULATION_OCR_PROMPT = (
+    "Ты OCR/VLM для русскоязычных регламентов. Распознай страницы документа. "
+    "Верни только JSON без markdown: {\"blocks\":[...]}. Каждый block: "
+    "page (номер страницы), section (заголовок раздела если виден), "
+    "kind: text|table|list, text, table:{headers:[...], rows:[[...]]} или null, "
+    "ocrConfidence от 0 до 1. Таблицы сохраняй структурно, списки не теряй."
+)
+
+ATTACHMENT_OCR_PROMPT = (
+    "Ты OCR для офисных документов, сканов и фото. Распознай страницы. "
+    "Верни только JSON без markdown: {\"blocks\":[...]}. Каждый block: "
+    "page (номер страницы), section (заголовок раздела если виден), "
+    "kind: text|table|list, text, table:{headers:[...], rows:[[...]]} или null, "
+    "ocrConfidence от 0 до 1. Таблицы сохраняй структурно, списки не теряй."
+)
+
+
+def recognize_pages(
+    images: list[tuple[int, Path]],
+    *,
+    prompt: str | None = None,
+) -> list[ExtractedBlock]:
     if not images:
         return []
-    prompt = (
-        "Ты OCR/VLM для русскоязычных регламентов. Распознай страницы документа. "
-        "Верни только JSON без markdown: {\"blocks\":[...]}. Каждый block: "
-        "page (номер страницы), section (заголовок раздела если виден), "
-        "kind: text|table|list, text, table:{headers:[...], rows:[[...]]} или null, "
-        "ocrConfidence от 0 до 1. Таблицы сохраняй структурно, списки не теряй."
-    )
+    prompt = (prompt or "").strip() or REGULATION_OCR_PROMPT
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
     for page, image_path in images:
         b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")

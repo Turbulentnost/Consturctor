@@ -125,8 +125,12 @@ class OneCSearchTasksTool(OneCReadOnlyTool):
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Подстрока в названии задачи"},
+                        "query": {"type": "string", "description": "Подстрока в номере или названии задачи"},
                         "status": {"type": "string", "description": "Статус, если нужен фильтр"},
+                        "mine_only": {
+                            "type": "boolean",
+                            "description": "Только задачи текущего пользователя COM-сессии",
+                        },
                         "max_results": {"type": "integer", "description": "Максимум задач"},
                     },
                 },
@@ -147,7 +151,8 @@ class OneCGetTaskCardTool(OneCReadOnlyTool):
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "task_ref": {"type": "string", "description": "Ссылка задачи из onec.search_tasks"},
+                        "task_ref": {"type": "string", "description": "Номер или ссылка из onec.search_tasks"},
+                        "number": {"type": "string", "description": "Номер задачи 1С"},
                     },
                 },
             ),

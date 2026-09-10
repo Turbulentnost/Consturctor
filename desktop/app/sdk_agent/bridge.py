@@ -62,9 +62,11 @@ class CursorSdkBridge:
         self._runner = runner or self._sdk_root / "src" / "runner.ts"
         self._skip_lock = threading.Lock()
         self._stdin_lock = threading.Lock()
+        self._workers_lock = threading.Lock()
         self._skip_ids: set[str] = set()
         self._active_request_ids: set[str] = set()
         self._active_tool_names: dict[str, str] = {}
+        self._tool_workers: list[threading.Thread] = []
         self._process: subprocess.Popen[str] | None = None
 
     def skip_tool(self, request_id: str = "") -> bool:
@@ -311,7 +313,10 @@ class CursorSdkBridge:
                         "agent_id": agent_id,
                     }
                 if event_type == "tool_request":
-                    self._handle_tool_request(
+                    # Do not block the stdout reader: Cursor can emit several
+                    # tool_request lines at once. One hung tool must not stall
+                    # the rest in the pipe until Node times them all out.
+                    self._start_tool_request(
                         process,
                         payload,
                         workflow_id=workflow_id,
@@ -449,6 +454,79 @@ class CursorSdkBridge:
         with self._stdin_lock:
             process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
             process.stdin.flush()
+
+    def _reap_tool_workers(self) -> None:
+        with self._workers_lock:
+            self._tool_workers = [item for item in self._tool_workers if item.is_alive()]
+
+    def _start_tool_request(
+        self,
+        process: subprocess.Popen[str],
+        payload: dict[str, Any],
+        *,
+        workflow_id: str,
+        cwd: str,
+        on_question: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        confirm_writes: bool = False,
+    ) -> None:
+        self._reap_tool_workers()
+        tool = str(payload.get("tool") or "tool").strip() or "tool"
+        thread = threading.Thread(
+            target=self._run_tool_request,
+            kwargs={
+                "process": process,
+                "payload": payload,
+                "workflow_id": workflow_id,
+                "cwd": cwd,
+                "on_question": on_question,
+                "should_stop": should_stop,
+                "confirm_writes": confirm_writes,
+            },
+            daemon=True,
+            name=f"sdk-tool-{tool[:48]}",
+        )
+        with self._workers_lock:
+            self._tool_workers.append(thread)
+        thread.start()
+
+    def _run_tool_request(
+        self,
+        process: subprocess.Popen[str],
+        payload: dict[str, Any],
+        *,
+        workflow_id: str,
+        cwd: str,
+        on_question: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        confirm_writes: bool = False,
+    ) -> None:
+        request_id = str(payload.get("requestId") or "")
+        tool = str(payload.get("tool") or "tool")
+        try:
+            self._handle_tool_request(
+                process,
+                payload,
+                workflow_id=workflow_id,
+                cwd=cwd,
+                on_question=on_question,
+                should_stop=should_stop,
+                confirm_writes=confirm_writes,
+            )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self._send(
+                    process,
+                    {
+                        "type": "tool_result",
+                        "requestId": request_id,
+                        "ok": False,
+                        "error": f"Ошибка инструмента {tool}: {exc}",
+                    },
+                )
+            except CursorSdkError:
+                pass
+            self._clear_active(request_id)
 
     def _handle_tool_request(
         self,

@@ -10,7 +10,12 @@ from app.services.regulation.vlm_client import VlmError, recognize_pages
 logger = logging.getLogger(__name__)
 
 
-def extract_pdf_scan(path: Path, *, work_dir: Path) -> ExtractedDocument:
+def extract_pdf_scan(
+    path: Path,
+    *,
+    work_dir: Path,
+    prompt: str | None = None,
+) -> ExtractedDocument:
     images = _render_pages(path, work_dir=work_dir)
     if not images:
         raise RuntimeError("PDF scan has 0 renderable pages")
@@ -28,7 +33,7 @@ def extract_pdf_scan(path: Path, *, work_dir: Path) -> ExtractedDocument:
             len(images),
         )
         try:
-            part = recognize_pages(batch)
+            part = recognize_pages(batch, prompt=prompt)
         except VlmError as exc:
             last_error = exc
             logger.warning(

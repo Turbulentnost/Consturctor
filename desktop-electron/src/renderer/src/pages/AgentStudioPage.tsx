@@ -150,6 +150,19 @@ export function AgentStudioPage({
     formation.runDemo()
   }
 
+  const testsPassed =
+    /TESTS:\s*PASS/i.test(record?.lastResult || '') &&
+    !/TESTS:\s*FAIL/i.test(record?.lastResult || '')
+  const localRun = record?.localRun || {}
+  const recordReadyToSave =
+    testsPassed ||
+    record?.phase === 'tested' ||
+    localRun.demo_ok === true ||
+    localRun.can_publish === true ||
+    String(localRun.tests_status || '').toLowerCase() === 'pass'
+  const canSave = !awaiting && (demoDone || recordReadyToSave)
+  const canDemo = designDone && !busy && !awaiting && !demoDone
+
   const basePhrase = useMemo(() => {
     if (session.pendingQuestion) return 'Агент ждёт ваш ответ'
     if (session.pendingHitl) return 'Требуется подтверждение действия'
@@ -158,16 +171,23 @@ export function AgentStudioPage({
       if (phase === 'executing') return 'Пробный запуск'
       return 'Планирование черновика'
     }
-    if (demoDone) return 'Пробный запуск завершён — можно перейти к расписанию'
-    if (designDone) return 'Черновик готов — запускаю пробный запуск'
+    if (demoDone || recordReadyToSave) return 'Пробный прогон прошёл — можно сохранить агента'
+    if (designDone) return 'Черновик готов — запускаю пробный прогон'
     return 'Готов к работе'
-  }, [session.pendingQuestion, session.pendingHitl, session.status, busy, phase, demoDone, designDone])
+  }, [
+    session.pendingQuestion,
+    session.pendingHitl,
+    session.status,
+    busy,
+    phase,
+    demoDone,
+    designDone,
+    recordReadyToSave
+  ])
 
   const clampedPhrase = clampWords(basePhrase, 10)
   const truncated = clampedPhrase !== basePhrase.trim()
   const animatedStatus = useAnimatedStatus(clampedPhrase, busy && !awaiting && !truncated)
-
-  const canDemo = designDone && !busy && !awaiting
   const composerDisabled = busy || awaiting
   const temporaryFiles = useMemo(
     () => files.filter((file) => categoryOf(file) === 'temporary'),
@@ -346,6 +366,24 @@ export function AgentStudioPage({
               Файлы {files.length}
             </button>
           </div>
+
+          {canDemo || canSave ? (
+            <div className="wf-actions">
+              {canDemo ? (
+                <button className="btn-primary" onClick={runDemo}>
+                  Пробный прогон
+                </button>
+              ) : null}
+              {canSave ? (
+                <button
+                  className="btn-primary"
+                  onClick={() => onGoSchedule(workflowId, record?.title || title)}
+                >
+                  Сохранить агента
+                </button>
+              ) : null}
+            </div>
+          ) : null}
 
           {tab === 'stages' ? (
             <div className="wf-right-body">

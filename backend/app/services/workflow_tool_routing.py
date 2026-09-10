@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterable
 
 from app.models.workflow import Workflow
 
@@ -22,6 +22,10 @@ _ONEC_TOOLS = [
     "onec.meeting_service_notes",
     "onec.search_documents",
     "onec.get_document_card",
+    "onec.erp_assignments",
+    "onec.erp_assignments_write",
+    "onec.download_artifact",
+    "onec.odata_catalog",
     "onec.list_attachments",
     "onec.read_attachment",
     "onec.odata_get",
@@ -347,6 +351,279 @@ _OPERATION_SYNONYMS = {
     "control": "read",
 }
 
+_USER_1C_TASK_HINTS = (
+    "задач исполнител",
+    "задачи исполнител",
+    "мои задач",
+    "текущие задач",
+    "задачи пользователя",
+    "erp_tasks",
+    "docflow",
+    "документооборот",
+    "домашн страниц",
+    "начальн страниц",
+)
+_ASSIGNMENT_STEP_HINTS = (
+    "поруч",
+    "аст00",
+    "аст 00",
+    "action tracker",
+    "журнал поруч",
+)
+_TASK_ENTITY_ALIASES = frozenset({"task", "задача", "задачи"})
+
+
+def wants_user_1c_tasks(blob: str) -> bool:
+    """True only for the session user's own executor tasks, not any 'задача'."""
+    low = (blob or "").casefold()
+    return any(hint in low for hint in _USER_1C_TASK_HINTS)
+
+
+def _step_blob(step: dict[str, Any]) -> str:
+    return " ".join(
+        str(step.get(key) or "")
+        for key in ("title", "entity", "data_expectation", "done_when", "action")
+    ).casefold()
+
+
+def looks_like_assignment_step(step: dict[str, Any]) -> bool:
+    return any(hint in _step_blob(step) for hint in _ASSIGNMENT_STEP_HINTS)
+
+
+_WRITE_OPS = frozenset({"create", "update"})
+_READ_OPS = frozenset({"read", "list", "search", "export", "notify"})
+_NON_ONEC_SYSTEMS = frozenset(
+    {"excel", "desktop", "outlook", "imap", "web", "constructor", "turboproject"}
+)
+_WRITE_TEXT_HINTS = (
+    "записать в 1",
+    "запис в 1",
+    "создать поруч",
+    "создать документ",
+    "новую карточк",
+    "новый документ",
+    "вернуть исполнител",
+    "поменять",
+    "сменить",
+    "записать коммент",
+    "прикрепить",
+    "odata_post",
+    "odata_patch",
+)
+_ONEC_WRITE_CONTEXT = (
+    "1с",
+    "1c",
+    "onec",
+    "odata",
+    "поруч",
+    "аст",
+    "erp",
+    "протокол",
+)
+_CHANGE_HINTS = (
+    ("status", ("статус", "состояни")),
+    ("due", ("срок",)),
+    ("comment", ("коммент", "вернуть исполнит", "результат выполнения")),
+    ("attach", ("прикрепить", "вложен", "приложен")),
+    ("create", ("создать", "новая карточ", "новый документ", "новую карточ")),
+)
+_ODATA_NAME_RE = re.compile(
+    r"\b((?:Document|Catalog|Task|BusinessProcess)_[A-Za-zА-Яа-яЁё0-9_]+)"
+)
+_KNOWN_ODATA_ENTITIES = {
+    "assignment": "Document_ТД_Поручения",
+    "protocol": "Document_ТД_Протокол",
+    "task": "Task_ЗадачаИсполнителя",
+}
+
+
+@dataclass(frozen=True)
+class WriteIntent:
+    family: str
+    entity: str
+    operation: str
+    change: str
+    tool: str
+    odata_entity: str = ""
+    title: str = ""
+
+    @property
+    def key(self) -> str:
+        return f"{self.family}:{self.operation}:{self.change}:{self.odata_entity}"
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "family": self.family,
+            "entity": self.entity,
+            "operation": self.operation,
+            "change": self.change,
+            "tool": self.tool,
+            "odata_entity": self.odata_entity,
+            "title": self.title,
+            "key": self.key,
+        }
+
+
+def _step_is_onec(step: dict[str, Any]) -> bool:
+    system = str(step.get("system") or "").strip().casefold()
+    if system in {"onec", "1c", "1с"}:
+        return True
+    if system in _NON_ONEC_SYSTEMS:
+        return False
+    candidates = [str(name) for name in (step.get("tool_candidates") or [])]
+    if any(name.startswith("onec.") for name in candidates):
+        return True
+    text = _step_blob(step)
+    return any(token in text for token in ("1с", "1c", "odata", "onec"))
+
+
+def _extract_odata_name(*parts: str) -> str:
+    for part in parts:
+        match = _ODATA_NAME_RE.search(str(part or ""))
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _infer_change(step_text: str, operation: str) -> str:
+    for change, hints in _CHANGE_HINTS:
+        if any(hint in step_text for hint in hints):
+            return change
+    if operation == "create":
+        return "create"
+    return "update"
+
+
+def _intent_family(entity: str, step: dict[str, Any], candidates: Iterable[str]) -> str:
+    names = {str(name) for name in candidates}
+    step_text = _step_blob(step)
+    if "onec.attach_file" in names or entity == "file" or _infer_change(step_text, "") == "attach":
+        if entity in {"assignment", "protocol"} or looks_like_assignment_step(step):
+            if "прикрепить" in step_text or "файл" in step_text:
+                return "file"
+        if entity == "file" or "onec.attach_file" in names:
+            return "file"
+    if entity == "assignment" or looks_like_assignment_step(step):
+        return "assignment"
+    if entity == "task" or wants_user_1c_tasks(step_text):
+        return "task"
+    if entity == "protocol" or "протокол" in step_text:
+        return "odata"
+    return "odata"
+
+
+def _intent_tool(family: str, operation: str, change: str, candidates: list[str]) -> str:
+    from app.services.onec_tools import ONEC_WRITE_TOOLS
+
+    for name in candidates:
+        if name in ONEC_WRITE_TOOLS or name.endswith("_write"):
+            return name
+    if family == "assignment":
+        return "onec.erp_assignments_write"
+    if family == "file":
+        return "onec.attach_file"
+    if family == "task":
+        return "onec.erp_assignments_write" if change == "comment" else "onec.odata_patch"
+    if operation == "create":
+        return "onec.odata_post"
+    return "onec.odata_patch"
+
+
+def _odata_entity_for(entity: str, step: dict[str, Any], family: str) -> str:
+    named = _extract_odata_name(
+        str(step.get("entity") or ""),
+        str(step.get("data_expectation") or ""),
+        str(step.get("title") or ""),
+        " ".join(str(item) for item in (step.get("required_params") or [])),
+    )
+    if named:
+        return named
+    if family == "assignment" or entity == "assignment":
+        return _KNOWN_ODATA_ENTITIES["assignment"]
+    if family == "task" or entity == "task":
+        return _KNOWN_ODATA_ENTITIES["task"]
+    if entity == "protocol" or "протокол" in _step_blob(step):
+        return _KNOWN_ODATA_ENTITIES["protocol"]
+    return _KNOWN_ODATA_ENTITIES.get(entity, "")
+
+
+def _intent_from_step(step: dict[str, Any]) -> WriteIntent | None:
+    from app.services.onec_tools import ONEC_WRITE_TOOLS
+
+    if not _step_is_onec(step):
+        return None
+    operation = normalize_operation(str(step.get("operation") or ""))
+    entity = normalize_entity(str(step.get("entity") or ""))
+    if entity in _TASK_ENTITY_ALIASES and looks_like_assignment_step(step):
+        entity = "assignment"
+    candidates = [str(name) for name in (step.get("tool_candidates") or []) if str(name).strip()]
+    step_text = _step_blob(step)
+    has_write_tool = any(name in ONEC_WRITE_TOOLS or name.endswith("_write") for name in candidates)
+    hinted = any(hint in step_text for hint in _WRITE_TEXT_HINTS)
+    if operation in _READ_OPS and not has_write_tool:
+        return None
+    if not has_write_tool and operation not in _WRITE_OPS and not hinted:
+        return None
+    if not has_write_tool and operation not in _WRITE_OPS and not any(
+        token in step_text for token in _ONEC_WRITE_CONTEXT
+    ):
+        return None
+    change = _infer_change(step_text, operation if operation in _WRITE_OPS else "update")
+    family = _intent_family(entity, step, candidates)
+    if change == "attach":
+        family = "file"
+    if change == "comment" and family == "assignment":
+        family = "task"
+    return WriteIntent(
+        family=family,
+        entity=entity or family,
+        operation=operation if operation in _WRITE_OPS else ("create" if change == "create" else "update"),
+        change=change,
+        tool=_intent_tool(family, operation, change, candidates),
+        odata_entity=_odata_entity_for(entity, step, family),
+        title=str(step.get("title") or "").strip(),
+    )
+
+
+def collect_write_intents(draft: dict[str, Any], *, blob: str = "") -> list[WriteIntent]:
+    """Every 1C mutation the constructor must prove on a throwaway object."""
+    found: list[WriteIntent] = []
+    seen: set[str] = set()
+    for step in draft.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        intent = _intent_from_step(step)
+        if intent is None or intent.key in seen:
+            continue
+        seen.add(intent.key)
+        found.append(intent)
+    if found:
+        return found
+    text = (blob or "").casefold()
+    if not any(hint in text for hint in _WRITE_TEXT_HINTS):
+        return []
+    if not any(token in text for token in _ONEC_WRITE_CONTEXT):
+        return []
+    family = "assignment" if any(hint in text for hint in _ASSIGNMENT_STEP_HINTS) else "odata"
+    change = _infer_change(text, "update")
+    entity = "assignment" if family == "assignment" else "document"
+    intent = WriteIntent(
+        family=family,
+        entity=entity,
+        operation="create" if change == "create" else "update",
+        change=change,
+        tool=_intent_tool(family, "update", change, []),
+        odata_entity=_KNOWN_ODATA_ENTITIES.get(entity, ""),
+        title="",
+    )
+    return [intent]
+
+
+def draft_needs_onec_write(draft: dict[str, Any], *, blob: str = "") -> bool:
+    """True when construction must probe a 1C write, for any entity the draft changes."""
+    return bool(collect_write_intents(draft, blob=blob))
+
+
 _ENTITY_ALIASES = {
     "проект": "project",
     "проекты": "project",
@@ -359,6 +636,17 @@ _ENTITY_ALIASES = {
     "служебная записка": "service_note",
     "служебные записки": "service_note",
     "сз": "service_note",
+    "поручение": "assignment",
+    "поручения": "assignment",
+    "журнал поручений": "assignment",
+    "action tracker": "assignment",
+    "аст00": "assignment",
+    "аст": "assignment",
+    "протокол": "protocol",
+    "протоколы": "protocol",
+    "задача исполнителя": "task",
+    "задачи исполнителя": "task",
+    "мои задачи": "task",
 }
 
 _PROJECT_OPERATIONS = frozenset({"", "search", "read", "list"})
@@ -386,6 +674,8 @@ def select_candidates(
     system = str(step.get("system") or "").strip().casefold()
     operation = normalize_operation(str(step.get("operation") or ""))
     entity = normalize_entity(str(step.get("entity") or ""))
+    if entity in _TASK_ENTITY_ALIASES and looks_like_assignment_step(step):
+        entity = "assignment"
     matched = candidates_for(
         system=system,
         entity=entity,
@@ -445,6 +735,11 @@ def select_candidates(
         names = ["onec.meeting_service_notes"] + [
             name for name in names if name != "onec.meeting_service_notes"
         ]
+    if entity == "assignment" and "onec.erp_assignments" in names:
+        preferred = ["onec.erp_assignments"]
+        if "onec.erp_assignments_write" in names:
+            preferred.append("onec.erp_assignments_write")
+        names = preferred + [name for name in names if name not in preferred]
     if entity == "protocol" and "onec.meeting_protocols" in names:
         names = ["onec.meeting_protocols"] + [
             name for name in names if name != "onec.meeting_protocols"

@@ -103,6 +103,8 @@ def test_tools_registered() -> None:
     assert "onec.erp_tasks_period" in ONEC_TOOLS
     assert "onec.erp_subordinate_tasks" in ONEC_TOOLS
     assert "onec.docflow_tasks" in ONEC_TOOLS
+    assert "onec.erp_assignments" in ONEC_TOOLS
+    assert "onec.erp_assignments_write" in ONEC_TOOLS
     names = {item["name"] for item in list_tools()}
     assert "onec.meeting_service_notes" in names
     meeting = next(item for item in list_tools() if item["name"] == "onec.meeting_service_notes")
@@ -116,12 +118,16 @@ def test_tools_registered() -> None:
     assert "onec.erp_tasks_period" in names
     assert "onec.erp_subordinate_tasks" in names
     assert "onec.docflow_tasks" in names
+    assert "onec.erp_assignments" in names
+    assert "onec.erp_assignments_write" in names
     for item in list_tools():
         if item["name"] in {
             "onec.erp_tasks_current",
             "onec.erp_tasks_period",
             "onec.erp_subordinate_tasks",
             "onec.docflow_tasks",
+            "onec.erp_assignments",
+            "onec.erp_assignments_write",
         }:
             assert item.get("execution") == "server"
 

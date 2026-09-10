@@ -85,7 +85,7 @@ export function RegulationCreationHistoryPage({
     [items, selectedId]
   )
   const messages = selected?.messages.slice(-12) ?? []
-  const canContinue = Boolean(selectedItem?.canContinue && selectedId)
+  const canOpen = Boolean(selectedId && (selectedItem?.canContinue || selectedItem?.hasResult))
 
   return (
     <div className="reg-history-page">
@@ -158,10 +158,10 @@ export function RegulationCreationHistoryPage({
                 <button
                   className="btn-primary reg-history-continue"
                   type="button"
-                  disabled={!canContinue}
+                  disabled={!canOpen}
                   onClick={() => void onContinue(selectedId)}
                 >
-                  Продолжить
+                  {selectedItem?.hasResult && !selectedItem?.canContinue ? 'Открыть' : 'Продолжить'}
                 </button>
               </div>
 

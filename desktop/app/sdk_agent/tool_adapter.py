@@ -18,8 +18,9 @@ ASK_QUESTION_SPEC: dict[str, Any] = {
         "Задать пользователю один уточняющий вопрос про пробел в логике "
         "будущего агента и дождаться ответа. Спрашивай то, чего нет в материалах, "
         "но без чего агент будет додумывать правило работы. "
-        "Если нужен исходный документ пользователя, передай needsFile=true "
-        "и accept: xlsx, xlsm или docx. Пользователь загрузит Excel или Word. "
+        "Если нужен исходный документ пользователя, передай needsFile=true. "
+        "Пользователь может приложить Word, Excel, PDF, изображение или другой файл. "
+        "Сканы и фото читаются через OCR. "
         "Файл временный: только для этого шага, не в постоянную базу знаний. "
         "В одном вызове один пробел. Не объединяй несколько вопросов. "
         "Не вызывай повторно, если ответ по этой теме уже получен. "
@@ -39,12 +40,12 @@ ASK_QUESTION_SPEC: dict[str, Any] = {
             },
             "needsFile": {
                 "type": "boolean",
-                "description": "true, если пользователь должен приложить Excel или Word",
+                "description": "true, если пользователь должен приложить файл (документ, таблица, PDF, изображение)",
             },
             "accept": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Разрешенные расширения: xlsx, xlsm, docx",
+                "description": "Подсказка по расширениям, например pdf, png, xlsx. Пусто — любые файлы",
             },
         },
         "required": ["question"],
@@ -107,6 +108,15 @@ def tool_timeout_seconds(name: str, arguments: dict[str, Any] | None = None) -> 
         return ASK_QUESTION_TIMEOUT_SECONDS
     limit = DEFAULT_TOOL_TIMEOUT_SECONDS
     try:
+        from app.tools.server_tools import canonical_server_tool_name, server_tool_timeout_seconds
+
+        folded = canonical_server_tool_name(folded)
+        extra = server_tool_timeout_seconds(folded)
+        if extra > 0:
+            limit = max(limit, extra)
+    except Exception:
+        pass
+    try:
         from app.tools.ac.dispatch import get_registry
 
         registry = get_registry()
@@ -119,6 +129,9 @@ def tool_timeout_seconds(name: str, arguments: dict[str, Any] | None = None) -> 
 
 def invoke_sdk_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
     try:
+        from app.tools.server_tools import canonical_server_tool_name
+
+        name = canonical_server_tool_name(name)
         result = invoke_tool(name, arguments if isinstance(arguments, dict) else {})
     except ToolHostError:
         raise

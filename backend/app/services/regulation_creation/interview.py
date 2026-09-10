@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-MAX_PROMPT_ATTACHMENT_CHARS = 32_000
+MAX_PROMPT_ATTACHMENT_CHARS = 120_000
 
 _UNKNOWN_VALUES = {
     "",
@@ -113,6 +113,8 @@ _DOCUMENT_SERVICE_PREFIXES = (
     "основание",
     "предположение",
 )
+
+_SOURCE_HEADING_RE = re.compile(r"^(\d+(?:\.\d+)*)\.\s+(\S.+)$")
 
 
 @dataclass(slots=True)
@@ -270,8 +272,6 @@ _GENERIC_WORK_LOCATION_WORDS = {
 
 
 def new_interview_state() -> dict[str, Any]:
-    from app.services.regulation_creation.pipeline import default_pipeline
-
     return {
         "version": 2,
         "position": "",
@@ -289,8 +289,6 @@ def new_interview_state() -> dict[str, Any]:
 
 
 def normalize_interview_state(raw: Any) -> dict[str, Any]:
-    from app.services.regulation_creation.pipeline import normalize_pipeline
-
     if not isinstance(raw, dict):
         return new_interview_state()
     state = deepcopy(raw)
@@ -352,25 +350,30 @@ def set_sdk_agent_id(state: Any, agent_id: str) -> dict[str, Any]:
     return out
 
 
-def set_research_sdk_agent_id(state: Any, agent_id: str) -> dict[str, Any]:
-    out = normalize_interview_state(state)
-    out["research_sdk_agent_id"] = _clean_str(agent_id)
-    return out
-
-
-def research_sdk_agent_id(state: Any) -> str:
-    return _clean_str(normalize_interview_state(state).get("research_sdk_agent_id"))
-
-
 def interview_sdk_agent_id(state: Any) -> str:
     return _clean_str(normalize_interview_state(state).get("sdk_agent_id"))
+
+
+def interview_facts_closed(state: Any) -> bool:
+    interview = normalize_interview_state(state)
+    selected = selected_process_ids(interview)
+    if not selected:
+        return False
+    if not _selected_processes_in_order(interview, selected):
+        return False
+    progress = interview_progress(interview)
+    if not progress.get("visible"):
+        return False
+    return int(progress.get("remaining") or 0) <= 0
 
 
 def interview_write_document(state: Any, *, force_create: bool = False) -> bool:
     if force_create:
         return True
     raw = state if isinstance(state, dict) else {}
-    return bool(raw.get("document_write_required"))
+    if bool(raw.get("document_write_required")):
+        return True
+    return interview_facts_closed(state)
 
 
 def interview_has_attachment_text(state: Any) -> bool:
@@ -414,11 +417,7 @@ def leading_question_text(raw: Any) -> str:
 
 
 def interview_snapshot(state: Any) -> dict[str, Any]:
-    """Slim snapshot for SDK/API — attachment bodies live in materials/*.txt."""
-    interview = normalize_interview_state(state)
-    slim = _prompt_state(interview)
-    slim["attachments"] = _prompt_attachment_refs(interview.get("attachments") or [])
-    return slim
+    return _prompt_state(normalize_interview_state(state))
 
 
 def is_replacement_garbage(value: Any) -> bool:
@@ -739,10 +738,14 @@ def _process_open_fields(
         if not bool(unknown.get("critical")):
             continue
         field = _progress_field_key(unknown.get("field"))
-        if field in _PROGRESS_REQUIRED_FACTS or field == "roleStatus":
-            # Only keep as open if the required fact is still empty/vague.
-            if field == "roleStatus" or field in open_fields or _fact_missing(facts.get(field)):
-                open_fields.add(field if field else "unknown")
+        if field == "roleStatus":
+            if not _role_status_resolved(process):
+                open_fields.add("roleStatus")
+            continue
+        if field in _PROGRESS_REQUIRED_FACTS and (
+            field in open_fields or _fact_missing(facts.get(field))
+        ):
+            open_fields.add(field)
     process_id = normalize_process_id(process.get("id") or process.get("processId"))
     for func in interview.get("functions") or []:
         if not isinstance(func, dict):
@@ -820,10 +823,9 @@ def owned_functions(state: Any) -> list[dict[str, Any]]:
 
 
 def append_user_turn(state: Any, message: str, attachments: list[dict]) -> dict[str, Any]:
-    from app.services.regulation_creation.pipeline import apply_round_answers, mark_upload_received
-
     out = normalize_interview_state(state)
     out.pop("document_write_required", None)
+    out.pop("document_write_attempts", None)
     attachment_refs: list[str] = []
     for item in attachments:
         name = str(item.get("name") or "file")
@@ -837,6 +839,9 @@ def append_user_turn(state: Any, message: str, attachments: list[dict]) -> dict[
                 "text": text,
             }
             out["attachments"].append(existing)
+        source_path = _clean_str(item.get("source_path"))
+        if source_path:
+            existing["source_path"] = source_path
         attachment_refs.append(str(existing.get("id") or existing.get("name") or name))
     out["turns"].append(
         {
@@ -850,26 +855,11 @@ def append_user_turn(state: Any, message: str, attachments: list[dict]) -> dict[
     if selected:
         out["selectedProcessIds"] = selected
     _attach_answer_to_current_question(out, message)
-    from app.services.regulation_creation.question_queue import apply_collect_answer_to_facts
-
-    out = apply_collect_answer_to_facts(out, message)
     _apply_role_answer(out, message)
-    _apply_explicit_unknown_answer(out, message)
-    out = mark_upload_received(out)
-    if message.strip():
-        out = apply_round_answers(out, free_message=message.strip())
-    from app.services.regulation_creation.pipeline import resume_interview_if_pending, sync_remaining_estimate
-    from app.services.regulation_creation.question_queue import replenish_queue
-
-    out = resume_interview_if_pending(out)
-    out = replenish_queue(out)
-    out["pipeline"] = sync_remaining_estimate(out)
     return out
 
 
 def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
-    from app.services.regulation_creation.pipeline import merge_pipeline_payload
-
     out = normalize_interview_state(state)
     answer_sufficiency = _extract_answer_sufficiency(payload)
     next_question = payload.get("nextQuestion") if isinstance(payload.get("nextQuestion"), dict) else {}
@@ -879,9 +869,6 @@ def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
         next_question=next_question,
     )
     if answer_sufficiency:
-        if _should_accept_periodicity_despite_partial(out, answer_sufficiency):
-            answer_sufficiency = {**answer_sufficiency, "status": "closed"}
-            _apply_concrete_periodicity_fact(out, answer_sufficiency)
         _record_answer_sufficiency(out, answer_sufficiency)
     incoming = _extract_functions(payload)
     for raw in incoming:
@@ -921,6 +908,20 @@ def merge_agent_payload(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _write_document_instructions() -> str:
+    return (
+        "Не пиши новый документ с нуля. Возьми исходный файл из materials/* как основу: "
+        "сохрани его разделы, нумерацию и формулировки. Допиши только то, что подтверждено "
+        "ответами пользователя и чего не хватало в исходном тексте. "
+        "Если исходного файла нет, собери регламент только по подтверждённым ответам. "
+        "Если исходный документ назван техническим заданием или ТЗ, в title и в шапке "
+        "назови его регламентом, не ТЗ. Остальной смысл файла не меняй. "
+        "Верни полный document как дописанный исходный файл. "
+        "Не используй interview.functions как оглавление и не пиши одинаковые карточки функций "
+        "с повтором 'Основание' и 'Предположение' в каждом блоке."
+    )
+
+
 def creation_interviewer_rules() -> str:
     return (
         "Ты в режиме agent: отвечай только текстом, без инструментов. "
@@ -931,6 +932,7 @@ def creation_interviewer_rules() -> str:
         "эталоны и типовые догадки как содержание регламента.\n"
         "Один ход = один вопрос пользователю. Не констатируй пробел ('не указано', 'не раскрыто', "
         "'упомянуто, но...') без вопроса: сразу спроси недостающий факт простым языком.\n"
+        "Сначала напиши только текст вопроса простым языком. Не начинай ответ с фигурной скобки. "
         "После вопроса с новой строки верни компактный JSON без markdown: status, message "
         "(тот же вопрос), quickAnswers, nextQuestion и только изменённый процесс в "
         "interview.processes. document оставляй пустым, пока status не ready.\n"
@@ -944,13 +946,34 @@ def creation_interviewer_rules() -> str:
         "Не добавляй лишние обязательные темы вроде получателей или триггера, если без них уже можно "
         "закрыть цели выше. Один ход = один вопрос.\n"
         "Не повторяй askedQuestions.\n"
+        "Если цели знания по всем выбранным процессам уже закрыты, не задавай новый вопрос: "
+        "верни status='ready' и полный document как дописанный исходный файл. "
+        "Оставшиеся необязательные unknowns опрос не держат.\n"
+    )
+
+
+def process_extraction_model_rules(*, position: str = "") -> str:
+    """Granularity used when processes are extracted from uploaded documents."""
+    who = f"«{position}»" if str(position or "").strip() else "пользователя"
+    return (
+        "Один process — это контур ответственности должности, а не отдельный глагол и не шаг.\n"
+        f"Выделяй processes только для должности {who} и её явных алиасов.\n"
+        "Шаги, проверки, правки, пересчёт, уведомления и смена данных внутри одного контура "
+        "пиши в knownFacts.steps. Не делай из них отдельные processes.\n"
+        "Пример: «Контроль календаря ПСД» включает проверку календаря и внесение изменений — "
+        "это один process. Не выделяй «Изменение календаря» отдельно.\n"
+        "Не дроби один контур по системам (Outlook и Excel), по частоте или по получателям.\n"
+        "Отдельный process только если другой объект, другой цикл или другой бизнес-результат "
+        "(командировки, календарь ПСД, документооборот инициатив).\n"
+        "К каждому process сразу заполняй knownFacts: inputs, outputs, deadlines, "
+        "workLocation, frequency, steps.\n"
     )
 
 
 def creation_system_rules(*, force_create: bool = False) -> str:
     force = (
-        "Пользователь запросил принудительное создание: можно вернуть status='ready' по проверенным данным "
-        "без выдумок."
+        "Пользователь запросил принудительное создание. Можно вернуть status='ready' по текущим "
+        "проверенным данным, но нельзя выдавать предположения как факты."
         if force_create
         else (
             "Не возвращай status='ready', пока по каждому выбранному процессу должности не ясны "
@@ -995,6 +1018,9 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "В nextQuestion укажи targetFact из inputs|outputs|deadlines|workLocation|frequency|steps, "
         "alreadyKnown, missingFact и whyThisQuestion. В message - только текст вопроса простым языком.\n"
         "Не повторяй askedQuestions. Один ход = один вопрос по текущему процессу.\n"
+        "Если цели знания по всем выбранным процессам уже закрыты, не задавай новый вопрос: "
+        "верни status='ready' и полный document как дописанный исходный файл. "
+        "Оставшиеся необязательные unknowns опрос не держат.\n"
         "Не предлагай пользователю подтвердить выдуманный ответ. quickAnswers — только если есть "
         "2-6 вариантов из текста вложения или уже данных ответов; без Outlook/Excel/1C и других "
         "систем наугад. Если вариантов нет, верни пустой quickAnswers. "
@@ -1006,17 +1032,12 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "Сначала напиши пользователю только текст одного вопроса простым языком, "
         "без JSON и без markdown. Не начинай ответ с фигурной скобки.\n"
         "Когда все обязательные цели знания закрыты и можно вернуть status='ready', document обязателен. "
-        "Его должен написать Cursor SDK как самостоятельный регламент процесса: связный документ, "
-        "понятный без истории чата. Вынеси в него подтверждённые входы, результаты, сроки, "
-        "источники данных, частоту, последовательность действий и релевантное содержание "
-        "materials/*, не выдумывая фактов.\n"
-        "Структуру разделов выбирай по фактическому процессу. Не используй фиксированный шаблон глав "
-        "и не копируй лейблы полей interview как тело документа.\n"
+        f"{_write_document_instructions()}\n"
         f"{force}\n"
         "После вопроса с новой строки верни компактный JSON без markdown. Контракт:\n"
         "{\n"
         '  "status": "need_more|ready",\n'
-        '  "message": "один короткий вопрос",\n'
+        '  "message": "один вопрос или сообщение о готовности",\n'
         '  "positions": ["..."],\n'
         '  "quickAnswers": ["вариант 1", "вариант 2"],\n'
         '  "answerSufficiency": {\n'
@@ -1057,97 +1078,9 @@ def creation_system_rules(*, force_create: bool = False) -> str:
         "    ],\n"
         '    "functions": []\n'
         "  },\n"
-        '  "document": {}\n'
-        "}\n"
-        "document заполняй только при status='ready' (см. правила финализации в отдельном запросе)."
+        '  "document": {"title": "", "sections": [{"number": "1", "title": "", "paragraphs": [], "items": []}]}\n'
+        "}"
     )
-
-
-def creation_document_rules(*, force_create: bool = False) -> str:
-    force = (
-        "Пользователь запросил принудительное создание. Можно вернуть status='ready' по текущим "
-        "проверенным данным, но нельзя выдавать предположения как факты."
-        if force_create
-        else "Верни status='ready' и полный document только если критичные unknowns закрыты."
-    )
-    return (
-        "Сейчас финализация: верни status='ready' и полный document как самостоятельный регламент.\n"
-        "Не задавай новый вопрос. Не копируй историю чата — пиши нормативный текст.\n"
-        "Факты только из interview.json, materials/* и ответов пользователя.\n"
-        "Шаблон СТО-34-003, разделы document.sections строго в порядке:\n"
-        "1 Назначение и область применения; 2 Нормативные ссылки; 3 Термины и определения; "
-        "4 Сокращения; 5 Ответственность; 6 Организация работы; 7 Ресурсы; "
-        "8 Документирование и архивирование; 9 Приложения.\n"
-        "Раздел 6 — жёсткая последовательность: кто, что, кому, срок, форма. "
-        "Таблицы в section.tables {headers, rows}. Подразделы 6.1/6.2 — в section.sections.\n"
-        "Не своди документ к четырём полям interview. Сохрани детали из материалов.\n"
-        "Запрещены заглушки и общие фразы без критерия.\n"
-        f"{force}\n"
-        "Ответ строго JSON: status='ready', message, interview (срез), полный document "
-        "(title, code, version, year, meta, sections)."
-    )
-
-
-def creation_collect_rules() -> str:
-    return (
-        "Сейчас этап COLLECT: добираем факты по выбранным процессам для исполняемого регламента.\n"
-        "Обязательные поля: workLocation, frequency, trigger, steps.\n"
-        "Расширенные (если пробел в regulationGapReport): inputs, outputs, controls, exceptions, recipients.\n"
-        "Один вопрос за ход — по самому критичному незакрытому пробелу.\n"
-        "roundQuestions — пакет 3–8 следующих вопросов для prefetch (только по открытым gaps).\n"
-        "Ответ строго JSON: status='need_more', message, quickAnswers, roundQuestions=[...], document={}."
-    )
-
-
-def creation_system_rules(
-    *,
-    force_create: bool = False,
-    for_document: bool = False,
-    stage: str = "",
-    pipeline: dict[str, Any] | None = None,
-) -> str:
-    from app.services.regulation_creation.pipeline import (
-        creation_extract_rules,
-        creation_round_interview_rules,
-        creation_select_rules,
-        normalize_pipeline,
-    )
-
-    pipe = normalize_pipeline(pipeline or {"stage": stage})
-    phase = str(pipe.get("interviewPhase") or stage or "")
-
-    if for_document or force_create:
-        if for_document:
-            return creation_document_rules(force_create=force_create)
-        return (
-            f"{creation_round_interview_rules(force_create=True)}\n\n"
-            f"{creation_document_rules(force_create=True)}"
-        )
-    if phase == "extract":
-        return creation_extract_rules()
-    if phase == "material_review":
-        from app.services.regulation_creation.dual_workflow import creation_material_review_rules
-
-        return creation_material_review_rules()
-    if phase == "select":
-        return creation_select_rules()
-    if phase == "collect":
-        from app.services.regulation_creation.dual_workflow import (
-            creation_interviewer_dual_rules,
-            dual_workflow_enabled,
-        )
-
-        if dual_workflow_enabled({"pipeline": pipe}):
-            return creation_interviewer_dual_rules(force_create=force_create)
-        return creation_collect_rules()
-    from app.services.regulation_creation.dual_workflow import (
-        creation_interviewer_dual_rules,
-        dual_workflow_enabled,
-    )
-
-    if dual_workflow_enabled({"pipeline": pipe}):
-        return creation_interviewer_dual_rules(force_create=force_create)
-    return creation_round_interview_rules(force_create=force_create)
 
 
 def build_creation_prompt(
@@ -1157,20 +1090,11 @@ def build_creation_prompt(
     initial: bool,
     force_create: bool,
     include_attachment_bodies: bool = True,
-    for_document: bool = False,
 ) -> str:
-    from app.services.regulation_creation.pipeline import normalize_pipeline, slice_materials_for_prompt
-
     interview = normalize_interview_state(state)
-    pipeline = normalize_pipeline(interview.get("pipeline"))
-    stage = str(pipeline.get("stage") or "upload")
-    for_document = for_document or bool(interview.get("document_write_required")) or force_create
-    inventory = _prompt_inventory_for_stage(interview, pipeline=pipeline, for_document=for_document)
+    inventory = _prompt_state(interview)
     if not include_attachment_bodies:
         inventory["attachments"] = _prompt_attachment_refs(inventory.get("attachments") or [])
-    elif stage in ("interview", "select") and not for_document:
-        inventory["attachments"] = _prompt_attachments(slice_materials_for_prompt(interview, full=False))
-    inventory["pipeline"] = pipeline
     action = "Начни" if initial else "Продолжай"
     files_hint = (
         "Тексты приложенных файлов уже лежат в рабочей папке: interview.json и materials/*.txt. "
@@ -1184,9 +1108,7 @@ def build_creation_prompt(
     focus = _current_process_prompt_hint(interview)
     return (
         f"{action} интервью.\n"
-        f"{speed}"
-        f"{stage_hint}"
-        f"{creation_system_rules(force_create=force_create, for_document=for_document, stage=stage, pipeline=pipeline)}\n"
+        f"{creation_system_rules(force_create=force_create)}\n"
         f"{files_hint}"
         f"{focus}"
         "Текущее постоянное состояние интервью:\n"
@@ -1202,14 +1124,22 @@ def build_followup_creation_prompt(
     state: Any = None,
     write_document: bool = False,
 ) -> str:
-    force = (
-        "Пользователь запросил принудительное создание. Можно вернуть status='ready' по текущим данным."
-        if force_create
-        else (
+    facts_closed = interview_facts_closed(state) if state is not None else False
+    if force_create:
+        force = (
+            "Пользователь запросил принудительное создание. Можно вернуть status='ready' по текущим данным."
+        )
+    elif write_document or facts_closed:
+        force = (
+            "Все обязательные факты выбранных процессов закрыты. "
+            "Не задавай новый вопрос и не уточняй оставшиеся необязательные unknowns. "
+            "Верни status='ready' и полный document."
+        )
+    else:
+        force = (
             "Не возвращай status='ready', пока есть unclear roleStatus, открытые gaps или "
             "критичные unknowns по процессам должности."
         )
-    )
     snapshot = ""
     focus = ""
     if state is not None:
@@ -1222,7 +1152,7 @@ def build_followup_creation_prompt(
             "используй только это сообщение и историю диалога:\n"
             f"{json.dumps(inventory, ensure_ascii=False, indent=2)}\n"
         )
-    if write_document or force_create:
+    if write_document or force_create or facts_closed:
         return (
             "Продолжи то же интервью. История диалога уже у тебя. "
             "Прочитай обновлённый interview.json и materials/* в рабочей папке.\n"
@@ -1230,11 +1160,8 @@ def build_followup_creation_prompt(
             "процессы снова и не возвращай pipeline.stage='select'.\n"
             f"{force}\n"
             f"Последний ответ пользователя: {message.strip()}\n"
-            "Не задавай новый вопрос: верни status='ready' и полный document как самостоятельный "
-            "связный регламент процесса. Вынеси в него релевантное содержание материалов "
-            "пользователя, подтверждённое файлами или ответами. "
-            "Не используй interview.functions как оглавление и не пиши одинаковые карточки функций "
-            "с повтором 'Основание' и 'Предположение' в каждом блоке."
+            "Не задавай новый вопрос. "
+            f"{_write_document_instructions()}"
         )
     return (
         "Продолжи то же интервью текстом, без инструментов. История диалога уже у тебя. "
@@ -1257,13 +1184,10 @@ def build_followup_creation_prompt(
         "Сначала напиши только текст следующего вопроса простым языком. Не начинай ответ "
         "с фигурной скобки. Затем с новой строки верни компактный JSON: status, message, "
         "quickAnswers, nextQuestion и только изменённый процесс.\n"
-        "Если в interview.json есть document_write_required=true, не задавай новый вопрос: "
-        "верни status='ready' и полный document как самостоятельный связный регламент процесса. "
-        "document оставляй пустым, пока status не ready. При status='ready' document обязателен: "
-        "это должен быть полный деловой текст, а не список полей interview. Вынеси в него "
-        "релевантное содержание материалов пользователя, подтверждённое файлами или ответами. "
-        "Не используй interview.functions как оглавление и не пиши одинаковые карточки функций "
-        "с повтором 'Основание' и 'Предположение' в каждом блоке."
+        "Если обязательные факты всех выбранных процессов закрыты или в interview.json есть "
+        "document_write_required=true, не задавай новый вопрос. "
+        f"{_write_document_instructions()} "
+        "document оставляй пустым, пока status не ready."
     )
 
 
@@ -1295,16 +1219,15 @@ def remember_assistant_question(
     field: str = "",
     process_id: str = "",
     intent: str = "",
-    queue_question_id: str = "",
+    already_known: list[str] | None = None,
+    missing_fact: str = "",
+    why_this_question: str = "",
 ) -> tuple[dict[str, Any], str]:
-    from app.services.regulation_creation.pipeline import _normalize_collect_field
-
     out = normalize_interview_state(state)
-    text = _dedupe_question_text(out, message=message, function_id=function_id, field=field)
-    raw_field = _clean_str(field)
-    collect_field = _normalize_collect_field(raw_field) if raw_field else ""
-    question_id = _clean_str(queue_question_id) or f"q{len(out['askedQuestions']) + 1}"
-    canonical_field = collect_field or _canonical_gap(raw_field)
+    text = _clean_str(message)
+    question_id = f"q{len(out['askedQuestions']) + 1}"
+    canonical_field = _canonical_gap(field)
+    duplicate = _question_was_asked(out, message=text, function_id=function_id, field=canonical_field)
     question = {
         "id": question_id,
         "message": text,
@@ -1313,9 +1236,13 @@ def remember_assistant_question(
         "processId": _clean_str(process_id or function_id),
         "field": canonical_field,
         "intent": _clean_str(intent) or canonical_field,
+        "alreadyKnown": _clean_list(already_known or []),
+        "missingFact": _clean_str(missing_fact),
+        "whyThisQuestion": _clean_str(why_this_question),
         "answer": "",
         "sufficiency": "pending",
         "missingFacts": [],
+        "duplicate": duplicate,
     }
     out["currentQuestion"] = dict(question)
     out["askedQuestions"].append(dict(question))
@@ -1333,8 +1260,6 @@ def followup_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None
 def ready_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None:
     if payload.get("status") != "ready":
         return None
-    from app.services.regulation_creation.pipeline import normalize_pipeline, round_gate
-
     interview = merge_agent_payload(state, payload)
     selected = selected_process_ids(interview)
     if selected:
@@ -1357,30 +1282,19 @@ def ready_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None:
     functions = [item for item in interview.get("functions") or [] if isinstance(item, dict)]
     position = _clean_str(interview.get("position"))
     owned = [item for item in functions if _role_status(item) != ROLE_FOREIGN]
-    selected = set(pipeline.get("selectedProcessIds") or [])
-    if selected:
-        owned = [item for item in owned if _clean_str(item.get("id")) in selected] or owned
     if not owned:
-        processes = [
-            item
-            for item in interview.get("processes") or []
-            if isinstance(item, dict) and _role_status(item) != ROLE_FOREIGN
-        ]
-        if selected:
-            processes = [item for item in processes if _clean_str(item.get("id")) in selected]
-        if not processes:
-            return ReadyBlocker(
-                message=(
-                    "Я пока не вижу полного списка функций пользователя. Приложите файл с обязанностями "
-                    "или опишите первую функцию, которую нужно включить в регламент."
-                ),
-                quick_answers=[
-                    "Приложу файл с обязанностями",
-                    "Опишу функции сообщением",
-                    "Начать с функций из моей должности",
-                ],
-                field="functions",
-            )
+        return ReadyBlocker(
+            message=(
+                "Я пока не вижу полного списка функций пользователя. Приложите файл с обязанностями "
+                "или опишите первую функцию, которую нужно включить в регламент."
+            ),
+            quick_answers=[
+                "Приложу файл с обязанностями",
+                "Опишу функции сообщением",
+                "Начать с функций из моей должности",
+            ],
+            field="functions",
+        )
     for func in owned:
         gaps = _open_gaps(func, position=position)
         if gaps:
@@ -1885,17 +1799,6 @@ def _attach_answer_to_current_question(state: dict[str, Any], message: str) -> N
     answer = _clean_str(message)
     if not current or not answer:
         return
-    field = _function_field(current.get("field"))
-    if field in {"tool", "periodicity", "triggerAction", "userAction"}:
-        func = _function_for_question(state, current.get("functionId") or current.get("processId"))
-        if func is not None:
-            func[field] = answer
-        _set_process_fact_value(
-            state,
-            process_id=current.get("processId") or current.get("functionId"),
-            field=field,
-            value=answer,
-        )
     current["answer"] = answer
     current["sufficiency"] = "pending"
     state["currentQuestion"] = current
@@ -2033,10 +1936,16 @@ def _prune_filled_unknowns(process: dict[str, Any]) -> list[dict[str, Any]]:
     kept: list[dict[str, Any]] = []
     for item in _normalize_unknowns(process.get("unknowns")):
         field = _progress_field_key(item.get("field"))
+        if field == "roleStatus" and _role_status_resolved(process):
+            continue
         if field in _PROGRESS_REQUIRED_FACTS and not _fact_open_in_known_facts(facts, field):
             continue
         kept.append(item)
     return kept
+
+
+def _role_status_resolved(process: dict[str, Any]) -> bool:
+    return _role_status(process) in {ROLE_BELONGS, ROLE_FOREIGN}
 
 
 def _answer_sufficiency_blocker(payload: dict[str, Any], state: Any) -> ReadyBlocker | None:
@@ -2044,8 +1953,6 @@ def _answer_sufficiency_blocker(payload: dict[str, Any], state: Any) -> ReadyBlo
     if not answer_sufficiency or answer_sufficiency.get("status") == "closed":
         return None
     interview = normalize_interview_state(state)
-    if _should_accept_periodicity_despite_partial(interview, answer_sufficiency):
-        return None
     field = _canonical_gap(
         answer_sufficiency.get("field")
         or (answer_sufficiency.get("missingFacts") or [""])[0]
@@ -2064,119 +1971,6 @@ def _answer_sufficiency_blocker(payload: dict[str, Any], state: Any) -> ReadyBlo
             field=_current_question_field(interview),
         )
     return None
-
-
-def _last_user_turn_message(interview: dict[str, Any]) -> str:
-    for turn in reversed(interview.get("turns") or []):
-        if not isinstance(turn, dict) or turn.get("role") != "user":
-            continue
-        return _clean_str(turn.get("message"))
-    return ""
-
-
-def _should_accept_periodicity_despite_partial(
-    interview: dict[str, Any],
-    answer_sufficiency: dict[str, Any],
-) -> bool:
-    """Guard against periodicity loops: concrete cadence answers must close the gap."""
-    field = _canonical_gap(
-        answer_sufficiency.get("field")
-        or (answer_sufficiency.get("missingFacts") or [""])[0]
-        or _current_question_field(interview)
-    )
-    if field != "periodicity":
-        return False
-    current = interview.get("currentQuestion") if isinstance(interview.get("currentQuestion"), dict) else {}
-    for candidate in (
-        _clean_str(current.get("answer")),
-        _last_user_turn_message(interview),
-    ):
-        if _is_concrete_periodicity_answer(candidate):
-            return True
-    process_id = _clean_str(
-        answer_sufficiency.get("processId")
-        or current.get("processId")
-        or current.get("functionId")
-    )
-    func = _function_for_question(interview, process_id)
-    if func is not None and _is_concrete_periodicity_answer(_clean_str(func.get("periodicity"))):
-        return True
-    process = _process_for_id(interview, process_id)
-    facts = process.get("knownFacts") if isinstance(process, dict) and isinstance(process.get("knownFacts"), dict) else {}
-    periodicity = _clean_str(facts.get("frequency") or process.get("periodicity"))
-    return _is_concrete_periodicity_answer(periodicity)
-
-
-def _apply_concrete_periodicity_fact(
-    interview: dict[str, Any],
-    answer_sufficiency: dict[str, Any],
-) -> None:
-    current = interview.get("currentQuestion") if isinstance(interview.get("currentQuestion"), dict) else {}
-    process_id = _clean_str(
-        answer_sufficiency.get("processId")
-        or current.get("processId")
-        or current.get("functionId")
-    )
-    value = ""
-    for candidate in (
-        _clean_str(current.get("answer")),
-        _last_user_turn_message(interview),
-    ):
-        if _is_concrete_periodicity_answer(candidate):
-            value = candidate
-            break
-    if not value:
-        func = _function_for_question(interview, process_id)
-        if func is not None:
-            value = _clean_str(func.get("periodicity"))
-        process = _process_for_id(interview, process_id)
-        facts = process.get("knownFacts") if isinstance(process, dict) and isinstance(process.get("knownFacts"), dict) else {}
-        value = _clean_str(facts.get("frequency") or process.get("periodicity"))
-    if not value:
-        return
-    func = _function_for_question(interview, process_id)
-    if func is not None:
-        func["periodicity"] = value
-        func["openGaps"] = _open_gaps(func, position=_clean_str(interview.get("position")))
-    process = _process_for_id(interview, process_id)
-    if isinstance(process, dict):
-        known = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
-        known["frequency"] = value
-        process["knownFacts"] = known
-
-
-def _is_concrete_periodicity_answer(value: str) -> bool:
-    text = _fold(_clean_str(value))
-    if not text:
-        return False
-    weak = {"по необходимости", "иногда", "по мере", "время от времени", "когда нужно"}
-    if any(item in text for item in weak):
-        return False
-    concrete_patterns = (
-        r"\bежеднев",
-        r"\bкажд(ыи|ый|ая|ое)\b",
-        r"\bраз в (день|недел|месяц|квартал|год)\b",
-        r"\bеженедел",
-        r"\bежемесяч",
-        r"\bежекварт",
-        r"\bежегод",
-        r"\bпо событи",
-        r"\bпри каждом\b",
-        r"\bкаждый рабочий день\b",
-    )
-    return any(re.search(pat, text) for pat in concrete_patterns)
-
-
-def _process_for_id(state: dict[str, Any], process_id: str) -> dict[str, Any]:
-    target = _clean_str(process_id)
-    if not target:
-        return {}
-    for item in state.get("processes") or []:
-        if not isinstance(item, dict):
-            continue
-        if _clean_str(item.get("id") or item.get("processId")) == target:
-            return item
-    return {}
 
 
 def _current_question_blocker(state: Any) -> ReadyBlocker | None:
@@ -2239,234 +2033,25 @@ def _function_field(field: Any) -> str:
     return _PROCESS_FIELD_TO_FUNCTION_FIELD.get(canonical, canonical)
 
 
-def _dedupe_question_text(state: dict[str, Any], *, message: str, function_id: str, field: str) -> str:
+def _question_was_asked(state: dict[str, Any], *, message: str, function_id: str, field: str) -> bool:
     text = _clean_str(message)
     if not text:
-        return text
+        return False
     current_field = _function_field(field)
     current_function = _clean_str(function_id)
-    current_signature = _question_signature(text)
-    duplicate_count = 0
     for item in reversed(state.get("askedQuestions") or []):
         if not isinstance(item, dict):
             continue
         same_field = _function_field(item.get("field")) == current_field
         same_function = not current_function or _clean_str(item.get("functionId") or item.get("processId")) == current_function
-        same_question = _question_signature(_clean_str(item.get("message"))) == current_signature
-        if same_field and same_function and same_question:
-            duplicate_count += 1
-    if duplicate_count <= 0:
-        return text
-    return _escalate_duplicate_question(text=text, field=current_field, duplicate_count=duplicate_count)
-
-
-def _escalate_duplicate_question(*, text: str, field: str, duplicate_count: int) -> str:
-    field_hint = _duplicate_question_hint(field, duplicate_count)
-    if duplicate_count == 1:
-        return f"{text}\n\n{field_hint}"
-    if duplicate_count == 2:
-        return f"Нужна конкретика, чтобы закрыть пробел.\n{field_hint}\n\n{text}"
-    return (
-        "Ответ пока слишком общий. Дайте исполнимое описание шага.\n"
-        f"{field_hint}\n"
-        "Можно в формате: [где/объект] -> [действие] -> [результат]."
-    )
-
-
-def _duplicate_question_hint(field: str, duplicate_count: int) -> str:
-    hint_map = {
-        "tool": [
-            "Укажите не только систему, а конкретный объект: файл/реестр/форма/карточка.",
-            "Напишите точный путь или название объекта работы (пример: папка, файл Excel, карточка в 1С).",
-        ],
-        "triggerAction": [
-            "Назовите наблюдаемое событие запуска: после чего именно начинается действие.",
-            "Укажите конкретный триггер с условием (кто/что/когда инициирует действие).",
-        ],
-        "periodicity": [
-            "Уточните периодичность: ежедневно/еженедельно/по событию + конкретное время или дедлайн.",
-            "Нужна измеримая частота выполнения (без формулировок «по необходимости»).",
-        ],
-        "userAction": [
-            "Опишите шаг руками: что открыть, что изменить, что сохранить/отправить.",
-            "Дайте последовательность 2-4 шага в системе или файле, чтобы действие можно было повторить.",
-        ],
-    }
-    variants = hint_map.get(field) or [
-        "Добавьте конкретику по шагу: объект работы, действие пользователя и результат.",
-        "Опишите этот шаг так, чтобы его можно было выполнить без догадок.",
-    ]
-    return variants[(max(1, duplicate_count) - 1) % len(variants)]
-
-
-def _question_signature(text: str) -> str:
-    folded = _fold(text)
-    if not folded:
-        return ""
-    # Убираем переменные части формулировки, чтобы ловить "тот же смысл" вопроса.
-    folded = re.sub(r"«[^»]+»", " ", folded)
-    folded = re.sub(r'"[^"]+"', " ", folded)
-    folded = re.sub(r"\bфункци[яи]\b\s+[a-zа-я0-9_-]+", " ", folded)
-    folded = re.sub(r"\s+", " ", folded)
-    return folded.strip()
-
-
-def _apply_explicit_unknown_answer(state: dict[str, Any], message: str) -> None:
-    current = state.get("currentQuestion") if isinstance(state.get("currentQuestion"), dict) else {}
-    if not current:
-        return
-    field = _function_field(current.get("field"))
-    if field not in {"tool", "periodicity", "triggerAction", "userAction"}:
-        return
-    answer = _fold(_clean_str(message))
-    if not answer:
-        return
-    unknown_markers = (
-        "нет данных",
-        "не знаю",
-        "неизвестно",
-        "не могу уточнить",
-        "уточню позже",
-        "пока нет",
-        "нет информации",
-    )
-    if not any(marker in answer for marker in unknown_markers):
-        return
-    func = _function_for_question(state, current.get("functionId") or current.get("processId"))
-    if func is None:
-        return
-    placeholder = _tbd_value_for_field(field)
-    func[field] = placeholder
-    _set_process_fact_tbd(state, process_id=current.get("processId") or current.get("functionId"), field=field, value=placeholder)
-    current["sufficiency"] = "closed"
-    current["answerSummary"] = "Зафиксировано как TBD по явному ответу пользователя."
-    current["missingFacts"] = []
-    current["reason"] = "Пользователь подтвердил отсутствие данных на текущем этапе."
-    question_id = _clean_str(current.get("id"))
-    for item in reversed(state.get("askedQuestions") or []):
-        if not isinstance(item, dict):
-            continue
-        if question_id and _clean_str(item.get("id")) != question_id:
-            continue
-        item["sufficiency"] = "closed"
-        item["answerSummary"] = current["answerSummary"]
-        item["missingFacts"] = []
-        item["reason"] = current["reason"]
-        break
-    state["currentQuestion"] = {}
-
-
-def _tbd_value_for_field(field: str) -> str:
-    labels = {
-        "tool": "<TBD: уточнить систему/объект работы>",
-        "periodicity": "<TBD: уточнить периодичность>",
-        "triggerAction": "<TBD: уточнить триггер запуска>",
-        "userAction": "<TBD: уточнить действие пользователя>",
-    }
-    return labels.get(field, "<TBD: уточнить>")
-
-
-def _set_process_fact_tbd(state: dict[str, Any], *, process_id: Any, field: str, value: str) -> None:
-    _set_process_fact_value(state, process_id=process_id, field=field, value=value)
-
-
-def _set_process_fact_value(state: dict[str, Any], *, process_id: Any, field: str, value: str) -> None:
-    target_id = _clean_str(process_id)
-    canonical_process_field = {
-        "tool": "workLocation",
-        "periodicity": "frequency",
-        "triggerAction": "trigger",
-        "userAction": "steps",
-    }.get(field, "")
-    if not canonical_process_field:
-        return
-    for process in state.get("processes") or []:
-        if not isinstance(process, dict):
-            continue
-        pid = _clean_str(process.get("id"))
-        if target_id and pid != target_id:
-            continue
-        facts = process.setdefault("knownFacts", {})
-        if canonical_process_field == "steps":
-            steps = _clean_list(facts.get("steps"))
-            if value not in steps:
-                steps.append(value)
-            facts["steps"] = steps
-        else:
-            facts[canonical_process_field] = value
-        break
+        if same_field and same_function and _fold(_clean_str(item.get("message"))) == _fold(text):
+            return True
+    return False
 
 
 def _prompt_state(state: dict[str, Any]) -> dict[str, Any]:
     out = deepcopy(state)
     out["attachments"] = _prompt_attachments(out.get("attachments") or [])
-    return out
-
-
-def _prompt_inventory_for_stage(
-    state: dict[str, Any],
-    *,
-    pipeline: dict[str, Any],
-    for_document: bool,
-) -> dict[str, Any]:
-    if for_document:
-        return _prompt_state(state)
-    stage = str(pipeline.get("stage") or "")
-    phase = str(pipeline.get("interviewPhase") or stage)
-    if stage != "interview":
-        return _prompt_state(state)
-    selected = {
-        _clean_str(item)
-        for item in (pipeline.get("selectedProcessIds") or [])
-        if _clean_str(item)
-    }
-    processes = [item for item in (state.get("processes") or []) if isinstance(item, dict)]
-    if selected:
-        processes = [item for item in processes if _clean_str(item.get("id")) in selected]
-    out = {
-        "version": state.get("version"),
-        "position": state.get("position"),
-        "pipeline": pipeline,
-        "attachments": _prompt_attachments(state.get("attachments") or []),
-        "turns": (state.get("turns") or [])[-6:],
-        "answers": (state.get("answers") or [])[-20:],
-        "askedQuestions": (state.get("askedQuestions") or [])[-20:],
-        "currentQuestion": state.get("currentQuestion") or {},
-    }
-    if phase == "collect":
-        from app.services.regulation_creation.dual_workflow import build_regulation_gap_report, dual_workflow_enabled
-
-        out["processes"] = [
-            {
-                "id": item.get("id"),
-                "title": item.get("title"),
-                "actor": item.get("actor"),
-                "roleStatus": item.get("roleStatus"),
-                "knownFacts": item.get("knownFacts") or {},
-                "unknowns": item.get("unknowns") or [],
-            }
-            for item in processes
-        ]
-        out["functions"] = []
-        if dual_workflow_enabled(state):
-            out["regulationGapReport"] = build_regulation_gap_report(state)
-            out["materialReview"] = state.get("materialReview") or list(
-                (state.get("processCompleteness") or {}).values()
-            )
-            out["researchQueue"] = (state.get("researchQueue") or [])[-10:]
-        return out
-    out["processes"] = processes
-    out["functions"] = [
-        item
-        for item in (state.get("functions") or [])
-        if isinstance(item, dict)
-        and (not selected or _clean_str(item.get("id") or item.get("processId")) in selected)
-    ]
-    from app.services.regulation_creation.dual_workflow import build_regulation_gap_report, dual_workflow_enabled
-
-    if dual_workflow_enabled(state):
-        out["regulationGapReport"] = build_regulation_gap_report(state)
-        out["researchQueue"] = (state.get("researchQueue") or [])[-10:]
     return out
 
 
@@ -2498,11 +2083,14 @@ def _clean_source_refs(value: Any) -> list[dict[str, Any]]:
             continue
         file_name = _clean_str(ref.get("file"))
         quote = _clean_str(ref.get("quote"))
-        if not file_name and not quote:
+        fragment_id = _clean_str(ref.get("fragmentId"))
+        if not file_name and not quote and not fragment_id:
             continue
         item = dict(ref)
         item["file"] = file_name
         item["quote"] = quote
+        if fragment_id:
+            item["fragmentId"] = fragment_id
         out.append(item)
     return out
 
@@ -2531,110 +2119,315 @@ def _prompt_attachments(attachments: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
-def document_from_interview(state: Any, title: str = "") -> dict[str, Any]:
-    sto_sections = (
-        "Назначение и область применения",
-        "Нормативные ссылки",
-        "Термины и определения",
-        "Сокращения",
-        "Ответственность",
-        "Организация работы",
-        "Ресурсы",
-        "Документирование и архивирование",
-        "Приложения",
-    )
-
+def source_docx_path(state: Any) -> str:
     interview = normalize_interview_state(state)
-    heading = _clean_str(title) or "Регламент"
+    fallback = ""
+    for item in interview.get("attachments") or []:
+        if not isinstance(item, dict):
+            continue
+        path = _clean_str(item.get("source_path"))
+        if not path.lower().endswith(".docx"):
+            continue
+        if Path(path).is_file():
+            return path
+        if not fallback:
+            fallback = path
+    return fallback
+
+
+def source_fact_inserts(state: Any) -> list[dict[str, Any]]:
+    interview = normalize_interview_state(state)
+    inserts: list[dict[str, Any]] = []
+    for process in interview.get("processes") or []:
+        if not isinstance(process, dict):
+            continue
+        facts = _process_fact_paragraphs(process)
+        if not facts:
+            continue
+        inserts.append(
+            {
+                "title": _clean_str(process.get("title")),
+                "paragraphs": facts,
+            }
+        )
+    return inserts
+
+
+def match_source_heading(headings: list[str], process_title: str) -> str:
+    tokens = [
+        token
+        for token in re.split(r"\W+", _fold(process_title))
+        if len(token) >= 4
+    ]
+    if not tokens:
+        return ""
+    best = ""
+    best_score = 0
+    for heading in headings:
+        score = sum(1 for token in tokens if token in _fold(heading))
+        if score > best_score:
+            best_score = score
+            best = heading
+    return best if best_score >= 1 else ""
+
+
+def source_attachment_text(state: Any) -> str:
+    interview = normalize_interview_state(state)
+    best = ""
+    for item in interview.get("attachments") or []:
+        if not isinstance(item, dict):
+            continue
+        text = _clean_str(item.get("text"))
+        if len(text) > len(best):
+            best = text
+    return best
+
+
+def rename_tz_to_regulation(text: str) -> str:
+    out = str(text or "")
+    replacements = (
+        (r"ТЕХНИЧЕСКОЕ ЗАДАНИЕ", "РЕГЛАМЕНТ"),
+        (r"Техническое задание", "Регламент"),
+        (r"технического задания", "регламента"),
+        (r"техническому заданию", "регламенту"),
+        (r"техническим заданием", "регламентом"),
+        (r"техническое задание", "регламент"),
+        (r"\bТЗ\b", "Регламент"),
+        (r"\bтз\b", "регламент"),
+    )
+    for pattern, repl in replacements:
+        out = re.sub(pattern, repl, out)
+    return out
+
+
+def regulation_title_from_source(text: str, fallback: str = "") -> str:
+    lines = [_clean_str(line) for line in str(text or "").splitlines()]
+    picked: list[str] = []
+    for line in lines:
+        if not line:
+            continue
+        if _SOURCE_HEADING_RE.match(line):
+            break
+        if re.fullmatch(r"\d{4}", line):
+            continue
+        picked.append(line)
+        if len(picked) >= 3:
+            break
+    title = re.sub(r"\s+", " ", rename_tz_to_regulation(" ".join(picked))).strip()
+    return title or _clean_str(fallback) or "Регламент"
+
+
+def document_from_source_text(text: str, *, title: str = "") -> dict[str, Any]:
+    renamed = rename_tz_to_regulation(text)
+    return {
+        "title": _clean_str(title) or regulation_title_from_source(renamed),
+        "sections": _sections_from_source_text(renamed),
+    }
+
+
+def document_from_interview(state: Any, title: str = "") -> dict[str, Any]:
+    interview = normalize_interview_state(state)
+    source = source_attachment_text(interview)
     processes = [
         item
         for item in interview.get("processes") or []
         if isinstance(item, dict) and _role_status(item) != ROLE_FOREIGN
     ]
-    functions = [
-        item
-        for item in interview.get("functions") or []
-        if isinstance(item, dict) and _role_status(item) != ROLE_FOREIGN
-    ]
-    actors = []
-    for item in processes + functions:
-        actor = _clean_str(item.get("actor"))
-        if actor and actor not in actors:
-            actors.append(actor)
-    purpose = [
-        f"1.1 Настоящий Регламент устанавливает порядок выполнения процесса «{heading}».",
-    ]
-    if actors:
-        purpose.append(
-            "1.2 Исполнители процесса: " + ", ".join(actors) + "."
+    if source:
+        document = document_from_source_text(
+            source,
+            title=rename_tz_to_regulation(_clean_str(title)) if _clean_str(title) else "",
         )
-    work_sections: list[dict[str, Any]] = []
+        if processes:
+            document["sections"] = _merge_process_facts_into_source(
+                document.get("sections") or [],
+                processes,
+            )
+        document["title"] = rename_tz_to_regulation(str(document.get("title") or "Регламент"))
+        return document
+    sections: list[dict[str, Any]] = []
+    index = 0
     if processes:
-        for index, process in enumerate(processes, start=1):
-            work_sections.append(_document_section_from_process(process, index=index))
-    elif functions:
-        for index, func in enumerate(functions, start=1):
-            work_sections.append(_document_section_from_function(func, index=index))
-    resources: list[str] = []
-    for process in processes:
-        facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
-        location = _clean_str(facts.get("workLocation"))
-        if location:
-            resources.append(location)
-        for obj in _clean_list(facts.get("objects") or []):
-            resources.append(obj)
-    for func in functions:
-        tool = _clean_str(func.get("tool"))
-        if tool:
-            resources.append(tool)
-    seen: set[str] = set()
-    unique_resources: list[str] = []
-    for item in resources:
-        if item in seen:
+        for process in processes:
+            index += 1
+            sections.append(_document_section_from_process(process, index=index))
+        return {
+            "title": rename_tz_to_regulation(_clean_str(title) or "Регламент"),
+            "sections": sections,
+        }
+    for func in interview.get("functions") or []:
+        if not isinstance(func, dict):
             continue
-        seen.add(item)
-        unique_resources.append(item)
-    sections = [
-        {"number": "1", "title": sto_sections[0], "paragraphs": purpose, "items": []},
-        {"number": "2", "title": sto_sections[1], "paragraphs": [], "items": ["СТО-34-003 «Управление документированной информацией»"]},
-        {"number": "3", "title": sto_sections[2], "paragraphs": ["В настоящем Регламенте применяются термины, необходимые для исполнения процесса."], "items": []},
-        {"number": "4", "title": sto_sections[3], "paragraphs": [], "items": []},
-        {
-            "number": "5",
-            "title": sto_sections[4],
-            "paragraphs": [f"Ответственность за исполнение несут: {', '.join(actors)}."] if actors else [],
-            "items": [],
-        },
-        {"number": "6", "title": sto_sections[5], "paragraphs": [], "items": [], "sections": work_sections},
-        {"number": "7", "title": sto_sections[6], "paragraphs": [], "items": unique_resources},
-        {"number": "8", "title": sto_sections[7], "paragraphs": [], "items": []},
-        {"number": "9", "title": sto_sections[8], "paragraphs": ["Приложений нет"], "items": []},
-    ]
-    return {"title": heading, "sections": sections}
-
-
-def _document_section_from_function(func: dict[str, Any], *, index: int) -> dict[str, Any]:
-    heading = _clean_str(func.get("title")) or f"Функция {index}"
-    paragraphs: list[str] = []
-    items: list[str] = []
-    actor = _clean_str(func.get("actor"))
-    if actor:
-        paragraphs.append(f"Исполнитель: {actor}")
-    for key, label in (
-        ("tool", "Инструмент"),
-        ("periodicity", "Периодичность"),
-        ("triggerAction", "Триггер"),
-        ("userAction", "Действие пользователя"),
-    ):
-        value = _clean_str(func.get(key))
-        if value:
-            items.append(f"{label}: {value}")
+        if _role_status(func) == ROLE_FOREIGN:
+            continue
+        index += 1
+        heading = _clean_str(func.get("title")) or f"Функция {index}"
+        paragraphs: list[str] = []
+        items: list[str] = []
+        actor = _clean_str(func.get("actor"))
+        if actor:
+            paragraphs.append(f"Исполнитель: {actor}")
+        for key, label in (
+            ("tool", "Инструмент"),
+            ("periodicity", "Периодичность"),
+            ("triggerAction", "Триггер"),
+            ("userAction", "Действие пользователя"),
+        ):
+            value = _clean_str(func.get(key))
+            if value:
+                items.append(f"{label}: {value}")
+        for ref in func.get("sourceRefs") or []:
+            if not isinstance(ref, dict):
+                continue
+            quote = _clean_str(ref.get("quote"))
+            source = _clean_str(ref.get("file"))
+            if quote:
+                items.append(f"Источник{f' ({source})' if source else ''}: {quote}")
+        if heading or paragraphs or items:
+            sections.append(
+                {
+                    "number": str(index),
+                    "title": heading,
+                    "paragraphs": paragraphs,
+                    "items": items,
+                }
+            )
     return {
-        "number": f"6.{index}",
-        "title": heading,
-        "paragraphs": paragraphs,
-        "items": items,
+        "title": rename_tz_to_regulation(_clean_str(title) or "Регламент"),
+        "sections": sections,
     }
+
+
+def _sections_from_source_text(text: str) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+    preamble: list[str] = []
+    current: dict[str, Any] | None = None
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        match = _SOURCE_HEADING_RE.match(line)
+        if match:
+            if current is not None:
+                sections.append(current)
+            current = {
+                "number": match.group(1),
+                "title": rename_tz_to_regulation(match.group(2).strip()),
+                "paragraphs": [],
+                "items": [],
+            }
+            continue
+        cleaned = rename_tz_to_regulation(line)
+        if current is None:
+            preamble.append(cleaned)
+            continue
+        current["paragraphs"].append(cleaned)
+    if current is not None:
+        sections.append(current)
+    intro = [
+        line
+        for line in preamble
+        if line.upper() not in {"РЕГЛАМЕНТ", "ТЕХНИЧЕСКОЕ ЗАДАНИЕ"}
+        and not re.fullmatch(r"\d{4}", line)
+    ]
+    if sections and intro:
+        first = sections[0]
+        first["paragraphs"] = [*intro, *(first.get("paragraphs") or [])]
+    elif not sections and preamble:
+        sections.append(
+            {
+                "number": "1",
+                "title": regulation_title_from_source(text),
+                "paragraphs": preamble,
+                "items": [],
+            }
+        )
+    return sections
+
+
+def _process_fact_paragraphs(process: dict[str, Any]) -> list[str]:
+    facts = process.get("knownFacts") if isinstance(process.get("knownFacts"), dict) else {}
+    out: list[str] = []
+    seen: set[str] = set()
+    for key in (
+        "steps",
+        "inputs",
+        "outputs",
+        "deadlines",
+        "workLocation",
+        "frequency",
+        "trigger",
+    ):
+        value = facts.get(key)
+        chunks = value if isinstance(value, list) else [value]
+        for item in chunks:
+            text = _clean_str(item)
+            if len(text.split()) < 6:
+                continue
+            folded = _fold(text)
+            if not folded or folded in seen:
+                continue
+            seen.add(folded)
+            out.append(text)
+            if len(out) >= 12:
+                return out
+    return out
+
+
+def _best_source_section(
+    sections: list[dict[str, Any]],
+    process: dict[str, Any],
+) -> dict[str, Any] | None:
+    tokens = [
+        token
+        for token in re.split(r"\W+", _fold(_clean_str(process.get("title"))))
+        if len(token) >= 4
+    ]
+    if not tokens:
+        return None
+    best: dict[str, Any] | None = None
+    best_score = 0
+    for section in sections:
+        heading = _fold(_clean_str(section.get("title")))
+        preview = _fold(" ".join(_clean_str(item) for item in (section.get("paragraphs") or [])[:4]))
+        blob = f"{heading} {preview}"
+        score = sum(1 for token in tokens if token in blob)
+        if score > best_score:
+            best_score = score
+            best = section
+    return best if best_score >= 1 else None
+
+
+def _merge_process_facts_into_source(
+    sections: list[dict[str, Any]],
+    processes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out = [dict(item) for item in sections]
+    for process in processes:
+        facts = _process_fact_paragraphs(process)
+        if not facts:
+            continue
+        target = _best_source_section(out, process)
+        if target is None:
+            out.append(
+                {
+                    "number": "",
+                    "title": _clean_str(process.get("title")) or "Уточнение по опросу",
+                    "paragraphs": facts,
+                    "items": [],
+                }
+            )
+            continue
+        existing = " ".join(_fold(str(item)) for item in (target.get("paragraphs") or []))
+        extra: list[str] = []
+        for para in facts:
+            folded = _fold(para)
+            if folded and folded not in existing:
+                extra.append(para)
+                existing = f"{existing} {folded}"
+        if extra:
+            target["paragraphs"] = [*(target.get("paragraphs") or []), *extra]
+    return out
 
 
 def _document_section_from_process(process: dict[str, Any], *, index: int) -> dict[str, Any]:
@@ -2838,6 +2631,7 @@ def _apply_role_answer(state: dict[str, Any], message: str) -> None:
     for target in targets:
         target["roleStatus"] = decided
         target["roleConfirmedByUser"] = True
+        target["unknowns"] = _prune_filled_unknowns(target)
     if decided == ROLE_FOREIGN and target_id:
         selected = selected_process_ids(state)
         if target_id in selected:

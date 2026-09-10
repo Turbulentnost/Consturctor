@@ -76,16 +76,31 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
     (
         "onec.odata_catalog",
         (
-            "Список доступных сущностей 1С OData: документы, справочники/таблицы и регистры. "
-            "Сначала вызови этот инструмент, затем onec.odata_get с entity из ответа. "
+            "Каталог сущностей 1С OData. Сначала локальный снимок метаданных ERP "
+            "(имена и структура полей/ТЧ), без живой 1С. "
+            "Затем onec.odata_get с entity из ответа. "
+            "Живая 1С только если сущности нет в снимке или refresh=true. "
             "Исполняется на сервере."
         ),
         _schema(
             {
                 "kind": _prop("string", "Фильтр: document / catalog / register / other"),
-                "search": _prop("string", "Подстрока в имени сущности (Document_, Catalog_, *Register_)"),
+                "search": _prop(
+                    "string",
+                    "Имя или смысл сущности: поручение, служебная записка, Document_ТД_Протокол",
+                ),
+                "entity": _prop("string", "Точное или почти точное имя EntitySet, вернёт и структуру"),
+                "include_structure": _prop(
+                    "boolean",
+                    "Вернуть поля и табличные части. По умолчанию да, если задан search/entity",
+                    default=True,
+                ),
                 "limit": _prop("integer", "Максимум сущностей в списке", default=400),
-                "refresh": _prop("boolean", "Сбросить кэш и заново прочитать service document", default=False),
+                "refresh": _prop(
+                    "boolean",
+                    "Пропустить снимок и прочитать живую 1С ($metadata)",
+                    default=False,
+                ),
             }
         ),
     ),
@@ -155,6 +170,7 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         "onec.erp_tasks_current",
         (
             "Текущие (открытые) задачи пользователя из базы 1С erp_pm. "
+            "Не журнал АСТ00 и не поиск «Проверить поручение». "
             "ФИО берётся из сессии Constructor; fio/user_id не обязательны. Сервер."
         ),
         _schema(
@@ -195,6 +211,88 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 "include_done": _prop("boolean", "Включать выполненные задачи за период", default=True),
                 "limit_per_person": _prop("integer", "Максимум задач на одного человека", default=30),
                 "include_self": _prop("boolean", "Включить руководителя (себя) отдельной строкой", default=True),
+            }
+        ),
+    ),
+    (
+        "onec.erp_assignments",
+        (
+            "Журнал поручений 1С ERP (Document_ТД_Поручения, серия АСТ00). "
+            "Проверка поручений = action=list, задачи «Проверить поручение» в 1С нет. "
+            "Заказчик = реквизит Руководитель. action=list/get/files/download/tasks/protocols. "
+            "Содержимое файла: onec.download_artifact с file_id из action=files. "
+            "Номер кириллический АСТ, не латиница ACT. Сервер."
+        ),
+        _schema(
+            {
+                "action": _prop("string", "list | get | files | download | tasks | protocols", default="list"),
+                "customer": _prop("string", "ФИО заказчика (Руководитель)"),
+                "number": _prop("string", "Номер АСТ00-..."),
+                "ref_key": _prop("string", "GUID документа"),
+                "query": _prop("string", "Подстрока в ОЧем или задаче"),
+                "date_from": _prop("string", "YYYY-MM-DD"),
+                "date_to": _prop("string", "YYYY-MM-DD"),
+                "only_open": _prop("boolean", "Только Создано/ВРаботе"),
+                "include_last_day": _prop("boolean", "Открытые плюс все за сегодня", default=True),
+                "include_files": _prop("boolean", "Сразу вернуть файлы", default=False),
+                "file_id": _prop("string", "GUID вложения для action=download"),
+                "limit": _prop("integer", "Максимум записей", default=40),
+                "performer": _prop("string", "ФИО исполнителя для action=tasks"),
+            }
+        ),
+    ),
+    (
+        "onec.download_artifact",
+        (
+            "Скачать приложенный файл 1С по GUID вкладки «Файлы». "
+            "file_id из onec.erp_assignments action=files. "
+            "OData Base64, том на диске, hs/dtw/files или UNC. Сервер, только чтение."
+        ),
+        _schema(
+            {
+                "file_id": _prop("string", "GUID вложения 1С (Ref_Key файла)"),
+                "file_ref_key": _prop("string", "То же, что file_id"),
+                "entity": _prop(
+                    "string",
+                    "Необязательно: Catalog_ТД_ПорученияПрисоединенныеФайлы или Catalog_ТД_ПротоколПрисоединенныеФайлы",
+                ),
+            },
+            ["file_id"],
+        ),
+    ),
+    (
+        "onec.erp_assignments_write",
+        (
+            "Запись в журнал поручений 1С. Требует подтверждения человека. "
+            "create / update / comment_task."
+        ),
+        _schema(
+            {
+                "action": _prop("string", "create | update | comment_task", default="update"),
+                "number": _prop("string", "Номер АСТ00-..."),
+                "ref_key": _prop("string", "GUID документа"),
+                "topic": _prop("string", "ОЧем"),
+                "basis": _prop("string", "Основание"),
+                "customer": _prop("string", "ФИО заказчика"),
+                "status": _prop("string", "Создано | ВРаботе | Принято"),
+                "due": _prop("string", "Срок YYYY-MM-DD"),
+                "lines": _prop("array", "Строки text/due/executor/priority"),
+                "comment": _prop("string", "Комментарий возврата"),
+                "task_ref_key": _prop("string", "GUID задачи исполнителя"),
+            }
+        ),
+    ),
+    (
+        "onec.erp_write_probe",
+        (
+            "Проба записи конструктора: тестовый объект CONSTRUCTOR_PROBE "
+            "нужной сущности 1С, проверка изменения, удаление. Не для боевых карточек."
+        ),
+        _schema(
+            {
+                "customer": _prop("string", "ФИО для теста. Пусто — сессия"),
+                "workflow_id": _prop("string", "id черновика"),
+                "intents": _prop("array", "Какие сущности и поля проверить"),
             }
         ),
     ),
@@ -298,6 +396,20 @@ LOCAL_BACKEND_TOOL_NAMES: frozenset[str] = frozenset(
 SERVER_TOOL_NAMES: frozenset[str] = frozenset(
     name for name, _desc, _schema_ in _SERVER_TOOL_DEFS if name not in LOCAL_BACKEND_TOOL_NAMES
 )
+SERVER_TOOL_TIMEOUTS: dict[str, int] = {
+    "onec.download_artifact": 300,
+}
+
+
+def canonical_server_tool_name(name: str) -> str:
+    from app.tools.tool_names import resolve_tool_name
+
+    return resolve_tool_name(name, SERVER_TOOL_NAMES)
+
+
+def server_tool_timeout_seconds(name: str) -> int:
+    official = canonical_server_tool_name(name)
+    return int(SERVER_TOOL_TIMEOUTS.get(official) or 0)
 
 
 def list_server_tools() -> list[dict[str, Any]]:
@@ -305,12 +417,14 @@ def list_server_tools() -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
     for name, description, schema in _SERVER_TOOL_DEFS:
         execution = "desktop" if name in LOCAL_BACKEND_TOOL_NAMES else "server"
-        tools.append(
-            {
-                "name": name,
-                "description": description,
-                "inputSchema": schema,
-                "execution": execution,
-            }
-        )
+        item: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "inputSchema": schema,
+            "execution": execution,
+        }
+        timeout = SERVER_TOOL_TIMEOUTS.get(name)
+        if timeout:
+            item["timeoutSeconds"] = timeout
+        tools.append(item)
     return tools

@@ -1,11 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
-import { ClarifyCard } from '../components/agentfeed/ClarifyCard'
-import type { PendingQuestion } from '../components/agentfeed/types'
-import type { AgentDraft, AgentReadinessResult, ReadinessQuestion } from '../api/types'
-
-const SYSTEM_ANSWER =
-  'Вся необходимая информация уже есть в корпоративных системах (1С ERP, Action Tracker, Outlook). Дополнительные файлы не требуются.'
+import { AgentFeed, useAgentSession, type AgentResult, type FeedItem, type PendingQuestion } from '../components/agentfeed'
+import type { AgentDraft, AgentSuggestion } from '../api/types'
 
 interface ReadinessPageProps {
   draft: AgentDraft
@@ -14,32 +10,81 @@ interface ReadinessPageProps {
   onComplete: (draft: AgentDraft) => void
 }
 
-function pendingQuestion(question: ReadinessQuestion): PendingQuestion {
-  return {
-    requestId: question.questionId,
-    question: question.question,
-    options: question.options?.length ? question.options : [SYSTEM_ANSWER],
-    needsFile: false,
-    accept: []
-  }
+function foldText(text: string): string {
+  return text.toLowerCase().replace(/ё/g, 'е')
 }
 
-async function acceptPendingChanges(
-  regulationId: string,
-  readinessRunId: string,
-  readiness: AgentReadinessResult
-): Promise<AgentReadinessResult> {
-  let current = readiness
-  for (const change of current.changes) {
-    if (change.status !== 'pending') continue
-    current = await api.decideReadinessChange(
-      regulationId,
-      readinessRunId,
-      change.changeId,
-      'accepted'
-    )
+function matchSuggestion(text: string, suggestions: AgentSuggestion[]): AgentSuggestion | null {
+  const blob = foldText(text)
+  let best: AgentSuggestion | null = null
+  for (const item of suggestions) {
+    const title = item.title.trim()
+    if (title.length < 3 || !blob.includes(foldText(title))) continue
+    if (!best || title.length > best.title.length) best = item
   }
-  return current
+  if (best) return best
+  for (const item of suggestions) {
+    const id = item.functionId.trim()
+    if (id.length >= 3 && blob.includes(foldText(id))) return item
+  }
+  return null
+}
+
+function stripAgentPrefix(question: string, title: string): string {
+  const trimmed = question.trim()
+  if (!title) return trimmed
+  const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return trimmed.replace(new RegExp(`^по агенту\\s*[«"']${escaped}[»"']\\s*:\\s*`, 'i'), '')
+}
+
+function labelQuestion(question: string, title: string): string {
+  const trimmed = question.trim()
+  if (!title || foldText(trimmed).includes(foldText(title))) return trimmed
+  const rest = trimmed ? trimmed[0].toLowerCase() + trimmed.slice(1) : trimmed
+  return `По агенту «${title}»: ${rest}`
+}
+
+function currentReadinessBlock(
+  question: PendingQuestion | null,
+  items: FeedItem[],
+  suggestions: AgentSuggestion[]
+): AgentSuggestion | null {
+  if (!suggestions.length) return null
+  const named = question?.blockTitle?.trim()
+  if (named) {
+    const exact = suggestions.find((item) => foldText(item.title) === foldText(named))
+    if (exact) return exact
+  }
+  if (question?.question) {
+    const fromQuestion = matchSuggestion(question.question, suggestions)
+    if (fromQuestion) return fromQuestion
+  }
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    const text = item.kind === 'message' ? item.text : ''
+    if (!text) continue
+    const found = matchSuggestion(text, suggestions)
+    if (found) return found
+  }
+  return question ? suggestions[0] : null
+}
+
+function enrichReadinessQuestion(
+  question: PendingQuestion | null,
+  suggestions: AgentSuggestion[],
+  current: AgentSuggestion | null
+): PendingQuestion | null {
+  if (!question || !current) return question
+  const index = suggestions.findIndex(
+    (item) => item.functionId === current.functionId || item.title === current.title
+  )
+  const position = index >= 0 ? index + 1 : 1
+  return {
+    ...question,
+    blockTitle: current.title,
+    context: `Агент ${position} из ${suggestions.length}`,
+    question: stripAgentPrefix(labelQuestion(question.question, current.title), current.title)
+  }
 }
 
 export function ReadinessPage({
@@ -48,139 +93,111 @@ export function ReadinessPage({
   onBack,
   onComplete
 }: ReadinessPageProps): React.JSX.Element {
-  const bootedRef = useRef('')
-  const [draftState, setDraftState] = useState(draft)
-  const [readiness, setReadiness] = useState<AgentReadinessResult | null>(draft.readiness)
-  const [loading, setLoading] = useState(true)
-  const [working, setWorking] = useState(false)
-  const [error, setError] = useState('')
+  const startedRef = useRef('')
+  const watchdogRef = useRef(0)
+  const [uploading, setUploading] = useState(false)
+  const [suggestions, setSuggestions] = useState(draft.agentSuggestions)
+  const [progress, setProgress] = useState(draft.progress ?? 0)
 
-  const blockCount = draftState.agentSuggestions.length
-  const currentQuestion = readiness?.questions.find((item) => !item.answered) ?? null
-  const pendingChanges = readiness?.changes.filter((item) => item.status === 'pending') ?? []
-  const progress = draftState.progress ?? readiness?.score ?? 0
-
-  const finishIfReady = useCallback(
-    async (nextDraft: AgentDraft, nextReadiness: AgentReadinessResult | null): Promise<boolean> => {
-      if (nextDraft.status === 'ready') {
-        onComplete(nextDraft)
-        return true
-      }
-      if (
-        nextReadiness?.status === 'ready' &&
-        !nextReadiness.questions.some((item) => !item.answered) &&
-        !nextReadiness.changes.some((item) => item.status === 'pending')
-      ) {
-        const finalized = await api.updateAgentDraftStatus(nextDraft.draftId, 'ready')
-        onComplete(finalized)
-        return true
-      }
-      return false
+  const handleResult = useCallback(
+    async (result: AgentResult) => {
+      if (result.kind !== 'readiness') return
+      const updated = await api.getAgentDraft(draft.draftId)
+      onComplete(updated)
     },
-    [onComplete]
+    [draft.draftId, onComplete]
   )
 
-  const bootstrap = useCallback(async (): Promise<void> => {
-    setError('')
-    setLoading(true)
-    try {
-      let next = await api.ensureDraftReadiness(draft.draftId)
-      let nextReadiness = next.readiness
-      if (nextReadiness && next.regulationId && next.readinessRunId) {
-        nextReadiness = await acceptPendingChanges(
-          next.regulationId,
-          next.readinessRunId,
-          nextReadiness
-        )
-        next = { ...next, readiness: nextReadiness }
-      }
-      setDraftState(next)
-      setReadiness(nextReadiness)
-      await finishIfReady(next, nextReadiness)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось загрузить уточнение регламента')
-    } finally {
-      setLoading(false)
-    }
-  }, [draft.draftId, finishIfReady])
+  const session = useAgentSession({ onResult: handleResult })
+  const { start } = session
 
   useEffect(() => {
-    if (!draft.draftId || bootedRef.current === draft.draftId) return
-    bootedRef.current = draft.draftId
-    void bootstrap()
-  }, [draft.draftId, bootstrap])
-
-  const applyAnswer = async (questionId: string, answer: string): Promise<void> => {
-    if (!readiness?.readinessRunId || !draftState.regulationId) return
-    setWorking(true)
-    setError('')
-    try {
-      let next = await api.answerReadinessQuestion(
-        draftState.regulationId,
-        readiness.readinessRunId,
-        questionId,
-        answer
-      )
-      next = await acceptPendingChanges(
-        draftState.regulationId,
-        readiness.readinessRunId,
-        next
-      )
-      setReadiness(next)
-      const refreshed = await api.getAgentDraft(draft.draftId)
-      setDraftState(refreshed)
-      if (next.status === 'ready') {
-        const finalized = await api.updateAgentDraftStatus(draft.draftId, 'ready')
-        onComplete(finalized)
+    let cancelled = false
+    if (!draft.draftId) return
+    void api.getAgentDraft(draft.draftId).then((fresh) => {
+      if (!cancelled) {
+        setSuggestions(fresh.agentSuggestions)
+        setProgress(fresh.progress ?? 0)
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось сохранить ответ')
-    } finally {
-      setWorking(false)
+    }).catch(() => {})
+    return () => {
+      cancelled = true
     }
+  }, [draft.draftId])
+
+  useEffect(() => {
+    if (!draft.draftId || startedRef.current === draft.draftId) return
+    startedRef.current = draft.draftId
+    start({ kind: 'readiness', draftId: draft.draftId })
+  }, [draft.draftId, start])
+
+  const restartAgent = (): void => {
+    startedRef.current = draft.draftId
+    void api.getAgentDraft(draft.draftId).then((fresh) => {
+      setSuggestions(fresh.agentSuggestions)
+      setProgress(fresh.progress ?? 0)
+    }).catch(() => {})
+    start({ kind: 'readiness', draftId: draft.draftId })
   }
 
-  const autoFillAll = async (): Promise<void> => {
-    if (!readiness?.readinessRunId || !draftState.regulationId) return
-    setWorking(true)
-    setError('')
-    try {
-      let next = readiness
-      for (const question of next.questions.filter((item) => !item.answered)) {
-        next = await api.answerReadinessQuestion(
-          draftState.regulationId,
-          readiness.readinessRunId,
-          question.questionId,
-          SYSTEM_ANSWER
-        )
+  useEffect(() => {
+    if (!session.running || session.pendingQuestion) return
+    const starting = /запускается/i.test(session.status)
+    const deadSidecar = session.items.every(
+      (item) => item.kind === 'system' && item.text.includes('завершился')
+    )
+    const stuck = starting && (session.items.length === 0 || deadSidecar)
+    if (!stuck || watchdogRef.current >= 2) return
+    const timer = window.setTimeout(() => {
+      watchdogRef.current += 1
+      restartAgent()
+    }, 20000)
+    return () => window.clearTimeout(timer)
+  }, [session.running, session.pendingQuestion, session.items, session.status, draft.draftId])
+
+  const answer = async (requestId: string, value: string, filePaths: string[] = []): Promise<void> => {
+    let finalValue = value
+    if (filePaths.length > 0) {
+      setUploading(true)
+      try {
+        const files = await api.uploadAgentDraftFiles(draft.draftId, filePaths)
+        const names = files.map((file) => file.filename).filter(Boolean)
+        if (names.length) {
+          finalValue = `${value.trim()}\nФайлы сохранены в черновике: ${names.join(', ')}`.trim()
+        }
+      } catch (err) {
+        session.pushSystem(err instanceof Error ? err.message : 'Не удалось прикрепить файл')
+        return
+      } finally {
+        setUploading(false)
       }
-      next = await acceptPendingChanges(
-        draftState.regulationId,
-        readiness.readinessRunId,
-        next
-      )
-      setReadiness(next)
-      const finalized = await api.updateAgentDraftStatus(draft.draftId, 'ready')
-      onComplete(finalized)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось автоматически закрыть пробелы')
-    } finally {
-      setWorking(false)
     }
+    session.answer(requestId, finalValue)
+    const refresh = (): void => {
+      void api.getAgentDraft(draft.draftId).then((fresh) => {
+        setSuggestions(fresh.agentSuggestions)
+        setProgress(fresh.progress ?? 0)
+      }).catch(() => {})
+    }
+    window.setTimeout(refresh, 800)
+    window.setTimeout(refresh, 2000)
   }
 
-  const locked = Boolean(busy || working || loading)
-  const statusText = loading
-    ? 'Анализирую функциональные блоки…'
-    : working
-      ? 'Сохраняю ответ…'
-      : currentQuestion
-        ? 'Нужен ваш ответ'
-        : pendingChanges.length
-          ? 'Подтверждаю изменения…'
-          : readiness?.status === 'ready'
-            ? 'Готово'
-            : ''
+  const currentBlock = useMemo(
+    () => currentReadinessBlock(session.pendingQuestion, session.items, suggestions),
+    [session.pendingQuestion, session.items, suggestions]
+  )
+  const pendingQuestion = useMemo(
+    () => enrichReadinessQuestion(session.pendingQuestion, suggestions, currentBlock),
+    [session.pendingQuestion, suggestions, currentBlock]
+  )
+  const currentIndex = currentBlock
+    ? suggestions.findIndex(
+        (item) => item.functionId === currentBlock.functionId || item.title === currentBlock.title
+      ) + 1
+    : 0
+  const totalBlocks = suggestions.length
+  const locked = Boolean(busy || uploading)
 
   return (
     <div className="agent-studio">
@@ -198,11 +215,11 @@ export function ReadinessPage({
 
       <div className="review-stats">
         <div className="stat">
-          <div className="stat-value">{blockCount}</div>
-          <div className="stat-label">блоков</div>
+          <div className="stat-value">{currentIndex ? `${currentIndex}/${totalBlocks}` : totalBlocks}</div>
+          <div className="stat-label">{currentIndex ? 'текущий агент' : 'блоков'}</div>
         </div>
         <div className="stat">
-          <div className="stat-value">{currentQuestion ? 1 : 0}</div>
+          <div className="stat-value">{pendingQuestion ? 1 : 0}</div>
           <div className="stat-label">нужен ответ</div>
         </div>
         <div className="stat">
@@ -213,60 +230,58 @@ export function ReadinessPage({
 
       <div className="agent-studio-body">
         <div className="agent-studio-main">
-          {loading && (
-            <div className="chat-hint">
-              <div className="spinner" style={{ marginBottom: 12 }} />
-              Анализирую регламент и формирую вопросы…
-            </div>
-          )}
-          {!loading && currentQuestion && (
-            <ClarifyCard
-              question={pendingQuestion(currentQuestion)}
-              allowFiles
-              onAnswer={(requestId, value) => void applyAnswer(requestId, value)}
-            />
-          )}
-          {!loading && !currentQuestion && !error && readiness && (
-            <div className="chat-hint">
-              {readiness.status === 'ready'
-                ? 'Все пробелы закрыты — переходим к списку агентов…'
-                : 'Вопросов пока нет. Можно продолжить автоматически.'}
-            </div>
-          )}
-          {error && (
-            <div className="status-line" style={{ color: 'var(--error)', marginTop: 8 }}>
-              {error}
-            </div>
-          )}
-          {statusText && !loading && (
-            <div className="status-line" style={{ marginTop: 8 }}>
-              {statusText}
-            </div>
-          )}
+          <AgentFeed
+            items={session.items}
+            status={uploading ? 'Прикрепляю файл к черновику…' : session.status}
+            running={session.running || locked}
+            pendingQuestion={locked ? null : pendingQuestion}
+            pendingHitl={session.pendingHitl}
+            emptyHint="Локальный Cursor SDK анализирует функциональные блоки и задаст вопросы по пробелам логики."
+            allowQuestionFiles
+            onAnswer={(requestId, value, filePaths) => void answer(requestId, value, filePaths)}
+            onHitl={session.respondHitl}
+            onSkip={session.skip}
+          />
         </div>
         <div className="agent-studio-side">
           <div className="agent-side-card">
             <h4>Уточнение регламента</h4>
+            {currentBlock ? (
+              <p className="readiness-current-agent">
+                Сейчас уточняем агента: <strong>{currentBlock.title}</strong>
+              </p>
+            ) : null}
             <p>
-              Backend анализирует функциональные блоки и задаёт вопросы по пробелам логики. На вопрос
-              можно выбрать вариант или написать свой ответ.
+              Локальный Cursor SDK проходит функциональные блоки по очереди. На вопрос можно выбрать вариант,
+              написать свой ответ или прикрепить файл.
             </p>
-            <button
-              className="btn-ghost"
-              style={{ marginTop: 10 }}
-              disabled={locked || !readiness}
-              onClick={() => void autoFillAll()}
-            >
-              Всё уже в системе — закрыть пробелы
-            </button>
-            <button
-              className="btn-ghost"
-              style={{ marginTop: 10 }}
-              disabled={locked}
-              onClick={() => void bootstrap()}
-            >
-              Обновить
-            </button>
+            {suggestions.length > 0 ? (
+              <ol className="readiness-block-list">
+                {suggestions.map((item, index) => {
+                  const active =
+                    currentBlock != null &&
+                    (item.functionId === currentBlock.functionId || item.title === currentBlock.title)
+                  return (
+                    <li
+                      key={item.functionId || item.agentId || `${item.title}-${index}`}
+                      className={active ? 'readiness-block-item on' : 'readiness-block-item'}
+                    >
+                      <span className="step-index">{index + 1}.</span>
+                      <span>{item.title}</span>
+                    </li>
+                  )
+                })}
+              </ol>
+            ) : null}
+            {session.running ? (
+              <button className="btn-ghost" style={{ marginTop: 10 }} onClick={session.cancel}>
+                Остановить
+              </button>
+            ) : (
+              <button className="btn-ghost" style={{ marginTop: 10 }} onClick={restartAgent}>
+                Запустить агента
+              </button>
+            )}
           </div>
         </div>
       </div>

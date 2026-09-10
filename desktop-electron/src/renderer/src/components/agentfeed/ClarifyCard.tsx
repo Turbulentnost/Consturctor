@@ -1,11 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
-import { FILE_QUESTION_SKIP_ANSWER, FILE_QUESTION_WAIT_SECONDS } from './questionArgs'
+import { fileDialogFilters, fileInputAccept } from './questionArgs'
 import type { PendingQuestion } from './types'
 
 interface ClarifyCardProps {
   question: PendingQuestion
   allowFiles?: boolean
   onAnswer: (requestId: string, value: string, filePaths?: string[]) => void
+}
+
+function pathsFromFileList(list: FileList | File[] | null | undefined): string[] {
+  if (!list) return []
+  const files = Array.from(list)
+  return files
+    .map((file) => {
+      try {
+        return window.api.getPathForFile?.(file) || ''
+      } catch {
+        return ''
+      }
+    })
+    .filter(Boolean)
 }
 
 export function ClarifyCard({
@@ -17,16 +31,10 @@ export function ClarifyCard({
   const [useCustom, setUseCustom] = useState(question.options.length === 0)
   const [custom, setCustom] = useState('')
   const [filePaths, setFilePaths] = useState<string[]>([])
-  const [held, setHeld] = useState(false)
-  const needsFile = Boolean(question.needsFile)
-  const autoWaitSeconds = needsFile
-    ? question.autoContinueSeconds || FILE_QUESTION_WAIT_SECONDS
-    : question.autoContinueSeconds || 0
-  const [left, setLeft] = useState(autoWaitSeconds)
+  const [fileError, setFileError] = useState('')
   const cardRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const submittedRef = useRef(false)
-  const hold = (): void => setHeld(true)
+  const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (useCustom) {
@@ -36,80 +44,99 @@ export function ClarifyCard({
     cardRef.current?.focus()
   }, [useCustom, question.requestId])
 
-  const accept = question.accept?.length ? question.accept : []
+  const needsFile = Boolean(question.needsFile)
   const canAttach = allowFiles || needsFile
-  const skipText =
-    question.autoContinueAnswer?.trim() ||
-    (needsFile ? FILE_QUESTION_SKIP_ANSWER : 'Файла нет. Ищи данные в 1С и папках, не спрашивай файл снова.')
-  const canAuto = autoWaitSeconds > 0
-  const hasAnswer = needsFile
-    ? filePaths.length > 0 || Boolean(useCustom ? custom.trim() : selected) || canAuto
-    : Boolean(useCustom ? custom.trim() || filePaths.length : selected)
+  const hasAnswer = Boolean(useCustom ? custom.trim() || filePaths.length : selected) || filePaths.length > 0
+  const canSubmit = hasAnswer || needsFile
 
-  const submit = (forced?: string): void => {
-    if (submittedRef.current) return
-    const text = (forced || (useCustom ? custom.trim() : selected)).trim()
+  const addPaths = (paths: string[]): void => {
+    if (!paths.length) return
+    setFileError('')
+    setFilePaths((prev) => Array.from(new Set([...prev, ...paths])))
+  }
+
+  const submit = (): void => {
+    const text = (useCustom ? custom.trim() : selected).trim()
     const names = filePaths.map((path) => path.split(/[\\/]/).pop()).filter(Boolean)
-    const value = [text, names.length ? `Прикрепленные файлы: ${names.join(', ')}` : '']
+    const skipNote = needsFile && !filePaths.length && !text ? 'Файл не приложен' : ''
+    const value = [text, names.length ? `Прикрепленные файлы: ${names.join(', ')}` : '', skipNote]
       .filter(Boolean)
       .join('\n')
-    if (!value && filePaths.length === 0) {
-      if (!canAuto) return
-      submittedRef.current = true
-      onAnswer(question.requestId, skipText, [])
-      return
-    }
-    submittedRef.current = true
+    if (!value && filePaths.length === 0) return
     onAnswer(question.requestId, value, filePaths)
   }
 
-  useEffect(() => {
-    submittedRef.current = false
-    setHeld(false)
-    setLeft(autoWaitSeconds)
-  }, [question.requestId, question.autoContinueSeconds, question.needsFile, autoWaitSeconds])
-
-  useEffect(() => {
-    if (!canAuto || held || filePaths.length > 0) return
-    if (left <= 0) {
-      submit(skipText)
-      return
-    }
-    const timer = window.setTimeout(() => setLeft((value) => value - 1), 1000)
-    return () => window.clearTimeout(timer)
-  }, [canAuto, held, filePaths.length, left, skipText])
+  const pickViaDialog = async (): Promise<boolean> => {
+    const paths = await window.api.openFile({
+      title: needsFile ? 'Прикрепить файл для этого запуска' : 'Прикрепить файл к ответу',
+      properties: ['openFile', 'multiSelections'],
+      filters: fileDialogFilters(question.accept)
+    })
+    if (!paths.length) return false
+    addPaths(paths)
+    return true
+  }
 
   const pickFiles = async (): Promise<void> => {
-    const paths = await window.api.openFile({
-      title: needsFile ? 'Загрузить файл для этого запуска' : 'Прикрепить файл к ответу',
-      properties: ['openFile', 'multiSelections'],
-      filters:
-        canAttach && accept.length
-          ? [
-              {
-                name: accept.join(', '),
-                extensions: accept
-              },
-              { name: 'Все файлы', extensions: ['*'] }
-            ]
-          : canAttach
-            ? [{ name: 'Все файлы', extensions: ['*'] }]
-            : undefined
-    })
-    if (!paths.length) return
-    hold()
-    setFilePaths((prev) => Array.from(new Set([...prev, ...paths])))
+    setFileError('')
+    try {
+      await pickViaDialog()
+    } catch {
+      if (fileRef.current) {
+        fileRef.current.click()
+        return
+      }
+      setFileError('Не удалось открыть выбор файла. Попробуйте ещё раз.')
+    }
+  }
+
+  const onHtmlFiles = (event: React.ChangeEvent<HTMLInputElement>): void => {
+    const files = event.target.files
+    const paths = pathsFromFileList(files)
+    event.target.value = ''
+    if (paths.length) {
+      addPaths(paths)
+      return
+    }
+    if (!files?.length) return
+    void pickViaDialog()
+      .then((opened) => {
+        if (!opened) setFileError('Не удалось прочитать файл. Выберите его ещё раз.')
+      })
+      .catch(() => {
+        setFileError('Не удалось прочитать файл. Выберите его ещё раз.')
+      })
+  }
+
+  const addClipboardImage = async (event?: React.ClipboardEvent): Promise<boolean> => {
+    const fromList = pathsFromFileList(event?.clipboardData?.files)
+    if (fromList.length) {
+      event?.preventDefault()
+      addPaths(fromList)
+      return true
+    }
+    try {
+      const path = (await window.api.saveClipboardImage?.()) || ''
+      if (!path) return false
+      event?.preventDefault()
+      addPaths([path])
+      return true
+    } catch {
+      return false
+    }
   }
 
   const onCardKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== 'Enter' || event.shiftKey) return
     if (event.target instanceof HTMLTextAreaElement) return
-    if (!hasAnswer) return
+    if (!canSubmit) return
     event.preventDefault()
     submit()
   }
 
   const title = question.question.trim() || 'Агенту нужно уточнение'
+  const kicker = question.context?.trim() || 'Агенту нужно уточнение'
+  const blockTitle = question.blockTitle?.trim() || ''
 
   return (
     <div
@@ -117,8 +144,32 @@ export function ClarifyCard({
       ref={cardRef}
       tabIndex={0}
       onKeyDown={onCardKeyDown}
+      onDragOver={
+        canAttach
+          ? (event) => {
+              event.preventDefault()
+            }
+          : undefined
+      }
+      onDrop={
+        canAttach
+          ? (event) => {
+              event.preventDefault()
+              const paths = pathsFromFileList(event.dataTransfer.files)
+              if (paths.length) addPaths(paths)
+            }
+          : undefined
+      }
+      onPaste={
+        canAttach
+          ? (event) => {
+              void addClipboardImage(event)
+            }
+          : undefined
+      }
     >
-      <div className="clarify-kicker">Агенту нужно уточнение</div>
+      <div className="clarify-kicker">{kicker}</div>
+      {blockTitle ? <div className="clarify-block">{blockTitle}</div> : null}
       <div className="clarify-question">{title}</div>
 
       {question.options.length > 0 && (
@@ -169,35 +220,55 @@ export function ClarifyCard({
             setCustom(e.target.value)
             setUseCustom(true)
             setSelected('')
-            hold()
           }}
+          onPaste={
+            canAttach
+              ? (event) => {
+                  void addClipboardImage(event)
+                }
+              : undefined
+          }
         />
       </div>
 
       {canAttach && (
         <div className="clarify-files">
-          <button type="button" className="btn-ghost clarify-attach" onClick={() => void pickFiles()}>
+          <input
+            ref={fileRef}
+            className="clarify-file-input"
+            type="file"
+            multiple
+            accept={fileInputAccept(question.accept)}
+            onChange={onHtmlFiles}
+          />
+          <button type="button" className="clarify-attach" onClick={() => void pickFiles()}>
             {needsFile ? 'Прикрепить файл для этого запуска' : 'Прикрепить файл'}
           </button>
           {needsFile && (
             <span className="clarify-file-hint">
-              Временный файл: только для этого запуска, в базу знаний не попадает.
-              {canAuto
-                ? ` Если не прикрепить, через ${left} сек агент сам возьмёт данные из 1С и папок.`
-                : ' Если файла нет — напишите это в «Свой вариант».'}
+              Необязательно. Word, Excel, PDF, изображения. Сканы и фото читаются через OCR.
+              Можно вставить скриншот (Ctrl+V) или нажать Далее без файла.
             </span>
           )}
+          {fileError ? <span className="clarify-file-error">{fileError}</span> : null}
           {filePaths.map((path) => (
-            <span key={path} className="clarify-file-name">
+            <button
+              key={path}
+              type="button"
+              className="clarify-file-name"
+              title="Убрать файл"
+              onClick={() => setFilePaths((prev) => prev.filter((item) => item !== path))}
+            >
               {path.split(/[\\/]/).pop() || path}
-            </span>
+              <span aria-hidden="true"> ×</span>
+            </button>
           ))}
         </div>
       )}
 
       <div className="clarify-actions">
-        <button className="clarify-submit" onClick={() => submit()} disabled={!hasAnswer}>
-          {canAuto && !held && filePaths.length === 0 && left > 0 ? `Далее (${left})` : 'Далее'}
+        <button className="clarify-submit" onClick={submit} disabled={!canSubmit}>
+          Далее
         </button>
       </div>
     </div>

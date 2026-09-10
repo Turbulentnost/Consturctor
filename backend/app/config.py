@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -17,11 +17,12 @@ class Settings(BaseSettings):
 
     erp_sql_server: str = "ii1"
     erp_sql_database: str = "erp_pm"
-    erp_sql_driver: str = "SQL Server"
+    erp_sql_driver: str = "ODBC Driver 18 for SQL Server"
     erp_sql_encrypt: str = "no"
     erp_sql_trusted_connection: bool = True
-    erp_sql_user: str = Field(default="", validation_alias=AliasChoices("ERP_SQL_USER", "SQL_USER"))
-    erp_sql_password: str = Field(default="", validation_alias=AliasChoices("ERP_SQL_PASSWORD", "SQL_PASSWORD"))
+    erp_sql_user: str = ""
+    erp_sql_password: str = ""
+    erp_sql_timeout: int = 45
 
     jwt_secret: str = "change-me"
     jwt_algorithm: str = "HS256"
@@ -98,6 +99,8 @@ class Settings(BaseSettings):
     onec_odata_entity_allowlist: str = ""
     # Before privileged OData, check the signed-in employee's BSP rights in erp_pm.
     onec_enforce_user_access: bool = True
+    odata_local_catalog_path: Path = BACKEND_ROOT / "app" / "data" / "odata_document_structures.json"
+    onec_artifact_storage_dir: Path = BACKEND_ROOT / "storage" / "onec_artifacts"
 
 
 settings = Settings()
@@ -105,3 +108,4 @@ settings.chat_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.onec_artifact_storage_dir.mkdir(parents=True, exist_ok=True)

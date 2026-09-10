@@ -30,6 +30,8 @@ def test_demo_prompt_with_draft_does_not_stop_for_clarify() -> None:
     assert "не задавай clarify" in low
     assert "после clarify не вызывай" not in low
     assert "черновик инструкции" in low
+    assert "jwt" in low
+    assert "erp_tasks_current" in low
 
 
 def test_demo_prompt_requires_content_questions() -> None:

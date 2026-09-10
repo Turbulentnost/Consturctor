@@ -18,7 +18,15 @@ from app.schemas.regulation import (
     RoleProfile,
     QuestionChatSendRequest,
 )
-from app.services.agents import create_or_get_draft, delete_draft, ensure_draft_readiness, list_drafts
+from app.schemas.regulation import AgentDraftSdkQaItem, AgentDraftSdkReadinessRequest
+from app.services.agents import (
+    create_or_get_draft,
+    delete_draft,
+    ensure_draft_readiness,
+    finish_sdk_readiness,
+    get_draft,
+    list_drafts,
+)
 from app.services.readiness.chat import create_or_get_question_chat, get_latest_question_chat, send_question_chat_message
 
 
@@ -202,6 +210,50 @@ def test_latest_question_chat_restores_saved_history(monkeypatch) -> None:
 
     assert latest.questionId == question_id
     assert [message.role for message in latest.messages][-2:] == ["user", "assistant"]
+
+
+def test_sdk_readiness_progress_keeps_answers_until_complete() -> None:
+    db = _memory_session()
+    _seed_role_run(db, user_id="user-1", regulation_id="reg-1", run_id="run-1")
+    draft = create_or_get_draft(db, user_id="user-1", regulation_id="reg-1", role_match_run_id="run-1")
+
+    mid = finish_sdk_readiness(
+        db,
+        user_id="user-1",
+        draft_id=draft.draftId,
+        request=AgentDraftSdkReadinessRequest(
+            complete=False,
+            qa=[
+                AgentDraftSdkQaItem(
+                    question="По агенту «ИИ-агент: оформляет техническую документацию»: когда запускать?",
+                    answer="Каждый рабочий день",
+                    blockTitle="ИИ-агент: оформляет техническую документацию",
+                )
+            ],
+        ),
+    )
+    assert mid.status == "interview"
+    assert mid.progress == 99
+    assert mid.sdkReadiness is not None
+    assert mid.sdkReadiness.complete is False
+    assert mid.sdkReadiness.qa[0].answer == "Каждый рабочий день"
+
+    again = get_draft(db, user_id="user-1", draft_id=draft.draftId)
+    assert again.sdkReadiness is not None
+    assert again.sdkReadiness.qa[0].question.startswith("По агенту")
+
+    done = finish_sdk_readiness(
+        db,
+        user_id="user-1",
+        draft_id=draft.draftId,
+        request=AgentDraftSdkReadinessRequest(answer='{"status":"ready"}', complete=True),
+    )
+    assert done.status == "ready"
+    assert done.progress == 100
+    assert done.sdkReadiness is not None
+    assert done.sdkReadiness.complete is True
+    assert done.sdkReadiness.qa[0].answer == "Каждый рабочий день"
+    assert done.sdkReadiness.answer == '{"status":"ready"}'
 
 
 def _memory_session():
