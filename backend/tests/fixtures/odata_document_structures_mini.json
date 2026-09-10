@@ -1,0 +1,37 @@
+{
+  "source": "test-snapshot",
+  "document_count": 2,
+  "entitytype_count": 4,
+  "documents": {
+    "Document_ТД_СлужебнаяЗаписка": {
+      "entity": "Document_ТД_СлужебнаяЗаписка",
+      "fields": [
+        {"name": "Ref_Key", "type": "Guid", "nullable": false},
+        {"name": "Number", "type": "String", "nullable": true},
+        {"name": "Тема", "type": "String", "nullable": true}
+      ],
+      "navigations": [
+        {"name": "Автор", "type": "Document_ТД_СлужебнаяЗаписка_Автор"}
+      ],
+      "tabular": {
+        "Участники": {
+          "entity": "Document_ТД_СлужебнаяЗаписка_Участники",
+          "fields": [
+            {"name": "Ref_Key", "type": "Guid", "nullable": false},
+            {"name": "Сотрудник_Key", "type": "Guid", "nullable": true}
+          ],
+          "navigations": []
+        }
+      }
+    },
+    "Document_ТД_Поручения": {
+      "entity": "Document_ТД_Поручения",
+      "fields": [
+        {"name": "Number", "type": "String", "nullable": true},
+        {"name": "Руководитель_Key", "type": "Guid", "nullable": true}
+      ],
+      "navigations": [],
+      "tabular": {}
+    }
+  }
+}

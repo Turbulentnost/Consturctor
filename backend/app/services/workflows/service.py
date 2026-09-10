@@ -446,13 +446,102 @@ def _emit_config_errors(validation: Any, on_event: WorkflowEventCallback | None)
 
 def _demo_notes(row: Workflow) -> str:
     notes = str(row.notes or "").strip()
+    extra_parts: list[str] = []
     hint = str((row.local_run or {}).get("retry_hint") or "").strip()
-    if not hint:
+    if hint:
+        extra_parts.append(f"Уточнение после прогона:\n{hint}")
+    recipe_text = prompts.write_recipe_prompt_text((row.local_run or {}).get("write_recipe"))
+    if recipe_text:
+        extra_parts.append(recipe_text)
+    extra = "\n\n".join(extra_parts)
+    if not extra:
         return notes
-    extra = f"Уточнение после прогона:\n{hint}"
     if extra in notes:
         return notes
     return f"{notes}\n\n{extra}".strip() if notes else extra
+
+
+def _ensure_write_recipe(
+    db: Session,
+    *,
+    row: Workflow,
+    draft: dict[str, Any],
+    user_id: str,
+    on_event: WorkflowEventCallback | None = None,
+) -> dict[str, Any]:
+    """Standing rule: any 1C write is proven on a throwaway object, then deleted."""
+    from app.services.app_users import get_app_user
+    from app.services.onec_tools import invoke_onec
+    from app.services.onec_write_probe import recipe_covers_intents
+    from app.services.workflow_tool_routing import collect_write_intents
+
+    local = dict(row.local_run or {})
+    existing = local.get("write_recipe") if isinstance(local.get("write_recipe"), dict) else {}
+    blob = " ".join(
+        [
+            row.title or "",
+            row.notes or "",
+            row.document_text or "",
+            str(draft.get("goal") or ""),
+            str(draft.get("result") or ""),
+        ]
+    )
+    intents = collect_write_intents(draft, blob=blob)
+    keys = [intent.key for intent in intents]
+    if recipe_covers_intents(existing, keys):
+        return existing
+    if not intents:
+        return existing
+    try:
+        user = get_app_user(user_id)
+        fio = str(getattr(user, "fio", "") or "")
+    except Exception:  # noqa: BLE001
+        fio = ""
+    _emit(
+        on_event,
+        "progress",
+        "проверяю запись в 1С: создаю тестовые объекты, затем удаляю",
+    )
+    try:
+        recipe = invoke_onec(
+            "onec.erp_write_probe",
+            {
+                "workflow_id": row.id,
+                "customer": fio,
+                "intents": [intent.to_dict() for intent in intents],
+            },
+            actor_user_id=user_id,
+            actor_fio=fio,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Write probe failed id=%s: %s", row.id, exc)
+        recipe = {
+            "ok": False,
+            "cleaned": True,
+            "error": str(exc),
+            "summary": f"Write probe failed: {exc}",
+            "recipe": {},
+            "intent_keys": keys,
+        }
+    local["write_recipe"] = recipe
+    row.local_run = local
+    db.commit()
+    db.refresh(row)
+    if recipe.get("ok"):
+        _emit(
+            on_event,
+            "decision",
+            "Запись в 1С проверена на тестовых объектах и удалена. "
+            "Боевые карточки конструктор больше не трогает.",
+        )
+    else:
+        _emit(
+            on_event,
+            "decision",
+            "Тест записи в 1С не прошёл: "
+            + str(recipe.get("error") or recipe.get("summary") or "нет механизма"),
+        )
+    return recipe if isinstance(recipe, dict) else {}
 
 
 def _blocked_before_demo_report(validation: Any, *, message: str = "") -> dict[str, Any]:
@@ -921,6 +1010,15 @@ def _finish_design(
     row.phase = "designed"
     db.commit()
     db.refresh(row)
+    if not (_needs_draft_repair(validation) and not allow_incomplete):
+        _ensure_write_recipe(
+            db,
+            row=row,
+            draft=draft,
+            user_id=str(row.user_id or ""),
+            on_event=on_event,
+        )
+        db.refresh(row)
     if _needs_draft_repair(validation) and not allow_incomplete:
         _emit(
             on_event,
@@ -930,6 +1028,21 @@ def _finish_design(
     else:
         steps = len(draft.get("steps") or [])
         _emit(on_event, "decision", f"Черновик инструкции готов: {steps} шагов. Запускаю пробный прогон.")
+    return _to_schema(row)
+
+
+def prepare_demo_writes(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    on_event: WorkflowEventCallback | None = None,
+) -> WorkflowSchema:
+    """Desktop/cloud demo: prove 1C writes before the trial run."""
+    row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    draft = draft_of(row)
+    _ensure_write_recipe(db, row=row, draft=draft, user_id=user_id, on_event=on_event)
+    db.refresh(row)
     return _to_schema(row)
 
 
@@ -976,6 +1089,9 @@ def demo_workflow(
         db.commit()
         db.refresh(row)
         return _to_schema(row)
+
+    _ensure_write_recipe(db, row=row, draft=draft, user_id=user_id, on_event=on_event)
+    draft = draft_of(row)
 
     from app.services.workflows.cursor_tools import with_tools_if_desktop
 
@@ -2115,6 +2231,11 @@ def _playbook_from_draft(row: Workflow, draft: dict[str, Any]) -> dict[str, Any]
         "expected_result": str(draft.get("result") or ""),
         "triggers": [],
     }
+    recipe = (row.local_run or {}).get("write_recipe") if isinstance(row.local_run, dict) else {}
+    if isinstance(recipe, dict) and recipe.get("ok"):
+        playbook["write_recipe"] = recipe.get("recipe") or recipe
+        if isinstance(recipe.get("recipes"), list) and recipe["recipes"]:
+            playbook["write_recipes"] = recipe["recipes"]
     # Carry over per-run inputs and the run trigger so they survive into the
     # published playbook (the schedule draft and run-start prompts rely on them).
     when_to_run = str(draft.get("when_to_run") or "").strip()
@@ -2281,6 +2402,39 @@ def _tests_status_from_text(text: str, *, live_tools_ok: bool = False) -> str:
     return "unknown"
 
 
+def _onec_domain_tools(blob: str) -> list[str]:
+    """1C tools for the domain. Session-user tasks only when the spec asks for them."""
+    from app.services.workflow_tool_routing import wants_user_1c_tasks
+
+    tools = [
+        "onec.meeting_service_notes",
+        "onec.search_documents",
+        "onec.get_document_card",
+        "onec.odata_catalog",
+        "onec.odata_get",
+        "onec.sql_query",
+        "onec.erp_assignments",
+        "onec.erp_assignments_write",
+        "onec.download_artifact",
+        "users.subordinates",
+        "turboproject",
+    ]
+    if wants_user_1c_tasks(blob):
+        tools.extend(
+            [
+                "onec.erp_tasks_current",
+                "onec.erp_tasks_period",
+                "onec.erp_subordinate_tasks",
+                "onec.docflow_tasks",
+            ]
+        )
+    if any(tip in blob for tip in ("excel", "xlsx", "action tracker")):
+        tools.extend(
+            ["excel.list_files", "excel.read_workbook", "excel.edit_workbook"]
+        )
+    return tools
+
+
 def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
     """Pick MCP tools from plan domain — never force web_search for Outlook/meetings."""
     answered = " ".join(
@@ -2301,23 +2455,10 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
     kind = str(getattr(plan.runtime, "kind", "") or "").casefold()
 
     if kind == "onec" or (
-        any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm", "задач"))
+        any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm"))
         and not any(tip in blob for tip in ("outlook", "календар", "совещан"))
     ):
-        return [
-            "onec.meeting_service_notes",
-            "onec.search_documents",
-            "onec.get_document_card",
-            "onec.odata_catalog",
-            "onec.odata_get",
-            "onec.sql_query",
-            "onec.erp_tasks_current",
-            "onec.erp_tasks_period",
-            "onec.erp_subordinate_tasks",
-            "onec.docflow_tasks",
-            "users.subordinates",
-            "turboproject",
-        ]
+        return _onec_domain_tools(blob)
 
     if kind == "turboproject" or any(
         tip in blob
@@ -2350,23 +2491,8 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
         tools: list[str] = []
         if any(tip in blob for tip in ("почт", "письм", "imap", "email", "mail")):
             tools.extend(["imap.list_unread", "imap.search"])
-        if any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm", "задач")):
-            tools.extend(
-                [
-                    "onec.meeting_service_notes",
-                    "onec.search_documents",
-                    "onec.get_document_card",
-                    "onec.odata_catalog",
-                    "onec.odata_get",
-                    "onec.sql_query",
-                    "onec.erp_tasks_current",
-                    "onec.erp_tasks_period",
-                    "onec.erp_subordinate_tasks",
-                    "onec.docflow_tasks",
-                    "users.subordinates",
-                    "turboproject",
-                ]
-            )
+        if any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm")):
+            tools.extend(_onec_domain_tools(blob))
         return tools
 
     if kind == "site_search_excel" or (

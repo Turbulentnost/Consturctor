@@ -622,7 +622,7 @@ export function App(): React.JSX.Element {
   async function openAgentRun(
     workflowId: string,
     runId: string,
-    autoStart = false
+    _autoStart = false
   ): Promise<void> {
     let title = ''
     try {
@@ -656,7 +656,7 @@ export function App(): React.JSX.Element {
       setView({ kind: 'history', workflowId, title, runId })
       return
     }
-    setView({ kind: 'agentrun', workflowId, title, autoStart })
+    setView({ kind: 'agentrun', workflowId, title, autoStart: false })
   }
 
   async function continueDraft(draftId: string): Promise<void> {

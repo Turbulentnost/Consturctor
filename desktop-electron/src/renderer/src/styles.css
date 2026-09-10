@@ -4337,6 +4337,42 @@ input {
 .feed-result-calendar {
   margin-bottom: 12px;
 }
+.feed-result-files {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.feed-result-files-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #3d6b5d;
+}
+.feed-result-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 1px solid #bfe6d7;
+  background: #fff;
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+.feed-result-file:hover {
+  background: #e7f6ef;
+}
+.feed-result-file-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: #06483d;
+}
+.feed-result-file-action {
+  font-size: 12px;
+  color: #0a8670;
+}
 .feed-tool {
   border: 1px solid var(--card-border);
   border-radius: 12px;

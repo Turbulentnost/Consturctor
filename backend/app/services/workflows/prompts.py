@@ -248,8 +248,13 @@ _DEMO_CLARIFY_HINT = (
 
 _DEMO_EXECUTE_DRAFT_HINT = (
     "Черновик уже согласован. Не задавай CLARIFY и не останавливайся: "
-    "какие записи брать — решает search/list шага и текущий пользователь, "
-    "а не вопрос человеку. Если подходящих нет — следуй on_empty шага. "
+    "какие записи брать — фильтры шага (заказчик, номер, даты, статус), "
+    "а не автоматически задачи пользователя из JWT. "
+    "onec.erp_tasks_current вызывай только если шаг про задачи исполнителя "
+    "текущего пользователя в erp_pm. "
+    "Запись в 1С конструктор уже мог проверить через onec.erp_write_probe — "
+    "не плоди тестовые объекты CONSTRUCTOR_PROBE и не трогай боевые карточки. "
+    "Если подходящих записей нет — следуй on_empty шага. "
     "Каждый обязательный шаг закрывается вызовом constructor_tool. "
     "Если ставишь встречи: сначала outlook.read_calendar широким периодом "
     "(people[] — календари участников), "
@@ -317,6 +322,47 @@ def _clip_demo_materials(*, document_text: str, notes: str = "") -> str:
     if extra and extra not in clipped:
         clipped = (extra + "\n\n" + clipped).strip() if clipped else extra
     return clipped or "(нет текста — опирайся на название и доступные Constructor tools)"
+
+
+def write_recipe_prompt_text(recipe: Any) -> str:
+    data = recipe if isinstance(recipe, dict) else {}
+    if not data:
+        return ""
+    if data.get("ok"):
+        recipes = data.get("recipes") if isinstance(data.get("recipes"), list) else []
+        if not recipes:
+            recipes = [data.get("recipe") if isinstance(data.get("recipe"), dict) else data]
+        number = str(data.get("test_number") or "")
+        lines = [
+            "ЗАПИСЬ В 1С УЖЕ ПРОВЕРЕНА КОНСТРУКТОРОМ. "
+            "Для каждого изменения создан тестовый объект CONSTRUCTOR_PROBE"
+            + (f" {number}" if number else "")
+            + ", найден рабочий вызов, тест удалён."
+        ]
+        for mech in recipes:
+            if not isinstance(mech, dict):
+                continue
+            tool = str(mech.get("tool") or "")
+            entity = str(mech.get("entity") or "")
+            update = mech.get("update") if isinstance(mech.get("update"), dict) else {}
+            status = (
+                mech.get("update_status")
+                if isinstance(mech.get("update_status"), dict)
+                else {}
+            )
+            field = str(update.get("field") or status.get("field") or "")
+            bit = " ".join(part for part in (entity, tool, field) if part)
+            if bit:
+                lines.append(f"Рабочий вызов: {bit}.")
+        lines.append(
+            "Не создавай ещё тестовые объекты и не пиши в боевые карточки без подтверждения."
+        )
+        return " ".join(lines)
+    error = str(data.get("error") or data.get("summary") or "нет рабочего вызова")
+    return (
+        "Проба записи в 1С не удалась: "
+        f"{error}. Не меняй боевые объекты вслепую."
+    )
 
 
 def build_demo_prompt(
@@ -402,7 +448,7 @@ _DRAFT_SCHEMA = (
     '      "title": "коротко что делаем",\n'
     '      "required": true,\n'
     '      "system": "onec|turboproject|outlook|imap|web|desktop|constructor",\n'
-    '      "entity": "сущность из контракта: task, document, project, mail_message, user…",\n'
+    '      "entity": "сущность из контракта: document, assignment, service_note, project, mail_message, task, user…",\n'
     '      "operation": "search|read|list|create|update|export|notify|execute",\n'
     '      "required_params": ["какие параметры нужны для вызова"],\n'
     '      "provides": ["какие поля отдаём следующим шагам"],\n'
@@ -487,8 +533,21 @@ def build_playbook_draft_prompt(
         f"{clarify}"
         "Технические детали (поля, протоколы, имена инструментов, логины) человеку "
         "не задаются — это твоя зона ответственности.\n"
+        "entity task — только задачи исполнителя в erp_pm/документообороте, "
+        "когда регламент явно про «мои задачи» текущего пользователя. "
+        "Не путай «задачу агента» с entity task и не добавляй "
+        "onec.erp_tasks_current «на всякий случай». "
+        "В 1С нет и не будет задачи «Проверить поручение(я)»: агент сам "
+        "стартует и читает журнал АСТ00. "
+        "Журнал поручений АСТ00 / Action Tracker — entity assignment, не task.\n"
+        "ПРАВИЛО ЗАПИСИ (любой агент, любая сущность 1С): если шаг меняет объект "
+        "(статус, поле, новая карточка, комментарий) — не выдумывай вызов. "
+        "Конструктор сам создаст тестовый объект CONSTRUCTOR_PROBE, найдёт механизм, "
+        "запишет рабочий вызов в инструкцию и удалит тест. "
+        "Боевые карточки на построении не трогать.\n"
         "Если в материалах объект описан через самого исполнителя («текущий пользователь», "
-        "«мои задачи»), это не вопрос человеку: добавь шаг, который читает контекст агента.\n"
+        "«мои задачи в 1С»), это не вопрос человеку: добавь users.current, "
+        "а не журнал чужих поручений и не задачи JWT, если в тексте другого заказчика.\n"
         "У каждого шага обязательно заполни done_when, on_empty и on_error.\n"
         "Шаги стыкуй явно: provides — что отдаём дальше, needs_from — откуда берём ссылку.\n"
         "Карточка (read) не стоит первой: ей нужен id/ref из предыдущего search/list той же сущности.\n"
@@ -1245,12 +1304,30 @@ TESTS_USER_CLARIFY_INSTRUCTION = (
     "тема совещания, место и остальные параметры блока «Организация совещания»). "
     "Не ищи такие СЗ через `onec.search_documents`. "
     "Правила из паспорта (`document_text`, например п. 6.4) не ищи в 1С. "
-    "Сначала `onec.odata_catalog` (документы/справочники/регистры), "
-    "затем `onec.odata_get` с entity из каталога и/или `onec.sql_query`. "
-    "Карточку документа читай по `ref_key` или path с guid — в ответе все реквизиты "
+    "Сначала `onec.odata_catalog` с search по смыслу документа: "
+    "локальный снимок метаданных ERP (имя и структура полей/ТЧ), без живой 1С. "
+    "Затем `onec.odata_get` с entity из ответа и/или `onec.sql_query`. "
+    "Если в снимке пусто — повтори catalog с refresh=true (живая 1С). "
+    "Журнал поручений ПСД / Action Tracker: сразу `onec.erp_assignments` "
+    "(Document_ТД_Поручения, серия АСТ00 кириллицей, не латиница ACT). "
+    "Проверка поручений = action=list по журналу. Не ищи в 1С задачу "
+    "«Проверить поручение(я)» — такой карточки нет, агент сам читает журнал. "
+    "Заказчик в 1С — реквизит Руководитель, параметр customer=ФИО. "
+    "Карточка: action=get и number=АСТ00-.... Файлы вкладки «Файлы»: action=files. "
+    "Содержимое вложения: `onec.download_artifact` с file_id=Ref_Key файла "
+    "(OData Base64, том, hs/dtw/files или UNC). "
+    "Новые протоколы после заседания: action=protocols. "
+    "Запись статуса, срока, новой карточки, комментария исполнителю — "
+    "`onec.erp_assignments_write` (после подтверждения человека). "
+    "ПРАВИЛО ЗАПИСИ: на построении любого агента `onec.erp_write_probe` "
+    "создаёт тестовый объект CONSTRUCTOR_PROBE той сущности, которую надо менять, "
+    "проверяет изменение, запоминает вызов и удаляет тест. "
+    "Карточку произвольного документа читай по `ref_key` или path с guid — в ответе все реквизиты "
     "и табличные части (участники, план совещания), не только Number/Date/Posted. "
-    "Задачи пользователя из erp_pm и документооборота: `onec.erp_tasks_current` "
-    "(открытые сейчас) и `onec.erp_tasks_period` (за период, date_from/date_to YYYY-MM-DD). "
+    "Задачи исполнителя текущего пользователя в erp_pm — только если это предмет агента: "
+    "`onec.erp_tasks_current` / `onec.erp_tasks_period`. "
+    "Не вызывай их вместо журнала поручений и не ищи «мои задачи», "
+    "если в ТЗ другой заказчик, журнал АСТ00 или Excel. "
     "Только документооборот: `onec.docflow_tasks`. "
     "Проекты MS Project + 1С: `turboproject` (поля — из ответа инструмента). "
     "Список подчинённых руководителя (люди из оргструктуры erp_pm, "
@@ -1258,8 +1335,8 @@ TESTS_USER_CLARIFY_INSTRUCTION = (
     "Задачи подчинённых руководителя: `onec.erp_subordinate_tasks` "
     "(сначала прямые подчинённые и их задачи/сроки за date_from…date_to, "
     "затем подчинённые каждого из них; человек из JWT). "
-    "ФИО берётся из JWT сессии — не спрашивай ФИО и не передавай его, "
-    "если не нужна чужая карточка. "
+    "ФИО из JWT — только для tools, которым нужен пользователь сессии "
+    "(erp_tasks_*, users.subordinates, docflow). Не подставляй JWT как заказчика журнала. "
     "Учётка уже на сервере. Не ходи в 1С/TurboProject прямым HTTP с облачной VM.\n"
     "- Если `constructor_tool` вернул ошибку — вызови его ещё раз. "
     "Не подменяй live-вызов `--fixtures` и не ставь FAIL из-за Cloud VM.\n"
@@ -1279,8 +1356,10 @@ RUNTIME_NETWORK_INSTRUCTION = (
     "если пользователь так указал в ответах; "
     "НЕ DuckDuckGo/web_search и НЕ site_browser «открыть outlook.office.com»;\n"
     "  • 1С — tools `onec.*` (OData/SQL с сервера) или COM на машине пользователя, не web_search; "
-    "задачи erp_pm и документооборота — `onec.erp_tasks_current` / `onec.erp_tasks_period` "
-    "/ `onec.erp_subordinate_tasks` / `onec.docflow_tasks` (ФИО из JWT); "
+    "задачи исполнителя текущего пользователя — `onec.erp_tasks_*` только если это предмет агента, "
+    "не по умолчанию и не чтобы найти «Проверить поручение»; "
+    "поручения АСТ00 / Action Tracker — `onec.erp_assignments` action=list и запись "
+    "`onec.erp_assignments_write`; "
     "проекты TurboProject — `turboproject`;\n"
     "  • поиск на сайте/ЭТП + Excel → site_browser / plan_export / HTTP к указанному site_url;\n"
     "  • общий веб-поиск фактов — только если это явно цель агента.\n"

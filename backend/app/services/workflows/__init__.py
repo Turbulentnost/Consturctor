@@ -19,6 +19,7 @@ __all__ = [
     "list_artifacts_for_workflow",
     "list_workflows",
     "plan_workflow",
+    "prepare_demo_writes",
     "publish_workflow",
     "resume_auto_run",
     "stop_auto_run",

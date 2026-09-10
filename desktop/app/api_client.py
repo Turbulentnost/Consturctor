@@ -1822,6 +1822,16 @@ class ApiClient:
             raise ApiError("Backend не вернул итоговый workflow")
         return self._parse_workflow(data)
 
+    def prepare_demo_writes(self, workflow_id: str) -> WorkflowRecord:
+        data = self._request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/demo/prepare-writes",
+            timeout=120.0,
+        )
+        if not isinstance(data, dict):
+            raise ApiError("Backend не вернул пробу записи 1С")
+        return self._parse_workflow(data)
+
     def stream_demo_workflow(
         self,
         workflow_id: str,

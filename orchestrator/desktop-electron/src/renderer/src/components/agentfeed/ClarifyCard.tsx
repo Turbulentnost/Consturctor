@@ -30,14 +30,14 @@ export function ClarifyCard({
   const needsFile = Boolean(question.needsFile)
   const accept = question.accept?.length ? question.accept : ['xlsx', 'xlsm', 'docx']
   const canAttach = allowFiles || needsFile
-  const hasAnswer = needsFile
-    ? filePaths.length > 0
-    : Boolean(useCustom ? custom.trim() || filePaths.length : selected)
+  const hasAnswer = Boolean(useCustom ? custom.trim() || filePaths.length : selected) || filePaths.length > 0
+  const canSubmit = hasAnswer || needsFile
 
   const submit = (): void => {
     const text = (useCustom ? custom.trim() : selected).trim()
     const names = filePaths.map((path) => path.split(/[\\/]/).pop()).filter(Boolean)
-    const value = [text, names.length ? `Прикрепленные файлы: ${names.join(', ')}` : '']
+    const skipNote = needsFile && !filePaths.length && !text ? 'Файл не приложен' : ''
+    const value = [text, names.length ? `Прикрепленные файлы: ${names.join(', ')}` : '', skipNote]
       .filter(Boolean)
       .join('\n')
     if (!value && filePaths.length === 0) return
@@ -64,7 +64,7 @@ export function ClarifyCard({
   const onCardKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== 'Enter' || event.shiftKey) return
     if (event.target instanceof HTMLTextAreaElement) return
-    if (!hasAnswer) return
+    if (!canSubmit) return
     event.preventDefault()
     submit()
   }
@@ -140,7 +140,7 @@ export function ClarifyCard({
           </button>
           {needsFile && (
             <span className="clarify-file-hint">
-              Временный файл: используется только в этом запуске и не сохраняется в базу знаний.
+              Необязательно. Можно нажать Далее без файла. Если приложите — только этот запуск, не в базу знаний.
             </span>
           )}
           {filePaths.map((path) => (
@@ -152,7 +152,7 @@ export function ClarifyCard({
       )}
 
       <div className="clarify-actions">
-        <button className="clarify-submit" onClick={submit} disabled={!hasAnswer}>
+        <button className="clarify-submit" onClick={submit} disabled={!canSubmit}>
           Далее
         </button>
       </div>

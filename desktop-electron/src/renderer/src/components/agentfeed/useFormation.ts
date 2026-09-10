@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { agentClient } from '../../api/agent'
 import { useAgentSession, type AgentResult, type UseAgentSessionValue } from './useAgentSession'
+
+function testsPassed(text?: string): boolean {
+  const upper = (text || '').toUpperCase()
+  if (upper.includes('TESTS: FAIL') || upper.includes('TESTS:FAIL')) return false
+  return upper.includes('TESTS: PASS') || upper.includes('TESTS:PASS')
+}
 
 export type FormationPhase = 'designing' | 'designed' | 'executing' | 'tested'
 
@@ -52,10 +59,23 @@ export function useFormation(): FormationController {
     if (result.kind === 'design') {
       setDesignDraft((result.answer || '').trim())
       setDesignDone(true)
-    } else if (result.kind === 'demo') {
+      return
+    }
+    if (result.kind === 'demo' || (result.kind !== 'design' && testsPassed(result.answer))) {
       setDemoDone(true)
     }
   }, [])
+
+  useEffect(() => {
+    return agentClient.onEvent((event) => {
+      if (event.type !== 'result') return
+      if (event.kind === 'design') return
+      if (event.workflowId && workflowId && event.workflowId !== workflowId) return
+      if (event.kind === 'demo' || testsPassed(String(event.answer || ''))) {
+        setDemoDone(true)
+      }
+    })
+  }, [workflowId])
 
   const session = useAgentSession({ onResult })
   const sessionRef = useRef(session)
@@ -76,17 +96,27 @@ export function useFormation(): FormationController {
 
   // Auto-start the trial run once the design draft is ready (unless the user
   // stopped the run - cancelling design must not silently start the demo).
+  // Mark the workflow only when start() actually runs. Otherwise StrictMode
+  // cleanup cancels the timer and the remount sees the ref and never starts.
   useEffect(() => {
-    if (!designDone || !workflowId || stopped) return
+    if (!designDone || !workflowId || stopped || demoDone) return
     if (demoAutoForRef.current === workflowId) return
     if (session.running || session.pendingQuestion || session.pendingHitl) return
-    demoAutoForRef.current = workflowId
-    const timer = setTimeout(
-      () => sessionRef.current.start({ kind: 'demo', workflowId }),
-      1200
-    )
+    const timer = setTimeout(() => {
+      if (demoAutoForRef.current === workflowId) return
+      demoAutoForRef.current = workflowId
+      sessionRef.current.start({ kind: 'demo', workflowId })
+    }, 1200)
     return () => clearTimeout(timer)
-  }, [designDone, workflowId, stopped, session.running, session.pendingQuestion, session.pendingHitl])
+  }, [
+    designDone,
+    workflowId,
+    stopped,
+    demoDone,
+    session.running,
+    session.pendingQuestion,
+    session.pendingHitl
+  ])
 
   const runDemo = useCallback(() => {
     if (!workflowId) return

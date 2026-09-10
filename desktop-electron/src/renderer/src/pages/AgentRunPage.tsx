@@ -5,7 +5,7 @@ import type { WorkflowFileItem } from '../api/types'
 import { AgentFeed } from '../components/agentfeed'
 import { useRuns } from '../store/runs'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
-import { categoryOf, FILE_CATEGORY_LABELS, formatSize } from './filesGrouping'
+import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './filesGrouping'
 
 interface AgentRunPageProps {
   workflowId: string
@@ -19,6 +19,8 @@ interface AgentRunPageProps {
 function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
   const name = file.name || 'file'
   const size = formatSize(file.sizeBytes)
+  const when = formatFileWhen(file.createdAt)
+  const meta = [when, size].filter(Boolean).join(' · ')
   return (
     <li>
       <button
@@ -33,7 +35,7 @@ function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
           <span className="wf-file-name" title={name}>
             {name}
           </span>
-          {size ? <span className="wf-file-meta">{size}</span> : null}
+          {meta ? <span className="wf-file-meta">{meta}</span> : null}
         </div>
       </button>
     </li>
@@ -63,7 +65,6 @@ function FileSection({
 export function AgentRunPage({
   workflowId,
   title,
-  autoStart = false,
   onBack,
   onOpenHistory
 }: AgentRunPageProps): React.JSX.Element {
@@ -77,7 +78,6 @@ export function AgentRunPage({
   const [attachments, setAttachments] = useState<string[]>([])
   const [files, setFiles] = useState<WorkflowFileItem[]>([])
   const resumeAgentRef = useRef<string>(entry?.resumeAgentId || '')
-  const autoStartedRef = useRef(false)
 
   const refreshFiles = useCallback(async () => {
     try {
@@ -128,22 +128,12 @@ export function AgentRunPage({
     void runs.attachHistoryFeed(workflowId)
   }, [running, workflowId, state?.items?.length, runs])
 
-  // The "Запустить" play button opens this page with autoStart, so the agent
-  // starts immediately on its own playbook instead of waiting for a message.
+  // Restore the last conversation. A new run starts only after the user sends
+  // a message. Skip when this page already owns a live sidecar session.
   useEffect(() => {
-    if (!autoStart || autoStartedRef.current) return
-    if (running) return
-    autoStartedRef.current = true
-    runs.startRun({
-      workflowId,
-      title,
-      message: '',
-      shownMessage: 'Запуск агента',
-      resumeAgentId: resumeAgentRef.current || undefined,
-      forceRestart: true
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoStart, workflowId])
+    if (state?.activeRunId) return
+    void runs.attachHistoryFeed(workflowId)
+  }, [workflowId, runs, state?.activeRunId])
 
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({
@@ -238,6 +228,12 @@ export function AgentRunPage({
               }}
               onHitl={(requestId, approved) => runs.respondHitl(workflowId, requestId, approved)}
               onSkip={() => runs.skip(workflowId)}
+              resultFiles={files
+                .filter((file) => /\.(xlsx|xls|xlsm|csv|docx|pdf)$/i.test(file.name || ''))
+                .map((file) => ({ name: file.name, downloadUrl: file.downloadUrl }))}
+              onOpenResultFile={(file) => {
+                if (file.downloadUrl) void api.download(file.downloadUrl, file.name)
+              }}
             />
           </div>
           <div className="wf-dock">

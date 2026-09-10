@@ -40,6 +40,10 @@ def test_sandbox_python_tools_never_ask_hitl() -> None:
 def test_read_tools_do_not_ask_hitl() -> None:
     assert not needs_confirmation("onec.odata_get")
     assert not needs_confirmation("onec.odata_catalog")
+    assert not needs_confirmation("onec.erp_assignments")
+    assert not needs_confirmation("onec.download_artifact")
+    assert not needs_confirmation("onecdownload_artifact")
+    assert not needs_confirmation("onec.erp_write_probe")
     assert not needs_confirmation("users.list")
     assert not needs_confirmation("imap.fetch")
     assert not needs_confirmation("turboproject.search_projects")
@@ -51,6 +55,7 @@ def test_write_tools_need_confirmation() -> None:
     assert needs_confirmation("onec.odata_post")
     assert needs_confirmation("onec.odata_patch")
     assert needs_confirmation("onec.attach_file")
+    assert needs_confirmation("onec.erp_assignments_write")
     assert needs_confirmation("outlook.send_mail")
     assert needs_confirmation("outlook.create_event")
     assert not needs_confirmation("outlook.read_calendar")

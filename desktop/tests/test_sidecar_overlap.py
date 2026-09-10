@@ -105,6 +105,32 @@ def test_chat_duplicate_does_not_cancel_slot() -> None:
     assert list(sidecar._active) == ["live-1"]
 
 
+def test_chat_duplicate_replaces_dead_sdk() -> None:
+    sidecar = Sidecar()
+    stale = _active(run_id="stale-chat", alive=False)
+    sidecar._active[stale.run_id] = stale
+    ran: list[str] = []
+    sidecar._run_safe = lambda kind, command, active: ran.append(active.run_id)
+    sidecar.start(
+        "run",
+        {"id": "run-next", "workflowId": "wf-1", "source": "chat"},
+    )
+    assert "stale-chat" not in sidecar._active
+    assert "run-next" in sidecar._active
+    sidecar._active["run-next"].thread.join(timeout=2)
+    assert ran == ["run-next"]
+
+
+def test_cancel_releases_slot() -> None:
+    sidecar = Sidecar()
+    sidecar._finish_active_history = lambda *_a, **_k: None
+    live = _active(run_id="live-1", alive=True)
+    sidecar._active[live.run_id] = live
+    sidecar.cancel({"id": "live-1", "workflowId": "wf-1"})
+    assert sidecar._active == {}
+    assert live.stop.is_set()
+
+
 def test_trigger_overlap_replaces_dead_sdk() -> None:
     sidecar = Sidecar()
     canceled: list[tuple] = []

@@ -18,6 +18,25 @@ from app.services.docflow_tasks import (
     handle_docflow_tasks as _docflow_tasks,
     stub_docflow_tasks as _stub_docflow_tasks,
 )
+from app.services.erp_assignments import (
+    ASSIGNMENT_ENTITY,
+    ASSIGNMENT_FILES_ENTITY,
+    ASSIGNMENT_LINES_ENTITY,
+    AssignmentError,
+    handle_assignments as _erp_assignments,
+    handle_assignments_write as _erp_assignments_write,
+    stub_assignments as _stub_erp_assignments,
+    stub_assignments_write as _stub_erp_assignments_write,
+)
+from app.services.onec_artifacts import (
+    ArtifactError,
+    handle_download_artifact as _download_artifact,
+    stub_download_artifact as _stub_download_artifact,
+)
+from app.services.onec_write_probe import (
+    probe_onec_writes as _erp_write_probe,
+    stub_write_probe as _stub_erp_write_probe,
+)
 from app.services.erp_tasks import (
     ErpTaskError,
     handle_current as _erp_tasks_current,
@@ -26,6 +45,15 @@ from app.services.erp_tasks import (
     stub_current as _stub_erp_tasks_current,
     stub_period as _stub_erp_tasks_period,
     stub_subordinate_tasks as _stub_erp_subordinate_tasks,
+)
+from app.services.odata_local_catalog import (
+    compact_structure,
+    entity_search_score,
+    extra_entity_names,
+    get_structure,
+    load_snapshot,
+    snapshot_available,
+    snapshot_meta,
 )
 from app.services.onec_security import (
     default_odata_entities,
@@ -59,6 +87,18 @@ _SUBJECT_KEYS = (
     "Комментарий",
 )
 _ODATA_TYPE_PREFIX = "StandardODATA."
+_KIND_RANK = {"document": 0, "other": 1, "register": 2, "catalog": 3}
+_PRIORITY_NAV_FIELDS = (
+    "Руководитель",
+    "Заказчик",
+    "ОтветственноеЛицо",
+    "Исполнитель",
+    "Автор",
+    "СекретарьРК",
+    "КтоДоложитОЗавершенииМероприятий",
+    "Организация",
+    "ВладелецФайла",
+)
 _COLLECTION_HREF_RE = re.compile(r"<collection\b[^>]*\bhref=\"([^\"]+)\"", re.IGNORECASE)
 _KIND_ALIASES = {
     "document": "document",
@@ -88,6 +128,7 @@ _REGISTER_PREFIXES = (
 )
 _stub_counter = 0
 _catalog_cache: list[dict[str, str]] | None = None
+_STRUCTURE_MATCH_LIMIT = 12
 
 ONEC_TOOLS = frozenset(
     {
@@ -100,6 +141,10 @@ ONEC_TOOLS = frozenset(
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
+        "onec.erp_assignments",
+        "onec.erp_assignments_write",
+        "onec.download_artifact",
+        "onec.erp_write_probe",
         "onec.docflow_tasks",
     }
 )
@@ -108,6 +153,7 @@ ONEC_WRITE_TOOLS = frozenset(
         "onec.odata_post",
         "onec.odata_patch",
         "onec.attach_file",
+        "onec.erp_assignments_write",
     }
 )
 _ERP_TASK_TOOLS = frozenset(
@@ -117,7 +163,10 @@ _ERP_TASK_TOOLS = frozenset(
         "onec.erp_subordinate_tasks",
     }
 )
-_JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {"onec.docflow_tasks"}
+_JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
+    "onec.docflow_tasks",
+    "onec.erp_write_probe",
+}
 
 
 class OnecToolError(RuntimeError):
@@ -150,7 +199,10 @@ def invoke_onec(
     actor_user_id: str = "",
     actor_fio: str = "",
 ) -> dict[str, Any]:
+    from app.services.tool_names import resolve_tool_name
+
     args = arguments if isinstance(arguments, dict) else {}
+    tool = resolve_tool_name(tool, ONEC_TOOLS) or (tool or "").strip()
     handlers = REAL_HANDLERS if odata_configured() else STUB_HANDLERS
     # sql_query / задачи работают от ERP SQL даже без OData URL
     if _erp_sql_ready() and not odata_configured():
@@ -172,7 +224,7 @@ def invoke_onec(
         return handler(args)
     except OnecToolError:
         raise
-    except ErpTaskError as exc:
+    except (ErpTaskError, AssignmentError, ArtifactError) as exc:
         raise OnecToolError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise OnecToolError(str(exc)) from exc
@@ -191,10 +243,18 @@ def _is_incoming_correspondence_path(path: str) -> bool:
 def _parse_top_limit(path: str, payload: dict[str, Any]) -> int:
     match = _TOP_RE.search(path)
     if match:
-        return max(1, min(100, int(match.group(1))))
+        return max(1, min(200, int(match.group(1))))
     raw_top = payload.get("top")
     if raw_top is not None:
-        return max(1, min(100, int(raw_top)))
+        return max(1, min(200, int(raw_top)))
+    entity = _entity_from_args(payload)
+    if entity in {
+        ASSIGNMENT_ENTITY,
+        ASSIGNMENT_LINES_ENTITY,
+        ASSIGNMENT_FILES_ENTITY,
+        "Document_ТД_Протокол",
+    }:
+        return 40
     return 3
 
 
@@ -487,9 +547,17 @@ def _resolve_navigation_names(row: dict[str, Any], args: dict[str, Any], *, budg
         obj[key] = name
         obj[f"{key}_Name"] = name
 
+    def _nav_sort_key(key: str) -> tuple[int, str]:
+        head = key[: -len("@navigationLinkUrl")] if key.endswith("@navigationLinkUrl") else key
+        try:
+            rank = _PRIORITY_NAV_FIELDS.index(head)
+        except ValueError:
+            rank = 100
+        return (rank, key)
+
     def resolve_obj(obj: dict[str, Any]) -> None:
         nonlocal remaining
-        for key, value in list(obj.items()):
+        for key, value in sorted(list(obj.items()), key=lambda item: _nav_sort_key(item[0])):
             if remaining <= 0:
                 return
             if str(key).endswith("_Type") or str(key).endswith("_Name"):
@@ -629,8 +697,9 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
     nav_suffix = cleaned_path.split(")", 1)[-1] if ")" in cleaned_path else ""
     is_navigation = keyed and nav_suffix.startswith("/")
     if value and not is_navigation:
+        nav_budget = 6 if entity == "Document_ТД_Поручения" else 2
         for row in value[:10]:
-            _resolve_navigation_names(row, args, budget=2)
+            _resolve_navigation_names(row, args, budget=nav_budget)
         card = value[0] if (keyed or number or extra_filter or len(value) == 1) else None
         if isinstance(card, dict):
             row_ref = str(card.get("Ref_Key") or ref_key or "").strip()
@@ -970,23 +1039,45 @@ def _items_from_names(names: list[str]) -> list[dict[str, str]]:
             continue
         seen.add(item["name"])
         items.append(item)
-    items.sort(key=lambda row: (row["kind"], row["name"]))
+    items.sort(key=lambda row: (_KIND_RANK.get(row["kind"], 9), row["name"]))
     return items
+
+
+def reset_catalog_cache() -> None:
+    global _catalog_cache
+    _catalog_cache = None
+
+
+def _local_catalog_items() -> list[dict[str, str]]:
+    if not snapshot_available():
+        return []
+    try:
+        names = list(load_snapshot()["documents"])
+    except Exception:  # noqa: BLE001
+        return []
+    return _items_from_names(names)
 
 
 def _cached_catalog_names(*, autoload: bool = True) -> set[str]:
     global _catalog_cache
-    if _catalog_cache is None and autoload:
+    names: set[str] = set()
+    if snapshot_available():
+        try:
+            names.update(extra_entity_names())
+        except Exception:  # noqa: BLE001
+            pass
+    if _catalog_cache is None and autoload and not names:
         try:
             if odata_configured():
                 _load_odata_catalog()
             else:
                 _catalog_cache = _stub_catalog_items()
         except Exception:  # noqa: BLE001
-            return set()
-    if not _catalog_cache:
-        return set()
-    return {item["name"] for item in _catalog_cache}
+            if not names:
+                return set()
+    if _catalog_cache:
+        names.update(item["name"] for item in _catalog_cache)
+    return names
 
 
 def _load_odata_catalog(*, force: bool = False) -> list[dict[str, str]]:
@@ -1032,6 +1123,33 @@ def _normalize_kind_filter(raw: str) -> str:
     return _KIND_ALIASES.get(raw.strip().casefold(), "")
 
 
+def _catalog_search_text(args: dict[str, Any]) -> str:
+    return str(
+        args.get("search") or args.get("query") or args.get("entity") or ""
+    ).strip()
+
+
+def _wants_structure(args: dict[str, Any], search: str) -> bool:
+    raw = args.get("include_structure")
+    if raw is None:
+        return bool(search)
+    return bool(raw)
+
+
+def _attach_structures(entities: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    remaining = max(0, limit)
+    for item in entities:
+        row = dict(item)
+        if remaining > 0:
+            structure = compact_structure(get_structure(str(row.get("name") or "")))
+            if structure:
+                row.update(structure)
+                remaining -= 1
+        enriched.append(row)
+    return enriched
+
+
 def _format_catalog(
     items: list[dict[str, str]],
     args: dict[str, Any],
@@ -1039,19 +1157,34 @@ def _format_catalog(
     source: str,
 ) -> dict[str, Any]:
     kind = _normalize_kind_filter(str(args.get("kind") or args.get("type") or ""))
-    search = str(args.get("search") or args.get("query") or "").strip().casefold()
+    search = _catalog_search_text(args)
+    search_folded = search.casefold()
     try:
         limit = int(args.get("limit") or 400)
     except (TypeError, ValueError):
         limit = 400
     limit = max(1, min(2000, limit))
 
-    filtered = items
+    filtered = list(items)
     if kind:
         filtered = [item for item in filtered if item["kind"] == kind]
     if search:
-        filtered = [item for item in filtered if search in item["name"].casefold()]
-    truncated = filtered[:limit]
+        scored: list[tuple[int, dict[str, str]]] = []
+        for item in filtered:
+            score = entity_search_score(search, item["name"])
+            if score <= 0 and search_folded in item["name"].casefold():
+                score = 20
+            if score > 0:
+                scored.append((score, item))
+        scored.sort(
+            key=lambda row: (-row[0], _KIND_RANK.get(row[1]["kind"], 9), row[1]["name"])
+        )
+        filtered = [item for _, item in scored]
+    else:
+        filtered = sorted(filtered, key=lambda row: (_KIND_RANK.get(row["kind"], 9), row["name"]))
+    truncated = [dict(item) for item in filtered[:limit]]
+    if _wants_structure(args, search):
+        truncated = _attach_structures(truncated, limit=_STRUCTURE_MATCH_LIMIT)
 
     documents = [item["name"] for item in truncated if item["kind"] == "document"]
     catalogs = [item["name"] for item in truncated if item["kind"] == "catalog"]
@@ -1061,6 +1194,10 @@ def _format_catalog(
         f"OData каталог: {len(documents)} документов, "
         f"{len(catalogs)} справочников/таблиц, {len(registers)} регистров"
     )
+    if source == "local":
+        summary = "Локальный снимок ERP. " + summary
+    elif source == "odata":
+        summary = "Живая 1С OData. " + summary
     if other and not kind:
         summary += f", {len(other)} прочих"
     if search or kind:
@@ -1071,7 +1208,7 @@ def _format_catalog(
         "count": len(truncated),
         "total_matched": len(filtered),
         "kind": kind or "all",
-        "search": search,
+        "search": search_folded,
         "documents": documents,
         "catalogs": catalogs,
         "registers": registers,
@@ -1080,18 +1217,56 @@ def _format_catalog(
     }
 
 
-def _odata_catalog(args: dict[str, Any]) -> dict[str, Any]:
+def _catalog_from_sources(args: dict[str, Any], *, allow_live: bool) -> dict[str, Any]:
     force = bool(args.get("refresh") or args.get("force"))
-    items = _load_odata_catalog(force=force)
-    return _format_catalog(items, args, source="odata")
+    search = _catalog_search_text(args)
+    local_items = _local_catalog_items()
+    meta = snapshot_meta() if local_items else {}
 
+    if local_items and not force:
+        result = _format_catalog(local_items, args, source="local")
+        result.update(meta)
+        result["live_fallback"] = False
+        if result["total_matched"] > 0 or not search:
+            return result
 
-def _stub_odata_catalog(args: dict[str, Any]) -> dict[str, Any]:
+    if allow_live:
+        try:
+            items = _load_odata_catalog(force=True)
+            result = _format_catalog(items, args, source="odata")
+            if meta:
+                result.update(meta)
+            result["live_fallback"] = bool(local_items and search)
+            result["local_missed"] = bool(local_items and search)
+            return result
+        except OnecToolError:
+            if local_items:
+                result = _format_catalog(local_items, args, source="local")
+                result.update(meta)
+                result["live_fallback"] = True
+                result["live_error"] = True
+                return result
+            raise
+
+    if local_items:
+        result = _format_catalog(local_items, args, source="local")
+        result.update(meta)
+        result["live_fallback"] = False
+        return result
+
     global _catalog_cache
     items = _stub_catalog_items()
     if _catalog_cache is None:
         _catalog_cache = items
     return _format_catalog(items, args, source="stub")
+
+
+def _odata_catalog(args: dict[str, Any]) -> dict[str, Any]:
+    return _catalog_from_sources(args, allow_live=True)
+
+
+def _stub_odata_catalog(args: dict[str, Any]) -> dict[str, Any]:
+    return _catalog_from_sources(args, allow_live=False)
 
 
 STUB_HANDLERS = {
@@ -1104,6 +1279,10 @@ STUB_HANDLERS = {
     "onec.erp_tasks_current": _stub_erp_tasks_current,
     "onec.erp_tasks_period": _stub_erp_tasks_period,
     "onec.erp_subordinate_tasks": _stub_erp_subordinate_tasks,
+    "onec.erp_assignments": _stub_erp_assignments,
+    "onec.erp_assignments_write": _stub_erp_assignments_write,
+    "onec.download_artifact": _stub_download_artifact,
+    "onec.erp_write_probe": _stub_erp_write_probe,
     "onec.docflow_tasks": _stub_docflow_tasks,
 }
 
@@ -1117,5 +1296,9 @@ REAL_HANDLERS = {
     "onec.erp_tasks_current": _erp_tasks_current,
     "onec.erp_tasks_period": _erp_tasks_period,
     "onec.erp_subordinate_tasks": _erp_subordinate_tasks,
+    "onec.erp_assignments": _erp_assignments,
+    "onec.erp_assignments_write": _erp_assignments_write,
+    "onec.download_artifact": _download_artifact,
+    "onec.erp_write_probe": _erp_write_probe,
     "onec.docflow_tasks": _docflow_tasks,
 }

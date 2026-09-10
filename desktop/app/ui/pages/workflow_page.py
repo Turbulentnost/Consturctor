@@ -4751,6 +4751,14 @@ class WorkflowPage(QWidget):
             bridge = CursorSdkBridge()
             bridge.check_ready()
             record = self._api.get_workflow(workflow_id)
+            try:
+                record = self._api.prepare_demo_writes(workflow_id)
+            except ApiError as exc:
+                if exc.status_code not in {404, 405}:
+                    self._stream_event.emit(
+                        "decision",
+                        f"Проба записи 1С не запустилась: {exc}",
+                    )
             resume_agent_id = str((record.local_run or {}).get("sdk_agent_id") or "").strip()
 
             def on_sdk_event(payload: dict) -> None:

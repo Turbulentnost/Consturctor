@@ -426,3 +426,17 @@ def test_meeting_notes_timeout_is_connection_error(monkeypatch) -> None:
     assert "не ответила" in text
     assert "cscript" not in text
     assert "run.vbs" not in text
+
+
+def test_assignment_com_search_query() -> None:
+    from app.tools.ac.workers.onec_com_actions import _assignment_search_query_com32
+
+    text, columns = _assignment_search_query_com32(
+        query="АСТ00-00093",
+        limit=5,
+        exact_number=True,
+    )
+    assert "Документ.ТД_Поручения" in text
+    assert 'Д.Номер = "АСТ00-00093"' in text
+    assert "ОЧем" in text
+    assert columns == ["Number", "DocDate", "Theme", "Status", "Customer"]

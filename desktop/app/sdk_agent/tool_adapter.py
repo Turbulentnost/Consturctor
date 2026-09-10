@@ -108,6 +108,15 @@ def tool_timeout_seconds(name: str, arguments: dict[str, Any] | None = None) -> 
         return ASK_QUESTION_TIMEOUT_SECONDS
     limit = DEFAULT_TOOL_TIMEOUT_SECONDS
     try:
+        from app.tools.server_tools import canonical_server_tool_name, server_tool_timeout_seconds
+
+        folded = canonical_server_tool_name(folded)
+        extra = server_tool_timeout_seconds(folded)
+        if extra > 0:
+            limit = max(limit, extra)
+    except Exception:
+        pass
+    try:
         from app.tools.ac.dispatch import get_registry
 
         registry = get_registry()
@@ -120,6 +129,9 @@ def tool_timeout_seconds(name: str, arguments: dict[str, Any] | None = None) -> 
 
 def invoke_sdk_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
     try:
+        from app.tools.server_tools import canonical_server_tool_name
+
+        name = canonical_server_tool_name(name)
         result = invoke_tool(name, arguments if isinstance(arguments, dict) else {})
     except ToolHostError:
         raise

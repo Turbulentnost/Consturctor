@@ -99,6 +99,8 @@ _PROVIDES_TO_PARAMS = {
     "task": ("task_ref", "task_id"),
     "documents": ("document_ref", "document_ref_key"),
     "document": ("document_ref", "document_ref_key"),
+    "assignments": ("document_ref", "document_ref_key", "number", "ref_key"),
+    "assignment": ("document_ref", "document_ref_key", "number", "ref_key"),
     "messages": ("uid", "message_id"),
     "files": ("file_id",),
     "id": ("id", "trigger_id"),

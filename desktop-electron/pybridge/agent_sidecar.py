@@ -136,6 +136,9 @@ _READ_EXACT = frozenset(
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
+        "onec.erp_assignments",
+        "onec.download_artifact",
+        "onec.erp_write_probe",
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
@@ -154,8 +157,12 @@ _READ_PREFIXES = ("onec.search_", "onec.get_", "imap.", "turboproject.")
 
 
 def _is_read_tool(name: str) -> bool:
-    tool = (name or "").strip()
+    from app.tools.tool_names import matches_known_tool, resolve_tool_name
+
+    tool = resolve_tool_name((name or "").strip(), _READ_EXACT | _NEVER_CONFIRM)
     if tool in _NEVER_CONFIRM or tool in _READ_EXACT:
+        return True
+    if matches_known_tool(tool, _READ_EXACT | _NEVER_CONFIRM):
         return True
     return any(tool.startswith(prefix) for prefix in _READ_PREFIXES)
 
@@ -1783,6 +1790,7 @@ class Sidecar:
             os.environ["ERP_PASSWORD"] = password
         elif "password" in command:
             os.environ.pop("ERP_PASSWORD", None)
+        self._sweep_dead_runs()
 
     def check_ready(self) -> None:
         try:
@@ -1812,6 +1820,42 @@ class Sidecar:
             return kind
         return f"{kind}:{target}" if target else ""
 
+    def _abort_active(self, active: "ActiveRun", answer: str) -> None:
+        active.stop.set()
+        try:
+            active.bridge.skip_tool("")
+        except Exception:
+            pass
+        process = getattr(active.bridge, "_process", None)
+        poll = getattr(process, "poll", None)
+        if process is not None and callable(poll) and poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        self._finish_active_history(active, answer)
+        emit(
+            {
+                "type": "result",
+                "runId": active.run_id,
+                "kind": active.kind or "run",
+                "status": "canceled",
+                "workflowId": active.workflow_id,
+            }
+        )
+
+    def _sweep_dead_runs(self) -> None:
+        dead: list[ActiveRun] = []
+        with self._lock:
+            for active in list(self._active.values()):
+                if _sdk_run_alive(active):
+                    continue
+                self._active.pop(active.run_id, None)
+                dead.append(active)
+        for active in dead:
+            log("sweep dead run: " + _ascii(active.run_id))
+            self._abort_active(active, "Cursor SDK не отвечает")
+
     def start(self, kind: str, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or uuid.uuid4().hex)
         dedup_key = self._dedup_key(kind, command)
@@ -1822,25 +1866,26 @@ class Sidecar:
                 for existing in list(self._active.values()):
                     if existing.dedup_key != dedup_key:
                         continue
-                    if _is_trigger_command(command) and _sdk_run_alive(existing):
+                    if _sdk_run_alive(existing):
                         log(
                             "skip duplicate run: "
                             + _ascii(f"{dedup_key} (active run {existing.run_id})")
                         )
-                        overlap_run_id = existing.run_id
-                        break
-                    if _is_trigger_command(command) and not _sdk_run_alive(existing):
-                        log(
-                            "replace dead run: "
-                            + _ascii(f"{dedup_key} (stale run {existing.run_id})")
-                        )
-                        self._active.pop(existing.run_id, None)
+                        if _is_trigger_command(command):
+                            overlap_run_id = existing.run_id
+                        else:
+                            skip_run_id = existing.run_id
                         break
                     log(
-                        "skip duplicate run: "
-                        + _ascii(f"{dedup_key} (active run {existing.run_id})")
+                        "replace dead run: "
+                        + _ascii(f"{dedup_key} (stale run {existing.run_id})")
                     )
-                    skip_run_id = existing.run_id
+                    existing.stop.set()
+                    try:
+                        existing.bridge.skip_tool("")
+                    except Exception:
+                        pass
+                    self._active.pop(existing.run_id, None)
                     break
             if not overlap_run_id and not skip_run_id:
                 gate = HitlGate(run_id)
@@ -2233,6 +2278,10 @@ class Sidecar:
         bridge = active.bridge
         bridge.check_ready()
         record = self._api.get_workflow(workflow_id)
+        try:
+            record = self._api.prepare_demo_writes(workflow_id)
+        except ApiError:
+            pass
         resume_agent_id = str((record.local_run or {}).get("sdk_agent_id") or "").strip()
         run_cwd = bridge.workspace_cwd(workflow_id)
         active.run_cwd = run_cwd
@@ -2745,9 +2794,10 @@ class Sidecar:
             name = spec.get("name") or "файл"
             description = spec.get("description") or ""
             accept = spec.get("accept") or ""
-            question = "Прикрепите файл для этого запуска: " + name
+            question = "Если для этого запуска нужен файл, прикрепите: " + name
             if description:
                 question = question + ". " + description
+            question = question + ". Можно нажать Далее без файла."
             reply = active.gate.ask_question(
                 {
                     "question": question,
@@ -2830,9 +2880,18 @@ class Sidecar:
 
     def cancel(self, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or "")
-        for active in list(self._active.values()):
-            if not run_id or active.run_id == run_id:
-                active.stop.set()
+        workflow_id = str(command.get("workflowId") or "").strip()
+        stopped: list[ActiveRun] = []
+        with self._lock:
+            for active in list(self._active.values()):
+                if run_id and active.run_id != run_id:
+                    continue
+                if workflow_id and active.workflow_id != workflow_id:
+                    continue
+                self._active.pop(active.run_id, None)
+                stopped.append(active)
+        for active in stopped:
+            self._abort_active(active, "Остановлено пользователем")
 
     def shutdown(self) -> None:
         with self._lock:

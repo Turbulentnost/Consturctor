@@ -386,7 +386,7 @@ export function App(): React.JSX.Element {
           ? 'processes'
           : 'settings'
 
-  async function openAgentRun(workflowId: string, runId = '', autoStart = false, title = ''): Promise<void> {
+  async function openAgentRun(workflowId: string, runId = '', _autoStart = false, title = ''): Promise<void> {
     if (!workflowId) {
       flash('У карточки нет id агента на сервере')
       return
@@ -425,7 +425,7 @@ export function App(): React.JSX.Element {
       })()
       return
     }
-    setView({ kind: 'agentrun', workflowId, title: nextTitle || 'ИИ-агент', autoStart })
+    setView({ kind: 'agentrun', workflowId, title: nextTitle || 'ИИ-агент', autoStart: false })
   }
 
   function renderContent(): React.JSX.Element {

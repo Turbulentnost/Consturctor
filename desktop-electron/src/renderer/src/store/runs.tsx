@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { AgentEvent, CalendarEvent } from '../api/types'
-import { buildFeedItems } from '../components/agentfeed/build'
+import { buildFeedItems, settleOpenFeedTools } from '../components/agentfeed/build'
 import {
   applyAgentEvent,
   createRunState,
@@ -123,7 +123,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       if (!workflowId) {
         workflowId = eventWorkflowId(event)
         if (!workflowId) return
-        if (!shouldTrackLiveRun(event) && !entriesRef.current[workflowId]) return
+        if (!shouldTrackLiveRun(event)) return
         indexRef.current[runId] = workflowId
         if (!entriesRef.current[workflowId]?.title) fillTitle(workflowId)
       }
@@ -311,7 +311,10 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       let runId = current?.backendRunId || ''
       if (!runId) {
         const list = await api.listAgentRuns(wid)
-        runId = list.find((item) => isInFlightRunStatus(item.status))?.runId || ''
+        runId =
+          list.find((item) => isInFlightRunStatus(item.status))?.runId ||
+          list[0]?.runId ||
+          ''
       }
       if (!runId) {
         if (current && current.state.running && !current.state.activeRunId && (current.state.items?.length ?? 0) === 0) {
@@ -335,8 +338,8 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         return
       }
       const detail = await api.getAgentRunDetail(wid, runId)
-      const historyItems = buildFeedItems(detail.events)
       const inFlight = isInFlightRunStatus(detail.item.status)
+      const historyItems = buildFeedItems(detail.events, { live: inFlight })
       const startedAt = Date.parse(detail.item.startedAt || '')
       const hung =
         inFlight &&
@@ -370,6 +373,11 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             'Запуск по расписанию. Ход появится, когда локальный агент начнёт работу.'
           )
         }
+        const locallyOwned = Boolean(entry.state.activeRunId)
+        const live = inFlight && !hung && locallyOwned
+        if (!live) {
+          nextItems = settleOpenFeedTools(nextItems)
+        }
         return {
           ...prev,
           [wid]: {
@@ -378,9 +386,11 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             state: {
               ...entry.state,
               items: nextItems,
-              running: inFlight && !hung,
-              status: inFlight && !hung ? entry.state.status || 'Агент работает…' : '',
-              error: hung ? SDK_DEAD_ANSWER : entry.state.error
+              running: live,
+              status: live ? entry.state.status || 'Агент работает…' : '',
+              error: hung ? SDK_DEAD_ANSWER : entry.state.error,
+              pendingQuestion: live ? entry.state.pendingQuestion : null,
+              pendingHitl: live ? entry.state.pendingHitl : null
             }
           }
         }

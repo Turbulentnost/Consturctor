@@ -135,6 +135,8 @@ _READ_EXACT = frozenset(
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
+        "onec.erp_assignments",
+        "onec.erp_write_probe",
         "onec.erp_tasks_current",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",

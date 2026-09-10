@@ -441,6 +441,8 @@ def test_tool_timeout_seconds_for_wait_matches_requested_pause() -> None:
     assert tool_timeout_seconds("agent.wait", {"seconds": 0}) == 60
     assert tool_timeout_seconds("outlook.read_calendar") >= 180
     assert tool_timeout_seconds("askQuestion") >= 900
+    assert tool_timeout_seconds("onec.download_artifact") >= 300
+    assert tool_timeout_seconds("onecdownload_artifact") >= 300
 
 
 def test_record_ready_for_sdk_demo_clears_server_clarify_gate() -> None:
@@ -989,8 +991,11 @@ def test_server_catalog_exposes_both_worlds() -> None:
 
     names = {str(t.get("name")) for t in sdk_tool_specs()}
     # Server-executed tools are offered to the local SDK agent.
-    assert {"onec.odata_get", "imap.list_unread", "users.current"} <= names
+    assert {"onec.odata_get", "imap.list_unread", "users.current", "onec.download_artifact"} <= names
+    download = next(item for item in sdk_tool_specs() if item.get("name") == "onec.download_artifact")
+    assert int(download.get("timeoutSeconds") or 0) >= 300
     # Local COM tools stay in the catalog too.
     assert "onec.search_documents" in names
     # Local COM 1C must not be routed to the server.
     assert "onec.search_documents" not in SERVER_TOOL_NAMES
+    assert "onec.download_artifact" in SERVER_TOOL_NAMES

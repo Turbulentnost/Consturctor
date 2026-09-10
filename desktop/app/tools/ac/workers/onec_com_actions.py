@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from app.tools.ac.workers.models import WorkerResult, WorkerTask
@@ -329,6 +331,41 @@ def _list_meeting_service_notes_com32(
     }
 
 
+def _assignment_search_query_com32(
+    *,
+    query: str,
+    limit: int,
+    exact_number: bool,
+) -> tuple[str, list[str]]:
+    """SELECT Document.TD_Porucheniya. Read-only."""
+    from app.tools.ac.workers.onec_meeting_notes import like_escape
+
+    limit = max(1, min(200, int(limit or 10)))
+    needle = like_escape(query)
+    conditions = ["НЕ Д.ПометкаУдаления"]
+    if exact_number and query:
+        safe = str(query).replace('"', '""')
+        conditions.append(f'Д.Номер = "{safe}"')
+    elif needle:
+        conditions.append(
+            f'(Д.Номер ПОДОБНО "%{needle}%" ИЛИ Д.ОЧем ПОДОБНО "%{needle}%")'
+        )
+    text = "\n".join(
+        [
+            f"ВЫБРАТЬ ПЕРВЫЕ {limit}",
+            "        Д.Номер КАК Number",
+            "        , Д.Дата КАК DocDate",
+            "        , Д.ОЧем КАК Theme",
+            "        , Д.Статус КАК Status",
+            "        , ПРЕДСТАВЛЕНИЕ(Д.Руководитель) КАК Customer",
+            "        ИЗ Документ.ТД_Поручения КАК Д",
+            "        ГДЕ " + " И ".join(conditions),
+            "        УПОРЯДОЧИТЬ ПО Д.Дата УБЫВ",
+        ]
+    )
+    return text, ["Number", "DocDate", "Theme", "Status", "Customer"]
+
+
 def _search_documents_com32(
     input_data: dict[str, Any],
     *,
@@ -351,6 +388,18 @@ def _search_documents_com32(
     limit = int(args.get("max_results") or args.get("limit") or 10)
     exact_number = bool(str(args.get("number") or "").strip()) or _looks_like_document_number(query)
     specs: list[tuple[str, list[str], str, str]] = []
+    document_type = str(args.get("document_type") or "").casefold()
+    assignment_hint = any(
+        token in (query.casefold() + " " + document_type)
+        for token in ("аст", "act00", "поруч", "td_поруч", "тд_поруч")
+    )
+    if assignment_hint or not query:
+        text, columns = _assignment_search_query_com32(
+            query=query,
+            limit=limit,
+            exact_number=exact_number and bool(query),
+        )
+        specs.append((text, columns, "ТД_Поручения", "Поручение"))
     for document_name in ("ТД_СлужебнаяЗаписка", "СлужебнаяЗаписка"):
         if exact_number and query:
             text, columns = build_document_search_query_latin(
@@ -1056,10 +1105,176 @@ def _is_browse_query(query: str, candidate_name: str, candidate_synonym: str) ->
     return overlap >= max(1, round(len(query_stems) * 0.6))
 
 
+_LOCAL_SNAPSHOT_CACHE: tuple[float, list[str]] | None = None
+
+
+def _local_odata_snapshot_path() -> Path | None:
+    env = (
+        os.environ.get("ONEC_ODATA_LOCAL_CATALOG")
+        or os.environ.get("ODATA_LOCAL_CATALOG_PATH")
+        or ""
+    ).strip()
+    candidates: list[Path] = []
+    if env:
+        candidates.append(Path(env))
+    here = Path(__file__).resolve()
+    if len(here.parents) > 5:
+        candidates.append(
+            here.parents[5] / "backend" / "app" / "data" / "odata_document_structures.json"
+        )
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _odata_metadata_name(entity: str) -> str:
+    text = str(entity or "").strip()
+    for prefix in ("Document_", "Catalog_"):
+        if text.startswith(prefix):
+            return text[len(prefix) :]
+    return text
+
+
+def _local_document_metadata_names() -> list[str]:
+    global _LOCAL_SNAPSHOT_CACHE
+    path = _local_odata_snapshot_path()
+    if path is None:
+        return []
+    mtime = path.stat().st_mtime
+    if _LOCAL_SNAPSHOT_CACHE and _LOCAL_SNAPSHOT_CACHE[0] == mtime:
+        return _LOCAL_SNAPSHOT_CACHE[1]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return []
+    documents = data.get("documents") if isinstance(data, dict) else None
+    if not isinstance(documents, dict):
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for key in documents:
+        meta = _odata_metadata_name(str(key))
+        if not meta or meta in seen:
+            continue
+        seen.add(meta)
+        names.append(meta)
+    _LOCAL_SNAPSHOT_CACHE = (mtime, names)
+    return names
+
+
+def _compact_label(text: str) -> str:
+    return re.sub(r"[^0-9A-Za-zА-Яа-яЁё]+", "", str(text or "")).casefold()
+
+
+def _score_local_metadata_name(query: str, name: str) -> int:
+    needle = str(query or "").strip()
+    entity = str(name or "").strip()
+    if not needle or not entity:
+        return 0
+    q = needle.casefold()
+    n = entity.casefold()
+    compact_q = _compact_label(needle)
+    compact_n = _compact_label(entity)
+    if q == n or compact_q == compact_n:
+        return 1000
+    if q in n or (compact_q and compact_q in compact_n):
+        return 80
+    tokens = [token for token in re.split(r"[^0-9A-Za-zА-Яа-яЁё]+", q) if len(token) >= 2]
+    if tokens and all(token in compact_n or token in n for token in tokens):
+        return 50
+    return 0
+
+
+def _lookup_metadata_item(metadata_root: Any, name: str) -> tuple[Any, str, str] | None:
+    for collection_name in METADATA_COLLECTION_NAMES:
+        try:
+            collection = getattr(metadata_root, collection_name)
+        except Exception:
+            continue
+        try:
+            item = getattr(collection, name)
+        except Exception:
+            item = None
+        if item is None:
+            continue
+        return item, collection_name, _metadata_collection_kind(collection_name)
+    return None
+
+
+def _candidate_from_metadata_item(
+    item: Any,
+    *,
+    collection_name: str,
+    kind: str,
+    name: str,
+    score: int,
+    query: str,
+) -> dict[str, Any]:
+    synonym = _metadata_synonym(item)
+    label_text = _normalize_search_text(f"{name} {synonym}")
+    return {
+        "collection_name": collection_name,
+        "kind": kind,
+        "name": name,
+        "synonym": synonym,
+        "label": synonym or name or label_text,
+        "item": item,
+        "score": score,
+        "browse_only": _is_browse_query(query, name, synonym),
+        "requisites": _metadata_requisite_names(item),
+        "tabular_sections": _metadata_tabular_sections(item),
+        "from_local_snapshot": True,
+    }
+
+
+def _candidates_from_local_snapshot(
+    session: Any,
+    query: str,
+    document_type: str | None = None,
+) -> list[dict[str, Any]]:
+    metadata_root = _get_metadata_root(session)
+    if metadata_root is None:
+        return []
+    needle = str(document_type or query or "").strip()
+    if not needle or not any(char.isalpha() for char in needle):
+        return []
+    scored: list[tuple[int, str]] = []
+    for name in _local_document_metadata_names():
+        score = _score_local_metadata_name(needle, name)
+        if score <= 0 and document_type:
+            score = _score_local_metadata_name(document_type, name)
+        if score > 0:
+            scored.append((score, name))
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    candidates: list[dict[str, Any]] = []
+    for score, name in scored[:12]:
+        found = _lookup_metadata_item(metadata_root, name)
+        if found is None:
+            continue
+        item, collection_name, kind = found
+        candidates.append(
+            _candidate_from_metadata_item(
+                item,
+                collection_name=collection_name,
+                kind=kind,
+                name=name,
+                score=score,
+                query=_normalize_search_text(needle),
+            )
+        )
+    candidates.sort(key=lambda candidate: candidate["score"], reverse=True)
+    return candidates
+
+
 def _discover_metadata_candidates(session: Any, query: str, document_type: str | None = None) -> list[dict[str, Any]]:
     metadata_root = _get_metadata_root(session)
     if metadata_root is None:
         return []
+
+    local_candidates = _candidates_from_local_snapshot(session, query, document_type)
+    if local_candidates:
+        return local_candidates
 
     normalized_query = _normalize_search_text(document_type or query)
     query_stems = _stem_set(normalized_query)

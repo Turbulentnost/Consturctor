@@ -39,6 +39,11 @@ export interface ResultItem {
   text: string
 }
 
+export interface ResultFileLink {
+  name: string
+  downloadUrl?: string
+}
+
 export type FeedItem = ThinkingItem | MessageItem | SystemItem | ToolItem | ResultItem
 
 export interface PendingQuestion {

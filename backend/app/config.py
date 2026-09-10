@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     auth_bypass_user_id: str = ""
     onec_sql_allowlist: str = ""
     onec_odata_entity_allowlist: str = ""
+    odata_local_catalog_path: Path = BACKEND_ROOT / "app" / "data" / "odata_document_structures.json"
+    onec_artifact_storage_dir: Path = BACKEND_ROOT / "storage" / "onec_artifacts"
 
 
 settings = Settings()
@@ -104,3 +106,4 @@ settings.chat_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.onec_artifact_storage_dir.mkdir(parents=True, exist_ok=True)

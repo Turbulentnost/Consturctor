@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -39,8 +41,9 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str,
     # Server-executed tools (1C OData/SQL, IMAP, users, notify) are proxied to the
     # Constructor backend. Everything else runs on this desktop by default, so no
     # locally written tool can leak to the server.
-    from app.tools.server_tools import SERVER_TOOL_NAMES
+    from app.tools.server_tools import SERVER_TOOL_NAMES, canonical_server_tool_name
 
+    name = canonical_server_tool_name(name)
     if name in SERVER_TOOL_NAMES:
         return _invoke_server_tool(name, args)
     if name == "data.process":
@@ -59,27 +62,85 @@ def invoke_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str,
         raise ToolHostError(str(exc)) from exc
 
 
+def _server_tool_timeout(name: str) -> float:
+    from app.tools.server_tools import server_tool_timeout_seconds
+
+    extra = server_tool_timeout_seconds(name)
+    return float(extra) if extra > 0 else 180.0
+
+
 def _invoke_server_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Proxy a server-executed tool to the Constructor backend.
 
-    Uses the same endpoint as the turboproject proxy:
-    POST /api/v1/tools/{name}/invoke with {"arguments": args}.
+    Prefers POST /api/v1/tools/invoke with the tool name in the JSON body so
+    dotted names like onec.download_artifact are not lost in the URL path.
     """
     from app.tools import runtime_api
 
+    timeout = _server_tool_timeout(name)
     try:
         data = runtime_api.request(
             "POST",
-            f"/api/v1/tools/{name}/invoke",
-            json={"arguments": args},
-            timeout=180.0,
+            "/api/v1/tools/invoke",
+            json={"tool": name, "arguments": args},
+            timeout=timeout,
         )
     except RuntimeError as exc:
         raise ToolHostError(str(exc)) from exc
     if isinstance(data, dict) and "result" in data:
         result = data.get("result")
-        return result if isinstance(result, dict) else {"result": result}
-    return data if isinstance(data, dict) else {"result": data}
+        payload = result if isinstance(result, dict) else {"result": result}
+        return _materialize_downloaded_artifact(payload)
+    payload = data if isinstance(data, dict) else {"result": data}
+    return _materialize_downloaded_artifact(payload) if isinstance(data, dict) else payload
+
+
+def _write_artifact_bytes(name: str, content: bytes, result: dict[str, Any]) -> dict[str, Any]:
+    dest_dir = Path(tempfile.gettempdir()) / "constructor-onec-artifacts"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / Path(name).name
+    dest.write_bytes(content)
+    out = dict(result)
+    out.pop("content_base64", None)
+    out["file"] = str(dest)
+    out["path"] = str(dest)
+    out["result_file"] = str(dest)
+    out["filename"] = dest.name
+    return out
+
+
+def _fetch_artifact_bytes(result: dict[str, Any]) -> bytes | None:
+    from app.tools import runtime_api
+
+    url = str(result.get("content_url") or "").strip()
+    file_id = str(result.get("file_id") or "").strip()
+    path = url if url.startswith("/") else ""
+    if not path and file_id:
+        path = f"/api/v1/tools/onec-artifacts/{file_id}"
+    if not path:
+        return None
+    try:
+        return runtime_api.request_bytes("GET", path, timeout=300.0)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _materialize_downloaded_artifact(result: dict[str, Any]) -> dict[str, Any]:
+    raw = result.get("content_base64")
+    name = str(result.get("filename") or "").strip()
+    content: bytes | None = None
+    if raw and name:
+        try:
+            content = base64.b64decode(str(raw), validate=True)
+        except Exception:
+            content = None
+    if content is None:
+        content = _fetch_artifact_bytes(result)
+        if not name:
+            name = str(result.get("filename") or "artifact.bin").strip() or "artifact.bin"
+    if not content or not name:
+        return result
+    return _write_artifact_bytes(name, content, result)
 
 
 def _web_search(arguments: dict[str, Any]) -> dict[str, Any]:
