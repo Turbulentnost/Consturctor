@@ -12,6 +12,14 @@ import { humanWhen, parseIso, sameDay, windowFor } from '../utils/calendar'
 import { CardMenu } from '../components/agents/CardMenu'
 import { humanResponseDelayColor } from './humanResponseColor'
 import { personalAgentWorkflowId } from './personalAgent'
+import { useRuns } from '../store/runs'
+import {
+  findPendingToolRequest,
+  isUserFacingResultFile,
+  readVerdict,
+  runDecisionId,
+  writeVerdict
+} from './preparedDecisions'
 import {
   STATUS_LABEL,
   TASK_STATUS_LABEL,
@@ -57,10 +65,18 @@ function eventStatus(status: string): DayTaskStatus {
   const value = (status || '').toLowerCase()
   if (value === 'ok' || value === 'done' || value === 'completed') return 'done'
   if (value === 'running' || value === 'active') return 'running'
+  if (value === 'skipped') return 'done'
   if (value === 'error' || value === 'needs_attention' || value === 'waiting_human') {
     return 'needs_decision'
   }
   return 'todo'
+}
+
+function isNoiseBoardEvent(event: CalendarEvent): boolean {
+  const status = (event.status || '').toLowerCase()
+  if (status === 'canceled' || status === 'cancelled') return true
+  const text = `${event.subtitle || ''} ${event.title || ''}`.trim().toLowerCase()
+  return text.startsWith('агент уже выполняется')
 }
 
 function formatDue(value: string): string {
@@ -82,6 +98,7 @@ function isTechnicalTaskText(text: string): boolean {
   if (value.startsWith('{') || value.startsWith('[')) return true
   if (/errno\s*\d+|traceback|invalid argument|filenotfounderror/i.test(value)) return true
   if (/"verdict"\s*:/i.test(value) || /ответь только json/i.test(value)) return true
+  if (/^агент уже выполняется/i.test(value)) return true
   return false
 }
 
@@ -108,8 +125,33 @@ function eventToTask(event: CalendarEvent, processId: string, agentName: string)
     title: taskTitleFromEvent(event, agentName),
     source: status === 'needs_decision' ? 'human' : 'agent',
     due: formatDue(event.startAt),
-    status
+    status,
+    runId: (event.runId || '').trim() || undefined
   }
+}
+
+function pickRunId(agent: WorkplaceAgent): string {
+  for (const task of agent.tasks) {
+    if (task.runId && (task.status === 'running' || task.status === 'needs_decision')) {
+      return task.runId
+    }
+  }
+  const hasOpenSlot = agent.tasks.some((task) => task.status === 'todo' || task.status === 'running')
+  if (hasOpenSlot) return ''
+  for (const task of agent.tasks) {
+    if (task.runId) return task.runId
+  }
+  return ''
+}
+
+function latestTaskStatus(agent: WorkplaceAgent): string {
+  const last = agent.tasks[agent.tasks.length - 1]
+  if (!last) return (agent.boardAgent?.lastRunStatus || '').toLowerCase()
+  if (last.status === 'needs_decision') return 'waiting_human'
+  if (last.status === 'running') return 'running'
+  if (last.status === 'done') return 'ok'
+  if (last.status === 'todo') return 'scheduled'
+  return (agent.boardAgent?.lastRunStatus || '').toLowerCase()
 }
 
 function agentCode(title: string): string {
@@ -137,6 +179,7 @@ function runStagePack(agent: BoardAgent, lastEvent?: CalendarEvent): { current: 
   else if (last === 'waiting_human' || last === 'hitl' || last === 'waiting') current = 2
   else if (last === 'ok' || last === 'done' || last === 'completed') current = 3
   else if (last === 'error') current = 1
+  else if (last === 'scheduled' || last === 'missed') current = 0
   else if (started) current = 1
   return {
     current,
@@ -254,7 +297,18 @@ export function buildWorkplaceAgents(board: WorkflowBoard, personal?: PersonalAg
       workflowId: agent.id,
       boardAgent: agent,
       tasks: events
-        .map((event) => eventToTask(event, agent.id, agent.title || 'ИИ-агент'))
+        .filter((event) => !isNoiseBoardEvent(event))
+        .map((event) => {
+          const task = eventToTask(event, agent.id, agent.title || 'ИИ-агент')
+          const runId = (event.runId || task.runId || '').trim()
+          if (runId && readVerdict(agent.id, runDecisionId(runId)) === 'confirmed') {
+            return { ...task, status: 'done' as DayTaskStatus, source: 'agent' as const }
+          }
+          if (/work_result/i.test(task.title) && task.status === 'needs_decision') {
+            return { ...task, status: 'done' as DayTaskStatus, source: 'agent' as const }
+          }
+          return task
+        })
         .sort((a, b) => a.time.localeCompare(b.time)),
       stages: pack.stages,
       stageIndex: pack.current,
@@ -553,11 +607,39 @@ export function AgentPlanCard({
 }
 
 export function ProcessStepper({
-  agent
+  agent,
+  onRun,
+  onOpenRun,
+  onOpenDecisions
 }: {
   agent: WorkplaceAgent
+  onRun: (workflowId: string, title: string) => void
+  onOpenRun: (workflowId: string, title: string, runId?: string) => void
+  onOpenDecisions: () => void
 }): React.JSX.Element {
   const waiting = agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR'
+  const paused = agent.paused || agent.status === 'PAUSED'
+  const stageId = agent.stages[agent.stageIndex]?.id || 'start'
+
+  const advance = (): void => {
+    if (waiting || paused) return
+    const slotStatus = latestTaskStatus(agent)
+    if (stageId === 'start' || stageId === 'next' || slotStatus === 'scheduled' || slotStatus === 'missed') {
+      onRun(agent.workflowId, agent.name)
+      return
+    }
+    if (stageId === 'human' || agent.status === 'WAITING_HUMAN') {
+      onOpenDecisions()
+      return
+    }
+    const runId = pickRunId(agent)
+    if (runId) {
+      onOpenRun(agent.workflowId, agent.name, runId)
+      return
+    }
+    onRun(agent.workflowId, agent.name)
+  }
+
   return (
     <section className="wp-card wp-stepper">
       <div className="wp-stepper-head">
@@ -594,12 +676,21 @@ export function ProcessStepper({
           )
         })}
         <li className="wp-step-next-cell">
-          <button className="btn-ghost wp-step-next" type="button" disabled={waiting}>
+          <button
+            className="btn-ghost wp-step-next"
+            type="button"
+            disabled={waiting || paused}
+            onClick={advance}
+          >
             Перейти к следующему этапу
           </button>
         </li>
       </ol>
-      {waiting && <p className="wp-step-note">Сначала подтвердите решение или разберите ошибку в прогоне.</p>}
+      {waiting ? (
+        <p className="wp-step-note">Сначала подтвердите решение или разберите ошибку в прогоне.</p>
+      ) : paused ? (
+        <p className="wp-step-note">Агент на паузе — возобновите автозапуск в карточке процесса.</p>
+      ) : null}
     </section>
   )
 }
@@ -709,6 +800,12 @@ type PreparedCard = {
   meta: string
   workflowId: string
   agentName: string
+  kind: 'file' | 'waiting'
+  fileId?: string
+  fileUrl?: string
+  runId?: string
+  requestId?: string
+  live?: boolean
 }
 
 type ProcessKpiRow = {
@@ -723,13 +820,20 @@ type ProcessKpiRow = {
 function PreparedSolutionsRail({
   items,
   onOpenDecisions,
-  onOpenItem
+  onOpenItem,
+  onConfirmItem,
+  onReturnItem,
+  busyId
 }: {
   items: PreparedCard[]
   onOpenDecisions: () => void
-  onOpenItem: (workflowId: string, title: string) => void
+  onOpenItem: (item: PreparedCard) => void
+  onConfirmItem: (item: PreparedCard) => void
+  onReturnItem: (item: PreparedCard) => void
+  busyId: string
 }): React.JSX.Element {
   const featured = items[0]
+  const busy = featured ? busyId === featured.id : false
   return (
     <section className="wp-rail-card wp-rail-solutions">
       <header className="wp-rail-card-head">
@@ -741,9 +845,7 @@ function PreparedSolutionsRail({
           <CardMenu
             items={[
               { label: 'Открыть решения', onClick: onOpenDecisions },
-              ...(featured
-                ? [{ label: 'Открыть решение', onClick: () => onOpenItem(featured.workflowId, featured.agentName) }]
-                : []),
+              ...(featured ? [{ label: 'Открыть решение', onClick: () => onOpenItem(featured) }] : []),
               { label: 'Посмотреть историю', onClick: onOpenDecisions }
             ]}
           />
@@ -767,14 +869,25 @@ function PreparedSolutionsRail({
               <button
                 className="btn-primary"
                 type="button"
-                onClick={() => onOpenItem(featured.workflowId, featured.agentName)}
+                disabled={busy}
+                onClick={() => onOpenItem(featured)}
               >
                 Открыть
               </button>
-              <button className="btn-primary" type="button" onClick={onOpenDecisions}>
-                Подтвердить
+              <button
+                className="btn-primary"
+                type="button"
+                disabled={busy}
+                onClick={() => onConfirmItem(featured)}
+              >
+                {busy ? 'Подтверждаем…' : 'Подтвердить'}
               </button>
-              <button className="btn-ghost" type="button" onClick={onOpenDecisions}>
+              <button
+                className="btn-ghost"
+                type="button"
+                disabled={busy}
+                onClick={() => onReturnItem(featured)}
+              >
                 Вернуть
               </button>
             </div>
@@ -933,17 +1046,30 @@ export function DetailRail({
   kpiRows,
   onOpenDecisions,
   onOpenMetrics,
-  onOpenItem
+  onOpenItem,
+  onConfirmItem,
+  onReturnItem,
+  busySolutionId
 }: {
   solutions: PreparedCard[]
   kpiRows: ProcessKpiRow[]
   onOpenDecisions: () => void
   onOpenMetrics: () => void
-  onOpenItem: (workflowId: string, title: string) => void
+  onOpenItem: (item: PreparedCard) => void
+  onConfirmItem: (item: PreparedCard) => void
+  onReturnItem: (item: PreparedCard) => void
+  busySolutionId: string
 }): React.JSX.Element {
   return (
     <aside className="wp-rail">
-      <PreparedSolutionsRail items={solutions} onOpenDecisions={onOpenDecisions} onOpenItem={onOpenItem} />
+      <PreparedSolutionsRail
+        items={solutions}
+        onOpenDecisions={onOpenDecisions}
+        onOpenItem={onOpenItem}
+        onConfirmItem={onConfirmItem}
+        onReturnItem={onReturnItem}
+        busyId={busySolutionId}
+      />
       <ProcessKpiRail rows={kpiRows} onOpenMetrics={onOpenMetrics} />
     </aside>
   )
@@ -1031,6 +1157,7 @@ export function TodayWorkplace({
   onOpenMetrics,
   onOpenPassport,
   onRun,
+  onOpenRun,
   onAskOrchestrator
 }: {
   userId: string
@@ -1039,12 +1166,14 @@ export function TodayWorkplace({
   onOpenMetrics: () => void
   onOpenPassport: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
   onRun: (workflowId: string, title: string) => void
+  onOpenRun: (workflowId: string, title: string, runId?: string) => void
   onAskOrchestrator: (message: string, appContext: string) => void
 }): React.JSX.Element {
   const { board, orch, agents, loading, error, flash, pause, resume, reload } = useWorkplaceData({
     userId,
     fio: userFio
   })
+  const runs = useRuns()
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<ProcessStatus | ''>('')
   const [urgency, setUrgency] = useState<'' | 'overdue' | 'ok'>('')
@@ -1055,6 +1184,15 @@ export function TodayWorkplace({
   const [askText, setAskText] = useState('')
   const [recentFilesByWorkflow, setRecentFilesByWorkflow] = useState<Record<string, WorkflowFileItem[]>>({})
   const [kpiByWorkflow, setKpiByWorkflow] = useState<Record<string, AgentKpi | null>>({})
+  const [decisionTick, setDecisionTick] = useState(0)
+  const [busySolutionId, setBusySolutionId] = useState('')
+  const [actionNote, setActionNote] = useState('')
+
+  useEffect(() => {
+    if (!actionNote) return
+    const timer = window.setTimeout(() => setActionNote(''), 4000)
+    return () => window.clearTimeout(timer)
+  }, [actionNote])
   const catalogAgents = useMemo(() => {
     const today = new Date()
     return agents.filter((agent) => {
@@ -1095,9 +1233,11 @@ export function TodayWorkplace({
     const cards: PreparedCard[] = []
     for (const agent of agents) {
       if (agent.standalone) continue
-      if (agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR') {
+      const liveHitl = runs.entries[agent.workflowId]?.state.pendingHitl
+      if (agent.status === 'WAITING_HUMAN' || agent.status === 'ERROR' || liveHitl) {
         cards.push({
           id: `wait:${agent.id}`,
+          kind: 'waiting',
           title: agent.tasks.find((task) => task.status === 'needs_decision')?.title || `Решение: ${agent.name}`,
           note:
             agent.status === 'ERROR'
@@ -1105,15 +1245,21 @@ export function TodayWorkplace({
               : 'Агент подготовил материал и ждёт подтверждения человека.',
           meta: `Агент «${agent.name}» · ${STATUS_LABEL[agent.status]}`,
           workflowId: agent.workflowId,
-          agentName: agent.name
+          agentName: agent.name,
+          requestId: liveHitl?.requestId,
+          runId: runs.entries[agent.workflowId]?.backendRunId || agent.tasks.find((task) => task.runId)?.runId,
+          live: Boolean(liveHitl?.requestId)
         })
       }
-      const files = recentFilesByWorkflow[agent.workflowId] || []
+      const files = (recentFilesByWorkflow[agent.workflowId] || []).filter(isUserFacingResultFile)
       for (const file of files.slice(0, 2)) {
+        const fileId = file.id || file.name
+        if (readVerdict(agent.workflowId, fileId)) continue
         cards.push({
-          id: `file:${agent.workflowId}:${file.id || file.name}`,
+          id: `file:${agent.workflowId}:${fileId}`,
+          kind: 'file',
           title: file.name || 'Файл результата',
-          note: `Результат агента «${agent.name}». Откройте и подтвердите на вкладке «Решения».`,
+          note: `Результат агента «${agent.name}». Откройте файл и подтвердите или верните на доработку.`,
           meta: file.createdAt
             ? `Подготовлено ${(() => {
                 const stamp = parseIso(file.createdAt)
@@ -1121,12 +1267,94 @@ export function TodayWorkplace({
               })()}`
             : 'Подготовлено сегодня',
           workflowId: agent.workflowId,
-          agentName: agent.name
+          agentName: agent.name,
+          fileId,
+          fileUrl: file.downloadUrl,
+          runId: file.runId
         })
       }
     }
     return cards.slice(0, 6)
-  }, [agents, recentFilesByWorkflow])
+  }, [agents, recentFilesByWorkflow, runs.entries, decisionTick])
+
+  const openPreparedItem = (item: PreparedCard): void => {
+    if (item.fileUrl) {
+      void api.download(item.fileUrl, item.title || 'file')
+      return
+    }
+    if (item.runId) {
+      onOpenRun(item.workflowId, item.agentName, item.runId)
+      return
+    }
+    onOpenPassport(item.workflowId, item.agentName, 'results')
+  }
+
+  const refreshWorkflowKpi = async (workflowId: string): Promise<void> => {
+    const kpi = await api.calculateWorkflowKpi(workflowId).catch(() => null)
+    if (kpi) {
+      setKpiByWorkflow((prev) => ({ ...prev, [workflowId]: kpi }))
+    }
+  }
+
+  const confirmPreparedItem = async (item: PreparedCard): Promise<void> => {
+    setBusySolutionId(item.id)
+    setActionNote('')
+    try {
+      const pending = await findPendingToolRequest(item.workflowId, item.requestId)
+      if (pending?.requestId) {
+        runs.respondHitl(item.workflowId, pending.requestId, true)
+        setActionNote('Действие подтверждено — агент продолжит работу.')
+        await refreshWorkflowKpi(item.workflowId)
+        await reload()
+        return
+      }
+      if (item.runId) {
+        writeVerdict(item.workflowId, runDecisionId(item.runId), 'confirmed')
+        setDecisionTick((value) => value + 1)
+        await refreshWorkflowKpi(item.workflowId)
+        await reload()
+        setActionNote(`Результат «${item.title}» подтверждён и учтён в KPI.`)
+        return
+      }
+      if (item.kind === 'file' && item.fileId) {
+        writeVerdict(item.workflowId, item.fileId, 'confirmed')
+        setDecisionTick((value) => value + 1)
+        await refreshWorkflowKpi(item.workflowId)
+        setActionNote(`Результат «${item.title}» подтверждён и учтён в KPI.`)
+        return
+      }
+      onOpenDecisions()
+    } catch (err) {
+      setActionNote(err instanceof Error ? err.message : 'Не удалось подтвердить результат')
+    } finally {
+      setBusySolutionId('')
+    }
+  }
+
+  const returnPreparedItem = async (item: PreparedCard): Promise<void> => {
+    setBusySolutionId(item.id)
+    setActionNote('')
+    try {
+      const pending = await findPendingToolRequest(item.workflowId, item.requestId)
+      if (pending?.requestId) {
+        runs.respondHitl(item.workflowId, pending.requestId, false)
+        setActionNote('Действие возвращено — агент получит отказ.')
+        await reload()
+        return
+      }
+      if (item.kind === 'file' && item.fileId) {
+        writeVerdict(item.workflowId, item.fileId, 'returned')
+        setDecisionTick((value) => value + 1)
+        setActionNote(`Результат «${item.title}» возвращён на доработку.`)
+        return
+      }
+      onOpenDecisions()
+    } catch (err) {
+      setActionNote(err instanceof Error ? err.message : 'Не удалось вернуть результат')
+    } finally {
+      setBusySolutionId('')
+    }
+  }
 
   const kpiRows = useMemo((): ProcessKpiRow[] => {
     return visible
@@ -1164,11 +1392,14 @@ export function TodayWorkplace({
     void Promise.all(
       targets.map(async (workflowId) => {
         const files = await api.listWorkflowFiles(workflowId).catch(() => [] as WorkflowFileItem[])
-        const produced = files.filter((file) => {
-          const source = String(file.source || '').toLowerCase()
-          const origin = String(file.origin || '').toLowerCase()
-          return source === 'agent' || source === 'result' || origin.includes('agent')
-        })
+        const produced = files
+          .filter((file) => {
+            const source = String(file.source || '').toLowerCase()
+            const origin = String(file.origin || '').toLowerCase()
+            return source === 'agent' || source === 'result' || origin.includes('agent')
+          })
+          .filter(isUserFacingResultFile)
+          .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
         return [workflowId, produced] as const
       })
     ).then((pairs) => {
@@ -1229,6 +1460,7 @@ export function TodayWorkplace({
       </div>
 
       {flash ? <div className="wp-toast">{flash}</div> : null}
+      {actionNote ? <div className="wp-toast">{actionNote}</div> : null}
       {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
 
       <SummaryRow
@@ -1343,14 +1575,24 @@ export function TodayWorkplace({
               onResume={(id) => void resume(id)}
             />
           ))}
-          {selected ? <ProcessStepper agent={selected} /> : null}
+          {selected ? (
+            <ProcessStepper
+              agent={selected}
+              onRun={onRun}
+              onOpenRun={onOpenRun}
+              onOpenDecisions={onOpenDecisions}
+            />
+          ) : null}
         </div>
         <DetailRail
           solutions={preparedSolutions}
           kpiRows={kpiRows}
           onOpenDecisions={onOpenDecisions}
           onOpenMetrics={onOpenMetrics}
-          onOpenItem={(workflowId, title) => onOpenPassport(workflowId, title, 'results')}
+          onOpenItem={openPreparedItem}
+          onConfirmItem={(item) => void confirmPreparedItem(item)}
+          onReturnItem={(item) => void returnPreparedItem(item)}
+          busySolutionId={busySolutionId}
         />
       </div>
 

@@ -230,6 +230,7 @@ export function AgentsPage({
   const createdTitles = useMemo(() => {
     const titles = new Set<string>()
     for (const item of workflowAgents) {
+      if (item.status === 'draft') continue
       if (item.title.trim()) titles.add(normalizeTitle(item.title))
     }
     return titles
@@ -249,7 +250,9 @@ export function AgentsPage({
   }
 
   const visibleAgents = useMemo(() => {
-    let items = [...board.agents]
+    let items = [...board.agents].sort(
+      (left, right) => Number(right.kind === 'draft') - Number(left.kind === 'draft')
+    )
     if (statusFilter === 'active') {
       items = items.filter(
         (item) => item.kind === 'workflow' && !item.paused && item.status !== 'draft'

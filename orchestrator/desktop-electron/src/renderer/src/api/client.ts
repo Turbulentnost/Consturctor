@@ -1056,7 +1056,8 @@ export class ApiClient {
   // ---------- Auth ----------
   async login(fio: string, password: string): Promise<LoginResult> {
     const data = await this.request<Record<string, unknown>>('POST', '/api/v1/auth/login', {
-      body: { fio, password, client: 'orchestrator' }
+      body: { fio, password, client: 'orchestrator' },
+      timeoutMs: 120_000
     })
     const token = String(data.access_token ?? '')
     this.token = token
@@ -1193,6 +1194,37 @@ export class ApiClient {
 
   async cancelTrigger(triggerId: string): Promise<void> {
     await this.request('POST', `/api/v1/triggers/${triggerId}/cancel`, { timeoutMs: 30_000 })
+  }
+
+  async listTriggers(): Promise<
+    Array<{ id: string; workflowId: string; enabled: boolean }>
+  > {
+    const data = await this.request<{ items?: Record<string, unknown>[] }>('GET', '/api/v1/triggers', {
+      timeoutMs: 30_000
+    })
+    return (data.items ?? [])
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => ({
+        id: String(item.id ?? ''),
+        workflowId: String(item.workflow_id ?? item.workflowId ?? ''),
+        enabled: item.enabled !== false
+      }))
+      .filter((item) => item.id)
+  }
+
+  async applyPublishedSchedule(workflowId: string, draft: ScheduleDraft): Promise<void> {
+    await this.persistScheduleDraft(workflowId, draft)
+    const existing = await this.listTriggers()
+    for (const item of existing) {
+      if (item.workflowId !== workflowId || !item.enabled) continue
+      await this.cancelTrigger(item.id)
+    }
+    for (const spec of draft.triggers) {
+      await this.createTriggerFromSpec(workflowId, {
+        ...spec,
+        message: (spec.message || draft.goal || '').trim()
+      })
+    }
   }
 
   async skipTriggerSlot(triggerId: string, at: string): Promise<void> {
@@ -1401,8 +1433,8 @@ export class ApiClient {
       {
         body: {
           passport: passportToApi(session.passport),
-          answers,
-          field_updates: {},
+          answers: {},
+          field_updates: answers,
           bp_name: session.bpName,
           excerpt: session.excerpt,
           functions: session.functions.map((item) => ({

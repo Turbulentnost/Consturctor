@@ -25,6 +25,8 @@ ONEC_COM32_TOOLS = frozenset(
         "onec.search_tasks",
         "onec.get_task_card",
         "onec.meeting_service_notes",
+        "onec.list_attachments",
+        "onec.read_attachment",
     }
 )
 
@@ -156,6 +158,53 @@ class OneCGetTaskCardTool(OneCReadOnlyTool):
         )
 
 
+class OneCListAttachmentsTool(OneCReadOnlyTool):
+    """Список вложений документа/карточки 1С."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.list_attachments",
+                "Список вложений 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "metadata_name": {"type": "string", "description": "Имя метаданных документа из карточки 1С"},
+                        "number": {"type": "string", "description": "Номер документа 1С"},
+                        "owner_ref": {"type": "string", "description": "Ссылка владельца из карточки"},
+                        "document_ref": {"type": "string", "description": "Альтернатива owner_ref"},
+                        "kind": {"type": "string", "description": "document или catalog"},
+                        "max_results": {"type": "integer", "description": "Максимум вложений"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
+class OneCReadAttachmentTool(OneCReadOnlyTool):
+    """Прочитать вложение 1С (текст PDF/DOCX/XLSX)."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            _definition(
+                "onec.read_attachment",
+                "Чтение вложения 1С",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "metadata_name": {"type": "string", "description": "Имя метаданных документа"},
+                        "attachment_ref": {"type": "string", "description": "Ссылка вложения из list_attachments"},
+                        "filename": {"type": "string", "description": "Имя файла, если ref неизвестен"},
+                        "owner_ref": {"type": "string", "description": "Ссылка документа-владельца"},
+                        "number": {"type": "string", "description": "Номер документа-владельца"},
+                    },
+                },
+            ),
+            worker,
+        )
+
+
 class OneCMeetingServiceNotesTool(OneCReadOnlyTool):
     """Чтение служебных записок на организацию совещаний. Только SELECT."""
 
@@ -206,6 +255,8 @@ def register_onec_readonly_tools(
         OneCGetDocumentCardTool(worker),
         OneCSearchTasksTool(worker),
         OneCGetTaskCardTool(worker),
+        OneCListAttachmentsTool(worker),
+        OneCReadAttachmentTool(worker),
         OneCMeetingServiceNotesTool(worker),
     ]:
         if skip_existing and registry.has_tool(tool.definition.name):

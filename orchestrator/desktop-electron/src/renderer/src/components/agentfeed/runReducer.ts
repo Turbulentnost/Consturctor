@@ -1,12 +1,6 @@
 import type { AgentEvent, AgentRunnerEvent } from '../../api/types'
-import {
-  beginAgentPhase,
-  beginHumanPhase,
-  closeTiming,
-  EMPTY_TIMING,
-  type LiveTiming
-} from '../../workplace/runTiming'
 import { isTaskTool, resolveToolName, toolArgHint, toolCardTitle, toolLabel } from './labels'
+import { summarizeToolResult } from './resultSummary'
 import { isAskQuestion, parseQuestionArgs } from './questionArgs'
 import { appendThinkingText, streamDelta } from './thinkingText'
 import type { FeedItem, PendingHitl, PendingQuestion, ToolItem } from './types'
@@ -27,12 +21,10 @@ export interface RunState {
   items: FeedItem[]
   status: string
   running: boolean
-  runningSinceMs: number | null
   error: string
   pendingQuestion: PendingQuestion | null
   pendingHitl: PendingHitl | null
   activeRunId: string | null
-  timing: LiveTiming
 }
 
 /** Effects a single event can emit so callers can fire callbacks / navigate. */
@@ -47,12 +39,10 @@ export function createRunState(): RunState {
     items: [],
     status: '',
     running: false,
-    runningSinceMs: null,
     error: '',
     pendingQuestion: null,
     pendingHitl: null,
-    activeRunId: null,
-    timing: { ...EMPTY_TIMING }
+    activeRunId: null
   }
 }
 
@@ -93,24 +83,7 @@ function normalizeResult(raw: unknown): Record<string, unknown> | null {
 
 /** Mirror desktop compact_tool_result: only the tool OUTPUT, summarized. */
 function summarizeResult(result: Record<string, unknown> | null): string {
-  if (!result || typeof result !== 'object') return 'Данные получены.'
-  const summary = result.summary
-  if (typeof summary === 'string' && summary.trim()) return summary.trim()
-  if (typeof result.result_file === 'string' && result.result_file.trim()) {
-    return `Файл: ${result.result_file}`
-  }
-  if (result.externalized && typeof result.result_file === 'string') {
-    return `Файл: ${result.result_file}`
-  }
-  if (result.skipped) return 'Пропущено пользователем'
-  if (result.rejected) return 'Отклонено пользователем'
-  for (const key of ['items', 'rows', 'results', 'messages', 'events', 'files', 'records', 'documents', 'tasks']) {
-    const value = result[key]
-    if (Array.isArray(value)) return `Получено записей: ${value.length}`
-  }
-  if (typeof result.text === 'string' && result.text.trim()) return result.text.trim().slice(0, 200)
-  if (typeof result.value === 'string' && result.value.trim()) return result.value.trim().slice(0, 200)
-  return 'Данные получены.'
+  return summarizeToolResult(result)
 }
 
 const _DONE_STATUS = new Set([
@@ -207,33 +180,6 @@ function pushAssistant(items: FeedItem[], text: string): FeedItem[] {
   return [...items, { kind: 'message', id: nextId('msg'), role: 'agent', text: clean }]
 }
 
-function isReadableText(value: string): boolean {
-  const text = (value || '').trim()
-  if (!text) return false
-  return Boolean(text.replace(/[?？\s.,;:!…()[\]{}'"`+-]/g, ''))
-}
-
-function bestErrorText(...values: unknown[]): string {
-  for (const value of values) {
-    const text = String(value ?? '').trim()
-    if (isReadableText(text)) return text
-  }
-  return ''
-}
-
-function fallbackErrorText(event: AgentEvent): string {
-  const payload = (event.payload as Record<string, unknown> | undefined) || {}
-  const code = String(event.code ?? payload.code ?? '').trim()
-  const status = String(event.status ?? payload.status ?? '').trim()
-  const runId = String(event.runId || '').trim()
-  const parts: string[] = []
-  if (status) parts.push(`status: ${status}`)
-  if (code) parts.push(`code: ${code}`)
-  if (runId) parts.push(`run: ${runId.slice(0, 8)}`)
-  const tail = parts.length ? ` (${parts.join(', ')})` : ''
-  return `Запуск прерван до получения ответа${tail}. Откройте «Диагностика» для деталей.`
-}
-
 export function pushSystem(items: FeedItem[], text: string, tone: 'info' | 'error' | 'success' = 'info'): FeedItem[] {
   const value = (text || '').trim()
   if (!value) return items
@@ -283,10 +229,12 @@ function handleToolCall(state: RunState, payload: AgentRunnerEvent): RunState {
         question,
         options,
         needsFile: parsed.needsFile || state.pendingQuestion?.needsFile,
-        accept: parsed.accept.length ? parsed.accept : state.pendingQuestion?.accept
+        accept: parsed.accept.length ? parsed.accept : state.pendingQuestion?.accept,
+        autoContinueSeconds:
+          parsed.autoContinueSeconds || state.pendingQuestion?.autoContinueSeconds,
+        autoContinueAnswer: parsed.autoContinueAnswer || state.pendingQuestion?.autoContinueAnswer
       },
-      status: 'Нужен ваш ответ',
-      timing: beginHumanPhase(state.timing || EMPTY_TIMING)
+      status: 'Нужен ваш ответ'
     }
   }
   const status = String(payload.status || '')
@@ -475,11 +423,8 @@ export function applyRunnerEvent(state: RunState, payload: AgentRunnerEvent): Ru
         return { ...state, items: pushResult(state.items, text) }
       }
       return state
-    case 'error': {
-      const message = bestErrorText(payload.text, payload.message, payload.error, payload.status)
-      if (!message) return state
-      return { ...state, items: pushSystem(state.items, message, 'error') }
-    }
+    case 'error':
+      return text ? { ...state, items: pushSystem(state.items, text, 'error') } : state
     default:
       return state
   }
@@ -520,10 +465,17 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
               ? parsed.accept
               : event.accept?.length
                 ? event.accept
-                : state.pendingQuestion?.accept
+                : state.pendingQuestion?.accept,
+            autoContinueSeconds:
+              parsed.autoContinueSeconds ||
+              event.autoContinueSeconds ||
+              state.pendingQuestion?.autoContinueSeconds,
+            autoContinueAnswer:
+              parsed.autoContinueAnswer ||
+              event.autoContinueAnswer ||
+              state.pendingQuestion?.autoContinueAnswer
           },
-          status: 'Нужен ваш ответ',
-          timing: beginHumanPhase(state.timing || EMPTY_TIMING)
+          status: 'Нужен ваш ответ'
         }
       }
     }
@@ -538,8 +490,7 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
             title: toolLabel(tool),
             arguments: (event.arguments as Record<string, unknown>) || {}
           },
-          status: 'Требуется подтверждение действия',
-          timing: beginHumanPhase(state.timing || EMPTY_TIMING)
+          status: 'Требуется подтверждение действия'
         }
       }
     }
@@ -549,12 +500,10 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
         state: {
           ...state,
           running: false,
-          runningSinceMs: null,
           status: '',
           pendingQuestion: null,
           pendingHitl: null,
           activeRunId: null,
-          timing: closeTiming(state.timing || EMPTY_TIMING),
           items: pushResult(state.items, answer)
         },
         result: {
@@ -570,35 +519,35 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
       }
     }
     case 'error': {
-      const message = bestErrorText(
-        event.message,
-        event.text,
-        (event.payload as Record<string, unknown> | undefined)?.error,
-        (event.payload as Record<string, unknown> | undefined)?.message,
-        (event.payload as Record<string, unknown> | undefined)?.text
-      )
-      const finalMessage = message || fallbackErrorText(event)
+      const message = String(event.message || 'Ошибка агента')
       return {
         state: {
           ...state,
           running: false,
-          runningSinceMs: null,
           status: '',
-          error: finalMessage,
+          error: message,
           pendingQuestion: null,
           pendingHitl: null,
-          items: pushSystem(state.items, finalMessage, 'error'),
-          activeRunId: null,
-          timing: closeTiming(state.timing || EMPTY_TIMING)
+          items: pushSystem(state.items, message, 'error'),
+          activeRunId: null
         },
-        error: finalMessage
+        error: message
       }
     }
     case 'ready_state':
       if (!event.ok && event.message) {
-        return { state: { ...state, items: pushSystem(state.items, `Локальный Cursor SDK недоступен: ${event.message}`, 'error') } }
+        return {
+          state: {
+            ...state,
+            running: false,
+            status: '',
+            error: event.message,
+            items: pushSystem(state.items, `Локальный Cursor SDK недоступен: ${event.message}`, 'error')
+          },
+          error: event.message
+        }
       }
-      return { state }
+      return { state: { ...state, status: 'Агент работает…' } }
     case 'sidecar_exit':
       return { state: { ...state, items: pushSystem(state.items, 'Процесс агента завершился. Перезапуск…', 'error') } }
     default:

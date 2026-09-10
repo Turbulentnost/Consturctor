@@ -49,6 +49,7 @@ import queue
 import re
 import sys
 import threading
+import time
 import traceback
 import uuid
 from dataclasses import asdict, is_dataclass
@@ -159,6 +160,23 @@ def _is_read_tool(name: str) -> bool:
     if tool in _NEVER_CONFIRM or tool in _READ_EXACT:
         return True
     return any(tool.startswith(prefix) for prefix in _READ_PREFIXES)
+
+
+_WORK_RESULT_DONE_RE = re.compile(r"#{0,6}[ \t]*WORK[ _]?RESULT\b", re.I)
+_FILES_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*FILES\b", re.I)
+_ACTIONS_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*ACTIONS\b", re.I)
+
+
+def _text_has_finished_work_result(text: str) -> bool:
+    raw = text or ""
+    upper = raw.upper()
+    if "TESTS: FAIL" in upper or "TESTS:FAIL" in upper:
+        return False
+    if "TESTS: PASS" not in upper and "TESTS:PASS" not in upper:
+        return False
+    if _WORK_RESULT_DONE_RE.search(raw):
+        return True
+    return bool(_FILES_SECTION_RE.search(raw) and _ACTIONS_SECTION_RE.search(raw))
 
 
 def needs_confirmation(name: str) -> bool:
@@ -326,7 +344,8 @@ OUTLOOK_MEETING_HINT = (
     "outlook.create_event has no recurrence field: pass events[] with one item per "
     "occurrence (about 8 weeks weekly, 6 months monthly). "
     "Wait for HITL approval. Done only after create_event returns ok. "
-    "To show the plan on the Calendar tab call calendar.show_meetings: "
+    "To show the briefing card call calendar.show_meetings with full title, "
+    "attendees[] and substitutes[] (who substitutes whom): "
     "cancel/red to drop, add/green to add."
 )
 
@@ -342,7 +361,8 @@ OUTLOOK_MEETING_RULE = (
     "Повторяемости в outlook.create_event нет: передай events[] — отдельную встречу "
     "на каждую дату серии (около 8 недель для еженедельных, 6 месяцев для ежемесячных). "
     "Дождись подтверждения записи. Задача выполнена только после ok от create_event. "
-    "Чтобы показать план на вкладке Календарь, вызови calendar.show_meetings: "
+    "Чтобы показать карточку для доклада, вызови calendar.show_meetings "
+    "с полной темой, attendees[] и substitutes[] (кто кого замещает): "
     "cancel/red - красным отменить, add/green - зеленым поставить."
 )
 
@@ -353,6 +373,37 @@ _MEETING_TIPS = (
     "встреч",
     "планерк",
     "create_event",
+)
+
+_CALENDAR_CONTROL_TIPS = (
+    "подготовка псд",
+    "контроль календаря",
+    "устный список",
+    "без окон",
+    "окна в рабочее",
+    "на планёрку",
+    "на планерку",
+    "календаря псд",
+    "сдвиг уже стоящих",
+)
+
+_SERIES_SCHEDULE_TIPS = (
+    "плановые совещани",
+    "развёртк",
+    "развертк",
+    "запланируй",
+    "запиши встреч",
+)
+
+CALENDAR_CONTROL_HINT = (
+    "This is calendar control / morning briefing, not a meeting-series job. "
+    "Morning: users.current, outlook.read_calendar for today, outlook.search_mail once "
+    "(query отпуск), calendar.show_meetings, then ## WORK_RESULT and TESTS: PASS. "
+    "If search_mail returned 0 messages, absences are empty — do not call it again. "
+    "Do not ask what the agent should do. Do not call create_event in the morning. "
+    "Evening after 16:00 MSK: same reads for tomorrow, show keep/add/cancel, "
+    "create_event only after HITL to shift existing meetings. "
+    "After WORK_RESULT call no more tools."
 )
 
 
@@ -417,6 +468,12 @@ RUN_INPUTS_RUN_HINT = (
     "in materials/attachments, stop and ask via askQuestion with needsFile=true. "
     "Do not substitute another tool or system for a missing user file."
 )
+RUN_INPUT_WAIT_SECONDS = 30
+RUN_INPUT_SKIP_ANSWER = (
+    "Файла нет. Ищи план работ в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\8. Планы работ, "
+    "реестр в \\\\192.168.1.198\\Files\\24.Ревизионная комиссия\\Отдел\\10. Секретарь РК\\РЕЕСТР ПОРУЧЕНИЙ "
+    "и поручения в 1С ERP. Не спрашивай файл снова."
+)
 _RUN_INPUT_GATE_HINTS = (
     "файл, который пользователь будет прикладывать",
     "прикладывать при каждом запуске",
@@ -424,8 +481,65 @@ _RUN_INPUT_GATE_HINTS = (
 )
 
 
+def _is_calendar_control_text(*parts: Any) -> bool:
+    blob = _meeting_blob(*parts)
+    return any(tip in blob for tip in _CALENDAR_CONTROL_TIPS)
+
+
+def _is_calendar_control_workflow(record: Any) -> bool:
+    parts: list[Any] = [
+        getattr(record, "title", "") or "",
+        getattr(record, "notes", "") or "",
+    ]
+    local = getattr(record, "local_run", None) or {}
+    if isinstance(local, dict):
+        for key in ("playbook", "playbook_draft"):
+            raw = local.get(key)
+            if isinstance(raw, dict):
+                parts.extend(
+                    [
+                        str(raw.get("name") or ""),
+                        str(raw.get("instructions") or ""),
+                    ]
+                )
+    return _is_calendar_control_text(*parts)
+
+
+_CALENDAR_CONTROL_TOOLS = {
+    "users.current",
+    "outlook.read_calendar",
+    "outlook.search_mail",
+    "calendar.show_meetings",
+    "outlook.create_event",
+    "users.list",
+    "notify.send",
+}
+
+
+def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
+    """Limit calendar-control runs to Outlook tools; keep the full catalog otherwise."""
+    if not _is_calendar_control_workflow(record):
+        return None
+    return [
+        item
+        for item in sdk_tool_specs()
+        if str(item.get("name") or "") in _CALENDAR_CONTROL_TOOLS
+    ]
+
+
+def _is_outlook_series_prompt(prompt: str) -> bool:
+    blob = (prompt or "").casefold()
+    if _is_calendar_control_text(blob):
+        return False
+    return any(tip in blob for tip in _SERIES_SCHEDULE_TIPS)
+
+
 def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
-    parts = [KEEP_FILE_HINT, OUTLOOK_MEETING_HINT]
+    parts = [KEEP_FILE_HINT]
+    if _is_calendar_control_text(prompt):
+        parts.append(CALENDAR_CONTROL_HINT)
+    elif _is_outlook_series_prompt(prompt):
+        parts.append(OUTLOOK_MEETING_HINT)
     if (mode or "").strip().casefold() == "design":
         parts.append(WHEN_TO_RUN_HINT)
         parts.append(RUN_INPUTS_HINT)
@@ -446,6 +560,8 @@ def _meeting_blob(*parts: Any) -> str:
 
 
 def _is_meeting_text(*parts: Any) -> bool:
+    if _is_calendar_control_text(*parts):
+        return False
     blob = _meeting_blob(*parts)
     return any(tip in blob for tip in _MEETING_TIPS)
 
@@ -492,6 +608,9 @@ def _merge_outlook_rule_into_playbook(local_run: dict[str, Any] | None) -> dict[
         if not isinstance(raw, dict):
             continue
         current = str(raw.get("instructions") or "").strip()
+        name = str(raw.get("name") or "")
+        if _is_calendar_control_text(current, name):
+            continue
         if OUTLOOK_SERIES_MARKER in current:
             continue
         updated = dict(raw)
@@ -985,6 +1104,7 @@ class HitlGate:
         self._needs_file: dict[str, bool] = {}
         self.qa_history: list[dict[str, str]] = []
         self._lock = threading.Lock()
+        self.work_result_done = False
 
     def bind(self, *, workflow_id: str = "", kind: str = "") -> None:
         if workflow_id:
@@ -992,7 +1112,19 @@ class HitlGate:
         if kind:
             self._kind = kind
 
+    def mark_work_result_done(self) -> None:
+        self.work_result_done = True
+        with self._lock:
+            pending = list(self._hitl.items())
+        for _request_id, box in pending:
+            try:
+                box.put_nowait(False)
+            except Exception:
+                continue
+
     def request(self, tool: str, args: dict[str, Any]) -> bool:
+        if self.work_result_done:
+            return False
         request_id = uuid.uuid4().hex
         box: queue.Queue[bool] = queue.Queue(maxsize=1)
         with self._lock:
@@ -1039,6 +1171,7 @@ class HitlGate:
         with self._lock:
             self._answers[request_id] = box
             self._needs_file[request_id] = needs_file
+        wait_s, skip_answer = _auto_continue_from_payload(payload)
         emit(
             _stamp_run_event(
                 {
@@ -1049,12 +1182,15 @@ class HitlGate:
                     "options": options,
                     "needsFile": needs_file,
                     "accept": accept,
+                    "autoContinueSeconds": wait_s or None,
+                    "autoContinueAnswer": skip_answer or None,
                 },
                 workflow_id=self._workflow_id,
                 kind=self._kind,
             )
         )
         reply: dict[str, Any] = {}
+        deadline = time.monotonic() + wait_s if wait_s > 0 else None
         try:
             while True:
                 if should_stop and should_stop():
@@ -1063,6 +1199,9 @@ class HitlGate:
                     reply = box.get(timeout=0.4)
                     break
                 except queue.Empty:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        reply = {"ok": True, "answer": skip_answer, "text": skip_answer}
+                        break
                     continue
         finally:
             with self._lock:
@@ -1197,6 +1336,29 @@ def _accept_extensions(raw: Any) -> list[str]:
         if ext and ext not in out:
             out.append(ext)
     return out
+
+
+def _auto_continue_from_payload(payload: dict[str, Any]) -> tuple[float, str]:
+    args = _as_record(payload.get("arguments"))
+    nested = _as_record(args.get("arguments") or args.get("input") or args.get("properties"))
+    source = {**nested, **args, **payload}
+    raw = source.get("autoContinueSeconds")
+    if raw is None:
+        raw = source.get("auto_continue_seconds")
+    try:
+        wait_s = float(raw or 0)
+    except (TypeError, ValueError):
+        wait_s = 0.0
+    if wait_s < 0:
+        wait_s = 0.0
+    skip = str(
+        source.get("autoContinueAnswer")
+        or source.get("auto_continue_answer")
+        or ""
+    ).strip()
+    if wait_s > 0 and not skip:
+        skip = RUN_INPUT_SKIP_ANSWER
+    return wait_s, skip
 
 
 def _file_request_from_payload(payload: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -1849,6 +2011,20 @@ class Sidecar:
             if not isinstance(payload, dict):
                 return
             event_type = str(payload.get("type") or "")
+            if event_type in {"assistant", "thinking", "final", "status"}:
+                blob = " ".join(
+                    str(payload.get(key) or "")
+                    for key in ("text", "answer", "message")
+                )
+                if blob.strip():
+                    # Stream deltas must concatenate; a newline between tokens
+                    # splits WORK_RESULT / FILES / ACTIONS headers.
+                    active.answer_buf = f"{active.answer_buf}{blob}"
+                if _text_has_finished_work_result(blob) or _text_has_finished_work_result(
+                    active.answer_buf
+                ):
+                    active.gate.mark_work_result_done()
+                    active.stop.set()
             if event_type not in {"ready", "done"}:
                 events.append(payload)
             # Interactive question/tool_request are handled via HITL gate.
@@ -2119,6 +2295,7 @@ class Sidecar:
             workflow_id=workflow_id,
             cwd=run_cwd,
             resume_agent_id=resume_agent_id,
+            tools=_tool_specs_for_workflow(record),
             on_event=self._forward_events(active, events),
             on_question=active.gate.ask_question,
             should_stop=active.stop.is_set,
@@ -2239,6 +2416,7 @@ class Sidecar:
                 workflow_id=workflow_id,
                 cwd=run_cwd,
                 resume_agent_id=resume_agent_id,
+                tools=_tool_specs_for_workflow(workflow),
                 on_event=self._forward_events(active, events),
                 on_question=active.gate.ask_question,
                 should_stop=active.stop.is_set,
@@ -2666,16 +2844,18 @@ class Sidecar:
                     "options": [],
                     "needsFile": True,
                     "accept": accept,
+                    "autoContinueSeconds": RUN_INPUT_WAIT_SECONDS,
+                    "autoContinueAnswer": RUN_INPUT_SKIP_ANSWER,
                     "why": (
                         "Это временный файл только для текущего запуска, "
-                        "он не сохраняется в базу знаний."
+                        "он не сохраняется в базу знаний. "
+                        "Через 30 секунд агент продолжит сам: 1С и папки РК."
                     ),
                 },
                 should_stop=active.stop.is_set,
             )
-            answer = str(reply.get("answer") or "").strip()
-            if answer:
-                notes.append(answer)
+            answer = str(reply.get("answer") or "").strip() or RUN_INPUT_SKIP_ANSWER
+            notes.append(answer)
         return notes
 
     def _ensure_outlook_rule_in_playbook(
@@ -2777,6 +2957,7 @@ class ActiveRun:
         self.dedup_key: str = ""
         self.history_run_id: str = ""
         self.history_finished: bool = False
+        self.answer_buf: str = ""
 
 
 def _ascii(text: str) -> str:

@@ -27,6 +27,7 @@ import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { MessengerPage } from './pages/MessengerPage'
 import { agentClient } from './api/agent'
 import { api, notesFromPassport, suggestionsFromRoleMatch } from './api/client'
+import { applyLocalPassportAnswers, localPassportFromSuggestion } from './api/localPassport'
 import { clearAvatarCache, loadUserAvatar } from './api/avatars'
 import type {
   AgentDraft,
@@ -63,7 +64,7 @@ type View =
   | { kind: 'passport' }
   | { kind: 'studio'; workflowId: string; title: string }
   | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean }
-  | { kind: 'schedule'; workflowId: string; title: string }
+  | { kind: 'schedule'; workflowId: string; title: string; published?: boolean }
   | { kind: 'kpi'; workflowId: string; title: string; draft: ScheduleDraft }
   | { kind: 'history'; workflowId: string; title: string; runId?: string }
   | { kind: 'chat'; thread: ChatThread }
@@ -716,38 +717,16 @@ export function App(): React.JSX.Element {
 
   async function openPassport(item: AgentSuggestion): Promise<void> {
     setSuggestion(item)
-    setPassport(null)
     setPassportError('')
     setView({ kind: 'passport' })
-    setBusy(true)
-    try {
-      const session = await api.draftPassportFromSuggestion(item, draft?.draftId || '', item.agentId)
-      setPassport(session)
-    } catch (err) {
-      setPassportError(err instanceof Error ? err.message : 'Не удалось собрать паспорт')
-    } finally {
-      setBusy(false)
-    }
+    setPassport(localPassportFromSuggestion(item, draft?.draftId || ''))
+    setBusy(false)
   }
 
   async function answerPassport(answers: Record<string, string>): Promise<void> {
-    if (!passport || !suggestion) return
-    setBusy(true)
+    if (!passport) return
     setPassportError('')
-    try {
-      const updated = await api.completePassport(
-        passport,
-        answers,
-        suggestion,
-        draft?.draftId || passport.draftId,
-        suggestion.agentId
-      )
-      setPassport(updated)
-    } catch (err) {
-      setPassportError(err instanceof Error ? err.message : 'Не удалось обновить паспорт')
-    } finally {
-      setBusy(false)
-    }
+    setPassport(applyLocalPassportAnswers(passport, answers))
   }
 
   async function startWorkflowFromPassport(): Promise<void> {
@@ -940,7 +919,9 @@ export function App(): React.JSX.Element {
           title={view.title}
           formation={formation}
           onBack={() => setView({ kind: 'tab', key: 'agents' })}
-          onGoSchedule={(workflowId, title) => setView({ kind: 'schedule', workflowId, title })}
+          onGoSchedule={(workflowId, title) =>
+            setView({ kind: 'schedule', workflowId, title, published: false })
+          }
         />
       )
     }
@@ -956,6 +937,17 @@ export function App(): React.JSX.Element {
       )
     }
     if (view.kind === 'schedule') {
+      if (view.published) {
+        return (
+          <AgentSchedulePage
+            workflowId={view.workflowId}
+            title={view.title}
+            published
+            onBack={() => setView({ kind: 'tab', key: 'agents' })}
+            onNext={() => setView({ kind: 'tab', key: 'agents' })}
+          />
+        )
+      }
       return (
         <AgentSchedulePage
           workflowId={view.workflowId}
@@ -1006,6 +998,12 @@ export function App(): React.JSX.Element {
             }
             onFormDraftSuggestion={formDraftSuggestion}
             onContinueDraft={continueDraft}
+            onContinueForming={(workflowId, title) =>
+              setView({ kind: 'studio', workflowId, title })
+            }
+            onOpenSchedule={(workflowId, title) =>
+              setView({ kind: 'schedule', workflowId, title, published: true })
+            }
           />
         )
       case 'files':

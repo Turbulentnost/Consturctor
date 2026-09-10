@@ -158,7 +158,16 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
         raise AuthError("Найдено несколько пользователей с таким ФИО", status_code=409) from exc
     except ErpSqlError as exc:
         logger.exception("ERP SQL error during login")
-        raise AuthError("Сервис аутентификации недоступен", status_code=503) from exc
+        if settings.erp_login.strip() and settings.erp_password:
+            try:
+                return await asyncio.to_thread(_login_via_bypass, fio, password, client)
+            except AuthError:
+                pass
+        raise AuthError(
+            "Сервис аутентификации 1С недоступен. Проверьте VPN и ERP_SQL_SERVER=ii1 "
+            "(не IP). Либо задайте ERP_LOGIN и ERP_PASSWORD в backend/.env для входа без SQL.",
+            status_code=503,
+        ) from exc
 
     data = erp_user.data or b""
     if not data or not verify_password(data, password):
@@ -258,6 +267,11 @@ async def get_current_user_profile(user_id: str, fio_hint: str | None = None) ->
         erp_user = await asyncio.to_thread(find_user_by_id, user_id)
     except ErpSqlError as exc:
         logger.exception("ERP SQL error loading profile")
+        app_user = app_users.get_app_user(user_id)
+        if app_user is None and fio_hint:
+            app_user = app_users.find_app_user_by_fio(fio_hint)
+        if app_user is not None:
+            return app_users.to_user_out(app_user)
         raise AuthError("Сервис аутентификации недоступен", status_code=503) from exc
 
     if erp_user is None:

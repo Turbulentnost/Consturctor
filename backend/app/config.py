@@ -15,7 +15,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    erp_sql_server: str = "192.168.1.157"
+    erp_sql_server: str = "ii1"
     erp_sql_database: str = "erp_pm"
     erp_sql_driver: str = "SQL Server"
     erp_sql_encrypt: str = "no"

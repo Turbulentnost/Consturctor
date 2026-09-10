@@ -10,6 +10,7 @@ if (process.platform === 'win32') {
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { NotificationGuard, showToast, type ToastPayload } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
+import { ensureLocalBackend } from './ensureBackend'
 import { getUpdateStatus, installAvailableUpdate, startUpdater, stopUpdater } from './updater'
 
 interface RequestOptions {
@@ -92,7 +93,7 @@ function loadConfig(): {
   const backendUrl = (
     process.env.BACKEND_URL ||
     env.BACKEND_URL ||
-    'http://127.0.0.1:7812'
+    'http://192.168.1.157:7812'
   ).replace(/\/+$/, '')
   const flag = (process.env.CONSTRUCTOR_TEST_USER || env.CONSTRUCTOR_TEST_USER || '')
     .trim()
@@ -211,6 +212,10 @@ function buildUrl(path: string, params?: RequestOptions['params']): string {
   return query ? `${base}?${query}` : base
 }
 
+function backendUnreachableMessage(): string {
+  return `Не удалось подключиться к backend (${CONFIG.backendUrl}). В установленной версии адрес сервера задаётся в .env рядом с exe (BACKEND_URL).`
+}
+
 function extractDetail(status: number, data: unknown): string {
   if (data && typeof data === 'object') {
     const detail = (data as Record<string, unknown>).detail
@@ -260,7 +265,7 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
     const message =
       err instanceof Error && err.name === 'AbortError'
         ? 'Превышено время ожидания ответа backend'
-        : `Не удалось подключиться к backend (${CONFIG.backendUrl})`
+        : backendUnreachableMessage()
     return { ok: false, status: 0, error: message }
   } finally {
     clearTimeout(timer)
@@ -308,7 +313,7 @@ async function handleUpload(_evt: unknown, opts: UploadOptions) {
     const message =
       err instanceof Error && err.name === 'AbortError'
         ? 'Превышено время ожидания ответа backend'
-        : `Не удалось подключиться к backend (${CONFIG.backendUrl})`
+        : backendUnreachableMessage()
     return { ok: false, status: 0, error: message }
   } finally {
     clearTimeout(timer)
@@ -482,7 +487,7 @@ async function handleCreateWorkflow(
     }
     return { ok: true, status: response.status, data }
   } catch {
-    return { ok: false, status: 0, error: `Не удалось подключиться к backend (${CONFIG.backendUrl})` }
+    return { ok: false, status: 0, error: backendUnreachableMessage() }
   }
 }
 
@@ -589,7 +594,7 @@ async function handleStream(
     }
     return { ok: true, status: 200, data: finalPayload }
   } catch {
-    return { ok: false, status: 0, error: `Не удалось подключиться к backend (${CONFIG.backendUrl})` }
+    return { ok: false, status: 0, error: backendUnreachableMessage() }
   }
 }
 
@@ -641,8 +646,9 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
-  console.log(`Orchestrator backend: ${CONFIG.backendUrl}`)
+app.whenReady().then(async () => {
+  const up = await ensureLocalBackend(CONFIG.backendUrl)
+  console.log(`Orchestrator backend: ${CONFIG.backendUrl}${up ? '' : ' (недоступен)'}`)
   ipcMain.handle('app:getConfig', () => ({
     backendUrl: CONFIG.backendUrl,
     testUser: CONFIG.testUser

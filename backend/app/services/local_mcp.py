@@ -633,7 +633,7 @@ def _turboproject_advanced_tools() -> list[dict[str, Any]]:
 def _desktop_ac_tools() -> list[dict[str, Any]]:
     """Схемы ported desktop-инструментов (исполнение на клиенте)."""
     items: list[tuple[str, str, dict[str, Any]]] = [
-        ("outlook.search_mail", "Поиск писем Outlook через COM на desktop.", {
+        ("outlook.search_mail", "Поиск писем Outlook. Для отсутствий один вызов: query=отпуск, date=сегодня. count=0 — писем нет, не повторять. query — подстрока темы/отправителя, не список людей.", {
             "folder": _prop("string", "Папка Outlook, например Inbox"),
             "date": _prop("string", "Один день YYYY-MM-DD"),
             "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
@@ -641,7 +641,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "query": _prop("string", "Подстрока в теме или отправителе, не список людей"),
             "max_results": _prop("integer", "Максимум писем"),
         }),
-        ("outlook.read_calendar", "Встречи Outlook за период. Без дат - год вперёд. people[] — календари этих сотрудников. Без people — свой. В ответе events, calendars и free_slots.", {
+        ("outlook.read_calendar", "Встречи Outlook за период. Без дат — год вперёд, так не делай на планёрке. Утро: date=сегодня. Вечер: date=завтра. people[] — календари этих сотрудников. Без people — свой. В ответе events, calendars и free_slots.", {
             "date": _prop("string", "Один день YYYY-MM-DD"),
             "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
             "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
@@ -650,8 +650,8 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "include_body": _prop("boolean", "Включить body_preview. По умолчанию false"),
             "people": _prop("array", "ФИО или почта сотрудников, чьи календари прочитать"),
         }),
-        ("calendar.show_meetings", "Показать итоговый план совещаний отдельной мини-формой календаря в ответе агента (не на общей вкладке Календарь запусков). mark=cancel/red - красным отменить, mark=add/green - зелёным поставить, mark=keep - уже стоит. Инструмент только визуализирует план и НИЧЕГО не двигает и не пишет в Outlook. Конфликты со встречами решает сам агент: сверь календари участников и их загрузку через outlook.read_calendar, реши, что перенести, и отрази это здесь mark. Перенос делается outlook.create_event, а не этим инструментом.", {
-            "meetings": _prop("array", "Список: title, start, end, mark, reason"),
+        ("calendar.show_meetings", "Показать итоговый план совещаний карточкой для доклада: полная тема, участники, кто кого замещает. mark=cancel/red - красным отменить, mark=add/green - зелёным поставить, mark=keep - уже стоит. Утро / контроль календаря ПСД: после карточки сегодняшних встреч сразу WORK_RESULT, create_event не вызывай. Вечер: сначала карточка сдвигов, outlook.create_event только после HITL. Инструмент только визуализирует и ничего не пишет в Outlook.", {
+            "meetings": _prop("array", "Список: title, start, end, mark, reason, organizer, attendees[], substitutes[] (кто замещает кого)"),
             "title": _prop("string", "Тема, если одно совещание без meetings[]"),
             "start": _prop("string", "Начало ISO datetime"),
             "end": _prop("string", "Конец ISO datetime"),
@@ -749,6 +749,30 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("onec.get_task_card", "Карточка задачи 1С на desktop.", {
             "task_ref": _prop("string", "Ссылка задачи из onec.search_tasks"),
         }),
+        (
+            "onec.list_attachments",
+            "Список вложений документа/карточки 1С (COM, только чтение). "
+            "metadata_name и owner_ref/number — из onec.get_document_card.",
+            {
+                "metadata_name": _prop("string", "Имя метаданных документа из карточки"),
+                "number": _prop("string", "Номер документа 1С"),
+                "owner_ref": _prop("string", "Ссылка владельца из карточки"),
+                "document_ref": _prop("string", "Альтернатива owner_ref"),
+                "max_results": _prop("integer", "Максимум вложений"),
+            },
+        ),
+        (
+            "onec.read_attachment",
+            "Прочитать вложение 1С: PDF/DOCX/XLSX → текст (COM, только чтение). "
+            "attachment_ref — из onec.list_attachments.",
+            {
+                "metadata_name": _prop("string", "Имя метаданных документа"),
+                "attachment_ref": _prop("string", "Ссылка вложения"),
+                "filename": _prop("string", "Имя файла, если ref неизвестен"),
+                "owner_ref": _prop("string", "Ссылка документа-владельца"),
+                "number": _prop("string", "Номер документа-владельца"),
+            },
+        ),
         (
             "onec.meeting_service_notes",
             "Только чтение COM через 32-bit V83.COMConnector (cscript), без py -3.12-32. "
@@ -952,6 +976,22 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     ),
     "onec.search_tasks": ("onec", "task", "search", [], ["tasks"], "count"),
     "onec.get_task_card": ("onec", "task", "read", ["task_ref"], ["task"], "none"),
+    "onec.list_attachments": (
+        "onec",
+        "file",
+        "list",
+        ["document_ref"],
+        ["attachments"],
+        "count",
+    ),
+    "onec.read_attachment": (
+        "onec",
+        "file",
+        "read",
+        ["attachment_ref"],
+        ["text", "filename"],
+        "none",
+    ),
     "onec.meeting_service_notes": (
         "onec",
         "service_note",
@@ -1105,6 +1145,8 @@ _COM32_RUNTIME_TOOLS = frozenset(
         "onec.search_tasks",
         "onec.get_task_card",
         "onec.meeting_service_notes",
+        "onec.list_attachments",
+        "onec.read_attachment",
     }
 )
 

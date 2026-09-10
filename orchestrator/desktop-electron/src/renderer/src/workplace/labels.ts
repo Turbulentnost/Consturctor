@@ -10,6 +10,7 @@ export interface DayTask {
   source: TaskSource
   due: string
   status: DayTaskStatus
+  runId?: string
 }
 
 export interface RunStage {

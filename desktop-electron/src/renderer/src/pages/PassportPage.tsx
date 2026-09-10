@@ -84,7 +84,7 @@ export function PassportPage({
         <h1 className="page-title" style={{ fontSize: 28 }}>
           {suggestion.title || 'Паспорт ИИ-агента'}
         </h1>
-        <p className="page-subtitle">Карточка обновляется после каждого ответа в чате</p>
+        <p className="page-subtitle">Опрос локальный, без Cursor Cloud API. Карточка обновляется после ответа</p>
       </div>
 
       <div className="passport-grid">
@@ -93,8 +93,8 @@ export function PassportPage({
             {!session && !messages.length && (
               <div className="chat-hint">
                 {busy
-                  ? 'Собираю черновик паспорта через Cursor Agent… Обычно это занимает 1–2 минуты.'
-                  : 'Собираю черновик паспорта агента…'}
+                  ? 'Собираю паспорт локально…'
+                  : 'Собираю паспорт агента…'}
               </div>
             )}
             {messages.map((message, index) => (

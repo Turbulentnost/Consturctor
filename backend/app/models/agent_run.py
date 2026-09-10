@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -10,6 +10,12 @@ from app.db.base import Base
 
 class AgentRun(Base):
     __tablename__ = "agent_runs"
+    __table_args__ = (
+        # Board calendar and run history filter by owner + agent, newest first.
+        Index("ix_agent_runs_user_wf_started", "user_id", "workflow_id", "started_at"),
+        # Stale-run sweep filters by owner + status.
+        Index("ix_agent_runs_user_status", "user_id", "status"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     workflow_id: Mapped[str] = mapped_column(

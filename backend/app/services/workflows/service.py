@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from sqlalchemy.orm import Session, object_session
+from sqlalchemy.orm import Session, load_only, object_session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.clients import cursor as cursor_client
@@ -231,6 +231,7 @@ def repair_deleted_workflows(db: Session, *, user_id: str) -> int:
     """Finish a half-applied delete: JSON flag without phase, leftover triggers."""
     rows = (
         db.query(Workflow)
+        .options(load_only(Workflow.id, Workflow.phase, Workflow.local_run))
         .filter(Workflow.user_id == user_id)
         .all()
     )
@@ -421,14 +422,38 @@ def _validate_and_store_draft(
         validate_draft,
     )
 
+    from app.services.workflows.meeting_agent_config import apply_meeting_agent_config
+    from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_playbook_draft
+    from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_playbook_draft
+
     allow_web = regulation_allows_web(_regulation_blob(row))
     enriched = attach_tool_candidates(draft, allow_web=allow_web)
+    blob = _regulation_blob(row)
+    if is_rk_meeting_agent(row.title or "", row.notes or "", blob):
+        seed = rk_playbook_draft()
+        enriched = {
+            **seed,
+            **enriched,
+            "steps": enriched.get("steps") or seed["steps"],
+            "runtime": seed.get("runtime") or enriched.get("runtime"),
+        }
+        enriched = attach_tool_candidates(enriched, allow_web=allow_web)
+    elif is_sd_meeting_agent(row.title or "", row.notes or "", blob):
+        seed = sd_playbook_draft()
+        enriched = {
+            **seed,
+            **enriched,
+            "steps": enriched.get("steps") or seed["steps"],
+            "runtime": seed.get("runtime") or enriched.get("runtime"),
+        }
+        enriched = attach_tool_candidates(enriched, allow_web=allow_web)
     validation = validate_draft(
         enriched,
         allow_web=allow_web,
         materials=_schedule_materials(row, enriched),
     )
     local = dict(row.local_run or {})
+    local = apply_meeting_agent_config(local, title=row.title or "", notes=row.notes or "")
     local["playbook_draft"] = enriched
     local["draft_validation"] = validation.to_dict()
     row.local_run = local
@@ -1502,6 +1527,18 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
         if goal and not (plan.goal or "").strip():
             plan.goal = goal
             row.plan_json = plan.to_dict()
+    from app.services.workflows.meeting_agent_config import (
+        apply_meeting_agent_config,
+        apply_meeting_plan_runtime,
+    )
+
+    row.plan_json = apply_meeting_plan_runtime(
+        row.plan_json if isinstance(row.plan_json, dict) else {},
+        title=row.title or "",
+        notes=row.notes or "",
+    )
+    plan = WorkflowPlan.from_dict(row.plan_json or {})
+    local = apply_meeting_agent_config(local, title=row.title or "", notes=row.notes or "")
     local.update(
         {
             "status": "published",
@@ -1586,6 +1623,7 @@ def generate_agent_kpi(
 
 def get_agent_kpi(db: Session, *, user_id: str, workflow_id: str):
     from app.services import agent_kpi
+    from app.services.workflows.kpi_calc import calculate_workflow_kpi
 
     row = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     plan = WorkflowPlan.from_dict(row.plan_json or {})
@@ -1594,6 +1632,20 @@ def get_agent_kpi(db: Session, *, user_id: str, workflow_id: str):
     title = str(draft.get("name") or row.title or plan.title or "ИИ-агент")
     goal = str(draft.get("goal") or plan.goal or "")
     stored = local.get("kpi") if isinstance(local.get("kpi"), dict) else None
+    if not stored or not (stored.get("tiles") or []):
+        stored = agent_kpi.build_kpi_record(None, title=title, goal=goal, schedule=draft, status="draft")
+        local["kpi"] = stored
+        row.local_run = local
+        db.commit()
+        db.refresh(row)
+    tiles = [item for item in (stored.get("tiles") or []) if isinstance(item, dict)]
+    needs_calc = not any(item.get("score_percent") is not None for item in tiles)
+    if needs_calc and tiles:
+        tile_ids = [str(item.get("id") or "") for item in tiles if str(item.get("id") or "").strip()]
+        calculate_workflow_kpi(db, row, tile_ids)
+        db.refresh(row)
+        local = dict(row.local_run or {})
+        stored = local.get("kpi") if isinstance(local.get("kpi"), dict) else stored
     if stored and (stored.get("tiles") or []):
         kpi = agent_kpi.build_kpi_record(
             stored,
@@ -2250,6 +2302,9 @@ def _tests_status_from_text(text: str, *, live_tools_ok: bool = False) -> str:
 
 def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
     """Pick MCP tools from plan domain — never force web_search for Outlook/meetings."""
+    from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_runtime_tools
+    from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_runtime_tools
+
     answered = " ".join(
         f"{q.question} {q.answer}" for q in (plan.answered_questions or []) if q.answer
     )
@@ -2266,6 +2321,12 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
         ]
     ).casefold()
     kind = str(getattr(plan.runtime, "kind", "") or "").casefold()
+
+    if kind == "revision_commission" or is_rk_meeting_agent(blob):
+        return rk_runtime_tools()
+
+    if kind == "board_meeting" or is_sd_meeting_agent(blob):
+        return sd_runtime_tools()
 
     if kind == "onec" or (
         any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm", "задач"))

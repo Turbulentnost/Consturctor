@@ -26,6 +26,24 @@ const HOUR_H = 56
 const GUTTER = 52
 const COL_MIN = 168
 
+function dayKey(date: Date): string {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
+}
+
+/** One pass over events instead of one filter pass per rendered day cell. */
+function indexEventsByDay(events: CalendarEvent[]): Map<string, CalendarEvent[]> {
+  const byDay = new Map<string, CalendarEvent[]>()
+  for (const item of events) {
+    const stamp = parseIso(item.startAt)
+    if (!stamp) continue
+    const key = dayKey(stamp)
+    const bucket = byDay.get(key)
+    if (bucket) bucket.push(item)
+    else byDay.set(key, [item])
+  }
+  return byDay
+}
+
 interface RunCalendarProps {
   view: CalendarView
   anchor: Date
@@ -325,21 +343,30 @@ interface GridProps {
 }
 
 function WeekGrid({ days, events, onEventClick, onGroupClick, onEventContext }: GridProps): React.JSX.Element {
-  const eventHours: number[] = []
-  for (const item of events) {
-    const stamp = parseIso(item.startAt)
-    if (stamp) eventHours.push(stamp.getHours())
-  }
-  const startHour = Math.min(8, ...eventHours)
-  let endHour = Math.max(20, ...eventHours.map((h) => h + 1))
-  endHour = Math.min(24, Math.max(endHour, startHour + 1))
+  const { startHour, endHour, groups, countByDay } = useMemo(() => {
+    const eventHours: number[] = []
+    for (const item of events) {
+      const stamp = parseIso(item.startAt)
+      if (stamp) eventHours.push(stamp.getHours())
+    }
+    const from = Math.min(8, ...eventHours)
+    let to = Math.max(20, ...eventHours.map((hour) => hour + 1))
+    to = Math.min(24, Math.max(to, from + 1))
+    const byDay = indexEventsByDay(events)
+    const counts = new Map<string, number>()
+    for (const [key, items] of byDay) counts.set(key, items.length)
+    return {
+      startHour: from,
+      endHour: to,
+      groups: groupBySlot(events),
+      countByDay: counts
+    }
+  }, [events])
   const hourCount = Math.max(1, endHour - startHour)
   const width = GUTTER + days.length * COL_MIN
   const height = HEADER + hourCount * HOUR_H
   const today = new Date()
   const now = new Date()
-
-  const groups = groupBySlot(events)
 
   const hourLines: React.JSX.Element[] = []
   for (let hour = startHour; hour <= endHour; hour++) {
@@ -359,10 +386,7 @@ function WeekGrid({ days, events, onEventClick, onGroupClick, onEventContext }: 
       {days.map((day, index) => {
         const x = GUTTER + index * COL_MIN
         const isToday = sameDay(day, today)
-        const count = events.filter((item) => {
-          const stamp = parseIso(item.startAt)
-          return stamp ? sameDay(stamp, day) : false
-        }).length
+        const count = countByDay.get(dayKey(day)) || 0
         return (
           <div key={`col-${index}`}>
             {isToday && (
@@ -519,7 +543,16 @@ function MonthGrid({
   const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1)
   const start = mondayOf(first)
   const today = new Date()
-  const cells = Array.from({ length: 42 }, (_, i) => addDays(start, i))
+  const cells = useMemo(() => Array.from({ length: 42 }, (_, i) => addDays(start, i)), [
+    start.getTime()
+  ])
+  // 42 cells previously re-filtered and re-grouped the whole event list each render.
+  const groupsByDay = useMemo(() => {
+    const byDay = indexEventsByDay(events)
+    const grouped = new Map<string, CalendarEvent[][]>()
+    for (const [key, items] of byDay) grouped.set(key, groupBySlot(items))
+    return grouped
+  }, [events])
 
   return (
     <div className="cal-month">
@@ -534,11 +567,7 @@ function MonthGrid({
         {cells.map((day, index) => {
           const inMonth = day.getMonth() === anchor.getMonth()
           const isToday = sameDay(day, today)
-          const dayEvents = events.filter((item) => {
-            const stamp = parseIso(item.startAt)
-            return stamp ? sameDay(stamp, day) : false
-          })
-          const groups = groupBySlot(dayEvents)
+          const groups = groupsByDay.get(dayKey(day)) || []
           const shown = groups.slice(0, 3)
           const leftover = groups.length - shown.length
           return (

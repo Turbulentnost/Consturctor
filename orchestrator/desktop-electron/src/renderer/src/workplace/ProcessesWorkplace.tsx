@@ -436,6 +436,26 @@ export function ProcessesWorkplace({
   const [latestRunById, setLatestRunById] = useState<Record<string, AgentRunHistoryItem | null>>({})
   const [regulationById, setRegulationById] = useState<Record<string, string>>({})
   const trackedAgentsCount = useMemo(() => agents.filter((item) => !item.standalone).length, [agents])
+  // A board reload rebuilds the agent objects, so per-agent fetches key off the
+  // workflow ids instead of the array identity.
+  const trackedIdsKey = useMemo(
+    () =>
+      agents
+        .filter((item) => !item.standalone)
+        .map((item) => item.workflowId)
+        .join('|'),
+    [agents]
+  )
+  const trackedIds = useMemo(
+    () => (trackedIdsKey ? trackedIdsKey.split('|') : []),
+    [trackedIdsKey]
+  )
+  // Run status arrives as a board push; no polling loop needed.
+  const [boardTick, setBoardTick] = useState(0)
+  useEffect(() => {
+    const unsubscribe = window.api.onBoardUpdated?.(() => setBoardTick((value) => value + 1))
+    return () => unsubscribe?.()
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -451,15 +471,14 @@ export function ProcessesWorkplace({
     return () => {
       alive = false
     }
-  }, [agents])
+  }, [trackedIdsKey])
 
   useEffect(() => {
     let alive = true
-    const workflowAgents = agents.filter((item) => !item.standalone)
     void Promise.all(
-      workflowAgents.map(async (item) => {
-        const kpi = await api.getWorkflowKpi(item.workflowId).catch(() => null)
-        return [item.workflowId, kpi] as const
+      trackedIds.map(async (workflowId) => {
+        const kpi = await api.getWorkflowKpi(workflowId).catch(() => null)
+        return [workflowId, kpi] as const
       })
     ).then((pairs) => {
       if (!alive) return
@@ -470,33 +489,25 @@ export function ProcessesWorkplace({
     return () => {
       alive = false
     }
-  }, [agents])
+  }, [trackedIds])
 
   useEffect(() => {
     let alive = true
-    const workflowAgents = agents.filter((item) => !item.standalone)
-    const load = (): void => {
-      void Promise.all(
-        workflowAgents.map(async (item) => {
-          const runs = await api.listAgentRuns(item.workflowId).catch(() => [] as AgentRunHistoryItem[])
-          return [item.workflowId, latestRun(runs)] as const
-        })
-      ).then((pairs) => {
-        if (!alive) return
-        const next: Record<string, AgentRunHistoryItem | null> = {}
-        for (const [id, run] of pairs) {
-          next[id] = run
-        }
-        setLatestRunById(next)
+    void Promise.all(
+      trackedIds.map(async (workflowId) => {
+        const runs = await api.listAgentRuns(workflowId).catch(() => [] as AgentRunHistoryItem[])
+        return [workflowId, latestRun(runs)] as const
       })
-    }
-    load()
-    const timer = window.setInterval(load, 4000)
+    ).then((pairs) => {
+      if (!alive) return
+      const next: Record<string, AgentRunHistoryItem | null> = {}
+      for (const [id, run] of pairs) next[id] = run
+      setLatestRunById(next)
+    })
     return () => {
       alive = false
-      window.clearInterval(timer)
     }
-  }, [agents])
+  }, [trackedIds, boardTick])
 
   const stages = useMemo(() => {
     const values = new Set(agents.map((item) => item.stage).filter(Boolean))

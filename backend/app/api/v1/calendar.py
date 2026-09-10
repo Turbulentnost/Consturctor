@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -14,11 +14,17 @@ router = APIRouter(prefix="/calendar", tags=["calendar"])
 
 
 class CalendarMeetingIn(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     title: str = ""
     start: str = ""
     end: str = ""
     mark: str = "keep"
     reason: str = ""
+    organizer: str = ""
+    location: str = ""
+    attendees: list | str = Field(default_factory=list)
+    substitutes: list | str = Field(default_factory=list)
 
 
 class CalendarOverlayIn(BaseModel):

@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, LargeBinary, String, Text, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    LargeBinary,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -10,6 +20,10 @@ from app.db.base import Base
 
 class Workflow(Base):
     __tablename__ = "workflows"
+    __table_args__ = (
+        # Board reads published agents of one owner, newest first.
+        Index("ix_workflows_user_phase_updated", "user_id", "phase", "updated_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(

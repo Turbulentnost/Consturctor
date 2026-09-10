@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import mimetypes
+import tempfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 TEXT_SUFFIXES = {
     ".txt",
@@ -205,7 +209,52 @@ def _read_pdf_bytes(raw: bytes) -> str:
         doc.close()
     except Exception as exc:  # noqa: BLE001
         raise DocumentError(f"Не удалось разобрать PDF: {exc}") from exc
-    return "\n\n".join(parts)
+    text = "\n\n".join(parts).strip()
+    if len(text) >= 80:
+        return text
+    ocr_text = _read_pdf_bytes_ocr(raw)
+    if ocr_text.strip():
+        return ocr_text
+    return text
+
+
+def _read_pdf_bytes_ocr(raw: bytes) -> str:
+    """OCR fallback for scan PDFs when text layer is empty."""
+    try:
+        from app.services.regulation.detect import is_scan_pdf
+        from app.services.regulation.pdf_ocr import extract_pdf_scan
+    except ImportError:
+        return ""
+    if not raw:
+        return ""
+    with tempfile.TemporaryDirectory(prefix="wf-pdf-ocr-") as tmp:
+        path = Path(tmp) / "attachment.pdf"
+        path.write_bytes(raw)
+        try:
+            is_scan, _pages = is_scan_pdf(path)
+        except Exception:
+            is_scan = len(_read_pdf_text_layer(raw)) < 80
+        if not is_scan and _read_pdf_text_layer(raw).strip():
+            return ""
+        try:
+            extracted = extract_pdf_scan(path, work_dir=Path(tmp))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pdf ocr fallback failed: %s", exc)
+            return ""
+        parts = [block.text.strip() for block in extracted.blocks if getattr(block, "text", "")]
+        return "\n\n".join(part for part in parts if part)
+
+
+def _read_pdf_text_layer(raw: bytes) -> str:
+    try:
+        import fitz
+
+        doc = fitz.open(stream=raw, filetype="pdf")
+        parts = [page.get_text() or "" for page in doc]
+        doc.close()
+        return "\n\n".join(parts).strip()
+    except Exception:
+        return ""
 
 
 def _read_docx_bytes(raw: bytes) -> str:

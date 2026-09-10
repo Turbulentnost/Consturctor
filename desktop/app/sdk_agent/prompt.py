@@ -77,7 +77,21 @@ TESTS: PASS
 
 RULES = AGENTS_MD  # backward-compatible alias for tests and callers
 
-_WORK_RESULT_RE = re.compile(r"^[ \t]*#{0,6}[ \t]*WORK[ _]?RESULT\b.*$", re.I | re.M)
+_WORK_RESULT_RE = re.compile(r"#{0,6}[ \t]*WORK[ _]?RESULT\b", re.I)
+_FILES_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*FILES\b", re.I)
+_ACTIONS_SECTION_RE = re.compile(r"(?:^|[\n\r])[ \t]*ACTIONS\b", re.I)
+_TESTS_PASS_RE = re.compile(r"TESTS:\s*PASS", re.I)
+_TESTS_FAIL_RE = re.compile(r"TESTS:\s*FAIL", re.I)
+
+
+def text_has_finished_work_result(text: str) -> bool:
+    """True when the run produced a closable result block, not just the words TESTS: PASS."""
+    raw = text or ""
+    if _TESTS_FAIL_RE.search(raw) or not _TESTS_PASS_RE.search(raw):
+        return False
+    if _WORK_RESULT_RE.search(raw):
+        return True
+    return bool(_FILES_SECTION_RE.search(raw) and _ACTIONS_SECTION_RE.search(raw))
 
 
 def strip_to_work_result(text: str) -> str:

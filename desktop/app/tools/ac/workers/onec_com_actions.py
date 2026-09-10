@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import os
 import re
 import sys
@@ -572,11 +574,25 @@ def _dispatch_tool(session: Any, task: WorkerTask) -> dict[str, Any]:
         document = documents[0] if documents and isinstance(documents[0], dict) else {}
         if document:
             document = _attach_com_tabular_parts(session, document)
+            document = _populate_record_attachments(session, document)
         return {
             "document": document,
             "source": "onec_com",
             "method": "get_document_card_from_search",
         }
+    if task.tool_name == "onec.list_attachments":
+        return _list_attachments_tool(session, task.input_data)
+    if task.tool_name == "onec.read_attachment":
+        args = task.input_data if isinstance(task.input_data, dict) else {}
+        return _read_attachment_for_owner(
+            session,
+            metadata_name=str(args.get("metadata_name") or args.get("document_type") or ""),
+            kind=str(args.get("kind") or "document"),
+            attachment_ref=str(args.get("attachment_ref") or args.get("ref") or ""),
+            filename=str(args.get("filename") or args.get("name") or ""),
+            owner_ref=str(args.get("owner_ref") or args.get("document_ref") or ""),
+            number=str(args.get("number") or args.get("query") or ""),
+        )
     if task.tool_name == "onec.search_tasks":
         mine_only = bool(task.input_data.get("mine_only", True))
         limit = int(task.input_data.get("max_results") or task.input_data.get("limit") or 10)
@@ -897,7 +913,12 @@ def _build_metadata_query(
     return "\n".join(query_lines), select_fields
 
 
-def _collect_metadata_rows(table: Any, candidate: dict[str, Any], select_fields: list[tuple[str, str]]) -> list[dict[str, Any]]:
+def _collect_metadata_rows(
+    session: Any,
+    table: Any,
+    candidate: dict[str, Any],
+    select_fields: list[tuple[str, str]],
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for i in range(table.Count()):
         row = table.Get(i)
@@ -905,19 +926,18 @@ def _collect_metadata_rows(table: Any, candidate: dict[str, Any], select_fields:
         for alias, attr in select_fields:
             val = getattr(row, attr, None)
             fields[alias] = _safe_str(getattr(val, "Наименование", None) or val, 5000)
-        rows.append(
-            {
-                "found": True,
-                "document_type": candidate["synonym"] or candidate["name"],
-                "metadata_name": candidate["name"],
-                "kind": candidate["kind"],
-                "ref": _safe_str(getattr(row, "Ref", "") or getattr(row, "Ссылка", "")),
-                "number": _safe_str(getattr(row, "Number", "") or getattr(row, "Номер", "")),
-                "fields": fields,
-                "tabular_sections": candidate.get("tabular_sections") or [],
-                "attachments": [],
-            }
-        )
+        item = {
+            "found": True,
+            "document_type": candidate["synonym"] or candidate["name"],
+            "metadata_name": candidate["name"],
+            "kind": candidate["kind"],
+            "ref": _safe_str(getattr(row, "Ref", "") or getattr(row, "Ссылка", "")),
+            "number": _safe_str(getattr(row, "Number", "") or getattr(row, "Номер", "")),
+            "fields": fields,
+            "tabular_sections": candidate.get("tabular_sections") or [],
+            "attachments": [],
+        }
+        rows.append(_populate_record_attachments(session, item))
     return rows
 
 
@@ -980,6 +1000,312 @@ def _attach_com_tabular_parts(session: Any, document: dict[str, Any]) -> dict[st
         document["tabular_parts"] = parts
     document.pop("tabular_sections", None)
     return document
+
+
+_ATTACHMENT_SUFFIX = "ПрисоединенныеФайлы"
+_OWNER_FIELDS = ("ВладелецФайла", "Owner", "Владелец")
+_ATTACHMENT_NAME_FIELDS = ("Наименование", "Description", "ИмяФайла", "FileName")
+_ATTACHMENT_EXT_FIELDS = ("Расширение", "Extension")
+_ATTACHMENT_SIZE_FIELDS = ("Размер", "Size")
+
+
+def _attachment_catalog_name(metadata_name: str) -> str:
+    name = (metadata_name or "").strip()
+    if not name:
+        return ""
+    if name.casefold().endswith(_ATTACHMENT_SUFFIX.casefold()):
+        return name
+    return f"{name}{_ATTACHMENT_SUFFIX}"
+
+
+def _discover_attachment_catalog(session: Any, metadata_name: str) -> dict[str, Any] | None:
+    catalog_name = _attachment_catalog_name(metadata_name)
+    if not catalog_name:
+        return None
+    candidates = _discover_metadata_candidates(session, catalog_name, catalog_name)
+    for candidate in candidates:
+        if _ATTACHMENT_SUFFIX.casefold() in str(candidate.get("name") or "").casefold():
+            return candidate
+    return None
+
+
+def _resolve_owner_number(session: Any, *, metadata_name: str, kind: str, number: str) -> str:
+    safe_number = number.replace('"', '""')
+    object_expr = _object_expr(kind or "document", metadata_name)
+    query_text = (
+        f"ВЫБРАТЬ ПЕРВЫЕ 1\n"
+        f"        Д.Ссылка КАК Ref\n"
+        f"        ИЗ {object_expr} КАК Д\n"
+        f"        ГДЕ Д.Номер = \"{safe_number}\""
+    )
+    try:
+        table = session.NewObject("Query", query_text).Execute().Unload()
+        if table.Count():
+            return _safe_str(getattr(table.Get(0), "Ref", ""))
+    except Exception:
+        return ""
+    return ""
+
+
+def _list_attachments_for_owner(
+    session: Any,
+    *,
+    metadata_name: str,
+    kind: str = "document",
+    owner_ref: str = "",
+    number: str = "",
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    catalog = _discover_attachment_catalog(session, metadata_name)
+    if catalog is None:
+        return []
+    owner = (owner_ref or "").strip()
+    if not owner and number.strip():
+        owner = _resolve_owner_number(session, metadata_name=metadata_name, kind=kind, number=number)
+    if not owner:
+        return []
+
+    catalog_name = str(catalog.get("name") or "")
+    object_expr = f"Справочник.{catalog_name}"
+    limit = max(1, min(100, int(limit)))
+    attachments: list[dict[str, Any]] = []
+    for owner_field in _OWNER_FIELDS:
+        query_text = (
+            f"ВЫБРАТЬ ПЕРВЫЕ {limit}\n"
+            f"        Ф.Ссылка КАК Ref,\n"
+            f"        Ф.Наименование КАК Name,\n"
+            f"        Ф.Расширение КАК Ext,\n"
+            f"        Ф.Размер КАК Size\n"
+            f"        ИЗ {object_expr} КАК Ф\n"
+            f"        ГДЕ Ф.{owner_field}.Ссылка = &Owner"
+        )
+        try:
+            query = session.NewObject("Query", query_text)
+            query.SetParameter("Owner", owner)
+            table = query.Execute().Unload()
+        except Exception:
+            continue
+        for index in range(table.Count()):
+            row = table.Get(index)
+            name = _safe_str(getattr(row, "Name", "") or getattr(row, "Наименование", ""), 500)
+            ext = _safe_str(getattr(row, "Ext", "") or getattr(row, "Extension", ""), 20)
+            size_raw = getattr(row, "Size", None)
+            try:
+                size = int(size_raw)
+            except (TypeError, ValueError):
+                size = 0
+            filename = name
+            if ext and not filename.casefold().endswith(f".{ext.casefold()}"):
+                filename = f"{filename}.{ext}" if filename else f"file.{ext}"
+            attachments.append(
+                {
+                    "ref": _safe_str(getattr(row, "Ref", "")),
+                    "name": filename or name or "file",
+                    "extension": ext,
+                    "size": size,
+                    "metadata_name": catalog_name,
+                    "owner_ref": owner,
+                }
+            )
+        if attachments:
+            break
+    return attachments
+
+
+def _populate_record_attachments(session: Any, record: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        return record
+    metadata_name = str(record.get("metadata_name") or "").strip()
+    if not metadata_name:
+        return record
+    kind = str(record.get("kind") or "document")
+    attachments = _list_attachments_for_owner(
+        session,
+        metadata_name=metadata_name,
+        kind=kind,
+        owner_ref=str(record.get("ref") or ""),
+        number=str(record.get("number") or ""),
+    )
+    updated = dict(record)
+    updated["attachments"] = attachments
+    return updated
+
+
+def _extract_text_from_attachment_bytes(filename: str, raw: bytes) -> str:
+    suffix = os.path.splitext(filename)[1].casefold()
+    if suffix == ".pdf":
+        try:
+            import fitz
+
+            doc = fitz.open(stream=raw, filetype="pdf")
+            parts = [page.get_text() or "" for page in doc]
+            doc.close()
+            text = "\n\n".join(parts).strip()
+            if text:
+                return text
+        except Exception:
+            pass
+    if suffix == ".docx":
+        try:
+            import docx
+
+            document = docx.Document(io.BytesIO(raw))
+            parts = [para.text for para in document.paragraphs if para.text.strip()]
+            return "\n".join(parts).strip()
+        except Exception:
+            pass
+    if suffix in {".xlsx", ".xlsm"}:
+        try:
+            import openpyxl
+
+            workbook = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+            parts: list[str] = []
+            for sheet in workbook.worksheets:
+                for row in sheet.iter_rows(values_only=True):
+                    values = [str(cell).strip() if cell is not None else "" for cell in row]
+                    if any(values):
+                        parts.append("\t".join(values))
+            workbook.close()
+            return "\n".join(parts).strip()
+        except Exception:
+            pass
+    for encoding in ("utf-8", "utf-8-sig", "cp1251", "latin-1"):
+        try:
+            text = raw.decode(encoding).strip()
+            if text:
+                return text
+        except UnicodeDecodeError:
+            continue
+    return ""
+
+
+def _read_attachment_binary(session: Any, *, catalog_name: str, attachment_ref: str) -> bytes | None:
+    ref = (attachment_ref or "").strip()
+    if not ref:
+        return None
+    for accessor in (
+        lambda: session.РаботаСФайлами.ДвоичныеДанныеФайла(ref),
+        lambda: session.РаботаСФайлами.ДвоичныеДанныеФайла(session.NewObject("СправочникСсылка." + catalog_name, ref)),
+    ):
+        try:
+            data = accessor()
+            if data is None:
+                continue
+            if isinstance(data, (bytes, bytearray)):
+                return bytes(data)
+            if hasattr(data, "GetData"):
+                return bytes(data.GetData())
+        except Exception:
+            continue
+    return None
+
+
+def _read_attachment_for_owner(
+    session: Any,
+    *,
+    metadata_name: str,
+    kind: str,
+    attachment_ref: str = "",
+    filename: str = "",
+    owner_ref: str = "",
+    number: str = "",
+    max_bytes: int = 8 * 1024 * 1024,
+) -> dict[str, Any]:
+    catalog = _discover_attachment_catalog(session, metadata_name)
+    if catalog is None:
+        return {"ok": False, "error": "Каталог вложений не найден в метаданных 1С"}
+    listed = _list_attachments_for_owner(
+        session,
+        metadata_name=metadata_name,
+        kind=kind,
+        owner_ref=owner_ref,
+        number=number,
+        limit=100,
+    )
+    target = None
+    ref = (attachment_ref or "").strip()
+    name_hint = (filename or "").strip().casefold()
+    for item in listed:
+        if ref and str(item.get("ref") or "") == ref:
+            target = item
+            break
+        if name_hint and name_hint in str(item.get("name") or "").casefold():
+            target = item
+            break
+    if target is None and listed and not ref and not name_hint:
+        target = listed[0]
+    if target is None:
+        return {"ok": False, "error": "Вложение не найдено", "attachments": listed}
+
+    catalog_name = str(catalog.get("name") or "")
+    raw = _read_attachment_binary(session, catalog_name=catalog_name, attachment_ref=str(target.get("ref") or ""))
+    if not raw:
+        return {
+            "ok": False,
+            "error": "Не удалось прочитать двоичные данные вложения через COM",
+            "attachment": target,
+            "attachments": listed,
+        }
+    if len(raw) > max_bytes:
+        return {
+            "ok": False,
+            "error": f"Вложение слишком большое ({len(raw)} байт), лимит {max_bytes}",
+            "attachment": target,
+        }
+    file_name = str(target.get("name") or filename or "attachment")
+    text = _extract_text_from_attachment_bytes(file_name, raw)
+    return {
+        "ok": True,
+        "attachment": target,
+        "filename": file_name,
+        "size": len(raw),
+        "text": text,
+        "text_chars": len(text),
+        "data_b64": base64.b64encode(raw).decode("ascii") if len(raw) <= 512 * 1024 else "",
+        "note": "" if text else "Текст не извлечён — возможно скан; попробуй OCR на стороне сервера.",
+        "source": "onec_com",
+        "readonly": True,
+    }
+
+
+def _list_attachments_tool(session: Any, input_data: dict[str, Any]) -> dict[str, Any]:
+    args = input_data if isinstance(input_data, dict) else {}
+    metadata_name = str(args.get("metadata_name") or args.get("document_type") or "").strip()
+    number = str(args.get("number") or args.get("document_ref") or args.get("query") or "").strip()
+    owner_ref = str(args.get("owner_ref") or args.get("ref") or "").strip()
+    kind = str(args.get("kind") or "document").strip() or "document"
+    if not metadata_name and number:
+        card = _get_document_card_any(session, number=number)
+        doc = (card or {}).get("document") if isinstance(card, dict) else {}
+        if isinstance(doc, dict):
+            metadata_name = str(doc.get("metadata_name") or "")
+            kind = str(doc.get("kind") or kind)
+            owner_ref = owner_ref or str(doc.get("ref") or "")
+            number = number or str(doc.get("number") or "")
+    if not metadata_name:
+        return {
+            "attachments": [],
+            "count": 0,
+            "error": "Укажите metadata_name или number документа 1С",
+            "source": "onec_com",
+            "readonly": True,
+        }
+    attachments = _list_attachments_for_owner(
+        session,
+        metadata_name=metadata_name,
+        kind=kind,
+        owner_ref=owner_ref,
+        number=number,
+        limit=int(args.get("max_results") or args.get("limit") or 30),
+    )
+    return {
+        "attachments": attachments,
+        "count": len(attachments),
+        "metadata_name": metadata_name,
+        "source": "onec_com",
+        "readonly": True,
+        "method": "list_attachments",
+    }
 
 
 def _session_user_fio(session: Any) -> str:
@@ -1107,10 +1433,11 @@ def _search_documents_across_specs(
                 browse_only=candidate["browse_only"],
             )
             table = session.NewObject("Query", query_text).Execute().Unload()
-            documents = _collect_metadata_rows(table, candidate, select_fields)
+            documents = _collect_metadata_rows(session, table, candidate, select_fields)
             if documents:
                 if limit == 1:
-                    documents = [_attach_com_tabular_parts(session, documents[0])]
+                    enriched = _attach_com_tabular_parts(session, documents[0])
+                    documents = [_populate_record_attachments(session, enriched)]
                 return {
                     "found": True,
                     "query": query,
@@ -1171,15 +1498,21 @@ def _get_document_card_any(
             for alias, attr in select_fields:
                 val = getattr(row, attr, None)
                 fields[alias] = _safe_str(getattr(val, "Наименование", None) or val, 5000)
-            return {
-                "document": {
+            doc = _populate_record_attachments(
+                session,
+                {
                     "found": True,
                     "document_type": candidate["synonym"] or candidate["name"],
+                    "metadata_name": candidate["name"],
+                    "kind": candidate["kind"],
                     "number": _safe_str(getattr(row, "Number", "") or getattr(row, "Номер", "")),
                     "ref": _safe_str(getattr(row, "Ref", "") or getattr(row, "Ссылка", "")),
                     "fields": fields,
                     "attachments": [],
                 },
+            )
+            return {
+                "document": doc,
                 "source": "onec_com",
                 "method": "query_document_card",
             }
@@ -1284,12 +1617,15 @@ def get_task_details(app: Any, *, number: str) -> dict[str, Any]:
         val = getattr(row, attr, None)
         fields[alias] = _safe_str(getattr(val, "Наименование", None) or val, 2000)
 
-    return {
+    record = {
         "found": True,
         "number": number,
+        "metadata_name": "ЗадачаИсполнителя",
+        "kind": "task",
         "fields": fields,
         "attachments": [],
     }
+    return record
 
 
 def get_incoming_correspondence(app: Any, *, number: str) -> dict[str, Any]:

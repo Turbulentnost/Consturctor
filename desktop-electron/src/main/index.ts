@@ -96,7 +96,7 @@ function loadConfig(): {
   const backendUrl = (
     process.env.BACKEND_URL ||
     env.BACKEND_URL ||
-    'http://127.0.0.1:7812'
+    'http://192.168.1.157:7812'
   ).replace(/\/+$/, '')
   const flag = (process.env.CONSTRUCTOR_TEST_USER || env.CONSTRUCTOR_TEST_USER || '')
     .trim()

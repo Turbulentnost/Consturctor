@@ -3604,14 +3604,83 @@ input {
   color: var(--main-text);
   min-width: 0;
 }
-.passport-notes-preview {
-  display: -webkit-box;
-  -webkit-line-clamp: 5;
-  line-clamp: 5;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.passport-view-dl dd .passport-input,
+.passport-view-dl dd .passport-textarea,
+.passport-view-dl dd .passport-triggers,
+.passport-view-dl dd .passport-add-wrap {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+.passport-view-dl dd .passport-textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+.passport-view-dl > div.passport-view-field-stack {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+.passport-view-dl > div.passport-view-field-inline {
+  grid-template-columns: minmax(140px, 220px) minmax(0, 1fr);
+  align-items: center;
+}
+.passport-view-dl dd .passport-field-value {
+  display: block;
+  width: 100%;
   white-space: pre-wrap;
+  word-break: break-word;
+}
+.passport-field-hint {
+  margin: 0 0 8px;
+  color: var(--content-muted);
+  font-size: 12px;
+}
+.passport-inline-edit {
+  margin-left: 10px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #1565c0;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.passport-inline-edit:hover {
+  text-decoration: underline;
+}
+.passport-chip-readonly {
+  width: 100%;
+  max-width: none;
+  text-align: left;
+  font: inherit;
+}
+.passport-view-dl dt {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.passport-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.passport-card-head h3 {
+  margin: 0;
+}
+.passport-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.passport-notes-preview {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: visible;
 }
 .passport-view .files-table td {
   vertical-align: middle;
@@ -4069,6 +4138,101 @@ button.feed-tool-head:hover {
 .feed-tool-head.static {
   cursor: default;
 }
+.feed-tool-request {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--content-muted, #5b7a99);
+  background: #fff;
+  border: 1px dashed var(--card-border, #d7e2ee);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  word-break: break-word;
+}
+.odata-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.odata-brief-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.odata-brief-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--content-strong, #10141a);
+  word-break: break-word;
+}
+.odata-brief-count,
+.odata-brief-more {
+  font-size: 12px;
+  color: var(--content-muted, #5b7a99);
+}
+.odata-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--card-border, #d7e2ee);
+  border-left: 3px solid #1f7a6c;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  cursor: pointer;
+}
+.odata-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.odata-card-title {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--content-strong, #10141a);
+}
+.odata-card-toggle {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1565c0;
+}
+.odata-card-sub,
+.odata-card-preview {
+  font-size: 12px;
+  color: var(--content-muted, #46617d);
+  line-height: 1.4;
+}
+.odata-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.odata-field-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--content-muted, #5b7a99);
+  margin-bottom: 2px;
+}
+.odata-field-value {
+  font-size: 13px;
+  color: var(--content-strong, #10141a);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.odata-people {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--content-strong, #10141a);
+}
 
 /* Mini calendar (calendar.show_meetings result) */
 .mini-cal {
@@ -4158,9 +4322,92 @@ button.feed-tool-head:hover {
 .mini-cal-title {
   font-size: 13px;
   color: var(--content-strong, #10141a);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow: visible;
+}
+.mini-cal-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mini-cal-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--card-border, #d7e2ee);
+  border-left-width: 3px;
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.mini-cal-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.mini-cal-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.mini-cal-card-time {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--content-muted, #46617d);
+}
+.mini-cal-card-toggle {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1565c0;
+}
+.mini-cal-card-title {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--content-strong, #10141a);
+  white-space: normal;
+}
+.mini-cal-card-preview,
+.mini-cal-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mini-cal-card-summary {
+  font-size: 11px;
+  color: var(--content-muted, #5b7a99);
+}
+.mini-cal-people {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mini-cal-people-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--content-muted, #5b7a99);
+}
+.mini-cal-people ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.mini-cal-people li,
+.mini-cal-people-text {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--content-strong, #10141a);
+  white-space: normal;
+}
+.mini-cal-empty-people {
+  font-size: 12px;
+  color: var(--content-muted, #5b7a99);
 }
 .mini-cal-chip {
   flex: none;
@@ -4181,7 +4428,7 @@ button.feed-tool-head:hover {
   white-space: normal;
 }
 .mini-cal-modal {
-  width: min(920px, 94vw);
+  width: min(720px, 94vw);
   max-height: 84vh;
 }
 .mini-cal-modal-head {
@@ -4221,7 +4468,8 @@ button.feed-tool-head:hover {
 /* ===== Mini calendar grid (time-axis view) ===== */
 .mini-cal-scroll {
   width: 100%;
-  overflow-x: auto;
+  max-height: 360px;
+  overflow: auto;
 }
 .mini-cal-grid {
   display: grid;
@@ -8692,6 +8940,10 @@ button.feed-tool-head:hover {
   border: 1px solid rgba(13, 59, 115, 0.14);
   border-radius: 16px;
   box-shadow: 0 10px 28px rgba(16, 32, 51, 0.08);
+}
+.wp-today .wp-ask-bar {
+  width: calc(100% - 92px);
+  max-width: calc(100% - 92px);
 }
 .wp-ask-spark {
   width: 36px;

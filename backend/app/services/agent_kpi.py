@@ -506,28 +506,50 @@ def apply_facts(
     return out
 
 
+def _meaningful_for_kpi(runs: list[Any]) -> list[tuple[Any, str]]:
+    from app.services.agent_runs import effective_run_status, has_run_result
+
+    items: list[tuple[Any, str]] = []
+    for row in runs:
+        status = str(getattr(row, "status", "") or "")
+        answer = str(getattr(row, "answer", "") or "")
+        effective = effective_run_status(status, answer)
+        if effective == "started":
+            continue
+        if effective == "canceled":
+            if status == "ok":
+                effective = "ok"
+            elif status == "error":
+                effective = "error"
+            elif not has_run_result(answer):
+                continue
+        items.append((row, effective))
+    return items
+
+
 def compute_fact(
     kind: str,
     params: dict[str, Any],
     runs: list[Any],
     schedule: dict[str, Any] | None = None,
 ) -> tuple[float | None, str]:
-    finished = [row for row in runs if str(getattr(row, "status", "") or "") in {"ok", "error"}]
+    meaningful = _meaningful_for_kpi(runs)
+    finished = [(row, status) for row, status in meaningful if status in {"ok", "error"}]
     if kind == "runs_count":
-        if not runs:
+        if not meaningful:
             return None, NO_RUNS_LABEL
-        return float(len(runs)), "число прогонов"
+        return float(len(meaningful)), "число прогонов"
     if kind == "fail_count":
         if not finished:
             return None, NO_RUNS_LABEL
-        return float(sum(1 for row in finished if str(getattr(row, "status", "")) == "error")), "ошибки"
+        return float(sum(1 for _row, status in finished if status == "error")), "ошибки"
     if kind == "success_rate":
         if not finished:
             return None, NO_RUNS_LABEL
-        ok = sum(1 for row in finished if str(getattr(row, "status", "")) == "ok")
+        ok = sum(1 for _row, status in finished if status == "ok")
         return round(100.0 * ok / len(finished), 1), "доля успешных"
     if kind == "expected_interval":
-        times = _started_times(runs)
+        times = _started_times([row for row, _status in meaningful])
         if len(times) < 2:
             return None, NO_RUNS_LABEL
         gaps = [(times[i] - times[i - 1]).total_seconds() / 60.0 for i in range(1, len(times))]
@@ -539,7 +561,11 @@ def compute_fact(
         except (TypeError, ValueError):
             tolerance = 0.0
         trigger_times = _started_times(
-            [row for row in runs if str(getattr(row, "source", "") or "") == "trigger"]
+            [
+                row
+                for row, _status in meaningful
+                if str(getattr(row, "source", "") or "") == "trigger"
+            ]
         )
         if minutes is None or len(trigger_times) < 2:
             return None, NO_RUNS_LABEL

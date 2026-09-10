@@ -20,6 +20,7 @@ from app.sdk_agent.prompt import (
     build_regulation_sdk_prompt,
     build_sdk_prompt,
     inferred_design_answers,
+    text_has_finished_work_result,
 )
 from app.sdk_agent.tool_adapter import (
     is_ask_question,
@@ -383,6 +384,10 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert 'value: "low"' in text
     assert "INTERVIEW_QUESTION_MODEL_PARAMS" in text
     assert "testsPassReady" in text
+    assert "isFinishedWorkResult" in text
+    assert "stopState" in text
+    assert "WORK[ _]?RESULT" in text
+    assert "hasResultSections" in text
     assert "thought +=" in text
     assert "finishIfReady" in text
     assert "TESTS: PASS" in text
@@ -395,6 +400,20 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
 def test_question_feed_kind_is_separate_block() -> None:
     assert resolve_feed_kind(title="Уточнение") == "question"
     assert resolve_feed_kind(kind="question") == "question"
+
+
+def test_finished_work_result_accepts_files_actions_without_header() -> None:
+    body = (
+        "Проверены 93 карточки ТД_Поручения в 1С.\n"
+        "FILES\npredlozheniya.docx: итог\n"
+        "ACTIONS\nПрочитаны 93 документа\n"
+        "TESTS: PASS\n"
+    )
+    assert text_has_finished_work_result(body)
+    assert text_has_finished_work_result("## WORK_RESULT\nИтог\nTESTS: PASS")
+    assert text_has_finished_work_result("размышление## WORK_RESULT\nИтог\nTESTS: PASS")
+    assert not text_has_finished_work_result("Сейчас вызову 1С. TESTS: PASS потом.")
+    assert not text_has_finished_work_result("## WORK_RESULT\nИтог\nTESTS: FAIL")
 
 
 def test_sdk_design_tool_specs_include_constructor_tools() -> None:

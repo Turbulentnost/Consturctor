@@ -82,11 +82,18 @@ function acceptList(raw: unknown): string[] {
   return out
 }
 
+function asSeconds(value: unknown): number {
+  const num = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(num) && num > 0 ? num : 0
+}
+
 export function parseQuestionArgs(raw: unknown): {
   question: string
   options: string[]
   needsFile: boolean
   accept: string[]
+  autoContinueSeconds: number
+  autoContinueAnswer: string
 } {
   const args = asRecord(raw)
   const nested = asRecord(args.arguments || args.input || args.properties)
@@ -105,7 +112,13 @@ export function parseQuestionArgs(raw: unknown): {
   if (!options.length) options = asOptions(source.answers)
   if (!options.length) options = asOptions(source.variants)
   if (!options.length && question && !needsFile) options = optionsFromText(question)
-  return { question, options, needsFile, accept }
+  const autoContinueSeconds = asSeconds(
+    source.autoContinueSeconds ?? source.auto_continue_seconds
+  )
+  const autoContinueAnswer = asText(
+    source.autoContinueAnswer ?? source.auto_continue_answer
+  )
+  return { question, options, needsFile, accept, autoContinueSeconds, autoContinueAnswer }
 }
 
 export function isAskQuestion(name: string): boolean {

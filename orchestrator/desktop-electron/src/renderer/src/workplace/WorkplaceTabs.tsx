@@ -60,6 +60,7 @@ export function TodayTab({
   onOpenMetrics,
   onOpenPassport,
   onRun,
+  onOpenRun,
   onAskOrchestrator
 }: {
   user: UserProfile
@@ -67,6 +68,7 @@ export function TodayTab({
   onOpenMetrics: () => void
   onOpenPassport: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
   onRun: (workflowId: string, title: string) => void
+  onOpenRun: (workflowId: string, title: string, runId?: string) => void
   onAskOrchestrator: (message: string, appContext: string) => void
 }): React.JSX.Element {
   return (
@@ -77,6 +79,7 @@ export function TodayTab({
       onOpenMetrics={onOpenMetrics}
       onOpenPassport={onOpenPassport}
       onRun={onRun}
+      onOpenRun={onOpenRun}
       onAskOrchestrator={onAskOrchestrator}
     />
   )

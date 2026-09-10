@@ -17,6 +17,8 @@ ALLOWED_ONEC_TOOLS = {
     "onec.search_tasks",
     "onec.get_task_card",
     "onec.meeting_service_notes",
+    "onec.list_attachments",
+    "onec.read_attachment",
 }
 
 FORBIDDEN_INPUT_KEYS = {

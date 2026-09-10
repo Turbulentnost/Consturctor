@@ -628,6 +628,8 @@ export interface AgentEvent {
   options?: string[]
   needsFile?: boolean
   accept?: string[]
+  autoContinueSeconds?: number
+  autoContinueAnswer?: string
   tool?: string
   arguments?: Record<string, unknown>
   kind?:

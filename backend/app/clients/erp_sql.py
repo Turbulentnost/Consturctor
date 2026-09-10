@@ -177,16 +177,63 @@ def _use_windows_impersonation() -> bool:
     )
 
 
-def _build_connection_string() -> str:
+_KNOWN_ERP_IP = "192.168.1.157"
+_KNOWN_ERP_HOST = "ii1"
+_last_good_server: str | None = None
+
+
+def _legacy_sql_driver() -> bool:
+    return settings.erp_sql_driver.strip().casefold() in {
+        "sql server",
+        "sql server native client 11.0",
+    }
+
+
+def _sql_password_auth_usable() -> bool:
+    user = settings.erp_sql_user.strip()
+    if not user or not settings.erp_sql_password:
+        return False
+    return "\\" not in user and "@" not in user
+
+
+def _erp_server_candidates(*, trusted: bool) -> list[str]:
+    # Hostname ii1 spends ~11s on name lookup, so a 10s ODBC timeout always fails.
+    # tcp:IP answers in ~20ms; Windows Auth works via impersonation.
+    raw = (settings.erp_sql_server or "").strip()
+    if trusted:
+        ordered = [_KNOWN_ERP_IP, _KNOWN_ERP_HOST]
+    else:
+        ordered = [raw] if raw else [_KNOWN_ERP_IP]
+        for extra in (_KNOWN_ERP_IP, _KNOWN_ERP_HOST):
+            if extra not in ordered:
+                ordered.append(extra)
+    if _last_good_server and _last_good_server in ordered:
+        ordered.remove(_last_good_server)
+        ordered.insert(0, _last_good_server)
+    return ordered
+
+
+def _server_token(server: str) -> str:
+    host = server.replace("tcp:", "").split(",")[0]
+    if host == _KNOWN_ERP_IP:
+        return f"tcp:{_KNOWN_ERP_IP},1433"
+    return server
+
+
+def _build_connection_string(*, server: str, trusted: bool) -> str:
     parts = [
         f"DRIVER={{{settings.erp_sql_driver}}}",
-        f"SERVER={settings.erp_sql_server}",
+        f"SERVER={_server_token(server)}",
         f"DATABASE={settings.erp_sql_database}",
-        f"Encrypt={settings.erp_sql_encrypt}",
-        "TrustServerCertificate=yes",
-        "Connection Timeout=15",
     ]
-    if _use_windows_impersonation() or settings.erp_sql_trusted_connection:
+    if not _legacy_sql_driver():
+        parts.extend(
+            [
+                f"Encrypt={settings.erp_sql_encrypt}",
+                "TrustServerCertificate=yes",
+            ]
+        )
+    if trusted:
         parts.append("Trusted_Connection=yes")
     else:
         parts.append(f"UID={settings.erp_sql_user}")
@@ -194,14 +241,51 @@ def _build_connection_string() -> str:
     return ";".join(parts) + ";"
 
 
-def _connect() -> pyodbc.Connection:
+def _odbc_connect(conn_str: str, timeout: int = 8) -> pyodbc.Connection:
+    return pyodbc.connect(conn_str, autocommit=True, timeout=timeout)
+
+
+def _connect_trusted(server: str) -> pyodbc.Connection:
+    conn_str = _build_connection_string(server=server, trusted=True)
+    # Current Windows session + tcp:IP is ~0ms. Impersonation (TURBO-DON\testii)
+    # takes ~25s per connect and made login look stuck on «Входим...».
     try:
-        if _use_windows_impersonation():
-            with _windows_impersonation(settings.erp_sql_user, settings.erp_sql_password):
-                return pyodbc.connect(_build_connection_string(), autocommit=True)
-        return pyodbc.connect(_build_connection_string(), autocommit=True)
-    except pyodbc.Error as exc:
-        raise ErpSqlError(f"Failed to connect to erp_pm: {exc}") from exc
+        return _odbc_connect(conn_str, timeout=8)
+    except pyodbc.Error:
+        if not _use_windows_impersonation():
+            raise
+        with _windows_impersonation(settings.erp_sql_user, settings.erp_sql_password):
+            return _odbc_connect(conn_str, timeout=15)
+
+
+def _connect() -> pyodbc.Connection:
+    global _last_good_server
+    last_error: Exception | None = None
+    use_trusted = bool(settings.erp_sql_trusted_connection or _use_windows_impersonation())
+    for server in _erp_server_candidates(trusted=use_trusted):
+        if use_trusted:
+            try:
+                conn = _connect_trusted(server)
+                _last_good_server = server
+                return conn
+            except (pyodbc.Error, ErpSqlError) as exc:
+                last_error = exc
+        if _sql_password_auth_usable():
+            try:
+                conn_str = _build_connection_string(server=server, trusted=False)
+                return _odbc_connect(conn_str)
+            except pyodbc.Error as exc:
+                last_error = exc
+    raise ErpSqlError(f"Failed to connect to erp_pm: {last_error}") from last_error
+
+
+def warmup() -> None:
+    """Open and close one ERP connection so the first login is not a cold SSPI handshake."""
+    conn = _connect()
+    try:
+        conn.cursor().execute("SELECT 1")
+    finally:
+        conn.close()
 
 
 def _row_department(row) -> str:

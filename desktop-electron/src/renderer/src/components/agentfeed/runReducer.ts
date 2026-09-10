@@ -1,5 +1,6 @@
 import type { AgentEvent, AgentRunnerEvent } from '../../api/types'
 import { isTaskTool, resolveToolName, toolArgHint, toolCardTitle, toolLabel } from './labels'
+import { summarizeToolResult } from './resultSummary'
 import { isAskQuestion, parseQuestionArgs } from './questionArgs'
 import { appendThinkingText, streamDelta } from './thinkingText'
 import type { FeedItem, PendingHitl, PendingQuestion, ToolItem } from './types'
@@ -82,24 +83,7 @@ function normalizeResult(raw: unknown): Record<string, unknown> | null {
 
 /** Mirror desktop compact_tool_result: only the tool OUTPUT, summarized. */
 function summarizeResult(result: Record<string, unknown> | null): string {
-  if (!result || typeof result !== 'object') return 'Данные получены.'
-  const summary = result.summary
-  if (typeof summary === 'string' && summary.trim()) return summary.trim()
-  if (typeof result.result_file === 'string' && result.result_file.trim()) {
-    return `Файл: ${result.result_file}`
-  }
-  if (result.externalized && typeof result.result_file === 'string') {
-    return `Файл: ${result.result_file}`
-  }
-  if (result.skipped) return 'Пропущено пользователем'
-  if (result.rejected) return 'Отклонено пользователем'
-  for (const key of ['items', 'rows', 'results', 'messages', 'events', 'files', 'records', 'documents', 'tasks']) {
-    const value = result[key]
-    if (Array.isArray(value)) return `Получено записей: ${value.length}`
-  }
-  if (typeof result.text === 'string' && result.text.trim()) return result.text.trim().slice(0, 200)
-  if (typeof result.value === 'string' && result.value.trim()) return result.value.trim().slice(0, 200)
-  return 'Данные получены.'
+  return summarizeToolResult(result)
 }
 
 const _DONE_STATUS = new Set([
@@ -245,7 +229,10 @@ function handleToolCall(state: RunState, payload: AgentRunnerEvent): RunState {
         question,
         options,
         needsFile: parsed.needsFile || state.pendingQuestion?.needsFile,
-        accept: parsed.accept.length ? parsed.accept : state.pendingQuestion?.accept
+        accept: parsed.accept.length ? parsed.accept : state.pendingQuestion?.accept,
+        autoContinueSeconds:
+          parsed.autoContinueSeconds || state.pendingQuestion?.autoContinueSeconds,
+        autoContinueAnswer: parsed.autoContinueAnswer || state.pendingQuestion?.autoContinueAnswer
       },
       status: 'Нужен ваш ответ'
     }
@@ -478,7 +465,15 @@ export function applyAgentEvent(state: RunState, event: AgentEvent): ApplyOutcom
               ? parsed.accept
               : event.accept?.length
                 ? event.accept
-                : state.pendingQuestion?.accept
+                : state.pendingQuestion?.accept,
+            autoContinueSeconds:
+              parsed.autoContinueSeconds ||
+              event.autoContinueSeconds ||
+              state.pendingQuestion?.autoContinueSeconds,
+            autoContinueAnswer:
+              parsed.autoContinueAnswer ||
+              event.autoContinueAnswer ||
+              state.pendingQuestion?.autoContinueAnswer
           },
           status: 'Нужен ваш ответ'
         }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from queue import Queue
@@ -290,7 +291,12 @@ async def read_workflow_health(
     auth: AuthContext = Depends(get_current_user),
 ) -> WorkflowHealth:
     _ = auth
-    return workflow_health()
+    # workflow_health() does a blocking Cursor HTTP call; keep it off the event
+    # loop and cap it so a slow provider cannot stall the page.
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(workflow_health), timeout=5.0)
+    except (TimeoutError, asyncio.TimeoutError):
+        return WorkflowHealth(ok=False, message="Cursor не ответил за 5 секунд")
 
 
 @router.get("/agent-tools")

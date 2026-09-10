@@ -195,9 +195,11 @@ export function Sidebar({
       }
     }
     void load()
+    // Live updates come from onChatEvent below; this is only a slow safety net
+    // for a dropped websocket.
     const timer = window.setInterval(() => {
       void load()
-    }, 20000)
+    }, 120_000)
     return () => {
       alive = false
       window.clearInterval(timer)
@@ -233,15 +235,19 @@ export function Sidebar({
     return () => unsubscribe?.()
   }, [currentUserId])
 
+  // Unread/preview pushes rebuild the peers array; avatars must not refetch
+  // unless a peer or its avatar actually changed.
+  const peerAvatarKey = peers
+    .map((peer) => `${peer.id}\u0000${peer.peerId || peer.id}\u0000${peer.avatarUrl || ''}`)
+    .join('\u0001')
   useEffect(() => {
     let alive = true
+    const entries = peerAvatarKey ? peerAvatarKey.split('\u0001') : []
     void Promise.all(
-      peers.map(async (peer) => {
-        const url = await loadUserAvatar({
-          id: peer.peerId || peer.id,
-          avatarUrl: peer.avatarUrl
-        })
-        return [peer.id, url] as const
+      entries.map(async (entry) => {
+        const [threadId, userId, avatarUrl] = entry.split('\u0000')
+        const url = await loadUserAvatar({ id: userId, avatarUrl })
+        return [threadId, url] as const
       })
     ).then((pairs) => {
       if (!alive) return
@@ -254,7 +260,7 @@ export function Sidebar({
     return () => {
       alive = false
     }
-  }, [peers])
+  }, [peerAvatarKey])
 
   function expandForSearch(): void {
     if (collapsed) setCollapsed(false)

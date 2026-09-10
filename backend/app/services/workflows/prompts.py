@@ -254,8 +254,9 @@ _DEMO_EXECUTE_DRAFT_HINT = (
     "Если ставишь встречи: сначала outlook.read_calendar широким периодом "
     "(people[] — календари участников), "
     "потом create с attendees[] и organizer, потом снова list — notify об успехе только если проверка видит встречи. "
-    "Итоговый план покажи мини-формой календаря в ответе через calendar.show_meetings "
-    "(cancel/red - отменить, add/green - поставить, keep - уже стоит). "
+    "Итоговый план покажи карточкой для доклада через calendar.show_meetings "
+    "(полная тема, attendees[], substitutes[] кто кого замещает; "
+    "cancel/red - отменить, add/green - поставить, keep - уже стоит). "
     "Этот инструмент только рисует план и ничего не двигает. "
     "Если слот пересекается с существующей встречей в Outlook — реши сам: "
     "посмотри календари участников и их загрузку, выбери перенос, сам перенеси через outlook.create_event, "
@@ -1232,6 +1233,33 @@ RESULT_STATUS_INSTRUCTION = (
     "цель недостижима. Не делай раздел «Что сделано», будто агент готов."
 )
 
+RK_MEETING_RUNTIME_INSTRUCTION = (
+    "Заседания Ревизионной комиссии (ПЛ-01-001):\n"
+    "- Запуск по расписанию: каждый понедельник 09:00–10:00 перед вторником. "
+    "Дату заседания бери из Outlook (`outlook.read_calendar`, тема: ревизион / РК).\n"
+    "- Поручения 1С без фильтра по статусам ТЗ: `onec.erp_tasks_current`, "
+    "`onec.erp_tasks_period`, `onec.docflow_tasks`; документы — `onec.search_documents`, "
+    "вложения — `onec.list_attachments` / `onec.read_attachment`.\n"
+    "- Excel-реестр: `excel.read_workbook` из materials/attachments; при отсутствии — "
+    "только чтение сетевой папки через `workspace.powershell_run`, Excel не править.\n"
+    "- Сверь чек-лист §15; расхождения 1С/Excel показывай обеими датами. "
+    "Без Word-расшифровки протокол не готовь.\n"
+    "- Итог: проект повестки и перечни + `report.export_document`."
+)
+
+SD_MEETING_RUNTIME_INSTRUCTION = (
+    "Заседания Совета директоров (ПЛ-34-242 v03):\n"
+    "- Сначала календарь Outlook (`outlook.read_calendar`), затем 1С: "
+    "`onec.meeting_service_notes` и карточки «совет директоров по гк» через "
+    "`onec.search_documents` + `onec.get_document_card`.\n"
+    "- Вложения 1С: `onec.list_attachments` → `onec.read_attachment` для каждого файла; "
+    "сканы PDF без текстового слоя читаются через OCR на сервере при загрузке.\n"
+    "- Материалы запуска: `excel.list_files` и `excel.read_workbook` из materials/attachments.\n"
+    "- Сверь пакет п. 6.4 ПЛ-34-242; пробелы не заполняй. Без Word-расшифровки "
+    "не готовь протокол, Decision Log и Action Tracker.\n"
+    "- Итог: сводка комплектности + `report.export_document`."
+)
+
 TESTS_USER_CLARIFY_INSTRUCTION = (
     "Тесты и тупики:\n"
     "- ЗАПРЕЩЕНО спрашивать пользователя про 1С, OData, COM, fixtures, INVOKER, "
@@ -1247,6 +1275,7 @@ TESTS_USER_CLARIFY_INSTRUCTION = (
     "затем `onec.odata_get` с entity из каталога и/или `onec.sql_query`. "
     "Карточку документа читай по `ref_key` или path с guid — в ответе все реквизиты "
     "и табличные части (участники, план совещания), не только Number/Date/Posted. "
+    "Вложения 1С: `onec.list_attachments` + `onec.read_attachment` (PDF/DOCX/XLSX → текст). "
     "Задачи пользователя из erp_pm и документооборота: `onec.erp_tasks_current` "
     "(открытые сейчас) и `onec.erp_tasks_period` (за период, date_from/date_to YYYY-MM-DD). "
     "Только документооборот: `onec.docflow_tasks`. "
@@ -1321,6 +1350,19 @@ def server_access_notes(*, odata: bool, imap: bool, turboproject: bool = False) 
     )
 
 
+def _meeting_runtime_block(*, plan: WorkflowPlan, document_text: str) -> str:
+    from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent
+    from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent
+
+    kind = str(getattr(plan.runtime, "kind", "") or "").casefold()
+    blob = " ".join([plan.title or "", plan.goal or "", document_text or "", kind])
+    if kind == "revision_commission" or is_rk_meeting_agent(blob):
+        return f"{RK_MEETING_RUNTIME_INSTRUCTION}\n\n"
+    if kind == "board_meeting" or is_sd_meeting_agent(blob):
+        return f"{SD_MEETING_RUNTIME_INSTRUCTION}\n\n"
+    return ""
+
+
 def build_execute_prompt(
     *,
     plan: WorkflowPlan,
@@ -1346,6 +1388,7 @@ def build_execute_prompt(
         f"{LIVE_TOOLS_TEST_INSTRUCTION}\n\n"
         f"{RESULT_STATUS_INSTRUCTION}\n\n"
         f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
+        f"{_meeting_runtime_block(plan=plan, document_text=doc)}"
         f"{TESTS_USER_CLARIFY_INSTRUCTION}\n\n"
         f"{ARTIFACTS_INSTRUCTION}\n"
         f"{answers_section}"
@@ -1389,6 +1432,7 @@ def build_reexecute_prompt(
         f"{LIVE_TOOLS_TEST_INSTRUCTION}\n\n"
         f"{RESULT_STATUS_INSTRUCTION}\n\n"
         f"{RUNTIME_NETWORK_INSTRUCTION}\n\n"
+        f"{_meeting_runtime_block(plan=plan, document_text='')}"
         f"{TESTS_USER_CLARIFY_INSTRUCTION}\n\n"
         f"{ARTIFACTS_INSTRUCTION}\n"
         f"{answers_section}"

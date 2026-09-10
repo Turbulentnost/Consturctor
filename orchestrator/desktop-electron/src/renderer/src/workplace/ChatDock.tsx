@@ -14,6 +14,7 @@ export function ChatDock({ onOpenThread, onOpenSupport }: ChatDockProps): React.
 
   useEffect(() => {
     let alive = true
+    let pending = 0
     const load = async (): Promise<void> => {
       try {
         const items = await api.listChatThreads()
@@ -23,10 +24,15 @@ export function ChatDock({ onOpenThread, onOpenSupport }: ChatDockProps): React.
       }
     }
     void load()
-    const timer = window.setInterval(() => void load(), 20000)
+    // Chat pushes replace polling; the debounce collapses message bursts.
+    const unsubscribe = window.api.onChatEvent?.(() => {
+      window.clearTimeout(pending)
+      pending = window.setTimeout(() => void load(), 500)
+    })
     return () => {
       alive = false
-      window.clearInterval(timer)
+      window.clearTimeout(pending)
+      unsubscribe?.()
     }
   }, [])
 

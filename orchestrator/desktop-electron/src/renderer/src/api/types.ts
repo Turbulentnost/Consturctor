@@ -576,6 +576,8 @@ export interface AgentEvent {
   options?: string[]
   needsFile?: boolean
   accept?: string[]
+  autoContinueSeconds?: number
+  autoContinueAnswer?: string
   tool?: string
   arguments?: Record<string, unknown>
   kind?: 'design' | 'readiness' | 'demo' | 'run' | 'trigger' | 'form_orchestrator' | 'calc_orchestrator'

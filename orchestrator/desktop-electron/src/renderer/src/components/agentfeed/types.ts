@@ -47,6 +47,8 @@ export interface PendingQuestion {
   options: string[]
   needsFile?: boolean
   accept?: string[]
+  autoContinueSeconds?: number
+  autoContinueAnswer?: string
 }
 
 export interface PendingHitl {

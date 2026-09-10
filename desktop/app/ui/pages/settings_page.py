@@ -346,9 +346,21 @@ class DepartmentSuggestEdit(QLineEdit):
         # Defer hide so list item click can fire first.
         QTimer.singleShot(0, self._maybe_close_popup)
 
+    def _uninstall_app_filter(self) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        try:
+            popup_visible = self._popup.isVisible()
+        except RuntimeError:
+            # The page was torn down while this app-wide filter was still
+            # installed: drop the filter instead of touching deleted widgets.
+            self._uninstall_app_filter()
+            return False
         if (
-            self._popup.isVisible()
+            popup_visible
             and event.type() == QEvent.Type.MouseButtonPress
             and isinstance(event, QMouseEvent)
         ):
@@ -359,6 +371,11 @@ class DepartmentSuggestEdit(QLineEdit):
                 self.hide_popup()
                 self._revert_if_incomplete()
         return super().eventFilter(obj, event)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._uninstall_app_filter()
+        self._popup.close()
+        super().closeEvent(event)
 
     def _maybe_close_popup(self) -> None:
         if not self._can_edit:

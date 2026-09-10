@@ -34,7 +34,17 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
   const [remember, setRemember] = useState(rememberPreference())
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [waitSec, setWaitSec] = useState(0)
   const [backendHint, setBackendHint] = useState('')
+
+  useEffect(() => {
+    if (!busy) {
+      setWaitSec(0)
+      return
+    }
+    const timer = window.setInterval(() => setWaitSec((sec) => sec + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [busy])
 
   useEffect(() => {
     let alive = true
@@ -76,7 +86,14 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
       setRememberPreference(remember)
       onLoggedIn(result, remember, password)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Ошибка входа')
+      if (err instanceof ApiError && err.status === 503) {
+        setError(
+          err.message ||
+            'Сервис аутентификации 1С недоступен. Проверьте VPN и что backend запущен (run_dev.bat).'
+        )
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Ошибка входа')
+      }
     } finally {
       setBusy(false)
     }
@@ -151,7 +168,11 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
         <div className="error">{backendHint || error}</div>
 
         <button className="btn-light" onClick={submit} disabled={busy}>
-          {busy ? 'Входим...' : 'Войти'}
+          {busy
+            ? waitSec >= 3
+              ? `Входим... ${waitSec}с, ждём erp_pm`
+              : 'Входим...'
+            : 'Войти'}
         </button>
       </div>
     </div>

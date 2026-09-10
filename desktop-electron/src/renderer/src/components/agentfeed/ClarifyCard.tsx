@@ -16,8 +16,12 @@ export function ClarifyCard({
   const [useCustom, setUseCustom] = useState(question.options.length === 0)
   const [custom, setCustom] = useState('')
   const [filePaths, setFilePaths] = useState<string[]>([])
+  const [held, setHeld] = useState(false)
+  const [left, setLeft] = useState(question.autoContinueSeconds || 0)
   const cardRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const submittedRef = useRef(false)
+  const hold = (): void => setHeld(true)
 
   useEffect(() => {
     if (useCustom) {
@@ -30,19 +34,46 @@ export function ClarifyCard({
   const needsFile = Boolean(question.needsFile)
   const accept = question.accept?.length ? question.accept : []
   const canAttach = allowFiles || needsFile
+  const skipText =
+    question.autoContinueAnswer?.trim() ||
+    'Файла нет. Ищи данные в 1С и папках, не спрашивай файл снова.'
+  const canAuto = (question.autoContinueSeconds || 0) > 0
   const hasAnswer = needsFile
-    ? filePaths.length > 0
+    ? filePaths.length > 0 || Boolean(useCustom ? custom.trim() : selected) || canAuto
     : Boolean(useCustom ? custom.trim() || filePaths.length : selected)
 
-  const submit = (): void => {
-    const text = (useCustom ? custom.trim() : selected).trim()
+  const submit = (forced?: string): void => {
+    if (submittedRef.current) return
+    const text = (forced || (useCustom ? custom.trim() : selected)).trim()
     const names = filePaths.map((path) => path.split(/[\\/]/).pop()).filter(Boolean)
     const value = [text, names.length ? `Прикрепленные файлы: ${names.join(', ')}` : '']
       .filter(Boolean)
       .join('\n')
-    if (!value && filePaths.length === 0) return
+    if (!value && filePaths.length === 0) {
+      if (!canAuto) return
+      submittedRef.current = true
+      onAnswer(question.requestId, skipText, [])
+      return
+    }
+    submittedRef.current = true
     onAnswer(question.requestId, value, filePaths)
   }
+
+  useEffect(() => {
+    submittedRef.current = false
+    setHeld(false)
+    setLeft(question.autoContinueSeconds || 0)
+  }, [question.requestId, question.autoContinueSeconds])
+
+  useEffect(() => {
+    if (!canAuto || held || filePaths.length > 0) return
+    if (left <= 0) {
+      submit(skipText)
+      return
+    }
+    const timer = window.setTimeout(() => setLeft((value) => value - 1), 1000)
+    return () => window.clearTimeout(timer)
+  }, [canAuto, held, filePaths.length, left, skipText])
 
   const pickFiles = async (): Promise<void> => {
     const paths = await window.api.openFile({
@@ -62,6 +93,7 @@ export function ClarifyCard({
             : undefined
     })
     if (!paths.length) return
+    hold()
     setFilePaths((prev) => Array.from(new Set([...prev, ...paths])))
   }
 
@@ -133,6 +165,7 @@ export function ClarifyCard({
             setCustom(e.target.value)
             setUseCustom(true)
             setSelected('')
+            hold()
           }}
         />
       </div>
@@ -144,7 +177,10 @@ export function ClarifyCard({
           </button>
           {needsFile && (
             <span className="clarify-file-hint">
-              Временный файл: используется только в этом запуске и не сохраняется в базу знаний.
+              Временный файл: только для этого запуска, в базу знаний не попадает.
+              {canAuto
+                ? ` Если не прикрепить, через ${left} сек агент сам возьмёт данные из 1С и папок.`
+                : ' Если файла нет — напишите это в «Свой вариант».'}
             </span>
           )}
           {filePaths.map((path) => (
@@ -156,8 +192,8 @@ export function ClarifyCard({
       )}
 
       <div className="clarify-actions">
-        <button className="clarify-submit" onClick={submit} disabled={!hasAnswer}>
-          Далее
+        <button className="clarify-submit" onClick={() => submit()} disabled={!hasAnswer}>
+          {canAuto && !held && filePaths.length === 0 && left > 0 ? `Далее (${left})` : 'Далее'}
         </button>
       </div>
     </div>

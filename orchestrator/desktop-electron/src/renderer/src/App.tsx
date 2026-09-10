@@ -75,7 +75,7 @@ type View =
   | { kind: 'passport'; workflowId: string; title: string; tab?: PassportTab }
   | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string }
   | { kind: 'history'; workflowId: string; title: string; runId?: string }
-  | { kind: 'schedule'; workflowId: string; title: string }
+  | { kind: 'schedule'; workflowId: string; title: string; published?: boolean }
 
 function fioKey(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -236,6 +236,7 @@ export function App(): React.JSX.Element {
 
   async function resetToLogin(): Promise<void> {
     void window.api.stopNotifications?.()
+    runs.clearAll()
     clearSession(true)
     clearComCredentials()
     api.setToken(null)
@@ -243,6 +244,10 @@ export function App(): React.JSX.Element {
     setAvatarUrl(null)
     setView({ kind: 'tab', key: 'today' })
     setUser(null)
+  }
+
+  function onLogout(): void {
+    void resetToLogin()
   }
 
   function flash(text: string): void {
@@ -514,6 +519,7 @@ export function App(): React.JSX.Element {
         <AgentSchedulePage
           workflowId={view.workflowId}
           title={view.title}
+          published={Boolean(view.published)}
           onBack={() => setView({ kind: 'tab', key: lastTab })}
           onNext={() => setView({ kind: 'tab', key: lastTab })}
         />
@@ -529,7 +535,9 @@ export function App(): React.JSX.Element {
             onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
             onFiles={(workflowId, title) => openAgentFiles(workflowId, title)}
             onHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
-            onSchedule={(workflowId, title) => setView({ kind: 'schedule', workflowId, title })}
+            onSchedule={(workflowId, title) =>
+              setView({ kind: 'schedule', workflowId, title, published: true })
+            }
           />
         )
       case 'calendar':
@@ -539,7 +547,9 @@ export function App(): React.JSX.Element {
             onOpenRun={(workflowId, runId, autoStart) =>
               void openAgentRun(workflowId, runId, Boolean(autoStart))
             }
-            onOpenSchedule={(workflowId, title) => setView({ kind: 'schedule', workflowId, title })}
+            onOpenSchedule={(workflowId, title) =>
+              setView({ kind: 'schedule', workflowId, title, published: true })
+            }
             onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
           />
         )
@@ -575,6 +585,7 @@ export function App(): React.JSX.Element {
             onOpenMetrics={() => setView({ kind: 'tab', key: 'metrics' })}
             onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
             onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
+            onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
             onAskOrchestrator={(message, appContext) => {
               const workflowId = personalAgentWorkflowId(activeUser.id || '')
               setView({
@@ -632,7 +643,7 @@ export function App(): React.JSX.Element {
               avatarUrl={avatarUrl}
               unread={unread}
               onUnreadChange={setUnread}
-              onLogout={() => void resetToLogin()}
+              onLogout={onLogout}
               showLogout={showLogout}
               onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
             />

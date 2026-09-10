@@ -65,10 +65,14 @@ function resolveDesktopRoot(starts: string[], fallback: string): string {
 }
 
 function cursorEnvFromDesktop(desktopRoot: string): Record<string, string> {
+  const appData = process.env.APPDATA || ''
   const files = [
+    appData ? join(appData, 'constructor-desktop-electron', '.env') : '',
+    appData ? join(appData, 'Orchestrator', '.env') : '',
+    join(process.cwd(), '.env'),
     join(desktopRoot, '.env'),
     ...walkParents(desktopRoot).map((root) => join(root, 'backend', '.env'))
-  ]
+  ].filter(Boolean)
   const out: Record<string, string> = {}
   for (const file of files) {
     const parsed = parseEnvFile(file)

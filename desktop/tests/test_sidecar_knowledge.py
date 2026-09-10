@@ -22,11 +22,16 @@ from agent_sidecar import (  # noqa: E402
     RUN_INPUTS_QUESTION,
     RUN_INPUTS_RUN_HINT,
     RUN_INPUTS_YES,
+    RUN_INPUT_SKIP_ANSWER,
+    RUN_INPUT_WAIT_SECONDS,
     WHEN_TO_RUN_HINT,
     WHEN_TO_RUN_QUESTION,
+    _auto_continue_from_payload,
     _file_request_from_payload,
     _is_meeting_text,
+    _is_calendar_control_workflow,
     _merge_outlook_rule_into_playbook,
+    _tool_specs_for_workflow,
     _merge_run_input_gate,
     _merge_run_inputs,
     _merge_when_to_run,
@@ -101,6 +106,19 @@ def test_file_request_parses_needs_file() -> None:
     assert accept == ["xlsx"]
 
 
+def test_run_input_auto_continues_in_30_seconds() -> None:
+    assert RUN_INPUT_WAIT_SECONDS == 30
+    wait_s, skip = _auto_continue_from_payload(
+        {"autoContinueSeconds": 30, "autoContinueAnswer": RUN_INPUT_SKIP_ANSWER}
+    )
+    assert wait_s == 30
+    assert "1С" in skip
+    assert "Планы работ" in skip
+    none_wait, none_skip = _auto_continue_from_payload({"question": "Когда запускать?"})
+    assert none_wait == 0
+    assert none_skip == ""
+
+
 def test_persist_xlsx_uploads_and_seeds_manifest(tmp_path: Path) -> None:
     source = tmp_path / "schedule.xlsx"
     source.write_bytes(b"XLSX")
@@ -124,10 +142,53 @@ def test_persist_xlsx_uploads_and_seeds_manifest(tmp_path: Path) -> None:
 
 
 def test_sidecar_prompt_includes_outlook_series_rule() -> None:
-    text = _with_sidecar_prompt("Sdelai demo")
+    text = _with_sidecar_prompt("Запланируй плановые совещания в Outlook")
     assert "keepKnowledgeFile" in text
     assert "outlook.create_event" in text
-    assert "Sdelai demo" in text
+    assert "Запланируй" in text
+    generic = _with_sidecar_prompt("Sdelai demo")
+    assert "keepKnowledgeFile" in generic
+    assert "outlook.create_event" not in generic
+
+
+def test_calendar_control_skips_series_rule() -> None:
+    prompt = "Утро рабочего дня — устный список совещаний на планёрку"
+    text = _with_sidecar_prompt(prompt)
+    assert "WORK_RESULT" in text
+    assert "create_event" not in text.lower() or "Do not call create_event" in text
+    assert not _is_meeting_text(
+        "Подготовка ПСД к рабочему дню и контроль календаря",
+        "устный список совещаний на планёрку",
+    )
+    merged = _merge_outlook_rule_into_playbook(
+        {
+            "playbook": {
+                "name": "Подготовка ПСД к рабочему дню и контроль календаря",
+                "instructions": "Утро: только устный список. Без окон после 16:00.",
+            }
+        }
+    )
+    assert merged is None
+
+
+def test_calendar_control_limits_tools() -> None:
+    record = SimpleNamespace(
+        title="Подготовка ПСД к рабочему дню и контроль календаря",
+        notes="Устный список на планёрку",
+        local_run={},
+    )
+    assert _is_calendar_control_workflow(record) is True
+    specs = _tool_specs_for_workflow(record)
+    assert specs is not None
+    names = {str(item.get("name") or "") for item in specs}
+    assert "outlook.search_mail" in names
+    assert "outlook.read_calendar" in names
+    assert "calendar.show_meetings" in names
+    assert "askQuestion" not in names
+    assert "imap.list_unread" not in names
+    assert "web_search" not in names
+    other = SimpleNamespace(title="Отчёт по KPI", notes="", local_run={})
+    assert _tool_specs_for_workflow(other) is None
 
 
 def test_meeting_text_detects_outlook_task() -> None:
