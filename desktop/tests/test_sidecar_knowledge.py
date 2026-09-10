@@ -17,13 +17,18 @@ from agent_sidecar import (  # noqa: E402
     needs_confirmation,
     OUTLOOK_MEETING_RULE,
     OUTLOOK_SERIES_MARKER,
-    RUN_INPUTS_HINT,
     RUN_INPUTS_NO,
     RUN_INPUTS_QUESTION,
     RUN_INPUTS_RUN_HINT,
     RUN_INPUTS_YES,
-    WHEN_TO_RUN_HINT,
     WHEN_TO_RUN_QUESTION,
+    _annotate_readiness_question,
+    _build_readiness_prompt,
+    _format_readiness_answers_md,
+    _label_readiness_question,
+    _readiness_qa_from_draft,
+    _readiness_qa_items,
+    _copy_attachments,
     _file_request_from_payload,
     _is_meeting_text,
     _merge_outlook_rule_into_playbook,
@@ -101,6 +106,32 @@ def test_file_request_parses_needs_file() -> None:
     assert accept == ["xlsx"]
 
 
+def test_file_request_accepts_pdf_and_images() -> None:
+    needs, accept = _file_request_from_payload(
+        {"arguments": {"needsFile": True, "accept": ["pdf", "png", "docx"]}}
+    )
+    assert needs is True
+    assert accept == ["pdf", "png", "docx"]
+
+
+def test_file_request_empty_accept_means_any() -> None:
+    needs, accept = _file_request_from_payload({"arguments": {"needsFile": True}})
+    assert needs is True
+    assert accept == []
+
+
+def test_copy_attachments_writes_text_sidecar(tmp_path: Path) -> None:
+    source = tmp_path / "kit.txt"
+    source.write_text("povestka", encoding="utf-8")
+    cwd = tmp_path / "run"
+    cwd.mkdir()
+    paths = _copy_attachments(str(cwd), [str(source)])
+    assert "materials/attachments/001_kit.txt" in paths
+    sidecar = cwd / "materials" / "attachments" / "001_kit.txt.txt"
+    assert sidecar.is_file()
+    assert sidecar.read_text(encoding="utf-8") == "povestka"
+
+
 def test_persist_xlsx_uploads_and_seeds_manifest(tmp_path: Path) -> None:
     source = tmp_path / "schedule.xlsx"
     source.write_bytes(b"XLSX")
@@ -121,6 +152,45 @@ def test_persist_xlsx_uploads_and_seeds_manifest(tmp_path: Path) -> None:
     assert manifest.is_file()
     assert "schedule.xlsx" in manifest.read_text(encoding="utf-8")
     assert (cwd / "materials" / "001_schedule.xlsx").read_bytes() == b"XLSX"
+
+
+def test_readiness_answers_md_lists_saved_qa() -> None:
+    text = _format_readiness_answers_md(
+        [
+            {
+                "question": "По агенту «Календарь ПСД»: когда запускать?",
+                "answer": "Каждый день к 08:00",
+                "blockTitle": "ИИ-агент: Рабочий день и календарь ПСД",
+            }
+        ]
+    )
+    assert "Календарь ПСД" in text
+    assert "Каждый день к 08:00" in text
+    assert "уже даны" in text
+
+
+def test_readiness_qa_from_draft_reads_sdk_readiness() -> None:
+    draft = SimpleNamespace(
+        sdk_readiness={
+            "qa": [
+                {
+                    "question": "Когда запускать?",
+                    "answer": "По календарю",
+                    "blockTitle": "Календарь",
+                }
+            ]
+        }
+    )
+    items = _readiness_qa_from_draft(draft)
+    assert items[0]["answer"] == "По календарю"
+    assert _readiness_qa_items({}) == []
+
+
+def test_readiness_prompt_mentions_previous_answers() -> None:
+    fresh = _build_readiness_prompt(has_answers=False)
+    resumed = _build_readiness_prompt(has_answers=True)
+    assert "askQuestion" in fresh
+    assert "answers.md уже есть ответы" in resumed
 
 
 def test_sidecar_prompt_includes_outlook_series_rule() -> None:
@@ -149,12 +219,48 @@ def test_merge_outlook_rule_appends_once() -> None:
     assert second is None
 
 
-def test_design_prompt_requires_agent_trigger_question() -> None:
+def test_design_prompt_does_not_inject_hardcoded_questions() -> None:
     text = _with_sidecar_prompt("Sproektiruy", mode="design")
-    assert WHEN_TO_RUN_HINT in text
-    assert "when_to_run" in text
+    assert "Always ask via askQuestion: when to run THIS agent" not in text
+    assert "you MUST" not in text
     run_text = _with_sidecar_prompt("Sdelai demo")
-    assert WHEN_TO_RUN_HINT not in run_text
+    assert RUN_INPUTS_RUN_HINT in run_text
+
+
+def test_readiness_prompt_skips_design_run_hints() -> None:
+    text = _with_sidecar_prompt("Utochni reglament", mode="readiness")
+    assert text == "Utochni reglament"
+    assert RUN_INPUTS_RUN_HINT not in text
+
+
+def test_label_readiness_question_prefixes_unnamed_agent() -> None:
+    labeled, title = _label_readiness_question(
+        "Когда запускать этого агента?",
+        ["Контроль календаря ПСД", "Сбор замечаний"],
+    )
+    assert title == "Контроль календаря ПСД"
+    assert "Контроль календаря ПСД" in labeled
+    assert labeled.startswith("По агенту")
+
+
+def test_label_readiness_question_keeps_named_block() -> None:
+    source = "По агенту «Сбор замечаний»: какой статус считать закрытым?"
+    labeled, title = _label_readiness_question(
+        source,
+        ["Контроль календаря ПСД", "Сбор замечаний"],
+    )
+    assert title == "Сбор замечаний"
+    assert labeled == source
+
+
+def test_annotate_readiness_question_sets_block_context() -> None:
+    payload = _annotate_readiness_question(
+        {"question": "Когда запускать этого агента?", "options": ["раз в день"]},
+        ["Контроль календаря ПСД"],
+    )
+    assert payload["blockTitle"] == "Контроль календаря ПСД"
+    assert "1 из 1" in payload["context"]
+    assert "Контроль календаря ПСД" in payload["question"]
 
 
 def test_when_to_run_not_inferred_from_meeting_cadence() -> None:
@@ -165,6 +271,17 @@ def test_when_to_run_not_inferred_from_meeting_cadence() -> None:
         local_run={},
     )
     assert _when_to_run_known(record) is False
+
+
+def test_when_to_run_known_from_process_cadence() -> None:
+    record = SimpleNamespace(
+        title="Agent",
+        notes="Условия: каждое рабочее утро к 07:50; днём раз в час с 08:00 до 17:00",
+        document_text="",
+        local_run={},
+    )
+    assert _when_to_run_known(record) is True
+    assert _when_to_run_user_answered(record) is True
 
 
 def test_when_to_run_known_from_playbook() -> None:
@@ -253,13 +370,10 @@ def test_keep_knowledge_upload_uses_keep_origin(tmp_path: Path) -> None:
     assert api.uploaded_origins == ["keep_knowledge"]
 
 
-def test_design_prompt_requires_run_inputs_hint() -> None:
+def test_design_prompt_does_not_force_run_inputs_gate() -> None:
     text = _with_sidecar_prompt("Sproektiruy", mode="design")
-    assert RUN_INPUTS_HINT in text
-    assert "needsFile=true" in text
-    assert "run_inputs" in text
+    assert "you MUST" not in text
     run_text = _with_sidecar_prompt("Sdelai demo")
-    assert RUN_INPUTS_HINT not in run_text
     assert RUN_INPUTS_RUN_HINT in run_text
     assert "Do not substitute" in run_text
 
@@ -372,7 +486,7 @@ def test_run_demo_asks_for_file_before_sdk() -> None:
     from agent_sidecar import Sidecar
 
     names = Sidecar._run_demo.__code__.co_names
-    assert "_ensure_run_input_sample_asked" in names
+    assert "_ensure_run_input_sample_asked" not in names
     assert "_ensure_run_inputs_provided" in names
 
 

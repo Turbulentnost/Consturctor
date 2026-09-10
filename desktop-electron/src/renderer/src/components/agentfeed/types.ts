@@ -47,6 +47,8 @@ export interface PendingQuestion {
   options: string[]
   needsFile?: boolean
   accept?: string[]
+  context?: string
+  blockTitle?: string
 }
 
 export interface PendingHitl {

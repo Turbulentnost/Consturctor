@@ -421,6 +421,7 @@ def _validate_and_store_draft(
         validate_draft,
     )
 
+    _fill_when_to_run_from_materials(row, draft)
     allow_web = regulation_allows_web(_regulation_blob(row))
     enriched = attach_tool_candidates(draft, allow_web=allow_web)
     validation = validate_draft(
@@ -723,6 +724,7 @@ def finish_local_design_workflow(
         ),
         local,
     )
+    _fill_when_to_run_from_materials(row, draft)
     if not draft.get("steps"):
         local = dict(row.local_run or {})
         local["runtime"] = "cursor-sdk"
@@ -1867,6 +1869,36 @@ def _apply_answers_to_draft(
     return _validate_and_store_draft(db, row=row, draft=draft)
 
 
+def _fill_when_to_run_from_materials(row: Workflow, draft: dict[str, Any]) -> None:
+    from app.schemas.trigger import ScheduleDraftOut
+    from app.services.workflows.schedule_draft import extract_when_to_run, triggers_from_when_answer
+
+    current = str((draft or {}).get("when_to_run") or "").strip()
+    found = current or extract_when_to_run(
+        row.notes or "",
+        row.document_text or "",
+        row.title or "",
+        str((draft or {}).get("answers") or ""),
+    )
+    if not found:
+        return
+    draft["when_to_run"] = found
+    local = dict(row.local_run or {})
+    existing = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+    if existing.get("triggers"):
+        row.local_run = local
+        return
+    specs = triggers_from_when_answer(found)
+    if not specs:
+        return
+    local["schedule_draft"] = ScheduleDraftOut(
+        name=str(existing.get("name") or row.title or "ИИ-агент"),
+        goal=str(existing.get("goal") or ""),
+        triggers=specs,
+    ).model_dump()
+    row.local_run = local
+
+
 def _apply_when_to_run_answer(row: Workflow, plan: WorkflowPlan, draft: dict[str, Any]) -> None:
     from app.schemas.trigger import ScheduleDraftOut
     from app.services.workflows.schedule_draft import (
@@ -1879,17 +1911,18 @@ def _apply_when_to_run_answer(row: Workflow, plan: WorkflowPlan, draft: dict[str
         if is_when_to_run_question(item.question) and (item.answer or "").strip():
             answer = item.answer.strip()
             break
-    if not answer:
+    if answer:
+        draft["when_to_run"] = answer
+        local = dict(row.local_run or {})
+        current = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
+        local["schedule_draft"] = ScheduleDraftOut(
+            name=str(current.get("name") or row.title or "ИИ-агент"),
+            goal=str(current.get("goal") or ""),
+            triggers=triggers_from_when_answer(answer),
+        ).model_dump()
+        row.local_run = local
         return
-    draft["when_to_run"] = answer
-    local = dict(row.local_run or {})
-    current = local.get("schedule_draft") if isinstance(local.get("schedule_draft"), dict) else {}
-    local["schedule_draft"] = ScheduleDraftOut(
-        name=str(current.get("name") or row.title or "ИИ-агент"),
-        goal=str(current.get("goal") or ""),
-        triggers=triggers_from_when_answer(answer),
-    ).model_dump()
-    row.local_run = local
+    _fill_when_to_run_from_materials(row, draft)
 
 
 def _continue_demo_after_answers(

@@ -23,6 +23,14 @@ WHEN_TO_RUN_OPTIONS = [
 ]
 WHEN_TO_RUN_WHY = "В материалах не сказано, когда запускать агента. Без этого он не должен стартовать сам."
 _MANUAL_HINTS = ("по кнопк", "вручную", "по запрос", "из чата", "только вручн")
+_WHEN_VALUE_LABELS = (
+    "когда запускать",
+    "расписание агента",
+    "запуск агента",
+    "триггер агента",
+    "триггер",
+    "условия",
+)
 _WHEN_QUESTION_HINTS = (
     "когда запуска",
     "как часто",
@@ -73,28 +81,99 @@ def trigger_chip_label(spec: ScheduleTriggerSpec) -> str:
 
 
 def explicit_when_to_run(*parts: str) -> bool:
-    """True только если человек или ТЗ явно сказали, когда запускать."""
+    """True if materials already say when the agent should run."""
+    return bool(extract_when_to_run(*parts))
+
+
+def extract_when_to_run(*parts: str) -> str:
+    """Take the schedule already written in the draft or TZ.
+
+    The agent runs the same way the process is described, so a line like
+    "raz v chas s 08:00 do 17:00" is the trigger, not a gap to ask about.
+    Bare process titles such as "ezhednevnyy kontrol" do not count.
+    """
     blob = "\n".join(str(part or "") for part in parts if str(part or "").strip())
     if not blob.strip():
+        return ""
+    labeled = _labeled_when_value(blob)
+    if labeled:
+        return _clip_when(labeled)
+    for line in blob.splitlines():
+        stripped = line.strip(" -\t")
+        if not stripped:
+            continue
+        candidate = _strip_when_label(stripped)
+        if _looks_like_schedule(candidate):
+            return _clip_when(candidate)
+    return ""
+
+
+def _labeled_when_value(text: str) -> str:
+    for line in (text or "").splitlines():
+        stripped = line.strip(" -\t")
+        if not stripped:
+            continue
+        folded = stripped.casefold().replace("ё", "е")
+        for label in _WHEN_VALUE_LABELS:
+            if not folded.startswith(label):
+                continue
+            parts = re.split(r"[:\-–]", stripped, maxsplit=1)
+            if len(parts) != 2:
+                continue
+            value = parts[1].strip()
+            if value and (_looks_like_schedule(value) or label != "условия"):
+                return value
+    return ""
+
+
+def _strip_when_label(text: str) -> str:
+    folded = (text or "").casefold().replace("ё", "е")
+    for label in _WHEN_VALUE_LABELS:
+        if not folded.startswith(label):
+            continue
+        parts = re.split(r"[:\-–]", text, maxsplit=1)
+        if len(parts) == 2 and parts[1].strip():
+            return parts[1].strip()
+    return (text or "").strip()
+
+
+def _clip_when(text: str) -> str:
+    raw = re.sub(r"\s+", " ", (text or "").strip())
+    if len(raw) <= 280:
+        return raw
+    return raw[:280].rsplit(" ", 1)[0].strip()
+
+
+def _looks_like_schedule(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
         return False
-    low = blob.casefold().replace("ё", "е")
-    if any(hint in low for hint in _MANUAL_HINTS):
+    low = raw.casefold().replace("ё", "е")
+    if re.search(r"событийн.{0,30}триггер|триггер.{0,30}событи|событие вместо расписания", low):
         return True
-    if _parse_interval(low) is not None:
+    if any(hint in low for hint in _MANUAL_HINTS) and (
+        len(low) < 48
+        or any(token in low for token in ("запуск", "запуска", "агент", "из чата", "по кнопк", "по запрос"))
+    ):
+        return True
+    if re.search(r"(утром|вечером|к)\s+\d{1,2}[:.]\d{2}", low):
         return True
     if re.search(r"(ежедневн|каждый день|раз в день).{0,20}\d{1,2}[:.]\d{2}", low):
         return True
-    if re.search(r"триггер:\s*\S+", blob, re.IGNORECASE):
-        hint = _passport_trigger_line(blob)
-        if hint and _parse_trigger_hint(hint) is not None:
+    interval = _parse_interval(low)
+    if interval is None:
+        if _is_explicit_event_condition(raw) and (
+            len(low) < 160 or _event_is_scheduled(low)
+        ):
             return True
-    if re.search(r"событийн.{0,30}триггер|триггер.{0,30}событи|событие вместо расписания", low):
-        return True
-    if _is_explicit_event_condition(blob) and (
-        len(low) < 160 or _event_is_scheduled(low)
-    ):
-        return True
-    return False
+        return False
+    _value, unit = interval
+    if unit == "days" and not re.search(r"\d{1,2}[:.]\d{2}", low):
+        if any(token in low for token in ("контрол", "свер", "провер", "монитор")):
+            return False
+        if len(low) > 48 and "раз в день" not in low and "каждый день" not in low:
+            return False
+    return True
 
 
 def already_asks_when_to_run(draft: dict[str, Any] | None) -> bool:

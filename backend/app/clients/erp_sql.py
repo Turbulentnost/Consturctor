@@ -177,15 +177,33 @@ def _use_windows_impersonation() -> bool:
     )
 
 
+def _login_timeout() -> int:
+    try:
+        return max(15, int(settings.erp_sql_timeout or 45))
+    except (TypeError, ValueError):
+        return 45
+
+
 def _build_connection_string() -> str:
+    driver = settings.erp_sql_driver
+    timeout = _login_timeout()
     parts = [
-        f"DRIVER={{{settings.erp_sql_driver}}}",
+        f"DRIVER={{{driver}}}",
         f"SERVER={settings.erp_sql_server}",
         f"DATABASE={settings.erp_sql_database}",
-        f"Encrypt={settings.erp_sql_encrypt}",
-        "TrustServerCertificate=yes",
-        "Connection Timeout=15",
+        f"Connection Timeout={timeout}",
     ]
+    # Driver 17 on this host rejects Encrypt=no as an invalid attribute and
+    # then ignores Connection Timeout (ODBC falls back to the 15s default).
+    # Driver 18 defaults Encrypt=yes, so it must stay explicit.
+    encrypt = (settings.erp_sql_encrypt or "no").strip().lower()
+    driver_l = driver.casefold()
+    if "odbc driver 18" in driver_l:
+        parts.append(f"Encrypt={encrypt}")
+        parts.append("TrustServerCertificate=yes")
+    elif encrypt in {"yes", "true", "1"}:
+        parts.append("Encrypt=yes")
+        parts.append("TrustServerCertificate=yes")
     if _use_windows_impersonation() or settings.erp_sql_trusted_connection:
         parts.append("Trusted_Connection=yes")
     else:
@@ -195,11 +213,20 @@ def _build_connection_string() -> str:
 
 
 def _connect() -> pyodbc.Connection:
+    timeout = _login_timeout()
     try:
         if _use_windows_impersonation():
             with _windows_impersonation(settings.erp_sql_user, settings.erp_sql_password):
-                return pyodbc.connect(_build_connection_string(), autocommit=True)
-        return pyodbc.connect(_build_connection_string(), autocommit=True)
+                return pyodbc.connect(
+                    _build_connection_string(),
+                    autocommit=True,
+                    timeout=timeout,
+                )
+        return pyodbc.connect(
+            _build_connection_string(),
+            autocommit=True,
+            timeout=timeout,
+        )
     except pyodbc.Error as exc:
         raise ErpSqlError(f"Failed to connect to erp_pm: {exc}") from exc
 

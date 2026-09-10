@@ -54,6 +54,18 @@ CLASS_NOT_REGISTERED_HRESULTS = {
     -2147221005,  # CO_E_CLASSSTRING — недопустимая строка класса (0x800401F3)
     -2147221231,  # CO_E_CLASSNOTREG для отдельного класса (0x80040111)
 }
+DISP_E_EXCEPTION = -2147352567  # 0x80020009
+MAPI_E_NOT_FOUND = -2147221233  # 0x8004010F
+TRUST_CENTER_HINT = (
+    "Классический Outlook должен быть открыт, календарь — свой (не только чтение). "
+    "Файл → Параметры → центр управления безопасностью → программный доступ: "
+    "не блокировать автоматизацию."
+)
+MAPI_NOT_FOUND_HINT = (
+    "Календарь или элемент профиля не найден (MAPI_E_NOT_FOUND). "
+    "Откройте классический Outlook с загруженным почтовым ящиком "
+    "и своим календарём, затем повторите."
+)
 OUTLOOK_NOT_REGISTERED_MESSAGE = (
     "Классический Outlook не найден или COM-автоматизация не зарегистрирована на "
     "этом компьютере. Установите классический Microsoft Outlook (desktop) и хотя бы "
@@ -128,15 +140,44 @@ def _is_transient_com_error(exc: Exception) -> bool:
     return "не выполнено" in text or "rpc_e_servercall_retrylater" in text
 
 
+def _com_hresults(exc: Exception) -> set[int]:
+    """Собрать HRESULT из pywin32 com_error, включая вложенный код Outlook."""
+    found: set[int] = set()
+    args = getattr(exc, "args", None) or ()
+    if args and isinstance(args[0], int):
+        found.add(args[0])
+    nested = args[2] if len(args) > 2 and isinstance(args[2], tuple) else ()
+    if nested and isinstance(nested[-1], int):
+        found.add(nested[-1])
+    return found
+
+
+def _is_mapi_not_found(exc: Exception) -> bool:
+    """MAPI_E_NOT_FOUND: папка/элемент календаря не найден, не блок Trust Center."""
+    codes = _com_hresults(exc)
+    if MAPI_E_NOT_FOUND in codes:
+        return True
+    text = str(exc).casefold()
+    return "8004010f" in text or "2147221233" in text
+
+
 def _is_class_not_registered_error(exc: Exception) -> bool:
     """Определить, что COM-класс Outlook не зарегистрирован (нет classic Outlook)."""
-    args = getattr(exc, "args", None)
-    if args and isinstance(args[0], int) and args[0] in CLASS_NOT_REGISTERED_HRESULTS:
+    if _com_hresults(exc) & CLASS_NOT_REGISTERED_HRESULTS:
         return True
     text = str(exc).casefold()
     return "80040154" in text or "class not registered" in text or (
         "недопустимая строка класса" in text
     )
+
+
+def _outlook_access_message(prefix: str, exc: Exception) -> str:
+    """Человекочитаемая причина COM-ошибки Outlook, без универсального Trust Center."""
+    if _is_class_not_registered_error(exc):
+        return f"{prefix}: {OUTLOOK_NOT_REGISTERED_MESSAGE} (детали COM: {exc})"
+    if _is_mapi_not_found(exc):
+        return f"{prefix}: {MAPI_NOT_FOUND_HINT} ({exc})"
+    return f"{prefix}: {exc}. {TRUST_CENTER_HINT}"
 
 
 def _run_com_read(operation: Callable[[Any], dict], access_error_prefix: str) -> dict:
@@ -178,12 +219,7 @@ def _run_com_read(operation: Callable[[Any], dict], access_error_prefix: str) ->
                     com_initialized = False
                 time.sleep(COM_RETRY_DELAY_SECONDS * attempt)
                 continue
-            raise OutlookAccessError(
-                f"{access_error_prefix}: {exc}. "
-                "Классический Outlook должен быть открыт, календарь — свой (не только чтение). "
-                "Файл → Параметры → центр управления безопасностью → программный доступ: "
-                "не блокировать автоматизацию."
-            ) from exc
+            raise OutlookAccessError(_outlook_access_message(access_error_prefix, exc)) from exc
         finally:
             if com_initialized:
                 try:
@@ -191,10 +227,7 @@ def _run_com_read(operation: Callable[[Any], dict], access_error_prefix: str) ->
                 except Exception:
                     pass
     raise OutlookAccessError(
-        f"{access_error_prefix}: {last_exc}. "
-        "Классический Outlook должен быть открыт, календарь — свой (не только чтение). "
-        "Файл → Параметры → центр управления безопасностью → программный доступ: "
-        "не блокировать автоматизацию."
+        _outlook_access_message(access_error_prefix, last_exc or RuntimeError("Outlook COM failed"))
     )
 
 
@@ -453,14 +486,30 @@ def _dedupe_calendar_events(events: list[dict]) -> list[dict]:
 
 def _own_calendar_folder(namespace: Any) -> Any:
     """Календарь профиля, который уже открыт в Outlook. MAPI_E_NOT_FOUND = нет профиля."""
+    last_exc: Exception | None = None
     try:
         return namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
     except Exception as exc:
-        raise OutlookAccessError(
-            "Календарь текущего профиля Outlook не найден (MAPI). "
-            "Откройте классический Outlook с почтовым профилем и повторите. "
-            f"({exc})"
-        ) from exc
+        last_exc = exc
+        _log_progress(f"step=default_calendar_failed: {exc}")
+    try:
+        for store in namespace.Stores:
+            try:
+                folder = store.GetDefaultFolder(CALENDAR_FOLDER_ID)
+            except Exception:
+                continue
+            if folder is not None:
+                _log_progress(
+                    f"step=default_calendar_store name={_safe_str(getattr(store, 'DisplayName', ''))}"
+                )
+                return folder
+    except Exception as exc:
+        last_exc = last_exc or exc
+    raise OutlookAccessError(
+        "Календарь текущего профиля Outlook не найден (MAPI). "
+        "Откройте классический Outlook с почтовым профилем и повторите. "
+        f"({last_exc})"
+    ) from last_exc
 
 
 def _open_shared_calendar(namespace: Any, person: str) -> tuple[Any | None, str]:
@@ -1265,10 +1314,22 @@ def _iter_outlook_items(items: Any):
     getter = getattr(items, "GetFirst", None)
     nxt = getattr(items, "GetNext", None)
     if callable(getter) and callable(nxt):
-        item = getter()
+        try:
+            item = getter()
+        except Exception as exc:
+            if _is_mapi_not_found(exc):
+                _log_progress(f"step=getfirst_not_found: {exc}")
+                return
+            raise
         while item is not None:
             yield item
-            item = nxt()
+            try:
+                item = nxt()
+            except Exception as exc:
+                if _is_mapi_not_found(exc):
+                    _log_progress(f"step=getnext_not_found: {exc}")
+                    return
+                raise
         return
     for item in items:
         yield item
@@ -1330,15 +1391,21 @@ def _collect_calendar_range(
         for restriction, window_items in _iter_restricted_calendar_items(items, win_start, win_end):
             tried_restrict = True
             _log_progress(f"step=restrict_try filter={restriction}")
-            chunk, scanned = _collect_calendar_events(
-                window_items,
-                start_at,
-                end_at,
-                remaining_results,
-                remaining_scan,
-                include_body=include_body,
-                calendar_owner=calendar_owner,
-            )
+            try:
+                chunk, scanned = _collect_calendar_events(
+                    window_items,
+                    start_at,
+                    end_at,
+                    remaining_results,
+                    remaining_scan,
+                    include_body=include_body,
+                    calendar_owner=calendar_owner,
+                )
+            except Exception as exc:
+                if _is_mapi_not_found(exc):
+                    _log_progress(f"step=restrict_not_found filter={restriction}")
+                    continue
+                raise
             if chunk:
                 break
         if not tried_restrict:
@@ -1380,8 +1447,14 @@ def _collect_calendar_events(
         if checked_count == 1 or checked_count % 50 == 0:
             _log_progress(f"step=iterate_items progress={checked_count}")
 
-        event_start = getattr(event, "Start", None)
-        event_end = getattr(event, "End", None)
+        try:
+            event_start = getattr(event, "Start", None)
+            event_end = getattr(event, "End", None)
+        except Exception as exc:
+            if _is_mapi_not_found(exc):
+                _log_progress(f"step=item_not_found progress={checked_count}")
+                continue
+            raise
         if not _is_within_range(event_start, start_at, end_at):
             continue
 

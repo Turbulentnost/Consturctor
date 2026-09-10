@@ -343,7 +343,7 @@ def test_valid_draft_has_no_issues() -> None:
     assert validation.ok
 
 
-def test_missing_schedule_in_materials_is_clarify() -> None:
+def test_missing_schedule_in_materials_is_not_hardcoded_clarify() -> None:
     from app.services.workflows.schedule_draft import WHEN_TO_RUN_QUESTION
 
     validation = validate_draft(
@@ -351,7 +351,7 @@ def test_missing_schedule_in_materials_is_clarify() -> None:
         materials="контролирует сроки, качество и риски проектов. Не допускать нарушения SLA.",
     )
 
-    assert any(issue.message == WHEN_TO_RUN_QUESTION for issue in validation.clarifications)
+    assert all(issue.message != WHEN_TO_RUN_QUESTION for issue in validation.clarifications)
 
 
 def test_explicit_schedule_in_materials_skips_when_question() -> None:

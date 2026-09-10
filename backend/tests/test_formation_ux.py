@@ -146,6 +146,22 @@ def test_when_answer_creates_daily_trigger() -> None:
     assert trigger_chip_label(specs[0]) == "ежедневно"
 
 
+def test_extract_when_to_run_from_process_cadence() -> None:
+    from app.services.workflows.schedule_draft import extract_when_to_run, explicit_when_to_run
+
+    conditions = (
+        "Условия: каждое рабочее утро к 07:50; днём раз в час с 08:00 до 17:00, "
+        "обед 12:00–13:00 пропускают; после 17:00 журналы не открывают"
+    )
+    found = extract_when_to_run(conditions)
+    assert "раз в час" in found
+    assert "07:50" in found
+    assert explicit_when_to_run(conditions)
+    assert not extract_when_to_run(
+        "Ежедневный контроль сроков проектов. Руководитель вручную сверяет вехи."
+    )
+
+
 def test_when_answer_parses_work_window() -> None:
     from app.services.workflows.schedule_draft import triggers_from_when_answer
 

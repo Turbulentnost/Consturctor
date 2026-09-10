@@ -110,7 +110,7 @@ from app.sdk_agent.prompt import (  # noqa: E402
     build_regulation_sdk_prompt,
     build_sdk_prompt,
 )
-from app.sdk_agent.tool_adapter import sdk_tool_specs  # noqa: E402
+from app.sdk_agent.tool_adapter import ASK_QUESTION_SPEC, sdk_tool_specs  # noqa: E402
 
 # HITL classification replicated from app.tools.hitl.needs_confirmation.
 # We do NOT import that module because it pulls in PySide6/Qt at import time,
@@ -361,22 +361,6 @@ def _is_keep_knowledge_file(name: str) -> bool:
 
 
 WHEN_TO_RUN_QUESTION = "Когда запускать этого агента?"
-WHEN_TO_RUN_OPTIONS = [
-    "только вручную из чата",
-    "каждый час",
-    "раз в день",
-    "при конкретном событии — напишу каком",
-]
-WHEN_TO_RUN_WHY = (
-    "Это расписание запуска агента, не расписание совещаний в Outlook. "
-    "Без ответа агент после публикации не стартует сам."
-)
-WHEN_TO_RUN_HINT = (
-    "Always ask via askQuestion: when to run THIS agent. "
-    "Options: only from chat; every hour; once a day; on an event I will name. "
-    "Outlook meeting cadence (weekly or monthly plannerka) is not the agent trigger. "
-    "Write the answer to when_to_run. Do not skip this question."
-)
 _WHEN_TO_RUN_HINTS = (
     "когда запуска",
     "как часто",
@@ -389,6 +373,8 @@ _AGENT_WHEN_LABELS = (
     "расписание агента",
     "запуск агента",
     "триггер агента",
+    "триггер",
+    "условия",
 )
 
 RUN_INPUTS_QUESTION = (
@@ -396,21 +382,6 @@ RUN_INPUTS_QUESTION = (
 )
 RUN_INPUTS_YES = "Да — сейчас прикреплю образец, чтобы проанализировать"
 RUN_INPUTS_NO = "Нет — все данные агент берёт из систем"
-RUN_INPUTS_SAMPLE_QUESTION = "Прикрепите образец временного файла"
-RUN_INPUTS_WHY = (
-    "Если агенту на каждый запуск нужен свежий файл пользователя, образец "
-    "нужен сейчас: проектировщик прочитает его и задаст уточнения. "
-    "Файл временный, в базу знаний не попадает."
-)
-RUN_INPUTS_HINT = (
-    "If the future agent needs a user file on EVERY run (a table, export, or "
-    "document that changes each time), you MUST call askQuestion with needsFile=true "
-    "NOW, then read the sample, then ask follow-up questions about its structure. "
-    "Do not invent the file and do not replace a missing user file with another "
-    "tool or system. Record confirmed inputs into playbook_draft.run_inputs as "
-    "{name, description, accept}. These stay temporary: never keepKnowledgeFile. "
-    "If no per-run file is required, leave run_inputs empty."
-)
 RUN_INPUTS_RUN_HINT = (
     "If playbook.run_inputs lists a required per-run file and it is not already "
     "in materials/attachments, stop and ask via askQuestion with needsFile=true. "
@@ -424,13 +395,13 @@ _RUN_INPUT_GATE_HINTS = (
 
 
 def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
-    parts = [KEEP_FILE_HINT, OUTLOOK_MEETING_HINT]
-    if (mode or "").strip().casefold() == "design":
-        parts.append(WHEN_TO_RUN_HINT)
-        parts.append(RUN_INPUTS_HINT)
-    else:
-        parts.append(RUN_INPUTS_RUN_HINT)
+    folded = (mode or "").strip().casefold()
     text = (prompt or "").strip()
+    if folded in {"readiness", "interview"}:
+        return text
+    parts = [KEEP_FILE_HINT, OUTLOOK_MEETING_HINT]
+    if folded != "design":
+        parts.append(RUN_INPUTS_RUN_HINT)
     if text:
         parts.append(text)
     return "\n\n".join(parts)
@@ -535,6 +506,34 @@ def _labeled_agent_when(text: str) -> str:
     return ""
 
 
+def _schedule_from_blob(text: str) -> str:
+    """Process cadence from materials is the agent trigger."""
+    for line in (text or "").splitlines():
+        stripped = line.strip(" -\t")
+        if not stripped:
+            continue
+        folded = stripped.casefold().replace("ё", "е")
+        if re.search(r"каждый час|раз в час|ежечасн|каждые\s+\d+", folded):
+            return stripped
+        if re.search(r"(утром|вечером|к)\s+\d{1,2}[:.]\d{2}", folded):
+            return stripped
+        if re.search(r"(ежедневн|каждый день|раз в день).{0,20}\d{1,2}[:.]\d{2}", folded):
+            return stripped
+    return ""
+
+
+def _when_blob(record: Any) -> str:
+    return "\n".join(
+        part
+        for part in (
+            getattr(record, "notes", "") or "",
+            getattr(record, "document_text", "") or "",
+            getattr(record, "title", "") or "",
+        )
+        if str(part or "").strip()
+    )
+
+
 def _when_to_run_from_local(local: dict[str, Any] | None) -> str:
     data = local if isinstance(local, dict) else {}
     for key in ("playbook", "playbook_draft"):
@@ -556,26 +555,12 @@ def _when_to_run_from_local(local: dict[str, Any] | None) -> str:
 def _when_to_run_known(record: Any) -> bool:
     if _when_to_run_from_local(getattr(record, "local_run", None)):
         return True
-    blob = "\n".join(
-        part
-        for part in (
-            getattr(record, "notes", "") or "",
-            getattr(record, "document_text", "") or "",
-            getattr(record, "title", "") or "",
-        )
-        if str(part or "").strip()
-    )
-    return bool(_labeled_agent_when(blob))
+    blob = _when_blob(record)
+    return bool(_labeled_agent_when(blob) or _schedule_from_blob(blob))
 
 
 def _when_to_run_user_answered(record: Any) -> bool:
-    """True only if the trigger was genuinely answered or is in materials.
-
-    Unlike _when_to_run_known, an LLM-invented playbook_draft.when_to_run does
-    NOT count. Used to decide whether we still owe the user the explicit
-    trigger question, so a model that never called askQuestion cannot suppress
-    it.
-    """
+    """True if the user answered or materials already name the cadence."""
     local = getattr(record, "local_run", None) or {}
     for item in local.get("design_answers") or []:
         if (
@@ -584,16 +569,8 @@ def _when_to_run_user_answered(record: Any) -> bool:
             and str(item.get("answer") or "").strip()
         ):
             return True
-    blob = "\n".join(
-        part
-        for part in (
-            getattr(record, "notes", "") or "",
-            getattr(record, "document_text", "") or "",
-            getattr(record, "title", "") or "",
-        )
-        if str(part or "").strip()
-    )
-    return bool(_labeled_agent_when(blob))
+    blob = _when_blob(record)
+    return bool(_labeled_agent_when(blob) or _schedule_from_blob(blob))
 
 
 def _merge_when_to_run(local_run: dict[str, Any] | None, answer: str) -> dict[str, Any] | None:
@@ -1038,6 +1015,7 @@ class HitlGate:
         with self._lock:
             self._answers[request_id] = box
             self._needs_file[request_id] = needs_file
+        block_title, context = _block_context_from_payload(payload)
         emit(
             _stamp_run_event(
                 {
@@ -1048,6 +1026,8 @@ class HitlGate:
                     "options": options,
                     "needsFile": needs_file,
                     "accept": accept,
+                    "blockTitle": block_title,
+                    "context": context,
                 },
                 workflow_id=self._workflow_id,
                 kind=self._kind,
@@ -1178,7 +1158,131 @@ def _question_from_payload(payload: dict[str, Any]) -> tuple[str, list[str]]:
     return question, options
 
 
-_KB_ACCEPT = ("xlsx", "xlsm", "docx")
+def _block_context_from_payload(payload: dict[str, Any]) -> tuple[str, str]:
+    args = _as_record(payload.get("arguments"))
+    nested = _as_record(args.get("arguments") or args.get("input") or args.get("properties"))
+    source = {**nested, **args, **payload}
+    title = (
+        _as_text(source.get("blockTitle"))
+        or _as_text(source.get("block_title"))
+        or _as_text(source.get("functionTitle"))
+        or _as_text(source.get("function_title"))
+    )
+    context = _as_text(source.get("context"))
+    return title, context
+
+
+def _readiness_block_titles(draft: Any) -> list[str]:
+    titles: list[str] = []
+    for item in getattr(draft, "agent_suggestions", None) or []:
+        title = str(getattr(item, "title", "") or "").strip()
+        if title:
+            titles.append(title)
+    return titles
+
+
+def _match_readiness_title(text: str, titles: list[str]) -> str:
+    blob = (text or "").casefold()
+    matched = [title for title in titles if title and title.casefold() in blob]
+    if not matched:
+        return ""
+    return max(matched, key=len)
+
+
+def _label_readiness_question(question: str, titles: list[str]) -> tuple[str, str]:
+    text = (question or "").strip()
+    if not titles:
+        return text, ""
+    current = _match_readiness_title(text, titles) or titles[0]
+    if current.casefold() in text.casefold():
+        return text, current
+    rest = text
+    if rest[:1].isupper() and (len(rest) < 2 or not rest[1:2].isupper()):
+        rest = rest[:1].lower() + rest[1:]
+    return f"По агенту «{current}»: {rest}", current
+
+
+def _sdk_readiness_from_draft(draft: Any) -> dict[str, Any]:
+    raw = getattr(draft, "sdk_readiness", None)
+    if isinstance(raw, dict):
+        return raw
+    data = getattr(draft, "result_json", None)
+    if isinstance(data, dict) and isinstance(data.get("sdkReadiness"), dict):
+        return data["sdkReadiness"]
+    return {}
+
+
+def _readiness_qa_items(readiness: dict[str, Any] | None) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    raw = readiness if isinstance(readiness, dict) else {}
+    for row in raw.get("qa") or []:
+        if not isinstance(row, dict):
+            continue
+        question = str(row.get("question") or "").strip()
+        answer = str(row.get("answer") or "").strip()
+        title = str(row.get("blockTitle") or row.get("block_title") or "").strip()
+        if question or answer:
+            items.append({"question": question, "answer": answer, "blockTitle": title})
+    if items:
+        return items
+    previous = str(raw.get("answer") or "").strip()
+    if previous and previous != "Ответов пользователя пока нет.":
+        items.append({"question": "", "answer": previous, "blockTitle": ""})
+    return items
+
+
+def _readiness_qa_from_draft(draft: Any) -> list[dict[str, str]]:
+    return _readiness_qa_items(_sdk_readiness_from_draft(draft))
+
+
+def _format_readiness_answers_md(qa: list[dict[str, str]]) -> str:
+    if not qa:
+        return "Ответов пользователя пока нет.\n"
+    lines = [
+        "# Ответы пользователя",
+        "",
+        "Эти ответы уже даны. Не спрашивай их снова.",
+        "Продолжай с первого блока, по которому ещё нет ответа.",
+        "",
+    ]
+    current = None
+    for item in qa:
+        title = str(item.get("blockTitle") or "").strip()
+        if title and title != current:
+            lines.extend([f"## {title}", ""])
+            current = title
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        if question:
+            lines.append(f"- Вопрос: {question}")
+            lines.append(f"  Ответ: {answer or '(нет ответа)'}")
+        elif answer:
+            lines.append(f"- Ответ: {answer}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _annotate_readiness_question(payload: dict[str, Any], titles: list[str]) -> dict[str, Any]:
+    data = dict(payload)
+    question, _options = _question_from_payload(data)
+    labeled, title = _label_readiness_question(question, titles)
+    index = titles.index(title) + 1 if title and title in titles else 0
+    context = f"Агент {index} из {len(titles)}" if title and index else (f"Агент: {title}" if title else "")
+    data["question"] = labeled
+    data["blockTitle"] = title
+    data["context"] = context
+    args = data.get("arguments")
+    if isinstance(args, dict):
+        next_args = dict(args)
+        next_args["question"] = labeled
+        if title:
+            next_args["blockTitle"] = title
+            next_args["context"] = context
+        data["arguments"] = next_args
+    return data
+
+
+_ACCEPT_EXT_RE = re.compile(r"^[a-z0-9]{1,8}$")
 
 
 def _as_bool(value: Any) -> bool:
@@ -1193,7 +1297,9 @@ def _accept_extensions(raw: Any) -> list[str]:
     out: list[str] = []
     for item in items:
         ext = str(item or "").strip().lower().lstrip(".")
-        if ext in _KB_ACCEPT and ext not in out:
+        if ext in {"*", "any", "all"}:
+            return []
+        if _ACCEPT_EXT_RE.match(ext) and ext not in out:
             out.append(ext)
     return out
 
@@ -1208,8 +1314,6 @@ def _file_request_from_payload(payload: dict[str, Any]) -> tuple[bool, list[str]
         or source.get("expectFile")
     )
     accept = _accept_extensions(source.get("accept") or source.get("allowedExtensions"))
-    if needs and not accept:
-        accept = list(_KB_ACCEPT)
     return needs, accept
 
 
@@ -1391,22 +1495,38 @@ READINESS_AGENTS_MD = """\
 Инструменты Constructor уже подключены как customTools. Не ищи проектный MCP или mcp.json.
 Работай только на русском.
 
-Твоя задача - закрыть пробелы логики регламента перед созданием ИИ-агентов.
-Сначала прочитай materials/regulation.md, materials/functions.md, materials/answers.md и materials/manifest.json.
+Твоя задача - закрыть пробелы логики по одному функциональному блоку за ход.
+Не анализируй все блоки сразу и не готовь пачку вопросов.
 
-Иди по каждому функциональному блоку из materials/functions.md.
-Для каждого блока проверь, понятны ли: входы, стартовое событие, условия, система, конкретное действие,
-ветвления, результат, получатель, контроль выполнения, ошибки и эскалация.
-Если без ответа будущий агент будет угадывать, вызови askQuestion.
+Старт:
+- прочитай только materials/functions.md и materials/answers.md;
+- не читай materials/regulation.md целиком;
+- возьми первый незакрытый блок сверху вниз.
+
+По текущему блоку:
+- опирайся на его карточку в functions.md и цитату;
+- если цитаты мало, прочитай в regulation.md только заголовок с его sourceBlockId;
+- проверь, понятны ли входы, старт, условия, система, действие, результат;
+- не спрашивай входы, результат, сроки и систему, если они уже есть в карточке или цитате;
+- не спрашивай «в каком виде» уже названный результат и не выдумывай акт или файл;
+- как только нашёл первый пробел, которого нет в материалах, сразу вызови askQuestion и жди ответ.
 
 Правила вопросов:
-- один пробел - один вопрос;
-- в вопросе называй функциональный блок простыми словами;
-- всегда передай 2-6 конкретных вариантов ответа в options;
+- один ход = один блок = один askQuestion;
+- не вызывай askQuestion второй раз, пока не получен ответ;
+- не переходи к следующему блоку, пока текущий не закрыт;
+- в каждом вопросе назови точное название текущего блока из functions.md;
+- пиши так: По агенту «Контроль календаря ПСД»: когда его запускать?;
+- не пиши «этого агента» без названия блока;
+- не спрашивай общее расписание запуска, пока не назван блок;
+- всегда передай 2-6 конкретных вариантов в options;
 - не вызывай askQuestion без options;
-- не спрашивай то, что уже есть в материалах или в ответах пользователя;
-- после ответа продолжай с учетом этого ответа, не начинай заново;
-- если пользователь упомянул прикрепленные файлы, считай их обязательными материалами.
+- не спрашивай то, что уже есть в карточке блока, цитате регламента или в answers.md;
+- после ответа продолжай тот же блок или переходи к следующему;
+- если пользователь прикрепил файлы, считай их обязательными материалами.
+- если в answers.md уже есть вопросы и ответы, не начинай интервью заново;
+- не задавай повторно вопрос, на который уже есть ответ;
+- возьми первый блок сверху, по которому ещё нет ответа, либо тот же блок, если остался пробел.
 
 Когда все блоки закрыты, напиши строго JSON без markdown:
 {
@@ -1467,26 +1587,34 @@ def _prepare_readiness_workspace(api: ApiClient, draft: Any, cwd: str) -> None:
         function_lines.append("Функциональные блоки не найдены в черновике. Сначала уточни общий процесс.")
     _write_text(cwd, "materials/functions.md", "\n".join(function_lines).strip() + "\n")
 
-    data = getattr(draft, "result_json", None)
-    if not isinstance(data, dict):
-        data = {}
-    readiness = data.get("sdkReadiness") if isinstance(data.get("sdkReadiness"), dict) else {}
-    previous = str(readiness.get("answer") or "").strip()
-    _write_text(
-        cwd,
-        "materials/answers.md",
-        (previous or "Ответов пользователя пока нет.") + "\n",
-    )
+    qa = _readiness_qa_from_draft(draft)
+    _write_text(cwd, "materials/answers.md", _format_readiness_answers_md(qa))
     _write_text(cwd, "materials/manifest.json", json.dumps({"files": []}, ensure_ascii=False, indent=2) + "\n")
 
 
-def _build_readiness_prompt() -> str:
-    return (
-        "Прочитай AGENTS.md и все файлы в materials. "
-        "Закрой через askQuestion пробелы логики по каждому функциональному блоку. "
-        "В каждом askQuestion передай 2-6 конкретных вариантов в options. "
-        "Когда все пробелы закрыты, верни JSON readiness и остановись."
+def _build_readiness_prompt(*, has_answers: bool = False) -> str:
+    prompt = (
+        "Прочитай AGENTS.md, затем только materials/functions.md и materials/answers.md. "
+        "Не читай regulation.md целиком. Возьми первый незакрытый блок и сразу задай "
+        "один askQuestion по его первому пробелу. Один ход = один блок = один вопрос. "
+        "К следующему блоку переходи только после ответа. "
+        "В каждом askQuestion назови точное название текущего блока из functions.md, "
+        "например: По агенту «Контроль календаря ПСД»: когда его запускать? "
+        "Не пиши «этого агента» без названия. "
+        "Не спрашивай входы и результат, если они уже есть в functions.md. "
+        "Не спрашивай «в каком виде» уже названный результат. "
+        "В askQuestion передай 2-6 конкретных вариантов в options. "
+        "Когда все блоки закрыты, верни JSON readiness и остановись."
     )
+    if has_answers:
+        prompt += (
+            " В materials/answers.md уже есть ответы прошлого запуска."
+            " Не начинай с первого блока, если по нему уже есть ответы."
+            " Не задавай те же вопросы повторно."
+            " Возьми первый блок сверху, по которому ещё нет ответа,"
+            " либо тот же блок, если остался незакрытый пробел."
+        )
+    return prompt
 
 
 RUN_JOURNAL_RELATIVE = "materials/run_journal.md"
@@ -1739,16 +1867,12 @@ class Sidecar:
             )
             return
         if skip_run_id:
-            emit(
-                {
-                    "type": "event",
-                    "runId": skip_run_id,
-                    "payload": {
-                        "type": "status",
-                        "text": "Продолжаю текущий запуск агента.",
-                    },
-                }
-            )
+            payload = {
+                "type": "status",
+                "text": "Продолжаю текущий запуск агента.",
+            }
+            for target in {skip_run_id, run_id}:
+                emit({"type": "event", "runId": target, "payload": payload})
             return
         emit(
             _stamp_run_event(
@@ -1906,9 +2030,6 @@ class Sidecar:
         if _is_meeting_workflow(record) or _is_meeting_text(design_prompt):
             _ensure_outlook_rule_in_brief(run_cwd)
         bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
-        # Ask for a per-run file sample before the designer writes the draft,
-        # so the SDK run can read it and ask follow-up questions.
-        self._ensure_run_input_sample_asked(active, workflow_id)
         events: list[dict[str, Any]] = []
         result = bridge.run(
             prompt=build_design_sdk_prompt(record, design_prompt),
@@ -1931,7 +2052,7 @@ class Sidecar:
             if exc.status_code not in {404, 405}:
                 raise
         self._ensure_outlook_rule_in_playbook(workflow_id)
-        self._ensure_when_to_run_asked(active, workflow_id)
+        self._persist_when_to_run_from_materials(workflow_id)
         emit(
             {
                 "type": "result",
@@ -1952,20 +2073,56 @@ class Sidecar:
         draft = self._api.get_agent_draft(draft_id)
         run_cwd = bridge.workspace_cwd(f"draft-{draft_id}")
         active.run_cwd = run_cwd
+        titles = _readiness_block_titles(draft)
+        qa = list(_readiness_qa_from_draft(draft))
         _prepare_readiness_workspace(self._api, draft, run_cwd)
         events: list[dict[str, Any]] = []
+
+        def persist_progress() -> None:
+            try:
+                self._api.save_sdk_readiness_progress(draft_id, qa=qa)
+            except Exception as exc:
+                log(f"readiness progress save failed: {exc}")
+            _write_text(run_cwd, "materials/answers.md", _format_readiness_answers_md(qa))
+
+        def on_question(payload: dict[str, Any], should_stop: Any = None) -> dict[str, Any]:
+            labeled = _annotate_readiness_question(
+                payload if isinstance(payload, dict) else {},
+                titles,
+            )
+            reply = active.gate.ask_question(labeled, should_stop)
+            answer_text = str(reply.get("answer") or reply.get("text") or "").strip()
+            if answer_text:
+                qa.append(
+                    {
+                        "question": str(labeled.get("question") or "").strip(),
+                        "answer": answer_text,
+                        "blockTitle": str(labeled.get("blockTitle") or "").strip(),
+                    }
+                )
+                persist_progress()
+            return reply
+
         result = bridge.run(
-            prompt=_build_readiness_prompt(),
+            prompt=_build_readiness_prompt(has_answers=bool(qa)),
             workflow_id=f"draft-{draft_id}",
             cwd=run_cwd,
-            mode="design",
+            mode="readiness",
+            model=REGULATION_SDK_MODEL,
+            model_params=[dict(item) for item in REGULATION_SDK_QUESTION_PARAMS],
+            tools=[dict(ASK_QUESTION_SPEC)],
             on_event=self._forward_events(active, events),
-            on_question=active.gate.ask_question,
+            on_question=on_question,
             should_stop=active.stop.is_set,
             confirm_writes=True,
         )
         answer = str(result.get("answer") or "").strip()
-        updated = self._api.finish_sdk_readiness(draft_id, answer=answer, events=events)
+        updated = self._api.finish_sdk_readiness(
+            draft_id,
+            answer=answer,
+            events=events,
+            qa=qa,
+        )
         emit(
             {
                 "type": "result",
@@ -2087,10 +2244,6 @@ class Sidecar:
         if _is_meeting_workflow(record):
             _ensure_outlook_rule_in_brief(run_cwd)
         bridge.bind_knowledge(self._api, workflow_id, run_cwd, active.run_id)
-        # Trial run is still interactive: ask for a per-run sample if design
-        # skipped it, then for each declared run_input. Otherwise the model
-        # invents a substitute data source (for example another system).
-        self._ensure_run_input_sample_asked(active, workflow_id)
         try:
             record = self._api.get_workflow(workflow_id)
         except ApiError:
@@ -2514,27 +2667,20 @@ class Sidecar:
         except ApiError:
             pass
 
-    def _ensure_when_to_run_asked(self, active: ActiveRun, workflow_id: str) -> None:
-        if active.stop.is_set():
+    def _persist_when_to_run_from_materials(self, workflow_id: str) -> None:
+        wid = (workflow_id or "").strip()
+        if not wid:
             return
         try:
-            record = self._api.get_workflow(workflow_id)
+            record = self._api.get_workflow(wid)
         except ApiError:
             return
-        if _when_to_run_user_answered(record):
+        if _when_to_run_from_local(getattr(record, "local_run", None)):
             return
-        reply = active.gate.ask_question(
-            {
-                "question": WHEN_TO_RUN_QUESTION,
-                "options": list(WHEN_TO_RUN_OPTIONS),
-                "why": WHEN_TO_RUN_WHY,
-            },
-            should_stop=active.stop.is_set,
-        )
-        answer = str(reply.get("answer") or "").strip()
-        if not answer or active.stop.is_set():
-            return
-        self._persist_when_to_run(workflow_id, answer)
+        blob = _when_blob(record)
+        found = _labeled_agent_when(blob) or _schedule_from_blob(blob)
+        if found:
+            self._persist_when_to_run(wid, found)
 
     def _persist_run_input_gate(self, workflow_id: str, answer: str) -> None:
         wid = (workflow_id or "").strip()
@@ -2574,51 +2720,6 @@ class Sidecar:
             self._api.update_workflow_local_run(wid, merged)
         except ApiError:
             pass
-
-    def _ensure_run_input_sample_asked(self, active: ActiveRun, workflow_id: str) -> None:
-        if active.stop.is_set():
-            return
-        try:
-            record = self._api.get_workflow(workflow_id)
-        except ApiError:
-            return
-        if _run_inputs_user_answered(record):
-            return
-        local = dict(getattr(record, "local_run", None) or {})
-        gate = _run_input_gate_from_local(local)
-        if not gate:
-            reply = active.gate.ask_question(
-                {
-                    "question": RUN_INPUTS_QUESTION,
-                    "options": [RUN_INPUTS_YES, RUN_INPUTS_NO],
-                    "why": RUN_INPUTS_WHY,
-                },
-                should_stop=active.stop.is_set,
-            )
-            gate = str(reply.get("answer") or "").strip()
-            if not gate or active.stop.is_set():
-                return
-            self._persist_run_input_gate(workflow_id, gate)
-            if _is_run_input_no(gate):
-                return
-        sample = active.gate.ask_question(
-            {
-                "question": RUN_INPUTS_SAMPLE_QUESTION,
-                "options": [],
-                "needsFile": True,
-                "why": (
-                    "Образец нужен проектировщику, чтобы прочитать структуру "
-                    "и задать уточнения. Файл временный, в базу знаний не попадает."
-                ),
-            },
-            should_stop=active.stop.is_set,
-        )
-        if active.stop.is_set():
-            return
-        specs = _run_inputs_from_answer(str(sample.get("answer") or ""))
-        if not specs:
-            return
-        self._persist_run_inputs(workflow_id, specs, gate_answer=gate or RUN_INPUTS_YES)
 
     def _ensure_run_inputs_provided(
         self,
@@ -2799,7 +2900,25 @@ def _copy_attachments(run_cwd: str, file_paths: list[str]) -> list[str]:
             log("attachment copy failed: " + repr(exc))
             continue
         relative.append(target.relative_to(root).as_posix())
+        extracted = _write_attachment_text(target)
+        if extracted:
+            try:
+                relative.append(Path(extracted).relative_to(root).as_posix())
+            except ValueError:
+                relative.append(extracted)
     return relative
+
+
+def _write_attachment_text(target: Path) -> str:
+    try:
+        from app.attachment_text import write_extracted_sidecar
+    except ImportError:
+        return ""
+    try:
+        return write_extracted_sidecar(target)
+    except Exception as exc:  # noqa: BLE001
+        log("attachment ocr failed: " + _ascii(repr(exc)))
+        return ""
 
 
 def _selected_process_ids(interview: dict[str, Any]) -> list[str]:
@@ -2868,7 +2987,8 @@ def _attachments_note(relative_paths: list[str]) -> str:
         return ""
     listing = ", ".join(relative_paths)
     return (
-        "Прикреплённые файлы (прочитай их из рабочей области): "
+        "Прикреплённые файлы (прочитай их из рабочей области; "
+        "для сканов и фото смотри соседний .txt после OCR): "
         + listing
     )
 

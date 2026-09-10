@@ -9,11 +9,13 @@ from app.models.regulation import AgentDraft, ReadinessRun, RegulationDocument, 
 from app.schemas.regulation import (
     AgentDraftDetail,
     AgentDraftListResult,
-    AgentSuggestion,
-    AgentSuggestionListResult,
+    AgentDraftSdkQaItem,
     AgentDraftSdkReadinessRequest,
+    AgentDraftSdkReadinessState,
     AgentDraftStatusRequest,
     AgentDraftSummary,
+    AgentSuggestion,
+    AgentSuggestionListResult,
     AgentReadinessResult,
     RoleMatchResult,
 )
@@ -157,16 +159,30 @@ def finish_sdk_readiness(
 ) -> AgentDraftDetail:
     draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
     data = _ensure_agent_suggestions(db, draft)
+    previous = data.get("sdkReadiness") if isinstance(data.get("sdkReadiness"), dict) else {}
+    qa = _merge_sdk_readiness_qa(previous.get("qa"), [item.model_dump(mode="json") for item in request.qa])
+    complete = bool(request.complete)
+    already_ready = str(previous.get("complete") or "").strip().lower() in {"1", "true", "yes"}
+    sdk_agent_id = (request.sdkAgentId or str(previous.get("sdkAgentId") or "")).strip()
+    answer = (request.answer or "").strip() or str(previous.get("answer") or "").strip()
+    events = list(request.events) if request.events else list(previous.get("events") or [])
     data = {
         **data,
         "sdkReadiness": {
-            "answer": request.answer,
-            "events": request.events,
+            "answer": answer,
+            "events": events,
+            "qa": qa,
+            "sdkAgentId": sdk_agent_id,
+            "complete": complete or already_ready,
         },
     }
     draft.result_json = data
-    draft.status = "ready"
-    draft.progress = 100
+    if complete:
+        draft.status = "ready"
+        draft.progress = 100
+    elif draft.status != "ready":
+        draft.status = "interview"
+        draft.progress = _sdk_readiness_progress(data.get("agentSuggestions") or [], qa)
     db.add(draft)
     db.commit()
     db.refresh(draft)
@@ -332,7 +348,77 @@ def _draft_detail(db: Session, draft: AgentDraft) -> AgentDraftDetail:
         run = db.query(ReadinessRun).filter(ReadinessRun.id == draft.readiness_run_id).first()
         if run is not None:
             readiness = AgentReadinessResult.model_validate(run.result_json)
-    return AgentDraftDetail(**_draft_summary(draft).model_dump(mode="python"), readiness=readiness)
+    return AgentDraftDetail(
+        **_draft_summary(draft).model_dump(mode="python"),
+        readiness=readiness,
+        sdkReadiness=_sdk_readiness_state(draft.result_json),
+    )
+
+
+def _sdk_readiness_state(result_json: dict | None) -> AgentDraftSdkReadinessState | None:
+    raw = (result_json or {}).get("sdkReadiness")
+    if not isinstance(raw, dict):
+        return None
+    qa = [
+        AgentDraftSdkQaItem(
+            question=str(item.get("question") or ""),
+            answer=str(item.get("answer") or ""),
+            blockTitle=str(item.get("blockTitle") or item.get("block_title") or ""),
+        )
+        for item in raw.get("qa") or []
+        if isinstance(item, dict)
+    ]
+    return AgentDraftSdkReadinessState(
+        answer=str(raw.get("answer") or ""),
+        qa=qa,
+        sdkAgentId=str(raw.get("sdkAgentId") or raw.get("sdk_agent_id") or ""),
+        complete=bool(raw.get("complete")),
+    )
+
+
+def _merge_sdk_readiness_qa(existing: object, incoming: object) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw in list(existing or []) + list(incoming or []):
+        if not isinstance(raw, dict):
+            continue
+        question = str(raw.get("question") or "").strip()
+        answer = str(raw.get("answer") or "").strip()
+        title = str(raw.get("blockTitle") or raw.get("block_title") or "").strip()
+        if not question and not answer:
+            continue
+        key = (question.casefold(), title.casefold(), answer.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append({"question": question, "answer": answer, "blockTitle": title})
+    return merged
+
+
+def _sdk_readiness_progress(suggestions: object, qa: list[dict]) -> int:
+    titles = []
+    for item in suggestions or []:
+        if isinstance(item, dict):
+            title = str(item.get("title") or "").strip()
+            if title:
+                titles.append(title)
+    if not titles:
+        return min(99, 10 * len(qa)) if qa else 0
+    answered: set[str] = set()
+    for item in qa:
+        title = str(item.get("blockTitle") or "").strip()
+        question = str(item.get("question") or "")
+        matched = ""
+        if title:
+            matched = title
+        else:
+            blob = question.casefold()
+            found = [name for name in titles if name.casefold() in blob]
+            if found:
+                matched = max(found, key=len)
+        if matched:
+            answered.add(matched.casefold())
+    return min(99, round(100 * len(answered) / len(titles)))
 
 
 def _draft_summary(draft: AgentDraft) -> AgentDraftSummary:

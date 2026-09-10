@@ -4039,6 +4039,38 @@ input {
   font-size: 13px;
   line-height: 1.5;
 }
+.agent-side-card .readiness-current-agent {
+  margin: 0 0 8px;
+  color: var(--main-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.readiness-block-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.readiness-block-item {
+  display: flex;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--card-border);
+  font-size: 13px;
+  color: var(--content-muted);
+  line-height: 1.4;
+}
+.readiness-block-item:first-child {
+  border-top: none;
+}
+.readiness-block-item.on {
+  color: var(--main-text);
+  font-weight: 650;
+}
+.readiness-block-item .step-index {
+  color: #08745f;
+  font-weight: 700;
+  min-width: 1.5em;
+}
 .agent-plan-step {
   display: flex;
   gap: 8px;
@@ -4669,6 +4701,12 @@ button.feed-tool-head:hover {
   font-weight: 650;
   color: #8a5300;
 }
+.clarify-block {
+  font-size: 15px;
+  font-weight: 750;
+  color: #06483d;
+  line-height: 1.35;
+}
 .clarify-question {
   font-size: 14px;
   font-weight: 650;
@@ -4744,23 +4782,55 @@ button.feed-tool-head:hover {
   border-color: #6e7d79;
 }
 .clarify-files {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
+.clarify-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
 .clarify-attach {
-  height: 32px;
-  padding: 0 10px;
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #08745f;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.clarify-attach:hover {
+  color: #06483d;
 }
 .clarify-file-name {
+  border: none;
+  background: #eef7f3;
+  border-radius: 8px;
+  padding: 4px 8px;
   font-size: 12px;
-  color: var(--content-muted);
+  color: #06483d;
+  cursor: pointer;
 }
 .clarify-file-hint {
   flex-basis: 100%;
   font-size: 11px;
   color: var(--content-muted);
+}
+.clarify-file-error {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: #b42318;
 }
 .clarify-actions {
   display: flex;

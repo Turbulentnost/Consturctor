@@ -601,6 +601,8 @@ export interface AgentEvent {
   options?: string[]
   needsFile?: boolean
   accept?: string[]
+  context?: string
+  blockTitle?: string
   tool?: string
   arguments?: Record<string, unknown>
   kind?:

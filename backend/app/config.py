@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     erp_sql_trusted_connection: bool = True
     erp_sql_user: str = ""
     erp_sql_password: str = ""
+    erp_sql_timeout: int = 45
 
     jwt_secret: str = "change-me"
     jwt_algorithm: str = "HS256"

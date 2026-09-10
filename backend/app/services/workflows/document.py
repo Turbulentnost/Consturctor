@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import mimetypes
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 TEXT_SUFFIXES = {
     ".txt",
@@ -25,12 +28,13 @@ TEXT_SUFFIXES = {
     ".conf",
     ".rtf",
 }
-DOC_SUFFIXES = {".pdf", ".docx"}
-SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm"}
-IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+DOC_SUFFIXES = {".pdf", ".docx", ".doc"}
+SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm", ".xls"}
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 SUPPORTED_SUFFIXES = TEXT_SUFFIXES | DOC_SUFFIXES | SPREADSHEET_SUFFIXES | IMAGE_SUFFIXES
 MAX_IMAGES = 5
 MAX_IMAGE_BYTES = 15 * 1024 * 1024
+MAX_FILE_BYTES = 25 * 1024 * 1024
 
 _MIME_BY_SUFFIX = {
     ".png": "image/png",
@@ -38,6 +42,9 @@ _MIME_BY_SUFFIX = {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
 }
 
 
@@ -45,35 +52,56 @@ class DocumentError(Exception):
     pass
 
 
-def load_attachment_bytes(name: str, raw: bytes) -> dict:
+def load_attachment_bytes(name: str, raw: bytes, *, ocr: bool = True) -> dict:
     suffix = Path(name).suffix.lower()
-    if suffix not in SUPPORTED_SUFFIXES:
-        raise DocumentError(
-            f"Формат «{suffix or 'без расширения'}» не поддерживается. "
-            f"Допустимо: {', '.join(sorted(SUPPORTED_SUFFIXES))}"
-        )
+    file_name = Path(name).name or "file"
+    if not raw:
+        raise DocumentError("Файл пустой.")
     if suffix in IMAGE_SUFFIXES:
-        return _load_image(name, raw, suffix)
+        return _load_image(name, raw, suffix, ocr=ocr)
+    if len(raw) > MAX_FILE_BYTES:
+        raise DocumentError(
+            f"{file_name}: слишком большой файл ({len(raw) // (1024 * 1024)} МБ). "
+            f"Лимит — {MAX_FILE_BYTES // (1024 * 1024)} МБ."
+        )
     if suffix == ".pdf":
-        text = _read_pdf_bytes(raw)
+        try:
+            text = _read_pdf_bytes(raw)
+        except DocumentError:
+            text = ""
+        if not text.strip() and ocr:
+            text = _ocr_visual(file_name, raw)
         kind = "text"
+        mime = "application/pdf"
     elif suffix == ".docx":
         text = _read_docx_bytes(raw)
         kind = "text"
+        mime = _guess_text_mime(suffix)
     elif suffix in SPREADSHEET_SUFFIXES:
-        text = _read_xlsx_bytes(raw)
+        try:
+            text = _read_xlsx_bytes(raw)
+        except DocumentError:
+            if suffix != ".xls":
+                raise
+            text = ""
         kind = "text"
-    else:
+        mime = _guess_text_mime(suffix)
+    elif suffix in TEXT_SUFFIXES:
         text = _read_text_bytes(raw)
         kind = "text"
-    text = text.strip()
+        mime = _guess_text_mime(suffix)
+    else:
+        text = ""
+        kind = "binary"
+        mime = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+    text = (text or "").strip()
     if not text:
-        raise DocumentError("Документ пуст или не удалось извлечь текст.")
+        text = f"[файл {file_name}: текст не извлечён, исходный файл сохранён]"
     return {
-        "name": Path(name).name,
+        "name": file_name,
         "text": text,
         "kind": kind,
-        "mime_type": _guess_text_mime(suffix),
+        "mime_type": mime,
         "data_b64": "",
     }
 
@@ -139,18 +167,36 @@ def collect_prompt_images(attachments: list[dict]) -> list[dict[str, str]]:
     return images
 
 
-def _load_image(name: str, raw: bytes, suffix: str) -> dict:
+def _ocr_visual(name: str, raw: bytes) -> str:
+    try:
+        from app.services.ocr_extract import extract_visual_text
+
+        return (extract_visual_text(name, raw) or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "attachment ocr failed name=%s detail=%s",
+            ascii(name),
+            ascii(str(exc)),
+        )
+        return ""
+
+
+def _load_image(name: str, raw: bytes, suffix: str, *, ocr: bool = True) -> dict:
     mime = _MIME_BY_SUFFIX.get(suffix) or mimetypes.guess_type(name)[0] or "image/png"
+    file_name = Path(name).name
     if not raw:
         raise DocumentError("Изображение пустое.")
     if len(raw) > MAX_IMAGE_BYTES:
         raise DocumentError(
-            f"{name}: слишком большой файл ({len(raw) // (1024 * 1024)} МБ). "
+            f"{file_name}: слишком большой файл ({len(raw) // (1024 * 1024)} МБ). "
             f"Лимит API — {MAX_IMAGE_BYTES // (1024 * 1024)} МБ."
         )
+    text = _ocr_visual(file_name, raw) if ocr else ""
+    if not text:
+        text = f"[изображение: {file_name}]"
     return {
-        "name": Path(name).name,
-        "text": f"[изображение: {Path(name).name}]",
+        "name": file_name,
+        "text": text,
         "kind": "image",
         "mime_type": mime,
         "data_b64": base64.b64encode(raw).decode("ascii"),

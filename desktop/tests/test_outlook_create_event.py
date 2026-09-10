@@ -379,3 +379,59 @@ def test_collect_range_retries_restrict_when_us_filter_is_empty() -> None:
     assert scanned >= 1
     assert events[0]["subject"] == "Планерка"
     assert events[0]["start"] == "2026-09-03T10:00:00"
+
+
+def _mapi_not_found() -> Exception:
+    return Exception(
+        -2147352567,
+        "Ошибка.",
+        (4096, "Microsoft Outlook", "Ошибка операции клиента.", None, 0, -2147221233),
+        None,
+    )
+
+
+def test_mapi_not_found_is_detected_from_nested_hresult() -> None:
+    from app.tools.ac.workers.outlook_com_actions import (
+        _is_mapi_not_found,
+        _outlook_access_message,
+    )
+
+    exc = _mapi_not_found()
+    assert _is_mapi_not_found(exc) is True
+    text = _outlook_access_message("Ошибка доступа к Outlook Calendar", exc)
+    assert "MAPI_E_NOT_FOUND" in text
+    assert "программный доступ" not in text
+
+
+def test_iter_outlook_items_stops_on_mapi_not_found() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _iter_outlook_items
+
+    class _Items:
+        def GetFirst(self):
+            raise _mapi_not_found()
+
+        def GetNext(self):
+            raise AssertionError("GetNext should not run")
+
+    assert list(_iter_outlook_items(_Items())) == []
+
+
+def test_own_calendar_falls_back_to_store() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _own_calendar_folder
+
+    calendar = object()
+
+    class _Store:
+        DisplayName = "Mailbox"
+
+        def GetDefaultFolder(self, folder_id: int):
+            assert folder_id == 9
+            return calendar
+
+    class _Namespace:
+        Stores = [_Store()]
+
+        def GetDefaultFolder(self, folder_id: int):
+            raise _mapi_not_found()
+
+    assert _own_calendar_folder(_Namespace()) is calendar

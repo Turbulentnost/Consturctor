@@ -18,10 +18,17 @@ from app.tools.ac.workers.onec_meeting_notes import (
     MEETING_FIELDS,
     assert_select_only,
     build_meeting_notes_query,
+    clean_onec_value,
     default_addressee,
+    like_escape,
     meeting_params_from_row,
     parse_note_period,
     pick_document_name,
+)
+
+TASK_METADATA_CANDIDATES = (
+    "Задача.ЗадачаИсполнителя",
+    "Задача.Задача",
 )
 
 FORBIDDEN_COM_METHOD_PARTS = (
@@ -161,6 +168,10 @@ def _dispatch_via_com32(task: WorkerTask) -> dict[str, Any]:
         return _search_documents_com32(task.input_data)
     if task.tool_name == "onec.get_document_card":
         return _get_document_card_com32(task.input_data)
+    if task.tool_name == "onec.search_tasks":
+        return _search_tasks_com32(task.input_data)
+    if task.tool_name == "onec.get_task_card":
+        return _get_task_card_com32(task.input_data)
     raise OneCConnectionError(
         f"Инструмент {task.tool_name} ещё не переведён на 32-bit COMConnector (cscript). "
         "32-bit Python (py -3.12-32) для этого не нужен."
@@ -459,6 +470,277 @@ def _get_document_card_com32(
     return result
 
 
+def _task_number_from_input(input_data: dict[str, Any]) -> str:
+    args = input_data if isinstance(input_data, dict) else {}
+    return str(
+        args.get("number")
+        or args.get("task_number")
+        or args.get("task_ref")
+        or args.get("ref")
+        or ""
+    ).strip()
+
+
+def _status_means_done(status: str) -> bool:
+    text = str(status or "").strip().casefold()
+    return any(marker in text for marker in ("выполн", "закрыт", "done", "completed", "closed"))
+
+
+def _com_session_login() -> str:
+    login = os.environ.get(ENV_LOGIN, "").strip()
+    if login:
+        return login
+    conn = os.environ.get(ENV_CONNECTION_STRING, "").strip()
+    match = re.search(r"Usr=(\"[^\"]+\"|[^;]+)", conn)
+    if match:
+        return match.group(1).strip('"').strip()
+    return ""
+
+
+def build_performer_tasks_query_latin(
+    *,
+    limit: int = 10,
+    query: str = "",
+    mine_only: bool = True,
+    done_only: bool = False,
+    metadata: str = "Задача.ЗадачаИсполнителя",
+    include_due: bool = True,
+    executor_like: str = "",
+) -> tuple[str, list[str]]:
+    """SELECT задач исполнителя. Только чтение, латинские алиасы для cscript."""
+    meta = str(metadata or "").strip() or "Задача.ЗадачаИсполнителя"
+    limit = max(1, min(100, int(limit or 10)))
+    needle = like_escape(query)
+    columns = ["Number", "Description", "Date"]
+    select = [
+        "Т.Номер КАК Number",
+        "Т.Наименование КАК Description",
+        "Т.Дата КАК Date",
+    ]
+    if include_due:
+        select.append("Т.СрокИсполнения КАК DueDate")
+        columns.append("DueDate")
+    select.append("ПРЕДСТАВЛЕНИЕ(Т.Исполнитель) КАК Executor")
+    columns.append("Executor")
+    conditions = ["Т.Выполнена" if done_only else "НЕ Т.Выполнена"]
+    like_name = str(executor_like or "").strip()
+    if like_name:
+        like = like_escape(like_name)
+        conditions.append(f"Т.Исполнитель.Наименование ПОДОБНО \"%{like}%\"")
+    elif mine_only:
+        conditions.append(
+            "("
+            "Т.Исполнитель.Наименование = ПолноеИмяПользователя() "
+            "ИЛИ Т.Исполнитель.Наименование = ИмяПользователя() "
+            "ИЛИ ПРЕДСТАВЛЕНИЕ(Т.Исполнитель) = ПолноеИмяПользователя() "
+            "ИЛИ ПРЕДСТАВЛЕНИЕ(Т.Исполнитель) = ИмяПользователя()"
+            ")"
+        )
+    if needle:
+        conditions.append(
+            f"(Т.Номер ПОДОБНО \"%{needle}%\" ИЛИ Т.Наименование ПОДОБНО \"%{needle}%\")"
+        )
+    query_text = "\n".join(
+        [
+            f"ВЫБРАТЬ ПЕРВЫЕ {limit}",
+            "        " + ",\n        ".join(select),
+            f"        ИЗ {meta} КАК Т",
+            "        ГДЕ " + " И ".join(conditions),
+            "        УПОРЯДОЧИТЬ ПО Т.Дата УБЫВ",
+        ]
+    )
+    return assert_select_only(query_text), columns
+
+
+def build_task_card_query_latin(
+    *,
+    number: str,
+    metadata: str = "Задача.ЗадачаИсполнителя",
+    include_optional: bool = True,
+) -> tuple[str, list[str]]:
+    """SELECT карточки задачи по номеру. Только чтение."""
+    meta = str(metadata or "").strip() or "Задача.ЗадачаИсполнителя"
+    safe_number = str(number or "").replace('"', '""')
+    select = [
+        "Т.Номер КАК Number",
+        "Т.Наименование КАК Description",
+        "Т.Дата КАК Date",
+        "Т.СрокИсполнения КАК DueDate",
+        "ПРЕДСТАВЛЕНИЕ(Т.Исполнитель) КАК Executor",
+    ]
+    columns = ["Number", "Description", "Date", "DueDate", "Executor"]
+    if include_optional:
+        select.extend(
+            [
+                "ПРЕДСТАВЛЕНИЕ(Т.Автор) КАК Author",
+                "Т.Выполнена КАК Done",
+                "Т.РезультатВыполнения КАК Result",
+                "Т.Описание КАК Details",
+                "ПРЕДСТАВЛЕНИЕ(Т.Предмет) КАК Subject",
+            ]
+        )
+        columns.extend(["Author", "Done", "Result", "Details", "Subject"])
+    query_text = "\n".join(
+        [
+            "ВЫБРАТЬ ПЕРВЫЕ 1",
+            "        " + ",\n        ".join(select),
+            f"        ИЗ {meta} КАК Т",
+            f'        ГДЕ Т.Номер = "{safe_number}"',
+        ]
+    )
+    return assert_select_only(query_text), columns
+
+
+def task_from_com32_row(row: dict[str, Any], *, source: str) -> dict[str, Any]:
+    number = clean_onec_value(row.get("Number"))
+    title = clean_onec_value(row.get("Description"))
+    executor = clean_onec_value(row.get("Executor"))
+    due_date = clean_onec_value(row.get("DueDate"), as_date=True) or clean_onec_value(row.get("DueDate"))
+    done_raw = str(row.get("Done") or "").strip()
+    done = done_raw.casefold() in {"true", "истина", "1", "да", "yes"}
+    return {
+        "ref": number,
+        "task_ref": number,
+        "number": number,
+        "title": title,
+        "description": title,
+        "date": clean_onec_value(row.get("Date"), as_date=True) or clean_onec_value(row.get("Date")),
+        "due_date": due_date,
+        "executor": executor,
+        "responsible": executor,
+        "author": clean_onec_value(row.get("Author")),
+        "status": "Выполнена" if done else "В работе",
+        "done": done,
+        "result": clean_onec_value(row.get("Result")),
+        "details": clean_onec_value(row.get("Details")),
+        "subject": clean_onec_value(row.get("Subject")),
+        "source": source,
+        "fields": {key: clean_onec_value(value) for key, value in row.items()},
+    }
+
+
+def _search_tasks_com32(
+    input_data: dict[str, Any],
+    *,
+    timeout: int | None = None,
+) -> dict[str, Any]:
+    """Поиск задач исполнителя через 32-bit SELECT. Без записи."""
+    args = input_data if isinstance(input_data, dict) else {}
+    query = str(args.get("query") or args.get("number") or "").strip()
+    limit = int(args.get("max_results") or args.get("limit") or 10)
+    mine_only = bool(args.get("mine_only", True))
+    done_only = _status_means_done(str(args.get("status") or ""))
+    specs: list[tuple[str, list[str], str]] = []
+    session_login = _com_session_login() if mine_only else ""
+    for metadata in TASK_METADATA_CANDIDATES:
+        if session_login:
+            text, columns = build_performer_tasks_query_latin(
+                limit=limit,
+                query=query,
+                mine_only=True,
+                done_only=done_only,
+                metadata=metadata,
+                include_due=True,
+                executor_like=session_login,
+            )
+            specs.append((text, columns, "erp_задача_исполнителя"))
+        for include_due in (True, False):
+            text, columns = build_performer_tasks_query_latin(
+                limit=limit,
+                query=query,
+                mine_only=mine_only,
+                done_only=done_only,
+                metadata=metadata,
+                include_due=include_due,
+            )
+            source = "erp_задача_исполнителя" if mine_only else "erp_задача_исполнителя_all"
+            specs.append((text, columns, source))
+        if mine_only:
+            text, columns = build_performer_tasks_query_latin(
+                limit=limit,
+                query=query,
+                mine_only=False,
+                done_only=done_only,
+                metadata=metadata,
+                include_due=True,
+            )
+            specs.append((text, columns, "erp_задача_исполнителя_all"))
+    try:
+        rows, chosen = _com32_select(
+            [(text, columns) for text, columns, _source in specs],
+            timeout=timeout,
+        )
+    except OneCConnectionError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc).strip()
+        return {
+            "tasks": [],
+            "count": 0,
+            "source": "onec_com32",
+            "task_source": "",
+            "method": "select_performer_tasks_com32",
+            "query": query,
+            "readonly": True,
+            "error": message or "32-bit COM не вернул задачи",
+        }
+    source = specs[chosen][2]
+    tasks = [task_from_com32_row(row, source=source) for row in rows]
+    return {
+        "tasks": tasks,
+        "count": len(tasks),
+        "source": "onec_com32",
+        "task_source": source,
+        "method": "select_performer_tasks_com32",
+        "query": query,
+        "readonly": True,
+        "mine_only": mine_only,
+    }
+
+
+def _get_task_card_com32(
+    input_data: dict[str, Any],
+    *,
+    timeout: int | None = None,
+) -> dict[str, Any]:
+    """Карточка задачи 1С через 32-bit SELECT. Без записи."""
+    number = _task_number_from_input(input_data)
+    if not number:
+        raise OneCConnectionError("Для get_task_card нужен number, task_number или task_ref")
+    specs: list[tuple[str, list[str]]] = []
+    for metadata in TASK_METADATA_CANDIDATES:
+        for include_optional in (True, False):
+            specs.append(
+                build_task_card_query_latin(
+                    number=number,
+                    metadata=metadata,
+                    include_optional=include_optional,
+                )
+            )
+    try:
+        rows, _chosen = _com32_select(specs, timeout=timeout)
+    except OneCConnectionError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc).strip()
+        return {
+            "task": {},
+            "source": "onec_com32",
+            "method": "select_task_card_com32",
+            "readonly": True,
+            "number": number,
+            "error": message or "32-bit COM не вернул карточку задачи",
+        }
+    task = task_from_com32_row(rows[0], source="erp_задача_исполнителя") if rows else {}
+    return {
+        "task": task,
+        "source": "onec_com32",
+        "method": "select_task_card_com32",
+        "readonly": True,
+        "number": number,
+    }
+
+
 def _connect_session() -> Any:
     """Подключиться к 1С через COMConnector."""
     _, win32com_client = _load_pywin32_modules()
@@ -589,7 +871,7 @@ def _dispatch_tool(session: Any, task: WorkerTask) -> dict[str, Any]:
             "method": "query_performer_tasks",
         }
     if task.tool_name == "onec.get_task_card":
-        number = str(task.input_data.get("number") or task.input_data.get("task_number") or "").strip()
+        number = _task_number_from_input(task.input_data)
         if not number:
             raise OneCConnectionError("Для get_task_card нужен номер задачи")
         raw = get_task_details(session, number=number)
