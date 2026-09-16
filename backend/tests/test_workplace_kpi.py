@@ -47,5 +47,12 @@ def test_workplace_kpi_returns_reference_dashboard(monkeypatch):
     agents = body["agents"]
     assert any(row["code"] == "RIG-01" for row in agents)
     assert body["problemZones"]
+    assert body["problemZones"][0]["typeLabel"] == "Низкое SLA"
+    assert body["problemZones"][0]["deviation"] == "-14%"
+    employee = body["employeeKpi"]
+    assert len(employee) == 4
+    assert employee[0]["id"] == "tasks"
+    assert employee[0]["displayValue"] == "78%"
+    assert employee[2]["displayValue"] == "4.7"
     assert body["workloadCompare"]
     assert body["dynamics"]["series"]

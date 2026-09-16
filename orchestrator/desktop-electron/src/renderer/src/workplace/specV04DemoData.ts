@@ -176,10 +176,6 @@ export interface SpecProjectRow {
   progress: number
   risk: string
   riskTone: SpecPillTone
-  /** TurboProject file_id (when distinct from code). */
-  fileId?: string
-  /** Руководитель / owner из карточки или 1С. */
-  manager?: string
 }
 
 export const DEMO_PROJECT_ROWS: SpecProjectRow[] = [
@@ -224,10 +220,12 @@ export const DEMO_PROJECT_ROWS: SpecProjectRow[] = [
   }
 ]
 
+export interface SpecMailAttachment {
+  name: string
+}
+
 export interface SpecMailRow {
   id: string
-  /** Outlook MAPI EntryID (same as id when loaded via COM). */
-  entryId?: string
   sender: string
   subject: string
   category: string
@@ -239,9 +237,12 @@ export interface SpecMailRow {
   status: string
   stTone: SpecPillTone
   assignee: string
+  to?: string
+  body?: string
+  preview?: string
+  receivedLabel?: string
   unread?: boolean
-  bodyPreview?: string
-  attachmentNames?: string[]
+  attachments?: SpecMailAttachment[]
 }
 
 export const DEMO_MAIL_ROWS: SpecMailRow[] = [

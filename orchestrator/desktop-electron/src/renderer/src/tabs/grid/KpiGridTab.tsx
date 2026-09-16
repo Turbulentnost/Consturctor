@@ -1,22 +1,30 @@
-import { useMemo, useState } from 'react'
-import {
-  OrchSlotBotA,
-  OrchSlotBotB,
-  OrchSlotBotC,
-  OrchSlotFilters,
-  OrchSlotMain,
-  OrchSlotMetrics
-} from '../../layout/GridSlots'
-import { KpiRangePicker } from '../../pages/KpiRangePicker'
-import { SpecFilters, SpecPanel, SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { api } from '../../api/client'
+import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
+import { DEFAULT_KPI_LAYOUT } from './useTabChromeLayout'
+import type { UserProfile } from '../../api/types'
+import { KpiRangePicker, type KpiRangeShortcut } from '../../pages/KpiRangePicker'
+import { SpecFilters, SpecPanel, SpecPill, SpecProgress } from '../../workplace/specV04Components'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
-import { StandardGridFilters } from './gridFilters'
+import { SpecIconSearch } from '../../workplace/specV04Icons'
+import { currentWeekRange, rollingKpiRange } from '../../workplace/kpiPeriod'
+import { setKpiExportSnapshot } from '../../workplace/kpiExportSnapshot'
+import {
+  buildKpiDailySyncPayload,
+  computeKpiEmployeeSnapshot,
+  mergeEmployeeKpiAndZones
+} from '../../workplace/mergeKpiEmployee'
+import { useKpiPeriodSources } from '../../workplace/useKpiPeriodSources'
+import { useKpiWorkflowBoard } from '../../workplace/useKpiWorkflowBoard'
 import { useWorkplaceKpiDashboard } from '../../workplace/useWorkplaceKpiDashboard'
-import type { WorkplaceKpiCard, WorkplaceKpiChartSeries, WorkplaceKpiDashboard } from '../../workplace/workplaceKpiTypes'
+import { agentMatchesKpiTile, toggleSimpleTile } from '../../workplace/tileFilters'
+import type { WorkplaceKpiCard } from '../../workplace/workplaceKpiTypes'
+import { KpiEmployeePanel } from './KpiEmployeePanel'
+import { KpiPeriodDynamicsChart } from './KpiPeriodDynamicsChart'
+import { KpiProblemZonesTable } from './KpiProblemZonesTable'
 import './kpiGrid.css'
 
-const DEFAULT_FROM = '2024-08-12'
-const DEFAULT_TO = '2024-08-18'
+const WEEK = currentWeekRange()
 
 const LOADING_TILES: SpecSummaryTile[] = [
   { id: 'tasks', label: 'Выполнение задач', value: '—', tone: 'orange' },
@@ -39,99 +47,127 @@ function cardsToTiles(cards: WorkplaceKpiCard[]): SpecSummaryTile[] {
   }))
 }
 
-function chartPolyline(points: number[], width: number, height: number, max: number): string {
-  if (!points.length) return ''
-  const yMax = Math.max(1, max)
-  const step = points.length > 1 ? width / (points.length - 1) : width
-  return points
-    .map((value, index) => {
-      const x = index * step
-      const y = height - (value / yMax) * (height - 12) - 6
-      return `${x.toFixed(1)},${y.toFixed(1)}`
-    })
-    .join(' ')
-}
-
-function DynamicsChart({ dynamics }: { dynamics: WorkplaceKpiDashboard['dynamics'] }): React.JSX.Element {
-  const width = 640
-  const height = 150
-  const yMax = dynamics.yMax || 100
-  return (
-    <div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="kpi-dynamics-chart" preserveAspectRatio="none">
-        {[0.25, 0.5, 0.75, 1].map((ratio) => (
-          <line key={ratio} x1={0} x2={width} y1={height * ratio} y2={height * ratio} />
-        ))}
-        {dynamics.series.map((series: WorkplaceKpiChartSeries) => (
-          <polyline
-            key={series.id}
-            points={chartPolyline(series.points, width, height, yMax)}
-            fill="none"
-            stroke={series.color}
-            strokeWidth={2.6}
-          />
-        ))}
-      </svg>
-      <div className="kpi-chart-axis">
-        {dynamics.xLabels.map((label) => (
-          <span key={label}>{label}</span>
-        ))}
-      </div>
-      <div className="kpi-dynamics-legend">
-        {dynamics.series.map((series) => (
-          <span key={series.id}>
-            <i style={{ background: series.color }} />
-            {series.label}
-          </span>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 export function KpiGridTab(_props: {
+  user?: UserProfile
   onOpenProcesses?: () => void
   onOpenDecisions?: () => void
 }): React.JSX.Element {
-  const [from, setFrom] = useState(DEFAULT_FROM)
-  const [to, setTo] = useState(DEFAULT_TO)
-  const { data, loading, error, notice } = useWorkplaceKpiDashboard(from, to)
+  const [from, setFrom] = useState(WEEK.from)
+  const [to, setTo] = useState(WEEK.to)
+  const [shortcut, setShortcut] = useState<KpiRangeShortcut | null>(null)
+  const [agentQuery, setAgentQuery] = useState('')
+  const [tileFilter, setTileFilter] = useState('all')
+  const { data, loading, error, notice, reload } = useWorkplaceKpiDashboard(from, to)
+  const periodSources = useKpiPeriodSources()
+  const { board: workflowBoard } = useKpiWorkflowBoard(from, to)
+  const dailySyncKeyRef = useRef('')
+
+  const dashboard = useMemo(
+    () => mergeEmployeeKpiAndZones(data, periodSources, from, to, workflowBoard),
+    [data, periodSources, from, to, workflowBoard]
+  )
 
   const tiles = useMemo(() => {
-    if (data?.cards.length) return cardsToTiles(data.cards)
+    if (dashboard?.cards.length) return cardsToTiles(dashboard.cards)
     if (loading) return LOADING_TILES
     return []
-  }, [data, loading])
+  }, [dashboard, loading])
+
+  const agents = useMemo(() => {
+    const rows = dashboard?.agents ?? []
+    const byTile =
+      tileFilter === 'all' ? rows : rows.filter((row) => agentMatchesKpiTile(row, tileFilter))
+    const q = agentQuery.trim().toLowerCase()
+    if (!q) return byTile
+    return byTile.filter((row) =>
+      [row.name, row.code, row.process, row.status].some((value) => value.toLowerCase().includes(q))
+    )
+  }, [dashboard, agentQuery, tileFilter])
+
+  useEffect(() => {
+    setKpiExportSnapshot({ from, to, data: dashboard })
+    return () => setKpiExportSnapshot({ from: '', to: '', data: null })
+  }, [from, to, dashboard])
+
+  useEffect(() => {
+    if (loading || !periodSources) return
+    const snap = computeKpiEmployeeSnapshot(periodSources, from, to)
+    if (!snap) return
+    const metrics = buildKpiDailySyncPayload(from, to, snap)
+    const key = metrics.map((m) => `${m.day}:${m.tasksPct}:${m.slaPct}`).join('|')
+    if (dailySyncKeyRef.current === key) return
+    dailySyncKeyRef.current = key
+    void api
+      .syncWorkplaceKpiDailyMetrics({ metrics })
+      .then(() => reload())
+      .catch(() => {
+        dailySyncKeyRef.current = ''
+      })
+  }, [from, to, loading, periodSources, reload])
 
   const applyRange = (next: { from: string; to: string }): void => {
     setFrom(next.from)
     setTo(next.to)
+    setShortcut(null)
+  }
+
+  const applyShortcut = (days: KpiRangeShortcut): void => {
+    const next = rollingKpiRange(days)
+    setFrom(next.from)
+    setTo(next.to)
+    setShortcut(days)
   }
 
   return (
-    <>
-      <OrchSlotMetrics>
-        <div className="orch-kpi-tiles">
-          <SpecSummaryTiles tiles={tiles} />
-        </div>
-      </OrchSlotMetrics>
-
-      <OrchSlotFilters>
+    <StandardTabChrome
+      tabId="kpi"
+      userId={_props.user?.id || ''}
+      defaults={DEFAULT_KPI_LAYOUT}
+      labels={{
+        side: 'KPI сотрудника',
+        botB: 'Нагрузка: сотрудник vs ИИ',
+        botC: 'Динамика показателей',
+        botA: 'Проблемные зоны',
+        main: 'KPI ИИ-агентов'
+      }}
+      chromeTiles={summaryTilesAsChrome(tiles, tileFilter === 'all' ? null : tileFilter, (id) =>
+        setTileFilter((current) => toggleSimpleTile(current, id))
+      )}
+      widgets={{
+        filters: (
+        <>
         <SpecFilters layout="row">
-          <KpiRangePicker from={from} to={to} shortcut={null} onApply={applyRange} onShortcut={() => undefined} />
-          <StandardGridFilters searchPlaceholder="Поиск по KPI…" />
+          <KpiRangePicker from={from} to={to} shortcut={shortcut} onApply={applyRange} onShortcut={applyShortcut} />
         </SpecFilters>
         {!tiles.length && loading ? (
           <p className="kpi-dash-status-banner">Загружаем показатели…</p>
         ) : null}
         {notice ? <p className="kpi-dash-status-banner">{notice}</p> : null}
         {error ? <p className="kpi-dash-status-banner error">{error}</p> : null}
-      </OrchSlotFilters>
-
-      <OrchSlotMain spanAll>
+        </>
+        ),
+        side: (
+          <KpiEmployeePanel
+            metrics={dashboard?.employeeKpi ?? []}
+            loading={loading}
+            onDetails={() => _props.onOpenProcesses?.()}
+          />
+        ),
+        main: (
+        <div className="kpi-dash-main-wrap">
         <div className="spec-table-toolbar kpi-dash-table-toolbar">
           <h3 className="kpi-dash-table-title">KPI ИИ-агентов</h3>
-          {data?.periodLabel ? <span className="spec-v04-muted">{data.periodLabel}</span> : null}
+          {dashboard?.periodLabel ? <span className="spec-v04-muted">{dashboard.periodLabel}</span> : null}
+          <label className="spec-filter-input spec-filter-search kpi-dash-agent-search">
+            <SpecIconSearch />
+            <input
+              className="wp-search"
+              type="search"
+              value={agentQuery}
+              onChange={(event) => setAgentQuery(event.target.value)}
+              placeholder="Поиск по агентам…"
+            />
+          </label>
         </div>
         <div className="spec-v04-table-wrap wp-card kpi-dash-main-table">
             <table className="spec-v04-table">
@@ -147,21 +183,25 @@ export function KpiGridTab(_props: {
                 </tr>
               </thead>
               <tbody>
-                {loading && !data?.agents.length ? (
+                {loading && !agents.length ? (
                   <tr>
                     <td colSpan={7} className="spec-v04-empty">
                       Загружаем…
                     </td>
                   </tr>
                 ) : null}
-                {!loading && !data?.agents.length ? (
+                {!loading && !agents.length ? (
                   <tr>
                     <td colSpan={7} className="spec-v04-empty">
-                      Нет данных за период
+                      {agentQuery.trim()
+                        ? 'Нет агентов по поиску'
+                        : tileFilter !== 'all'
+                          ? 'Нет агентов по выбранной плитке'
+                          : 'Нет данных за период'}
                     </td>
                   </tr>
                 ) : null}
-                {(data?.agents ?? []).map((row) => (
+                {agents.map((row) => (
                   <tr key={row.id}>
                     <td>
                       <div className="kpi-dash-agent-name">
@@ -184,72 +224,50 @@ export function KpiGridTab(_props: {
               </tbody>
             </table>
         </div>
-      </OrchSlotMain>
-
-      <OrchSlotBotA>
-        <SpecPanel title="Проблемные зоны">
-          <div className="spec-v04-table-wrap">
-            <table className="spec-v04-table spec-v04-table-compact">
-              <thead>
-                <tr>
-                  <th>Зона</th>
-                  <th>Показатель</th>
-                  <th>Значение</th>
-                  <th>Рекомендация</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(data?.problemZones ?? []).map((zone) => (
-                  <tr key={zone.id}>
-                    <td>{zone.zone}</td>
-                    <td>{zone.metric}</td>
-                    <td>
-                      <SpecPill tone={zone.severity}>{zone.value}</SpecPill>
-                    </td>
-                    <td>{zone.recommendation}</td>
-                  </tr>
-                ))}
-                {!data?.problemZones.length && !loading ? (
-                  <tr>
-                    <td colSpan={4} className="spec-v04-empty">
-                      Нет проблемных зон
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-        </SpecPanel>
-      </OrchSlotBotA>
-
-      <OrchSlotBotB>
+        </div>
+        ),
+        botA: <KpiProblemZonesTable zones={dashboard?.problemZones ?? []} loading={loading} />,
+        botB: (
         <SpecPanel title="Нагрузка: сотрудник vs ИИ">
-          <div className="kpi-compare-legend">
-            <span className="emp">Сотрудник (ч)</span>
-            <span className="ai">ИИ (ч)</span>
-          </div>
-          <div className="kpi-compare-chart">
-            {(data?.workloadCompare ?? []).map((row) => {
-              const max = Math.max(row.employee, row.ai, 1)
-              return (
-                <div key={row.id} className="kpi-compare-row">
-                  <span>{row.label}</span>
-                  <div className="kpi-compare-track">
-                    <i className="emp" style={{ width: `${(row.employee / max) * 100}%` }} title={`${row.employee} ч`} />
-                    <i className="ai" style={{ width: `${(row.ai / max) * 100}%` }} title={`${row.ai} ч`} />
+          <div className="kpi-widget-fill">
+            <div className="kpi-compare-legend">
+              <span className="emp">Сотрудник (ч)</span>
+              <span className="ai">ИИ (ч)</span>
+            </div>
+            <div className="kpi-compare-chart kpi-compare-chart--dense">
+              {(dashboard?.workloadCompare ?? []).map((row) => {
+                const max = Math.max(row.employee, row.ai, 1)
+                return (
+                  <div key={row.id} className="kpi-compare-row">
+                    <span className="kpi-compare-label">{row.label}</span>
+                    <div className="kpi-compare-track">
+                      <i className="emp" style={{ width: `${(row.employee / max) * 100}%` }} title={`${row.employee} ч`} />
+                      <i className="ai" style={{ width: `${(row.ai / max) * 100}%` }} title={`${row.ai} ч`} />
+                    </div>
+                    <span className="kpi-compare-values">
+                      <em className="emp">{row.employee}</em>
+                      <span className="kpi-compare-sep">/</span>
+                      <em className="ai">{row.ai}</em>
+                    </span>
                   </div>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
           </div>
         </SpecPanel>
-      </OrchSlotBotB>
-
-      <OrchSlotBotC>
-        <SpecPanel title={data?.dynamics.title ?? 'Динамика показателей'}>
-          {data?.dynamics ? <DynamicsChart dynamics={data.dynamics} /> : loading ? <p className="spec-v04-muted">Загружаем…</p> : null}
+        ),
+        botC: (
+        <SpecPanel title={dashboard?.dynamics.title ?? 'Динамика показателей'}>
+          <div className="kpi-widget-fill">
+            {dashboard?.dynamics ? (
+              <KpiPeriodDynamicsChart dynamics={dashboard.dynamics} />
+            ) : loading ? (
+              <p className="spec-v04-muted">Загружаем…</p>
+            ) : null}
+          </div>
         </SpecPanel>
-      </OrchSlotBotC>
-    </>
+        )
+      }}
+    />
   )
 }

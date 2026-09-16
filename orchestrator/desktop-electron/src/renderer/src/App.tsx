@@ -11,12 +11,12 @@ import {
   clearComCredentials,
   comCredentials,
   clearSession,
-  hasComPassword,
   loadSession,
   saveSession,
   setComCredentials,
   setDevGatewayCredentials,
-  syncComProfileFromUser
+  syncComProfileFromUser,
+  getComCredentialsRevision
 } from './store/session'
 import { formatGatewayToolError, shouldForceReLogin } from './workplace/onecSessionHints'
 import { fetchMyErpTasksOData } from './workplace/fetchMyErpTasksOData'
@@ -44,6 +44,8 @@ import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
+import { clearGridCacheForUser } from './workplace/gridDataCache'
+import { ORCH_OPEN_TAB, type WorkplaceTabIntent } from './workplace/workplaceNav'
 import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
 import {
   ComCredentialsRevisionProvider,
@@ -163,6 +165,20 @@ function findExistingChat(threads: ChatThread[], name: string, peerId?: string):
   return threads.find((item) => item.kind !== 'support' && fioEquals(item.title, name))
 }
 
+function DebugSourcesLifetime(): null {
+  useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'post-fix',hypothesisId:'H2',location:'App.tsx:DebugSourcesLifetime',message:'sources provider mount',data:{},timestamp:Date.now()})}).catch(()=>{})
+    // #endregion
+    return () => {
+      // #region agent log
+      fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'post-fix',hypothesisId:'H2',location:'App.tsx:DebugSourcesLifetime',message:'sources provider unmount',data:{},timestamp:Date.now()})}).catch(()=>{})
+      // #endregion
+    }
+  }, [])
+  return null
+}
+
 export function App(): React.JSX.Element {
   return (
     <RunProvider>
@@ -192,6 +208,7 @@ function AppShell(): React.JSX.Element {
   const [windowFocused, setWindowFocused] = useState(() => document.hasFocus())
   const seenHitlRef = useRef<Set<string>>(new Set())
   const seenRunNotifyRef = useRef<Map<string, 'started' | 'finished'>>(new Map())
+  const [tabIntent, setTabIntent] = useState<WorkplaceTabIntent | null>(null)
   const runs = useRuns()
 
   useEffect(() => {
@@ -228,7 +245,7 @@ function AppShell(): React.JSX.Element {
             try {
               const profile = await api.me(8_000)
               setUser(profile)
-              setRequireComLogin(!hasComPassword())
+              // JWT has no 1C password — workplace shows OneCReconnectDialog, not LoginPage / DOK_HTTP_USER.
               setModeForUser(profile)
             } catch {
               clearSession(true)
@@ -297,7 +314,11 @@ function AppShell(): React.JSX.Element {
     }
     const token = api.getToken()
     if (token) void window.api.startNotifications?.(token)
+    const beforeRevision = getComCredentialsRevision()
     syncComProfileFromUser(user)
+    if (getComCredentialsRevision() !== beforeRevision) {
+      bumpComCredentialsRevision()
+    }
     const creds = comCredentials()
     void agentClient
       .ready(token, {
@@ -305,7 +326,7 @@ function AppShell(): React.JSX.Element {
         password: creds.password || ''
       })
       .catch(() => undefined)
-  }, [user?.id ?? '', user?.nameMail ?? '', user?.fio ?? '', comCredsRevision])
+  }, [user?.id ?? '', user?.nameMail ?? '', user?.fio ?? '', comCredsRevision, bumpComCredentialsRevision])
 
   useEffect(() => {
     if (!import.meta.env.DEV || !user) {
@@ -354,6 +375,21 @@ function AppShell(): React.JSX.Element {
       window.removeEventListener('focus', onFocus)
       window.removeEventListener('blur', onBlur)
     }
+  }, [])
+
+  useEffect(() => {
+    const onOpenTab = (event: Event): void => {
+      const detail = (event as CustomEvent<{ key?: string; intent?: WorkplaceTabIntent }>).detail || {}
+      const key = String(detail.key || '')
+      if (!key) return
+      if ((WORKPLACE_TAB_KEYS as string[]).includes(key) || (ADMIN_TAB_KEYS as string[]).includes(key)) {
+        setTabIntent(detail.intent ?? null)
+        setLastTab(key as PageKey)
+        setView({ kind: 'tab', key: key as PageKey })
+      }
+    }
+    window.addEventListener(ORCH_OPEN_TAB, onOpenTab)
+    return () => window.removeEventListener(ORCH_OPEN_TAB, onOpenTab)
   }, [])
 
   useEffect(() => {
@@ -425,7 +461,6 @@ function AppShell(): React.JSX.Element {
       }
     }
   }, [runs.entries])
-
   function setModeForUser(profile: UserProfile): void {
     const mode = profile.isAdmin ? 'admin' : 'user'
     setAdminViewMode(mode)
@@ -433,9 +468,9 @@ function AppShell(): React.JSX.Element {
     setView({ kind: 'tab', key: mode === 'admin' ? 'overview' : 'today' })
   }
 
-  function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
+  function onLoggedIn(result: LoginResult, remember: boolean, password = '', typedLogin = ''): void {
     api.setToken(result.accessToken || null)
-    setComCredentials(result.user.fio, password, result.user.nameMail)
+    setComCredentials(typedLogin || result.user.fio, password, result.user.nameMail)
     bumpComCredentialsRevision()
     setRequireComLogin(false)
     void agentClient
@@ -460,6 +495,8 @@ function AppShell(): React.JSX.Element {
   }
 
   async function resetToLogin(): Promise<void> {
+    const uid = (user?.id || '').trim()
+    if (uid) clearGridCacheForUser(uid)
     void window.api.stopNotifications?.()
     runs.clearAll()
     clearSession(true)
@@ -706,6 +743,12 @@ function AppShell(): React.JSX.Element {
     })
   }
 
+  function askOrchestratorFromDock(message: string): void {
+    const tabKey = view.kind === 'tab' ? view.key : lastTab
+    const label = tabKey ? PAGE_LABELS[tabKey] || tabKey : ''
+    askOrchestratorFromTab(message, label ? `Вкладка «${label}»` : 'Рабочее место')
+  }
+
   function renderAdminContent(): React.JSX.Element {
     if (view.kind === 'chat') {
       return (
@@ -775,21 +818,21 @@ function AppShell(): React.JSX.Element {
   function renderWorkplaceGridTab(key: WorkplaceTabKey): React.JSX.Element {
     switch (key) {
       case 'processes':
-        return <ProcessesGridTab user={activeUser} onOpen={(workflowId, title) => setView({ kind: 'passport', workflowId, title, tab: 'info' })} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} onAskOrchestrator={askOrchestratorFromTab} />
+        return <ProcessesGridTab user={activeUser} navProcessTab={tabIntent?.processTab} onOpen={(workflowId, title) => setView({ kind: 'passport', workflowId, title, tab: 'info' })} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
       case 'tasks':
-        return <TasksGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+        return <TasksGridTab user={activeUser} navTaskFilter={tabIntent?.taskFilter} />
       case 'projects':
-        return <ProjectsGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+        return <ProjectsGridTab user={activeUser} />
       case 'mail':
         return <MailGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
       case 'meetings':
-        return <MeetingsGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+        return <MeetingsGridTab user={activeUser} />
       case 'decisions':
-        return <DecisionsGridTab onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)} />
+        return <DecisionsGridTab user={activeUser} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)} />
       case 'kpi':
-        return <KpiGridTab onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
+        return <KpiGridTab user={activeUser} onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
       case 'knowledge':
-        return <KnowledgeGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+        return <KnowledgeGridTab user={activeUser} />
       case 'history':
         return <HistoryGridTab onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
       case 'today':
@@ -802,7 +845,6 @@ function AppShell(): React.JSX.Element {
             onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
             onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
             onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
-            onAskOrchestrator={askOrchestratorFromTab}
           />
         )
     }
@@ -860,11 +902,18 @@ function AppShell(): React.JSX.Element {
     return renderUserFullscreen()
   }
 
-  if (!isAdminMode && view.kind === 'tab' && isWorkplaceTabKey(view.key)) {
-    const tabKey = view.key
-    return (
-      <GridDataRefreshProvider userId={activeUser.id}>
-        <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
+  const workplaceGrid = !isAdminMode && view.kind === 'tab' && isWorkplaceTabKey(view.key)
+  const tabKey = workplaceGrid && view.kind === 'tab' ? view.key : null
+  const content = isAdminMode ? renderAdminContent() : renderUserContent()
+  // #region agent log
+  fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'post-fix',hypothesisId:'H2',location:'App.tsx:unified-tree',message:'render unified provider tree',data:{workplaceGrid,isAdminMode,tabKey,viewKind:view.kind},timestamp:Date.now()})}).catch(()=>{})
+  // #endregion
+
+  return (
+    <GridDataRefreshProvider userId={activeUser.id}>
+      <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
+        <DebugSourcesLifetime />
+        {workplaceGrid && tabKey ? (
           <div className="app-root orch-app-root">
             <OrchGridShell
               activeKey={tabKey}
@@ -881,6 +930,7 @@ function AppShell(): React.JSX.Element {
               activeThreadId=""
               chatRefreshAt={chatRefreshAt}
               onNavigate={(key) => {
+                setTabIntent(null)
                 setLastTab(key)
                 setView({ kind: 'tab', key })
               }}
@@ -896,60 +946,53 @@ function AppShell(): React.JSX.Element {
             >
               {renderUserContent()}
             </OrchGridShell>
-            <ChatDock onOpenThread={openChat} onOpenSupport={openSupport} />
+            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
           </div>
-        </SpecV04SourcesProvider>
-      </GridDataRefreshProvider>
-    )
-  }
-
-  const content = isAdminMode ? renderAdminContent() : renderUserContent()
-
-  return (
-    <GridDataRefreshProvider userId={activeUser.id}>
-      <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
-        <div className="app-root">
-          <Sidebar
-            active={activeKey}
-            light={false}
-            showAdminNav={isAdminMode}
-            activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
-            currentUserId={activeUser.id || ''}
-            onNavigate={(key) => {
-              if (isAdminMode && !isAdminTabKey(key)) return
-              if (!isAdminMode && !isWorkplaceTabKey(key) && key !== 'settings') return
-              setLastTab(key)
-              setView({ kind: 'tab', key })
-            }}
-            onOpenThread={openChat}
-            onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
-            refreshAt={chatRefreshAt}
-          />
-          <main className={isAdminMode ? 'content' : 'content orch-legacy-fullpage'}>
-            <div className={view.kind === 'chat' ? 'content-inner messenger-mode' : 'content-inner'}>
-              <div className="app-page-header">
-                <UserMenu
-                  user={activeUser}
-                  avatarUrl={avatarUrl}
-                  unread={unread}
-                  onUnreadChange={setUnread}
-                  onLogout={onLogout}
-                  showLogout={showLogout}
-                  onOpenAgent={openFromInbox}
-                  onStopRun={(workflowId, runId) => runs.cancel(workflowId, runId)}
-                  isRunLive={() => true}
-                  onOpenSettings={() => setView({ kind: 'tab', key: 'settings' })}
-                  canSwitchAdminView={Boolean(activeUser.isAdmin)}
-                  onSwitchAdminView={switchAdminView}
-                  variant={isAdminMode ? 'admin' : 'default'}
-                />
+        ) : (
+          <div className="app-root">
+            <Sidebar
+              active={activeKey}
+              light={false}
+              showAdminNav={isAdminMode}
+              activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
+              currentUserId={activeUser.id || ''}
+              onNavigate={(key) => {
+                if (isAdminMode && !isAdminTabKey(key)) return
+                if (!isAdminMode && !isWorkplaceTabKey(key) && key !== 'settings') return
+                setTabIntent(null)
+                setLastTab(key)
+                setView({ kind: 'tab', key })
+              }}
+              onOpenThread={openChat}
+              onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
+              refreshAt={chatRefreshAt}
+            />
+            <main className={isAdminMode ? 'content' : 'content orch-legacy-fullpage'}>
+              <div className={view.kind === 'chat' ? 'content-inner messenger-mode' : 'content-inner'}>
+                <div className="app-page-header">
+                  <UserMenu
+                    user={activeUser}
+                    avatarUrl={avatarUrl}
+                    unread={unread}
+                    onUnreadChange={setUnread}
+                    onLogout={onLogout}
+                    showLogout={showLogout}
+                    onOpenAgent={openFromInbox}
+                    onStopRun={(workflowId, runId) => runs.cancel(workflowId, runId)}
+                    isRunLive={() => true}
+                    onOpenSettings={() => setView({ kind: 'tab', key: 'settings' })}
+                    canSwitchAdminView={Boolean(activeUser.isAdmin)}
+                    onSwitchAdminView={switchAdminView}
+                    variant={isAdminMode ? 'admin' : 'default'}
+                  />
+                </div>
+                {toast && <div className="wp-toast">{toast}</div>}
+                {content}
               </div>
-              {toast && <div className="wp-toast">{toast}</div>}
-              {content}
-            </div>
-          </main>
-          <ChatDock onOpenThread={openChat} onOpenSupport={openSupport} />
-        </div>
+            </main>
+            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
+          </div>
+        )}
       </SpecV04SourcesProvider>
     </GridDataRefreshProvider>
   )

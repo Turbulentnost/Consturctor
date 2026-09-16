@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { SpecIconCalendar } from '../../workplace/specV04Icons'
 import {
@@ -11,11 +11,10 @@ import {
   type TodayPlanBlock,
   type TodayPlanBlockDetail
 } from './todayDemoData'
-import { openOutlookCalendarView } from '../../workplace/specGridQuickActions'
+import { layoutPlanTrack, planBlockStyle, type PositionedPlanBlock } from './planBlockLayout'
 
 const DAY_START = TODAY_PLAN_DAY_START
 const DAY_END = TODAY_PLAN_DAY_END
-const DAY_SPAN = DAY_END - DAY_START
 
 function startOfToday(): Date {
   const d = new Date()
@@ -157,115 +156,37 @@ function PlanEventDetailDialog({
   )
 }
 
-/** Icon inset from block border — must match todayGrid.css */
-const PLAN_BLOCK_ICON_LEFT_PX = 3
-const PLAN_BLOCK_ICON_WIDTH_PX = 22
-const PLAN_BLOCK_ICON_TEXT_GAP_PX = 4
-
-let planBlockMeasureCanvas: CanvasRenderingContext2D | null | undefined
-
-function planBlockMeasureCtx(): CanvasRenderingContext2D | null {
-  if (planBlockMeasureCanvas !== undefined) return planBlockMeasureCanvas
-  const canvas = document.createElement('canvas')
-  planBlockMeasureCanvas = canvas.getContext('2d')
-  return planBlockMeasureCanvas
-}
-
-function planBlockFirstWord(title: string): string {
-  const trimmed = title.trim()
-  const match = /\S+/.exec(trimmed)
-  return match ? match[0] : trimmed
-}
-
-function planBlockTextWidth(text: string, titleEl: HTMLElement): number {
-  const ctx = planBlockMeasureCtx()
-  if (!ctx || !text) return 0
-  const style = getComputedStyle(titleEl)
-  ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
-  return Math.ceil(ctx.measureText(text).width)
-}
-
-/** Icon-only / hidden title only when even the first word cannot fit (not when full title overflows). */
-function planBlockNeedsCompact(button: HTMLElement, titleEl: HTMLElement, hasIcon: boolean): boolean {
-  const width = button.clientWidth
-  if (width <= 0) return false
-
-  const buttonStyle = getComputedStyle(button)
-  const padX = parseFloat(buttonStyle.paddingLeft) + parseFloat(buttonStyle.paddingRight)
-  const innerWidth = width - padX
-
-  const titleStyle = getComputedStyle(titleEl)
-  const titlePadX = parseFloat(titleStyle.paddingLeft) + parseFloat(titleStyle.paddingRight)
-  const firstWord = planBlockFirstWord(titleEl.textContent ?? '')
-  const minWordWidth = planBlockTextWidth(firstWord, titleEl) || 8
-
-  if (!hasIcon) {
-    const textSpace = innerWidth - titlePadX
-    return textSpace < minWordWidth
-  }
-
-  const iconZone = PLAN_BLOCK_ICON_LEFT_PX + PLAN_BLOCK_ICON_WIDTH_PX + PLAN_BLOCK_ICON_TEXT_GAP_PX
-  const titlePadLeft = parseFloat(titleStyle.paddingLeft)
-  const titlePadRight = parseFloat(titleStyle.paddingRight)
-  const textSpace = innerWidth - Math.max(titlePadLeft, iconZone) - titlePadRight
-
-  const iconOnlyThreshold =
-    padX + PLAN_BLOCK_ICON_LEFT_PX + PLAN_BLOCK_ICON_WIDTH_PX + PLAN_BLOCK_ICON_TEXT_GAP_PX + minWordWidth
-  if (width < iconOnlyThreshold) return true
-
-  return textSpace < minWordWidth
-}
-
 function PlanTimelineBlock({
   block,
   onSelect
 }: {
-  block: TodayPlanBlock
+  block: PositionedPlanBlock
   onSelect: (block: TodayPlanBlock) => void
 }): React.JSX.Element {
   const isLunch = block.lane === 'lunch'
-  const hint = block.subtitle ? `${block.title} — ${block.subtitle}` : block.title
-  const blockRef = useRef<HTMLButtonElement>(null)
-  const titleRef = useRef<HTMLElement>(null)
-  const [compact, setCompact] = useState(false)
-
-  useLayoutEffect(() => {
-    const button = blockRef.current
-    const titleEl = titleRef.current
-    if (!button || !titleEl) return
-
-    const update = (): void => {
-      setCompact(planBlockNeedsCompact(button, titleEl, !isLunch))
-    }
-
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(button)
-    return () => observer.disconnect()
-  }, [block.title, isLunch])
-
+  const timeLabel = `${formatHourLabel(block.startHour)} – ${formatHourLabel(block.endHour)}`
+  const hint = block.subtitle
+    ? `${timeLabel} · ${block.title} — ${block.subtitle}`
+    : `${timeLabel} · ${block.title}`
   const open = (): void => onSelect(block)
 
   return (
     <button
-      ref={blockRef}
       type="button"
       className={`today-plan-block tone-${block.tone}${isLunch ? ' today-plan-block-lunch' : ''}`}
-      style={blockStyle(block)}
-      data-compact={compact ? 'true' : 'false'}
+      style={planBlockStyle(block, DAY_START, DAY_END)}
       title={hint}
       aria-label={`Подробнее: ${hint}`}
       onClick={open}
     >
-      <div className="today-plan-block-inner">
-        {!isLunch ? (
-          <span className="today-plan-block-ico" aria-hidden>
-            <PlanBlockIcon kind={block.kind} />
-          </span>
-        ) : null}
-        <strong ref={titleRef} className="today-plan-block-title">
-          {block.title}
-        </strong>
+      {!isLunch ? (
+        <span className="today-plan-block-ico" aria-hidden>
+          <PlanBlockIcon kind={block.kind} />
+        </span>
+      ) : null}
+      <div className="today-plan-block-body">
+        <span className="today-plan-block-time">{timeLabel}</span>
+        <strong className="today-plan-block-title">{block.title}</strong>
       </div>
     </button>
   )
@@ -282,10 +203,17 @@ function PlanTrack({
   laneClass: string
   onSelectBlock: (block: TodayPlanBlock) => void
 }): React.JSX.Element {
+  const layout = useMemo(() => {
+    const merged = lunchBlock ? [...blocks, lunchBlock] : blocks
+    return layoutPlanTrack(merged)
+  }, [blocks, lunchBlock])
+
   return (
-    <div className={`today-plan-track ${laneClass}`}>
-      {lunchBlock ? <PlanTimelineBlock block={lunchBlock} onSelect={onSelectBlock} /> : null}
-      {blocks.map((block) => (
+    <div
+      className={`today-plan-track ${laneClass}`}
+      style={{ height: layout.heightPx, minHeight: layout.heightPx }}
+    >
+      {layout.blocks.map((block) => (
         <PlanTimelineBlock key={block.id} block={block} onSelect={onSelectBlock} />
       ))}
     </div>
@@ -313,12 +241,6 @@ function IconClock(): React.JSX.Element {
       <path d="M12 8v4l2.5 2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   )
-}
-
-function blockStyle(block: TodayPlanBlock): React.CSSProperties {
-  const left = ((block.startHour - DAY_START) / DAY_SPAN) * 100
-  const width = ((block.endHour - block.startHour) / DAY_SPAN) * 100
-  return { left: `${left}%`, width: `${Math.max(width, 3.5)}%` }
 }
 
 function whoTag(block: TodayPlanBlock): string {
@@ -500,11 +422,7 @@ export function TodayPlanPanel({
             {plan.loading ? <p className="today-plan-head-note">Загружаем календарь…</p> : null}
           </div>
         </div>
-        <button
-          type="button"
-          className="today-plan-open"
-          onClick={() => void openOutlookCalendarView()}
-        >
+        <button type="button" className="today-plan-open">
           Открыть полный план →
         </button>
       </header>

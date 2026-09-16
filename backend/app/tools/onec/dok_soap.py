@@ -1,7 +1,11 @@
 """Открытые задачи пользователя из 1С:Документооборота (HTTP SOAP dm.1cws).
 
 Автономный клиент: стандартная библиотека Python.
-Учётные данные — DOK_HTTP_* из окружения, .env или backend settings.
+Хост — DOK_HTTP_SERVER/PORT (есть значения по умолчанию).
+SOAP Basic: если desktop передал логин и пароль сеанса — только они
+(без ODATA_* / DOK_HTTP_*). Для CLI-дампа без сеанса — сервисные пары
+DOK_HTTP_* → DOCFLOW_ODATA_* → ODATA_* → ERP_*.
+ФИО сеанса режет дамп (исполнитель/автор).
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -46,12 +51,26 @@ class DokConfig:
     password: str
     timeout: float
     base_path: str
+    encoding: str = "utf-8"
 
     def soap_url(self) -> str:
         return f"http://{self.server}:{self.port}{self.base_path}/ws/dm.1cws"
 
+    def with_encoding(self, encoding: str) -> "DokConfig":
+        if encoding == self.encoding:
+            return self
+        return DokConfig(
+            server=self.server,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            timeout=self.timeout,
+            base_path=self.base_path,
+            encoding=encoding,
+        )
+
     def auth_header(self) -> str:
-        token = base64.b64encode(f"{self.user}:{self.password}".encode("utf-8")).decode("ascii")
+        token = base64.b64encode(f"{self.user}:{self.password}".encode(self.encoding)).decode("ascii")
         return f"Basic {token}"
 
 
@@ -122,7 +141,31 @@ def _settings_mapping() -> dict[str, str]:
         "DOK_HTTP_PASSWORD": str(getattr(settings, "dok_http_password", "") or "").strip(),
         "DOK_HTTP_TIMEOUT": str(getattr(settings, "dok_http_timeout", "") or "").strip(),
         "DOK_HTTP_BASE_PATH": str(getattr(settings, "dok_http_base_path", "") or "").strip(),
+        "DOCFLOW_ODATA_USERNAME": str(getattr(settings, "docflow_odata_username", "") or "").strip(),
+        "DOCFLOW_ODATA_PASSWORD": str(getattr(settings, "docflow_odata_password", "") or "").strip(),
+        "ODATA_USERNAME": str(getattr(settings, "odata_username", "") or "").strip(),
+        "ODATA_PASSWORD": str(getattr(settings, "odata_password", "") or "").strip(),
+        "ERP_LOGIN": str(getattr(settings, "erp_login", "") or "").strip(),
+        "ERP_PASSWORD": str(getattr(settings, "erp_password", "") or "").strip(),
     }
+
+
+_SOAP_CREDENTIAL_PAIRS = (
+    ("DOK_HTTP_USER", "DOK_HTTP_PASSWORD"),
+    ("DOCFLOW_ODATA_USERNAME", "DOCFLOW_ODATA_PASSWORD"),
+    ("ODATA_USERNAME", "ODATA_PASSWORD"),
+    ("ERP_LOGIN", "ERP_PASSWORD"),
+)
+
+
+def _pick_soap_credentials(loaded: list[dict[str, str]]) -> tuple[str, str]:
+    """Service account for SOAP Basic when the session did not send a password."""
+    for user_key, pass_key in _SOAP_CREDENTIAL_PAIRS:
+        user = env_get(loaded, user_key)
+        secret = env_get(loaded, pass_key)
+        if user and secret:
+            return user, secret
+    return "", ""
 
 
 def load_config(
@@ -130,18 +173,32 @@ def load_config(
     env_file: str | None = None,
     username: str | None = None,
     password: str | None = None,
+    require_user: bool = True,
 ) -> DokConfig:
+    # Документооборот /doc принимает учётку 1С (обычно ФИО + пароль сеанса).
+    # ODATA_* — erp_pm, на dm.1cws часто даёт HTTP 401.
+    session_user = (username or "").strip()
+    session_secret = (password or "").strip()
     loaded = [load_env_file(path) for path in discover_env_files(env_file)]
     settings_map = _settings_mapping()
     if any(settings_map.values()):
         loaded.append(settings_map)
     server = env_get(loaded, "DOK_HTTP_SERVER", "192.168.2.229")
-    user = (username or "").strip() or env_get(loaded, "DOK_HTTP_USER")
-    secret = env_get(loaded, "DOK_HTTP_PASSWORD")
-    if password is not None and ((username or "").strip() or not secret):
-        secret = password
-    if not server or not user:
-        raise RuntimeError("Задайте DOK_HTTP_SERVER и DOK_HTTP_USER в окружении или .env")
+    # Desktop session: never substitute OData / .env service account.
+    if session_user or session_secret:
+        user, secret = session_user, session_secret
+    else:
+        user, secret = _pick_soap_credentials(loaded)
+    if not server:
+        raise RuntimeError("Задайте DOK_HTTP_SERVER в окружении или .env")
+    if require_user and not user:
+        raise RuntimeError(
+            "Документооборот SOAP: нет пользователя. Войдите с паролем 1С."
+        )
+    if require_user and not secret:
+        raise RuntimeError(
+            "Документооборот SOAP: нет пароля. Войдите с паролем 1С."
+        )
     return DokConfig(
         server=server,
         port=int(env_get(loaded, "DOK_HTTP_PORT", "81") or "81"),
@@ -153,11 +210,12 @@ def load_config(
 
 
 def soap_configured(*, env_file: str | None = None) -> bool:
+    """Host plus a service credential pair (DOK_HTTP_*, DOCFLOW_ODATA_*, ODATA_*, ERP_*)."""
     try:
-        config = load_config(env_file=env_file)
+        config = load_config(env_file=env_file, require_user=False)
     except (RuntimeError, ValueError, OSError):
         return False
-    return bool(config.server and config.user)
+    return bool(config.server and config.user and config.password)
 
 
 def decode_body(raw: bytes) -> str:
@@ -239,8 +297,14 @@ def performer_value(user: dict[str, str]) -> str:
     )
 
 
-def _dump_cache_key(endpoint: str, only_open: bool) -> str:
-    return f"dump|{endpoint}|{int(only_open)}"
+def _dump_cache_key(
+    endpoint: str,
+    only_open: bool,
+    soap_user: str = "",
+    soap_secret: str = "",
+) -> str:
+    secret_fp = hashlib.sha256(soap_secret.encode("utf-8")).hexdigest()[:16] if soap_secret else ""
+    return f"dump|{endpoint}|{int(only_open)}|{soap_user}|{secret_fp}"
 
 
 def _lock_for(key: str) -> threading.Lock:
@@ -371,7 +435,18 @@ def _is_timeout_reason(reason: object) -> bool:
     return "timed out" in text or "timeout" in text
 
 
-def execute_dm(config: DokConfig, request_xml: str, *, timeout: float) -> ET.Element:
+def _auth_encodings(config: DokConfig) -> list[str]:
+    blob = f"{config.user}{config.password}"
+    if not any(ord(ch) > 127 for ch in blob):
+        return [config.encoding]
+    seen: list[str] = []
+    for encoding in (config.encoding, "utf-8", "cp1251"):
+        if encoding not in seen:
+            seen.append(encoding)
+    return seen
+
+
+def _execute_dm_once(config: DokConfig, request_xml: str, *, timeout: float) -> ET.Element:
     body = envelope(request_xml).encode("utf-8")
     request = Request(
         config.soap_url(),
@@ -389,6 +464,10 @@ def execute_dm(config: DokConfig, request_xml: str, *, timeout: float) -> ET.Ele
             status = getattr(response, "status", 200)
     except HTTPError as error:
         text = decode_body(error.read() or b"")
+        if error.code in {401, 402, 403}:
+            raise RuntimeError(
+                f"HTTP {error.code}: Документооборот отклонил Basic-учётку"
+            ) from error
         raise RuntimeError(f"HTTP {error.code}: {text[:800]}") from error
     except TimeoutError as error:
         raise RuntimeError(soap_timeout_message(timeout)) from error
@@ -410,6 +489,27 @@ def execute_dm(config: DokConfig, request_xml: str, *, timeout: float) -> ET.Ele
     if fault is not None:
         raise RuntimeError(fault.findtext("faultstring") or text[:800])
     return root
+
+
+def execute_dm(config: DokConfig, request_xml: str, *, timeout: float) -> ET.Element:
+    last_error: RuntimeError | None = None
+    for encoding in _auth_encodings(config):
+        try:
+            return _execute_dm_once(config.with_encoding(encoding), request_xml, timeout=timeout)
+        except RuntimeError as error:
+            last_error = error
+            if _is_soap_http_auth_error(str(error)):
+                continue
+            raise
+        except (LookupError, UnicodeEncodeError):
+            continue
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Документооборот отклонил Basic-учётку")
+
+
+def _is_soap_http_auth_error(text: str) -> bool:
+    return bool(re.search(r"\bHTTP\s*40[123]\b", text or "", flags=re.I))
 
 
 def xml_text(node: ET.Element | None, path: str) -> str:
@@ -581,8 +681,39 @@ def retrieve_tasks(config: DokConfig, task_ids: list[str], *, timeout: float) ->
     return parse_tasks(root)
 
 
+ROLE_EXECUTOR = "executor"
+ROLE_AUTHOR = "author"
+ROLE_BOTH = "both"
+
+SOURCE_INBOX = "документооборот"
+SOURCE_FROM_ME = "документооборот (от меня)"
+CHANNEL_SOAP = "soap"
+
+
 def normalize_person(value: str) -> str:
     return " ".join(value.lower().replace("ё", "е").split())
+
+
+def task_role_for_user(row: dict[str, Any], user_fio: str) -> str | None:
+    """executor / author / both when the dump row belongs to the session FIO."""
+    mine = normalize_person(user_fio)
+    if not mine:
+        return None
+    is_performer = normalize_person(str(row.get("performer") or "")) == mine
+    is_author = normalize_person(str(row.get("author") or "")) == mine
+    if is_performer and is_author:
+        return ROLE_BOTH
+    if is_performer:
+        return ROLE_EXECUTOR
+    if is_author:
+        return ROLE_AUTHOR
+    return None
+
+
+def source_for_role(role: str) -> str:
+    if role in {ROLE_AUTHOR, ROLE_BOTH}:
+        return SOURCE_FROM_ME
+    return SOURCE_INBOX
 
 
 def _filter_ignored(rows: list[dict[str, Any]], user_name: str) -> bool:
@@ -626,6 +757,21 @@ def _dump_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in raw if isinstance(row, dict)]
 
 
+def task_dedup_key(row: dict[str, Any]) -> str:
+    """Stable identity for SOAP dump rows (1C may repeat the same task)."""
+    for field in ("id", "number"):
+        value = str(row.get(field) or "").strip()
+        if value:
+            return f"id:{value.casefold()}"
+    desc = " ".join(str(row.get("description") or row.get("target") or row.get("name") or "").split())
+    due = str(row.get("due") or "").strip()[:10]
+    author = normalize_person(str(row.get("author") or ""))
+    performer = normalize_person(str(row.get("performer") or ""))
+    if desc or due:
+        return f"sig:{author}|{performer}|{desc.casefold()}|{due}"
+    return ""
+
+
 def slice_dump_for_user(
     dump: dict[str, Any],
     user_fio: str,
@@ -633,12 +779,20 @@ def slice_dump_for_user(
     today_and_overdue: bool = False,
 ) -> dict[str, Any]:
     today = date.today()
-    mine = normalize_person(user_fio)
-    rows = [
-        row
-        for row in _dump_rows(dump)
-        if normalize_person(str(row.get("performer") or "")) == mine
-    ]
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for row in _dump_rows(dump):
+        role = task_role_for_user(row, user_fio)
+        if role is None:
+            continue
+        key = task_dedup_key(row)
+        if key:
+            if key in seen:
+                continue
+            seen.add(key)
+        tagged = dict(row)
+        tagged["role"] = role
+        rows.append(tagged)
     if today_and_overdue:
         rows = [row for row in rows if is_today_or_overdue(row, today=today)]
     return {
@@ -724,12 +878,7 @@ def fetch_inbox(
             raise last_error
         raise RuntimeError("Документооборот SOAP: не удалось отобрать задачи исполнителя")
     listed_at = time.perf_counter()
-    rows = [
-        row
-        for row in raw
-        if normalize_person(str(row.get("performer") or ""))
-        == normalize_person(user["name"])
-    ]
+    rows = [row for row in raw if task_role_for_user(row, user["name"])]
     if today_and_overdue:
         rows = [row for row in rows if is_today_or_overdue(row, today=today)]
     if rows and retrieve:
@@ -779,7 +928,12 @@ def fetch_user_inbox_tasks(
         endpoint = load_config(env_file=env_file, username=username, password=password).soap_url()
     except (RuntimeError, ValueError, OSError):
         endpoint = "http://192.168.2.229:81/doc/ws/dm.1cws"
-    key = _dump_cache_key(endpoint, only_open)
+    key = _dump_cache_key(
+        endpoint,
+        only_open,
+        soap_user=(username or "").strip(),
+        soap_secret=(password or "").strip(),
+    )
     lock = _lock_for(key)
 
     def _serve(dump: dict[str, Any], *, cached: bool, fetched_at: float) -> dict[str, Any]:

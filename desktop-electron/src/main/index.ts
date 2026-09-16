@@ -524,7 +524,7 @@ async function handleUpload(_evt: unknown, opts: UploadOptions) {
   }
 }
 
-function resolveBackendUrl(pathOrUrl: string): string {
+function toAbsoluteBackendUrl(pathOrUrl: string): string {
   if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
     return pathOrUrl
   }
@@ -564,7 +564,7 @@ async function handleFetchDataUrl(
   _evt: unknown,
   opts: { url: string; token?: string | null }
 ) {
-  const url = resolveBackendUrl(opts.url)
+  const url = toAbsoluteBackendUrl(opts.url)
   const headers: Record<string, string> = {}
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
   try {
@@ -606,7 +606,7 @@ async function handleDownload(
     : await dialog.showSaveDialog(saveOptions)
   if (result.canceled || !result.filePath) return { ok: false, canceled: true }
   const target = ensureDocxPath(result.filePath)
-  const url = resolveBackendUrl(opts.url)
+  const url = toAbsoluteBackendUrl(opts.url)
   const headers: Record<string, string> = {}
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
   try {

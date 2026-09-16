@@ -37,8 +37,9 @@ export function setRememberPreference(value: boolean): void {
 
 /**
  * In-memory 1C password from Orchestrator login (FIO in localStorage token session only).
- * Used for gateway OData and COM; not written to disk. After token restore without re-login
- * password is empty — gateway/COM fall back to server env (DOCFLOW_ODATA_*, ERP_*).
+ * Used for SOAP документооборот (FIO+password), gateway OData and COM; not written to disk.
+ * After JWT restore without re-login the password is empty — UI shows the 1C reconnect dialog
+ * instead of requiring DOK_HTTP_USER/PASSWORD in backend/.env.
  */
 let comLogin = ''
 let comPassword = ''
@@ -87,7 +88,7 @@ export function comCredentials(): { login: string; password: string; nameMail: s
 }
 
 export function hasComPassword(): boolean {
-  return Boolean(comPassword || devGatewayPassword)
+  return Boolean(comPassword)
 }
 
 export function setDevGatewayCredentials(opts: {
@@ -115,8 +116,9 @@ export function devGatewayCredentials(): {
   }
 }
 
+/** Пароль, введённый на экране входа / в диалоге 1С. Не пароль из .env. */
 export function gatewaySessionPassword(): string {
-  return comPassword || devGatewayPassword
+  return comPassword
 }
 
 /** Bumps on set/clear — use in React deps to refetch 1C after re-login. */

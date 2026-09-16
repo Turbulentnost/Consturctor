@@ -5,6 +5,7 @@ from app.models.notification import Notification
 from app.models.orchestrator import UserOrchestrator
 from app.models.regulation import RegulationDocument, RoleMatchRun
 from app.models.trigger import AgentTrigger
+from app.models.kpi_daily_metric import WorkplaceKpiDailyMetric
 from app.models.workflow import Workflow, WorkflowFile
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "AgentTrigger",
     "Workflow",
     "WorkflowFile",
+    "WorkplaceKpiDailyMetric",
 ]

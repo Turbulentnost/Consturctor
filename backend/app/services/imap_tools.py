@@ -9,10 +9,26 @@ from __future__ import annotations
 import email
 import os
 import ssl
+from datetime import datetime, timedelta
 from email import policy
 from typing import Any
 
 from app.config import settings
+
+_IMAP_MONTHS = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
 
 IMAP_NOT_CONFIGURED = (
     "IMAP not configured: set IMAP_HOST, IMAP_USERNAME, and IMAP_PASSWORD in backend/.env"
@@ -132,16 +148,82 @@ def _stub_list_unread(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _parse_ymd(raw: str) -> datetime | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    for fmt, size in (("%Y-%m-%d", 10), ("%d.%m.%Y", 10)):
+        chunk = text[:size]
+        try:
+            return datetime.strptime(chunk, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def imap_date_token(raw: str) -> str | None:
+    """IMAP date atom (English month). Do not use locale-dependent %b."""
+    dt = _parse_ymd(raw)
+    if dt is None:
+        return None
+    return f"{dt.day}-{_IMAP_MONTHS[dt.month - 1]}-{dt.year}"
+
+
+def _date_window(args: dict[str, Any]) -> tuple[datetime | None, datetime | None]:
+    date_only = str(args.get("date") or "").strip()
+    since_raw = str(args.get("since") or args.get("date_from") or "").strip()
+    before_raw = str(args.get("before") or args.get("date_to") or "").strip()
+    if date_only and not since_raw and not before_raw:
+        since = _parse_ymd(date_only)
+        if since is None:
+            return None, None
+        return since, since + timedelta(days=1)
+    since = _parse_ymd(since_raw or date_only)
+    before = _parse_ymd(before_raw)
+    if before is not None:
+        before = before + timedelta(days=1)
+    return since, before
+
+
+def _stub_in_window(since: datetime | None, before: datetime | None) -> bool:
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if since is not None and today < since.replace(hour=0, minute=0, second=0, microsecond=0):
+        return False
+    if before is not None and today >= before.replace(hour=0, minute=0, second=0, microsecond=0):
+        return False
+    return True
+
+
+def _stub_message_row(user_key: str, uid: int) -> dict[str, Any]:
+    msg = _message_for_user(user_key, uid)
+    stamp = datetime.now().astimezone().replace(microsecond=0).isoformat()
+    return {
+        "uid": uid,
+        "subject": msg["subject"],
+        "from": msg["from"],
+        "date": stamp,
+        "message_id": f"<stub-{uid}@constructor.local>",
+        "unread": True,
+    }
+
+
 def _stub_search(args: dict[str, Any]) -> dict[str, Any]:
     query = str(args.get("query", "")).strip()
     user = str(args.get("user", "")).strip()
     limit = max(1, min(50, int(args.get("limit", 3))))
     user_key = _user_key(user, query)
+    since, before = _date_window(args)
+    if not _stub_in_window(since, before):
+        return {
+            "summary": f"found=0 for user {user_key}",
+            "query": query or user_key,
+            "user": user_key,
+            "uids": [],
+            "messages": [],
+            **_stub_meta(),
+        }
     uids = _stub_uids_for_user(user_key, limit)
-    messages = []
-    for uid in uids:
-        msg = _message_for_user(user_key, uid)
-        messages.append({"uid": uid, "subject": msg["subject"], "from": msg["from"]})
+    messages = [_stub_message_row(user_key, uid) for uid in uids]
     return {
         "summary": f"found={len(uids)} for user {user_key}",
         "query": query or user_key,
@@ -211,15 +293,18 @@ def _connect():
     return client
 
 
-def _list_unread(_: dict[str, Any]) -> dict[str, Any]:
+def _list_unread(args: dict[str, Any]) -> dict[str, Any]:
+    limit = max(1, min(80, int(args.get("limit", 50))))
     client = _connect()
     try:
         client.select_folder(settings.imap_mailbox)
-        uids = client.search(["UNSEEN"])
+        uids = list(client.search(["UNSEEN"]))[-limit:]
+        messages = _messages_for_uids(client, uids)
         return {
             "summary": f"unread={len(uids)}",
-            "uids": list(uids),
+            "uids": uids,
             "count": len(uids),
+            "messages": messages,
             **_imap_meta(),
         }
     finally:
@@ -289,29 +374,116 @@ def _fetch_attachments(args: dict[str, Any]) -> dict[str, Any]:
         client.logout()
 
 
-def _search_criteria(user: str, query: str) -> list[Any]:
+def _imap_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace").strip()
+    return str(value).strip()
+
+
+def _fetch_field(data: dict[Any, Any], name: str) -> Any:
+    key_b = name.encode("ascii")
+    if key_b in data:
+        return data[key_b]
+    return data.get(name)
+
+
+def _addr_list_to_str(addrs: Any) -> str:
+    if not addrs:
+        return ""
+    first = addrs[0]
+    name = _imap_text(getattr(first, "name", None))
+    mailbox = _imap_text(getattr(first, "mailbox", None))
+    host = _imap_text(getattr(first, "host", None))
+    email_addr = f"{mailbox}@{host}" if mailbox and host else mailbox
+    if name and email_addr:
+        return f"{name} <{email_addr}>"
+    return email_addr or name
+
+
+def _flags_unseen(flags: Any) -> bool:
+    if not flags:
+        return True
+    for flag in flags:
+        token = _imap_text(flag).upper().lstrip("\\")
+        if token == "SEEN":
+            return False
+    return True
+
+
+def envelope_to_message(uid: int, env: Any, flags: Any = None) -> dict[str, Any]:
+    date_val = getattr(env, "date", None) if env is not None else None
+    if hasattr(date_val, "isoformat"):
+        date_iso = date_val.isoformat()
+    else:
+        date_iso = _imap_text(date_val)
+    return {
+        "uid": int(uid),
+        "message_id": _imap_text(getattr(env, "message_id", "") if env is not None else ""),
+        "subject": _imap_text(getattr(env, "subject", "") if env is not None else ""),
+        "from": _addr_list_to_str(getattr(env, "from_", None) if env is not None else None),
+        "date": date_iso,
+        "unread": _flags_unseen(flags),
+    }
+
+
+def _messages_for_uids(client: Any, uids: list[Any]) -> list[dict[str, Any]]:
+    if not uids:
+        return []
+    fetched = client.fetch(uids, ["ENVELOPE", "FLAGS"])
+    out: list[dict[str, Any]] = []
+    for uid in uids:
+        data = fetched.get(uid) or {}
+        if not isinstance(data, dict):
+            continue
+        env = _fetch_field(data, "ENVELOPE")
+        flags = _fetch_field(data, "FLAGS")
+        row = envelope_to_message(int(uid), env, flags)
+        if row["subject"] or row["from"] or row["message_id"]:
+            out.append(row)
+    return out
+
+
+def _search_criteria(
+    user: str,
+    query: str,
+    since_token: str | None = None,
+    before_token: str | None = None,
+) -> list[Any]:
     # Avoid TEXT (full-body) — times out on large mailboxes.
+    parts: list[Any] = []
+    if since_token:
+        parts.extend(["SINCE", since_token])
+    if before_token:
+        parts.extend(["BEFORE", before_token])
     needle = (user or query).strip()
-    if not needle:
-        return ["ALL"]
-    if "@" in needle:
-        return ["FROM", needle]
-    return ["OR", "FROM", needle, "SUBJECT", needle]
+    if needle:
+        if "@" in needle:
+            parts.extend(["FROM", needle])
+        else:
+            parts.extend(["OR", "FROM", needle, "SUBJECT", needle])
+    return parts or ["ALL"]
 
 
 def _search(args: dict[str, Any]) -> dict[str, Any]:
     query = str(args.get("query", "")).strip()
     user = str(args.get("user", "")).strip()
-    limit = max(1, int(args.get("limit", 50)))
+    limit = max(1, min(80, int(args.get("limit", 50))))
+    since, before = _date_window(args)
+    since_token = imap_date_token(since.strftime("%Y-%m-%d")) if since else None
+    before_token = imap_date_token(before.strftime("%Y-%m-%d")) if before else None
     client = _connect()
     try:
         client.select_folder(settings.imap_mailbox)
-        uids = list(client.search(_search_criteria(user, query)))[-limit:]
+        uids = list(client.search(_search_criteria(user, query, since_token, before_token)))[-limit:]
+        messages = _messages_for_uids(client, uids)
         return {
             "summary": f"found={len(uids)}",
             "query": query,
             "user": user,
             "uids": uids,
+            "messages": messages,
             **_imap_meta(),
         }
     finally:

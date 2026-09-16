@@ -20,8 +20,19 @@ export interface OutlookMailDetail {
   attachments: OutlookMailAttachment[]
 }
 
-function entryIdOf(row: { entryId?: string; id: string }): string {
-  return String(row.entryId || row.id || '').trim()
+export function hasOutlookEntryId(row: { entryId?: string; id: string; channel?: string }): boolean {
+  const explicit = String(row.entryId || '').trim()
+  if (explicit && !explicit.toLowerCase().startsWith('imap:')) return true
+  if (row.channel === 'imap') return false
+  const id = String(row.id || '').trim()
+  return Boolean(id) && !id.toLowerCase().startsWith('imap:')
+}
+
+function entryIdOf(row: { entryId?: string; id: string; channel?: string }): string {
+  if (!hasOutlookEntryId(row)) return ''
+  const explicit = String(row.entryId || '').trim()
+  if (explicit && !explicit.toLowerCase().startsWith('imap:')) return explicit
+  return String(row.id || '').trim()
 }
 
 export async function fetchOutlookMailDetail(

@@ -27,7 +27,7 @@ function testLoginResult(): LoginResult {
 }
 
 interface LoginPageProps {
-  onLoggedIn: (result: LoginResult, remember: boolean, password: string) => void
+  onLoggedIn: (result: LoginResult, remember: boolean, password: string, typedLogin: string) => void
   banner?: string
 }
 
@@ -64,7 +64,7 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
         result = await api.login(fio.trim(), password)
       }
       setRememberPreference(remember)
-      onLoggedIn(result, remember, password)
+      onLoggedIn(result, remember, password, fio.trim())
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Ошибка входа')
     } finally {

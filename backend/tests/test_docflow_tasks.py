@@ -17,8 +17,157 @@ from app.services.docflow_tasks import (
     docflow_auth,
     docflow_base_url,
     docflow_env_auth,
+    docflow_soap_ready,
+    docflow_url_ready,
+    handle_docflow_tasks,
     odata_entity,
 )
+
+
+def test_docflow_url_ready_without_env_user(monkeypatch) -> None:
+    monkeypatch.setattr("app.tools.onec.dok_soap.soap_configured", lambda **_kwargs: True)
+    monkeypatch.setattr("app.services.docflow_tasks.docflow_base_url", lambda: "")
+    assert docflow_soap_ready() is True
+    assert docflow_url_ready() is True
+
+
+def test_fetch_inbox_tasks_soap_keeps_session_fio_not_soap_user(monkeypatch) -> None:
+    from app.tools.onec import docflow_inbox_fetch
+
+    captured: dict[str, object] = {}
+
+    def fake_fetch(fio: str, **kwargs):
+        captured["fio"] = fio
+        captured.update(kwargs)
+        return {"user_fio": fio, "rows": []}
+
+    monkeypatch.setattr(docflow_inbox_fetch, "fetch_user_inbox_tasks", fake_fetch)
+    monkeypatch.setattr(docflow_inbox_fetch, "map_inbox_payload", lambda _payload, *, fio: [])
+    tasks, warning = docflow_inbox_fetch.fetch_inbox_tasks_soap(
+        "Иванов И.И.",
+        auth_args={"fio": "Иванов И.И.", "erp_login": "Иванов И.И.", "password": "secret", "erp_password": "secret"},
+    )
+    assert tasks == []
+    assert warning == ""
+    assert captured["fio"] == "Иванов И.И."
+    assert captured.get("username") == "Иванов И.И."
+    assert captured.get("password") == "secret"
+
+
+def test_fetch_inbox_tasks_soap_session_alias_is_soap_user(monkeypatch) -> None:
+    from app.tools.onec import docflow_inbox_fetch
+
+    captured: dict[str, object] = {}
+
+    def fake_fetch(fio: str, **kwargs):
+        captured["fio"] = fio
+        captured.update(kwargs)
+        return {"user_fio": fio, "rows": []}
+
+    monkeypatch.setattr(docflow_inbox_fetch, "fetch_user_inbox_tasks", fake_fetch)
+    monkeypatch.setattr(docflow_inbox_fetch, "map_inbox_payload", lambda _payload, *, fio: [])
+    docflow_inbox_fetch.fetch_inbox_tasks_soap(
+        "Петров П.П.",
+        auth_args={"erp_login": "Петров П.П.", "erp_password": "pw"},
+    )
+    assert captured["fio"] == "Петров П.П."
+    assert captured.get("username") == "Петров П.П."
+    assert captured.get("password") == "pw"
+
+
+def test_fetch_inbox_tasks_soap_uses_session_login_first(monkeypatch) -> None:
+    from app.tools.onec import docflow_inbox_fetch
+
+    captured: dict[str, object] = {}
+
+    def fake_fetch(fio: str, **kwargs):
+        captured["fio"] = fio
+        captured.update(kwargs)
+        return {"user_fio": fio, "rows": []}
+
+    monkeypatch.setattr(docflow_inbox_fetch, "fetch_user_inbox_tasks", fake_fetch)
+    monkeypatch.setattr(docflow_inbox_fetch, "map_inbox_payload", lambda _payload, *, fio: [])
+    docflow_inbox_fetch.fetch_inbox_tasks_soap(
+        "Иванов Иван Иванович",
+        auth_args={
+            "fio": "Иванов Иван Иванович",
+            "session_login": "Иванов И.И.",
+            "username": "i.ivanov",
+            "password": "typed-secret",
+        },
+    )
+    assert captured.get("username") == "Иванов И.И."
+    assert captured.get("password") == "typed-secret"
+
+
+def test_fetch_inbox_tasks_soap_does_not_fallback_to_service_account(monkeypatch) -> None:
+    from app.tools.onec import docflow_inbox_fetch
+
+    calls: list[tuple[str | None, str | None]] = []
+
+    def fake_fetch(fio: str, **kwargs):
+        user = kwargs.get("username")
+        secret = kwargs.get("password")
+        calls.append((user if isinstance(user, str) or user is None else str(user), secret if isinstance(secret, str) or secret is None else str(secret)))
+        raise RuntimeError("HTTP 401: Документооборот отклонил Basic-учётку")
+
+    monkeypatch.setattr(docflow_inbox_fetch, "fetch_user_inbox_tasks", fake_fetch)
+    tasks, warning = docflow_inbox_fetch.fetch_inbox_tasks_soap(
+        "Иванов И.И.",
+        auth_args={
+            "fio": "Иванов И.И.",
+            "username": "i.ivanov",
+            "password": "typed-secret",
+        },
+    )
+    assert tasks == []
+    assert "экрана входа" in warning
+    assert "Иванов И.И." in warning
+    assert "i.ivanov" in warning
+    assert all(secret == "typed-secret" for _user, secret in calls)
+    assert (None, None) not in calls
+
+
+def test_fetch_inbox_tasks_soap_retries_latin_after_401(monkeypatch) -> None:
+    from app.tools.onec import docflow_inbox_fetch
+
+    calls: list[tuple[str | None, str | None]] = []
+
+    def fake_fetch(fio: str, **kwargs):
+        user = kwargs.get("username")
+        secret = kwargs.get("password")
+        calls.append((user if isinstance(user, str) or user is None else str(user), secret if isinstance(secret, str) or secret is None else str(secret)))
+        if user == "Иванов И.И.":
+            raise RuntimeError("HTTP 401: Документооборот отклонил Basic-учётку")
+        return {"user_fio": fio, "rows": []}
+
+    monkeypatch.setattr(docflow_inbox_fetch, "fetch_user_inbox_tasks", fake_fetch)
+    monkeypatch.setattr(docflow_inbox_fetch, "map_inbox_payload", lambda _payload, *, fio: [{"title": "ok"}])
+    tasks, warning = docflow_inbox_fetch.fetch_inbox_tasks_soap(
+        "Иванов И.И.",
+        auth_args={
+            "fio": "Иванов И.И.",
+            "username": "i.ivanov",
+            "password": "secret",
+        },
+    )
+    assert warning == ""
+    assert tasks == [{"title": "ok"}]
+    assert calls[0] == ("Иванов И.И.", "secret")
+    assert calls[1] == ("i.ivanov", "secret")
+
+
+def test_fetch_inbox_tasks_soap_missing_creds_asks_reconnect(monkeypatch) -> None:
+    from app.tools.onec import docflow_inbox_fetch
+
+    tasks, warning = docflow_inbox_fetch.fetch_inbox_tasks_soap(
+        "Иванов И.И.",
+        auth_args={"fio": "Иванов И.И."},
+    )
+    assert tasks == []
+    assert "Войдите с паролем 1С" in warning
+    assert "DOK_HTTP_USER" not in warning
+    assert "DOK_HTTP_PASSWORD" not in warning
 
 
 def test_docflow_auth_prefers_session_fio_password(monkeypatch) -> None:
@@ -88,8 +237,8 @@ def test_parse_odata_dt_skips_empty() -> None:
 def test_odata_entity_and_executor_filters() -> None:
     assert odata_entity() == "Task_ЗадачаИсполнителя"
     clauses = odata_executor_filter_clauses("41290a43-1111-2222-3333-444455556666")
-    assert len(clauses) == 2
-    assert "Исполнитель_Key eq guid'" in clauses[0][0]
+    assert len(clauses) == 1
+    assert "Исполнитель eq cast(guid'" in clauses[0][0]
 
 
 def test_fio_matches_executor_column() -> None:
@@ -149,6 +298,94 @@ def test_list_docflow_tasks_uses_soap_not_odata(monkeypatch) -> None:
     assert called["odata"] == 0
     assert len(rows) == 1
     assert rows[0]["title"] == "Согласовать"
+
+
+def test_handle_docflow_tasks_forwards_session_password(monkeypatch) -> None:
+    from app.services import docflow_tasks
+
+    captured: dict[str, object] = {}
+
+    def fake_soap(fio, **kwargs):
+        captured["fio"] = fio
+        captured.update(kwargs)
+        return [], ""
+
+    monkeypatch.setattr(docflow_tasks, "_get", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("app.tools.onec.docflow_inbox_fetch.fetch_inbox_tasks_soap", fake_soap)
+    handle_docflow_tasks(
+        {
+            "fio": "Иванов И.И.",
+            "erp_login": "Иванов И.И.",
+            "password": "secret",
+            "erp_password": "secret",
+            "today_and_overdue": True,
+            "only_open": True,
+        },
+        actor_fio="Иванов И.И.",
+    )
+    auth = captured.get("auth_args")
+    assert isinstance(auth, dict)
+    assert auth["fio"] == "Иванов И.И."
+    assert auth["password"] == "secret"
+    assert auth["erp_password"] == "secret"
+
+
+def test_handle_docflow_tasks_keeps_both_roles_and_warning(monkeypatch) -> None:
+    from app.services import docflow_tasks
+
+    monkeypatch.setattr(docflow_tasks, "_get", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "app.tools.onec.docflow_inbox_fetch.fetch_inbox_tasks_soap",
+        lambda fio, **_kwargs: (
+            [
+                {
+                    "number": "to-me",
+                    "title": "Мне",
+                    "source": "документооборот",
+                    "role": "executor",
+                    "channel": "soap",
+                    "author": "Петров П.П.",
+                    "performer": fio,
+                    "done": False,
+                    "due_at": "2026-09-10 18:00:00",
+                    "created_at": "2026-09-01 10:00:00",
+                },
+                {
+                    "number": "from-me",
+                    "title": "От меня",
+                    "source": "документооборот (от меня)",
+                    "role": "author",
+                    "channel": "soap",
+                    "author": fio,
+                    "performer": "Петров П.П.",
+                    "done": False,
+                    "due_at": "2026-09-10 18:00:00",
+                    "created_at": "2026-09-01 10:00:00",
+                },
+                {
+                    "number": "both",
+                    "title": "Оба",
+                    "source": "документооборот (от меня)",
+                    "role": "both",
+                    "channel": "soap",
+                    "author": fio,
+                    "performer": fio,
+                    "done": False,
+                    "due_at": "2026-09-10 18:00:00",
+                    "created_at": "2026-09-01 10:00:00",
+                },
+            ],
+            "SOAP: частичное предупреждение",
+        ),
+    )
+    payload = handle_docflow_tasks(
+        {"today_and_overdue": True, "only_open": True, "limit": 20},
+        actor_fio="Иванов И.И.",
+    )
+    assert payload["count"] == 3
+    assert {row["role"] for row in payload["tasks"]} == {"executor", "author", "both"}
+    assert payload["docflow_warning"] == "SOAP: частичное предупреждение"
+    assert payload["tasks"][1]["source"] == "документооборот (от меня)"
 
 
 def test_list_docflow_today_and_overdue_drops_future(monkeypatch) -> None:

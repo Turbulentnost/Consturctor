@@ -1,11 +1,12 @@
 /**
  * Grid task sources: ERP SQL gateway + TurboProject session.
- * SpecV04SourcesProvider calls fetchOrchestratorTaskSources; hooks/tabs read context via useSpecV04Sources.
+ * SpecV04SourcesProvider loads SOAP / Turbo / Outlook independently; hooks/tabs read context via useSpecV04Sources.
  */
 export {
   ORCH_SOURCE_ID,
   fetchOrchestratorTaskSources,
   loadOrchestratorErpTasks,
+  loadOrchestratorOutlookMailWeek,
   loadOrchestratorTurboPortfolio,
   loadOrchestratorTurboTaskRows,
   onecComTasksFallbackEnabled,

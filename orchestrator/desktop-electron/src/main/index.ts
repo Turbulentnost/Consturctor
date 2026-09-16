@@ -24,7 +24,7 @@ import {
   pingBackendHealth
 } from './ensureBackend'
 import { loadExternalOdataEnv } from './odataExternalEnv'
-import { getUpdateStatus, installAvailableUpdate, startUpdater, stopUpdater } from './updater'
+import { getUpdateStatus, installAvailableUpdate, requestUpdateCheck, startUpdater, stopUpdater } from './updater'
 
 interface RequestOptions {
   method?: string
@@ -1023,6 +1023,7 @@ function registerMainIpcHandlers(): void {
   ipcHandle('fs:readLocalFilePreview', handleReadLocalFilePreview)
   ipcHandle('fs:copyLocalFile', handleCopyLocalFile)
   ipcHandle('updater:getStatus', () => getUpdateStatus())
+  ipcHandle('updater:check', () => requestUpdateCheck())
   ipcHandle('updater:install', () => installAvailableUpdate())
   ipcHandle('orch:load-odata-external-env', () => {
     const loaded = loadExternalOdataEnv()

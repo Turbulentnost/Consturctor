@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 from typing import Any, Callable
 
+from app.services.erp_task_odata_scan import row_matches_user_ref
 from app.services.erp_tasks import from_1c_datetime, task_is_late
 
 _ODATA_ENTITY = "Task_ЗадачаИсполнителя"
@@ -62,17 +63,29 @@ def row_is_open(row: dict[str, Any]) -> bool:
     return True
 
 
+def row_matches_executor(
+    row: dict[str, Any],
+    *,
+    fio: str,
+    user_key: str = "",
+) -> bool:
+    if user_key and row_matches_user_ref(row, "Исполнитель", user_key):
+        return True
+    return fio_matches(executor_from_row(row), fio)
+
+
 def filter_document_executor_rows(
     rows: list[dict[str, Any]],
     *,
     fio: str,
     only_open: bool,
+    user_key: str = "",
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if not fio_matches(executor_from_row(row), fio):
+        if not row_matches_executor(row, fio=fio, user_key=user_key):
             continue
         if only_open and not row_is_open(row):
             continue
@@ -159,12 +172,11 @@ def odata_entity() -> str:
 
 
 def odata_executor_filter_clauses(user_key: str) -> list[list[str]]:
-    """Filter variants for «Исполнитель» on Task_ЗадачаИсполнителя (/doc OData)."""
+    """Filter variants for «Исполнитель» (erp_pm/doc often expose ref, not *_Key)."""
     key = user_key.strip()
     if not key:
         return []
     return [
-        [f"Исполнитель_Key eq guid'{key}'"],
         [f"Исполнитель eq cast(guid'{key}','{_USER_CATALOG}')"],
     ]
 
@@ -180,46 +192,44 @@ def fetch_executor_tasks_odata(
     get_page: Callable[..., dict[str, Any]],
     auth_args: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    """Load rows matching ТД_ЗадачиДокумента executor column via OData."""
-    from app.services.docflow_tasks import _odata_dt
+    """Load rows matching ТД_ЗадачиДокумента executor column via OData (client match)."""
+    from app.services.erp_task_odata_scan import ROLE_EXECUTOR, scan_task_zadacha_ispolnitelya
 
-    def _base_clauses() -> list[str]:
-        clauses: list[str] = []
-        if only_open:
-            clauses.append("Executed eq false")
-        if date_from is not None:
-            clauses.append(f"Date ge datetime'{_odata_dt(date_from)}'")
-        if date_to is not None:
-            clauses.append(f"Date le datetime'{_odata_dt(date_to)}'")
-        return clauses
+    def fetch_page(_entity: str, *, params: dict[str, Any]) -> dict[str, Any]:
+        return get_page(
+            _entity,
+            params=params,
+            auth_args=auth_args,
+        )
 
-    collected: list[dict[str, Any]] = []
-    seen_numbers: set[str] = set()
+    collected, _warning = scan_task_zadacha_ispolnitelya(
+        user_ref=user_key,
+        fio=fio,
+        limit=limit,
+        fetch_page=fetch_page,
+        roles=frozenset({ROLE_EXECUTOR}),
+        map_row=lambda row, _role: map_document_executor_row(row, fio=fio),
+    )
 
-    for variant in odata_executor_filter_clauses(user_key):
-        filt = " and ".join([*variant, *_base_clauses()])
-        try:
-            data = get_page(
-                _ODATA_ENTITY,
-                params={"$top": limit, "$orderby": "Date desc", "$filter": filt},
-                auth_args=auth_args,
-            )
-        except Exception:
-            continue
-        for row in data.get("value") or []:
-            if not isinstance(row, dict):
+    if date_from is not None or date_to is not None:
+        filtered: list[dict[str, Any]] = []
+        for item in collected:
+            created_text = str(item.get("created_at") or "").strip()
+            if not created_text:
+                filtered.append(item)
                 continue
-            if not fio_matches(executor_from_row(row), fio):
+            try:
+                created = datetime.fromisoformat(created_text[:19])
+            except ValueError:
+                filtered.append(item)
                 continue
-            if only_open and not row_is_open(row):
+            if date_from is not None and created < date_from:
                 continue
-            number = str(row.get("Number") or "").strip()
-            marker = number or str(row.get("Ref_Key") or "")
-            if marker and marker in seen_numbers:
+            if date_to is not None and created > date_to:
                 continue
-            if marker:
-                seen_numbers.add(marker)
-            collected.append(map_document_executor_row(row, fio=fio))
-        if collected:
-            break
+            filtered.append(item)
+        collected = filtered
+
+    if only_open:
+        collected = [item for item in collected if not item.get("done")]
     return collected[:limit]

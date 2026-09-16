@@ -1,26 +1,40 @@
 import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
-import {
-  fetchOutlookMailForRange,
-  outlookMailWeekRange,
-  skipOutlookCom
-} from '../utils/outlookMail'
+import { loadOrchestratorMail, type OrchestratorMailLoad } from './mailProbe'
 import {
   enrichEmptyOneCErrors,
   isOneCAuthFailure,
-  stubSourceMessage,
-  isErpMetaHintRecord
+  isTechnicalDocflowConfigMessage,
+  sessionOneCSourceLabel,
+  userFacingOneCError,
+  isErpMetaHintRecord,
 } from './onecSessionHints'
-import { onecGatewayInvokeArgs, turboProjectInvokeArgs } from './userContext'
+import { hasTurboSessionCredentials, onecGatewayInvokeArgs, turboProjectInvokeArgs } from './userContext'
 import {
   erpTaskToRow,
-  outlookMessageToMailRow,
   turboProjectTaskToSpecTaskRow,
   turboProjectToRow
 } from './specV04Mappers'
 import { turboTaskAssignedToActor } from './turboAssigneeMatch'
 import type { SpecMailRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
-import { isTurboNoSessionError } from './turboSession'
+import { isTechnicalTurboMessage, isTurboNoSessionError } from './turboSession'
+
+/** Одна задача 1С — один id (повторы из SOAP/кэша или гонки refetch). */
+export function dedupeSpecTaskRows(rows: SpecTaskRow[]): SpecTaskRow[] {
+  const seen = new Set<string>()
+  const out: SpecTaskRow[] = []
+  for (const row of rows) {
+    const id = row.id.trim().toLowerCase()
+    const key =
+      id && id !== '—'
+        ? `id:${id}`
+        : `sig:${row.title.trim().toLowerCase()}|${row.deadline}|${row.executor.trim().toLowerCase()}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(row)
+  }
+  return out
+}
 
 /** Stable ids for grid refresh / telemetry (see GridDataRefreshProvider generation). */
 export const ORCH_SOURCE_ID = {
@@ -178,12 +192,12 @@ export function parseErpToolTasks(
   }
   const payload = res.result as Record<string, unknown>
   const source = normalizeErpGatewaySource(String(payload.source || 'документооборот'))
-  const warning = String(payload.docflow_warning || payload.warning || '').trim()
+  const warning = userFacingOneCError(String(payload.docflow_warning || payload.warning || '').trim())
   const raw = Array.isArray(payload.tasks) ? payload.tasks : []
   const records = raw
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
     .filter((item) => !isErpMetaHintRecord(item))
-  const rows = records.map((item) => erpTaskToRow(item, erpFio))
+  const rows = dedupeSpecTaskRows(records.map((item) => erpTaskToRow(item, erpFio)))
   return { rows, source, warning, error: '' }
 }
 
@@ -202,10 +216,17 @@ function uniqueErrorJoin(...chunks: (string | undefined | null)[]): string {
   return parts.join(' · ')
 }
 
+export type IsolatedSource<T> = {
+  rows: T[]
+  error: string
+  loading: boolean
+}
+
 export type OrchestratorErpLoad = {
   tasks: SpecTaskRow[]
   sourceLabel: string
   error: string
+  loading: boolean
   /** Reserved; SOAP is the only 1C source, so this stays empty. */
   erpSecondaryHint: string
   oneCAuthFailure: boolean
@@ -219,37 +240,45 @@ export async function loadOrchestratorErpTasks(
   const onecArgs = onecGatewayInvokeArgs(user, {
     limit: 80,
     only_open: true,
-    today_and_overdue: true,
+    today_and_overdue: false,
     force_refresh: Boolean(opts?.forceRefresh)
   })
-  const dfRes = await api.invokeServerTool('onec.docflow_tasks', onecArgs, 300_000)
+  const dfRes = await api.invokeServerTool('onec.docflow_tasks', onecArgs, 90_000)
   const dfParsed = parseErpToolTasks(dfRes, erpFio)
   const tasks = dfParsed.rows
-  const sourceLabel = tasks.length ? dfParsed.source || 'документооборот' : dfParsed.source || '—'
-
-  let mergedError = uniqueErrorJoin(
-    dfRes.error || '',
-    dfParsed.error,
-    dfParsed.warning,
-    !dfRes.ok && !tasks.length && !dfRes.error ? 'onec.docflow_tasks недоступен' : '',
-    dfParsed.source === 'stub' ? 'Документооборот: stub (нет DOK_HTTP_* на backend)' : ''
+  const invokeError = userFacingOneCError(dfRes.error || '')
+  const stubOrTech =
+    dfParsed.source === 'stub' ||
+    isTechnicalDocflowConfigMessage(dfRes.error || '') ||
+    isTechnicalDocflowConfigMessage(dfParsed.warning) ||
+    isTechnicalDocflowConfigMessage(dfParsed.error) ||
+    (!dfRes.ok && !invokeError && !tasks.length)
+  const mergedError = uniqueErrorJoin(
+    invokeError,
+    userFacingOneCError(dfParsed.error),
+    dfParsed.warning
   )
-  const erpCoreError =
-    !tasks.length && dfParsed.source === 'stub'
-      ? enrichEmptyOneCErrors(mergedError, {
-          erpSource: dfParsed.source,
-          docSource: dfParsed.source,
-          mergedCount: 0
-        })
-      : mergedError
-
+  const erpCoreError = tasks.length
+    ? ''
+    : enrichEmptyOneCErrors(mergedError, {
+        erpSource: dfParsed.source,
+        docSource: dfParsed.source,
+        mergedCount: tasks.length,
+        fio: erpFio
+      })
+  const sourceLabel = tasks.length
+    ? dfParsed.source === 'stub'
+      ? 'документооборот'
+      : dfParsed.source || 'документооборот'
+    : sessionOneCSourceLabel(erpFio)
   const oneCAuthFailure =
-    tasks.length === 0 && isOneCAuthFailure(dfRes.error, dfParsed.error, erpCoreError)
+    tasks.length === 0 && !stubOrTech && isOneCAuthFailure(dfRes.error, dfParsed.error, erpCoreError)
 
   return {
     tasks,
     sourceLabel,
     error: erpCoreError,
+    loading: false,
     erpSecondaryHint: '',
     oneCAuthFailure
   }
@@ -260,6 +289,8 @@ export type OrchestratorTurboLoad = {
   sourceLabel: string
   turboNoSession: boolean
   hint: string
+  error: string
+  loading: boolean
 }
 
 async function finalizeTurboPortfolioProjects(
@@ -284,18 +315,24 @@ export async function loadOrchestratorTurboPortfolio(
     api.getToolStatus('turboproject').catch(() => null)
   ])
 
+  const liveSession = hasTurboSessionCredentials(user)
+
   if (turboRes.ok && turboRes.result && typeof turboRes.result === 'object') {
     const payload = turboRes.result as Record<string, unknown>
     const source = String(payload.source || ORCH_SOURCE_ID.turboProject)
     if (source === 'stub') {
       return {
-        projects: await finalizeTurboPortfolioProjects(user, erpFio, mergePinnedTurboProjects([]), true),
-        sourceLabel:
-          turboStatus && !turboStatus.configured
-            ? 'TurboProject: на gateway задайте TURBOPROJECT_API_BASE'
-            : 'TurboProject не настроен',
-        turboNoSession: true,
-        hint: stubSourceMessage('stub')
+        projects: await finalizeTurboPortfolioProjects(
+          user,
+          erpFio,
+          mergePinnedTurboProjects([]),
+          !liveSession
+        ),
+        sourceLabel: liveSession ? ORCH_SOURCE_ID.turboProject : '',
+        turboNoSession: !liveSession,
+        hint: '',
+        error: '',
+        loading: false
       }
     }
     const raw = Array.isArray(payload.projects) ? payload.projects : []
@@ -318,21 +355,31 @@ export async function loadOrchestratorTurboPortfolio(
       projects,
       sourceLabel: ORCH_SOURCE_ID.turboProject,
       turboNoSession: false,
-      hint: uniqueErrorJoin(portfolioHint, pinnedNote)
+      hint: uniqueErrorJoin(portfolioHint, pinnedNote),
+      error: '',
+      loading: false
     }
   }
 
   if (turboStatus && !turboStatus.configured) {
     return {
-      projects: await finalizeTurboPortfolioProjects(user, erpFio, mergePinnedTurboProjects([]), true),
-      sourceLabel: 'TurboProject: на gateway задайте TURBOPROJECT_API_BASE',
-      turboNoSession: true,
-      hint: 'На gateway нет TURBOPROJECT_API_BASE — задайте в backend/.env или используйте localhost:7812 с актуальным кодом.'
+      projects: await finalizeTurboPortfolioProjects(
+        user,
+        erpFio,
+        mergePinnedTurboProjects([]),
+        !liveSession
+      ),
+      sourceLabel: liveSession ? ORCH_SOURCE_ID.turboProject : '',
+      turboNoSession: !liveSession,
+      hint: '',
+      error: '',
+      loading: false
     }
   }
 
   const turboErr = turboRes.error || 'недоступно'
-  const noSession = isTurboNoSessionError(turboErr)
+  const noSession = !liveSession && isTurboNoSessionError(turboErr)
+  const tech = isTechnicalTurboMessage(turboErr)
   return {
     projects: await finalizeTurboPortfolioProjects(
       user,
@@ -340,50 +387,20 @@ export async function loadOrchestratorTurboPortfolio(
       noSession ? [] : mergePinnedTurboProjects([]),
       noSession
     ),
-    sourceLabel: turboErr,
+    sourceLabel: liveSession ? ORCH_SOURCE_ID.turboProject : '',
     turboNoSession: noSession,
-    hint: turboErr
+    hint: '',
+    error: liveSession && !tech ? turboErr : '',
+    loading: false
   }
 }
 
-export type OrchestratorMailLoad = {
-  rows: SpecMailRow[]
-  sourceLabel: string
-}
+export type { OrchestratorMailLoad }
 
 export async function loadOrchestratorOutlookMailWeek(
   outlookMailbox: string
 ): Promise<OrchestratorMailLoad> {
-  if (skipOutlookCom()) {
-    return {
-      rows: [],
-      sourceLabel: 'Outlook COM отключён (VITE_SKIP_OUTLOOK_COM)'
-    }
-  }
-  const mailRange = outlookMailWeekRange()
-  const outlookMailRes = await fetchOutlookMailForRange(mailRange.dateFrom, mailRange.dateTo, {
-    folder: 'All',
-    maxResults: 50
-  })
-  if (outlookMailRes.ok && outlookMailRes.messages.length) {
-    return {
-      sourceLabel:
-        outlookMailRes.source ||
-        `${ORCH_SOURCE_ID.outlookMail} (${mailRange.dateFrom}…${mailRange.dateTo}, All)`,
-      rows: outlookMailRes.messages.map((item, index) => outlookMessageToMailRow(item, index))
-    }
-  }
-  const mailHint = outlookMailRes.error
-    ? `Outlook: ${outlookMailRes.error}`
-    : outlookMailbox
-      ? `Outlook: ${outlookMailbox}`
-      : ORCH_SOURCE_ID.outlookMail
-  return {
-    rows: [],
-    sourceLabel: outlookMailRes.ok
-      ? `${ORCH_SOURCE_ID.outlookMail} (${mailRange.dateFrom}…${mailRange.dateTo}, All)`
-      : mailHint
-  }
+  return loadOrchestratorMail(outlookMailbox)
 }
 
 /** Projects to fetch for «Сегодня → проектные задачи» (pinned file_id first, then by open task count). */
@@ -401,8 +418,9 @@ export function pickTurboProjectsForTaskFetch(projects: SpecProjectRow[], max = 
       if (right.tasks !== left.tasks) return right.tasks - left.tasks
       return left.name.localeCompare(right.name, 'ru')
     })
+  const cap = max > 0 ? max : projects.length
   for (const row of rest) {
-    if (selected.length >= max) break
+    if (cap > 0 && selected.length >= cap) break
     if (!selected.some((item) => item.id === row.id)) selected.push(row)
   }
   return selected
@@ -411,6 +429,7 @@ export function pickTurboProjectsForTaskFetch(projects: SpecProjectRow[], max = 
 export type OrchestratorTurboTasksLoad = {
   tasks: SpecTaskRow[]
   error: string
+  loading: boolean
 }
 
 function isOpenTurboTask(task: Record<string, unknown>): boolean {
@@ -423,15 +442,13 @@ export async function loadOrchestratorTurboTaskRows(
   user: UserProfile,
   erpFio: string,
   projects: SpecProjectRow[],
-  turboNoSession: boolean
+  _turboNoSession: boolean
 ): Promise<OrchestratorTurboTasksLoad> {
-  if (turboNoSession || !projects.length) {
-    return { tasks: [], error: '' }
-  }
-  const candidates = turboProjectFetchCandidates(projects, 8)
-  if (!candidates.length) return { tasks: [], error: '' }
+  const pool = projects.length ? projects : mergePinnedTurboProjects([])
+  const candidates = turboProjectFetchCandidates(pool, pool.length || 200)
+  if (!candidates.length) return { tasks: [], error: '', loading: false }
 
-  const byId = new Map(projects.map((row) => [row.id, row]))
+  const byId = new Map(pool.map((row) => [row.id, row]))
   let fetchError = ''
   const batches = await Promise.all(
     candidates.map(async (project) => {
@@ -445,7 +462,9 @@ export async function loadOrchestratorTurboTaskRows(
       )
       if (!res.ok || !res.result || typeof res.result !== 'object') {
         const hint = (res.error || '').trim()
-        if (hint && !fetchError) fetchError = hint
+        if (hint && !fetchError && !isTechnicalTurboMessage(hint) && !isTurboNoSessionError(hint)) {
+          fetchError = hint
+        }
         return [] as SpecTaskRow[]
       }
       const payload = res.result as Record<string, unknown>
@@ -470,7 +489,7 @@ export async function loadOrchestratorTurboTaskRows(
     if (left.urgent !== right.urgent) return left.urgent ? -1 : 1
     return left.deadline.localeCompare(right.deadline, 'ru')
   })
-  return { tasks, error: fetchError }
+  return { tasks, error: fetchError, loading: false }
 }
 
 export type OrchestratorTaskSourcesBundle = {
@@ -478,6 +497,11 @@ export type OrchestratorTaskSourcesBundle = {
   turbo: OrchestratorTurboLoad
   turboTasks: OrchestratorTurboTasksLoad
   mail: OrchestratorMailLoad
+  sources: {
+    erp: IsolatedSource<SpecTaskRow>
+    turbo: IsolatedSource<SpecTaskRow>
+    mail: IsolatedSource<SpecMailRow>
+  }
 }
 
 /** Single fetch entry for SpecV04SourcesProvider (order: SOAP ДО → Turbo portfolio → Outlook week). */
@@ -487,6 +511,7 @@ export async function fetchOrchestratorTaskSources(
   outlookMailbox: string,
   opts?: { forceRefresh?: boolean }
 ): Promise<OrchestratorTaskSourcesBundle> {
+  const mailPromise = loadOrchestratorMail(outlookMailbox)
   const [erp, turbo] = await Promise.all([
     loadOrchestratorErpTasks(user, erpFio, opts),
     loadOrchestratorTurboPortfolio(user, erpFio)
@@ -497,6 +522,21 @@ export async function fetchOrchestratorTaskSources(
     turbo.projects,
     turbo.turboNoSession
   )
-  const mail = await loadOrchestratorOutlookMailWeek(outlookMailbox)
-  return { erp, turbo, turboTasks, mail }
+  const mail = await mailPromise
+  const turboError = turbo.error || turboTasks.error || ''
+  return {
+    erp,
+    turbo,
+    turboTasks,
+    mail,
+    sources: {
+      erp: { rows: erp.tasks, error: erp.error, loading: false },
+      turbo: { rows: turboTasks.tasks, error: turboError, loading: false },
+      mail: {
+        rows: mail.rows,
+        error: [mail.comError, mail.imapError].filter(Boolean).join(' · '),
+        loading: false
+      }
+    }
+  }
 }

@@ -89,7 +89,7 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
       if (err instanceof ApiError && err.status === 503) {
         setError(
           err.message ||
-            'Сервис аутентификации 1С недоступен. Проверьте VPN и что backend запущен (run_dev.bat).'
+            'Сервис аутентификации 1С недоступен. Локальный backend: VPN до erp_pm или AUTH_ERP_GATEWAY_URL=192.168.1.157:7812. Без VPN: BACKEND_URL=http://192.168.1.157:7812.'
         )
       } else {
         setError(err instanceof ApiError ? err.message : 'Ошибка входа')

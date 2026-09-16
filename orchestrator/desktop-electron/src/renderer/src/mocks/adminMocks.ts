@@ -384,6 +384,24 @@ export interface AdminKnowledgeRowMock {
   updatedAt: string
 }
 
+export interface AdminKnowledgeDocumentDetail {
+  title: string
+  status: string
+  statusTone: AdminBadgeTone
+  meta: string
+  text: string
+  format: string
+  author: string
+  category: string
+  tags: string[]
+  usageTotal: string
+  usageTrend: string
+  usageBars: number[]
+  agentsShare: Array<{ label: string; value: number }>
+  related: Array<{ title: string; type: string }>
+  relatedCount: number
+}
+
 export interface AdminKnowledgeBaseMock {
   breadcrumb: string
   title: string
@@ -392,23 +410,7 @@ export interface AdminKnowledgeBaseMock {
   filters: AdminFilterMock[]
   rows: AdminKnowledgeRowMock[]
   pagination: { pageSize: number; total: number }
-  document: {
-    title: string
-    status: string
-    statusTone: AdminBadgeTone
-    meta: string
-    text: string
-    format: string
-    author: string
-    category: string
-    tags: string[]
-    usageTotal: string
-    usageTrend: string
-    usageBars: number[]
-    agentsShare: Array<{ label: string; value: number }>
-    related: Array<{ title: string; type: string }>
-    relatedCount: number
-  }
+  document: AdminKnowledgeDocumentDetail
 }
 
 const ADMIN_PERIOD: AdminPeriodMock = {
@@ -875,4 +877,91 @@ export function getAllAiAgentsRows(): AdminAgentRowMock[] {
 export function getAllKnowledgeRows(): AdminKnowledgeRowMock[] {
   const { total, pageSize } = adminKnowledgeBaseMock.pagination
   return getAllPagedRows(total, pageSize, getKnowledgePageRows)
+}
+
+const KNOWLEDGE_DOC_TEXT: Record<string, string> = {
+  'Регламент по закупкам':
+    'Документ описывает порядок закупок компании: инициирование заявки, согласование, выбор поставщика, оформление договора и контроль исполнения.',
+  'Шаблоны КП':
+    'Набор шаблонов коммерческих предложений для быстрой подготовки КП по типовым сценариям продаж и закупок.',
+  'Реестр поставщиков':
+    'Справочник проверенных поставщиков с рейтингами, контактами, условиями поставки и историей сотрудничества.',
+  'Частые вопросы (FAQ)':
+    'Свод ответов на типовые вопросы сотрудников по процессам, регламентам и работе с ИИ-агентами.',
+  'Инструкции по 1С':
+    'Пошаговые инструкции по работе в 1С для ключевых операций: закупки, финансы, отчётность и документооборот.',
+  'Политика безопасности':
+    'Правила информационной безопасности, доступа к данным и работы с конфиденциальной информацией.',
+  'Матрица компетенций':
+    'Справочник компетенций сотрудников и требований к ролям для HR и кадровых процессов.',
+  'Шаблон договора поставки':
+    'Типовой шаблон договора поставки с обязательными условиями и блоками для юридической проверки.',
+  'Глоссарий терминов':
+    'Словарь терминов компании и предметной области для единообразной работы агентов и сотрудников.',
+  'Инструкция по Outlook':
+    'Руководство по работе с почтой и календарём Outlook: правила, шаблоны и типовые сценарии переписки.'
+}
+
+const KNOWLEDGE_AUTHORS = ['Иванов И.И.', 'Петрова А.С.', 'Сидоров В.В.', 'Кузнецова Е.Е.', 'Михайлов Д.Д.']
+const KNOWLEDGE_FORMATS = ['PDF (1.4 MB)', 'DOCX (820 KB)', 'PDF (980 KB)', 'XLSX (640 KB)', 'MD (120 KB)']
+
+function knowledgeSeed(name: string): number {
+  return name.split('').reduce((sum, char, index) => sum + char.charCodeAt(0) * (index + 1), 0)
+}
+
+function buildUsageBars(seed: number): number[] {
+  return Array.from({ length: 14 }, (_, index) => 10 + ((seed + index * 17) % 26))
+}
+
+function buildAgentsShare(row: AdminKnowledgeRowMock, seed: number): Array<{ label: string; value: number }> {
+  const primary = row.agents.split(',')[0].trim()
+  const primaryShare = 45 + (seed % 25)
+  const remaining = 100 - primaryShare
+  const secondary = Math.round(remaining * 0.55)
+  const tertiary = Math.round(remaining * 0.3)
+  const rest = 100 - primaryShare - secondary - tertiary
+  return [
+    { label: primary, value: primaryShare },
+    { label: 'Агент_Аналитика', value: secondary },
+    { label: 'Агент_КП', value: tertiary },
+    { label: 'Агент_Совещания', value: rest }
+  ]
+}
+
+export function getKnowledgeDocumentDetail(
+  row: AdminKnowledgeRowMock,
+  pool: AdminKnowledgeRowMock[] = [...KNOWLEDGE_TEMPLATES, ...EXTRA_KNOWLEDGE]
+): AdminKnowledgeDocumentDetail {
+  const seed = knowledgeSeed(row.name)
+  const relatedPool = pool.filter((item) => item.name !== row.name)
+  const relatedStart = relatedPool.length ? seed % relatedPool.length : 0
+  const related = Array.from({ length: Math.min(5, relatedPool.length) }, (_, index) => relatedPool[(relatedStart + index) % relatedPool.length])
+  const usageTotal = 180 + (seed % 420)
+  const trend = (seed % 2 === 0 ? '+' : '-') + `${8 + (seed % 15)}%`
+  const category = row.type === 'FAQ' ? 'Справочная информация' : row.type
+  const tags = [
+    row.type.toLowerCase(),
+    row.agents.replace('Агент_', '').toLowerCase(),
+    row.status === 'Требует обновления' ? 'обновление' : 'актуальный'
+  ]
+
+  return {
+    title: row.name,
+    status: row.status,
+    statusTone: row.statusTone,
+    meta: `${row.type} • v${row.version} • Обновлен ${row.updatedAt}`,
+    text:
+      KNOWLEDGE_DOC_TEXT[row.name] ||
+      `Документ «${row.name}» используется агентами ${row.agents} для типовых сценариев категории «${row.type}».`,
+    format: KNOWLEDGE_FORMATS[seed % KNOWLEDGE_FORMATS.length],
+    author: KNOWLEDGE_AUTHORS[seed % KNOWLEDGE_AUTHORS.length],
+    category,
+    tags,
+    usageTotal: String(usageTotal),
+    usageTrend: trend,
+    usageBars: buildUsageBars(seed),
+    agentsShare: buildAgentsShare(row, seed),
+    related: related.map((item) => ({ title: item.name, type: item.type })),
+    relatedCount: 8 + (seed % 9)
+  }
 }

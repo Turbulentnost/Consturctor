@@ -4,11 +4,13 @@ import { SpecPill } from '../../workplace/specV04Components'
 import {
   displayOutlookMail,
   fetchOutlookMailDetail,
+  hasOutlookEntryId,
   markOutlookMailRead,
   saveOutlookAttachment,
   type OutlookMailAttachment,
   type OutlookMailDetail
 } from '../../utils/outlookMailActions'
+import { fetchImapMessage, parseImapUid } from '../../utils/imapMail'
 import {
   downloadAttachmentCopy,
   ensureAttachmentSaved,
@@ -40,32 +42,60 @@ export function MailDetailPanel({
     }
   }, [])
 
+  const canOutlookActions = hasOutlookEntryId(mail)
+
   useEffect(() => {
     let alive = true
     setDetail(null)
     setLoading(true)
     setNote('')
-    void fetchOutlookMailDetail(mail).then((res) => {
+    const load = async (): Promise<void> => {
+      if (hasOutlookEntryId(mail)) {
+        const res = await fetchOutlookMailDetail(mail)
+        if (!alive) return
+        setLoading(false)
+        if (res.ok) {
+          setDetail(res.detail)
+          if (typeof res.detail.unread === 'boolean') {
+            onPatchRow?.(mail.id, {
+              unread: res.detail.unread,
+              status: res.detail.unread ? 'Непрочитано' : 'Прочитано',
+              stTone: res.detail.unread ? 'orange' : 'blue'
+            })
+          }
+          return
+        }
+        showNote(res.error, true)
+        return
+      }
+      const uid = parseImapUid(mail)
+      if (!uid) {
+        setLoading(false)
+        return
+      }
+      const res = await fetchImapMessage(uid)
       if (!alive) return
       setLoading(false)
       if (res.ok) {
-        setDetail(res.detail)
-        if (typeof res.detail.unread === 'boolean') {
-          onPatchRow?.(mail.id, {
-            unread: res.detail.unread,
-            status: res.detail.unread ? 'Непрочитано' : 'Прочитано',
-            stTone: res.detail.unread ? 'orange' : 'blue'
-          })
-        }
-      } else {
-        showNote(res.error, true)
+        setDetail({
+          entryId: '',
+          subject: res.subject || mail.subject,
+          sender: res.from || mail.sender,
+          body: res.body,
+          bodyPreview: res.body.slice(0, 400),
+          unread: Boolean(mail.unread),
+          attachments: []
+        })
+        return
       }
-    })
+      showNote(res.error || 'IMAP: не удалось загрузить письмо', true)
+    }
+    void load()
     return () => {
       alive = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reload only when selection changes
-  }, [mail.id, mail.entryId])
+  }, [mail.id, mail.entryId, mail.imapUid])
 
   const runAction = async (label: string, fn: () => Promise<{ ok: boolean; error?: string }>): Promise<void> => {
     if (busy) return
@@ -148,6 +178,11 @@ export function MailDetailPanel({
           <SpecPill tone={mail.catTone}>{mail.category}</SpecPill>
         </div>
         {note ? <p className="spec-v04-muted spec-mail-action-note">{note}</p> : null}
+        {!canOutlookActions ? (
+          <p className="spec-v04-muted spec-mail-action-note">
+            Ответ / открыть / прочитано — через Outlook COM (письмо только в IMAP).
+          </p>
+        ) : null}
         <div className="spec-mail-body-preview">{bodyText}</div>
         {attachments.length ? (
           <div className="spec-attachments spec-mail-attachments">
@@ -204,7 +239,7 @@ export function MailDetailPanel({
           <button
             type="button"
             className="spec-btn-launch spec-btn-launch-block"
-            disabled={Boolean(busy)}
+            disabled={Boolean(busy) || !canOutlookActions}
             onClick={() => void runAction('reply', () => displayOutlookMail(mail, 'reply'))}
           >
             {busy === 'reply' ? '…' : 'Ответить'}
@@ -212,7 +247,7 @@ export function MailDetailPanel({
           <button
             type="button"
             className="spec-btn-outline spec-btn-outline-block"
-            disabled={Boolean(busy)}
+            disabled={Boolean(busy) || !canOutlookActions}
             onClick={() => void runAction('reply_all', () => displayOutlookMail(mail, 'reply_all'))}
           >
             {busy === 'reply_all' ? '…' : 'Ответить всем'}
@@ -220,7 +255,7 @@ export function MailDetailPanel({
           <button
             type="button"
             className="spec-btn-outline spec-btn-outline-block"
-            disabled={Boolean(busy)}
+            disabled={Boolean(busy) || !canOutlookActions}
             onClick={() => void runAction('open', () => displayOutlookMail(mail, 'open'))}
           >
             {busy === 'open' ? '…' : 'В Outlook'}
@@ -229,7 +264,7 @@ export function MailDetailPanel({
             <button
               type="button"
               className="spec-btn-outline spec-mail-read-btn"
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || !canOutlookActions}
               onClick={() =>
                 void runAction('read', async () => {
                   const res = await markOutlookMailRead(mail, false)
@@ -252,7 +287,7 @@ export function MailDetailPanel({
             <button
               type="button"
               className="spec-btn-outline spec-mail-read-btn"
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || !canOutlookActions}
               onClick={() =>
                 void runAction('unread', async () => {
                   const res = await markOutlookMailRead(mail, true)

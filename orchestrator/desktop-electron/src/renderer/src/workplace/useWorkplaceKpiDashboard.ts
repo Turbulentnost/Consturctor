@@ -6,9 +6,11 @@ import {
   shouldUseWorkplaceKpiReferenceFallback
 } from './workplaceKpiLoadError'
 import { buildReferenceWorkplaceKpiDashboard } from './workplaceKpiReferenceFallback'
+import { currentWeekRange } from './kpiPeriod'
 
-const DEFAULT_FROM = '2024-08-12'
-const DEFAULT_TO = '2024-08-18'
+const WEEK = currentWeekRange()
+const DEFAULT_FROM = WEEK.from
+const DEFAULT_TO = WEEK.to
 
 const OFFLINE_NOTICE =
   'Показаны эталонные KPI (offline): маршрут /api/v1/workplace/kpi недоступен на gateway — обновите LAN или используйте локальный backend.'

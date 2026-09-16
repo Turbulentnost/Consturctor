@@ -5,7 +5,7 @@ import { agentClient } from '../api/agent'
 import type { UserProfile } from '../api/types'
 import { comCredentials, setComCredentials } from '../store/session'
 import { erpActorComUsername, erpActorFio } from './userContext'
-import { isDoubleOneCAuthHint } from './onecSessionHints'
+import { isDoubleOneCAuthHint, userFacingOneCError } from './onecSessionHints'
 import { useBumpComCredentialsRevision } from './ComCredentialsRevisionContext'
 import { useGridDataRefreshContext } from './GridDataRefreshContext'
 
@@ -89,6 +89,7 @@ export function OneCReconnectDialog({
   if (!open) return null
 
   const doubleHint = awaitSecondAuth || isDoubleOneCAuthHint(errorHint)
+  const safeHint = userFacingOneCError(errorHint)
 
   return createPortal(
     <div className="modal-overlay onec-reconnect-overlay" onClick={() => !busy && onClose()} role="presentation">
@@ -107,7 +108,7 @@ export function OneCReconnectDialog({
             ? '1С может запросить двойную авторизацию — введите пароль ещё раз и нажмите «Повторить».'
             : 'Введите учётные данные 1С. Пароль хранится только в памяти приложения до закрытия.'}
         </p>
-        {errorHint ? <p className="modal-note onec-reconnect-error-hint">{errorHint}</p> : null}
+        {safeHint ? <p className="modal-note onec-reconnect-error-hint">{safeHint}</p> : null}
         {formError ? <p className="onec-reconnect-form-error">{formError}</p> : null}
 
         <label className="modal-label" htmlFor="onec-reconnect-fio">
@@ -174,7 +175,9 @@ export function OneCReconnectInline({
 }): React.JSX.Element {
   return (
     <div className="onec-reconnect-inline">
-      <p className="spec-v04-muted">{errorHint || 'Не удалось загрузить задачи 1С — проверьте пароль сеанса.'}</p>
+      <p className="spec-v04-muted">
+        {userFacingOneCError(errorHint || '') || 'Не удалось загрузить задачи 1С — проверьте пароль сеанса.'}
+      </p>
       <button type="button" className="btn-primary onec-reconnect-inline-btn" onClick={onOpen}>
         Подключить 1С
       </button>

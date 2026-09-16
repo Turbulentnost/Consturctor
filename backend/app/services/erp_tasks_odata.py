@@ -10,7 +10,6 @@ from app.services.erp_tasks import (
     ErpTaskError,
     actor_from_args,
     from_1c_datetime,
-    is_constructor_test_probe,
     merge_task_lists,
     resolve_actor,
     task_is_late,
@@ -22,10 +21,6 @@ _USER_TASK_FIELDS = (
     "РезультатВыполнения",
     "Комментарий",
 )
-
-
-def _odata_escape(text: str) -> str:
-    return (text or "").replace("'", "''")
 
 
 def _parse_odata_datetime(value: Any) -> datetime | None:
@@ -114,7 +109,13 @@ def _fetch_odata_tasks(
     limit: int,
     auth_args: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], str]:
-    """OData: исполнитель + совпадение ФИО в теме/комментарии (как SQL relevance)."""
+    """OData МоиЗадачи: мне (Исполнитель) + от меня (Автор) + ФИО в теме."""
+    from app.services.erp_task_odata_scan import (
+        ROLE_AUTHOR,
+        ROLE_EXECUTOR,
+        ROLE_MENTION,
+        scan_task_zadacha_ispolnitelya,
+    )
     from app.services.onec_tools import OnecToolError, _fetch_odata_list, odata_configured
 
     if not odata_configured(auth_args):
@@ -123,51 +124,48 @@ def _fetch_odata_tasks(
             "ODATA_USERNAME/ODATA_PASSWORD или ERP_LOGIN/ERP_PASSWORD "
             "(backend/.env или odata_* в invoke)"
         )
-    safe_fio = _odata_escape(fio)
-    merged_rows: list[dict[str, Any]] = []
-    warnings: list[str] = []
     top = max(1, min(int(limit or 50), 200))
+    warnings: list[str] = []
 
-    def pull(filter_expr: str) -> list[dict[str, Any]]:
-        payload = {
+    try:
+        user = resolve_user(fio)
+    except AssignmentError as exc:
+        raise ErpTaskError(str(exc)) from exc
+
+    def fetch_page(_entity: str, *, params: dict[str, Any]) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "entity": TASK_ENTITY,
-            "top": top,
-            "filter": filter_expr,
+            "top": int(params.get("$top") or top),
+            "skip": int(params.get("$skip") or 0),
+            "filter": str(params.get("$filter") or ""),
         }
         if auth_args:
             payload.update(auth_args)
-        result = _fetch_odata_list(payload)
-        return [row for row in (result.get("value") or []) if isinstance(row, dict)]
+        return _fetch_odata_list(payload)
 
-    base_open = "DeletionMark eq false and Executed eq false"
+    def map_row(row: dict[str, Any], role: str) -> dict[str, Any]:
+        mapped = _map_odata_task_row(row)
+        if role == ROLE_AUTHOR:
+            mapped["source"] = "erp_pm+odata (от меня)"
+        return mapped
+
     try:
-        user = resolve_user(fio)
-        exec_filter = (
-            f"{base_open} and Исполнитель eq guid'{user['ref_key']}'"
+        scanned, scan_warning = scan_task_zadacha_ispolnitelya(
+            user_ref=user["ref_key"],
+            fio=fio,
+            limit=top,
+            fetch_page=fetch_page,
+            mention_checker=_row_mentions_fio,
+            map_row=map_row,
+            roles=frozenset({ROLE_EXECUTOR, ROLE_AUTHOR, ROLE_MENTION}),
         )
-        for row in pull(exec_filter):
-            mapped = _map_odata_task_row(row)
-            if not is_constructor_test_probe(mapped):
-                merged_rows.append(mapped)
-    except (AssignmentError, OnecToolError) as exc:
-        warnings.append(f"OData исполнитель: {exc}")
+    except OnecToolError as exc:
+        raise ErpTaskError(f"OData Task_ЗадачаИсполнителя: {exc}") from exc
 
-    name_clauses = [
-        f"substringof('{safe_fio}', {field})" for field in ("Description", "ПредметСтрокой")
-    ]
-    if name_clauses:
-        title_filter = f"{base_open} and ({' or '.join(name_clauses)})"
-        try:
-            for row in pull(title_filter):
-                if not _row_mentions_fio(row, fio):
-                    continue
-                mapped = _map_odata_task_row(row)
-                if not is_constructor_test_probe(mapped):
-                    merged_rows.append(mapped)
-        except OnecToolError as exc:
-            warnings.append(f"OData тема/ФИО: {exc}")
+    if scan_warning:
+        warnings.append(scan_warning)
 
-    deduped = merge_task_lists([], merged_rows, limit=top)
+    deduped = merge_task_lists([], scanned, limit=top)
     return deduped, " · ".join(w for w in warnings if w)
 
 

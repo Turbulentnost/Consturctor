@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CalendarEvent, WorkflowBoard } from '../api/types'
 import {
   dedupeMeetingEvents,
@@ -8,7 +8,12 @@ import {
 } from '../utils/outlookMeetings'
 import { parseIso, sameDay } from '../utils/calendar'
 import { useWorkplaceData } from './WorkplaceBoard'
-import type { TodayPlanBlock } from '../tabs/grid/todayDemoData'
+import {
+  TODAY_PLAN_AI_MOCKS,
+  TODAY_PLAN_MEETING_MOCKS,
+  TODAY_PLAN_PREFER_MOCKS,
+  type TodayPlanBlock
+} from '../tabs/grid/todayDemoData'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
 import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 
@@ -237,7 +242,8 @@ export function useTodayPlanTimeline(
         return
       }
     }
-    setMeetingsLoading(true)
+    const hadCache = Boolean(readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey))
+    if (!hadCache) setMeetingsLoading(true)
     setMeetingsError('')
     void ensureOutlookMeetings('day', periodDay, { owner: fio })
       .then((res) => {
@@ -267,6 +273,9 @@ export function useTodayPlanTimeline(
     }
   }, [dayKey, fio, generation, periodDay, userId])
 
+  const stableMeetingsRef = useRef<TodayPlanBlock[]>([])
+  const stableAiRef = useRef<TodayPlanBlock[]>([])
+
   return useMemo(() => {
     const loading = meetingsLoading || boardLoading
     const onDay = dedupeMeetingEvents(
@@ -283,9 +292,31 @@ export function useTodayPlanTimeline(
 
     let aiBlocks = aiBlocksForDay(board, periodDay)
 
+    if (TODAY_PLAN_PREFER_MOCKS) {
+      meetingBlocks = TODAY_PLAN_MEETING_MOCKS
+      aiBlocks = TODAY_PLAN_AI_MOCKS
+    } else {
+      if (!meetingBlocks.length) meetingBlocks = TODAY_PLAN_MEETING_MOCKS
+      if (!aiBlocks.length) aiBlocks = TODAY_PLAN_AI_MOCKS
+      if (loading) {
+        if (!meetingBlocks.length && stableMeetingsRef.current.length) {
+          meetingBlocks = stableMeetingsRef.current
+        }
+        if (!aiBlocks.length && stableAiRef.current.length) {
+          aiBlocks = stableAiRef.current
+        }
+      }
+    }
+
+    if (meetingBlocks.length) stableMeetingsRef.current = meetingBlocks
+    if (aiBlocks.length) stableAiRef.current = aiBlocks
+
+    const usingPlanMocks =
+      TODAY_PLAN_PREFER_MOCKS || meetingBlocks.every((block) => block.id.startsWith('mock-'))
+
     return {
-      loading,
-      meetingsError,
+      loading: TODAY_PLAN_PREFER_MOCKS ? false : loading,
+      meetingsError: usingPlanMocks ? '' : meetingsError,
       meetingBlocks,
       aiBlocks,
       lunchBlock: TODAY_LUNCH_BLOCK

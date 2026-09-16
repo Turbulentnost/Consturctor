@@ -89,6 +89,7 @@ const TILE_ICON: Record<string, () => React.JSX.Element> = {
   day: SpecIconReg,
   reg: SpecIconReg,
   onec: SpecIconOnec,
+  'onec-from-me': SpecIconOnec,
   proj: SpecIconProject,
   mail: SpecIconMail,
   meet: SpecIconMeeting,
@@ -99,7 +100,15 @@ export function SpecTileIcon({ id }: { id: string }): React.JSX.Element | null {
   const Icon = TILE_ICON[id]
   if (!Icon) return null
   const tone =
-    id === 'meet' || id === 'ev' ? 'yellow' : id === 'day' ? 'orange' : id === 'proj' ? 'proj' : id
+    id === 'meet' || id === 'ev'
+      ? 'yellow'
+      : id === 'day'
+        ? 'orange'
+        : id === 'proj'
+          ? 'proj'
+          : id === 'onec-from-me'
+            ? 'onec'
+            : id
   return (
     <span className={`spec-tile-icon-wrap tone-${tone}`} aria-hidden>
       <Icon />

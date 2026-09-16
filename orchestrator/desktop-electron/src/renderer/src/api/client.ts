@@ -2078,6 +2078,12 @@ export class ApiClient {
     return parseWorkplaceKpiDashboard(data)
   }
 
+  async syncWorkplaceKpiDailyMetrics(body: {
+    metrics: { day: string; tasksPct: number; slaPct: number }[]
+  }): Promise<void> {
+    await this.request<void>('POST', '/api/v1/workplace/kpi/daily-metrics', { json: body })
+  }
+
   // ---------- Admin (orchestrator panel) ----------
   async adminOverview(): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>('GET', '/api/v1/admin/overview')

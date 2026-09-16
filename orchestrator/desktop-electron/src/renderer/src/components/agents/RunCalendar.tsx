@@ -56,8 +56,10 @@ interface RunCalendarProps {
   onAgentFilter: (workflowId: string) => void
   onEventClick: (workflowId: string, runId: string) => void
   onOpenGroup: (events: CalendarEvent[]) => void
-  onScheduleRun: (workflowId: string, iso: string) => void
+  onScheduleRun?: (workflowId: string, iso: string) => void
   onSkipSlot?: (event: CalendarEvent) => void
+  title?: string
+  showSchedule?: boolean
 }
 
 interface PopupState {
@@ -159,7 +161,7 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
     <div className="run-calendar">
       <div className="cal-head">
         <div className="cal-heading">
-          <div className="cal-title">Календарь запусков</div>
+          <div className="cal-title">{props.title || 'Календарь запусков'}</div>
           <div className="cal-period">{formatPeriod(view, anchor)}</div>
         </div>
         <div className="cal-controls">
@@ -193,9 +195,11 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
           <button className="cal-btn" onClick={() => setShowFilters((v) => !v)}>
             Фильтры
           </button>
-          <button className="cal-btn primary" onClick={() => setScheduleOpen(true)}>
-            Запланировать запуск
-          </button>
+          {props.showSchedule !== false && props.onScheduleRun ? (
+            <button className="cal-btn primary" onClick={() => setScheduleOpen(true)}>
+              Запланировать запуск
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -319,17 +323,17 @@ export function RunCalendar(props: RunCalendarProps): React.JSX.Element {
         </div>
       )}
 
-      {scheduleOpen && (
+      {scheduleOpen && props.onScheduleRun ? (
         <ScheduleDialog
           agents={agents}
           defaultAgent={agentFilter}
           onCancel={() => setScheduleOpen(false)}
           onConfirm={(workflowId, iso) => {
             setScheduleOpen(false)
-            props.onScheduleRun(workflowId, iso)
+            props.onScheduleRun?.(workflowId, iso)
           }}
         />
-      )}
+      ) : null}
     </div>
   )
 }

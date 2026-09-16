@@ -1,4 +1,5 @@
 import { invokeLocalAcTool } from '../utils/localAcTool'
+import { openWorkplaceTab } from './workplaceNav'
 
 export type SpecQuickActionTone = 'green' | 'orange' | 'blue' | 'yellow'
 
@@ -12,9 +13,9 @@ export interface SpecQuickActionDef {
   run: () => void | Promise<void>
 }
 
-/** Клик по «Запустить процесс» в шапке сетки (тот же UI, что в tabRegistry). */
+/** Клик по «Запустить процесс» в шапке сетки — вкладка «Решения». */
 export function triggerHeaderQuickLaunch(): void {
-  document.querySelector<HTMLButtonElement>('.orch-grid-header-actions .spec-btn-launch')?.click()
+  openWorkplaceTab('decisions')
 }
 
 async function runPowerShell(command: string): Promise<void> {

@@ -25,6 +25,19 @@ export interface WorkplaceKpiAgentRow {
   source: KpiValueSource
 }
 
+export interface WorkplaceKpiEmployeeMetric {
+  id: string
+  title: string
+  displayValue: string
+  trendDelta: string
+  trendUp: boolean
+  trendPositive: boolean
+  footerText: string
+  sparklinePoints: number[]
+  sparklineColor: string
+  source: KpiValueSource
+}
+
 export interface WorkplaceKpiProblemZone {
   id: string
   zone: string
@@ -32,6 +45,16 @@ export interface WorkplaceKpiProblemZone {
   value: string
   severity: string
   recommendation: string
+  typeId: string
+  typeLabel: string
+  description: string
+  process: string
+  indicator: string
+  currentValue: string
+  targetValue: string
+  deviation: string
+  status: string
+  statusTone: string
   source: KpiValueSource
 }
 
@@ -64,6 +87,7 @@ export interface WorkplaceKpiDashboard {
   periodLabel: string
   cards: WorkplaceKpiCard[]
   agents: WorkplaceKpiAgentRow[]
+  employeeKpi: WorkplaceKpiEmployeeMetric[]
   problemZones: WorkplaceKpiProblemZone[]
   workloadCompare: WorkplaceKpiCompareRow[]
   dynamics: WorkplaceKpiDynamics
@@ -76,6 +100,31 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function parseSource(raw: unknown): KpiValueSource {
   return raw === 'computed' ? 'computed' : 'reference'
+}
+
+function parseProblemZone(row: Record<string, unknown>): WorkplaceKpiProblemZone {
+  const process = String(row.process ?? row.zone ?? '')
+  const indicator = String(row.indicator ?? row.metric ?? '')
+  const currentValue = String(row.currentValue ?? row.value ?? '')
+  return {
+    id: String(row.id ?? ''),
+    zone: String(row.zone ?? process),
+    metric: String(row.metric ?? indicator),
+    value: String(row.value ?? currentValue),
+    severity: String(row.severity ?? 'orange'),
+    recommendation: String(row.recommendation ?? ''),
+    typeId: String(row.typeId ?? ''),
+    typeLabel: String(row.typeLabel ?? ''),
+    description: String(row.description ?? ''),
+    process,
+    indicator,
+    currentValue,
+    targetValue: String(row.targetValue ?? ''),
+    deviation: String(row.deviation ?? ''),
+    status: String(row.status ?? 'Требует внимания'),
+    statusTone: String(row.statusTone ?? 'orange'),
+    source: parseSource(row.source)
+  }
 }
 
 export function parseWorkplaceKpiDashboard(raw: unknown): WorkplaceKpiDashboard {
@@ -113,19 +162,27 @@ export function parseWorkplaceKpiDashboard(raw: unknown): WorkplaceKpiDashboard 
         } satisfies WorkplaceKpiAgentRow
       })
     : []
-  const problemZones = Array.isArray(data.problemZones)
-    ? data.problemZones.map((item) => {
+  const employeeKpi = Array.isArray(data.employeeKpi)
+    ? data.employeeKpi.map((item) => {
         const row = asRecord(item)
         return {
           id: String(row.id ?? ''),
-          zone: String(row.zone ?? ''),
-          metric: String(row.metric ?? ''),
-          value: String(row.value ?? ''),
-          severity: String(row.severity ?? 'orange'),
-          recommendation: String(row.recommendation ?? ''),
+          title: String(row.title ?? ''),
+          displayValue: String(row.displayValue ?? ''),
+          trendDelta: String(row.trendDelta ?? ''),
+          trendUp: row.trendUp == null ? true : Boolean(row.trendUp),
+          trendPositive: row.trendPositive == null ? true : Boolean(row.trendPositive),
+          footerText: String(row.footerText ?? ''),
+          sparklinePoints: Array.isArray(row.sparklinePoints)
+            ? row.sparklinePoints.map((p) => Number(p))
+            : [],
+          sparklineColor: String(row.sparklineColor ?? '#1565c0'),
           source: parseSource(row.source)
-        } satisfies WorkplaceKpiProblemZone
+        } satisfies WorkplaceKpiEmployeeMetric
       })
+    : []
+  const problemZones = Array.isArray(data.problemZones)
+    ? data.problemZones.map((item) => parseProblemZone(asRecord(item)))
     : []
   const workloadCompare = Array.isArray(data.workloadCompare)
     ? data.workloadCompare.map((item) => {
@@ -157,6 +214,7 @@ export function parseWorkplaceKpiDashboard(raw: unknown): WorkplaceKpiDashboard 
     periodLabel: String(data.periodLabel ?? ''),
     cards,
     agents,
+    employeeKpi,
     problemZones,
     workloadCompare,
     dynamics: {

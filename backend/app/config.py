@@ -104,6 +104,8 @@ class Settings(BaseSettings):
     dok_http_base_path: str = "/doc"
     erp_login: str = ""
     erp_password: str = ""
+    # When local ODBC to erp_pm fails (dev PC without VPN), delegate login to LAN gateway.
+    auth_erp_gateway_url: str = ""
     # Temporary: issue JWT as ERP_LOGIN without querying erp_pm SQL.
     auth_skip_erp_sql: bool = False
     # Dev: do not compare JWT sid to Redis (LAN vs localhost BACKEND_URL mismatch).

@@ -9,9 +9,17 @@ interface AdminDataTableProps {
   columns: AdminTableColumn[]
   rows: React.ReactNode[][]
   stretchRows?: boolean
+  selectedRowIndex?: number | null
+  onRowClick?: (rowIndex: number) => void
 }
 
-export function AdminDataTable({ columns, rows, stretchRows = false }: AdminDataTableProps): React.JSX.Element {
+export function AdminDataTable({
+  columns,
+  rows,
+  stretchRows = false,
+  selectedRowIndex = null,
+  onRowClick
+}: AdminDataTableProps): React.JSX.Element {
   return (
     <div
       className={stretchRows ? 'admin-table-wrap admin-table-wrap--stretch' : 'admin-table-wrap'}
@@ -29,7 +37,14 @@ export function AdminDataTable({ columns, rows, stretchRows = false }: AdminData
         </thead>
         <tbody>
           {rows.map((cells, rowIndex) => (
-            <tr key={rowIndex}>
+            <tr
+              key={rowIndex}
+              className={[
+                onRowClick ? 'is-clickable' : '',
+                selectedRowIndex === rowIndex ? 'is-selected' : ''
+              ].filter(Boolean).join(' ')}
+              onClick={onRowClick ? () => onRowClick(rowIndex) : undefined}
+            >
               {cells.map((cell, cellIndex) => (
                 <td key={`${rowIndex}-${cellIndex}`} className={columns[cellIndex]?.align ? `is-${columns[cellIndex].align}` : ''}>
                   {cell}

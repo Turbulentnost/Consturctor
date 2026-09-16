@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { TODAY_RESULT_FILES } from '../tabs/grid/todayDemoData'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { WorkflowFileItem } from '../api/types'
@@ -12,7 +13,7 @@ import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCac
 export type TodayAgentResultItem = {
   id: string
   name: string
-  kind: 'doc' | 'pdf' | 'xls'
+  kind: 'doc' | 'pdf' | 'xls' | 'csv'
   tag: string
   tagTone: SpecPillTone
   downloadUrl?: string
@@ -22,10 +23,11 @@ export type TodayAgentResultItem = {
   summary?: string
 }
 
-function fileKind(name: string): 'doc' | 'pdf' | 'xls' {
+function fileKind(name: string): 'doc' | 'pdf' | 'xls' | 'csv' {
   const lower = (name || '').toLowerCase()
   if (/\.pdf$/.test(lower)) return 'pdf'
-  if (/\.(xlsx?|csv)$/.test(lower)) return 'xls'
+  if (/\.csv$/.test(lower)) return 'csv'
+  if (/\.xlsx?$/.test(lower)) return 'xls'
   return 'doc'
 }
 
@@ -137,5 +139,20 @@ export function useTodayAgentResults(periodDay: Date, userId?: string): TodayAge
     return () => window.clearInterval(timer)
   }, [load])
 
-  return { loading, error, items }
+  const resolvedItems = useMemo(() => {
+    if (items.length) return items
+    return TODAY_RESULT_FILES.map((file) => ({
+      id: file.id,
+      name: file.name,
+      kind: file.kind,
+      tag: file.tag,
+      tagTone: file.tagTone
+    }))
+  }, [items])
+
+  return {
+    loading: loading && items.length === 0,
+    error: resolvedItems.length ? '' : error,
+    items: resolvedItems
+  }
 }

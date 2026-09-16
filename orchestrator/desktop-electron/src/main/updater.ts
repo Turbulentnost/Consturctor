@@ -12,6 +12,8 @@ export interface UpdateStatus {
   availableVersion: string
   percent: number
   error: string
+  source: string
+  devMode: boolean
 }
 
 export interface UpdaterOptions {
@@ -52,7 +54,17 @@ const status: UpdateStatus = {
   currentVersion: '',
   availableVersion: '',
   percent: 0,
-  error: ''
+  error: '',
+  source: '',
+  devMode: false
+}
+
+function sourceLabel(): string {
+  return options.owner && options.repo ? `${options.owner}/${options.repo}` : ''
+}
+
+function isDevMode(): boolean {
+  return !app.isPackaged
 }
 
 export function parseVersionParts(raw: string): number[] {
@@ -131,29 +143,71 @@ export function pickInstallers(assets: GithubAsset[]): GithubAsset[] {
   return picked
 }
 
-async function fetchLatestRelease(): Promise<GithubRelease | null> {
+async function fetchLatestRelease(): Promise<GithubRelease> {
+  const source = sourceLabel() || 'unknown'
   const url = `https://api.github.com/repos/${options.owner}/${options.repo}/releases/latest`
-  const response = await fetch(url, { headers: authHeaders() })
-  if (response.status === 404) return null
+  let response: Response
+  try {
+    response = await fetch(url, { headers: authHeaders() })
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    throw new Error(`Сеть: не удалось проверить ${source} (${detail})`)
+  }
+  if (response.status === 404) {
+    throw new Error(`Нет релиза в ${source}`)
+  }
   if (!response.ok) {
-    throw new Error(`GitHub release check failed (${response.status})`)
+    throw new Error(`GitHub ${source}: ошибка ${response.status}`)
   }
   return (await response.json()) as GithubRelease
 }
 
 async function checkForUpdate(): Promise<void> {
-  if (busy || !options.owner || !options.repo) return
+  if (busy) return
   status.currentVersion = currentVersion()
+  status.devMode = isDevMode()
+  status.source = sourceLabel()
+  if (!options.owner || !options.repo) {
+    setStatus({
+      state: 'error',
+      availableVersion: '',
+      percent: 0,
+      error: 'Не задан репозиторий обновлений'
+    })
+    return
+  }
   try {
     const release = await fetchLatestRelease()
-    const assets = pickInstallers(release?.assets || [])
-    const version = String(release?.tag_name || '').trim()
-    if (!release || !assets.length || !version || compareVersions(version, status.currentVersion) <= 0) {
+    const assets = pickInstallers(release.assets || [])
+    const version = String(release.tag_name || '').trim()
+    if (!version) {
+      found = null
+      if (status.state === 'downloading' || status.state === 'installing') return
+      setStatus({
+        state: 'error',
+        availableVersion: '',
+        percent: 0,
+        error: `Нет релиза в ${sourceLabel()}`
+      })
+      return
+    }
+    if (!assets.length) {
+      found = null
+      if (status.state === 'downloading' || status.state === 'installing') return
+      setStatus({
+        state: 'error',
+        availableVersion: version,
+        percent: 0,
+        error: `В релизе ${version} нет установщика`
+      })
+      return
+    }
+    if (compareVersions(version, status.currentVersion) <= 0) {
       found = null
       if (status.state === 'downloading' || status.state === 'installing') return
       setStatus({
         state: 'idle',
-        availableVersion: '',
+        availableVersion: version,
         percent: 0,
         error: ''
       })
@@ -175,7 +229,7 @@ async function checkForUpdate(): Promise<void> {
     const message = err instanceof Error ? err.message : 'GitHub update check failed'
     console.error(message)
     if (status.state === 'idle' || status.state === 'error') {
-      setStatus({ state: found ? 'available' : 'idle', error: found ? '' : message })
+      setStatus({ state: found ? 'available' : 'error', error: found ? '' : message })
     }
   }
 }
@@ -243,10 +297,29 @@ function launchInstaller(installerPath: string): void {
 
 export function getUpdateStatus(): UpdateStatus {
   status.currentVersion = currentVersion()
+  status.devMode = isDevMode()
+  status.source = sourceLabel() || status.source
   return snapshot()
 }
 
+export async function requestUpdateCheck(): Promise<UpdateStatus> {
+  status.currentVersion = currentVersion()
+  status.devMode = isDevMode()
+  status.source = sourceLabel()
+  if (isDevMode()) {
+    return setStatus({
+      state: 'idle',
+      availableVersion: '',
+      percent: 0,
+      error: 'Проверка недоступна в dev'
+    })
+  }
+  await checkForUpdate()
+  return getUpdateStatus()
+}
+
 export async function installAvailableUpdate(): Promise<{ ok: boolean; error?: string }> {
+  if (isDevMode()) return { ok: false, error: 'Установка exe недоступна в dev' }
   if (busy) return { ok: false, error: 'Update already in progress' }
   if (!found) {
     await checkForUpdate()
@@ -306,8 +379,16 @@ export function startUpdater(next: UpdaterOptions): void {
     token: next.token?.trim() || undefined
   }
   status.currentVersion = currentVersion()
+  status.devMode = isDevMode()
+  status.source = sourceLabel()
   if (firstTimer) clearTimeout(firstTimer)
   if (timer) clearInterval(timer)
+  firstTimer = null
+  timer = null
+  if (status.devMode) {
+    broadcast()
+    return
+  }
   firstTimer = setTimeout(() => {
     void checkForUpdate()
   }, FIRST_CHECK_MS)

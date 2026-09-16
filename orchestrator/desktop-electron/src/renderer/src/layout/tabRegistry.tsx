@@ -5,6 +5,8 @@ import {
   SpecQuickLaunchButton,
   SpecTodayQuickLaunchButton
 } from '../workplace/specV04Components'
+import { CreateTaskHeaderButton } from './CreateTaskHeaderButton'
+import { KpiExportReportButton } from './KpiExportReportButton'
 
 export type WorkplaceTabKey =
   | 'today'
@@ -43,14 +45,7 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   tasks: {
     title: PAGE_LABELS.tasks,
     subtitle: 'Единый центр управления задачами сотрудника',
-    headerActions: (
-      <button type="button" className="spec-btn-launch">
-        <span>+ Создать задачу</span>
-        <span className="spec-btn-launch-caret" aria-hidden>
-          ▾
-        </span>
-      </button>
-    )
+    headerActions: <CreateTaskHeaderButton />
   },
   projects: {
     title: PAGE_LABELS.projects,
@@ -75,11 +70,7 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   kpi: {
     title: PAGE_LABELS.kpi,
     subtitle: 'Ключевые показатели сотрудника и ИИ-агентов',
-    headerActions: (
-      <button type="button" className="spec-btn-outline">
-        Экспорт отчёта ▾
-      </button>
-    )
+    headerActions: <KpiExportReportButton />
   },
   history: {
     title: PAGE_LABELS.history,

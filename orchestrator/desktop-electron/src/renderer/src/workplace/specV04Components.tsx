@@ -4,6 +4,7 @@ import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecPillTone } from './specV04DemoData'
 import { SpecIconCalendar, SpecIconOnec, SpecIconPlay, SpecTileIcon } from './specV04Icons'
 import type { SpecQuickActionIcon } from './specGridQuickActions'
+import { openWorkplaceTab } from './workplaceNav'
 
 function SpecQuickActionIcon({ kind }: { kind: SpecQuickActionIcon }): React.JSX.Element {
   const icon =
@@ -59,38 +60,98 @@ export function SpecPageHead({
   )
 }
 
-export function SpecSummaryTiles({ tiles }: { tiles: SpecSummaryTile[] }): React.JSX.Element {
+/** Clickable KPI tiles. Parent owns filter state; re-click of an active id should reset to `all`. */
+export function SpecSummaryTiles({
+  tiles,
+  activeId,
+  onSelect,
+  className
+}: {
+  tiles: SpecSummaryTile[]
+  activeId?: string | string[] | null
+  onSelect?: (id: string) => void
+  className?: string
+}): React.JSX.Element {
+  const activeIds = new Set(Array.isArray(activeId) ? activeId : activeId ? [activeId] : [])
+  const clickable = Boolean(onSelect)
   return (
-    <div className="spec-v04-tiles spec-v04-tiles-rich">
-      {tiles.map((tile) => (
-        <article key={tile.id} className={`spec-v04-tile tone-${tile.tone || 'neutral'}`}>
-          <div className="spec-v04-tile-top">
-            <div className="spec-v04-tile-label-row">
-              <SpecTileIcon id={tile.id} />
-              <span className="spec-v04-tile-label">{tile.label}</span>
+    <div className={`spec-v04-tiles spec-v04-tiles-rich${className ? ` ${className}` : ''}`}>
+      {tiles.map((tile) => {
+        const active = activeIds.has(tile.id)
+        const classNames = [
+          'spec-v04-tile',
+          `tone-${tile.tone || 'neutral'}`,
+          clickable ? 'is-clickable' : '',
+          active ? 'is-active' : ''
+        ]
+          .filter(Boolean)
+          .join(' ')
+        const body = (
+          <>
+            <div className="spec-v04-tile-top">
+              <div className="spec-v04-tile-label-row">
+                <SpecTileIcon id={tile.id} />
+                <span className="spec-v04-tile-label" title={tile.label}>
+                  {tile.label}
+                </span>
+              </div>
+            </div>
+            <div className="spec-v04-tile-metrics">
+              <strong className="spec-v04-tile-value" title={tile.value}>
+                {tile.value}
+              </strong>
+              {tile.hint && tile.hint !== tile.value ? (
+                <small className="spec-v04-tile-hint" title={tile.hint}>
+                  {tile.hint}
+                </small>
+              ) : null}
             </div>
             {tile.progress != null ? (
-              <div className={`spec-v04-ring tone-${tile.tone || 'blue'}`} style={{ '--p': `${tile.progress}%` } as React.CSSProperties}>
+              <div
+                className={`spec-v04-ring tone-${tile.tone || 'blue'}`}
+                style={{ '--p': `${tile.progress}%` } as React.CSSProperties}
+                title={`${tile.progress}%`}
+              >
                 <span>{tile.progress}%</span>
               </div>
             ) : null}
-          </div>
-          <strong className="spec-v04-tile-value">{tile.value}</strong>
-          {tile.hint ? <small className="spec-v04-tile-hint">{tile.hint}</small> : null}
-          {tile.progress != null && !tile.ring ? (
-            <div className="spec-v04-tile-bar">
-              <i style={{ width: `${tile.progress}%` }} />
-            </div>
-          ) : null}
-        </article>
-      ))}
+            {tile.progress != null && !tile.ring ? (
+              <div className="spec-v04-tile-bar" title={`${tile.progress}%`}>
+                <i style={{ width: `${tile.progress}%` }} />
+              </div>
+            ) : null}
+          </>
+        )
+        if (clickable) {
+          return (
+            <button
+              key={tile.id}
+              type="button"
+              className={classNames}
+              aria-pressed={active}
+              onClick={() => onSelect?.(tile.id)}
+            >
+              {body}
+            </button>
+          )
+        }
+        return (
+          <article key={tile.id} className={classNames}>
+            {body}
+          </article>
+        )
+      })}
     </div>
   )
 }
 
 export function SpecProcessMapButton(): React.JSX.Element {
   return (
-    <button type="button" className="spec-btn-outline spec-header-action-compact">
+    <button
+      type="button"
+      className="spec-btn-outline spec-header-action-compact"
+      onClick={() => openWorkplaceTab('decisions')}
+    >
       Карта процессов
     </button>
   )
@@ -98,7 +159,7 @@ export function SpecProcessMapButton(): React.JSX.Element {
 
 export function SpecQuickLaunchButton(): React.JSX.Element {
   return (
-    <button type="button" className="spec-btn-launch">
+    <button type="button" className="spec-btn-launch" onClick={() => openWorkplaceTab('decisions')}>
       <SpecIconPlay />
       <span>Запустить процесс</span>
       <span className="spec-btn-launch-caret" aria-hidden>
@@ -110,7 +171,11 @@ export function SpecQuickLaunchButton(): React.JSX.Element {
 
 export function SpecTodayQuickLaunchButton(): React.JSX.Element {
   return (
-    <button type="button" className="spec-btn-launch spec-btn-launch-today">
+    <button
+      type="button"
+      className="spec-btn-launch spec-btn-launch-today"
+      onClick={() => openWorkplaceTab('decisions')}
+    >
       <SpecIconPlay />
       <span>Быстрый запуск</span>
       <span className="spec-btn-launch-caret" aria-hidden>

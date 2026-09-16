@@ -75,7 +75,7 @@ OUTLOOK_NOT_REGISTERED_MESSAGE = (
 DEFAULT_MAIL_MAX_SCAN_ITEMS = 200
 DEFAULT_CALENDAR_MAX_SCAN_ITEMS = 1000
 MAX_SCAN_ITEMS = 2000
-BODY_PREVIEW_LIMIT = 500
+BODY_PREVIEW_LIMIT = 12000
 CALENDAR_BODY_PREVIEW_LIMIT = 300
 
 # MAPI proptag-схемы для чтения адресных свойств через PropertyAccessor.
@@ -1197,164 +1197,6 @@ def _compute_free_slots(
     return slots
 
 
-def _mail_item_from_entry_id(namespace: Any, entry_id: str) -> Any:
-    """Открыть MailItem по EntryID MAPI."""
-    key = (entry_id or "").strip()
-    if not key:
-        raise OutlookComError("entry_id обязателен")
-    try:
-        return namespace.GetItemFromID(key)
-    except Exception as exc:
-        raise OutlookAccessError(f"Письмо не найдено в Outlook: {exc}") from exc
-
-
-def _attachment_manifest(message: Any) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    try:
-        attachments = message.Attachments
-        count = int(getattr(attachments, "Count", 0) or 0)
-    except Exception:
-        return out
-    for idx in range(1, count + 1):
-        try:
-            att = attachments.Item(idx)
-            out.append(
-                {
-                    "index": idx,
-                    "file_name": _safe_str(getattr(att, "FileName", "")),
-                    "display_name": _safe_str(getattr(att, "DisplayName", "")),
-                    "size": int(getattr(att, "Size", 0) or 0),
-                }
-            )
-        except Exception:
-            continue
-    return out
-
-
-def fetch_mail_message(input_data: dict) -> dict:
-    """Прочитать письмо по entry_id: тело, непрочитанное, список вложений."""
-    entry_id = _safe_str(input_data.get("entry_id")).strip()
-
-    def _read(win32com_client: Any) -> dict:
-        outlook = _dispatch_outlook(win32com_client)
-        namespace = outlook.GetNamespace("MAPI")
-        message = _mail_item_from_entry_id(namespace, entry_id)
-        body = _safe_str(getattr(message, "Body", ""))
-        try:
-            unread = bool(getattr(message, "UnRead", False))
-        except Exception:
-            unread = False
-        attachments = _attachment_manifest(message)
-        clipped = body[:5000] if len(body) > 5000 else body
-        return {
-            "entry_id": entry_id,
-            "subject": _safe_str(getattr(message, "Subject", "")),
-            "sender": _read_guarded_property(message, PR_SENDER_NAME_W),
-            "body": clipped,
-            "body_preview": body[:BODY_PREVIEW_LIMIT],
-            "unread": unread,
-            "attachments": attachments,
-            "attachment_count": len(attachments),
-            "source": "outlook_com",
-        }
-
-    return _run_com_read(_read, "Не удалось прочитать письмо Outlook")
-
-
-def mark_mail_read(input_data: dict) -> dict:
-    """Пометить письмо прочитанным или непрочитанным."""
-    entry_id = _safe_str(input_data.get("entry_id")).strip()
-    unread = _truthy(input_data.get("unread"))
-
-    def _write(win32com_client: Any) -> dict:
-        outlook = _dispatch_outlook(win32com_client)
-        namespace = outlook.GetNamespace("MAPI")
-        message = _mail_item_from_entry_id(namespace, entry_id)
-        message.UnRead = unread
-        message.Save()
-        return {
-            "ok": True,
-            "entry_id": entry_id,
-            "unread": unread,
-            "source": "outlook_com",
-        }
-
-    return _run_com_read(_write, "Не удалось изменить статус письма")
-
-
-def display_mail_message(input_data: dict) -> dict:
-    """Открыть письмо или черновик ответа/пересылки в окне Outlook."""
-    entry_id = _safe_str(input_data.get("entry_id")).strip()
-    mode = _safe_str(input_data.get("mode") or "open").strip().casefold()
-
-    def _write(win32com_client: Any) -> dict:
-        outlook = _dispatch_outlook(win32com_client)
-        namespace = outlook.GetNamespace("MAPI")
-        message = _mail_item_from_entry_id(namespace, entry_id)
-        if mode in {"reply", "ответ", "ответить"}:
-            draft = message.Reply()
-            draft.Display()
-            return {"entry_id": entry_id, "mode": "reply", "displayed": True, "source": "outlook_com"}
-        if mode in {"reply_all", "replyall", "ответить_всем", "ответить всем"}:
-            draft = message.ReplyAll()
-            draft.Display()
-            return {
-                "entry_id": entry_id,
-                "mode": "reply_all",
-                "displayed": True,
-                "source": "outlook_com",
-            }
-        if mode in {"forward", "переслать"}:
-            draft = message.Forward()
-            draft.Display()
-            return {"entry_id": entry_id, "mode": "forward", "displayed": True, "source": "outlook_com"}
-        message.Display()
-        return {"entry_id": entry_id, "mode": "open", "displayed": True, "source": "outlook_com"}
-
-    return _run_com_read(_write, "Не удалось открыть письмо в Outlook")
-
-
-def save_mail_attachment(input_data: dict) -> dict:
-    """Сохранить вложение письма во временную папку и вернуть путь."""
-    import tempfile
-    from pathlib import Path
-
-    entry_id = _safe_str(input_data.get("entry_id")).strip()
-    index = _clamp_int(input_data.get("attachment_index") or input_data.get("index"), 1, 1, 999)
-    save_dir_raw = _safe_str(input_data.get("save_dir")).strip()
-
-    def _read(win32com_client: Any) -> dict:
-        outlook = _dispatch_outlook(win32com_client)
-        namespace = outlook.GetNamespace("MAPI")
-        message = _mail_item_from_entry_id(namespace, entry_id)
-        try:
-            att = message.Attachments.Item(index)
-        except Exception as exc:
-            raise OutlookComError(f"Вложение #{index} не найдено: {exc}") from exc
-        file_name = _safe_str(getattr(att, "FileName", "")).strip() or f"attachment_{index}"
-        base = Path(save_dir_raw) if save_dir_raw else Path(tempfile.gettempdir()) / "orch-outlook-mail"
-        base.mkdir(parents=True, exist_ok=True)
-        target = base / file_name
-        if target.exists():
-            stem = target.stem
-            suffix = target.suffix
-            for n in range(2, 100):
-                candidate = base / f"{stem}_{n}{suffix}"
-                if not candidate.exists():
-                    target = candidate
-                    break
-        att.SaveAsFile(str(target))
-        return {
-            "entry_id": entry_id,
-            "attachment_index": index,
-            "file_name": file_name,
-            "saved_path": str(target),
-            "source": "outlook_com",
-        }
-
-    return _run_com_read(_read, "Не удалось сохранить вложение")
-
-
 def send_mail_disabled(input_data: dict) -> dict:
     """Всегда заблокировать отправку писем в безопасном режиме."""
     raise DangerousOutlookActionBlockedError(
@@ -1677,21 +1519,6 @@ def _collect_mail_messages(
         recipients = _read_guarded_property(message, PR_DISPLAY_TO_W)
         sent_representing = _read_guarded_property(message, PR_SENT_REPRESENTING_NAME_W)
         timestamp = _safe_str(message_time)
-        try:
-            unread = bool(getattr(message, "UnRead", False))
-        except Exception:
-            unread = False
-        attachment_names: list[str] = []
-        try:
-            attachments = message.Attachments
-            count = int(getattr(attachments, "Count", 0) or 0)
-            for idx in range(1, min(count, 20) + 1):
-                att = attachments.Item(idx)
-                name = _safe_str(getattr(att, "FileName", "")).strip()
-                if name:
-                    attachment_names.append(name)
-        except Exception:
-            attachment_names = []
         item = {
             "entry_id": _safe_str(getattr(message, "EntryID", "")),
             "subject": subject,
@@ -1703,13 +1530,35 @@ def _collect_mail_messages(
             "direction": direction,
             "folder": folder_name,
             "body_preview": body[:BODY_PREVIEW_LIMIT],
-            "unread": unread,
-            "attachment_count": len(attachment_names),
-            "attachment_names": attachment_names,
+            "unread": bool(getattr(message, "UnRead", False)),
+            "attachments": _mail_attachment_names(message),
             "datetime_sort": _datetime_sort_key(message_time),
         }
         results.append(item)
     return results, scanned_count
+
+
+def _mail_attachment_names(message: Any) -> list[dict[str, str]]:
+    """Имена вложений письма без встроенных картинок подписи."""
+    names: list[dict[str, str]] = []
+    try:
+        attachments = getattr(message, "Attachments", None)
+        count = int(getattr(attachments, "Count", 0) or 0)
+    except Exception:
+        return names
+    for index in range(1, count + 1):
+        try:
+            item = attachments.Item(index)
+            name = _safe_str(getattr(item, "FileName", ""))
+            att_type = int(getattr(item, "Type", 1) or 1)
+            if not name or att_type != 1:
+                continue
+            if re.match(r"image\d+\.(png|jpe?g|gif|bmp)$", name, re.I):
+                continue
+            names.append({"name": name})
+        except Exception:
+            continue
+    return names
 
 
 def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:

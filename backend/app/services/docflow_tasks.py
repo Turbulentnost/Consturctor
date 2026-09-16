@@ -79,6 +79,7 @@ def docflow_auth(args: dict[str, Any] | None = None) -> tuple[str, str] | None:
 
 
 def docflow_soap_ready() -> bool:
+    """SOAP host plus a service credential pair (including ODATA_*)."""
     from app.tools.onec.dok_soap import soap_configured
 
     return soap_configured()
@@ -89,6 +90,7 @@ def docflow_configured() -> bool:
 
 
 def docflow_url_ready() -> bool:
+    """SOAP is ready when host + service creds exist, or OData /doc URL is set."""
     return docflow_soap_ready() or bool(docflow_base_url())
 
 
@@ -302,21 +304,19 @@ def handle_docflow_tasks(
         only_open = bool(args.get("only_open"))
     today_and_overdue = bool(args.get("today_and_overdue"))
     force_refresh = bool(args.get("force_refresh") or args.get("refresh"))
-    warning = ""
-    try:
-        tasks = list_docflow_tasks(
-            fio=fio,
-            date_from=None if today_and_overdue else start,
-            date_to=None if today_and_overdue else finish,
-            only_open=only_open,
-            limit=int(args.get("limit") or 200),
-            today_and_overdue=today_and_overdue,
-            force_refresh=force_refresh,
-            auth_args=args,
-        )
-    except DocflowError as exc:
-        tasks = []
-        warning = str(exc)
+    auth_args = dict(args)
+    if fio and not str(auth_args.get("fio") or auth_args.get("erp_login") or "").strip():
+        auth_args["fio"] = fio
+    tasks, warning = _list_docflow_via_soap(
+        fio,
+        limit=int(args.get("limit") or 200),
+        date_from=None if today_and_overdue else start,
+        date_to=None if today_and_overdue else finish,
+        only_open=only_open,
+        today_and_overdue=today_and_overdue,
+        force_refresh=force_refresh,
+        auth_args=auth_args,
+    )
     summary = (
         f"Задачи документооборота на сегодня и просроченные: {len(tasks)} ({fio})"
         if today_and_overdue

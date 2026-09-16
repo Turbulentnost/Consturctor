@@ -1,8 +1,14 @@
-import { hasComPassword } from '../store/session'
+import { comCredentials, hasComPassword } from '../store/session'
 
 /** Dev-only suffix for empty 1C states (no password value). */
 export function comPasswordSessionHint(): string {
-  return `Пароль 1С в сессии: ${hasComPassword() ? 'да' : 'нет'}`
+  const login = (comCredentials().login || '').trim()
+  if (hasComPassword()) {
+    return login
+      ? `Пароль 1С: введён на экране входа · логин SOAP: ${login}`
+      : 'Пароль 1С: введён на экране входа'
+  }
+  return 'Пароль 1С: не введён (не берём пароль из .env)'
 }
 
 export function missingComPasswordMessage(): string {
@@ -54,6 +60,65 @@ export function shouldForceReLogin(message: string, status = 0): boolean {
   return kind === 'session_revoked' || kind === 'invalid_token' || kind === 'auth_required'
 }
 
+const DOK_HTTP_ENV_BANNER =
+  /Задайте DOK_HTTP_SERVER( и DOK_HTTP_USER)? в окружении или \.env/i
+const GATEWAY_STUB_BANNER =
+  /Gateway вернул stub \(нет ERP SQL\s*\/\s*OData на сервере\)/i
+const DOK_STUB_BANNER = /Документооборот:\s*stub \(нет DOK_HTTP_\* на backend\)/i
+const DOK_HTTP_CONFIG_HINT =
+  /задайте DOK_HTTP_(SERVER|USER|PASSWORD)|нет DOK_HTTP_\*|Передайте ФИО и пароль сеанса/i
+const COM_FALLBACK_HINT = /VITE_ONEC_COM_TASKS_FALLBACK|COM onec\.search_tasks/i
+
+/** Env / stub / old-gateway paragraphs — never show these as user-facing errors. */
+export function isTechnicalDocflowConfigMessage(text: string): boolean {
+  const t = (text || '').trim()
+  if (!t) return false
+  return (
+    DOK_HTTP_ENV_BANNER.test(t) ||
+    GATEWAY_STUB_BANNER.test(t) ||
+    DOK_STUB_BANNER.test(t) ||
+    DOK_HTTP_CONFIG_HINT.test(t) ||
+    COM_FALLBACK_HINT.test(t) ||
+    /нет ERP SQL\s*\/\s*OData|Проверьте ERP_\* на backend/i.test(t)
+  )
+}
+
+export function stripTechnicalDocflowMessages(text: string): string {
+  if (!(text || '').trim()) return ''
+  const kept = text
+    .split(' · ')
+    .map((part) => part.trim())
+    .filter((part) => part && !isTechnicalDocflowConfigMessage(part))
+  return kept.join(' · ')
+}
+
+/** User-facing 1C error: technical stub/env text is dropped. */
+export function userFacingOneCError(text: string): string {
+  const cleaned = stripTechnicalDocflowMessages(text)
+  if (/^HTTP\s*40[123]\s*:?\s*$/i.test(cleaned) || /HTTP\s*40[123]:\s*$/i.test(cleaned)) {
+    return 'Документооборот не принял учётку. Войдите с паролем 1С.'
+  }
+  if (/HTTP\s*40[123].*отклонил Basic/i.test(cleaned)) {
+    return 'Документооборот не принял учётку. Войдите с паролем 1С.'
+  }
+  return cleaned
+}
+
+export function sessionOneCSourceLabel(fio: string): string {
+  const name = (fio || '').trim()
+  return name ? `1С · ${name}` : '1С'
+}
+
+export function sessionOneCEmptyText(fio: string): string {
+  const name = (fio || '').trim()
+  return name ? `Нет открытых задач 1С для ${name}.` : 'Нет открытых задач 1С.'
+}
+
+export function sessionOneCLoadingText(fio: string): string {
+  const name = (fio || '').trim()
+  return name ? `Загружаем задачи 1С для ${name}…` : 'Загружаем задачи 1С…'
+}
+
 /** COM / gateway / OData signals that 1C credentials or session must be re-entered. */
 export function isOneCAuthFailure(...chunks: (string | undefined | null)[]): boolean {
   const text = chunks
@@ -62,7 +127,15 @@ export function isOneCAuthFailure(...chunks: (string | undefined | null)[]): boo
     .join(' ')
     .trim()
   if (!text) return false
-  if (/Войдите с паролем 1С|пароль не сохраняется|Пароль 1С в сессии: нет/i.test(text)) {
+  const cleaned = stripTechnicalDocflowMessages(text)
+  if (!cleaned) return !hasComPassword()
+  if (/Войдите с паролем 1С|пароль не сохраняется|Пароль 1С в сессии: нет|экрана входа|не берём пароль из \.env/i.test(cleaned)) {
+    return true
+  }
+  if (/Документооборот SOAP: нет (пароля|пользователя|учётн)/i.test(cleaned)) {
+    return true
+  }
+  if (/Передайте ФИО и пароль сеанса|задайте DOK_HTTP_USER/i.test(cleaned)) {
     return true
   }
   if (
@@ -114,23 +187,27 @@ export function formatGatewayToolError(message: string, status = 0): string {
   }
   if (kind === 'gateway_auth') {
     const code = status === 402 ? 402 : 401
-    const tail = text && !/Gateway отклонил/i.test(text) ? ` (${text})` : ''
+    const cleaned = userFacingOneCError(text)
+    const tail = cleaned && !/Gateway отклонил/i.test(cleaned) ? ` (${cleaned})` : ''
     return (
       `Gateway/OData отклонил запрос (${code}). Проверьте пароль 1С в сеансе и ODATA_* / DOCFLOW_* на backend. ` +
       `На старом LAN gateway обновите constructor-gateway.${tail} ${comPasswordSessionHint()}`
     )
   }
   if (status === 401 && text) {
-    return `Доступ запрещён (401): ${text}`
+    const cleaned = userFacingOneCError(text)
+    return cleaned ? `Доступ запрещён (401): ${cleaned}` : ''
   }
   if (status === 401) {
     return `Доступ запрещён (401). ${comPasswordSessionHint()}`
   }
   if (/401|402|unauthorized|отклонил учётку/i.test(text)) {
-    if (/обновите|gateway/i.test(text)) return text
-    return `${text} Если ошибка повторяется — проверьте пароль 1С (${comPasswordSessionHint()}).`
+    if (/обновите|gateway/i.test(text)) return userFacingOneCError(text)
+    return userFacingOneCError(
+      `${text} Если ошибка повторяется — проверьте пароль 1С (${comPasswordSessionHint()}).`
+    )
   }
-  return text
+  return userFacingOneCError(text)
 }
 
 /** Gateway/docflow hint strings must not appear as rows in the 1C task grid. */
@@ -139,6 +216,7 @@ export function isErpMetaHintRecord(task: Record<string, unknown>): boolean {
   if (/^\d{2}-[\wА-Яа-яЁё.-]+-\d{3,}$/i.test(number)) return false
   const title = String(task.title || number || '').trim()
   if (!title) return true
+  if (isTechnicalDocflowConfigMessage(title)) return true
   if (
     /BACKEND_URL|127\.0\.0\.1:7812|192\.168\.\d+\.\d+:7812|LAN gateway|run_dev\.bat|erp_reachable|constructor-gateway устарел|VPN на вашем ПК/i.test(
       title
@@ -154,7 +232,7 @@ export function isErpMetaHintRecord(task: Record<string, unknown>): boolean {
   ) {
     return true
   }
-  if (/Войдите с паролем 1С|Пароль 1С в сессии/i.test(title)) return true
+  if (/Войдите с паролем 1С|Пароль 1С в сессии|Пароль 1С: введён|Пароль 1С: не введён/i.test(title)) return true
   return false
 }
 
@@ -196,13 +274,10 @@ export function lanGatewayZeroTasksHint(backendUrl: string): string {
   )
 }
 
+/** Never user-facing. Old remote gateways still return source=stub; hide that paragraph. */
 export function stubSourceMessage(source: string): string {
-  const key = (source || '').trim().toLowerCase()
-  if (key !== 'stub') return ''
-  return (
-    'Gateway вернул stub (нет ERP SQL / OData на сервере). ' +
-    'Проверьте ERP_* на backend :7812. COM onec.search_tasks — только при VITE_ONEC_COM_TASKS_FALLBACK=1.'
-  )
+  void source
+  return ''
 }
 
 export function enrichEmptyOneCErrors(
@@ -211,16 +286,14 @@ export function enrichEmptyOneCErrors(
     erpSource?: string
     docSource?: string
     mergedCount: number
+    fio?: string
   }
 ): string {
-  if (opts.mergedCount > 0) return erpError
-  const parts: string[] = []
-  if (!hasComPassword()) parts.push(missingComPasswordMessage())
-  const stubErp = stubSourceMessage(opts.erpSource || '')
-  const stubDoc = stubSourceMessage(opts.docSource || '')
-  if (stubErp) parts.push(stubErp)
-  if (stubDoc && stubDoc !== stubErp) parts.push(stubDoc)
-  if (erpError.trim()) parts.push(erpError.trim())
-  const joined = parts.join(' · ')
-  return joined || `Нет задач 1С. ${comPasswordSessionHint()}`
+  const cleaned = userFacingOneCError(erpError)
+  if (opts.mergedCount > 0) return cleaned
+  const stub =
+    (opts.erpSource || '').trim().toLowerCase() === 'stub' ||
+    (opts.docSource || '').trim().toLowerCase() === 'stub'
+  if (stub && !cleaned) return ''
+  return cleaned
 }

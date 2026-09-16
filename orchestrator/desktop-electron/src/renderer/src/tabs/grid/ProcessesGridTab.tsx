@@ -1,33 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../../api/client'
 import type { AgentRunHistoryItem, UserProfile } from '../../api/types'
+import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
+import { DEFAULT_PROCESS_LAYOUT } from './useTabChromeLayout'
 import {
-  OrchSlotBotA,
-  OrchSlotBotB,
-  OrchSlotBotC,
-  OrchSlotFilters,
-  OrchSlotMain,
-  OrchSlotMetrics,
-  OrchSlotSide
-} from '../../layout/GridSlots'
-import {
-  SpecAskOrchestratorBlock,
-  SpecFilters,
   SpecPanel,
   SpecPill,
   SpecProgress,
   SpecQuickActions,
-  SpecSummaryTiles,
   SpecTableTabs
 } from '../../workplace/specV04Components'
-import { ASK_CHIPS, type SpecProcessRow } from '../../workplace/specV04DemoData'
+import { type SpecProcessRow } from '../../workplace/specV04DemoData'
 import {
   buildProcessTiles,
   countProcessRowsByTab,
   filterProcessRowsByTab,
+  processTabLoading,
   useSpecV04Sources
 } from '../../workplace/useSpecV04Data'
-import { SpecIconCalendar, SpecIconSearch } from '../../workplace/specV04Icons'
+import { isDeadProcessSource } from '../../workplace/tileFilters'
+import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
 import { buildProcessesQuickActions } from '../../workplace/specGridQuickActions'
 import { applyMeetingDoneToRow, isMeetingRowId } from '../../workplace/meetingCompletion'
 import { useMeetingCompletion } from '../../workplace/useMeetingCompletion'
@@ -248,19 +240,39 @@ export function ProcessesGridTab({
   user,
   onOpen,
   onOpenRun,
-  onAskOrchestrator
+  navProcessTab
 }: {
   user: UserProfile
   onOpen: (workflowId: string, title: string) => void
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
-  onAskOrchestrator?: (message: string, context: string) => void
+  navProcessTab?: string | null
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
   const meetingCompletion = useMeetingCompletion()
-  const [tab, setTab] = useState('all')
+  const [tab, setTab] = useState(navProcessTab || 'all')
+  const [query, setQuery] = useState('')
+  const [barType, setBarType] = useState('')
+  const [barStatus, setBarStatus] = useState('')
+  const [barSource, setBarSource] = useState('')
+  const [barProject, setBarProject] = useState('')
+  useEffect(() => {
+    if (navProcessTab) setTab(navProcessTab)
+  }, [navProcessTab])
   const [rowMenuId, setRowMenuId] = useState('')
   const allRows = data.allProcessRows
-  const rows = useMemo(() => filterProcessRowsByTab(allRows, tab), [allRows, tab])
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return filterProcessRowsByTab(allRows, tab).filter((row) => {
+      if (barType && row.type !== barType) return false
+      if (barStatus && row.status !== barStatus) return false
+      if (barSource && row.source !== barSource) return false
+      if (barProject && row.project !== barProject) return false
+      if (q && !`${row.name} ${row.code} ${row.type} ${row.source} ${row.project}`.toLowerCase().includes(q)) {
+        return false
+      }
+      return true
+    })
+  }, [allRows, tab, query, barType, barStatus, barSource, barProject])
   const displayRows = useMemo(
     () =>
       rows.map((row) =>
@@ -287,10 +299,6 @@ export function ProcessesGridTab({
   const tableBusy = data.tableLoading && tab === 'reg' && !rows.length
   const tableEmpty = !tableBusy && !rows.length
 
-  const ask = (message: string): void => {
-    onAskOrchestrator?.(message, 'Вкладка «Процессы»')
-  }
-
   const quickActions = useMemo(
     () =>
       buildProcessesQuickActions({}).map((action) => ({
@@ -303,54 +311,70 @@ export function ProcessesGridTab({
     []
   )
 
+  const chromeTiles = useMemo(
+    () =>
+      summaryTilesAsChrome(buildProcessTiles(data), tab === 'all' ? null : tab, (id) => {
+        if (isDeadProcessSource(data, id)) return
+        setTab((current) => (id === current ? 'all' : id))
+      }),
+    [data, tab]
+  )
+
   return (
-    <>
-      <OrchSlotMetrics>
-        <SpecSummaryTiles tiles={buildProcessTiles(data)} />
-      </OrchSlotMetrics>
-      <OrchSlotFilters>
-        <SpecFilters layout="row">
-          <select className="wp-select spec-filter-field" defaultValue="">
-            <option value="">Все типы</option>
-            <option value="reg">Регламент</option>
-            <option value="onec">Задача из 1С</option>
-            <option value="proj">Проект</option>
-            <option value="mail">Письмо</option>
-            <option value="meet">Совещание</option>
-          </select>
-          <select className="wp-select spec-filter-field" defaultValue="">
-            <option value="">Все статусы</option>
-          </select>
-          <select className="wp-select spec-filter-field" defaultValue="">
-            <option value="">Все источники</option>
-          </select>
-          <select className="wp-select spec-filter-field" defaultValue="">
-            <option value="">Все проекты</option>
-            {data.projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <label className="spec-filter-input spec-filter-search">
-            <SpecIconSearch />
-            <input className="wp-search" type="search" placeholder="Поиск…" />
-          </label>
-          <label className="spec-filter-input spec-filter-period">
-            <SpecIconCalendar />
-            <select className="wp-select" defaultValue="week">
-              <option value="week">Период: Неделя</option>
-            </select>
-          </label>
-          <button type="button" className="spec-filter-reset">
-            Сбросить фильтры
-          </button>
-        </SpecFilters>
-      </OrchSlotFilters>
-      <OrchSlotMain>
-        <div className="spec-table-toolbar">
+    <StandardTabChrome
+      tabId="processes"
+      userId={user.id || ''}
+      defaults={DEFAULT_PROCESS_LAYOUT}
+      chromeTiles={chromeTiles}
+      widgets={{
+        filters: (
+        <GridFilterBar
+          search={{ value: query, onChange: setQuery, placeholder: 'Поиск…' }}
+          selects={[
+            {
+              id: 'type',
+              value: barType,
+              emptyLabel: 'Все типы',
+              onChange: setBarType,
+              options: toFilterOptions(uniqueFilterValues(allRows.map((row) => row.type)))
+            },
+            {
+              id: 'status',
+              value: barStatus,
+              emptyLabel: 'Все статусы',
+              onChange: setBarStatus,
+              options: toFilterOptions(uniqueFilterValues(allRows.map((row) => row.status)))
+            },
+            {
+              id: 'source',
+              value: barSource,
+              emptyLabel: 'Все источники',
+              onChange: setBarSource,
+              options: toFilterOptions(uniqueFilterValues(allRows.map((row) => row.source)))
+            },
+            {
+              id: 'project',
+              value: barProject,
+              emptyLabel: 'Все проекты',
+              onChange: setBarProject,
+              options: toFilterOptions(uniqueFilterValues(allRows.map((row) => row.project)))
+            }
+          ]}
+          onReset={() => {
+            setQuery('')
+            setBarType('')
+            setBarStatus('')
+            setBarSource('')
+            setBarProject('')
+            setTab('all')
+          }}
+        />
+        ),
+        main: (
+        <div className="orch-process-main">
+        <div className="spec-table-toolbar orch-process-tabs">
           <SpecTableTabs tabs={tabs} active={tab} onChange={setTab} />
-          <select className="wp-select" defaultValue="priority">
+          <select className="wp-select orch-process-tabs-sort" defaultValue="priority">
             <option value="priority">Сортировка: По приоритету</option>
           </select>
         </div>
@@ -380,7 +404,7 @@ export function ProcessesGridTab({
               {tableEmpty ? (
                 <tr>
                   <td colSpan={9} className="spec-v04-empty">
-                    {data.sourcesLoading ? 'Подгружаем данные…' : 'Нет процессов в категории.'}
+                    {processTabLoading(data, tab) ? 'Подгружаем данные…' : 'Нет процессов в категории.'}
                   </td>
                 </tr>
               ) : null}
@@ -452,9 +476,9 @@ export function ProcessesGridTab({
             </tbody>
           </table>
         </div>
-      </OrchSlotMain>
-      <OrchSlotSide>
-        {selected ? (
+        </div>
+        ),
+        side: selected ? (
           <ProcessDetail
             row={selected}
             onOpen={onOpen}
@@ -466,9 +490,8 @@ export function ProcessesGridTab({
           />
         ) : (
           <div className="wp-card spec-v04-muted">Выберите процесс в таблице</div>
-        )}
-      </OrchSlotSide>
-      <OrchSlotBotA>
+        ),
+        botA: (
         <SpecPanel title="Проекты и проектные задачи">
           {data.projects.length ? (
             <table className="spec-v04-table spec-v04-table-compact">
@@ -489,15 +512,13 @@ export function ProcessesGridTab({
             <p className="spec-v04-muted">Портфель TurboProject пуст или недоступен.</p>
           )}
         </SpecPanel>
-      </OrchSlotBotA>
-      <OrchSlotBotB>
+        ),
+        botB: (
         <SpecPanel title="Быстрые действия">
           <SpecQuickActions items={quickActions} />
         </SpecPanel>
-      </OrchSlotBotB>
-      <OrchSlotBotC>
-        <SpecAskOrchestratorBlock placeholder="Спросить про процессы…" chips={ASK_CHIPS.processes} onSubmit={ask} />
-      </OrchSlotBotC>
-    </>
+        )
+      }}
+    />
   )
 }

@@ -1,5 +1,37 @@
 import { addDays, mondayOf, type CalendarView } from './calendar'
 
+export function isOutlookFolderOwner(value: string | undefined): boolean {
+  const text = String(value || '').trim().toLowerCase()
+  return !text || text === 'календарь' || text === 'calendar' || text === 'календари' || text === 'calendars'
+}
+
+export function meetingFormatHint(location: string): string {
+  const loc = (location || '').trim()
+  if (!loc) return 'Формат не указан'
+  const lower = loc.toLowerCase()
+  if (
+    lower.includes('teams') ||
+    lower.includes('zoom') ||
+    lower.includes('meet') ||
+    lower.includes('онлайн') ||
+    lower.includes('http')
+  ) {
+    return 'Онлайн'
+  }
+  return 'Очно / переговорная'
+}
+
+export function formatMeetingStamp(value: string): string {
+  const parsed = parseMeetingTime(value)
+  if (!parsed) return (value || '').trim() || '—'
+  return parsed.toLocaleString('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
 /** A meeting read from the user's Outlook calendar (normalized for the UI). */
 export interface MeetingEvent {
   id: string

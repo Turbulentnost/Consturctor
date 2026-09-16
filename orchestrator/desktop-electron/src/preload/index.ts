@@ -221,7 +221,18 @@ const api = {
     availableVersion: string
     percent: number
     error: string
+    source: string
+    devMode: boolean
   }> => ipcRenderer.invoke('updater:getStatus'),
+  checkUpdate: (): Promise<{
+    state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+    currentVersion: string
+    availableVersion: string
+    percent: number
+    error: string
+    source: string
+    devMode: boolean
+  }> => ipcRenderer.invoke('updater:check'),
   installUpdate: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('updater:install'),
   loadOdataExternalEnv: (): Promise<{
     ok: boolean
@@ -247,6 +258,8 @@ const api = {
       availableVersion: string
       percent: number
       error: string
+      source: string
+      devMode: boolean
     }) => void
   ): (() => void) => {
     const listener = (
@@ -257,6 +270,8 @@ const api = {
         availableVersion: string
         percent: number
         error: string
+        source: string
+        devMode: boolean
       }
     ): void => {
       callback(payload)

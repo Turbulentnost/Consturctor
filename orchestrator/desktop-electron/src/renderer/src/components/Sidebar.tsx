@@ -6,7 +6,7 @@ import { loadUserAvatar } from '../api/avatars'
 import type { ChatMessage, ChatThread, DirectoryUser } from '../api/types'
 import logoUrl from '../assets/logo.png'
 import iconSearch from '../assets/search.png'
-import { NavIcon as UserNavIcon } from '../layout/navIcons'
+import { NavIcon } from '../layout/navIcons'
 
 export type AdminPageKey =
   | 'overview'
@@ -70,53 +70,9 @@ const USER_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'decisions', label: PAGE_LABELS.decisions },
   { key: 'kpi', label: PAGE_LABELS.kpi },
   { key: 'history', label: PAGE_LABELS.history },
-  { key: 'knowledge', label: PAGE_LABELS.knowledge }
+  { key: 'knowledge', label: PAGE_LABELS.knowledge },
+  { key: 'settings', label: PAGE_LABELS.settings }
 ]
-
-function AdminNavIcon({ page }: { page: PageKey }): React.JSX.Element {
-  if (page === 'overview' || page === 'history' || page === 'launch_calendar') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="4" y="5" width="16" height="15" rx="3" />
-        <path d="M8 3v4M16 3v4M4 10h16" strokeLinecap="round" />
-        {page === 'history' ? <path d="M12 13v3l2 1.5" strokeLinecap="round" /> : null}
-        {page === 'launch_calendar' ? <path d="M9 15l-2 2 2 2M15 15l2 2-2 2" strokeLinecap="round" strokeLinejoin="round" /> : null}
-        {page === 'overview' ? <path d="M8 14h8M8 17h5" strokeLinecap="round" /> : null}
-      </svg>
-    )
-  }
-  if (page === 'kpi') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="5" y="5" width="14" height="14" rx="2" />
-        <path d="M8 16l4-5 4 5" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    )
-  }
-  if (page === 'users') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="9" cy="9" r="3" />
-        <circle cx="17" cy="10" r="2.5" />
-        <path d="M4 19c0-2.2 2.2-4 5-4M14 19c0-1.6 1.4-3 3.5-3" strokeLinecap="round" />
-      </svg>
-    )
-  }
-  if (page === 'knowledge_base') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="5" y="4" width="14" height="16" rx="2" />
-        <path d="M9 8h6M9 12h6M9 16h4" strokeLinecap="round" />
-      </svg>
-    )
-  }
-  return (
-    <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M12 3l7 4v6c0 4.4-3.1 7.4-7 8-3.9-.6-7-3.6-7-8V7l7-4z" strokeLinejoin="round" />
-      <circle cx="12" cy="11" r="2" />
-    </svg>
-  )
-}
 
 function initials(fio: string): string {
   const parts = (fio || '').replace(/\./g, ' ').split(/\s+/).filter(Boolean)
@@ -159,6 +115,8 @@ interface UpdateStatus {
   availableVersion: string
   percent: number
   error: string
+  source: string
+  devMode: boolean
 }
 
 const IDLE_UPDATE: UpdateStatus = {
@@ -166,7 +124,9 @@ const IDLE_UPDATE: UpdateStatus = {
   currentVersion: '',
   availableVersion: '',
   percent: 0,
-  error: ''
+  error: '',
+  source: '',
+  devMode: false
 }
 
 interface SidebarProps {
@@ -197,7 +157,19 @@ export function Sidebar({
   const [peers, setPeers] = useState<ChatThread[]>([])
   const [peerAvatars, setPeerAvatars] = useState<Record<string, string>>({})
   const [update, setUpdate] = useState<UpdateStatus>(IDLE_UPDATE)
+  const [checking, setChecking] = useState(false)
   const items = showAdminNav ? ADMIN_ITEMS : USER_ITEMS
+
+  const runCheck = (): void => {
+    if (checking) return
+    setChecking(true)
+    void window.api
+      .checkUpdate?.()
+      .then((payload) => {
+        if (payload) setUpdate(payload)
+      })
+      .finally(() => setChecking(false))
+  }
 
   useEffect(() => {
     let alive = true
@@ -262,7 +234,8 @@ export function Sidebar({
     return () => unsubscribe?.()
   }, [currentUserId])
 
-  const peerAvatarKey = peers
+  const peoplePeers = peers.filter((peer) => peer.kind !== 'support')
+  const peerAvatarKey = peoplePeers
     .map((peer) => `${peer.id}\u0000${peer.peerId || peer.id}\u0000${peer.avatarUrl || ''}`)
     .join('\u0001')
   useEffect(() => {
@@ -339,7 +312,7 @@ export function Sidebar({
               title={item.label}
             >
               <span className="nav-icon" aria-hidden>
-                {showAdminNav ? <AdminNavIcon page={item.key} /> : <UserNavIcon page={item.key} />}
+                <NavIcon page={item.key} />
               </span>
               {!collapsed && <span className="nav-label">{item.label}</span>}
             </button>
@@ -347,35 +320,55 @@ export function Sidebar({
         })}
       </nav>
 
-      {(update.state === 'available' || update.state === 'downloading' || update.state === 'installing') && (
-        <div className="sidebar-update">
-          {update.state === 'downloading' || update.state === 'installing' ? (
-            <div
-              className={update.percent > 0 ? 'sidebar-update-progress' : 'sidebar-update-progress indeterminate'}
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={update.percent}
-            >
-              <i className="sidebar-update-progress-bar" style={update.percent > 0 ? { width: `${update.percent}%` } : undefined} />
-              {!collapsed && (
-                <span className="sidebar-update-progress-label">
-                  {update.state === 'installing' ? 'Установка...' : update.percent > 0 ? `${update.percent}%` : 'Загрузка...'}
-                </span>
-              )}
-            </div>
-          ) : (
-            <button className="sidebar-update-btn" title={update.error || 'Установить обновление Конструктора и Оркестратора'} onClick={() => void window.api.installUpdate?.()}>
-              {!collapsed && <span>Обновить обе программы</span>}
-              {collapsed && <span className="sidebar-update-mark">!</span>}
-            </button>
-          )}
-        </div>
-      )}
+      <div className="sidebar-update">
+        {!collapsed ? (
+          <p className="sidebar-update-meta">
+            {update.currentVersion ? `v${update.currentVersion}` : 'Версия —'}
+            {update.availableVersion && update.availableVersion !== update.currentVersion
+              ? ` → ${update.availableVersion}`
+              : ''}
+          </p>
+        ) : null}
+        {update.error && !collapsed ? <p className="sidebar-update-error">{update.error}</p> : null}
+        {update.state === 'downloading' || update.state === 'installing' ? (
+          <div
+            className={update.percent > 0 ? 'sidebar-update-progress' : 'sidebar-update-progress indeterminate'}
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={update.percent}
+          >
+            <i className="sidebar-update-progress-bar" style={update.percent > 0 ? { width: `${update.percent}%` } : undefined} />
+            {!collapsed && (
+              <span className="sidebar-update-progress-label">
+                {update.state === 'installing' ? 'Установка...' : update.percent > 0 ? `${update.percent}%` : 'Загрузка...'}
+              </span>
+            )}
+          </div>
+        ) : update.state === 'available' && !update.devMode ? (
+          <button
+            className="sidebar-update-btn"
+            title={update.error || 'Установить обновление Конструктора и Оркестратора'}
+            onClick={() => void window.api.installUpdate?.()}
+          >
+            {!collapsed && <span>Обновить обе программы</span>}
+            {collapsed && <span className="sidebar-update-mark">!</span>}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="sidebar-update-check"
+          disabled={checking || update.state === 'downloading' || update.state === 'installing'}
+          title="Проверить обновление приложения (не перезагрузка данных сеток)"
+          onClick={runCheck}
+        >
+          {collapsed ? '↻' : checking ? 'Проверяем…' : 'Проверить обновление'}
+        </button>
+      </div>
 
       <div className="sidebar-divider" />
       <div className="sidebar-peers">
-        {peers.map((peer) => {
+        {peoplePeers.map((peer) => {
           const isActive = peer.id === activeThreadId || (peer.peerId !== '' && peer.peerId === activeThreadId)
           const preview = lastMessagePreview(peer.preview)
           const unread = peer.unread > 0 && !isActive

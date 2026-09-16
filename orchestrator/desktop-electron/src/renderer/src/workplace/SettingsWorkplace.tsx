@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { UserProfile } from '../api/types'
 import { api } from '../api/client'
+import {
+  defaultTodayWidgetVisibility,
+  readTodayWidgetVisibility,
+  TODAY_WIDGET_IDS,
+  TODAY_WIDGET_LABELS,
+  type TodayWidgetId,
+  writeTodayWidgetVisibility
+} from '../tabs/grid/todayWidgetSettings'
 
 type SettingsSection = 'general' | 'notifications' | 'access' | 'diagnostics' | 'integrations'
 
@@ -16,6 +24,85 @@ interface EventChannelRow {
   emailOptional?: boolean
   when: SendWhen
   escalate: Escalate
+}
+
+interface UpdateStatus {
+  state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+  currentVersion: string
+  availableVersion: string
+  percent: number
+  error: string
+  source: string
+  devMode: boolean
+}
+
+const IDLE_UPDATE: UpdateStatus = {
+  state: 'idle',
+  currentVersion: '',
+  availableVersion: '',
+  percent: 0,
+  error: '',
+  source: '',
+  devMode: false
+}
+
+function SettingsUpdateBlock(): React.JSX.Element {
+  const [update, setUpdate] = useState<UpdateStatus>(IDLE_UPDATE)
+  const [checking, setChecking] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    void window.api.getUpdateStatus?.().then((payload) => {
+      if (alive && payload) setUpdate(payload)
+    })
+    const unsubscribe = window.api.onUpdateStatus?.((payload) => {
+      setUpdate(payload)
+    })
+    return () => {
+      alive = false
+      unsubscribe?.()
+    }
+  }, [])
+
+  const runCheck = (): void => {
+    if (checking) return
+    setChecking(true)
+    void window.api
+      .checkUpdate?.()
+      .then((payload) => {
+        if (payload) setUpdate(payload)
+      })
+      .finally(() => setChecking(false))
+  }
+
+  const canInstall = update.state === 'available' && !update.devMode
+
+  return (
+    <>
+      <p className="set-muted">
+        Источник релиза: {update.source || 'Turbulentnost/Consturctor'}. Это обновление приложения, не
+        перезагрузка данных сеток (TTL 10 мин).
+      </p>
+      <p className="set-muted">
+        Текущая версия: {update.currentVersion || '—'}. Доступная:{' '}
+        {update.availableVersion || (update.devMode ? 'проверка недоступна в dev' : '—')}.
+      </p>
+      {update.error ? <p className="set-muted">{update.error}</p> : null}
+      {update.devMode ? (
+        <p className="set-muted">Режим разработки: установка exe не предлагается.</p>
+      ) : null}
+      <div className="wp-actions">
+        <button className="btn-primary" type="button" disabled={checking} onClick={runCheck}>
+          {checking ? 'Проверяем…' : 'Проверить обновление'}
+        </button>
+        {canInstall ? (
+          <button className="btn-ghost" type="button" onClick={() => void window.api.installUpdate?.()}>
+            Установить
+          </button>
+        ) : null}
+      </div>
+    </>
+  )
 }
 
 interface NotifyPrefs {
@@ -240,11 +327,20 @@ export function SettingsWorkplace({
   const [unread, setUnread] = useState(0)
   const [savedNote, setSavedNote] = useState('')
   const [toolLines, setToolLines] = useState<string[]>([])
+  const [widgetVisibility, setWidgetVisibility] = useState<Record<TodayWidgetId, boolean>>(() =>
+    readTodayWidgetVisibility(user.id)
+  )
+  const [widgetDraft, setWidgetDraft] = useState<Record<TodayWidgetId, boolean>>(() =>
+    readTodayWidgetVisibility(user.id)
+  )
 
   useEffect(() => {
     const next = loadPrefs(user.id)
     setPrefs(next)
     setDraft(next)
+    const widgets = readTodayWidgetVisibility(user.id)
+    setWidgetVisibility(widgets)
+    setWidgetDraft(widgets)
   }, [user.id])
 
   useEffect(() => {
@@ -283,7 +379,12 @@ export function SettingsWorkplace({
     return () => window.clearTimeout(t)
   }, [savedNote])
 
-  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(prefs), [draft, prefs])
+  const dirty = useMemo(
+    () =>
+      JSON.stringify(draft) !== JSON.stringify(prefs) ||
+      JSON.stringify(widgetDraft) !== JSON.stringify(widgetVisibility),
+    [draft, prefs, widgetDraft, widgetVisibility]
+  )
 
   function patchEvent(id: string, patch: Partial<EventChannelRow>): void {
     setDraft((prev) => ({
@@ -295,12 +396,26 @@ export function SettingsWorkplace({
   function saveChanges(): void {
     savePrefs(user.id, draft)
     setPrefs(draft)
+    writeTodayWidgetVisibility(user.id, widgetDraft)
+    setWidgetVisibility(widgetDraft)
     setSavedNote('Изменения сохранены')
   }
 
   function restoreDefaults(): void {
     const next = structuredClone(DEFAULT_PREFS)
     setDraft(next)
+    const widgets = defaultTodayWidgetVisibility()
+    setWidgetDraft(widgets)
+  }
+
+  function saveWidgetSettings(): void {
+    writeTodayWidgetVisibility(user.id, widgetDraft)
+    setWidgetVisibility(widgetDraft)
+    setSavedNote('Настройки виджетов сохранены')
+  }
+
+  function restoreWidgetDefaults(): void {
+    setWidgetDraft(defaultTodayWidgetVisibility())
   }
 
   function openNotificationCenter(): void {
@@ -343,18 +458,7 @@ export function SettingsWorkplace({
           </section>
           <section className="set-card">
             <h2>Обновления</h2>
-            <p className="set-muted">Одно обновление ставит и Конструктор, и Оркестратор.</p>
-            <div className="wp-actions">
-              <button
-                className="btn-primary"
-                type="button"
-                onClick={() => {
-                  void window.api.installUpdate?.()
-                }}
-              >
-                Проверить и установить
-              </button>
-            </div>
+            <SettingsUpdateBlock />
           </section>
           <section className="set-card">
             <h2>Файлы агентов</h2>
@@ -364,6 +468,34 @@ export function SettingsWorkplace({
             <div className="wp-actions">
               <button className="btn-primary" type="button" onClick={onFiles}>
                 Открыть файлы
+              </button>
+            </div>
+          </section>
+          <section className="set-card set-widgets-card">
+            <h2>Виджеты вкладки «Сегодня»</h2>
+            <p className="set-muted">Выберите, какие блоки показывать на главной рабочей вкладке.</p>
+            <ul className="set-widget-list">
+              {TODAY_WIDGET_IDS.map((id) => (
+                <li key={id}>
+                  <label className="set-widget-row">
+                    <input
+                      type="checkbox"
+                      checked={widgetDraft[id] !== false}
+                      onChange={(event) =>
+                        setWidgetDraft((prev) => ({ ...prev, [id]: event.target.checked }))
+                      }
+                    />
+                    <span>{TODAY_WIDGET_LABELS[id]}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+            <div className="wp-actions set-widget-actions">
+              <button className="btn-primary" type="button" onClick={saveWidgetSettings}>
+                Сохранить виджеты
+              </button>
+              <button className="btn-ghost" type="button" onClick={restoreWidgetDefaults}>
+                Все виджеты
               </button>
             </div>
           </section>

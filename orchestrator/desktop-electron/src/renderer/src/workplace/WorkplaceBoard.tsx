@@ -25,6 +25,7 @@ import {
 import { buildProcessKpiMetrics, latestAgentRun } from './kpiMetrics'
 import type { AgentRunHistoryItem } from '../api/types'
 import { isLiveRunState } from '../store/liveRun'
+import { agentAccentStyle } from './agentAccent'
 import {
   STATUS_LABEL,
   TASK_STATUS_LABEL,
@@ -266,6 +267,16 @@ export function agentHasWorkToday(agent: WorkplaceAgent, today = new Date()): bo
     return true
   }
   return agent.status === 'ACTIVE' || agent.status === 'WAITING_HUMAN'
+}
+
+/** Scheduled or already started on the local calendar day — not the full process catalog. */
+export function agentLaunchesToday(agent: WorkplaceAgent, today = new Date()): boolean {
+  if (agent.standalone) return false
+  if (agent.tasks.length > 0) return true
+  const last = parseIso(agent.boardAgent?.lastRunAt || '')
+  if (last && sameDay(last, today)) return true
+  const next = parseIso(agent.boardAgent?.nextRunAt || '')
+  return Boolean(next && sameDay(next, today))
 }
 
 export function buildWorkplaceAgents(board: WorkflowBoard, personal?: PersonalAgentSeed | null): WorkplaceAgent[] {
@@ -537,7 +548,10 @@ export function AgentPlanCard({
   const [expanded, setExpanded] = useState(hasPlan)
   const badge = groupWorkBadge(agent)
   return (
-    <article className={`wp-agent-card${selected ? ' selected' : ''}${hasPlan ? '' : ' idle'}`}>
+    <article
+      className={`wp-agent-card${selected ? ' selected' : ''}${hasPlan ? '' : ' idle'}`}
+      style={agentAccentStyle(agent.workflowId)}
+    >
       <header className="wp-agent-head">
         <button
           className={`wp-agent-toggle${expanded ? ' open' : ''}`}
@@ -1130,6 +1144,9 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
         void reload()
       }
     } else {
+      // #region agent log
+      fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H5',location:'WorkplaceBoard.tsx:reload',message:'workplace board fetch (generation or miss)',data:{generation,userId:personal.userId},timestamp:Date.now()})}).catch(()=>{})
+      // #endregion
       void reload()
     }
     const unsubscribe = window.api.onBoardUpdated?.(() => {

@@ -11,7 +11,14 @@ function toneForStatus(text: string): SpecPillTone {
   return 'gray'
 }
 
+function whoFromDocflowRole(role: string): string {
+  if (role === 'author') return 'от меня'
+  if (role === 'both') return 'Я / от меня'
+  return 'Я'
+}
+
 export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): SpecTaskRow {
+  const refKey = String(task.ref_key || task.refKey || '').trim()
   const number = String(task.number || '').trim()
   const titleRaw = String(task.title || number || 'Задача 1С').trim()
   const title =
@@ -20,28 +27,39 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
   const done = Boolean(task.done)
   const late = Boolean(task.late)
   const taskSource = String(task.source || 'erp_pm').trim().toLowerCase()
+  const role = String(task.role || '').trim().toLowerCase()
+  const author = String(task.author || '').trim()
+  const performer = String(task.performer || '').trim()
+  const channel = String(task.channel || '').trim()
+  const isDocflow = taskSource.includes('документооборот') || taskSource.includes('docflow')
   let sourceLabel = '1С ERP'
-  if (taskSource.includes('документооборот') || taskSource.includes('docflow')) {
-    sourceLabel = taskSource.includes('от меня') ? '1С ДО (от меня)' : '1С ДО'
+  if (isDocflow) {
+    sourceLabel = taskSource.includes('от меня') || role === 'author' || role === 'both'
+      ? '1С ДО (от меня)'
+      : '1С ДО'
   } else if (taskSource.includes('odata')) {
     sourceLabel = '1С ERP (OData)'
   }
   return {
-    id: number || title,
+    id: refKey || number || title,
     title,
     source: sourceLabel,
-    sourceTone: taskSource.includes('документооборот') || taskSource.includes('docflow') ? 'green' : 'blue',
+    sourceTone: isDocflow ? 'green' : 'blue',
     process: String(task.approval || task.comment || '—'),
     project: '—',
     deadline: due || '—',
-    urgent: late || (!done && due.includes(String(new Date().getDate()))),
+    urgent: late,
     priority: late ? 'Высокий' : 'Средний',
     priorityTone: late ? 'red' : 'orange',
     status: done ? 'Выполнена' : 'В работе',
     statusTone: done ? 'green' : 'blue',
-    executor: actorFio,
-    who: 'Я',
-    progress: done ? 100 : 40
+    executor: performer || actorFio,
+    who: isDocflow ? whoFromDocflowRole(role) : 'Я',
+    progress: done ? 100 : 40,
+    author: author || undefined,
+    performer: performer || undefined,
+    channel: channel || (isDocflow ? 'soap' : undefined),
+    role: role || undefined
   }
 }
 
@@ -152,8 +170,8 @@ function turboOpenTaskCount(item: Record<string, unknown>): number {
     if (Number.isFinite(nonSummary) && nonSummary > 0) {
       return Math.max(0, nonSummary - (Number.isFinite(completed) ? completed : 0))
     }
-    const overdue = Number(stats.overdue_tasks_count ?? 0)
-    if (Number.isFinite(overdue) && overdue > 0) return overdue
+    const open = Number(stats.open_tasks ?? stats.open_tasks_count ?? 0)
+    if (Number.isFinite(open) && open > 0) return open
   }
   const direct = Number(item.open_tasks ?? item.tasks_count ?? 0)
   return Number.isFinite(direct) && direct > 0 ? direct : 0
@@ -316,6 +334,8 @@ export function turboProjectToRow(item: Record<string, unknown>, actorFio = ''):
   }
   const openTasks = turboOpenTaskCount(item)
   const manager = String(item.owner || data1c?.rukovoditel || data1c?.rukovoditel_proekta || '').trim()
+  const rawUrl = String(item.url || item.web_url || item.link || item.project_url || '').trim()
+  const url = /^https?:\/\//i.test(rawUrl) ? rawUrl : undefined
   return {
     id: fileId || code,
     name,
@@ -329,24 +349,12 @@ export function turboProjectToRow(item: Record<string, unknown>, actorFio = ''):
     risk: riskLabel,
     riskTone,
     fileId: fileId || undefined,
-    manager: manager || undefined
+    manager: manager || undefined,
+    url
   }
 }
 
-export function outlookMessageToMailRow(msg: Record<string, unknown>, index: number): {
-  id: string
-  sender: string
-  subject: string
-  category: string
-  catTone: SpecPillTone
-  link: string
-  time: string
-  priority: string
-  priTone: SpecPillTone
-  status: string
-  stTone: SpecPillTone
-  assignee: string
-} {
+export function outlookMessageToMailRow(msg: Record<string, unknown>, index: number): SpecMailRow {
   const subject = String(msg.subject || 'Без темы')
   const rawTime = String(msg.datetime || msg.received_at || msg.sent_at || '')
   const direction = String(msg.direction || 'inbox')
@@ -360,6 +368,7 @@ export function outlookMessageToMailRow(msg: Record<string, unknown>, index: num
   return {
     id: entryId,
     entryId,
+    channel: 'outlook',
     sender: String(msg.sender || msg.from || '—'),
     subject,
     category: direction === 'sent' ? 'Отправленные' : 'Входящие',
@@ -377,34 +386,29 @@ export function outlookMessageToMailRow(msg: Record<string, unknown>, index: num
   }
 }
 
-export function imapMessageToMailRow(msg: Record<string, unknown>, index: number): {
-  id: string
-  sender: string
-  subject: string
-  category: string
-  catTone: SpecPillTone
-  link: string
-  time: string
-  priority: string
-  priTone: SpecPillTone
-  status: string
-  stTone: SpecPillTone
-  assignee: string
-} {
+export function imapMessageToMailRow(msg: Record<string, unknown>, index: number): SpecMailRow {
   const subject = String(msg.subject || 'Без темы')
+  const uidRaw = Number(msg.uid)
+  const uid = Number.isFinite(uidRaw) && uidRaw > 0 ? uidRaw : 0
+  const messageId = String(msg.message_id || msg.messageId || '').trim()
+  const unread = Boolean(msg.unread)
   return {
-    id: String(msg.uid ?? msg.id ?? index),
+    id: uid ? `imap:${uid}` : `imap:${index}`,
+    imapUid: uid || undefined,
+    messageId: messageId || undefined,
+    channel: 'imap',
     sender: String(msg.from || msg.sender || '—'),
     subject,
-    category: 'Почта',
+    category: 'Входящие',
     catTone: 'blue',
     link: '—',
     time: String(msg.date || msg.received_at || ''),
-    priority: 'Средний',
-    priTone: 'orange',
-    status: 'К обработке',
-    stTone: 'orange',
-    assignee: '—'
+    priority: unread ? 'Высокий' : 'Средний',
+    priTone: unread ? 'red' : 'orange',
+    status: unread ? 'Непрочитано' : 'К обработке',
+    stTone: unread ? 'orange' : 'blue',
+    assignee: '—',
+    unread
   }
 }
 

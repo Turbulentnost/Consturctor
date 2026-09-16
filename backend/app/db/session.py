@@ -29,6 +29,7 @@ def init_db() -> None:
     from app.models import regulation as _regulation  # noqa: F401
     from app.models import trigger as _trigger  # noqa: F401
     from app.models import user as _user  # noqa: F401
+    from app.models import kpi_daily_metric as _kpi_daily_metric  # noqa: F401
     from app.models import workflow as _workflow  # noqa: F401
     from app.modules.chat import models as _chat  # noqa: F401
 

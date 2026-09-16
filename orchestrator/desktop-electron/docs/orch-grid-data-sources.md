@@ -8,8 +8,8 @@
 | Таблица процессов | live | agents + 1C + Turbo + Outlook mail + Outlook meetings |
 | Задачи 1С | live | **`onec.docflow_tasks`** — HTTP SOAP `/doc/ws/dm.1cws` (DOK_HTTP_*). Без `erp_tasks_current` / OData. |
 | Проекты | live | `turboproject.get_user_portfolio` (source id `turboproject`) |
-| Письма (вкладка «Почта» / процессы) | live | `outlook.search_mail` (COM): `folder=All`, `date_from`/`date_to` = текущая неделя (пн…вс), `max_results=50`; sidecar `agent:search-mail`. Действия в боковой панели: `outlook.fetch_message`, `outlook.display_message` (ответ/открыть), `outlook.mark_read`, `outlook.save_attachment`; вложения — `fs:readLocalFilePreview` / `fs:copyLocalFile` + модалка `MailAttachmentsModal`, внешнее открытие — `shell:openPath`, таймаут UI 45s |
-| Письма («Сегодня» → Outlook) | live | `outlook.search_mail`: `folder=Inbox`, `date=YYYY-MM-DD` (день = «Период») |
+| Письма (вкладка «Почта» / процессы) | live | **Проба сегодня:** Outlook COM Inbox vs backend IMAP (`POST /api/v1/tools/invoke` → `imap.search` / `imap.list_unread`, desktop **не** открывает IMAP-сокеты). Сверка по `message-id` или нормализованным `(from, subject, date)`. Если IMAP даёт письма за сегодня, которых нет в Outlook — **IMAP primary** (маппер `imapMessageToMailRow`). Иначе COM week (`outlook.search_mail`, `folder=All`, пн…вс). Stub/пустой IMAP — не переключать, показать `GET /api/v1/tools/imap/status`. COM остаётся fallback и для ответ/открыть/прочитано. Ошибки COM и IMAP независимы. |
+| Письма («Сегодня») | live | Та же проба primary. Виджет дня: IMAP (`imap.search` `date=Период`) или COM Inbox. Stub/пусто IMAP — COM + строка статуса IMAP. |
 | Совещания | live/partial | `ensureOutlookMeetings` |
 | База знаний | partial | `api.listWorkflows()` (регламенты Constructor) |
 | KPI «Сегодня» (5 плиток) | live/partial | `useTodayKpiData` → `useSpecV04Sources` (см. ниже) |
@@ -45,13 +45,29 @@ TTL кэша: **10 мин** (`GRID_DATA_TTL_MS = 600_000`). Смена вкла�
 |---------|-----------|------------|-------------------------------|-----------------|---------|
 | `SpecV04SourcesProvider` → `fetchOrchestratorTaskSources` (`orchestratorTaskSources.ts`) | App | да | да | да | — |
 | `useWorkplaceData` (доска) | hook + module cache | да | да | да | `onBoardUpdated` (всегда reload) |
-| `useTodayOutlookMail` | hook + cache | — (`periodDay` в deps) | да | да | — |
+| `useTodayOutlookMail` | hook + cache | — (`periodDay` в deps) | да | да | проба IMAP vs COM за сегодня, primary кэшируется 2 мин |
 | `useTodayAgentResults` | hook + cache | — | да | да | `files_updated`, poll 60 с |
 | `useTodayPreparedDecisions` | hook + cache | — | да | да | `files_updated`, `useRuns`, poll 60 с |
 | `useTodayProjectTasks` | hook + cache | — | да | да | — |
 | `useTodayPlanTimeline` | hook + cache | — | да | да | — |
 
 Повторный вход в приложение поднимает `generation` и перезапрашивает live-источники без пересборки exe.
+
+Это **не** обновление приложения. `forceRefresh()` / TTL 10 мин только перезапрашивают данные сеток.
+
+### Обновление приложения (Electron)
+
+Источник инсталлятора: GitHub `releases/latest` репозитория **Turbulentnost/Consturctor** (`UPDATE_GITHUB_OWNER` / `REPO`, опционально token). MaxJalo — только разработка, не канал установщика.
+
+Алгоритм (`src/main/updater.ts`): `app.getVersion()` ↔ `tag_name`; ассеты `constructor-setup.exe` / `orchestrator-setup.exe`; скачивание в `%TEMP%\constructor-updates`; установка `/S`. Автоопрос каждые 30 мин (первый через 4 с) — только в упакованном exe.
+
+| Действие | Где | IPC |
+|----------|-----|-----|
+| Проверить обновление | сайдбар, Настройки → Общие | `updater:check` |
+| Статус (версия / ошибка / нет релиза / сеть) | сайдбар и настройки | `updater:status`, `updater:getStatus` |
+| Установить exe | только packaged + есть релиз | `updater:install` |
+
+`npm run dev`: проверка недоступна, установку exe не предлагаем. Не путать с кнопкой обновления данных на вкладках.
 
 ### Запуск для вкладки «Сегодня» (Outlook COM + 1С COM)
 
@@ -67,14 +83,19 @@ TTL кэша: **10 мин** (`GRID_DATA_TTL_MS = 600_000`). Смена вкла�
 
 | Кнопка | Действие |
 |--------|----------|
-| Запустить новый процесс | клик по `SpecQuickLaunchButton` в `.orch-grid-header-actions` |
-| Создать задачу в 1С | `invokeLocalAcTool('onec.search_tasks', { mine_only: true, limit: 1 })` — COM-сессия |
+| Быстрый запуск / Запустить процесс / Карта процессов | вкладка «Решения» (`openWorkplaceTab('decisions')`) |
+| Создать задачу в 1С (быстрые действия процессов) | `invokeLocalAcTool('onec.search_tasks', { mine_only: true, limit: 1 })` — COM-сессия |
+| + Создать задачу (шапка Задач) | канал 1С / Turbo / черновик → панель «write-API не готов», без фейкового успеха |
 | Открыть календарь Outlook | `workspace.powershell_run`: Outlook COM `ShowFolder` (календарь) или `Start-Process outlook` |
 | Перейти в 1С | `invokeLocalAcTool('onec.search_tasks', { mine_only: true, limit: 1 })` |
+
+### Кнопки, которые пока noop
+
+Чекбоксы задач, «Отметить выполненной», «⋯» процессов, админ KB/календарь «Запланировать». Плитки KPI в этой итерации не кликабельны (фильтры плиток — отдельная задача).
 
 ## Вопросы к владельцу продукта
 
 1. Endpoint глобального поиска или только фильтр текущей таблицы?
-2. ~~Письма: ждём Outlook COM или достаточно IMAP?~~ На «Сегодня» — Outlook COM по дню; IMAP остаётся на вкладке «Почта».
+2. ~~Письма: ждём Outlook COM или достаточно IMAP?~~ Проба за сегодня: если IMAP (real) содержит письма, которых нет в Outlook Inbox — IMAP становится primary для «Почта» и виджета «Сегодня». COM остаётся fallback + действия. Stub/пусто — не переключать, показать `GET /api/v1/tools/imap/status`.
 3. KB: отдельный сервис или только Constructor workflows?
 4. KPI/History: приоритет pixel-perfect графиков vs табличные данные?

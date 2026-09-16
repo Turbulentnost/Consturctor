@@ -10,7 +10,7 @@ import {
   STATUS_STYLE,
   type CalendarView
 } from '../../utils/calendar'
-import { parseMeetingTime, type MeetingEvent } from '../../utils/outlookMeetings'
+import { isOutlookFolderOwner, parseMeetingTime, type MeetingEvent } from '../../utils/outlookMeetings'
 
 const HEADER = 40
 const HOUR_H = 56
@@ -30,6 +30,9 @@ interface MeetingsCalendarProps {
   onShift: (step: number) => void
   onToday: () => void
   onRefresh: () => void
+  selectedId?: string
+  onSelectMeeting?: (meeting: MeetingEvent) => void
+  showDetailsModal?: boolean
 }
 
 interface Positioned {
@@ -59,8 +62,12 @@ function positioned(meetings: MeetingEvent[]): Positioned[] {
 }
 
 export function MeetingsCalendar(props: MeetingsCalendarProps): React.JSX.Element {
-  const { view, anchor, meetings, loading, error, ownerName } = props
+  const { view, anchor, meetings, loading, error, ownerName, showDetailsModal = true } = props
   const [selected, setSelected] = useState<MeetingEvent | null>(null)
+  const selectMeeting = (meeting: MeetingEvent): void => {
+    props.onSelectMeeting?.(meeting)
+    if (showDetailsModal) setSelected(meeting)
+  }
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const items = useMemo(() => positioned(meetings), [meetings])
@@ -128,14 +135,16 @@ export function MeetingsCalendar(props: MeetingsCalendarProps): React.JSX.Elemen
       </div>
 
       {view === 'month' ? (
-        <MonthGrid anchor={anchor} items={items} onSelect={setSelected} />
+        <MonthGrid anchor={anchor} items={items} onSelect={selectMeeting} />
       ) : (
         <div className="cal-scroll" ref={scrollRef}>
-          <WeekGrid days={days} items={items} onSelect={setSelected} />
+          <WeekGrid days={days} items={items} onSelect={selectMeeting} />
         </div>
       )}
 
-      {selected && <MeetingDetails meeting={selected} onClose={() => setSelected(null)} />}
+      {showDetailsModal && selected ? (
+        <MeetingDetails meeting={selected} onClose={() => setSelected(null)} />
+      ) : null}
     </div>
   )
 }
@@ -318,8 +327,15 @@ interface MeetingBlockProps {
   compact?: boolean
 }
 
+function meetingBlockColors(item: Positioned, now = new Date()): { bg: string; border: string } {
+  const end = item.end || item.start
+  if (end.getTime() < now.getTime()) return { bg: '#E8F6EE', border: '#1B7F4A' }
+  if (sameDay(item.start, now)) return { bg: '#FFF6D8', border: '#C9A227' }
+  return { bg: STATUS_STYLE.meeting.bg, border: STATUS_STYLE.meeting.border }
+}
+
 function MeetingBlock({ item, style, onClick, compact }: MeetingBlockProps): React.JSX.Element {
-  const meta = STATUS_STYLE.meeting
+  const meta = meetingBlockColors(item)
   const tip = [
     item.meeting.subject,
     `${timeLabel(item.start)}${item.end ? `–${timeLabel(item.end)}` : ''}`,
@@ -342,7 +358,7 @@ function MeetingBlock({ item, style, onClick, compact }: MeetingBlockProps): Rea
         {timeLabel(item.start)}&nbsp;&nbsp;{item.meeting.subject}
       </div>
       {!compact && (
-        <div className="cal-event-sub">{clip(item.meeting.location || item.meeting.organizer || meta.label, 42)}</div>
+        <div className="cal-event-sub">{clip(item.meeting.location || item.meeting.organizer || 'Совещание', 42)}</div>
       )}
     </div>
   )
@@ -369,7 +385,9 @@ function MeetingDetails({ meeting, onClose }: MeetingDetailsProps): React.JSX.El
         {meeting.location && <p className="meeting-details-row">📍 {meeting.location}</p>}
         {meeting.organizer && <p className="meeting-details-row">Организатор: {meeting.organizer}</p>}
         {meeting.attendees && <p className="meeting-details-row">Участники: {meeting.attendees}</p>}
-        {meeting.owner && <p className="meeting-details-row muted">Календарь: {meeting.owner}</p>}
+        {meeting.owner && !isOutlookFolderOwner(meeting.owner) ? (
+          <p className="meeting-details-row muted">Календарь: {meeting.owner}</p>
+        ) : null}
         <div className="modal-actions">
           <button className="btn-light" onClick={onClose}>
             Закрыть

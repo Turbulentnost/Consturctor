@@ -11,6 +11,14 @@ export function isTurboNoSessionError(message: string): boolean {
   )
 }
 
+/** Stub / missing API base / «нет сеанса» — never show on tiles or Today widgets. */
+export function isTechnicalTurboMessage(message: string): boolean {
+  const text = (message || '').trim()
+  if (!text) return false
+  if (isTurboNoSessionError(text)) return true
+  return /turbo/i.test(text) && /настроен|сеанс|stub|api_base|недоступ/i.test(text)
+}
+
 export function missingTurboSessionHint(hasPassword: boolean, hasMailbox: boolean): string {
   if (!hasPassword) {
     return 'Войдите с паролем 1С — для TurboProject нужны email и пароль из сеанса.'

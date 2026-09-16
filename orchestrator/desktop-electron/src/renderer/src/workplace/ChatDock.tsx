@@ -1,40 +1,24 @@
-import { useEffect, useState } from 'react'
-import { api } from '../api/client'
-import type { ChatThread } from '../api/types'
+import { useState } from 'react'
 
 interface ChatDockProps {
-  onOpenThread: (thread: ChatThread) => void
+  onAskOrchestrator: (message: string) => void
   onOpenSupport: () => void
 }
 
-export function ChatDock({ onOpenThread, onOpenSupport }: ChatDockProps): React.JSX.Element {
+export function ChatDock({ onAskOrchestrator, onOpenSupport }: ChatDockProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
-  const [threads, setThreads] = useState<ChatThread[]>([])
-  const unread = threads.reduce((acc, item) => acc + (item.unread || 0), 0)
+  const [draft, setDraft] = useState('')
 
-  useEffect(() => {
-    let alive = true
-    let pending = 0
-    const load = async (): Promise<void> => {
-      try {
-        const items = await api.listChatThreads()
-        if (alive) setThreads(items)
-      } catch {
-        if (alive) setThreads([])
-      }
-    }
-    void load()
-    // Chat pushes replace polling; the debounce collapses message bursts.
-    const unsubscribe = window.api.onChatEvent?.(() => {
-      window.clearTimeout(pending)
-      pending = window.setTimeout(() => void load(), 500)
-    })
-    return () => {
-      alive = false
-      window.clearTimeout(pending)
-      unsubscribe?.()
-    }
-  }, [])
+  function openOrchestrator(message = ''): void {
+    setOpen(false)
+    setDraft('')
+    onAskOrchestrator(message)
+  }
+
+  function openSupport(): void {
+    setOpen(false)
+    onOpenSupport()
+  }
 
   return (
     <div className="chat-dock">
@@ -46,32 +30,38 @@ export function ChatDock({ onOpenThread, onOpenSupport }: ChatDockProps): React.
               Свернуть
             </button>
           </div>
-          <p className="chat-dock-hint">Сообщения сотрудникам. Поле «Задать вопрос оркестратору» — отдельно, не в этот канал.</p>
-          <button type="button" className="btn-primary chat-dock-support" onClick={onOpenSupport}>
-            Техническая поддержка
-          </button>
-          <div className="chat-dock-list">
-            {threads.length === 0 && <p>Нет диалогов. Найдите сотрудника в меню слева.</p>}
-            {threads.map((thread) => (
-              <button
-                key={thread.id}
-                type="button"
-                className="wp-row"
-                onClick={() => {
-                  setOpen(false)
-                  onOpenThread(thread)
-                }}
-              >
-                <strong>{thread.title}</strong>
-                <span>{thread.preview || 'Диалог'}</span>
-              </button>
-            ))}
+          <div className="chat-dock-actions">
+            <button type="button" className="btn-primary chat-dock-action" onClick={() => openOrchestrator()}>
+              Оркестратор
+            </button>
+            <button type="button" className="btn-ghost chat-dock-action" onClick={openSupport}>
+              Поддержка
+            </button>
           </div>
+          <form
+            className="chat-dock-form"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const text = draft.trim()
+              if (!text) return
+              openOrchestrator(text)
+            }}
+          >
+            <input
+              type="text"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="Спросить оркестратора…"
+              autoComplete="off"
+            />
+            <button type="submit" className="btn-primary" disabled={!draft.trim()}>
+              Отправить
+            </button>
+          </form>
         </div>
       )}
       <button type="button" className="chat-dock-btn" onClick={() => setOpen((v) => !v)}>
         Чат
-        {unread > 0 && <i>{unread > 9 ? '9+' : unread}</i>}
       </button>
     </div>
   )

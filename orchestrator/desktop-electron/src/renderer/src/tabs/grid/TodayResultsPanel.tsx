@@ -1,3 +1,4 @@
+import { Download } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import { SpecPanel, SpecPill } from '../../workplace/specV04Components'
@@ -5,14 +6,7 @@ import {
   type TodayAgentResultItem,
   useTodayAgentResults
 } from '../../workplace/useTodayAgentResults'
-
-function ResultIcon({ kind }: { kind: TodayAgentResultItem['kind'] }): React.JSX.Element {
-  return (
-    <span className={`today-file-ico kind-${kind}`}>
-      {kind === 'doc' ? 'W' : kind === 'pdf' ? 'PDF' : 'XL'}
-    </span>
-  )
-}
+import { TodayFileIcon } from './todayFileIcon'
 
 export function TodayResultsPanel({
   periodDay,
@@ -48,7 +42,7 @@ export function TodayResultsPanel({
   }
 
   const body = ((): React.ReactNode => {
-    if (loading) {
+    if (loading && !items.length) {
       return <p className="today-table-status">Загружаем…</p>
     }
     if (error) {
@@ -61,7 +55,7 @@ export function TodayResultsPanel({
       <ul className="today-results-list">
         {items.map((file) => (
           <li key={file.id} className="today-results-item">
-            <ResultIcon kind={file.kind} />
+            <TodayFileIcon name={file.name} kind={file.kind} />
             <div className="today-results-meta">
               <strong title={file.name}>{file.name}</strong>
               <SpecPill tone={file.tagTone}>{file.tag}</SpecPill>
@@ -69,11 +63,13 @@ export function TodayResultsPanel({
             <div className="today-results-actions">
               <button
                 type="button"
-                className="today-link-btn"
+                className="today-download-btn"
+                aria-label={downloadingId === file.id ? 'Скачивание…' : 'Скачать'}
+                title={downloadingId === file.id ? 'Скачивание…' : 'Скачать'}
                 disabled={!file.downloadUrl || downloadingId === file.id}
                 onClick={() => void downloadFile(file)}
               >
-                {downloadingId === file.id ? '…' : 'Скачать'}
+                <Download size={16} strokeWidth={2} aria-hidden />
               </button>
               <button
                 type="button"

@@ -78,7 +78,18 @@ function installBrowserApi(): void {
       currentVersion: '',
       availableVersion: '',
       percent: 0,
-      error: ''
+      error: '',
+      source: '',
+      devMode: true
+    }),
+    checkUpdate: async () => ({
+      state: 'idle' as const,
+      currentVersion: '',
+      availableVersion: '',
+      percent: 0,
+      error: 'Проверка недоступна в dev',
+      source: '',
+      devMode: true
     }),
     installUpdate: async () => ({ ok: false, error: 'Только в Electron' }),
     onUpdateStatus: noopUnsub,
