@@ -6974,10 +6974,23 @@ button.feed-tool-head:hover {
   font-size: 18px;
   cursor: pointer;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .wf-send:disabled {
   background: #c4d3cd;
   cursor: default;
+}
+.wf-send-stop:hover {
+  filter: brightness(0.92);
+}
+.wf-send-stop-icon {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #fff;
 }
 .wf-status {
   display: flex;

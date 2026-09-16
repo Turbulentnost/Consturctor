@@ -216,6 +216,11 @@ export function AgentRunPage({
     setAttachments((prev) => prev.filter((item) => item !== path))
   }
 
+  const stop = useCallback((): void => {
+    if (!running) return
+    runs.cancel(workflowId)
+  }, [running, runs, workflowId])
+
   const submit = (): void => {
     if (running) return
     const message = input.trim()
@@ -256,6 +261,17 @@ export function AgentRunPage({
   useEffect(() => {
     resizeComposer()
   }, [input, resizeComposer])
+
+  useEffect(() => {
+    if (!running) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      stop()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [running, stop])
 
   useEffect(() => {
     const host = leftRef.current
@@ -401,14 +417,27 @@ export function AgentRunPage({
                   }
                 }}
               />
-              <button
-                className="wf-send"
-                disabled={running || (!input.trim() && attachments.length === 0)}
-                onClick={submit}
-                title={running ? 'Агент выполняется' : 'Отправить'}
-              >
-                ↑
-              </button>
+              {running ? (
+                <button
+                  type="button"
+                  className="wf-send wf-send-stop"
+                  onClick={stop}
+                  title="Остановить"
+                  aria-label="Остановить"
+                >
+                  <span className="wf-send-stop-icon" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="wf-send"
+                  disabled={!input.trim() && attachments.length === 0}
+                  onClick={submit}
+                  title="Отправить"
+                >
+                  ↑
+                </button>
+              )}
             </div>
           </div>
           <div className="wf-status">

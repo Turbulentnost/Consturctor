@@ -36,6 +36,7 @@ type RunCommand = {
   useTools?: boolean;
   tools?: ToolSpec[];
   resumeAgentId?: string;
+  restrictBuiltins?: boolean;
 };
 
 type ToolResultCommand = {
@@ -749,7 +750,20 @@ async function runAgent(command: RunCommand): Promise<void> {
         ? { tools: [] as string[] }
         : interview
           ? { tools: interviewReadTools }
-          : { disallowedTools: ["shell", "edit", "delete", "applyAgentDiff"] }),
+          : command.restrictBuiltins
+            ? {
+                disallowedTools: [
+                  "shell",
+                  "edit",
+                  "delete",
+                  "applyAgentDiff",
+                  "read",
+                  "grep",
+                  "glob",
+                  "ls",
+                ],
+              }
+            : { disallowedTools: ["shell", "edit", "delete", "applyAgentDiff"] }),
       local: {
         cwd,
         customTools: customTools as never,

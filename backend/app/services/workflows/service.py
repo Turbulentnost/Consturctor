@@ -457,7 +457,14 @@ def _validate_and_store_draft(
     local = apply_meeting_agent_config(local, title=row.title or "", notes=row.notes or "")
     local["playbook_draft"] = enriched
     local["draft_validation"] = validation.to_dict()
+    from app.services.workflows.tool_whitelist import collect_runtime_whitelist, store_whitelist
+
+    local = store_whitelist(
+        local,
+        collect_runtime_whitelist(local=local, playbook=local.get("playbook") if isinstance(local.get("playbook"), dict) else {}),
+    )
     row.local_run = local
+    flag_modified(row, "local_run")
     db.commit()
     db.refresh(row)
     return enriched, validation
@@ -1657,6 +1664,15 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
     )
     plan = WorkflowPlan.from_dict(row.plan_json or {})
     local = apply_meeting_agent_config(local, title=row.title or "", notes=row.notes or "")
+    published_playbook = playbook or (local.get("playbook") if isinstance(local.get("playbook"), dict) else {}) or {}
+    from app.services.workflows.tool_whitelist import collect_runtime_whitelist
+
+    tools = collect_runtime_whitelist(
+        row=row,
+        local=local,
+        playbook=published_playbook if isinstance(published_playbook, dict) else {},
+        plan=row.plan_json if isinstance(row.plan_json, dict) else {},
+    ) or _tools_for_published_plan(plan, row)
     local.update(
         {
             "status": "published",
@@ -1664,9 +1680,9 @@ def publish_workflow(db: Session, *, user_id: str, workflow_id: str) -> Workflow
             "published": True,
             "tests_status": "pass",
             "runtime": "cursor" if has_demo else "mcp",
-            "tools": _tools_for_published_plan(plan, row),
+            "tools": tools,
             "ui_mode": "chat",
-            "playbook": playbook or local.get("playbook") or {},
+            "playbook": published_playbook,
         }
     )
     row.local_run = local
@@ -1922,6 +1938,13 @@ def _finish_demo_stream(
             "steps": playbook.get("steps") or draft.get("steps"),
             "status": prompts.DRAFT_STATUS_VERIFIED,
         }
+    from app.services.workflows.tool_whitelist import collect_runtime_whitelist, store_whitelist
+
+    whitelist = collect_runtime_whitelist(local={**local, "live_tools_invoked": tools}, playbook=playbook)
+    if whitelist:
+        playbook["tools"] = whitelist
+        local["playbook"] = playbook
+    local = store_whitelist(local, whitelist)
     local["demo_ok"] = bool(playbook.get("demo_ok"))
     local["can_publish"] = bool(playbook.get("instructions"))
     local["tests_status"] = "pass" if playbook.get("demo_ok") else "unknown"
@@ -2352,7 +2375,12 @@ def _refine_playbook(
         return playbook
 
     playbook = _playbook_from_draft(row, draft)
-    playbook["tools"] = list(tools)
+    from app.services.workflows.tool_whitelist import collect_runtime_whitelist
+
+    playbook["tools"] = collect_runtime_whitelist(
+        local={"playbook_draft": draft, "live_tools_invoked": tools},
+        playbook={**playbook, "tools": tools},
+    ) or list(tools)
     playbook["example_run"] = (demo_text or "").strip()[:2500]
     playbook["demo_ok"] = True
     playbook["status"] = prompts.DRAFT_STATUS_VERIFIED
@@ -2487,9 +2515,17 @@ def _onec_domain_tools(blob: str) -> list[str]:
 
 
 def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
-    """Pick MCP tools from plan domain — never force web_search for Outlook/meetings."""
+    """Playbook whitelist first; otherwise MCP tools from the plan domain."""
+    from app.services.workflows.tool_whitelist import collect_runtime_whitelist
     from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_runtime_tools
     from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_runtime_tools
+
+    collected = collect_runtime_whitelist(
+        row=row,
+        plan=plan.to_dict() if hasattr(plan, "to_dict") else {},
+    )
+    if collected:
+        return collected
 
     answered = " ".join(
         f"{q.question} {q.answer}" for q in (plan.answered_questions or []) if q.answer

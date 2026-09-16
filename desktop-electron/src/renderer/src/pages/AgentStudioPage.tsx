@@ -335,14 +335,27 @@ export function AgentStudioPage({
                   }
                 }}
               />
-              <button
-                className="wf-send"
-                disabled={(!input.trim() && attachments.length === 0) || composerDisabled}
-                onClick={submit}
-                title="Отправить"
-              >
-                ↑
-              </button>
+              {busy ? (
+                <button
+                  type="button"
+                  className="wf-send wf-send-stop"
+                  onClick={formation.cancel}
+                  title="Остановить"
+                  aria-label="Остановить"
+                >
+                  <span className="wf-send-stop-icon" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="wf-send"
+                  disabled={!input.trim() && attachments.length === 0}
+                  onClick={submit}
+                  title="Отправить"
+                >
+                  ↑
+                </button>
+              )}
             </div>
           </div>
           <div className="wf-status">

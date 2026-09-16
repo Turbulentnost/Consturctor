@@ -701,10 +701,61 @@ _CALENDAR_CONTROL_TOOLS = {
 }
 
 
+def _whitelist_tool_names(record: Any) -> list[str]:
+    """Playbook / draft tools saved at formation. Empty means the catalog is still open."""
+    local = getattr(record, "local_run", None) or {}
+    if not isinstance(local, dict):
+        local = {}
+    book = local.get("playbook") if isinstance(local.get("playbook"), dict) else {}
+    draft = local.get("playbook_draft") if isinstance(local.get("playbook_draft"), dict) else {}
+    names: list[str] = []
+    seen: set[str] = set()
+    builtins = {
+        "read",
+        "grep",
+        "glob",
+        "ls",
+        "shell",
+        "edit",
+        "delete",
+        "applyAgentDiff",
+        "code.run_python",
+        "write",
+    }
+
+    def add(value: object) -> None:
+        name = str(value or "").strip()
+        if not name or name in seen or name in builtins:
+            return
+        seen.add(name)
+        names.append(name)
+
+    def add_all(values: object) -> None:
+        if isinstance(values, (list, tuple, set)):
+            for item in values:
+                add(item)
+
+    add_all(book.get("tools"))
+    add_all(local.get("live_tools_invoked"))
+    for blob in (book, draft):
+        for step in blob.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            add(step.get("tool") or step.get("tool_name"))
+            add_all(step.get("tool_candidates"))
+    if names:
+        return names
+    add_all(local.get("tools"))
+    return names
+
+
 def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
-    """Limit specialized agents to their playbook tools; keep the full catalog otherwise."""
+    """Limit an agent to its formation whitelist; fall back to SD/RK/calendar packs."""
     allowed: set[str] | None = None
-    if _is_calendar_control_workflow(record):
+    names = _whitelist_tool_names(record)
+    if names:
+        allowed = set(names)
+    elif _is_calendar_control_workflow(record):
         allowed = _CALENDAR_CONTROL_TOOLS
     elif _is_sd_meeting_workflow(record):
         allowed = _SD_MEETING_TOOLS
@@ -1189,6 +1240,7 @@ class ElectronBridge(CursorSdkBridge):
             on_question=on_question,
             should_stop=should_stop,
             confirm_writes=confirm_writes,
+            restrict_builtins=tools is not None,
         )
 
     def _handle_tool_request(

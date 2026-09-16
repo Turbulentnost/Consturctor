@@ -275,14 +275,27 @@ export function AgentRunPage({
                   }
                 }}
               />
-              <button
-                className="wf-send"
-                disabled={(!input.trim() && attachments.length === 0) || running}
-                onClick={submit}
-                title="Отправить"
-              >
-                ↑
-              </button>
+              {running ? (
+                <button
+                  type="button"
+                  className="wf-send wf-send-stop"
+                  onClick={() => runs.cancel(workflowId)}
+                  title="Остановить"
+                  aria-label="Остановить"
+                >
+                  <span className="wf-send-stop-icon" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="wf-send"
+                  disabled={!input.trim() && attachments.length === 0}
+                  onClick={submit}
+                  title="Отправить"
+                >
+                  ↑
+                </button>
+              )}
             </div>
           </div>
           <div className="wf-status">
