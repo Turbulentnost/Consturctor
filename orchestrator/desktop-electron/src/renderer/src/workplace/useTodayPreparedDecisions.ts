@@ -39,7 +39,7 @@ export type TodayPreparedDecisionRow = {
   runId?: string
   requestId?: string
   fileId?: string
-  kind: 'tool' | 'file' | 'waiting'
+  kind: 'tool' | 'file' | 'waiting' | 'result'
   at: string
 }
 
@@ -121,6 +121,32 @@ function rowFromFile(
   }
 }
 
+function rowFromRunResult(
+  workflowId: string,
+  agentName: string,
+  runId: string,
+  at: string,
+  title: string,
+  text: string
+): TodayPreparedDecisionRow {
+  const summary = (text || '').trim()
+  return {
+    id: `run:${workflowId}:${runId}`,
+    title: title || `Итог: ${agentName}`,
+    status: 'Готово',
+    statusTone: 'green',
+    statusIcon: '✓',
+    tag: 'ИИ',
+    tagTone: 'purple',
+    subtitle: summary.length > 160 ? `${summary.slice(0, 157)}…` : summary,
+    workflowId,
+    agentName,
+    runId,
+    kind: 'result',
+    at
+  }
+}
+
 function mapAgentFile(item: WorkflowFileItem): TodayAgentResultItem {
   const lower = (item.name || '').toLowerCase()
   const kind = /\.pdf$/.test(lower) ? 'pdf' : /\.(xlsx?|csv)$/.test(lower) ? 'xls' : 'doc'
@@ -163,6 +189,7 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
   const [toolRows, setToolRows] = useState<TodayPreparedDecisionRow[]>([])
   const [fileRows, setFileRows] = useState<TodayPreparedDecisionRow[]>([])
   const [waitingRows, setWaitingRows] = useState<TodayPreparedDecisionRow[]>([])
+  const [resultRows, setResultRows] = useState<TodayPreparedDecisionRow[]>([])
 
   const runActivityKey = useMemo(
     () =>
@@ -176,7 +203,8 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
             state.running,
             state.items.length,
             state.status,
-            state.pendingHitl?.requestId || ''
+            state.pendingHitl?.requestId || '',
+            state.pendingQuestion?.requestId || ''
           ].join(':')
         })
         .join('|'),
@@ -190,17 +218,19 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
 
   const load = useCallback(async (): Promise<void> => {
     setError('')
-    const boardAgents = agentsRef.current.filter((agent) => !agent.standalone)
-    if (!boardAgents.length) {
+    const allAgents = agentsRef.current
+    if (!allAgents.length) {
       setToolRows([])
       setFileRows([])
       setWaitingRows([])
+      setResultRows([])
       return
     }
 
     const collectedTools: ToolDecisionItem[] = []
     const collectedFiles: TodayPreparedDecisionRow[] = []
     const collectedWaiting: TodayPreparedDecisionRow[] = []
+    const collectedResults: TodayPreparedDecisionRow[] = []
     const seenRuns = new Set<string>()
     const liveEntries = runs.entries
     const viewingToday = sameDay(periodDay, new Date())
@@ -219,7 +249,7 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
         platformByWorkflow.set(wid, bucket)
       }
 
-      const jobs = boardAgents.slice(0, MAX_AGENTS).map(async (agent) => {
+      const jobs = allAgents.slice(0, MAX_AGENTS).map(async (agent) => {
         const history = await api.listAgentRuns(agent.workflowId).catch(() => [] as AgentRunHistoryItem[])
         const agentPlatformFiles = platformByWorkflow.get(agent.workflowId) || []
 
@@ -252,8 +282,32 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
             })
           }
         }
+        if (live?.state.pendingQuestion && viewingToday) {
+          const question = live.state.pendingQuestion
+          collectedWaiting.push({
+            id: `wait:${agent.workflowId}:${question.requestId}`,
+            title: question.question || `Вопрос: ${agent.name}`,
+            status: 'На проверке',
+            statusTone: 'orange',
+            statusIcon: '!',
+            tag: 'ИИ',
+            tagTone: 'purple',
+            subtitle: 'Агент ждёт ответ, чтобы продолжить прогон.',
+            workflowId: agent.workflowId,
+            agentName: agent.name,
+            runId: live.backendRunId || live.state.activeRunId || undefined,
+            requestId: question.requestId,
+            kind: 'waiting',
+            at: new Date(live.state.runningSinceMs || Date.now()).toISOString()
+          })
+        }
 
-        if (agent.status === 'WAITING_HUMAN' && viewingToday && !live?.state.pendingHitl) {
+        if (
+          agent.status === 'WAITING_HUMAN' &&
+          viewingToday &&
+          !live?.state.pendingHitl &&
+          !live?.state.pendingQuestion
+        ) {
           const taskTitle = agent.tasks.find((task) => task.status === 'needs_decision')?.title
           collectedWaiting.push({
             id: `wait-board:${agent.workflowId}`,
@@ -299,6 +353,14 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
           })
           .slice(0, MAX_RUNS_PER_AGENT)
 
+        const latestResult = matched.reduce<AgentRunHistoryItem | null>((best, run) => {
+          if (isInFlightRunStatus(run.status)) return best
+          if (!best) return run
+          const bestAt = runStamp(best)?.getTime() || 0
+          const runAt = runStamp(run)?.getTime() || 0
+          return runAt >= bestAt ? run : best
+        }, null)
+
         for (const run of matched) {
           const runKey = `${agent.workflowId}:${run.runId}`
           if (seenRuns.has(runKey)) continue
@@ -315,30 +377,25 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
           })
           collectedTools.push(...extracted.filter((item) => isOnPeriodDay(item.at, periodDay)))
 
-          if (!extracted.length && !isInFlightRunStatus(run.status)) {
+          if (latestResult && run.runId === latestResult.runId) {
             const cleaned = cleanRunResult({
-              answer: detail?.item.answer || run.answer,
-              summary: run.summary,
+              answer: detail?.item.answer || latestResult.answer,
+              summary: latestResult.summary,
               events,
-              status: run.status
+              status: latestResult.status
             })
-            const summary = (cleaned.text || run.summary || '').trim()
+            const summary = (cleaned.text || latestResult.summary || '').trim()
             if (summary) {
-              collectedWaiting.push({
-                id: `run:${agent.workflowId}:${run.runId}`,
-                title: run.summary?.trim() || `Итог: ${agent.name}`,
-                status: 'Готово',
-                statusTone: 'green',
-                statusIcon: '✓',
-                tag: 'ИИ',
-                tagTone: 'purple',
-                subtitle: summary.length > 160 ? `${summary.slice(0, 157)}…` : summary,
-                workflowId: agent.workflowId,
-                agentName: agent.name,
-                runId: run.runId,
-                kind: 'waiting',
-                at
-              })
+              collectedResults.push(
+                rowFromRunResult(
+                  agent.workflowId,
+                  agent.name,
+                  latestResult.runId,
+                  at,
+                  latestResult.summary?.trim() || `Итог: ${agent.name}`,
+                  summary
+                )
+              )
             }
           }
         }
@@ -348,6 +405,7 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
       setToolRows([])
       setFileRows([])
       setWaitingRows([])
+      setResultRows([])
       setError(err instanceof Error ? err.message : 'Не удалось загрузить решения')
       return
     }
@@ -359,10 +417,12 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
     setToolRows(toolMapped)
     setFileRows(collectedFiles.sort((a, b) => String(b.at).localeCompare(String(a.at))))
     setWaitingRows(collectedWaiting.sort((a, b) => String(b.at).localeCompare(String(a.at))))
+    setResultRows(collectedResults.sort((a, b) => String(b.at).localeCompare(String(a.at))))
     writeGridCache(cacheKey, {
       toolRows: toolMapped,
       fileRows: collectedFiles.sort((a, b) => String(b.at).localeCompare(String(a.at))),
-      waitingRows: collectedWaiting.sort((a, b) => String(b.at).localeCompare(String(a.at)))
+      waitingRows: collectedWaiting.sort((a, b) => String(b.at).localeCompare(String(a.at))),
+      resultRows: collectedResults.sort((a, b) => String(b.at).localeCompare(String(a.at)))
     })
   }, [periodDay, runActivityKey, runs.entries, cacheKey])
 
@@ -374,11 +434,13 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
         toolRows: TodayPreparedDecisionRow[]
         fileRows: TodayPreparedDecisionRow[]
         waitingRows: TodayPreparedDecisionRow[]
+        resultRows: TodayPreparedDecisionRow[]
       }>(cacheKey)
       if (cached) {
         setToolRows(cached.toolRows)
         setFileRows(cached.fileRows)
         setWaitingRows(cached.waitingRows)
+        setResultRows(cached.resultRows || [])
         setLoadingDetails(false)
         return
       }
@@ -411,7 +473,7 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
   const items = useMemo(() => {
     const seen = new Set<string>()
     const merged: TodayPreparedDecisionRow[] = []
-    for (const row of [...waitingRows, ...toolRows, ...fileRows]) {
+    for (const row of [...waitingRows, ...resultRows, ...toolRows, ...fileRows]) {
       const key = dedupeKey(row)
       if (seen.has(key)) continue
       seen.add(key)
@@ -419,7 +481,7 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
     }
     merged.sort((left, right) => String(right.at).localeCompare(String(left.at)))
     return merged.slice(0, MAX_ROWS)
-  }, [waitingRows, toolRows, fileRows])
+  }, [waitingRows, resultRows, toolRows, fileRows])
 
   const loading = agentsLoading || loadingDetails
   const combinedError = agentsError || error

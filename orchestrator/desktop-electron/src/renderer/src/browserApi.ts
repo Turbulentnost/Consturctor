@@ -67,6 +67,7 @@ function installBrowserApi(): void {
     stopNotifications: async () => ({ ok: true }),
     showNotification: async () => ({ ok: true }),
     onNotificationOpen: noopUnsub,
+    onNotificationStop: noopUnsub,
     onNotificationHitl: noopUnsub,
     onInboxChanged: noopUnsub,
     onBoardUpdated: noopUnsub,

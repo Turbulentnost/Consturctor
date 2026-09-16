@@ -12,7 +12,9 @@ interface UserMenuProps {
   onUnreadChange: (count: number) => void
   onLogout: () => void
   showLogout: boolean
-  onOpenAgent?: (workflowId: string, runId: string) => void
+  onOpenAgent?: (workflowId: string, runId: string, title?: string, body?: string) => void
+  onStopRun?: (workflowId: string, runId?: string) => void
+  isRunLive?: (workflowId: string, runId?: string) => boolean
   onOpenSettings?: () => void
   onGoToSettings?: () => void
   canSwitchAdminView?: boolean
@@ -29,6 +31,8 @@ export function UserMenu({
   onLogout,
   showLogout,
   onOpenAgent,
+  onStopRun,
+  isRunLive,
   onOpenSettings,
   onGoToSettings,
   canSwitchAdminView = false,
@@ -113,10 +117,13 @@ export function UserMenu({
 
   function openItem(item: InboxNotification): void {
     setInboxOpen(false)
-    setItems((current) => current.map((entry) => (entry.id === item.id ? { ...entry, unread: false } : entry)))
-    void api.markNotificationRead(item.id).catch(() => undefined)
+    const isLiveNotification = item.id.startsWith('live:')
+    if (!isLiveNotification) {
+      setItems((current) => current.map((entry) => (entry.id === item.id ? { ...entry, unread: false } : entry)))
+      void api.markNotificationRead(item.id).catch(() => undefined)
+    }
     if (item.workflowId && onOpenAgent) {
-      onOpenAgent(item.workflowId, item.runId || '')
+      onOpenAgent(item.workflowId, item.runId || '', item.title, item.body)
     }
   }
 
@@ -180,6 +187,11 @@ export function UserMenu({
           onClearAll={() => void clearAll()}
           onClearOne={(id) => void clearOne(id)}
           onOpen={openItem}
+          onStop={(item) => {
+            if (!item.workflowId) return
+            onStopRun?.(item.workflowId, item.runId)
+          }}
+          canStop={(item) => Boolean(item.workflowId && isRunLive?.(item.workflowId, item.runId))}
         />
       )}
     </div>

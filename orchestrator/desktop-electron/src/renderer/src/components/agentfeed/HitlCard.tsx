@@ -1,3 +1,4 @@
+import { agentWantsText, explainTool } from './explainTool'
 import type { PendingHitl } from './types'
 
 interface HitlCardProps {
@@ -6,33 +7,23 @@ interface HitlCardProps {
   onSkip: () => void
 }
 
-function summarizeArgs(args: Record<string, unknown>): string {
-  const entries = Object.entries(args || {})
-  if (!entries.length) return ''
-  return entries
-    .map(([key, value]) => {
-      let text: string
-      if (typeof value === 'string') text = value
-      else {
-        try {
-          text = JSON.stringify(value)
-        } catch {
-          text = String(value)
-        }
-      }
-      if (text.length > 200) text = `${text.slice(0, 200)}…`
-      return `${key}: ${text}`
-    })
-    .join('\n')
-}
-
 export function HitlCard({ hitl, onRespond, onSkip }: HitlCardProps): React.JSX.Element {
-  const summary = summarizeArgs(hitl.arguments)
+  const explained = explainTool(hitl.tool, hitl.arguments)
+  const title = hitl.title?.startsWith('Агент хочет') ? hitl.title : agentWantsText(hitl.tool, hitl.arguments)
+  const detail = (hitl.intent || explained.detail).trim()
+  const facts = detail ? [] : explained.facts
   return (
     <div className="feed-hitl">
-      <div className="feed-hitl-badge">Подтвердите действие</div>
-      <div className="feed-hitl-title">{hitl.title}</div>
-      {summary && <pre className="feed-hitl-args">{summary}</pre>}
+      <div className="feed-hitl-badge">Нужно ваше решение</div>
+      <div className="feed-hitl-title">{title}</div>
+      {detail && <div className="feed-hitl-intent">{detail}</div>}
+      {facts.length > 0 && (
+        <ul className="feed-hitl-facts">
+          {facts.map((fact) => (
+            <li key={fact}>{fact}</li>
+          ))}
+        </ul>
+      )}
       <div className="feed-hitl-actions">
         <button className="btn-primary" onClick={() => onRespond(hitl.requestId, true)}>
           Разрешить
@@ -41,7 +32,7 @@ export function HitlCard({ hitl, onRespond, onSkip }: HitlCardProps): React.JSX.
           Отклонить
         </button>
         <button className="btn-ghost" onClick={onSkip}>
-          Пропустить инструмент
+          Пропустить
         </button>
       </div>
     </div>

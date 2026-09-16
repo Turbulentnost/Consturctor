@@ -189,6 +189,9 @@ function AppShell(): React.JSX.Element {
   const comCredsRevision = useComCredentialsRevision()
   const bumpComCredentialsRevision = useBumpComCredentialsRevision()
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
+  const [windowFocused, setWindowFocused] = useState(() => document.hasFocus())
+  const seenHitlRef = useRef<Set<string>>(new Set())
+  const seenRunNotifyRef = useRef<Map<string, 'started' | 'finished'>>(new Map())
   const runs = useRuns()
 
   useEffect(() => {
@@ -341,6 +344,87 @@ function AppShell(): React.JSX.Element {
     const unsubscribe = window.api.onChatEvent?.(() => setChatRefreshAt(Date.now()))
     return () => unsubscribe?.()
   }, [])
+
+  useEffect(() => {
+    const onFocus = (): void => setWindowFocused(true)
+    const onBlur = (): void => setWindowFocused(false)
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [])
+
+  useEffect(() => {
+    const stopUnsub = window.api.onNotificationStop?.((payload) => {
+      const workflowId = payload?.workflowId || ''
+      if (workflowId) runs.cancel(workflowId)
+    })
+    const unsubscribe = window.api.onNotificationOpen?.((payload) => {
+      if (payload?.openDecisions || payload?.requestId) {
+        setLastTab('decisions')
+        setView({ kind: 'tab', key: 'decisions' })
+        return
+      }
+      const workflowId = payload?.workflowId || ''
+      if (workflowId) void openAgentRun(workflowId, payload?.runId || '', false)
+    })
+    return () => {
+      stopUnsub?.()
+      unsubscribe?.()
+    }
+  }, [runs])
+
+  useEffect(() => {
+    const watchingDecisions = view.kind === 'tab' && view.key === 'decisions'
+    for (const entry of Object.values(runs.entries)) {
+      const hitl = entry.state.pendingHitl
+      const question = entry.state.pendingQuestion
+      const requestId = hitl?.requestId || question?.requestId || ''
+      if (!requestId || seenHitlRef.current.has(requestId)) continue
+      const watchingThisAgent =
+        (view.kind === 'agentrun' || view.kind === 'history' || view.kind === 'passport') &&
+        view.workflowId === entry.workflowId
+      if (windowFocused && (watchingDecisions || watchingThisAgent)) continue
+      seenHitlRef.current.add(requestId)
+      void window.api.showNotification?.({
+        title: 'Агент ожидает подтверждения',
+        body: `${entry.title || 'ИИ-агент'}: ${hitl?.title || question?.question || 'нужно подтверждение'}`,
+        workflowId: entry.workflowId,
+        runId: entry.state.activeRunId || entry.backendRunId || '',
+        requestId,
+        openDecisions: true
+      })
+    }
+  }, [runs.entries, view, windowFocused])
+
+  useEffect(() => {
+    for (const entry of Object.values(runs.entries)) {
+      const runId = entry.backendRunId || entry.state.activeRunId || entry.workflowId
+      if (!runId) continue
+      const live = Boolean(entry.state.running || entry.state.pendingHitl || entry.state.pendingQuestion)
+      const prev = seenRunNotifyRef.current.get(runId)
+      if (live && prev !== 'started' && prev !== 'finished') {
+        seenRunNotifyRef.current.set(runId, 'started')
+        void window.api.showNotification?.({
+          title: 'Запуск начался',
+          body: `Агент «${entry.title || 'агент'}»: запуск начался.`,
+          workflowId: entry.workflowId,
+          runId: entry.backendRunId || ''
+        })
+      }
+      if (!live && prev === 'started') {
+        seenRunNotifyRef.current.set(runId, 'finished')
+        void window.api.showNotification?.({
+          title: 'Запуск закончен',
+          body: `Агент «${entry.title || 'агент'}» завершил запуск.`,
+          workflowId: entry.workflowId,
+          runId: entry.backendRunId || '',
+        })
+      }
+    }
+  }, [runs.entries])
 
   function setModeForUser(profile: UserProfile): void {
     const mode = profile.isAdmin ? 'admin' : 'user'
@@ -554,7 +638,11 @@ function AppShell(): React.JSX.Element {
     }
     const nextTitle = title || 'ИИ-агент'
     const live = runs.entries[workflowId]
-    if (live && isLiveRunState(live.state)) {
+    const liveSameRun =
+      live &&
+      isLiveRunState(live.state) &&
+      (!runId || !live.backendRunId || live.backendRunId === runId)
+    if (live && liveSameRun) {
       setView({ kind: 'agentrun', workflowId, title: nextTitle || live.title, autoStart: false })
       return
     }
@@ -581,6 +669,29 @@ function AppShell(): React.JSX.Element {
       return
     }
     setView({ kind: 'agentrun', workflowId, title: nextTitle || 'ИИ-агент', autoStart: false })
+  }
+
+  function openFromInbox(workflowId: string, runId = '', title = '', body = ''): void {
+    if (/ожидает подтверждения/i.test(title)) {
+      setLastTab('decisions')
+      setView({ kind: 'tab', key: 'decisions' })
+      return
+    }
+    const fromBody = /Агент «([^»]+)»/.exec(body || '')?.[1] || ''
+    const agentTitle = fromBody || (/запуск/i.test(title) ? '' : title)
+    if (/запуск закончен/i.test(title) && runId) {
+      setView({ kind: 'history', workflowId, title: agentTitle || 'ИИ-агент', runId })
+      void api
+        .getWorkflow(workflowId)
+        .then((record) => {
+          if (record?.title) {
+            setView({ kind: 'history', workflowId, title: record.title, runId })
+          }
+        })
+        .catch(() => undefined)
+      return
+    }
+    void openAgentRun(workflowId, runId, false, agentTitle)
   }
 
   function askOrchestratorFromTab(message: string, appContext: string): void {
@@ -622,7 +733,16 @@ function AppShell(): React.JSX.Element {
       return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'overview' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
     }
     if (view.kind === 'history') {
-      return <AgentHistoryPage workflowId={view.workflowId} title={view.title} initialRunId={view.runId} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenLive={() => setView({ kind: 'agentrun', workflowId: view.workflowId, title: view.title })} />
+      return (
+        <AgentHistoryPage
+          key={`${view.workflowId}:${view.runId || ''}`}
+          workflowId={view.workflowId}
+          title={view.title}
+          initialRunId={view.runId}
+          onBack={() => setView({ kind: 'tab', key: lastTab })}
+          onOpenLive={() => setView({ kind: 'agentrun', workflowId: view.workflowId, title: view.title })}
+        />
+      )
     }
     if (view.kind === 'schedule') {
       return <AgentSchedulePage workflowId={view.workflowId} title={view.title} published={Boolean(view.published)} onBack={() => setView({ kind: 'tab', key: lastTab })} onNext={() => setView({ kind: 'tab', key: lastTab })} />
@@ -708,7 +828,16 @@ function AppShell(): React.JSX.Element {
       return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'today' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
     }
     if (view.kind === 'history') {
-      return <AgentHistoryPage workflowId={view.workflowId} title={view.title} initialRunId={view.runId} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenLive={() => setView({ kind: 'agentrun', workflowId: view.workflowId, title: view.title })} />
+      return (
+        <AgentHistoryPage
+          key={`${view.workflowId}:${view.runId || ''}`}
+          workflowId={view.workflowId}
+          title={view.title}
+          initialRunId={view.runId}
+          onBack={() => setView({ kind: 'tab', key: lastTab })}
+          onOpenLive={() => setView({ kind: 'agentrun', workflowId: view.workflowId, title: view.title })}
+        />
+      )
     }
     if (view.kind === 'schedule') {
       return <AgentSchedulePage workflowId={view.workflowId} title={view.title} published={Boolean(view.published)} onBack={() => setView({ kind: 'tab', key: lastTab })} onNext={() => setView({ kind: 'tab', key: lastTab })} />
@@ -758,7 +887,9 @@ function AppShell(): React.JSX.Element {
               onOpenThread={openChat}
               onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
               onOpenSettings={() => setView({ kind: 'tab', key: 'settings' })}
-              onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+              onOpenAgent={openFromInbox}
+              onStopRun={(workflowId, runId) => runs.cancel(workflowId, runId)}
+              isRunLive={() => true}
               canSwitchAdminView={Boolean(activeUser.isAdmin)}
               onSwitchAdminView={switchAdminView}
               toast={toast ? <div className="wp-toast">{toast}</div> : null}
@@ -804,7 +935,9 @@ function AppShell(): React.JSX.Element {
                   onUnreadChange={setUnread}
                   onLogout={onLogout}
                   showLogout={showLogout}
-                  onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+                  onOpenAgent={openFromInbox}
+                  onStopRun={(workflowId, runId) => runs.cancel(workflowId, runId)}
+                  isRunLive={() => true}
                   onOpenSettings={() => setView({ kind: 'tab', key: 'settings' })}
                   canSwitchAdminView={Boolean(activeUser.isAdmin)}
                   onSwitchAdminView={switchAdminView}

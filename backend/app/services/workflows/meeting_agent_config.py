@@ -47,7 +47,9 @@ def apply_meeting_agent_config(
     *,
     title: str,
     notes: str,
+    document_text: str = "",
 ) -> dict[str, Any]:
+    del document_text
     local = apply_rk_config(local_run, title=title, notes=notes)
     return apply_sd_config(local, title=title, notes=notes)
 

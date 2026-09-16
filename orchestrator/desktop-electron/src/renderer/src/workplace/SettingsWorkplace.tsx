@@ -39,8 +39,28 @@ const TABS: { id: SettingsSection; label: string }[] = [
 
 const DEFAULT_EVENTS: EventChannelRow[] = [
   {
+    id: 'run_started',
+    title: 'Запуск начался',
+    icon: 'clock',
+    inApp: true,
+    email: false,
+    emailOptional: true,
+    when: 'immediate',
+    escalate: 'none'
+  },
+  {
+    id: 'run_finished',
+    title: 'Запуск закончен',
+    icon: 'clock',
+    inApp: true,
+    email: false,
+    emailOptional: true,
+    when: 'immediate',
+    escalate: 'none'
+  },
+  {
     id: 'decision_new',
-    title: 'Новое решение ожидает подтверждения',
+    title: 'Агент ожидает подтверждения',
     icon: 'clock',
     inApp: true,
     email: true,

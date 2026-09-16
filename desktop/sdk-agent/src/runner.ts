@@ -741,9 +741,10 @@ async function runAgent(command: RunCommand): Promise<void> {
       model: modelParams.length ? { id: model, params: modelParams } : { id: model },
       ...(conversationMode ? { mode: conversationMode } : {}),
       // Ban the built-in mutating/exec tools so every write goes through a
-      // Constructor customTool with HITL. Read-only built-ins (read/grep/glob/
-      // ls) stay for navigation, "mcp" keeps our customTools.
-      // Not persisted across resume, so it is re-applied on every create/resume.
+      // Constructor customTool with HITL. Read and Grep stay so the agent can
+      // open materials/agent.md, the run journal, and result_file pages.
+      // restrictBuiltins also hides Glob/Ls so a published agent does not
+      // wander the workspace. Not persisted across resume — re-applied every time.
       // Do not enable autoReview: it waits for the IDE classifier/UI we don't have,
       // and the feed stays on «Выполняется» forever.
       ...(interviewChat
@@ -757,10 +758,9 @@ async function runAgent(command: RunCommand): Promise<void> {
                   "edit",
                   "delete",
                   "applyAgentDiff",
-                  "read",
-                  "grep",
                   "glob",
                   "ls",
+                  "task",
                 ],
               }
             : { disallowedTools: ["shell", "edit", "delete", "applyAgentDiff"] }),

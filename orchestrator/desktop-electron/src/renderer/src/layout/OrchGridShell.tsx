@@ -29,7 +29,9 @@ interface OrchGridShellProps {
   onOpenThread: (thread: ChatThread) => void
   onOpenFio: (fio: string, user?: DirectoryUser) => void
   onOpenSettings: () => void
-  onOpenAgent?: (workflowId: string, runId: string) => void
+  onOpenAgent?: (workflowId: string, runId: string, title?: string, body?: string) => void
+  onStopRun?: (workflowId: string, runId?: string) => void
+  isRunLive?: (workflowId: string, runId?: string) => boolean
   canSwitchAdminView?: boolean
   onSwitchAdminView?: (mode: 'admin' | 'user') => void
   toast?: ReactNode
@@ -53,6 +55,8 @@ export function OrchGridShell({
   onOpenFio,
   onOpenSettings,
   onOpenAgent,
+  onStopRun,
+  isRunLive,
   canSwitchAdminView = false,
   onSwitchAdminView,
   toast,
@@ -119,6 +123,8 @@ export function OrchGridShell({
           onLogout={onLogout}
           showLogout={showLogout}
           onOpenAgent={onOpenAgent}
+          onStopRun={onStopRun}
+          isRunLive={isRunLive}
           onOpenSettings={onOpenSettings}
           canSwitchAdminView={canSwitchAdminView}
           onSwitchAdminView={onSwitchAdminView}

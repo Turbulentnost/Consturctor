@@ -11,6 +11,7 @@ from app.services.erp_assignments import (
     build_assignment_filter,
     build_create_body,
     handle_assignments,
+    normalize_assignment_number,
     pick_user_row,
     probe_assignment_write,
     stub_assignments,
@@ -453,6 +454,51 @@ def test_list_normalizes_card(monkeypatch) -> None:
     assert result["assignments"][0]["lines"][0]["text"] == "Sdelat"
     assert result["assignments"][0]["lines"][0]["executor"] == "Иванов Иван"
     assert "startswith(Number,'АСТ')" in result["filter"]
+
+
+def test_normalize_assignment_number_fixes_latin_act() -> None:
+    assert normalize_assignment_number("ACT00-000001") == "АСТ00-000001"
+    assert normalize_assignment_number("АСТ00-00093") == "АСТ00-00093"
+    assert normalize_assignment_number("") == ""
+
+
+def test_get_assignment_uses_cyrillic_number(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_odata_get(args: dict) -> dict:
+        seen.append(str(args.get("number") or ""))
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    try:
+        handle_assignments({"action": "get", "number": "ACT00-000001"})
+    except Exception as exc:
+        assert "ACT00-000001" not in str(exc) or "АСТ00-000001" in str(exc)
+    assert seen == ["АСТ00-000001"]
+
+
+def test_list_empty_customer_has_no_ocr_hint(monkeypatch) -> None:
+    def fake_odata_get(args: dict) -> dict:
+        entity = str(args.get("entity") or "")
+        if entity == "Catalog_Пользователи":
+            return {
+                "value": [
+                    {
+                        "Description": "Ильченко Екатерина Александровна",
+                        "Ref_Key": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    }
+                ],
+                "source": "odata",
+            }
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    result = handle_assignments(
+        {"action": "list", "customer": "Ильченко Екатерина Александровна"}
+    )
+    assert result["count"] == 0
+    assert "OCR" in str(result.get("hint") or "")
+    assert "action=list" in str(result.get("hint") or "")
 
 
 def test_list_tasks_has_no_default_check_assignment_title(monkeypatch) -> None:

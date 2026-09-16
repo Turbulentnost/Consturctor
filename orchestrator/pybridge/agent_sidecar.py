@@ -125,6 +125,7 @@ _NEVER_CONFIRM = frozenset(
         "code.write_python",
         "code.run_python",
         "report.export_document",
+        "office.format_document",
     }
 )
 _READ_EXACT = frozenset(
@@ -586,6 +587,14 @@ def _is_calendar_control_text(*parts: Any) -> bool:
     return any(tip in blob for tip in _CALENDAR_CONTROL_TIPS)
 
 
+def _is_assignment_journal_text(*parts: Any) -> bool:
+    """Журнал поручений — не серия совещаний Outlook; playbook не подменяем."""
+    blob = _meeting_blob(*parts)
+    if _is_rk_text(blob) or _is_sd_meeting_text(blob):
+        return False
+    return any(tip in blob for tip in ("аст00", "action tracker", "журнал поруч"))
+
+
 def _is_rk_text(*parts: Any) -> bool:
     blob = _meeting_blob(*parts)
     if any(hint in blob for hint in ("совета директоров", "пл-34-242", "пл 34-242")):
@@ -726,7 +735,12 @@ def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
 
 def _is_outlook_series_prompt(prompt: str) -> bool:
     blob = (prompt or "").casefold()
-    if _is_calendar_control_text(blob) or _is_sd_meeting_text(blob) or _is_rk_text(blob):
+    if (
+        _is_calendar_control_text(blob)
+        or _is_sd_meeting_text(blob)
+        or _is_rk_text(blob)
+        or _is_assignment_journal_text(blob)
+    ):
         return False
     return any(tip in blob for tip in _SERIES_SCHEDULE_TIPS)
 
@@ -761,7 +775,12 @@ def _meeting_blob(*parts: Any) -> str:
 
 
 def _is_meeting_text(*parts: Any) -> bool:
-    if _is_calendar_control_text(*parts) or _is_sd_meeting_text(*parts) or _is_rk_text(*parts):
+    if (
+        _is_calendar_control_text(*parts)
+        or _is_sd_meeting_text(*parts)
+        or _is_rk_text(*parts)
+        or _is_assignment_journal_text(*parts)
+    ):
         return False
     blob = _meeting_blob(*parts)
     return any(tip in blob for tip in _MEETING_TIPS)
@@ -810,7 +829,7 @@ def _merge_outlook_rule_into_playbook(local_run: dict[str, Any] | None) -> dict[
             continue
         current = str(raw.get("instructions") or "").strip()
         name = str(raw.get("name") or "")
-        if _is_calendar_control_text(current, name):
+        if _is_calendar_control_text(current, name) or _is_assignment_journal_text(current, name):
             continue
         if OUTLOOK_SERIES_MARKER in current:
             continue
@@ -1705,15 +1724,15 @@ def _write_answer_document(cwd: str, filename: str, answer: str) -> Path | None:
     path = folder / name
     body = (answer or "").strip() or name
     try:
-        from docx import Document
+        from app.tools.ac.office_style import pretty_title, write_docx
 
-        document = Document()
-        document.add_heading(Path(name).stem.replace("_", " "), level=0)
-        for line in body.splitlines() or [body]:
-            document.add_paragraph(line)
         if path.suffix.lower() != ".docx":
             path = path.with_suffix(".docx")
-        document.save(path)
+        write_docx(
+            path,
+            title=pretty_title(Path(name).stem),
+            sections=[{"heading": "", "body": body}],
+        )
         return path
     except Exception:
         fallback = path.with_suffix(".md")
@@ -2920,16 +2939,6 @@ class Sidecar:
             active.workflow_id = workflow_id
             active.gate.bind(workflow_id=workflow_id)
         evidence = str(check.get("changed") or check.get("evidence") or "")
-        emit(
-            {
-                "type": "event",
-                "runId": active.run_id,
-                "payload": {
-                    "type": "decision",
-                    "text": "Trigger fired" if fired else "Trigger condition not met",
-                },
-            }
-        )
         if not fired:
             emit(
                 {

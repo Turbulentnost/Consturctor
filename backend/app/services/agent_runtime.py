@@ -226,13 +226,17 @@ def _run_with_playbook(
     plan_text = _playbook_plan_text(playbook, workflow)
     if plan_text:
         emit({"type": "plan", "title": "План", "text": plan_text})
+    steps = playbook.get("steps") if isinstance(playbook.get("steps"), list) else []
     prompt = with_tools_if_desktop(
         prompts.build_published_run_prompt(
             instructions=str(playbook.get("instructions") or ""),
             example_run=str(playbook.get("example_run") or ""),
             user_message=message,
             title=workflow.title or "",
-        )
+            steps=steps if steps else None,
+            chain=str(playbook.get("chain") or ""),
+        ),
+        draft=playbook if steps else None,
     )
     emit({"type": "status", "text": "Запускаю Cursor по инструкции и примеру запуска…"})
 
@@ -278,6 +282,7 @@ def _run_with_playbook(
             mode="execute",
             stream_run=_stream_run,
             required_live_tools=required,
+            draft=playbook if steps else None,
         )
     except CursorAgentError as exc:
         emit({"type": "error", "message": exc.message})
@@ -334,6 +339,9 @@ def _playbook_plan_text(playbook: dict[str, Any], workflow: Workflow) -> str:
             title = str(step.get("title") or "").strip()
             action = str(step.get("action") or "").strip()
             head = f"{sid} — {title}".strip(" —") if sid or title else f"шаг {index}"
+            tool = str(step.get("tool") or "").strip()
+            if tool and tool not in head:
+                head = f"{head} — {tool}"
             lines.append(head)
             if action:
                 lines.append(f"  {action}")

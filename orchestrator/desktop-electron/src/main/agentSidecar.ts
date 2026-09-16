@@ -188,7 +188,7 @@ export class AgentSidecar {
     python: '',
     cwd: ''
   }
-  private readonly runMeta = new Map<string, { workflowId: string; kind: string }>()
+  private readonly runMeta = new Map<string, { workflowId: string; kind: string; source: string }>()
 
   constructor(
     private readonly backendUrl: string,
@@ -423,7 +423,8 @@ export class AgentSidecar {
     if (!runId) return
     this.runMeta.set(runId, {
       workflowId: String(command.workflowId || ''),
-      kind: String(command.type || '')
+      kind: String(command.type || ''),
+      source: String(command.source || '')
     })
   }
 
@@ -444,6 +445,7 @@ export class AgentSidecar {
     if (!next.kind && meta.kind) {
       next.kind = meta.kind === 'check_trigger' ? 'trigger' : meta.kind
     }
+    if (!next.source && meta.source) next.source = meta.source
     if (next.type === 'result' || next.type === 'error') {
       this.runMeta.delete(runId)
     }

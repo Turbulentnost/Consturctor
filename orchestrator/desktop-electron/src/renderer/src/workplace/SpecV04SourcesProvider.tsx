@@ -15,6 +15,7 @@ import {
   type MeetingEvent
 } from '../utils/outlookMeetings'
 import { hasComPassword } from '../store/session'
+import { useRuns } from '../store/runs'
 import { erpActorFio, outlookMailboxAddress } from './userContext'
 import {
   agentToProcessRow,
@@ -27,6 +28,7 @@ import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from '.
 import { useWorkplaceData } from './WorkplaceBoard'
 import { useGridDataRefreshContext } from './GridDataRefreshContext'
 import { fetchOrchestratorTaskSources, ORCH_SOURCE_ID } from './orchestratorTaskSources'
+import { isLiveRunState, liveRunProgress } from '../store/liveRun'
 import type { SpecV04SourcesState } from './useSpecV04Data'
 
 const EMPTY: SpecV04SourcesState = {
@@ -74,6 +76,7 @@ export function SpecV04SourcesProvider({
   const erpFio = erpActorFio(user)
   const outlookMailbox = outlookMailboxAddress(user)
   const { generation, takeHardRefresh } = useGridDataRefreshContext()
+  const liveRuns = useRuns()
   const { agents, loading: agentsLoading } = useWorkplaceData({
     userId: user.id || '',
     fio: erpFio
@@ -171,8 +174,22 @@ export function SpecV04SourcesProvider({
   }, [user.id, erpFio, generation])
 
   const regRows = useMemo(() => {
-    return agents.filter((a) => !a.standalone).map(agentToProcessRow)
-  }, [agents])
+    return agents.map((agent) => {
+      const row = agentToProcessRow(agent)
+      const live = liveRuns.entries[agent.workflowId]
+      if (!live || !isLiveRunState(live.state)) return row
+      return {
+        ...row,
+        progress: liveRunProgress({
+          running: live.state.running,
+          pendingQuestion: live.state.pendingQuestion,
+          pendingHitl: live.state.pendingHitl,
+          timing: live.state.timing,
+          items: live.state.items
+        })
+      }
+    })
+  }, [agents, liveRuns.entries])
 
   const allTaskCount = useMemo(
     () => erpTasks.length + turboTasks.length + regRows.length,
@@ -209,7 +226,7 @@ export function SpecV04SourcesProvider({
       projectCount: projects.length,
       mailRows,
       mailCount: mailRows.length,
-      processRows: regRows,
+      processRows: regRows.filter((row) => !row.id.startsWith('mail:') && !row.id.startsWith('proj:')),
       allProcessRows,
       meetingCount: meetings.length,
       meetingCountToday,

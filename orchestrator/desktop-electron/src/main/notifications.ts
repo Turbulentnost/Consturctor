@@ -16,19 +16,109 @@ export interface ToastPayload {
   body?: string
   workflowId?: string
   runId?: string
+  requestId?: string
+  openDecisions?: boolean
+  canStop?: boolean
+}
+
+const liveStartToasts = new Map<string, Notification>()
+let stopRunHandler: ((workflowId: string, runId: string) => void) | null = null
+
+export function setStopRunHandler(
+  handler: ((workflowId: string, runId: string) => void) | null
+): void {
+  stopRunHandler = handler
+}
+
+export function isStartRunTitle(title: string): boolean {
+  return /запуск начался|начат плановый запуск/i.test(title || '')
+}
+
+export function isFinishRunTitle(title: string): boolean {
+  return /запуск закончен/i.test(title || '')
+}
+
+function closeStartToast(workflowId: string): void {
+  const key = (workflowId || '').trim()
+  if (!key) return
+  const toast = liveStartToasts.get(key)
+  if (!toast) return
+  try {
+    toast.close()
+  } catch {
+    /* already dismissed */
+  }
+  liveStartToasts.delete(key)
+}
+
+function stopFromToast(payload: ToastPayload): void {
+  const workflowId = (payload.workflowId || '').trim()
+  const runId = (payload.runId || '').trim()
+  closeStartToast(workflowId)
+  try {
+    stopRunHandler?.(workflowId, runId)
+  } catch {
+    /* renderer still applies cancel */
+  }
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  }
+  notifyWindows('notification:stop', {
+    workflowId,
+    runId: payload.runId || ''
+  })
 }
 
 /**
  * Show a native OS toast and, on click, focus the app window and ask the
  * renderer to open the related agent. Mirrors the desktop winotify behavior.
  */
+const recentToasts = new Map<string, number>()
+const TOAST_DEDUP_MS = 90_000
+
+function toastKey(payload: ToastPayload): string {
+  const title = (payload.title || '').trim()
+  const workflowId = (payload.workflowId || '').trim()
+  if (/Запуск начался|Запуск закончен/.test(title) && workflowId) {
+    return `${title}|${workflowId}`
+  }
+  return `${title}|${workflowId}|${payload.runId || ''}|${payload.requestId || ''}`
+}
+
+function shouldSkipDuplicateToast(payload: ToastPayload): boolean {
+  const key = toastKey(payload)
+  const previous = recentToasts.get(key) || 0
+  if (Date.now() - previous < TOAST_DEDUP_MS) return true
+  recentToasts.set(key, Date.now())
+  return false
+}
+
 export function showToast(payload: ToastPayload): void {
+  if (shouldSkipDuplicateToast(payload)) return
   const title = (payload.title || '').trim() || 'Уведомление'
+  const workflowId = (payload.workflowId || '').trim()
+  const canStop = Boolean(payload.canStop || isStartRunTitle(title))
+  if (isFinishRunTitle(title)) closeStartToast(workflowId)
   if (!Notification.isSupported()) {
     notifyWindows('notification:open', payload)
     return
   }
-  const toast = new Notification({ title, body: (payload.body || '').trim() })
+  const options: Electron.NotificationConstructorOptions = {
+    title,
+    body: (payload.body || '').trim(),
+    timeoutType: canStop ? 'never' : 'default',
+    urgency: canStop ? 'critical' : 'normal'
+  }
+  if (canStop) {
+    options.actions = [{ type: 'button', text: 'Остановить' }]
+    if (process.platform === 'win32') {
+      options.toastXml = startToastXml(title, options.body || '', payload)
+    }
+  }
+  const toast = new Notification(options)
+  if (canStop && workflowId) liveStartToasts.set(workflowId, toast)
   toast.on('click', () => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isMinimized()) win.restore()
@@ -37,10 +127,73 @@ export function showToast(payload: ToastPayload): void {
     }
     notifyWindows('notification:open', {
       workflowId: payload.workflowId || '',
-      runId: payload.runId || ''
+      runId: payload.runId || '',
+      requestId: payload.requestId || '',
+      openDecisions: Boolean(payload.openDecisions || payload.requestId)
     })
   })
+  toast.on('action', () => {
+    if (canStop) stopFromToast(payload)
+  })
+  toast.on('close', () => {
+    if (workflowId && liveStartToasts.get(workflowId) === toast) {
+      liveStartToasts.delete(workflowId)
+    }
+  })
   toast.show()
+}
+
+function escapeXml(value: string): string {
+  return (value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function startToastXml(title: string, body: string, payload: ToastPayload): string {
+  const wid = encodeURIComponent(payload.workflowId || '')
+  const rid = encodeURIComponent(payload.runId || '')
+  const stopArgs = escapeXml(`orch-stop:?wid=${wid}&rid=${rid}`)
+  return (
+    `<toast activationType="foreground" duration="long">` +
+    `<visual><binding template="ToastGeneric">` +
+    `<text>${escapeXml(title)}</text>` +
+    `<text>${escapeXml(body)}</text>` +
+    `</binding></visual>` +
+    `<actions>` +
+    `<action content="Остановить" arguments="${stopArgs}" activationType="foreground"/>` +
+    `</actions></toast>`
+  )
+}
+
+let activationInstalled = false
+
+export function installToastActivation(): void {
+  if (activationInstalled) return
+  const handle = (
+    Notification as typeof Notification & {
+      handleActivation?: (callback: (details: {
+        type?: string
+        arguments?: string
+        actionIndex?: number
+      }) => void) => void
+    }
+  ).handleActivation
+  if (typeof handle !== 'function') return
+  activationInstalled = true
+  handle((details) => {
+    const raw = String(details?.arguments || '')
+    if (!raw.startsWith('orch-stop:')) return
+    const query = raw.slice(raw.indexOf('?') + 1)
+    const params = new URLSearchParams(query)
+    stopFromToast({
+      title: 'Запуск начался',
+      workflowId: decodeURIComponent(params.get('wid') || ''),
+      runId: decodeURIComponent(params.get('rid') || ''),
+      canStop: true
+    })
+  })
 }
 
 function websocketUrl(backendUrl: string, token: string): string {
@@ -185,11 +338,14 @@ export class NotificationGuard {
     const id = String(payload.id || '')
     if (id && this.shownIds.has(id)) return
     if (id) this.shownIds.add(id)
+    const title = String(payload.title || '')
     showToast({
-      title: String(payload.title || ''),
+      title,
       body: String(payload.body || ''),
       workflowId: String(payload.workflow_id || payload.workflowId || ''),
-      runId: String(payload.run_id || payload.runId || '')
+      runId: String(payload.run_id || payload.runId || ''),
+      openDecisions: /ожидает подтверждения/i.test(title),
+      canStop: isStartRunTitle(title)
     })
     notifyWindows('inbox:changed', { id })
     if (id) void this.ack(id)

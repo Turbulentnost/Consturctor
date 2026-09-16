@@ -10,7 +10,7 @@ import { cleanRunResult } from '../utils/cleanRunResult'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { humanResponseDelayColor } from '../workplace/humanResponseColor'
 import { durationLabel } from '../workplace/runTiming'
-import { formatSize } from './filesGrouping'
+import { formatFileWhen, formatSize } from './filesGrouping'
 import {
   eventsForHistoryRun,
   filesForHistoryRun,
@@ -71,7 +71,7 @@ export function AgentHistoryPage({
     return () => {
       alive = false
     }
-  }, [workflowId])
+  }, [workflowId, initialRunId])
 
   useEffect(() => {
     if (!selected) {
@@ -309,27 +309,30 @@ export function AgentHistoryPage({
                   <div className="wf-files-empty">Агент не приложил файлы к этому запуску.</div>
                 ) : (
                   <ul className="wf-files">
-                    {files.map((file) => (
-                      <li key={file.id || file.name}>
-                        <button
-                          className="wf-file-card history-file-btn"
-                          type="button"
-                          onClick={() => {
-                            if (file.downloadUrl) void api.download(file.downloadUrl, file.name)
-                          }}
-                        >
-                          <img className="files-type-icon" src={fileTypeIconSrc(file.name)} alt="" />
-                          <div className="wf-file-copy">
-                            <span className="wf-file-name" title={file.name}>
-                              {file.name}
-                            </span>
-                            {formatSize(file.sizeBytes) ? (
-                              <span className="wf-file-meta">{formatSize(file.sizeBytes)}</span>
-                            ) : null}
-                          </div>
-                        </button>
-                      </li>
-                    ))}
+                    {files.map((file) => {
+                      const meta = [formatFileWhen(file.createdAt), formatSize(file.sizeBytes)]
+                        .filter(Boolean)
+                        .join(' · ')
+                      return (
+                        <li key={file.id || file.name}>
+                          <button
+                            className="wf-file-card history-file-btn"
+                            type="button"
+                            onClick={() => {
+                              if (file.downloadUrl) void api.download(file.downloadUrl, file.name)
+                            }}
+                          >
+                            <img className="files-type-icon" src={fileTypeIconSrc(file.name)} alt="" />
+                            <div className="wf-file-copy">
+                              <span className="wf-file-name" title={file.name}>
+                                {file.name}
+                              </span>
+                              {meta ? <span className="wf-file-meta">{meta}</span> : null}
+                            </div>
+                          </button>
+                        </li>
+                      )
+                    })}
                   </ul>
                 )}
               </section>

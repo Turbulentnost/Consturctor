@@ -42,7 +42,7 @@ def start_agent_run(
     trigger_id: str = "",
     evidence: str = "",
 ) -> AgentRun:
-    _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    workflow = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
     kind = (source or "chat").strip() or "chat"
     if kind not in {"chat", "trigger"}:
         kind = "chat"
@@ -69,6 +69,13 @@ def start_agent_run(
     db.commit()
     db.refresh(row)
     _notify_board(db, user_id=user_id, workflow_id=workflow_id, run_id=row.id, status=row.status)
+    _notify_run_started(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        run_id=row.id,
+        agent_title=workflow.title or "агент",
+    )
     return row
 
 
@@ -76,8 +83,10 @@ def save_run_events(db: Session, *, run_id: str, events: list[dict[str, Any]]) -
     row = db.get(AgentRun, run_id)
     if row is None or (row.status or "") != "started":
         return
+    previous = row.events_json if isinstance(row.events_json, list) else []
     row.events_json = slim_run_events(events)
     db.commit()
+    _notify_new_run_waits(db, row, previous=previous, current=row.events_json)
 
 
 def fail_stale_started_runs(db: Session, *, user_id: str, notify: bool = True) -> int:
@@ -278,6 +287,7 @@ def finish_agent_run(
     row = db.get(AgentRun, run_id)
     if row is None:
         return
+    was_open = _row_in_flight(row)
     row.answer = (answer or "").strip()[:32000]
     row.status = effective_run_status(_normalize_run_status(status), row.answer, in_flight=False)
     row.finished_at = datetime.now(timezone.utc)
@@ -307,6 +317,14 @@ def finish_agent_run(
             run_id=row.id,
             status=row.status,
         )
+        if was_open:
+            _notify_run_finished(
+                db,
+                user_id=row.user_id,
+                workflow_id=row.workflow_id,
+                run_id=row.id,
+                status=row.status,
+            )
 
 
 def list_agent_runs(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRunOut]:
@@ -352,6 +370,151 @@ def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -
             }
         )
     return out
+
+
+def _agent_title(db: Session, workflow_id: str) -> str:
+    from app.models.workflow import Workflow
+
+    workflow = db.get(Workflow, workflow_id)
+    title = str(getattr(workflow, "title", "") or "").strip()
+    return title or "агент"
+
+
+def _push_run_notification(item: Any) -> None:
+    try:
+        from app.services.notifications.hub import hub
+        from app.services.notifications.service import payload_dict
+
+        hub.schedule_push(item.recipient_user_id, payload_dict(item))
+    except Exception:  # noqa: BLE001
+        logger.debug("Run inbox push failed", exc_info=True)
+
+
+def _create_run_inbox(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    run_id: str,
+    title: str,
+    body: str,
+) -> None:
+    from app.schemas.notification import NotificationCreate
+    from app.services.notifications.service import NotificationError, create_notification
+
+    try:
+        item = create_notification(
+            db,
+            sender_user_id=user_id,
+            payload=NotificationCreate(
+                recipient_user_id=user_id,
+                title=title,
+                body=body,
+                workflow_id=workflow_id,
+                run_id=run_id,
+            ),
+        )
+    except NotificationError as exc:
+        logger.warning("Could not store run notification user=%s: %s", user_id, exc)
+        return
+    _push_run_notification(item)
+
+
+def _pending_wait_events(events: list[Any]) -> dict[str, dict[str, Any]]:
+    pending: dict[str, dict[str, Any]] = {}
+    closed: set[str] = set()
+    for raw in events:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("type") or "").strip().lower()
+        request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
+        status = str(raw.get("status") or "").strip().lower()
+        if request_id and (status in {"approved", "rejected"} or raw.get("skipped")):
+            closed.add(request_id)
+            pending.pop(request_id, None)
+            continue
+        if kind in {"hitl", "question"} and request_id and request_id not in closed:
+            pending[request_id] = raw
+    return pending
+
+
+def _notify_new_run_waits(
+    db: Session,
+    row: AgentRun,
+    *,
+    previous: list[Any],
+    current: list[Any],
+) -> None:
+    from app.services.sessions import WAIT_CONFIRM_TITLE
+
+    old_ids = set(_pending_wait_events(previous))
+    fresh = [
+        event
+        for request_id, event in _pending_wait_events(current).items()
+        if request_id not in old_ids
+    ]
+    if not fresh:
+        return
+    agent_title = _agent_title(db, row.workflow_id)
+    for event in fresh:
+        tool = str(event.get("tool") or event.get("title") or event.get("text") or "").strip()
+        hint = f": {tool}" if tool else ""
+        _create_run_inbox(
+            db,
+            user_id=row.user_id,
+            workflow_id=row.workflow_id,
+            run_id=row.id,
+            title=f"{WAIT_CONFIRM_TITLE} · {agent_title}",
+            body=f"Агент «{agent_title}» ожидает подтверждения{hint}. Откройте вкладку «Решения».",
+        )
+
+
+def _notify_run_started(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    run_id: str,
+    agent_title: str,
+) -> None:
+    from app.services.sessions import START_RUN_BODY, START_RUN_TITLE
+
+    _create_run_inbox(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+        title=f"{START_RUN_TITLE} · {agent_title}",
+        body=f"Агент «{agent_title}»: {START_RUN_BODY}",
+    )
+
+
+def _notify_run_finished(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    run_id: str,
+    status: str,
+) -> None:
+    from app.services.sessions import FINISH_RUN_TITLE
+
+    agent_title = _agent_title(db, workflow_id)
+    key = (status or "").strip().lower()
+    if key in {"error", "failed"}:
+        body = f"Агент «{agent_title}» завершил запуск с ошибкой."
+    elif key in {"canceled", "cancelled"}:
+        body = f"Агент «{agent_title}»: запуск отменён."
+    else:
+        body = f"Агент «{agent_title}» завершил запуск."
+    _create_run_inbox(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        run_id=run_id,
+        title=f"{FINISH_RUN_TITLE} · {agent_title}",
+        body=body,
+    )
 
 
 def _notify_board(
@@ -510,6 +673,7 @@ _MUST_KEEP_EVENT_TYPES = {
     "result",
     "user_message",
     "question",
+    "hitl",
     "tool_request",
     "human_wait",
     "human_reply",

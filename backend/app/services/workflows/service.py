@@ -75,6 +75,7 @@ class PhaseResult:
     git: dict[str, Any] = field(default_factory=dict)
     successful_live_tools: list[str] = field(default_factory=list)
     step_ledger: list[dict[str, Any]] = field(default_factory=list)
+    tool_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 def workflow_health() -> WorkflowHealth:
@@ -1192,7 +1193,8 @@ def finish_local_demo_workflow(
         status="FINISHED",
         text=(answer or "").strip(),
         successful_live_tools=tools,
-        step_ledger=_local_demo_ledger(draft, tools),
+        step_ledger=_local_demo_ledger(draft, tools, events=events or []),
+        tool_events=list(events or []),
     )
     local = dict(row.local_run or {})
     local["runtime"] = "cursor-sdk"
@@ -1927,6 +1929,7 @@ def _finish_demo_stream(
         demo_text=phase.text or "",
         tools=tools,
         report=report,
+        events=list(phase.tool_events or []),
         on_event=on_event,
     )
     local = dict(row.local_run or {})
@@ -1940,7 +1943,11 @@ def _finish_demo_stream(
         }
     from app.services.workflows.tool_whitelist import collect_runtime_whitelist, store_whitelist
 
-    whitelist = collect_runtime_whitelist(local={**local, "live_tools_invoked": tools}, playbook=playbook)
+    chain_tools = list(playbook.get("tools") or tools)
+    whitelist = collect_runtime_whitelist(
+        local={**local, "live_tools_invoked": chain_tools},
+        playbook=playbook,
+    )
     if whitelist:
         playbook["tools"] = whitelist
         local["playbook"] = playbook
@@ -2225,21 +2232,30 @@ def _successful_tools_from_events(events: list[dict[str, Any]]) -> list[str]:
     return [name for name in tools if name not in failed]
 
 
-def _local_demo_ledger(draft: dict[str, Any], tools: list[str]) -> list[dict[str, Any]]:
-    steps = [item for item in (draft.get("steps") or []) if isinstance(item, dict)]
+def _local_demo_ledger(
+    draft: dict[str, Any],
+    tools: list[str],
+    events: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    from app.services.workflows.playbook_validation import lock_verified_chain
+
+    locked = lock_verified_chain(draft, events=events, tools=tools)
+    steps = [item for item in (locked.get("steps") or []) if isinstance(item, dict)]
     if not steps:
         return []
     fallback_tool = tools[0] if tools else ""
     ledger: list[dict[str, Any]] = []
     for index, step in enumerate(steps, start=1):
         step_id = str(step.get("id") or step.get("title") or f"step-{index}")
-        tool = str(step.get("tool") or step.get("tool_name") or fallback_tool)
+        tool = str(step.get("tool") or step.get("tool_name") or "")
+        if not tool and fallback_tool:
+            tool = fallback_tool
         ledger.append(
             {
                 "id": step_id,
                 "required": True,
-                "status": "completed",
-                "data_status": "complete" if tool else "empty_valid",
+                "status": "completed" if tool or tools else "pending",
+                "data_status": "complete" if tool or tools else "empty_valid",
                 "tool": tool,
                 "error": "",
                 "reasons": [],
@@ -2310,6 +2326,9 @@ def _playbook_from_draft(row: Workflow, draft: dict[str, Any]) -> dict[str, Any]
         playbook["write_recipe"] = recipe.get("recipe") or recipe
         if isinstance(recipe.get("recipes"), list) and recipe["recipes"]:
             playbook["write_recipes"] = recipe["recipes"]
+    steps = [dict(step) for step in (draft.get("steps") or []) if isinstance(step, dict)]
+    if steps:
+        playbook["steps"] = steps
     # Carry over per-run inputs and the run trigger so they survive into the
     # published playbook (the schedule draft and run-start prompts rely on them).
     when_to_run = str(draft.get("when_to_run") or "").strip()
@@ -2359,6 +2378,35 @@ def _fail_demo_validation(
     return _to_schema(row)
 
 
+def _lock_playbook_chain(
+    playbook: dict[str, Any],
+    draft: dict[str, Any],
+    *,
+    tools: list[str],
+    report: dict[str, Any],
+    events: list[dict[str, Any]] | None = None,
+    steps: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    from app.services.workflows.playbook_validation import (
+        chain_tools,
+        lock_verified_chain,
+        verified_chain_text,
+    )
+
+    source = {**draft, "steps": steps or playbook.get("steps") or draft.get("steps") or []}
+    locked = lock_verified_chain(
+        source,
+        ledger=report.get("ledger") if isinstance(report.get("ledger"), list) else [],
+        events=events,
+        tools=tools,
+    )
+    playbook["steps"] = locked.get("steps") or []
+    helpers = [name for name in tools if name in {"users.current", "users.list"}]
+    playbook["tools"] = chain_tools(playbook["steps"], extras=helpers) or list(tools)
+    playbook["chain"] = verified_chain_text({**playbook, "chain": ""})
+    return playbook
+
+
 def _refine_playbook(
     row: Workflow,
     *,
@@ -2366,6 +2414,7 @@ def _refine_playbook(
     demo_text: str,
     tools: list[str],
     report: dict[str, Any],
+    events: list[dict[str, Any]] | None = None,
     on_event: WorkflowEventCallback | None = None,
 ) -> dict[str, Any]:
     """Правка черновика по фактам запуска, а не первое его создание."""
@@ -2375,12 +2424,9 @@ def _refine_playbook(
         return playbook
 
     playbook = _playbook_from_draft(row, draft)
-    from app.services.workflows.tool_whitelist import collect_runtime_whitelist
-
-    playbook["tools"] = collect_runtime_whitelist(
-        local={"playbook_draft": draft, "live_tools_invoked": tools},
-        playbook={**playbook, "tools": tools},
-    ) or list(tools)
+    playbook = _lock_playbook_chain(
+        playbook, draft, tools=tools, report=report, events=events
+    )
     playbook["example_run"] = (demo_text or "").strip()[:2500]
     playbook["demo_ok"] = True
     playbook["status"] = prompts.DRAFT_STATUS_VERIFIED
@@ -2417,7 +2463,17 @@ def _refine_playbook(
     if parsed.get("triggers"):
         playbook["triggers"] = parsed["triggers"]
     if parsed.get("steps"):
-        playbook["steps"] = parsed["steps"]
+        from app.services.workflows.playbook_validation import attach_tool_candidates
+
+        refined = attach_tool_candidates({**draft, "steps": parsed["steps"]})
+        playbook = _lock_playbook_chain(
+            playbook,
+            refined,
+            tools=tools,
+            report=report,
+            events=events,
+            steps=refined.get("steps"),
+        )
     return playbook
 
 

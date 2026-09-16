@@ -8,7 +8,13 @@ if (process.platform === 'win32') {
   app.setAppUserModelId('com.orchestrator.desktop')
 }
 import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, copyFileSync } from 'node:fs'
-import { NotificationGuard, showToast, type ToastPayload } from './notifications'
+import {
+  installToastActivation,
+  NotificationGuard,
+  setStopRunHandler,
+  showToast,
+  type ToastPayload
+} from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
 import {
   LOCAL_BACKEND_DEFAULT,
@@ -222,9 +228,23 @@ function broadcastAgentEvent(message: AgentSidecarMessage): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('agent:event', message)
   }
+  if (
+    (message.type === 'result' || message.type === 'error') &&
+    String(message.source || '') === 'trigger'
+  ) {
+    showToast({
+      title: 'Запуск закончен',
+      body: 'Плановый запуск агента завершён.',
+      workflowId: String(message.workflowId || ''),
+      runId: String(message.runId || '')
+    })
+  }
 }
 
 const agentSidecar = new AgentSidecar(CONFIG.backendUrl, broadcastAgentEvent)
+setStopRunHandler((workflowId, runId) => {
+  agentSidecar.send({ type: 'cancel', id: runId, workflowId })
+})
 
 const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
   const kind = String(command.type || '')
@@ -241,9 +261,17 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
       message
     })
   } else if (kind === 'run_agent') {
+    const runId = `run-${Date.now()}`
+    showToast({
+      title: 'Запуск начался',
+      body: 'Плановый запуск агента. Можно остановить из этого уведомления.',
+      workflowId,
+      runId,
+      canStop: true
+    })
     agentSidecar.send({
       type: 'run',
-      id: `run-${Date.now()}`,
+      id: runId,
       workflowId,
       message,
       source: 'trigger',
@@ -1085,6 +1113,7 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   registerMainIpcHandlers()
+  installToastActivation()
   agentSidecar.warmup()
   const ready = await ensureDesktopBackend(CONFIG.backendUrl)
   const remoteUp =

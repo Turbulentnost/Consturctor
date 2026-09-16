@@ -165,32 +165,25 @@ def _tender_to_row(tender: Any) -> dict[str, str]:
 def _export_excel(rows: list[dict[str, Any]], dest: Path, columns: list[str]) -> Path:
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Alignment, Font
-        from openpyxl.utils import get_column_letter
     except ImportError as exc:
         raise ToolHostError(
             "Нужен openpyxl для Excel. Установите: pip install openpyxl"
         ) from exc
 
+    from app.tools.ac.office_style import pretty_title, write_excel_sheet
+
     dest.parent.mkdir(parents=True, exist_ok=True)
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Результат"
-    header_font = Font(bold=True)
-
     headers = [c[:1].upper() + c[1:] if c else c for c in columns]
-    for col, name in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col, value=name)
-        cell.font = header_font
-        cell.alignment = Alignment(vertical="center", wrap_text=True)
-        ws.column_dimensions[get_column_letter(col)].width = 28 if col > 1 else 55
-    ws.freeze_panes = "A2"
-
     field_keys = [_COLUMN_ALIASES.get(c.casefold(), c.casefold()) for c in columns]
-    for r_i, row in enumerate(rows, start=2):
-        for c_i, key in enumerate(field_keys, start=1):
-            val = row.get(key, "")
-            ws.cell(row=r_i, column=c_i, value=val).alignment = Alignment(wrap_text=True)
-
-    wb.save(dest)
+    table = [[row.get(key, "") for key in field_keys] for row in rows]
+    workbook = Workbook()
+    write_excel_sheet(
+        workbook,
+        sheet="Результат",
+        headers=headers,
+        rows=table,
+        title=pretty_title(dest.name, "Результат поиска"),
+    )
+    workbook.save(dest)
+    workbook.close()
     return dest

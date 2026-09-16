@@ -152,7 +152,7 @@ export function AgentStudioPage({
 
   const basePhrase = useMemo(() => {
     if (session.pendingQuestion) return 'Агент ждёт ваш ответ'
-    if (session.pendingHitl) return 'Требуется подтверждение действия'
+    if (session.pendingHitl) return session.pendingHitl.title || 'Нужно ваше решение'
     if (busy) {
       if (session.status) return session.status
       if (phase === 'executing') return 'Пробный запуск'

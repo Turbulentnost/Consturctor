@@ -31,6 +31,10 @@ SKIP_RUN_TITLE = "Пропущен плановый запуск"
 SKIP_RUN_BODY = (
     "Оркестратор не был запущен, поэтому система пропустила плановый запуск."
 )
+START_RUN_TITLE = "Запуск начался"
+START_RUN_BODY = "запуск начался."
+FINISH_RUN_TITLE = "Запуск закончен"
+WAIT_CONFIRM_TITLE = "Агент ожидает подтверждения"
 RECONNECT_EVIDENCE = "ожидание подключения десктопа"
 RECONNECT_RETRY_SEC = 45
 

@@ -2176,6 +2176,7 @@ class ApiClient:
         title: str,
         body: str = "",
         workflow_id: str = "",
+        run_id: str = "",
         recipient_user_id: str = "",
     ) -> dict:
         user_id = (recipient_user_id or self._user_id).strip()
@@ -2189,9 +2190,33 @@ class ApiClient:
                 "title": title,
                 "body": body,
                 "workflow_id": workflow_id,
+                "run_id": run_id,
             },
             timeout=20.0,
         )
+
+    def notify_run_inbox(
+        self,
+        *,
+        title: str,
+        body: str,
+        workflow_id: str,
+        run_id: str = "",
+        agent_title: str = "",
+    ) -> None:
+        name = (agent_title or "").strip() or "агент"
+        text = (body or "").strip()
+        if "{agent}" in text:
+            text = text.replace("{agent}", name)
+        try:
+            self.create_inbox_notification(
+                title=title,
+                body=text,
+                workflow_id=workflow_id,
+                run_id=run_id,
+            )
+        except Exception:
+            return
 
     def unread_notification_count(self) -> int:
         data = self._request("GET", "/api/v1/notifications/unread-count", timeout=15.0)
@@ -2296,7 +2321,20 @@ class ApiClient:
         )
         if not isinstance(data, dict):
             raise ApiError("Не удалось создать запуск агента")
-        return _parse_agent_run(data, workflow_id)
+        parsed = _parse_agent_run(data, workflow_id)
+        agent_title = "агент"
+        try:
+            agent_title = (self.get_workflow(workflow_id).title or "").strip() or "агент"
+        except Exception:
+            pass
+        self.notify_run_inbox(
+            title="Запуск начался",
+            body=f"Агент «{agent_title}»: запуск начался.",
+            workflow_id=workflow_id,
+            run_id=parsed.id,
+            agent_title=agent_title,
+        )
+        return parsed
 
     def update_local_agent_run_events(
         self,
@@ -2351,7 +2389,27 @@ class ApiClient:
         )
         if not isinstance(data, dict):
             raise ApiError("Не удалось завершить запуск агента")
-        return _parse_agent_run(data, workflow_id)
+        parsed = _parse_agent_run(data, workflow_id)
+        key = (status or "").strip().lower()
+        agent_title = "агент"
+        try:
+            agent_title = (self.get_workflow(workflow_id).title or "").strip() or "агент"
+        except Exception:
+            pass
+        if key in {"error", "failed"}:
+            body = f"Агент «{agent_title}» завершил запуск с ошибкой."
+        elif key in {"canceled", "cancelled"}:
+            body = f"Агент «{agent_title}»: запуск отменён."
+        else:
+            body = f"Агент «{agent_title}» завершил запуск."
+        self.notify_run_inbox(
+            title="Запуск закончен",
+            body=body,
+            workflow_id=workflow_id,
+            run_id=parsed.id or run_id,
+            agent_title=agent_title,
+        )
+        return parsed
 
     def get_agent_run(self, workflow_id: str, run_id: str) -> AgentRunHistoryItem:
         data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs/{run_id}", timeout=60.0)

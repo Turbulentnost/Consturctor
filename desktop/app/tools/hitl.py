@@ -28,7 +28,14 @@ AUTONOMY_LEVEL = 1
 HUMAN_REJECTED = "отклонено человеком"
 
 _NEVER_CONFIRM = frozenset(
-    {"notify.send", "notify", "code.write_python", "code.run_python"}
+    {
+        "notify.send",
+        "notify",
+        "code.write_python",
+        "code.run_python",
+        "report.export_document",
+        "office.format_document",
+    }
 )
 
 _READ_EXACT = frozenset(
@@ -151,8 +158,12 @@ _TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
         "Файл в 1С",
         "Прикрепляет файл из папки агента к документу в 1С.",
     ),
+    "onec.erp_assignments": (
+        "Поручения в 1С",
+        "Откроет журнал поручений АСТ00.",
+    ),
     "onec.erp_assignments_write": (
-        "Запись поручения 1С",
+        "Изменение поручения",
         "Создаёт или меняет карточку журнала АСТ00, либо пишет комментарий исполнителю.",
     ),
     "outlook.send_mail": (
@@ -178,7 +189,11 @@ _TOOL_EXPLAIN: dict[str, tuple[str, str]] = {
     ),
     "report.export_document": (
         "Отчёт в файл",
-        "Сохраняет отчёт файлом (Word или Markdown) в папке агента.",
+        "Сохраняет оформленный отчёт файлом (Word или Markdown) в папке агента.",
+    ),
+    "office.format_document": (
+        "Оформление Excel/Word",
+        "Создаёт или переоформляет Excel и Word корпоративным шаблоном.",
     ),
     "excel.edit_workbook": (
         "Изменение Excel",
@@ -241,6 +256,94 @@ def _human_entity(entity: str) -> str:
     return kind
 
 
+def _clip(text: str, max_len: int = 180) -> str:
+    value = " ".join(str(text or "").split())
+    if len(value) <= max_len:
+        return value
+    return value[: max_len - 1].rstrip() + "…"
+
+
+def _assignment_facts(args: dict) -> list[str]:
+    facts: list[str] = []
+    number = str(args.get("number") or "").strip()
+    if number:
+        facts.append(f"поручение {number}")
+    customer = str(args.get("customer") or "").strip()
+    if customer:
+        facts.append(f"заказчик {customer}")
+    topic = str(args.get("topic") or "").strip()
+    if topic:
+        facts.append(f"о чём: {_clip(topic, 120)}")
+    status = str(args.get("status") or "").strip()
+    if status:
+        facts.append(f"статус {status}")
+    due = str(args.get("due") or "").strip()
+    if due:
+        facts.append(f"срок {due}")
+    comment = str(args.get("comment") or "").strip()
+    if comment:
+        facts.append(f"комментарий: {_clip(comment, 140)}")
+    query = str(args.get("query") or "").strip()
+    if query:
+        facts.append(f"ищет «{_clip(query, 80)}»")
+    performer = str(args.get("performer") or "").strip()
+    if performer:
+        facts.append(f"исполнитель {performer}")
+    limit = args.get("limit")
+    if isinstance(limit, int) and limit > 0:
+        facts.append(f"не больше {limit} записей")
+    if args.get("include_last_day") is True or (
+        args.get("include_last_day") is None and str(args.get("action") or "list").lower() == "list"
+    ):
+        if str(args.get("action") or "list").lower() == "list" and args.get("only_open") is not True:
+            facts.append("открытые и за сегодня")
+    if args.get("only_open") is True:
+        facts.append("только открытые")
+    return facts
+
+
+def _explain_assignments(tool: str, args: dict) -> tuple[str, str]:
+    action = str(args.get("action") or ("list" if tool == "onec.erp_assignments" else "update")).strip().lower()
+    number = str(args.get("number") or "").strip()
+    facts = _assignment_facts(args)
+    extra = ". ".join(item[0].upper() + item[1:] if item else item for item in facts)
+    extra = f"{extra}." if extra else ""
+    if tool == "onec.erp_assignments":
+        titles = {
+            "get": (
+                "Карточка поручения",
+                f"Откроет карточку поручения{(' ' + number) if number else ''} в 1С.",
+            ),
+            "files": ("Файлы поручения", "Покажет файлы поручения в 1С."),
+            "download": ("Файл поручения", "Скачает файл из поручения 1С."),
+            "tasks": ("Задачи по поручениям", "Покажет задачи исполнителей по поручениям."),
+            "protocols": ("Протоколы поручений", "Покажет протоколы, связанные с поручениями."),
+        }
+        title, base = titles.get(
+            action,
+            ("Поручения в 1С", "Откроет журнал поручений АСТ00."),
+        )
+        return title, " ".join(part for part in (base, extra) if part).strip()
+    if action == "create":
+        return "Новое поручение", " ".join(
+            part for part in ("Создаст новую карточку в журнале поручений 1С.", extra) if part
+        ).strip()
+    if action == "comment_task":
+        return "Комментарий исполнителю", " ".join(
+            part
+            for part in ("Напишет комментарий в задачу исполнителя поручения.", extra)
+            if part
+        ).strip()
+    return "Изменение поручения", " ".join(
+        part
+        for part in (
+            f"Изменит{(' поручение ' + number) if number else ' поручение'} в журнале 1С.",
+            extra,
+        )
+        if part
+    ).strip()
+
+
 def _body_facts(body: object) -> list[str]:
     if not isinstance(body, dict):
         return []
@@ -272,6 +375,8 @@ def explain_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
         (tool or "инструмент", "Выполнит действие во внешней системе. Без подтверждения операция не пройдёт."),
     )
     extra: list[str] = []
+    if tool in {"onec.erp_assignments", "onec.erp_assignments_write"}:
+        return _explain_assignments(tool, args)
     if tool in {"onec.odata_post", "onec.odata_patch"}:
         entity = _human_entity(str(args.get("entity") or args.get("entitySet") or ""))
         if entity:
@@ -285,7 +390,7 @@ def explain_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
         filename = str(args.get("filename") or "").strip()
         if filename:
             extra.append(f"Файл: {filename}.")
-    elif tool in {"excel.create_workbook", "excel.edit_workbook"}:
+    elif tool in {"excel.create_workbook", "excel.edit_workbook", "office.format_document", "report.export_document"}:
         filename = str(args.get("filename") or args.get("path") or "").strip()
         if filename:
             extra.append(f"Файл: {filename}.")

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { UserProfile } from '../../api/types'
+import { api } from '../../api/client'
+import type { AgentRunHistoryItem, UserProfile } from '../../api/types'
 import {
   OrchSlotBotA,
   OrchSlotBotB,
@@ -30,6 +31,7 @@ import { SpecIconCalendar, SpecIconSearch } from '../../workplace/specV04Icons'
 import { buildProcessesQuickActions } from '../../workplace/specGridQuickActions'
 import { applyMeetingDoneToRow, isMeetingRowId } from '../../workplace/meetingCompletion'
 import { useMeetingCompletion } from '../../workplace/useMeetingCompletion'
+import { formatRunWhen, historySourceLabel, historyStatusLabel, historyStatusTone } from '../../pages/historyDetail'
 
 const DETAIL_TABS = [
   { id: 'general', label: 'Общее' },
@@ -53,11 +55,13 @@ const PROCESS_TABS = [
 function ProcessDetail({
   row,
   onOpen,
+  onOpenRun,
   meetingDone,
   onToggleMeetingDone
 }: {
   row: SpecProcessRow
   onOpen?: (workflowId: string, title: string) => void
+  onOpenRun?: (workflowId: string, title: string, runId?: string) => void
   meetingDone?: boolean
   onToggleMeetingDone?: () => void
 }): React.JSX.Element {
@@ -66,10 +70,45 @@ function ProcessDetail({
       ? ''
       : row.id
   const [detailTab, setDetailTab] = useState<DetailTabId>('general')
+  const [historyRuns, setHistoryRuns] = useState<AgentRunHistoryItem[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState('')
 
   useEffect(() => {
     setDetailTab('general')
+    setHistoryRuns([])
+    setHistoryLoading(false)
+    setHistoryError('')
   }, [row.id])
+
+  useEffect(() => {
+    if (detailTab !== 'history') return
+    if (!openId) {
+      setHistoryRuns([])
+      setHistoryError('История запусков доступна только для агентов Constructor.')
+      return
+    }
+    let alive = true
+    setHistoryLoading(true)
+    setHistoryError('')
+    void api
+      .listAgentRuns(openId)
+      .then((runs) => {
+        if (!alive) return
+        setHistoryRuns(runs)
+      })
+      .catch((err) => {
+        if (!alive) return
+        setHistoryRuns([])
+        setHistoryError(err instanceof Error ? err.message : 'Не удалось загрузить историю запусков')
+      })
+      .finally(() => {
+        if (alive) setHistoryLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [detailTab, openId])
 
   return (
     <div className="spec-detail-card">
@@ -140,7 +179,42 @@ function ProcessDetail({
       ) : null}
       {detailTab === 'history' ? (
         <div className="spec-detail-pane">
-          <p className="spec-v04-muted">История запусков — вкладка «История».</p>
+          <div className="spec-detail-pane-head">
+            <p className="spec-v04-muted">История запусков агента.</p>
+            {openId && onOpenRun ? (
+              <button type="button" className="btn-ghost" onClick={() => onOpenRun(openId, row.name)}>
+                Открыть страницу истории
+              </button>
+            ) : null}
+          </div>
+          {historyLoading ? <p className="spec-v04-muted">Загружаю историю…</p> : null}
+          {!historyLoading && historyError ? <div className="feed-system error">{historyError}</div> : null}
+          {!historyLoading && !historyError && !historyRuns.length ? (
+            <p className="spec-v04-muted">Пока нет запусков для этого процесса.</p>
+          ) : null}
+          {!historyLoading && !historyError && historyRuns.length > 0 ? (
+            <div className="history-list">
+              {historyRuns.map((run) => (
+                <div key={run.runId} className="history-row">
+                  <div>
+                    <div className={`history-status is-${historyStatusTone(run.status)}`}>
+                      {historyStatusLabel(run.status)}
+                    </div>
+                    <div className="history-when">
+                      {formatRunWhen(run.startedAt)}
+                      {run.source ? ` · ${historySourceLabel(run)}` : ''}
+                    </div>
+                    {run.triggerReason ? <div className="history-summary">{run.triggerReason}</div> : null}
+                  </div>
+                  {onOpenRun ? (
+                    <button type="button" className="btn-ghost" onClick={() => onOpenRun(openId || row.id, row.name, run.runId)}>
+                      Открыть
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
       <footer className="spec-detail-actions">
@@ -384,6 +458,7 @@ export function ProcessesGridTab({
           <ProcessDetail
             row={selected}
             onOpen={onOpen}
+            onOpenRun={onOpenRun}
             meetingDone={isMeetingRowId(selected.id) ? meetingCompletion.isDone(selected.id) : undefined}
             onToggleMeetingDone={
               isMeetingRowId(selected.id) ? () => meetingCompletion.toggle(selected.id) : undefined

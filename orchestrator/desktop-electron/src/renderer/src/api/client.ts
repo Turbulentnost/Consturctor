@@ -296,7 +296,7 @@ function parseInboxNotification(value: unknown): InboxNotification {
     body: String(data.body ?? ''),
     unread: Boolean(data.unread),
     senderFio: String(data.senderFio ?? data.sender_fio ?? ''),
-    createdAt: String(data.createdAt ?? data.created_at ?? ''),
+    createdAt: String(data.createdAt ?? data.created_at ?? data.sendAt ?? data.send_at ?? ''),
     workflowId: String(data.workflowId ?? data.workflow_id ?? ''),
     runId: String(data.runId ?? data.run_id ?? '')
   }
@@ -1690,7 +1690,8 @@ export class ApiClient {
             ? undefined
             : Boolean(item.confirm_only ?? item.confirmOnly),
         error: item.error != null ? String(item.error) : undefined,
-        status: item.status != null ? String(item.status) : undefined
+        status: item.status != null ? String(item.status) : undefined,
+        question: item.question != null ? String(item.question) : undefined
       }))
     return {
       item: parseAgentRunItem({ ...data, id: data.run_id ?? data.runId ?? data.id ?? runId }, workflowId),
@@ -1923,6 +1924,26 @@ export class ApiClient {
       { timeoutMs: 15_000 }
     )
     return ((data.items ?? []) as Record<string, unknown>[]).map(parseInboxNotification)
+  }
+
+  async createNotification(payload: {
+    recipientUserId: string
+    title: string
+    body?: string
+    workflowId?: string
+    runId?: string
+  }): Promise<InboxNotification> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/notifications', {
+      body: {
+        recipient_user_id: payload.recipientUserId,
+        title: payload.title,
+        body: payload.body || '',
+        workflow_id: payload.workflowId || '',
+        run_id: payload.runId || ''
+      },
+      timeoutMs: 15_000
+    })
+    return parseInboxNotification(data)
   }
 
   async markAllNotificationsRead(): Promise<void> {

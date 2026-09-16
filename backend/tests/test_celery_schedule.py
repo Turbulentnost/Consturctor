@@ -510,3 +510,133 @@ def test_notifications_ws_does_not_dispatch_triggers() -> None:
 
     assert not hasattr(triggers, "dispatch_due_triggers")
     assert "dispatch_due_triggers" not in notifications.__dict__
+
+
+def test_start_trigger_run_notifies_inbox() -> None:
+    from app.services.agent_runs import start_agent_run
+    from app.services.notifications.service import list_inbox
+    from app.services.sessions import START_RUN_TITLE
+
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    started = start_agent_run(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        message="проверить сроки",
+        source="trigger",
+        trigger_id="tr-1",
+    )
+    items = list_inbox(db, user_id=user_id)
+    assert items
+    assert items[0].title.startswith(START_RUN_TITLE)
+    assert "Контроль сроков" in items[0].title
+    assert "Контроль сроков" in items[0].body
+    assert items[0].workflow_id == workflow_id
+    assert items[0].run_id == started.id
+    start_agent_run(db, user_id=user_id, workflow_id=workflow_id, message="вручную", source="chat")
+    titles = [item.title for item in list_inbox(db, user_id=user_id)]
+    assert sum(title.startswith(START_RUN_TITLE) for title in titles) == 2
+
+
+def test_finish_trigger_run_notifies_inbox() -> None:
+    from app.services.agent_runs import finish_agent_run, start_agent_run
+    from app.services.notifications.service import list_inbox
+    from app.services.sessions import FINISH_RUN_TITLE, START_RUN_TITLE
+
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    started = start_agent_run(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        message="проверить сроки",
+        source="trigger",
+        trigger_id="tr-1",
+    )
+    finish_agent_run(db, run_id=started.id, status="ok", answer="WORK_RESULT: готово")
+    titles = [item.title for item in list_inbox(db, user_id=user_id)]
+    assert any(title.startswith(START_RUN_TITLE) for title in titles)
+    assert sum(title.startswith(FINISH_RUN_TITLE) for title in titles) == 1
+    finished = next(
+        item for item in list_inbox(db, user_id=user_id) if item.title.startswith(FINISH_RUN_TITLE)
+    )
+    assert "Контроль сроков" in finished.body
+    assert finished.run_id == started.id
+    chat = start_agent_run(db, user_id=user_id, workflow_id=workflow_id, message="вручную", source="chat")
+    finish_agent_run(db, run_id=chat.id, status="ok", answer="готово")
+    titles = [item.title for item in list_inbox(db, user_id=user_id)]
+    assert sum(title.startswith(FINISH_RUN_TITLE) for title in titles) == 2
+
+
+def test_finish_trigger_run_notifies_inbox_from_running_state() -> None:
+    from app.services.agent_runs import finish_agent_run, start_agent_run
+    from app.services.notifications.service import list_inbox
+    from app.services.sessions import FINISH_RUN_TITLE
+
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    started = start_agent_run(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        message="проверить сроки",
+        source="trigger",
+        trigger_id="tr-1",
+    )
+    row = db.get(AgentRun, started.id)
+    assert row is not None
+    row.status = "running"
+    db.commit()
+
+    finish_agent_run(db, run_id=started.id, status="ok", answer="WORK_RESULT: готово")
+
+    titles = [item.title for item in list_inbox(db, user_id=user_id)]
+    assert any(title.startswith(FINISH_RUN_TITLE) for title in titles)
+
+
+def test_save_run_events_notifies_wait_once() -> None:
+    from app.services.agent_runs import save_run_events, start_agent_run
+    from app.services.notifications.service import list_inbox
+    from app.services.sessions import WAIT_CONFIRM_TITLE
+
+    db = _session()
+    user_id, workflow_id = _seed(db)
+    started = start_agent_run(
+        db,
+        user_id=user_id,
+        workflow_id=workflow_id,
+        message="проверить сроки",
+        source="trigger",
+        trigger_id="tr-1",
+    )
+    hitl = {
+        "type": "hitl",
+        "requestId": "req-1",
+        "tool": "excel.create_workbook",
+        "title": "Создать файл",
+        "status": "pending",
+    }
+    save_run_events(db, run_id=started.id, events=[hitl])
+    titles = [item.title for item in list_inbox(db, user_id=user_id)]
+    assert titles.count(WAIT_CONFIRM_TITLE) == 1
+    waiting = next(item for item in list_inbox(db, user_id=user_id) if item.title == WAIT_CONFIRM_TITLE)
+    assert "excel.create_workbook" in waiting.body
+    assert "Решения" in waiting.body
+    save_run_events(db, run_id=started.id, events=[hitl])
+    titles = [item.title for item in list_inbox(db, user_id=user_id)]
+    assert titles.count(WAIT_CONFIRM_TITLE) == 1
+    save_run_events(
+        db,
+        run_id=started.id,
+        events=[
+            hitl,
+            {
+                "type": "question",
+                "requestId": "req-2",
+                "text": "Какой файл использовать?",
+            },
+        ],
+    )
+    titles = [item.title for item in list_inbox(db, user_id=user_id)]
+    assert titles.count(WAIT_CONFIRM_TITLE) == 2

@@ -69,6 +69,26 @@ def _odata_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def normalize_assignment_number(number: str) -> str:
+    """Journal series is Cyrillic АСТ00. Models often send Latin ACT."""
+    text = str(number or "").strip()
+    if len(text) < 3:
+        return text
+    mapped: list[str] = []
+    for char in text[:3]:
+        if char in "Aa":
+            mapped.append("А")
+        elif char in "CcСс":
+            mapped.append("С")
+        elif char in "TtТт":
+            mapped.append("Т")
+        else:
+            mapped.append(char)
+    if "".join(mapped) == "АСТ" and text[:3] != "АСТ":
+        return "АСТ" + text[3:]
+    return text
+
+
 def _parse_day(raw: str, *, end: bool = False) -> datetime | None:
     text = (raw or "").strip()
     if not text:
@@ -367,7 +387,7 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
         resolved = resolve_user(customer)
         customer_key = resolved["ref_key"]
         customer = resolved["fio"]
-    number = str(args.get("number") or "").strip()
+    number = normalize_assignment_number(str(args.get("number") or "").strip())
     query = str(args.get("query") or args.get("topic") or "").strip()
     date_from = _parse_day(str(args.get("date_from") or ""))
     date_to = _parse_day(str(args.get("date_to") or ""), end=True)
@@ -406,7 +426,7 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
     summary = f"Porucheniya 1C: {len(items)}"
     if customer:
         summary += f" (zakazchik {customer})"
-    return {
+    payload: dict[str, Any] = {
         "summary": summary,
         "entity": ASSIGNMENT_ENTITY,
         "number_series": "АСТ00",
@@ -417,13 +437,20 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
         "assignments": items,
         "source": result.get("source") or "odata",
     }
+    if not items:
+        payload["hint"] = (
+            "Zhurnal AST00 pust. Esli filtrovali po zakazchiku — povtori action=list "
+            "bez customer. Potom excel.create_workbook s tekstom «porucheniy net». "
+            "Ne ischi zadachi ispolnitelya, protokoly i ne delai OCR."
+        )
+    return payload
 
 
 def _get_assignment(args: dict[str, Any]) -> dict[str, Any]:
-    number = str(args.get("number") or "").strip()
+    number = normalize_assignment_number(str(args.get("number") or "").strip())
     ref_key = str(args.get("ref_key") or args.get("Ref_Key") or "").strip()
     if not number and not ref_key:
-        raise AssignmentError("Nuzhen number (AST00-...) ili ref_key")
+        raise AssignmentError("Nuzhen number (АСТ00-...) ili ref_key")
     call: dict[str, Any] = {"entity": ASSIGNMENT_ENTITY, "top": 5}
     if ref_key:
         call["ref_key"] = ref_key
@@ -515,7 +542,7 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
     if only_open is None:
         only_open = True
     top = max(1, min(int(args.get("limit") or 20), 100))
-    parts = ["DeletionMark eq false"]
+    parts: list[str] = []
     if query:
         safe = query.replace("'", "''")
         parts.append(f"(substringof('{safe}', Description) or substringof('{safe}', ПредметСтрокой))")
@@ -527,7 +554,10 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
         performer = user["fio"]
     filt = " and ".join(parts)
     try:
-        result = _odata_get({"entity": TASK_ENTITY, "top": top, "filter": filt})
+        call: dict[str, Any] = {"entity": TASK_ENTITY, "top": top}
+        if filt:
+            call["filter"] = filt
+        result = _odata_get(call)
         rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
         source = result.get("source") or "odata"
     except Exception as exc:  # noqa: BLE001
@@ -537,9 +567,9 @@ def _list_tasks(args: dict[str, Any]) -> dict[str, Any]:
             "count": 0,
             "tasks": [],
             "hint": (
-                "Zhurnal porucheniy - action=list (Document_TD_Porucheniya, AST00). "
-                "V 1C net zadachi 'Proverit poruchenie': agent sam chitaet zhurnal. "
-                "Ne ischi ee cherez onec.erp_tasks_current."
+                "Eto ne zhurnal porucheniy. Vozvratis k action=list "
+                "(Document_TD_Porucheniya, seriya AST00 kirillicey). "
+                "Ne ischi zadachu 'Proverit poruchenie', ne delai OCR."
             ),
             "source": "error",
         }

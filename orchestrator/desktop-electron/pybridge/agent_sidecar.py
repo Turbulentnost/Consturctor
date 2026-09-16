@@ -150,6 +150,7 @@ _NEVER_CONFIRM = frozenset(
         "code.write_python",
         "code.run_python",
         "report.export_document",
+        "office.format_document",
     }
 )
 _READ_EXACT = frozenset(
@@ -163,12 +164,17 @@ _READ_EXACT = frozenset(
         "browser.get_page_html",
         "outlook.search_mail",
         "outlook.read_calendar",
+        "calendar.show_meetings",
         "excel.list_files",
         "excel.read_workbook",
         "onec.odata_catalog",
         "onec.odata_get",
         "onec.sql_query",
+        "onec.erp_assignments",
+        "onec.download_artifact",
+        "onec.erp_write_probe",
         "onec.erp_tasks_current",
+        "onec.erp_tasks_odata",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
         "onec.docflow_tasks",
@@ -186,9 +192,21 @@ _READ_EXACT = frozenset(
 _READ_PREFIXES = ("onec.search_", "onec.get_", "imap.", "turboproject.")
 
 
+def _compact_tool_name(name: str) -> str:
+    return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+
+def _matches_known_tool(name: str, known: frozenset[str]) -> bool:
+    tool = (name or "").strip()
+    if tool in known:
+        return True
+    compact = _compact_tool_name(tool)
+    return any(_compact_tool_name(item) == compact for item in known)
+
+
 def _is_read_tool(name: str) -> bool:
     tool = (name or "").strip()
-    if tool in _NEVER_CONFIRM or tool in _READ_EXACT:
+    if _matches_known_tool(tool, _NEVER_CONFIRM | _READ_EXACT):
         return True
     return any(tool.startswith(prefix) for prefix in _READ_PREFIXES)
 
@@ -212,9 +230,20 @@ def _text_has_finished_work_result(text: str) -> bool:
 
 def needs_confirmation(name: str) -> bool:
     tool = (name or "").strip()
-    if tool in _NEVER_CONFIRM:
+    if _matches_known_tool(tool, _NEVER_CONFIRM):
         return False
     return not _is_read_tool(tool)
+
+
+def _tool_wait_title(tool: str) -> str:
+    name = (tool or "").strip()
+    if name.startswith("onec."):
+        return "Доступ к 1С"
+    if name.startswith("excel."):
+        return "Действие в Excel"
+    if "outlook" in name or name.startswith("email."):
+        return "Действие в почте"
+    return name or "Действие агента"
 
 
 _STDOUT_LOCK = threading.Lock()
@@ -632,6 +661,14 @@ def _is_calendar_control_text(*parts: Any) -> bool:
     return any(tip in blob for tip in _CALENDAR_CONTROL_TIPS)
 
 
+def _is_assignment_journal_text(*parts: Any) -> bool:
+    """Журнал поручений — не серия совещаний Outlook; playbook не подменяем."""
+    blob = _meeting_blob(*parts)
+    if _is_rk_text(blob) or _is_sd_meeting_text(blob):
+        return False
+    return any(tip in blob for tip in ("аст00", "action tracker", "журнал поруч"))
+
+
 def _is_rk_text(*parts: Any) -> bool:
     blob = _meeting_blob(*parts)
     if any(hint in blob for hint in ("совета директоров", "пл-34-242", "пл 34-242")):
@@ -772,7 +809,12 @@ def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
 
 def _is_outlook_series_prompt(prompt: str) -> bool:
     blob = (prompt or "").casefold()
-    if _is_calendar_control_text(blob) or _is_sd_meeting_text(blob) or _is_rk_text(blob):
+    if (
+        _is_calendar_control_text(blob)
+        or _is_sd_meeting_text(blob)
+        or _is_rk_text(blob)
+        or _is_assignment_journal_text(blob)
+    ):
         return False
     return any(tip in blob for tip in _SERIES_SCHEDULE_TIPS)
 
@@ -811,7 +853,12 @@ def _meeting_blob(*parts: Any) -> str:
 
 
 def _is_meeting_text(*parts: Any) -> bool:
-    if _is_calendar_control_text(*parts) or _is_sd_meeting_text(*parts) or _is_rk_text(*parts):
+    if (
+        _is_calendar_control_text(*parts)
+        or _is_sd_meeting_text(*parts)
+        or _is_rk_text(*parts)
+        or _is_assignment_journal_text(*parts)
+    ):
         return False
     blob = _meeting_blob(*parts)
     return any(tip in blob for tip in _MEETING_TIPS)
@@ -860,7 +907,12 @@ def _merge_outlook_rule_into_playbook(local_run: dict[str, Any] | None) -> dict[
             continue
         current = str(raw.get("instructions") or "").strip()
         name = str(raw.get("name") or "")
-        if _is_calendar_control_text(current, name) or _is_sd_meeting_text(current, name) or _is_rk_text(current, name):
+        if (
+            _is_calendar_control_text(current, name)
+            or _is_sd_meeting_text(current, name)
+            or _is_rk_text(current, name)
+            or _is_assignment_journal_text(current, name)
+        ):
             continue
         if OUTLOOK_SERIES_MARKER in current:
             continue
@@ -1228,6 +1280,8 @@ class ElectronBridge(CursorSdkBridge):
             self._knowledge_workflow_id = workflow_id
         if cwd:
             self._knowledge_cwd = cwd
+        kind = str(getattr(self._hitl_gate, "_kind", "") or "")
+        must_confirm = bool(confirm_writes) or kind == "run"
         return super().run(
             prompt=_with_sidecar_prompt(prompt, mode=mode),
             workflow_id=workflow_id,
@@ -1239,7 +1293,7 @@ class ElectronBridge(CursorSdkBridge):
             on_event=on_event,
             on_question=on_question,
             should_stop=should_stop,
-            confirm_writes=confirm_writes,
+            confirm_writes=must_confirm,
             restrict_builtins=tools is not None,
         )
 
@@ -1359,6 +1413,7 @@ class HitlGate:
         self.qa_history: list[dict[str, str]] = []
         self._lock = threading.Lock()
         self._events: list[dict[str, Any]] | None = None
+        self.on_events_changed: Any = None
         self.work_result_done = False
 
     def bind(self, *, workflow_id: str = "", kind: str = "") -> None:
@@ -1369,6 +1424,37 @@ class HitlGate:
 
     def bind_events(self, events: list[dict[str, Any]]) -> None:
         self._events = events
+
+    def _notify_events_changed(self) -> None:
+        callback = self.on_events_changed
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _append_wait_event(self, event: dict[str, Any]) -> None:
+        payload = _with_at(dict(event))
+        if self._events is not None:
+            self._events.append(payload)
+        self._notify_events_changed()
+
+    def _mark_wait_event(self, request_id: str, *, approved: bool) -> None:
+        rid = (request_id or "").strip()
+        if not rid or self._events is None:
+            return
+        for ev in reversed(self._events):
+            if str(ev.get("type") or "") not in {"hitl", "question"}:
+                continue
+            ev_id = str(ev.get("requestId") or ev.get("request_id") or "").strip()
+            if ev_id != rid:
+                continue
+            ev["status"] = "approved" if approved else "rejected"
+            ev["ok"] = bool(approved)
+            ev["skipped"] = not approved
+            break
+        self._notify_events_changed()
 
     def _record_timing(self, typ: str, wait: str, request_id: str) -> None:
         if self._events is None:
@@ -1407,10 +1493,24 @@ class HitlGate:
                     "requestId": request_id,
                     "tool": tool,
                     "arguments": _safe_args(args),
+                    "title": _tool_wait_title(tool),
+                    "text": f"Нужно подтверждение: {tool}",
                 },
                 workflow_id=self._workflow_id,
                 kind=self._kind,
             )
+        )
+        self._append_wait_event(
+            {
+                "type": "hitl",
+                "tool": tool,
+                "title": _tool_wait_title(tool),
+                "text": f"Нужно подтверждение: {tool}",
+                "requestId": request_id,
+                "arguments": _safe_args(args),
+                "confirm_only": True,
+                "status": "pending",
+            }
         )
         self._record_timing("human_wait", "hitl", request_id)
         try:
@@ -1421,6 +1521,7 @@ class HitlGate:
 
     def resolve_hitl(self, request_id: str, approved: bool) -> None:
         self._record_timing("human_reply", "hitl", request_id)
+        self._mark_wait_event(request_id, approved=approved)
         with self._lock:
             box = self._hitl.get(request_id)
         if box is not None:
@@ -1461,6 +1562,17 @@ class HitlGate:
                 kind=self._kind,
             )
         )
+        self._append_wait_event(
+            {
+                "type": "question",
+                "tool": "askQuestion",
+                "title": question or "Вопрос агента",
+                "text": question,
+                "requestId": request_id,
+                "confirm_only": True,
+                "status": "pending",
+            }
+        )
         self._record_timing("human_wait", "question", request_id)
         reply: dict[str, Any] = {}
         deadline = time.monotonic() + wait_s if wait_s > 0 else None
@@ -1491,6 +1603,10 @@ class HitlGate:
 
     def resolve_answer(self, request_id: str, reply: dict[str, Any]) -> None:
         self._record_timing("human_reply", "question", request_id)
+        approved = bool(reply.get("ok", True)) and bool(
+            str(reply.get("answer") or reply.get("text") or "").strip()
+        )
+        self._mark_wait_event(request_id, approved=approved)
         with self._lock:
             box = self._answers.get(request_id)
         if box is not None:
@@ -1779,15 +1895,15 @@ def _write_answer_document(cwd: str, filename: str, answer: str) -> Path | None:
     path = folder / name
     body = (answer or "").strip() or name
     try:
-        from docx import Document
+        from app.tools.ac.office_style import pretty_title, write_docx
 
-        document = Document()
-        document.add_heading(Path(name).stem.replace("_", " "), level=0)
-        for line in body.splitlines() or [body]:
-            document.add_paragraph(line)
         if path.suffix.lower() != ".docx":
             path = path.with_suffix(".docx")
-        document.save(path)
+        write_docx(
+            path,
+            title=pretty_title(Path(name).stem),
+            sections=[{"heading": "", "body": body}],
+        )
         return path
     except Exception:
         fallback = path.with_suffix(".md")
@@ -2394,6 +2510,7 @@ class Sidecar:
                 active.workflow_id = str(command.get("workflowId") or "").strip()
                 if active.workflow_id:
                     gate.bind(workflow_id=active.workflow_id, kind=kind)
+                active.gate.on_events_changed = lambda current=active: self._flush_run_events(current)
                 self._active[run_id] = active
         if overlap_run_id:
             self._cancel_overlap_slot(command)
@@ -2502,6 +2619,34 @@ class Sidecar:
             )
         except ApiError:
             pass
+        self._notify_fresh_waits(active)
+
+    def _notify_fresh_waits(self, active: ActiveRun) -> None:
+        seen = getattr(active, "notified_waits", None)
+        if seen is None:
+            seen = set()
+            active.notified_waits = seen
+        for raw in list(active.events):
+            if not isinstance(raw, dict):
+                continue
+            kind = str(raw.get("type") or "").strip().lower()
+            if kind not in {"hitl", "question"}:
+                continue
+            request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
+            status = str(raw.get("status") or "").strip().lower()
+            if not request_id or request_id in seen:
+                continue
+            seen.add(request_id)
+            if status in {"approved", "rejected"} or raw.get("skipped"):
+                continue
+            tool = str(raw.get("tool") or raw.get("title") or raw.get("text") or "").strip()
+            hint = f": {tool}" if tool else ""
+            self._api.notify_run_inbox(
+                title="Агент ожидает подтверждения",
+                body=f"Агент ожидает подтверждения{hint}. Откройте вкладку «Решения».",
+                workflow_id=active.workflow_id,
+                run_id=active.history_run_id,
+            )
 
     def _forward_events(self, active: ActiveRun, events: list[dict[str, Any]]):
         """Build an on_event callback that streams raw runner events."""
@@ -2742,8 +2887,8 @@ class Sidecar:
         active.gate.bind(workflow_id=workflow_id, kind="run")
         message = str(command.get("message") or "").strip()
         source = str(command.get("source") or "chat").strip() or "chat"
-        # Trigger/scheduled runs are headless: there is no UI to approve writes,
-        # so they run autonomously like the desktop HeadlessRunner.
+        # Scheduled runs have no file picker, but write confirmations still wait
+        # on the Orchestrator «Решения» tab until the user answers.
         autonomous = source == "trigger"
         trigger_id = str(command.get("triggerId") or "").strip()
         evidence = str(command.get("evidence") or "").strip()
@@ -2798,7 +2943,8 @@ class Sidecar:
             self._api, workflow_id, run_cwd, file_paths, run_id=output_run_id
         )
         # Manual runs: hard-ask for each declared per-run input the user did not
-        # already attach. Trigger/autonomous runs have no UI, so we skip them.
+        # already attach. Trigger runs have no file picker, so we skip attach,
+        # but write confirmations still wait on «Решения».
         run_input_notes: list[str] = []
         if not autonomous:
             run_input_notes = self._ensure_run_inputs_provided(
@@ -2832,7 +2978,7 @@ class Sidecar:
                     on_event=self._forward_events(active, events),
                     on_question=active.gate.ask_question,
                     should_stop=active.stop.is_set,
-                    confirm_writes=not autonomous,
+                    confirm_writes=True,
                 )
             except Exception as exc:  # noqa: BLE001
                 if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
@@ -2847,7 +2993,7 @@ class Sidecar:
                         on_event=self._forward_events(active, events),
                         on_question=active.gate.ask_question,
                         should_stop=active.stop.is_set,
-                        confirm_writes=not autonomous,
+                        confirm_writes=True,
                     )
                 else:
                     raise
@@ -3064,7 +3210,7 @@ class Sidecar:
                     on_event=self._forward_events(active, events),
                     on_question=active.gate.ask_question,
                     should_stop=active.stop.is_set,
-                    confirm_writes=not autonomous,
+                    confirm_writes=True,
                 )
             except Exception as exc:  # noqa: BLE001
                 if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
@@ -3078,7 +3224,7 @@ class Sidecar:
                         on_event=self._forward_events(active, events),
                         on_question=active.gate.ask_question,
                         should_stop=active.stop.is_set,
-                        confirm_writes=not autonomous,
+                        confirm_writes=True,
                     )
                 else:
                     raise
@@ -3219,16 +3365,6 @@ class Sidecar:
             active.workflow_id = workflow_id
             active.gate.bind(workflow_id=workflow_id)
         evidence = str(check.get("changed") or check.get("evidence") or "")
-        emit(
-            {
-                "type": "event",
-                "runId": active.run_id,
-                "payload": {
-                    "type": "decision",
-                    "text": "Trigger fired" if fired else "Trigger condition not met",
-                },
-            }
-        )
         if not fired:
             emit(
                 {

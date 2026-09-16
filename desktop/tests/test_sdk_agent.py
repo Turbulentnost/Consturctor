@@ -15,6 +15,7 @@ from app.sdk_agent.files import (
     _sanitize_prior_run_excerpt,
     seed_agent_brief,
     seed_agents_md,
+    seed_last_agent_outputs,
     seed_workflow_files,
 )
 from app.sdk_agent.prompt import (
@@ -415,6 +416,17 @@ def test_runner_does_not_emit_duplicate_askquestion_event() -> None:
     assert 'provider === "custom-user-tools"' in text
     assert "skipped" in text
     assert "isError: true" in text
+    restricted = text.split("command.restrictBuiltins", 1)[1].split(
+        ': { disallowedTools: ["shell", "edit", "delete", "applyAgentDiff"] }',
+        1,
+    )[0]
+    assert '"read"' not in restricted
+    assert '"grep"' not in restricted
+    assert '"glob"' in restricted
+    assert '"ls"' in restricted
+    assert '"task"' in restricted
+    assert '"Task"' not in restricted
+    assert '"Explore"' not in restricted
 
 
 def test_question_feed_kind_is_separate_block() -> None:
@@ -946,6 +958,42 @@ def test_seed_workflow_files_materializes_manifest(tmp_path: Path) -> None:
     assert "БАЗА ДОКУМЕНТОВ" not in hint
 
 
+def test_seed_last_agent_outputs_restores_latest_workbook(tmp_path: Path) -> None:
+    class _Api:
+        def list_workflow_files(self, workflow_id: str) -> WorkflowFiles:
+            assert workflow_id == "wf-1"
+            return WorkflowFiles(
+                agent_files=[
+                    WorkflowFileItem(
+                        id="old",
+                        filename="ActionTracker.xlsx",
+                        created_at="2026-09-16T08:00:00Z",
+                    ),
+                    WorkflowFileItem(
+                        id="new",
+                        filename="ActionTracker.xlsx",
+                        created_at="2026-09-16T10:00:00Z",
+                    ),
+                    WorkflowFileItem(
+                        id="note",
+                        filename="readme.txt",
+                        created_at="2026-09-16T11:00:00Z",
+                    ),
+                ]
+            )
+
+        def download_workflow_file_to(self, workflow_id: str, file_id: str, destination: Path) -> str:
+            assert workflow_id == "wf-1"
+            assert file_id == "new"
+            destination.write_bytes(b"xlsx-bytes")
+            return str(destination)
+
+    restored = seed_last_agent_outputs(_Api(), "wf-1", str(tmp_path))  # type: ignore[arg-type]
+    target = tmp_path / "ActionTracker.xlsx"
+    assert restored == ["ActionTracker.xlsx"]
+    assert target.read_bytes() == b"xlsx-bytes"
+
+
 def test_seed_agent_brief_writes_plan_and_design_text(tmp_path: Path) -> None:
     record = WorkflowRecord(
         id="wf-1",
@@ -975,6 +1023,28 @@ def test_seed_agent_brief_writes_plan_and_design_text(tmp_path: Path) -> None:
     assert "Верни ТОЛЬКО один JSON-объект" in text
     assert "recipient: руководитель" in text
     assert "График загружает пользователь Excel-файлом." in text
+
+
+def test_seed_agent_brief_writes_verified_chain(tmp_path: Path) -> None:
+    record = WorkflowRecord(
+        id="wf-2",
+        title="Контроль поручений",
+        phase="tested",
+        local_run={
+            "playbook": {
+                "instructions": "Сверь журнал и выгрузи файл.",
+                "steps": [
+                    {"id": "s1", "title": "Журнал АСТ00", "tool": "onec.erp_assignments"},
+                    {"id": "s2", "title": "Excel", "tool": "excel.create_workbook"},
+                ],
+            }
+        },
+    )
+    path = seed_agent_brief(str(tmp_path), record)
+    text = (tmp_path / path).read_text(encoding="utf-8")
+    assert "Проверенная цепочка" in text
+    assert "onec.erp_assignments" in text
+    assert "excel.create_workbook" in text
     agents = seed_agents_md(str(tmp_path))
     assert agents == "AGENTS.md"
     agents_text = (tmp_path / agents).read_text(encoding="utf-8")

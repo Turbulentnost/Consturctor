@@ -6,6 +6,7 @@ import { MiniCalendar, meetingsFromFeed } from './MiniCalendar'
 import { presentAgentText } from './formatAgentText'
 import { ToolCard } from './ToolCard'
 import { fileTypeIconSrc } from '../../utils/fileTypeIcon'
+import { omitTriggerCheckNoise } from './build'
 import type { FeedItem, PendingHitl, PendingQuestion, ResultFileLink } from './types'
 
 const RESULT_FILE_RE = /\.(xlsx|xls|xlsm|csv|docx|doc|pdf)$/i
@@ -192,25 +193,27 @@ export function AgentFeed({
     pinnedRef.current = distance < 60
   }
 
+  const visibleItems = useMemo(() => omitTriggerCheckNoise(items), [items])
+
   useEffect(() => {
     if (!pinnedRef.current) return
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [items, pendingQuestion, pendingHitl, status, running])
+  }, [visibleItems, pendingQuestion, pendingHitl, status, running])
 
-  const resultMeetings = useMemo(() => meetingsFromFeed(items), [items])
+  const resultMeetings = useMemo(() => meetingsFromFeed(visibleItems), [visibleItems])
   const resultDocs = useMemo(
-    () => mergeResultFiles(filesFromToolResults(items), resultFiles),
-    [items, resultFiles]
+    () => mergeResultFiles(filesFromToolResults(visibleItems), resultFiles),
+    [visibleItems, resultFiles]
   )
-  const hasResultItem = items.some((item) => item.kind === 'result')
+  const hasResultItem = visibleItems.some((item) => item.kind === 'result')
   const liftCalendar = resultMeetings.length > 0
-  const isEmpty = items.length === 0 && !pendingQuestion && !pendingHitl && !running
+  const isEmpty = visibleItems.length === 0 && !pendingQuestion && !pendingHitl && !running
 
   return (
     <div className="agent-feed" ref={scrollRef} onScroll={handleScroll}>
       {isEmpty && emptyHint && <div className="agent-feed-empty">{emptyHint}</div>}
-      {items.map((item) => (
+      {visibleItems.map((item) => (
         <FeedRow
           key={item.id}
           item={item}

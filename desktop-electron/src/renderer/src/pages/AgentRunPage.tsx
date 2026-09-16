@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { WorkflowFileItem } from '../api/types'
-import { AgentFeed } from '../components/agentfeed'
+import { AgentFeed, omitTriggerCheckNoise } from '../components/agentfeed'
 import { useRuns } from '../store/runs'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './filesGrouping'
@@ -124,9 +124,9 @@ export function AgentRunPage({
   // events reach this page. Pull persisted steps so the feed is not empty.
   useEffect(() => {
     if (!running) return
-    if ((state?.items?.length ?? 0) > 0) return
+    if (omitTriggerCheckNoise(state?.items ?? []).length > 0) return
     void runs.attachHistoryFeed(workflowId)
-  }, [running, workflowId, state?.items?.length, runs])
+  }, [running, workflowId, state?.items, runs])
 
   // Restore the last conversation. A new run starts only after the user sends
   // a message. Skip when this page already owns a live sidecar session.

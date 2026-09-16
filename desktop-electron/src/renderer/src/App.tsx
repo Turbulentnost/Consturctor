@@ -172,6 +172,7 @@ export function App(): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   const kickedRef = useRef(false)
   const seenHitlRef = useRef<Set<string>>(new Set())
+  const seenRunNotifyRef = useRef<Map<string, 'started' | 'finished'>>(new Map())
   const seenRegQuestionRef = useRef<Set<string>>(new Set())
   const [windowFocused, setWindowFocused] = useState(() =>
     typeof document === 'undefined' ? true : document.hasFocus()
@@ -375,20 +376,49 @@ export function App(): React.JSX.Element {
         : ''
     for (const entry of Object.values(runs.entries)) {
       const hitl = entry.state.pendingHitl
-      if (!hitl?.requestId) continue
-      if (seenHitlRef.current.has(hitl.requestId)) continue
+      const question = entry.state.pendingQuestion
+      const requestId = hitl?.requestId || question?.requestId || ''
+      if (!requestId || seenHitlRef.current.has(requestId)) continue
+      const locallyOwned = Boolean(entry.state.activeRunId)
       const watchingThisAgent = windowFocused && activeWorkflowId === entry.workflowId
-      if (watchingThisAgent) continue
-      seenHitlRef.current.add(hitl.requestId)
+      if (watchingThisAgent && locallyOwned) continue
+      seenHitlRef.current.add(requestId)
       void window.api.showNotification?.({
-        title: 'Агент ждёт подтверждения',
-        body: `${entry.title || 'ИИ-агент'}: ${hitl.title || hitl.tool}`,
+        title: 'Агент ожидает подтверждения',
+        body: `${entry.title || 'ИИ-агент'}: ${hitl?.title || hitl?.intent || hitl?.tool || question?.question || 'нужно подтверждение'}`,
         workflowId: entry.workflowId,
         runId: entry.state.activeRunId || entry.backendRunId || '',
-        requestId: hitl.requestId
+        requestId
       })
     }
   }, [runs.entries, view, windowFocused])
+
+  useEffect(() => {
+    for (const entry of Object.values(runs.entries)) {
+      const runId = entry.backendRunId || entry.workflowId
+      if (!runId) continue
+      const live = Boolean(entry.state.running || entry.state.pendingHitl || entry.state.pendingQuestion)
+      const prev = seenRunNotifyRef.current.get(runId)
+      if (live && prev !== 'started' && prev !== 'finished') {
+        seenRunNotifyRef.current.set(runId, 'started')
+        void window.api.showNotification?.({
+          title: 'Запуск начался',
+          body: `Агент «${entry.title || 'агент'}»: запуск начался.`,
+          workflowId: entry.workflowId,
+          runId: entry.backendRunId || ''
+        })
+      }
+      if (!live && prev === 'started') {
+        seenRunNotifyRef.current.set(runId, 'finished')
+        void window.api.showNotification?.({
+          title: 'Запуск закончен',
+          body: `Агент «${entry.title || 'агент'}» завершил запуск.`,
+          workflowId: entry.workflowId,
+          runId: entry.backendRunId || ''
+        })
+      }
+    }
+  }, [runs.entries])
 
   // Each new interview question during regulation creation raises a Windows
   // toast so the user knows the chat is waiting for an answer.

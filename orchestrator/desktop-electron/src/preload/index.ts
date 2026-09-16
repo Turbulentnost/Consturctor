@@ -120,19 +120,44 @@ const api = {
     runId?: string
     requestId?: string
     draftId?: string
+    openDecisions?: boolean
+    canStop?: boolean
   }): Promise<{ ok: boolean }> => ipcRenderer.invoke('notify:show', payload),
   onNotificationOpen: (
-    callback: (payload: { workflowId: string; runId: string; draftId?: string }) => void
+    callback: (payload: {
+      workflowId: string
+      runId: string
+      draftId?: string
+      requestId?: string
+      openDecisions?: boolean
+    }) => void
   ): (() => void) => {
     const listener = (
       _event: unknown,
-      payload: { workflowId: string; runId: string; draftId?: string }
+      payload: {
+        workflowId: string
+        runId: string
+        draftId?: string
+        requestId?: string
+        openDecisions?: boolean
+      }
     ): void => {
       callback(payload)
     }
     ipcRenderer.on('notification:open', listener)
     return () => {
       ipcRenderer.removeListener('notification:open', listener)
+    }
+  },
+  onNotificationStop: (
+    callback: (payload: { workflowId: string; runId: string }) => void
+  ): (() => void) => {
+    const listener = (_event: unknown, payload: { workflowId: string; runId: string }): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('notification:stop', listener)
+    return () => {
+      ipcRenderer.removeListener('notification:stop', listener)
     }
   },
   onNotificationHitl: (

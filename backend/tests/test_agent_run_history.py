@@ -187,6 +187,28 @@ def test_slim_run_events_keeps_calendar_after_thinking_overflow() -> None:
     assert "work_result" in types
 
 
+def test_slim_run_events_keeps_hitl_after_thinking_overflow() -> None:
+    events = [{"type": "thinking", "text": f"step {index}"} for index in range(420)]
+    events.append(
+        {
+            "type": "hitl",
+            "tool": "excel.create_workbook",
+            "text": "Нужно подтверждение: excel.create_workbook",
+            "requestId": "req-hitl",
+            "confirm_only": True,
+            "status": "pending",
+        }
+    )
+    events.append({"type": "work_result", "text": "## WORK_RESULT\nГотово\nTESTS: PASS"})
+    stored = slim_run_events(events)
+    types = [item.get("type") for item in stored]
+    assert "hitl" in types
+    hitl = next(item for item in stored if item.get("type") == "hitl")
+    assert hitl["requestId"] == "req-hitl"
+    assert hitl["confirm_only"] is True
+    assert hitl["status"] == "pending"
+
+
 def test_slim_run_events_keeps_timing_markers() -> None:
     stored = slim_run_events(
         [

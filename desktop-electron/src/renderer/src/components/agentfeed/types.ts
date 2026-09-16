@@ -60,5 +60,6 @@ export interface PendingHitl {
   requestId: string
   tool: string
   title: string
+  intent?: string
   arguments: Record<string, unknown>
 }

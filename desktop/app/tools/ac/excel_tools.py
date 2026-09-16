@@ -31,12 +31,22 @@ def _cell_value(value: object) -> object:
     return value
 
 
+_EXCEL_SUFFIXES = (".xlsx", ".xlsm")
+
+
+def _is_excel_name(name: str) -> bool:
+    lower = str(name).strip().lower()
+    return any(lower.endswith(suffix) for suffix in _EXCEL_SUFFIXES)
+
+
 def _ensure_xlsx(name: str) -> str:
-    """Гарантировать расширение Excel у имени файла."""
-    name = str(name).strip()
-    lower = name.lower()
-    if lower.endswith(".xlsx") or lower.endswith(".xlsm"):
+    """Гарантировать расширение Excel, не склеивая его с .txt/.md и т.п."""
+    name = str(name).strip().replace("\\", "/")
+    if _is_excel_name(name):
         return name
+    path = Path(name)
+    if path.suffix:
+        return path.with_suffix(".xlsx").as_posix()
     return f"{name}.xlsx"
 
 
@@ -109,7 +119,9 @@ class ExcelReadWorkbookTool(_WorkspaceTool):
                 name="excel.read_workbook",
                 title="Чтение Excel",
                 description=(
-                    "Читает данные листа .xlsx (заголовки и строки). "
+                    "Читает данные листа .xlsx/.xlsm (заголовки и строки). "
+                    "Только книги Excel. Тексты, регламент и notes.txt — "
+                    "встроенным Read, не этим инструментом. "
                     "filename — имя или путь из excel.list_files, "
                     "включая materials/attachments/."
                 ),
@@ -142,15 +154,15 @@ class ExcelReadWorkbookTool(_WorkspaceTool):
 
         try:
             workspace = self._workspace(input_data)
-            path = workspace.resolve(
-                _ensure_xlsx(input_data.get("filename", "")), must_exist=True
-            )
+            path = self._resolve_workbook(workspace, input_data.get("filename", ""))
         except WorkspaceError as exc:
             return self._fail("WORKSPACE_ERROR", str(exc))
+        if isinstance(path, ToolCallResult):
+            return path
 
         max_rows = int(input_data.get("max_rows") or 500)
         try:
-            workbook = load_workbook(path, read_only=True, data_only=True)
+            workbook = load_workbook(path, data_only=True)
         except Exception as exc:  # noqa: BLE001 - openpyxl бросает разные типы
             return self._fail("EXCEL_READ_ERROR", str(exc))
 
@@ -163,9 +175,16 @@ class ExcelReadWorkbookTool(_WorkspaceTool):
                     f"Лист {requested!r} не найден. Доступны: {sheet_names}",
                 )
             worksheet = workbook[requested] if requested else workbook.active
+            from app.tools.ac.office_style import data_start_row
+
+            start = max(1, data_start_row(workbook, worksheet))
+            last = worksheet.max_row or start
+            end = min(last, start + max(1, max_rows) - 1)
             rows: list[list] = []
-            for row in worksheet.iter_rows(max_row=max(1, max_rows), values_only=True):
+            for row in worksheet.iter_rows(min_row=start, max_row=end, values_only=True):
                 rows.append([_cell_value(cell) for cell in row])
+            while rows and all(cell in (None, "") for cell in rows[-1]):
+                rows.pop()
         finally:
             workbook.close()
 
@@ -182,6 +201,30 @@ class ExcelReadWorkbookTool(_WorkspaceTool):
             },
         )
 
+    def _resolve_workbook(self, workspace, filename: object):
+        """Найти .xlsx или сказать, что файл есть, но это не Excel."""
+        raw = str(filename or "").strip()
+        if not raw:
+            return self._fail("INVALID_FILENAME", "Укажи filename книги Excel.")
+        try:
+            existing = workspace.resolve(raw, must_exist=True)
+        except WorkspaceError:
+            existing = None
+        if existing is not None:
+            if _is_excel_name(existing.name):
+                return existing
+            relative = existing.relative_to(workspace.directory.resolve()).as_posix()
+            return self._fail(
+                "NOT_EXCEL",
+                f"Файл на месте: {relative}. Это не Excel "
+                f"({existing.suffix or 'без расширения'}). "
+                "Тексты и регламент читай встроенным Read; "
+                "excel.read_workbook — только для .xlsx/.xlsm.",
+            )
+        if _is_excel_name(raw) or not Path(raw.replace("\\", "/")).suffix:
+            return workspace.resolve(_ensure_xlsx(raw), must_exist=True)
+        raise WorkspaceError(f"Файл не найден: {raw}")
+
 
 class ExcelCreateWorkbookTool(_WorkspaceTool):
     """Создание нового .xlsx в рабочей папке агента."""
@@ -192,7 +235,12 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
             ToolDefinition(
                 name="excel.create_workbook",
                 title="Создание Excel",
-                description="Создаёт или перезаписывает .xlsx с заголовками и строками.",
+                description=(
+                    "Создаёт или перезаписывает оформленный .xlsx: баннер, тема, "
+                    "цветная шапка, зебра, автофильтр, ширины колонок. "
+                    "Голую таблицу не пишет. title/kpis усиливают шапку, "
+                    "без title берётся имя файла."
+                ),
                 side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
                 execution_mode=ToolExecutionMode.LOCAL,
                 requires_human_approval=False,
@@ -203,6 +251,17 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
                         "sheet": {"type": "string"},
                         "headers": {"type": "array", "items": {"type": "string"}},
                         "rows": {"type": "array"},
+                        "title": {"type": "string", "description": "Заголовок отчёта над таблицей"},
+                        "subtitle": {"type": "string", "description": "Подзаголовок или период"},
+                        "theme": {
+                            "type": "string",
+                            "enum": ["navy", "forest", "graphite", "wine", "sand"],
+                            "description": "Цветовая тема оформления. По умолчанию navy.",
+                        },
+                        "kpis": {
+                            "type": "array",
+                            "description": "Плашки над таблицей: [{label, value, hint}]",
+                        },
                         "overwrite": {"type": "boolean"},
                     },
                     "required": ["filename"],
@@ -226,6 +285,10 @@ class ExcelCreateWorkbookTool(_WorkspaceTool):
             headers=input_data.get("headers") or [],
             rows=input_data.get("rows") or [],
             tool_name=self.definition.name,
+            title=str(input_data.get("title") or path.stem),
+            subtitle=str(input_data.get("subtitle") or ""),
+            theme=input_data.get("theme"),
+            kpis=input_data.get("kpis"),
         )
 
 
@@ -285,6 +348,10 @@ class ExcelEditWorkbookTool(_WorkspaceTool):
                 headers=headers or [],
                 rows=rows or [],
                 tool_name=self.definition.name,
+                title=str(input_data.get("title") or path.stem),
+                subtitle=str(input_data.get("subtitle") or ""),
+                theme=input_data.get("theme"),
+                kpis=input_data.get("kpis"),
             )
         if not isinstance(operations, list) or not operations:
             return self._fail(
@@ -311,6 +378,13 @@ class ExcelEditWorkbookTool(_WorkspaceTool):
                 if error is not None:
                     workbook.close()
                     return self._fail("INVALID_OPERATION", error)
+            from app.tools.ac.office_style import restyle_excel_workbook
+
+            restyle_excel_workbook(
+                workbook,
+                theme=input_data.get("theme"),
+                title=str(input_data.get("title") or path.stem),
+            )
             workbook.save(path)
         except Exception as exc:  # noqa: BLE001
             return self._fail("EXCEL_WRITE_ERROR", str(exc))
@@ -403,19 +477,28 @@ def _save_workbook(
     headers: object,
     rows: object,
     tool_name: str,
+    title: str = "",
+    subtitle: str = "",
+    theme: object = None,
+    kpis: object | None = None,
 ) -> ToolCallResult:
     from openpyxl import Workbook
 
+    from app.tools.ac.office_style import normalize_table, pretty_title, write_excel_sheet
+
+    header_list, row_list = normalize_table(headers, rows)
     workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = (sheet or "Лист1")[:31]
-    header_list = list(headers) if isinstance(headers, (list, tuple)) else []
-    if header_list:
-        worksheet.append([str(header) for header in header_list])
-    row_list = list(rows) if isinstance(rows, (list, tuple)) else []
-    for row in row_list:
-        worksheet.append(list(row) if isinstance(row, (list, tuple)) else [row])
     try:
+        worksheet = write_excel_sheet(
+            workbook,
+            sheet=sheet,
+            headers=header_list,
+            rows=row_list,
+            title=pretty_title(title, path.name, sheet),
+            subtitle=subtitle,
+            theme=theme,
+            kpis=kpis,
+        )
         workbook.save(path)
     except Exception as exc:  # noqa: BLE001
         return ToolCallResult(
@@ -434,6 +517,8 @@ def _save_workbook(
             "filename": path.name,
             "sheet": worksheet.title,
             "written_rows": len(row_list) + (1 if header_list else 0),
+            "theme": str(theme or "navy"),
+            "styled": True,
             "path": str(path),
         },
     )

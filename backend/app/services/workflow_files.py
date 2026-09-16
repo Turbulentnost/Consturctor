@@ -226,8 +226,40 @@ def register_agent_files(
         run_id=run_id,
         origin=origin,
     )
+    for item in rows:
+        _drop_older_same_name_outputs(
+            db,
+            workflow_id=row.id,
+            filename=item.filename,
+            keep_id=item.id,
+        )
     db.flush()
     return rows
+
+
+def _drop_older_same_name_outputs(
+    db: Session,
+    *,
+    workflow_id: str,
+    filename: str,
+    keep_id: str,
+) -> None:
+    name = (filename or "").strip()
+    if not name or not keep_id:
+        return
+    stale = (
+        db.query(WorkflowFile)
+        .filter(
+            WorkflowFile.workflow_id == workflow_id,
+            WorkflowFile.source == SOURCE_AGENT,
+            WorkflowFile.scope == SCOPE_RUN_OUTPUT,
+            WorkflowFile.filename == name,
+            WorkflowFile.id != keep_id,
+        )
+        .all()
+    )
+    for item in stale:
+        db.delete(item)
 
 
 def list_user_platform_files(db: Session, *, user_id: str) -> PlatformFilesResponse:

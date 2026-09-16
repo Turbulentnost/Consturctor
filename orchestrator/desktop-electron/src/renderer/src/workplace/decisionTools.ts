@@ -1,8 +1,15 @@
 import type { AgentRunnerEvent, WorkflowFileItem } from '../api/types'
 import type { FeedItem } from '../components/agentfeed/types'
-import { toolArgHint, toolLabel } from '../components/agentfeed/labels'
+import { agentWantsText, toolIntent as explainIntent } from '../components/agentfeed/explainTool'
 
-const NEVER_CONFIRM = new Set(['notify.send', 'notify', 'code.write_python', 'code.run_python'])
+const NEVER_CONFIRM = new Set([
+  'notify.send',
+  'notify',
+  'code.write_python',
+  'code.run_python',
+  'report.export_document',
+  'office.format_document'
+])
 
 const READ_EXACT = new Set([
   'web_search',
@@ -20,6 +27,9 @@ const READ_EXACT = new Set([
   'onec.odata_catalog',
   'onec.odata_get',
   'onec.sql_query',
+  'onec.erp_assignments',
+  'onec.download_artifact',
+  'onec.erp_write_probe',
   'onec.erp_tasks_current',
   'onec.erp_tasks_period',
   'onec.erp_subordinate_tasks',
@@ -45,25 +55,6 @@ const READ_PREFIXES = ['onec.search_', 'onec.get_', 'imap.', 'turboproject.']
 
 const WRITE_MARKERS = /write|create|edit|delete|send|post|patch|attach|export|notify/
 
-const TOOL_INTENT: Record<string, string> = {
-  'onec.odata_post': 'Создаёт документ или элемент справочника в 1С.',
-  'onec.odata_patch': 'Меняет уже существующий объект в 1С.',
-  'onec.attach_file': 'Прикрепляет файл к документу в 1С.',
-  'outlook.send_mail': 'Отправляет письмо через Outlook.',
-  'email.send': 'Отправляет письмо через Outlook.',
-  'email.create_draft': 'Создаёт черновик письма в Outlook.',
-  'excel.create_workbook': 'Создаёт новую книгу Excel в папке агента.',
-  'excel.edit_workbook': 'Правит существующую книгу Excel.',
-  'outlook.create_event': 'Создаёт событие в календаре Outlook.',
-  'report.export_document': 'Сохраняет отчёт файлом в папке агента.',
-  'code.write_python': 'Сохраняет Python-файл в папке агента.',
-  'code.run_python': 'Запускает Python-скрипт на этом компьютере.',
-  'notify.send': 'Отправляет уведомление пользователю.',
-  write: 'Записывает файл в рабочую область агента.',
-  Write: 'Записывает файл в рабочую область агента.',
-  Edit: 'Правит файл в рабочей области агента.',
-  Delete: 'Удаляет файл в рабочей области агента.'
-}
 
 export function isReadTool(name: string): boolean {
   const tool = (name || '').trim()
@@ -92,12 +83,7 @@ export function isDecisionTool(name: string, forcedConfirm = false): boolean {
 }
 
 export function toolIntent(tool: string, args?: Record<string, unknown>): string {
-  const known = TOOL_INTENT[tool] || TOOL_INTENT[tool.toLowerCase()] || ''
-  const hint = toolArgHint(args)
-  if (known && hint) return `${known} Цель: ${hint}`
-  if (known) return known
-  if (hint) return `Инструмент ${toolLabel(tool)}: ${hint}`
-  return `Инструмент ${toolLabel(tool)} должен выполнить запись или действие, которое меняет данные.`
+  return explainIntent(tool, args)
 }
 
 export function toolFromText(text: string): string {
@@ -123,10 +109,15 @@ export function summarizeToolResult(result: unknown, fallback = ''): string {
 
 export function eventLooksLikeConfirm(event: AgentRunnerEvent): boolean {
   const type = String(event.type || '').toLowerCase()
-  if (type === 'hitl') return true
+  if (type === 'hitl' || type === 'question') return true
   if (event.confirmOnly === true) return true
   const text = String(event.text || event.message || '')
   return /нужно подтверждение|жду подтверждения|подтверждение:|требуется hitl/i.test(text)
+}
+
+export function isQuestionDecision(tool: string): boolean {
+  const name = (tool || '').trim()
+  return name === 'askQuestion' || name === 'question'
 }
 
 export function eventLooksLikeReject(event: AgentRunnerEvent): boolean {
@@ -152,6 +143,8 @@ export interface ToolDecisionItem {
 }
 
 function eventTool(event: AgentRunnerEvent): string {
+  const type = String(event.type || '').toLowerCase()
+  if (type === 'question') return String(event.tool || 'askQuestion').trim()
   return String(event.tool || toolFromText(String(event.text || event.message || ''))).trim()
 }
 
@@ -202,13 +195,17 @@ export function extractToolDecisions(
     agentName: meta.agentName,
     runId: meta.runId,
     tool,
-    title: String(event.title || '').trim() || toolLabel(tool),
+    title:
+      String(event.title || '').trim() ||
+      (tool === 'askQuestion'
+        ? String(event.text || event.message || 'Вопрос агента').trim()
+        : agentWantsText(tool, event.arguments)),
     intent: toolIntent(tool, event.arguments),
     result: '',
     status,
     requestId: String(event.requestId || ''),
     at: meta.at,
-    live: false,
+    live: !meta.runClosed && status === 'pending',
     arguments: event.arguments && typeof event.arguments === 'object' ? event.arguments : {}
   })
 
@@ -226,9 +223,11 @@ export function extractToolDecisions(
     const confirm = eventLooksLikeConfirm(event)
     const rejected = eventLooksLikeReject(event) || Boolean(event.skipped)
     if (confirm && tool && isDecisionTool(tool, true)) {
+      const statusRaw = String(event.status || '').toLowerCase()
+      const approved = statusRaw === 'approved' || (event.ok === true && statusRaw !== 'pending')
       let item = findOpen(tool, String(event.requestId || ''))
       if (!item) {
-        item = makeItem(tool, event, rejected ? 'rejected' : 'pending')
+        item = makeItem(tool, event, rejected ? 'rejected' : approved ? 'confirmed' : 'pending')
         items.push(item)
         open.push(item)
       } else if (event.requestId) {
@@ -237,6 +236,9 @@ export function extractToolDecisions(
       if (rejected) {
         item.status = 'rejected'
         item.result = summarizeToolResult(event.result, String(event.text || event.message || 'Отклонено'))
+      } else if (approved) {
+        item.status = 'confirmed'
+        item.live = false
       }
       continue
     }

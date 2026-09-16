@@ -45,6 +45,8 @@ export const TOOL_LABELS: Record<string, string> = {
   'excel.read_workbook': 'Чтение Excel',
   'excel.create_workbook': 'Создание Excel',
   'excel.edit_workbook': 'Изменение Excel',
+  'office.format_document': 'Оформление Excel/Word',
+  'report.export_document': 'Отчёт в файл',
   'workspace.powershell_run': 'PowerShell в папке агента',
   'code.write_python': 'Запись Python-кода',
   'code.run_python': 'Запуск Python-кода',

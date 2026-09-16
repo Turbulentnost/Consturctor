@@ -72,9 +72,9 @@ export function isUserFacingResultFile(file: WorkflowFileItem): boolean {
 export async function findPendingToolRequest(
   workflowId: string,
   liveRequestId?: string
-): Promise<{ requestId: string; live: boolean } | null> {
+): Promise<{ requestId: string; live: boolean; tool: string } | null> {
   const pendingId = (liveRequestId || '').trim()
-  if (pendingId) return { requestId: pendingId, live: true }
+  if (pendingId) return { requestId: pendingId, live: true, tool: '' }
 
   const history = await api.listAgentRuns(workflowId).catch(() => [])
   const latest = history[0]
@@ -90,5 +90,5 @@ export async function findPendingToolRequest(
   })
   const pending = tools.find((item) => item.status === 'pending' && item.requestId)
   if (!pending?.requestId) return null
-  return { requestId: pending.requestId, live: false }
+  return { requestId: pending.requestId, live: false, tool: pending.tool }
 }

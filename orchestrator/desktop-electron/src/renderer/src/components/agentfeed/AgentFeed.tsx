@@ -5,6 +5,7 @@ import { MarkdownBody } from './MarkdownBody'
 import { MiniCalendar, meetingsFromFeed } from './MiniCalendar'
 import { ToolCard } from './ToolCard'
 import { presentAgentText } from './formatAgentText'
+import { omitTriggerCheckNoise } from './build'
 import type { FeedItem, PendingHitl, PendingQuestion } from './types'
 
 interface AgentFeedProps {
@@ -115,21 +116,22 @@ export function AgentFeed({
     pinnedRef.current = distance < 60
   }
 
+  const visibleItems = useMemo(() => omitTriggerCheckNoise(items), [items])
+  const resultMeetings = useMemo(() => meetingsFromFeed(visibleItems), [visibleItems])
+
   useEffect(() => {
     if (!pinnedRef.current) return
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [items, pendingQuestion, pendingHitl, status, running])
-
-  const resultMeetings = useMemo(() => meetingsFromFeed(items), [items])
-  const hasResultItem = items.some((item) => item.kind === 'result')
+  }, [visibleItems, pendingQuestion, pendingHitl, status, running])
+  const hasResultItem = visibleItems.some((item) => item.kind === 'result')
   const liftCalendar = resultMeetings.length > 0
-  const isEmpty = items.length === 0 && !pendingQuestion && !pendingHitl && !running
+  const isEmpty = visibleItems.length === 0 && !pendingQuestion && !pendingHitl && !running
 
   return (
     <div className="agent-feed" ref={scrollRef} onScroll={handleScroll}>
       {isEmpty && emptyHint && <div className="agent-feed-empty">{emptyHint}</div>}
-      {items.map((item) => (
+      {visibleItems.map((item) => (
         <FeedRow
           key={item.id}
           item={item}

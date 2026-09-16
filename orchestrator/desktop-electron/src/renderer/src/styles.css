@@ -1440,6 +1440,12 @@ input {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.notify-card-time {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #7b8883;
+}
 .notify-card-body {
   margin-top: 4px;
   font-size: 12px;
@@ -1449,6 +1455,46 @@ input {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.notify-card-live {
+  background: linear-gradient(180deg, #f2f8ff 0%, #eef6ff 100%);
+  border-color: #cfe0ff;
+}
+.notify-progress {
+  margin-top: 10px;
+  height: 8px;
+  border-radius: 999px;
+  background: #dbe9ff;
+  overflow: hidden;
+}
+.notify-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2d7ff9 0%, #58a6ff 100%);
+  transition: width 0.4s ease;
+}
+.notify-progress-meta {
+  margin-top: 6px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #5e6f86;
+}
+.notify-card-stop {
+  margin-top: 8px;
+  border: 1px solid #c62828;
+  background: #fff;
+  color: #c62828;
+  border-radius: 10px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.notify-card-stop:hover {
+  background: #fff4f4;
 }
 .notify-card-close {
   flex-shrink: 0;
@@ -6154,6 +6200,23 @@ button.feed-tool-head:hover {
   font-weight: 600;
   color: var(--main-text);
   margin-bottom: 8px;
+  line-height: 1.35;
+}
+.feed-hitl-intent {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--main-text);
+  margin: 0 0 10px;
+}
+.feed-hitl-facts {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  color: #5b6b74;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.feed-hitl-facts li + li {
+  margin-top: 4px;
 }
 .feed-hitl-args {
   margin: 0 0 12px;

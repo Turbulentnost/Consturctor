@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
-import type { AgentEvent, CalendarEvent } from '../api/types'
-import { buildFeedItems, settleOpenFeedTools } from '../components/agentfeed/build'
+import type { AgentEvent, AgentRunHistoryItem, CalendarEvent } from '../api/types'
+import { buildFeedItems, isTriggerCheckNoise, omitTriggerCheckNoise, settleOpenFeedTools } from '../components/agentfeed/build'
 import {
   applyAgentEvent,
   createRunState,
@@ -69,6 +69,13 @@ export interface RunStore {
 }
 
 const RunContext = createContext<RunStore | null>(null)
+
+function isEmptyTriggerCheckRun(item: AgentRunHistoryItem): boolean {
+  if (isInFlightRunStatus(item.status)) return false
+  const answer = (item.answer || item.summary || '').trim()
+  if (isTriggerCheckNoise(answer)) return true
+  return (item.source || '').toLowerCase() === 'trigger' && !answer
+}
 
 function isActive(entry: RunEntry): boolean {
   return isLiveRunState(entry.state)
@@ -313,14 +320,14 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     const wid = workflowId.trim()
     if (!wid) return
     const current = entriesRef.current[wid]
-    if (current?.state.activeRunId && (current.state.items?.length ?? 0) > 0) return
+    if (current?.state.activeRunId && omitTriggerCheckNoise(current.state.items || []).length > 0) return
     try {
       let runId = current?.backendRunId || ''
       if (!runId) {
         const list = await api.listAgentRuns(wid)
         runId =
           list.find((item) => isInFlightRunStatus(item.status))?.runId ||
-          list[0]?.runId ||
+          list.find((item) => !isEmptyTriggerCheckRun(item))?.runId ||
           ''
       }
       if (!runId) {
@@ -346,7 +353,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       }
       const detail = await api.getAgentRunDetail(wid, runId)
       const inFlight = isInFlightRunStatus(detail.item.status)
-      const historyItems = buildFeedItems(detail.events, { live: inFlight })
+      const historyItems = omitTriggerCheckNoise(buildFeedItems(detail.events, { live: inFlight }))
       const startedAt = Date.parse(detail.item.startedAt || '')
       const hung =
         inFlight &&
@@ -362,14 +369,19 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       setEntries((prev) => {
         const entry = prev[wid] ?? emptyLiveEntry(wid, '', runId)
         if (entry.state.activeRunId && (entry.state.items?.length ?? 0) > 0) return prev
-        const liveItems = entry.state.items || []
+        const liveItems = omitTriggerCheckNoise(entry.state.items || [])
         const items =
           liveItems.length >= historyItems.length
             ? liveItems
             : historyItems
         const answer = (detail.item.answer || detail.item.summary || '').trim()
         let nextItems = items
-        if (!inFlight && answer && !nextItems.some((item) => item.kind === 'result')) {
+        if (
+          !inFlight &&
+          answer &&
+          !isTriggerCheckNoise(answer) &&
+          !nextItems.some((item) => item.kind === 'result')
+        ) {
           nextItems = [...nextItems, { kind: 'result', id: `hist-res-${runId}`, text: answer }]
         }
         if (hung) {
@@ -492,10 +504,22 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         for (const [wid, entry] of Object.entries(next)) {
           if (running.has(wid)) continue
           if (entry.state.activeRunId) continue
-          if ((entry.state.items?.length ?? 0) > 0) continue
-          if (!entry.state.running) continue
-          delete next[wid]
-          changed = true
+          if (entry.state.running || entry.state.pendingHitl || entry.state.pendingQuestion) {
+            if ((entry.state.items?.length ?? 0) === 0) {
+              delete next[wid]
+            } else {
+              next[wid] = {
+                ...entry,
+                state: {
+                  ...entry.state,
+                  running: false,
+                  pendingHitl: null,
+                  pendingQuestion: null
+                }
+              }
+            }
+            changed = true
+          }
         }
         return changed ? next : prev
       })
