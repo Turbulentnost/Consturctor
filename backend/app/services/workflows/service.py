@@ -1959,16 +1959,18 @@ def _finish_demo_stream(
     local["runtime"] = str(local.get("runtime") or "cursor")
     local["awaiting_demo_answers"] = False
     local["work_result"] = work
-    name = str(playbook.get("name") or "").strip()
-    if name and not prompts.is_placeholder_title(name):
-        row.title = name
-    elif prompts.is_placeholder_title(row.title):
-        row.title = prompts.title_from_materials(
-            notes=row.notes or "",
-            document_text=row.document_text or "",
-            document_name=row.document_name or "",
-            fallback=row.title or "ИИ-агент",
-        )
+    current_title = str(row.title or "").strip()
+    if not current_title or prompts.is_placeholder_title(current_title):
+        name = str(playbook.get("name") or "").strip()
+        if name and not prompts.is_placeholder_title(name):
+            row.title = name
+        else:
+            row.title = prompts.title_from_materials(
+                notes=row.notes or "",
+                document_text=row.document_text or "",
+                document_name=row.document_name or "",
+                fallback=row.title or "ИИ-агент",
+            )
     from app.services.workflows.schedule_draft import draft_after_demo
 
     plan_for_scope = (

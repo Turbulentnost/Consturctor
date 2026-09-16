@@ -166,6 +166,10 @@ export function TodayGridTab({
     onAskOrchestrator(message, 'Вкладка «Сегодня»')
   }
 
+  const resultsRail = (
+    <TodayResultsPanel periodDay={periodDay} userId={user.id} onOpenRun={onOpenRun} />
+  )
+
   const showOneCReconnect =
     !data.sourcesLoading && !taskRows.length && data.oneCAuthFailure
   const onecReconnectBlock = showOneCReconnect ? (
@@ -197,11 +201,7 @@ export function TodayGridTab({
           <TodayPlanPanel periodDay={periodDay} userId={user.id || ''} fio={erpFio} />
         </TodayWindow>
       ),
-      results: (
-        <TodayWindow>
-          <TodayResultsPanel periodDay={periodDay} userId={user.id} onOpenRun={onOpenRun} />
-        </TodayWindow>
-      ),
+      results: null,
       outlook: (
         <TodayWindow>
         <MiniTableCard
@@ -454,6 +454,7 @@ export function TodayGridTab({
           onLayoutChange={onLayoutChange}
           onToggleLock={toggleWidgetLock}
           widgets={todayWidgets}
+          rightRail={resultsRail}
         />
       </OrchSlotTodayCanvas>
       <OneCReconnectDialog

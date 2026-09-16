@@ -95,7 +95,8 @@ export function TodayWidgetGrid({
   locked,
   onLayoutChange,
   onToggleLock,
-  widgets
+  widgets,
+  rightRail
 }: {
   userId: string
   editMode: boolean
@@ -104,6 +105,7 @@ export function TodayWidgetGrid({
   onLayoutChange: (layout: Layout) => void
   onToggleLock: (id: TodayWidgetId) => void
   widgets: Record<TodayWidgetId, React.ReactNode>
+  rightRail?: React.ReactNode
 }): React.JSX.Element {
   const draggable = editMode
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -195,6 +197,7 @@ export function TodayWidgetGrid({
       >
         {children}
       </GridLayout>
+      {rightRail ? <div className="today-widget-right-rail">{rightRail}</div> : null}
     </div>
   )
 }

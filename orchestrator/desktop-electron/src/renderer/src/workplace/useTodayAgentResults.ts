@@ -47,10 +47,21 @@ function mapFile(item: WorkflowFileItem): TodayAgentResultItem {
 
 function isAgentFileOnDay(item: WorkflowFileItem, day: Date): boolean {
   if (!isUserFacingResultFile(item)) return false
-  if (item.source !== 'agent') return false
+  const source = String(item.source || '').toLowerCase()
+  const origin = String(item.origin || '').toLowerCase()
+  if (source !== 'agent' && source !== 'result' && !origin.includes('agent') && !origin.includes('result')) {
+    return false
+  }
   const stamp = parseFileDate(item.createdAt)
   if (!stamp) return false
   return sameDay(stamp, day)
+}
+
+function isAgentResultFile(item: WorkflowFileItem): boolean {
+  if (!isUserFacingResultFile(item)) return false
+  const source = String(item.source || '').toLowerCase()
+  const origin = String(item.origin || '').toLowerCase()
+  return source === 'agent' || source === 'result' || origin.includes('agent') || origin.includes('result')
 }
 
 export interface TodayAgentResultsState {
@@ -72,10 +83,17 @@ export function useTodayAgentResults(periodDay: Date, userId?: string): TodayAge
     setError('')
     try {
       const rows = await api.listPlatformFiles()
-      const filtered = rows
+      const todayRows = rows
         .filter((item) => isAgentFileOnDay(item, periodDay))
         .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
-        .map(mapFile)
+      const filteredRows =
+        todayRows.length > 0
+          ? todayRows
+          : rows
+              .filter((item) => isAgentResultFile(item))
+              .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
+              .slice(0, 8)
+      const filtered = filteredRows.map(mapFile)
       setItems(filtered)
       writeGridCache(cacheKey, filtered)
     } catch (err) {
