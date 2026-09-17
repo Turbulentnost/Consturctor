@@ -480,7 +480,8 @@ ARTIFACT_CLOSE_HINT = (
     "Do not search a meeting date, agenda, or \\\\192.168.1.198 RK folders. "
     "Do not ask for an Excel registry or launch files. "
     "Call onec.erp_assignments action=list only_open=true include_files=true limit=100. "
-    "Download executor files with onec.download_artifact. "
+    "If that times out, retry once without include_files, then action=files per card. "
+    "Download executor files with onec.download_artifact one file_id at a time. "
     "Read Word/PDF/images via office.read_file, Excel via excel.read_workbook. "
     "Decide per card: recommend close / partial / no / insufficient data. "
     "Export Word, then ## WORK_RESULT. No 1C write without HITL."
@@ -488,12 +489,18 @@ ARTIFACT_CLOSE_HINT = (
 
 CALENDAR_CONTROL_HINT = (
     "This is calendar control / morning briefing, not a meeting-series job. "
-    "Morning: users.current, outlook.read_calendar for today, outlook.search_mail once "
-    "(query отпуск), calendar.show_meetings, then ## WORK_RESULT and TESTS: PASS. "
+    "PSD is Амураль Игорь Борисович. His meetings are in the shared mailbox "
+    "«Совещания», not the assistant calendar and not Жалыбин's mailbox. "
+    "Morning: users.current, outlook.read_calendar for today "
+    "(folder=Совещания, people=[Амураль Игорь Борисович]), "
+    "outlook.search_mail once (query отпуск), calendar.show_meetings, "
+    "then ## WORK_RESULT and TESTS: PASS. "
     "If search_mail returned 0 messages, absences are empty — do not call it again. "
     "Do not ask what the agent should do. Do not call create_event in the morning. "
+    "If folder Совещания is missing, say so — do not read your own calendar. "
     "Evening after 16:00 MSK: same reads for tomorrow, show keep/add/cancel, "
-    "create_event only after HITL to shift existing meetings. "
+    "create_event only after HITL to shift existing meetings "
+    "(organizer=Амураль Игорь Борисович). "
     "After WORK_RESULT call no more tools."
 )
 

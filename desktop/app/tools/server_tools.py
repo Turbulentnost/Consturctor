@@ -213,7 +213,7 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         (
             "Скачать приложенный файл 1С по GUID вкладки «Файлы». "
             "file_id из onec.erp_assignments action=files. "
-            "OData Base64, том на диске, hs/dtw/files или UNC. Сервер, только чтение. "
+            "Только HTTP hs/dtw/files, без OData. Сервер, только чтение. "
             "Дальше: Word/PDF/картинки — office.read_file, Excel — excel.read_workbook. "
             "Встроенный Read по saved_path не вызывай."
         ),
@@ -367,6 +367,8 @@ SERVER_TOOL_NAMES: frozenset[str] = frozenset(
 )
 SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     "onec.download_artifact": 300,
+    # Journal list + files: 1C OData, not a quick catalog ping.
+    "onec.erp_assignments": 180,
 }
 
 

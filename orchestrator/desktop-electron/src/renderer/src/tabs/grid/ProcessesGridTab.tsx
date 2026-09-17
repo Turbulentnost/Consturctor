@@ -275,6 +275,9 @@ export function ProcessesGridTab({
   const data = useSpecV04Sources(user)
   const meetingCompletion = useMeetingCompletion()
   const [tab, setTab] = useState(navProcessTab || 'all')
+  useEffect(() => {
+    void data.reloadBoard()
+  }, [user.id, data.reloadBoard])
   const [query, setQuery] = useState('')
   const [barType, setBarType] = useState('')
   const [barStatus, setBarStatus] = useState('')

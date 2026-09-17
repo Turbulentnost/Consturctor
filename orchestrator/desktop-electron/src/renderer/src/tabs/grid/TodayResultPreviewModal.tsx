@@ -4,11 +4,13 @@ import { createPortal } from 'react-dom'
 import { formatFileWhen } from '../../pages/filesGrouping'
 import type { TodayAgentResultItem } from '../../workplace/useTodayAgentResults'
 import { TodayResultReport } from './TodayResultReport'
+import { TodayResultWorkbook, WorkbookPreviewGuard } from './TodayResultWorkbook'
 import {
   loadResultFilePreview,
   resultAgentLabel,
   type ResultFilePreview
 } from './todayResultPreview'
+import { isUsefulWorkbook, tableToWorkbook } from './todayWorkbookPreview'
 
 function PreviewBody({ preview }: { preview: ResultFilePreview | null }): React.JSX.Element {
   if (!preview) {
@@ -17,28 +19,21 @@ function PreviewBody({ preview }: { preview: ResultFilePreview | null }): React.
   if (preview.kind === 'error') {
     return <p className="today-result-preview-status today-table-error">{preview.message}</p>
   }
+  if (preview.kind === 'workbook') {
+    if (!isUsefulWorkbook(preview) && preview.fallbackText) {
+      return <TodayResultReport text={preview.fallbackText} />
+    }
+    return (
+      <WorkbookPreviewGuard fallbackText={preview.fallbackText}>
+        <TodayResultWorkbook sheets={preview.sheets} />
+      </WorkbookPreviewGuard>
+    )
+  }
   if (preview.kind === 'table') {
     return (
-      <div className="today-result-preview-table-wrap">
-        <table className="today-result-preview-table">
-          <thead>
-            <tr>
-              {preview.headers.map((cell) => (
-                <th key={cell}>{cell}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {preview.rows.map((row, index) => (
-              <tr key={`${row[0] || 'row'}:${index}`}>
-                {row.map((cell, cellIndex) => (
-                  <td key={`${cellIndex}:${cell}`}>{cell}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <WorkbookPreviewGuard>
+        <TodayResultWorkbook sheets={tableToWorkbook(preview.headers, preview.rows).sheets} />
+      </WorkbookPreviewGuard>
     )
   }
   if (preview.kind === 'embed') {
@@ -88,11 +83,12 @@ export function TodayResultPreviewModal({
   }, [file])
 
   const bodyKind = preview?.kind || 'loading'
+  const wide = bodyKind === 'workbook' || bodyKind === 'table'
 
   return createPortal(
     <div className="modal-overlay today-result-preview-overlay" onClick={onClose} role="presentation">
       <div
-        className="modal-card today-result-preview-dialog"
+        className={`modal-card today-result-preview-dialog${wide ? ' is-wide' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

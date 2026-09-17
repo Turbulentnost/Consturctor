@@ -428,6 +428,10 @@ def _validate_and_store_draft(
         is_artifact_close_agent,
     )
     from app.services.workflows.meeting_agent_config import apply_meeting_agent_config
+    from app.services.workflows.calendar_control_playbook import (
+        calendar_control_playbook_draft,
+        is_calendar_control_agent,
+    )
     from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_playbook_draft
     from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_playbook_draft
 
@@ -460,6 +464,16 @@ def _validate_and_store_draft(
             **seed,
             **enriched,
             "steps": enriched.get("steps") or seed["steps"],
+            "runtime": seed.get("runtime") or enriched.get("runtime"),
+        }
+        enriched = attach_tool_candidates(enriched, allow_web=allow_web)
+    elif is_calendar_control_agent(row.title or "", row.notes or "", blob):
+        seed = calendar_control_playbook_draft()
+        enriched = {
+            **seed,
+            **enriched,
+            "steps": seed["steps"],
+            "run_inputs": [],
             "runtime": seed.get("runtime") or enriched.get("runtime"),
         }
         enriched = attach_tool_candidates(enriched, allow_web=allow_web)
@@ -2594,6 +2608,10 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
         artifact_close_runtime_tools,
         is_artifact_close_agent,
     )
+    from app.services.workflows.calendar_control_playbook import (
+        calendar_control_runtime_tools,
+        is_calendar_control_agent,
+    )
     from app.services.workflows.rk_meeting_playbook import is_rk_meeting_agent, rk_runtime_tools
     from app.services.workflows.sd_meeting_playbook import is_sd_meeting_agent, sd_runtime_tools
 
@@ -2629,6 +2647,9 @@ def _tools_for_published_plan(plan: WorkflowPlan, row: Workflow) -> list[str]:
 
     if kind == "board_meeting" or is_sd_meeting_agent(blob):
         return sd_runtime_tools()
+
+    if kind == "calendar_control" or is_calendar_control_agent(blob):
+        return calendar_control_runtime_tools()
 
     if kind == "onec" or (
         any(tip in blob for tip in ("1с", "1c", "onec", "odata", "erp_pm"))

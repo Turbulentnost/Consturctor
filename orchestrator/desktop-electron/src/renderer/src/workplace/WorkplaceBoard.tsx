@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
-import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
+import { writeGridCache } from './gridDataCache'
 import { api } from '../api/client'
 import type {
   AgentKpi,
@@ -1115,7 +1115,7 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
   const reloadRef = useRef<() => Promise<void>>(async () => undefined)
   const generation = useGridRefreshGeneration(personal?.userId)
 
-  const reload = async (): Promise<void> => {
+  const reload = useCallback(async (): Promise<void> => {
     const win = windowFor('week', new Date())
     const userId = personal?.userId || ''
     try {
@@ -1134,7 +1134,7 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
     } finally {
       setLoading(false)
     }
-  }
+  }, [personal?.userId])
   reloadRef.current = reload
 
   useEffect(() => {
@@ -1142,27 +1142,12 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
       setLoading(false)
       return
     }
-    const cacheKey = `workplace-board:${personal.userId}`
-    if (!shouldRunGridFetch(cacheKey, generation)) {
-      const cached = readGridCache<{ board: WorkflowBoard; orch: PositionOrchestrator | null }>(cacheKey)
-      if (cached) {
-        setBoard(cached.board)
-        setOrch(cached.orch)
-        setLoading(false)
-      } else {
-        void reload()
-      }
-    } else {
-      // #region agent log
-      fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H5',location:'WorkplaceBoard.tsx:reload',message:'workplace board fetch (generation or miss)',data:{generation,userId:personal.userId},timestamp:Date.now()})}).catch(()=>{})
-      // #endregion
-      void reload()
-    }
+    void reload()
     const unsubscribe = window.api.onBoardUpdated?.(() => {
       void reloadRef.current()
     })
     return () => unsubscribe?.()
-  }, [personal?.userId, generation])
+  }, [personal?.userId, generation, reload])
 
   const notice = (text: string): void => {
     setFlash(text)

@@ -504,6 +504,7 @@ def test_tool_timeout_seconds_for_wait_matches_requested_pause() -> None:
     assert tool_timeout_seconds("askQuestion") >= 900
     assert tool_timeout_seconds("onec.download_artifact") >= 300
     assert tool_timeout_seconds("onecdownload_artifact") >= 300
+    assert tool_timeout_seconds("onec.erp_assignments") >= 180
 
 
 def test_record_ready_for_sdk_demo_clears_server_clarify_gate() -> None:

@@ -1347,7 +1347,7 @@ TESTS_USER_CLARIFY_INSTRUCTION = (
     "Заказчик в 1С — реквизит Руководитель, параметр customer=ФИО. "
     "Карточка: action=get и number=АСТ00-.... Файлы вкладки «Файлы»: action=files. "
     "Содержимое вложения: `onec.download_artifact` с file_id=Ref_Key файла "
-    "(OData Base64, том, hs/dtw/files или UNC). "
+    "(только HTTP hs/dtw/files, без OData). "
     "Новые протоколы после заседания: action=protocols. "
     "Запись статуса, срока, новой карточки, комментария исполнителю — "
     "`onec.erp_assignments_write` (после подтверждения человека). "

@@ -480,9 +480,7 @@ def _raw_tools() -> list[dict[str, Any]]:
             "description": (
                 "Скачать приложенный файл 1С по GUID из вкладки «Файлы». "
                 "file_id бери из onec.erp_assignments action=files (ref_key файла). "
-                "Ищет Catalog_ТД_ПорученияПрисоединенныеФайлы и "
-                "Catalog_ТД_ПротоколПрисоединенныеФайлы. "
-                "Байты: OData Base64, том на диске, hs/dtw/files или UNC. "
+                "Байты только через HTTP hs/dtw/files, без OData. "
                 "В ответе filename, saved_path и content_base64. Сервер, только чтение. "
                 "Дальше: Word/PDF/картинки — office.read_file, Excel — excel.read_workbook. "
                 "Встроенный Read по saved_path не вызывай."
@@ -811,14 +809,15 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "query": _prop("string", "Подстрока в теме или отправителе, не список людей"),
             "max_results": _prop("integer", "Максимум писем"),
         }),
-        ("outlook.read_calendar", "Встречи Outlook за период. Без дат — год вперёд, так не делай на планёрке. Утро: date=сегодня. Вечер: date=завтра. people[] — календари этих сотрудников. Без people — свой. В ответе events, calendars и free_slots.", {
+        ("outlook.read_calendar", "Встречи Outlook за период. Без дат — год вперёд, так не делай на планёрке. Утро: date=сегодня. Вечер: date=завтра. Контроль календаря ПСД: folder=Совещания, people=[Амураль Игорь Борисович] — общий ящик, фильтр по участнику. Без people — свой. В ответе events, calendars и free_slots.", {
             "date": _prop("string", "Один день YYYY-MM-DD"),
             "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
             "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
             "days_forward": _prop("integer", "Сколько дней вперёд от сегодня, если дат нет. По умолчанию 365"),
             "max_results": _prop("integer", "Максимум событий, до 500"),
             "include_body": _prop("boolean", "Включить body_preview. По умолчанию false"),
-            "people": _prop("array", "ФИО или почта сотрудников, чьи календари прочитать"),
+            "people": _prop("array", "ФИО участников: ящик Совещания, затем фильтр"),
+            "folder": _prop("string", "Имя календаря. Для ПСД — Совещания"),
         }),
         ("calendar.show_meetings", "Показать итоговый план совещаний карточкой для доклада: полная тема, участники, кто кого замещает. mark=cancel/red - красным отменить, mark=add/green - зелёным поставить, mark=keep - уже стоит. Утро / контроль календаря ПСД: после карточки сегодняшних встреч сразу WORK_RESULT, create_event не вызывай. Вечер: сначала карточка сдвигов, outlook.create_event только после HITL. Инструмент только визуализирует и ничего не пишет в Outlook.", {
             "meetings": _prop("array", "Список: title, start, end, mark, reason, organizer, attendees[], substitutes[] (кто замещает кого)"),

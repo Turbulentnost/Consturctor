@@ -65,6 +65,8 @@ export interface SpecV04SourcesState {
   comPasswordInSession: boolean
   /** Нужен повторный ввод пароля 1С (COM / gateway / OData). */
   oneCAuthFailure: boolean
+  /** Перечитать доску Constructor (опубликованные агенты). */
+  reloadBoard: () => Promise<void>
 }
 
 function pct(done: number, total: number): number {

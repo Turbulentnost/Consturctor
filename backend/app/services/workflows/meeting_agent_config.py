@@ -9,6 +9,11 @@ from app.services.workflows.artifact_close_playbook import (
     apply_artifact_close_plan_runtime,
     is_artifact_close_agent,
 )
+from app.services.workflows.calendar_control_playbook import (
+    apply_calendar_control_config,
+    apply_calendar_control_plan_runtime,
+    is_calendar_control_agent,
+)
 from app.services.workflows.rk_meeting_playbook import (
     apply_rk_config,
     apply_rk_plan_runtime,
@@ -27,6 +32,7 @@ def is_meeting_agent(*parts: str) -> bool:
         is_artifact_close_agent(blob)
         or is_rk_meeting_agent(blob)
         or is_sd_meeting_agent(blob)
+        or is_calendar_control_agent(blob)
     )
 
 
@@ -63,7 +69,12 @@ def apply_meeting_agent_config(
     if is_artifact_close_agent(title, notes):
         return local
     local = apply_rk_config(local, title=title, notes=notes)
-    return apply_sd_config(local, title=title, notes=notes)
+    if is_rk_meeting_agent(title, notes):
+        return local
+    local = apply_sd_config(local, title=title, notes=notes)
+    if is_sd_meeting_agent(title, notes):
+        return local
+    return apply_calendar_control_config(local, title=title, notes=notes)
 
 
 def apply_meeting_plan_runtime(
@@ -76,4 +87,9 @@ def apply_meeting_plan_runtime(
     if is_artifact_close_agent(title, notes, (plan or {}).get("goal") or ""):
         return plan
     plan = apply_rk_plan_runtime(plan, title=title, notes=notes)
-    return apply_sd_plan_runtime(plan, title=title, notes=notes)
+    if is_rk_meeting_agent(title, notes, (plan or {}).get("goal") or ""):
+        return plan
+    plan = apply_sd_plan_runtime(plan, title=title, notes=notes)
+    if is_sd_meeting_agent(title, notes, (plan or {}).get("goal") or ""):
+        return plan
+    return apply_calendar_control_plan_runtime(plan, title=title, notes=notes)

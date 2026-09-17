@@ -63,7 +63,8 @@ const EMPTY: SpecV04SourcesState = {
   turboNoSession: false,
   comPasswordInSession: false,
   oneCAuthFailure: false,
-  user: null
+  user: null,
+  reloadBoard: async () => undefined
 }
 
 export const SpecV04SourcesContext = createContext<SpecV04SourcesState>(EMPTY)
@@ -81,7 +82,7 @@ export function SpecV04SourcesProvider({
   const erpFio = erpActorFio(user)
   const outlookMailbox = outlookMailboxAddress(user)
   const { generation, takeHardRefresh } = useGridDataRefreshContext()
-  const { agents, board, loading: agentsLoading } = useWorkplaceData({
+  const { agents, board, loading: agentsLoading, reload: reloadBoard } = useWorkplaceData({
     userId: user.id || '',
     fio: erpFio
   })
@@ -263,7 +264,8 @@ export function SpecV04SourcesProvider({
       turboNoSession,
       comPasswordInSession: hasComPassword(),
       oneCAuthFailure,
-      user
+      user,
+      reloadBoard
     }),
     [
       sourcesLoading,
@@ -293,7 +295,8 @@ export function SpecV04SourcesProvider({
       turboNoSession,
       comCredsRevision,
       oneCAuthFailure,
-      user
+      user,
+      reloadBoard
     ]
   )
 

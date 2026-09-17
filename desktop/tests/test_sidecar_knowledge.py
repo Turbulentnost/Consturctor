@@ -200,6 +200,15 @@ def test_sidecar_prompt_includes_outlook_series_rule() -> None:
     assert "Sdelai demo" in text
 
 
+def test_sidecar_prompt_calendar_control_uses_chairman() -> None:
+    text = _with_sidecar_prompt("Подготовка ПСД к рабочему дню и контроль календаря")
+    assert "Амураль Игорь Борисович" in text
+    assert "Совещания" in text
+    assert "people=" in text
+    assert "do not read your own" in text
+    assert "create_event" in text
+
+
 def test_meeting_text_detects_outlook_task() -> None:
     assert _is_meeting_text("Nuzhno zaplanirovat soveschaniya v Outlook")
     assert not _is_meeting_text("Sochini otchet po KPI")

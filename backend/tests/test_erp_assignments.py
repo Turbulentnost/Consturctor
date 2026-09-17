@@ -521,6 +521,77 @@ def test_list_tasks_has_no_default_check_assignment_title(monkeypatch) -> None:
     assert "erp_tasks_current" not in hint
 
 
+def test_list_include_files_batches_owner_filter(monkeypatch) -> None:
+    first = "11111111-1111-1111-1111-111111111111"
+    second = "22222222-2222-2222-2222-222222222222"
+    file_filters: list[str] = []
+
+    def fake_odata_get(args: dict) -> dict:
+        entity = str(args.get("entity") or "")
+        filt = str(args.get("filter") or "")
+        if entity == ASSIGNMENT_ENTITY:
+            return {
+                "value": [
+                    {
+                        "Number": "АСТ00-00001",
+                        "Ref_Key": first,
+                        "Date": "2026-09-10T09:00:00",
+                        "Posted": True,
+                        "ОЧем": "Tema 1",
+                        "Статус": "ВРаботе",
+                        "Поручения": [
+                            {
+                                "LineNumber": "1",
+                                "Мероприятие": "Sdelat",
+                                "СрокИсполнения": "2026-09-20T00:00:00",
+                            }
+                        ],
+                    },
+                    {
+                        "Number": "АСТ00-00002",
+                        "Ref_Key": second,
+                        "Date": "2026-09-11T09:00:00",
+                        "Posted": True,
+                        "ОЧем": "Tema 2",
+                        "Статус": "Создано",
+                        "Поручения": [],
+                    },
+                ],
+                "source": "odata",
+            }
+        if entity == "Catalog_ТД_ПорученияПрисоединенныеФайлы":
+            file_filters.append(filt)
+            return {
+                "value": [
+                    {
+                        "Description": "akt",
+                        "Расширение": "pdf",
+                        "Ref_Key": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "ВладелецФайла_Key": first,
+                    },
+                    {
+                        "Description": "scan",
+                        "Расширение": "jpg",
+                        "Ref_Key": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        "ВладелецФайла_Key": second,
+                    },
+                ],
+                "source": "odata",
+            }
+        return {"value": [], "source": "odata"}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
+    result = handle_assignments(
+        {"action": "list", "only_open": True, "include_files": True, "limit": 100}
+    )
+    assert result["count"] == 2
+    assert len(file_filters) == 1
+    assert first in file_filters[0]
+    assert second in file_filters[0]
+    assert result["assignments"][0]["files"][0]["name"] == "akt"
+    assert result["assignments"][1]["files"][0]["name"] == "scan"
+
+
 def test_live_or_stub_list() -> None:
     try:
         result = invoke_onec(

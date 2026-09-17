@@ -1781,6 +1781,22 @@ export class ApiClient {
     return String(data.text ?? data.extracted_text ?? data.summary ?? '').trim()
   }
 
+  async getWorkflowFilePreview(
+    workflowId: string,
+    fileId: string
+  ): Promise<{ text: string; summary: string; workbook: unknown }> {
+    const data = await this.request<Record<string, unknown>>(
+      'GET',
+      `/api/v1/workflows/${workflowId}/files/${fileId}/preview`,
+      { timeoutMs: 20_000 }
+    )
+    return {
+      text: String(data.text ?? data.extracted_text ?? '').trim(),
+      summary: String(data.summary ?? '').trim(),
+      workbook: data.workbook ?? null
+    }
+  }
+
   async listPlatformFiles(): Promise<WorkflowFileItem[]> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/workflows/files', {
       timeoutMs: 20_000

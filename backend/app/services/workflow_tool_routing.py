@@ -228,6 +228,10 @@ def infer_kind_from_blob(blob: str) -> str:
         return "revision_commission"
     if _is_board_meeting_blob(low):
         return "board_meeting"
+    from app.services.workflows.calendar_control_playbook import is_calendar_control_agent
+
+    if is_calendar_control_agent(low):
+        return "calendar_control"
     has_onec = any(tip in low for tip in ("1с", "1c", "onec", "odata"))
     has_outlook = any(
         tip in low
@@ -271,6 +275,10 @@ def default_tools_for_kind(kind: str, *, blob: str = "") -> list[str]:
         return list(_RK_TOOLS)
     if kind == "board_meeting":
         return list(_SD_TOOLS)
+    if kind == "calendar_control":
+        from app.services.workflows.calendar_control_playbook import calendar_control_runtime_tools
+
+        return calendar_control_runtime_tools()
     if kind == "onec":
         return list(_ONEC_TOOLS)
     if kind == "outlook_calendar":

@@ -1,6 +1,13 @@
 import { api } from '../../api/client'
 import { cleanRunResult, isBrokenResultText } from '../../utils/cleanRunResult'
 import type { TodayAgentResultItem } from '../../workplace/useTodayAgentResults'
+import {
+  isUsefulWorkbook,
+  parseWorkbookPreview,
+  tableToWorkbook,
+  type WorkbookPreview,
+  type WorkbookSheet
+} from './todayWorkbookPreview'
 
 export function resultAgentLabel(file: TodayAgentResultItem): string {
   const title = (file.agentTitle || '').trim()
@@ -23,6 +30,7 @@ export function uniqueAgentResults(items: TodayAgentResultItem[]): TodayAgentRes
 
 export type ResultFilePreview =
   | { kind: 'text'; text: string }
+  | WorkbookPreview
   | { kind: 'table'; headers: string[]; rows: string[][] }
   | { kind: 'embed'; dataUrl: string; mime: string }
   | { kind: 'error'; message: string }
@@ -66,14 +74,61 @@ export function parsePreviewTable(text: string): { headers: string[]; rows: stri
   return { headers: rows[0], rows: rows.slice(1) }
 }
 
+function withFallback(preview: WorkbookPreview, text: string): WorkbookPreview {
+  return { ...preview, fallbackText: text }
+}
+
 function previewFromText(file: TodayAgentResultItem, text: string): ResultFilePreview {
   const trimmed = text.trim()
   if (!trimmed) return { kind: 'error', message: 'Результат пуст' }
+  const preferCsv = file.kind === 'csv'
+  const workbook = parseWorkbookPreview(trimmed, { preferCsv })
+  if (isUsefulWorkbook(workbook)) return withFallback(workbook, trimmed)
   if (file.kind === 'csv' || file.kind === 'xls') {
     const table = parsePreviewTable(trimmed)
-    if (table) return { kind: 'table', ...table }
+    if (table) return withFallback(tableToWorkbook(table.headers, table.rows), trimmed)
   }
   return { kind: 'text', text: trimmed }
+}
+
+function asWorkbook(raw: unknown, fallbackText = ''): WorkbookPreview | null {
+  if (!raw || typeof raw !== 'object') return null
+  const sheets = (raw as { sheets?: unknown }).sheets
+  if (!Array.isArray(sheets)) return null
+  const normalized: WorkbookSheet[] = sheets.map((sheet) => {
+    const row = sheet && typeof sheet === 'object' ? (sheet as Record<string, unknown>) : {}
+    return {
+      name: String(row.name || 'Лист'),
+      title: String(row.title || ''),
+      subtitle: String(row.subtitle || ''),
+      kpis: Array.isArray(row.kpis)
+        ? row.kpis.map((item) => {
+            const kpi = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+            return { label: String(kpi.label || ''), value: String(kpi.value || '') }
+          })
+        : [],
+      notes: Array.isArray(row.notes) ? row.notes.map((item) => String(item || '')) : [],
+      headers: Array.isArray(row.headers) ? row.headers.map((item) => String(item || '')) : [],
+      rows: Array.isArray(row.rows)
+        ? row.rows.map((item) => (Array.isArray(item) ? item.map((cell) => String(cell ?? '')) : []))
+        : []
+    }
+  })
+  const preview = { kind: 'workbook' as const, sheets: normalized, fallbackText }
+  return isUsefulWorkbook(preview) ? preview : null
+}
+
+async function loadFileStructuredPreview(
+  file: TodayAgentResultItem
+): Promise<{ text: string; workbook: WorkbookPreview | null }> {
+  if (!file.workflowId || !file.id) return { text: '', workbook: null }
+  try {
+    const data = await api.getWorkflowFilePreview(file.workflowId, file.id)
+    const text = String(data.text || '').trim()
+    return { text, workbook: asWorkbook(data.workbook, text) }
+  } catch {
+    return { text: '', workbook: null }
+  }
 }
 
 const RESULT_READY_TEXT = 'Отчёт сформирован.\nПолный текст доступен после скачивания.'
@@ -116,29 +171,35 @@ async function loadFileExtractedText(file: TodayAgentResultItem): Promise<string
 }
 
 export async function loadResultFilePreview(file: TodayAgentResultItem): Promise<ResultFilePreview> {
-  const [fromRun, extracted] = await Promise.all([loadRunResultText(file), loadFileExtractedText(file)])
+  const [fromRun, extracted, structured] = await Promise.all([
+    loadRunResultText(file),
+    loadFileExtractedText(file),
+    loadFileStructuredPreview(file)
+  ])
+  if (structured.workbook) return structured.workbook
   const stub = pickPreviewText(fromRun, file.summary || '')
-  const stubIsShort = isBrokenResultText(stub) || stub.length < 80
-  if (stubIsShort && extracted && !isBrokenResultText(extracted) && extracted.length > stub.length) {
-    return previewFromText(file, extracted)
+  const bestText = [structured.text, extracted, stub].find((item) => item && item.trim()) || ''
+  if (bestText) {
+    const preview = previewFromText(file, bestText)
+    if (preview.kind !== 'error') return preview
   }
+  const stubIsShort = isBrokenResultText(stub) || stub.length < 80
   const canPreviewInline = file.kind === 'pdf' || file.kind === 'csv'
-  if (file.downloadUrl && (canPreviewInline || stubIsShort)) {
+  if (file.downloadUrl && (canPreviewInline || stubIsShort || !bestText)) {
     try {
       const remote = await api.fetchFilePreview(file.downloadUrl, file.name)
       if (remote.ok && remote.kind === 'embed') {
         return { kind: 'embed', dataUrl: remote.dataUrl, mime: remote.mime }
       }
       if (remote.ok && remote.kind === 'text' && remote.text.trim()) {
-        const remoteText = remote.text.trim()
-        if (!stub || remoteText.length >= stub.length) return previewFromText(file, remoteText)
+        return previewFromText(file, remote.text.trim())
       }
     } catch {
       /* show ready-state below */
     }
   }
 
-  if (stub) return previewFromText(file, stub)
+  if (bestText) return { kind: 'text', text: bestText }
   if (file.downloadUrl) return { kind: 'text', text: RESULT_READY_TEXT }
   return { kind: 'error', message: 'Результат ещё не доступен для просмотра' }
 }

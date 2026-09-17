@@ -30,6 +30,10 @@ CLOSED_STATUSES = {
 }
 
 _GUID_EMPTY = "00000000-0000-0000-0000-000000000000"
+_FILE_LIST_SELECT = (
+    "Ref_Key,Description,Subject,Расширение,Размер,ПутьКФайлу,"
+    "ДатаСоздания,ВладелецФайла_Key"
+)
 
 
 class AssignmentError(RuntimeError):
@@ -372,11 +376,41 @@ def _fetch_files(ref_key: str) -> list[dict[str, Any]]:
     result = _odata_get(
         {
             "entity": ASSIGNMENT_FILES_ENTITY,
+            "path": f"{ASSIGNMENT_FILES_ENTITY}?$select={_FILE_LIST_SELECT}",
             "top": 50,
             "filter": f"ВладелецФайла_Key eq guid'{ref_key}'",
         }
     )
     return [_normalize_file(row) for row in (result.get("value") or []) if isinstance(row, dict)]
+
+
+def _fetch_files_map(ref_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """One OData call per 15 owners — list+include_files must not N+1 to 1C."""
+    keys = [key for key in dict.fromkeys(ref_keys) if _looks_like_guid(key)]
+    out: dict[str, list[dict[str, Any]]] = {}
+    for index in range(0, len(keys), 15):
+        chunk = keys[index : index + 15]
+        filt = " or ".join(f"ВладелецФайла_Key eq guid'{key}'" for key in chunk)
+        try:
+            result = _odata_get(
+                {
+                    "entity": ASSIGNMENT_FILES_ENTITY,
+                    "path": f"{ASSIGNMENT_FILES_ENTITY}?$select={_FILE_LIST_SELECT}",
+                    "top": 200,
+                    "filter": filt,
+                }
+            )
+        except Exception:  # noqa: BLE001
+            for key in chunk:
+                out.setdefault(key, []).extend(_fetch_files(key))
+            continue
+        for row in result.get("value") or []:
+            if not isinstance(row, dict):
+                continue
+            owner = str(row.get("ВладелецФайла_Key") or "")
+            if owner:
+                out.setdefault(owner, []).append(_normalize_file(row))
+    return out
 
 
 def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
@@ -418,9 +452,14 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
     result = _odata_get({"entity": ASSIGNMENT_ENTITY, "top": top, "filter": filt})
     raw_rows = [row for row in (result.get("value") or []) if isinstance(row, dict)]
     _attach_missing_lines(raw_rows)
+    file_map = (
+        _fetch_files_map([str(row.get("Ref_Key") or "") for row in raw_rows])
+        if include_files
+        else {}
+    )
     items = []
     for row in raw_rows:
-        files = _fetch_files(str(row.get("Ref_Key") or "")) if include_files else []
+        files = file_map.get(str(row.get("Ref_Key") or ""), []) if include_files else []
         items.append(_normalize_assignment(row, files=files))
     _enrich_assignment_names(items, customer=customer, customer_key=customer_key)
     summary = f"Porucheniya 1C: {len(items)}"

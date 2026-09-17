@@ -322,6 +322,103 @@ def _current_calendar_owner(namespace: Any) -> str:
         return ""
 
 
+def _ensure_mapi_logon(namespace: Any) -> None:
+    """Подключить профиль, если Dispatch поднял Outlook без сессии."""
+    try:
+        current = getattr(namespace, "CurrentUser", None)
+        if current is not None and _safe_str(getattr(current, "Name", "")).strip():
+            return
+    except Exception:
+        pass
+    try:
+        namespace.Logon("", "", False, False)
+        _log_progress("step=mapi_logon ok")
+    except Exception as exc:
+        _log_progress(f"step=mapi_logon skipped: {exc}")
+
+
+def _mapi_namespace(outlook: Any) -> Any:
+    namespace = outlook.GetNamespace("MAPI")
+    _ensure_mapi_logon(namespace)
+    return namespace
+
+
+def _walk_typed_folder(root: Any, item_type: int, *, depth: int = 0) -> Any | None:
+    if root is None or depth > 3:
+        return None
+    try:
+        if int(getattr(root, "DefaultItemType", 0) or 0) == item_type:
+            return root
+    except Exception:
+        pass
+    try:
+        children = root.Folders
+    except Exception:
+        return None
+    try:
+        for child in children:
+            found = _walk_typed_folder(child, item_type, depth=depth + 1)
+            if found is not None:
+                return found
+    except Exception:
+        return None
+    return None
+
+
+def _find_typed_folder(namespace: Any, item_type: int) -> Any | None:
+    try:
+        for folder in namespace.Folders:
+            found = _walk_typed_folder(folder, item_type)
+            if found is not None:
+                return found
+    except Exception as exc:
+        _log_progress(f"step=walk_folders skipped: {exc}")
+    return None
+
+
+def _default_folder(namespace: Any, folder_id: int) -> Any:
+    """Папка профиля: Logon → GetDefaultFolder → store → обход дерева."""
+    last_exc: Exception | None = None
+    _ensure_mapi_logon(namespace)
+    try:
+        folder = namespace.GetDefaultFolder(folder_id)
+        if folder is not None:
+            return folder
+    except Exception as exc:
+        last_exc = exc
+        _log_progress(f"step=default_folder_failed id={folder_id}: {exc}")
+    try:
+        for store in namespace.Stores:
+            try:
+                folder = store.GetDefaultFolder(folder_id)
+            except Exception:
+                continue
+            if folder is not None:
+                _log_progress(
+                    f"step=default_folder_store id={folder_id} "
+                    f"name={_safe_str(getattr(store, 'DisplayName', ''))}"
+                )
+                return folder
+    except Exception as exc:
+        last_exc = last_exc or exc
+    item_type = OL_APPOINTMENT_ITEM if folder_id == CALENDAR_FOLDER_ID else 0
+    walked = _find_typed_folder(namespace, item_type)
+    if walked is not None:
+        _log_progress(f"step=default_folder_walk id={folder_id}")
+        return walked
+    if folder_id == CALENDAR_FOLDER_ID:
+        raise OutlookAccessError(
+            "Календарь текущего профиля Outlook не найден (MAPI). "
+            "Откройте классический Outlook с почтовым профилем и повторите. "
+            f"({last_exc})"
+        ) from last_exc
+    raise OutlookAccessError(
+        "Папка Outlook не найдена (MAPI). "
+        "Откройте классический Outlook с почтовым профилем и повторите. "
+        f"({last_exc})"
+    ) from last_exc
+
+
 def _same_calendar_person(left: str, right: str) -> bool:
     """ФИО из 1С и Display Name Outlook часто не совпадают буква в букву."""
     a = (left or "").strip().casefold()
@@ -339,8 +436,118 @@ def _same_calendar_person(left: str, right: str) -> bool:
     return True
 
 
+def _folder_matches_person(label: str, person: str) -> bool:
+    """Папка «Календарь — Жалыбин» или store DisplayName совпадает с ФИО."""
+    if _same_calendar_person(label, person):
+        return True
+    label_cf = (label or "").casefold()
+    parts = (person or "").replace(".", " ").split()
+    last = parts[0].casefold() if parts else ""
+    return bool(last) and len(last) >= 4 and last in label_cf
+
+
+def _calendar_access_hint(status: str) -> str:
+    if status in {"own", "shared", "visible", "meetings"}:
+        return ""
+    return (
+        "Нет доступа к этому календарю. Нужен общий доступ в Outlook "
+        "или запуск с профиля владельца."
+    )
+
+
+PUBLIC_MEETINGS_FOLDER = "Совещания"
+
+
+def _is_public_meetings_label(label: str) -> bool:
+    """Общедоступный ящик «Совещания», не личный календарь."""
+    text = (label or "").casefold()
+    return "совещани" in text
+
+
+def _find_public_meeting_folders(
+    outlook: Any, namespace: Any, own_name: str = ""
+) -> list[tuple[str, Any]]:
+    """Календари общего ящика Совещания: панель, store, GetSharedDefaultFolder."""
+    found: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(label: str, folder: Any) -> None:
+        if folder is None:
+            return
+        key = _folder_entry_id(folder) or f"{label}:{id(folder)}"
+        if key in seen:
+            return
+        seen.add(key)
+        found.append((label or PUBLIC_MEETINGS_FOLDER, folder))
+
+    for label, folder, is_own in _iter_visible_calendar_folders(outlook, namespace, own_name):
+        if is_own:
+            continue
+        if _is_public_meetings_label(label):
+            add(label, folder)
+    if not found:
+        folder, _status = _open_shared_calendar(namespace, PUBLIC_MEETINGS_FOLDER)
+        if folder is not None:
+            add(PUBLIC_MEETINGS_FOLDER, folder)
+    return found
+
+
+def _resolve_person_calendar_folder(
+    outlook: Any,
+    namespace: Any,
+    person: str,
+    own_name: str,
+) -> tuple[Any | None, str]:
+    """Свой календарь, уже открытый в панели, затем GetSharedDefaultFolder.
+
+    Чужой календарь не подменяем своим: иначе помощник ПСД читает свой ящик.
+    """
+    if not person or _same_calendar_person(person, own_name):
+        return _own_calendar_folder(namespace), "own"
+    visible = _iter_visible_calendar_folders(outlook, namespace, own_name)
+    for label, folder, is_own in visible:
+        if is_own or folder is None:
+            continue
+        if _folder_matches_person(label, person):
+            return folder, "visible"
+    folder, status = _open_shared_calendar(namespace, person)
+    if folder is not None:
+        return folder, status
+    return None, status
+
+
 OL_APPOINTMENT_ITEM = 1
 OL_NAVIGATION_MODULE_CALENDAR = 1
+
+
+def _iter_outlook_explorers(outlook: Any):
+    """ActiveExplorer часто пуст у скрытого COM — берём все открытые окна."""
+    seen: set[int] = set()
+    try:
+        active = outlook.ActiveExplorer()
+    except Exception:
+        active = None
+    if active is not None:
+        seen.add(id(active))
+        yield active
+    try:
+        explorers = outlook.Explorers
+    except Exception:
+        return
+    try:
+        count = int(explorers.Count or 0)
+    except Exception:
+        count = 0
+    for index in range(1, count + 1):
+        try:
+            explorer = explorers.Item(index)
+        except Exception:
+            continue
+        key = id(explorer)
+        if key in seen:
+            continue
+        seen.add(key)
+        yield explorer
 
 
 def _folder_entry_id(folder: Any) -> str:
@@ -381,16 +588,26 @@ def _iter_visible_calendar_folders(
         pass
 
     try:
-        explorer = outlook.ActiveExplorer()
-        module = explorer.NavigationPane.Modules.GetNavigationModule(OL_NAVIGATION_MODULE_CALENDAR)
-        for group in module.NavigationGroups:
-            group_name = _safe_str(getattr(group, "Name", "")).strip()
-            for nav in group.NavigationFolders:
-                try:
-                    folder = nav.Folder
-                except Exception:
-                    continue
-                add(folder, _folder_label(folder, group_name))
+        seen_explorers = 0
+        for explorer in _iter_outlook_explorers(outlook):
+            seen_explorers += 1
+            try:
+                module = explorer.NavigationPane.Modules.GetNavigationModule(
+                    OL_NAVIGATION_MODULE_CALENDAR
+                )
+            except Exception as exc:
+                _log_progress(f"step=nav_module skipped: {exc}")
+                continue
+            for group in module.NavigationGroups:
+                group_name = _safe_str(getattr(group, "Name", "")).strip()
+                for nav in group.NavigationFolders:
+                    try:
+                        folder = nav.Folder
+                    except Exception:
+                        continue
+                    add(folder, _folder_label(folder, group_name))
+        if seen_explorers == 0:
+            _log_progress("step=nav_calendars skipped: no explorer")
     except Exception as exc:
         _log_progress(f"step=nav_calendars skipped: {exc}")
 
@@ -493,30 +710,7 @@ def _dedupe_calendar_events(events: list[dict]) -> list[dict]:
 
 def _own_calendar_folder(namespace: Any) -> Any:
     """Календарь профиля, который уже открыт в Outlook. MAPI_E_NOT_FOUND = нет профиля."""
-    last_exc: Exception | None = None
-    try:
-        return namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
-    except Exception as exc:
-        last_exc = exc
-        _log_progress(f"step=default_calendar_failed: {exc}")
-    try:
-        for store in namespace.Stores:
-            try:
-                folder = store.GetDefaultFolder(CALENDAR_FOLDER_ID)
-            except Exception:
-                continue
-            if folder is not None:
-                _log_progress(
-                    f"step=default_calendar_store name={_safe_str(getattr(store, 'DisplayName', ''))}"
-                )
-                return folder
-    except Exception as exc:
-        last_exc = last_exc or exc
-    raise OutlookAccessError(
-        "Календарь текущего профиля Outlook не найден (MAPI). "
-        "Откройте классический Outlook с почтовым профилем и повторите. "
-        f"({last_exc})"
-    ) from last_exc
+    return _default_folder(namespace, CALENDAR_FOLDER_ID)
 
 
 def _open_shared_calendar(namespace: Any, person: str) -> tuple[Any | None, str]:
@@ -544,10 +738,10 @@ def _open_shared_calendar(namespace: Any, person: str) -> tuple[Any | None, str]
     return folder, "shared"
 
 
-def _prepare_calendar_items(folder: Any) -> Any:
+def _prepare_calendar_items(folder: Any, *, include_recurrences: bool = True) -> Any:
     items = folder.Items
     try:
-        items.IncludeRecurrences = True
+        items.IncludeRecurrences = bool(include_recurrences)
     except Exception:
         pass
     try:
@@ -658,14 +852,14 @@ def search_mail(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         _log_progress("step=dispatch_outlook ok")
         _log_progress("step=get_namespace start")
-        namespace = outlook.GetNamespace("MAPI")
+        namespace = _mapi_namespace(outlook)
         _log_progress("step=get_namespace ok")
 
         results = []
         scanned_count = 0
         for folder_name, folder_id, sort_field, date_attr, direction in folder_specs:
             _log_progress(f"step=get_mail_folder start folder={folder_name}")
-            folder_obj = namespace.GetDefaultFolder(folder_id)
+            folder_obj = _default_folder(namespace, folder_id)
             _log_progress(f"step=get_mail_folder ok folder={folder_name}")
             _log_progress(f"step=get_items start folder={folder_name}")
             messages = folder_obj.Items
@@ -741,6 +935,7 @@ def read_calendar(input_data: dict) -> dict:
     filter_user = (
         _safe_str(input_data.get("for_user") or input_data.get("filter_user") or "").strip()
     )
+    folder_hint = _safe_str(input_data.get("folder") or input_data.get("calendar") or "").strip()
     all_visible = _truthy(input_data.get("all_visible"))
 
     def _read(win32com_client: Any) -> dict:
@@ -748,7 +943,7 @@ def read_calendar(input_data: dict) -> dict:
         outlook = _dispatch_outlook(win32com_client)
         _log_progress("step=dispatch_outlook ok")
         _log_progress("step=get_namespace start")
-        namespace = outlook.GetNamespace("MAPI")
+        namespace = _mapi_namespace(outlook)
         _log_progress("step=get_namespace ok")
         start_at, end_at = _resolve_date_range(
             input_data,
@@ -759,6 +954,109 @@ def read_calendar(input_data: dict) -> dict:
         events: list[dict] = []
         checked_count = 0
         calendars: list[dict] = []
+        want_meetings = _is_public_meetings_label(folder_hint) or bool(people)
+        if want_meetings:
+            meeting_folders = _find_public_meeting_folders(outlook, namespace, own_name)
+            _log_progress(f"step=meetings_folders count={len(meeting_folders)}")
+            if meeting_folders:
+                for label, folder in meeting_folders:
+                    remaining_results = max_results - len(events)
+                    remaining_scan = max_scan_items - checked_count
+                    if remaining_results <= 0 or remaining_scan <= 0:
+                        break
+                    try:
+                        items = _prepare_calendar_items(folder)
+                    except Exception as exc:
+                        calendars.append(
+                            {"person": label, "status": f"items:{exc}", "count": 0}
+                        )
+                        continue
+                    chunk, scanned = _collect_calendar_range(
+                        items,
+                        start_at,
+                        end_at,
+                        max_results=remaining_results,
+                        max_scan_items=remaining_scan,
+                        include_body=include_body,
+                        calendar_owner=label,
+                        own_calendar=False,
+                    )
+                    if not chunk and scanned == 0:
+                        try:
+                            plain = _prepare_calendar_items(
+                                folder, include_recurrences=False
+                            )
+                            chunk, scanned = _collect_calendar_range(
+                                plain,
+                                start_at,
+                                end_at,
+                                max_results=remaining_results,
+                                max_scan_items=remaining_scan,
+                                include_body=include_body,
+                                calendar_owner=label,
+                                own_calendar=False,
+                            )
+                        except Exception as exc:
+                            _log_progress(f"step=meetings_retry_failed: {exc}")
+                    checked_count += scanned
+                    events.extend(chunk)
+                    calendars.append(
+                        {"person": label, "status": "meetings", "count": len(chunk)}
+                    )
+                    _log_progress(
+                        f"step=meetings_ok folder={label} events={len(chunk)} "
+                        f"scanned={scanned}"
+                    )
+                events = _dedupe_calendar_events(events)
+                filters = _unique_people([*people, filter_user] if filter_user else people)
+                if filters:
+                    before = len(events)
+                    events = [
+                        item
+                        for item in events
+                        if any(event_involves_person(item, name) for name in filters)
+                    ]
+                    _log_progress(
+                        f"step=filter_meetings names={filters} "
+                        f"before={before} after={len(events)}"
+                    )
+                events.sort(key=lambda item: str(item.get("start") or ""))
+                _log_progress("step=done ok")
+                return {
+                    "events": events,
+                    "count": len(events),
+                    "free_slots": _compute_free_slots(events, start_at, end_at),
+                    "calendars": calendars,
+                    "scanned_count": checked_count,
+                    "source": "outlook_com",
+                    "folder": PUBLIC_MEETINGS_FOLDER,
+                    "filter_user": ", ".join(filters),
+                    "range_start": start_at.isoformat(),
+                    "range_end": end_at.isoformat(),
+                }
+            if _is_public_meetings_label(folder_hint):
+                _log_progress("step=meetings_folder_missing")
+                return {
+                    "events": [],
+                    "count": 0,
+                    "free_slots": [],
+                    "calendars": [
+                        {
+                            "person": PUBLIC_MEETINGS_FOLDER,
+                            "status": "missing",
+                            "count": 0,
+                            "hint": (
+                                "Календарь «Совещания» не найден. "
+                                "Откройте общедоступный ящик в классическом Outlook."
+                            ),
+                        }
+                    ],
+                    "scanned_count": 0,
+                    "source": "outlook_com",
+                    "folder": PUBLIC_MEETINGS_FOLDER,
+                    "range_start": start_at.isoformat(),
+                    "range_end": end_at.isoformat(),
+                }
         if all_visible:
             folders = _iter_visible_calendar_folders(outlook, namespace, own_name)
             if not folders:
@@ -836,28 +1134,39 @@ def read_calendar(input_data: dict) -> dict:
                 folder = _own_calendar_folder(namespace)
                 status = "own"
             else:
-                _log_progress(f"step=get_shared_calendar person={person}")
-                folder, status = _open_shared_calendar(namespace, person)
-                if folder is None:
-                    _log_progress(
-                        f"step=shared_fallback_own person={person} status={status}"
-                    )
-                    folder = _own_calendar_folder(namespace)
-                    status = f"fallback_own:{status}"
+                _log_progress(f"step=resolve_calendar person={person}")
+                folder, status = _resolve_person_calendar_folder(
+                    outlook, namespace, person, own_name
+                )
+                _log_progress(
+                    f"step=resolve_calendar_done person={person} status={status} "
+                    f"found={int(folder is not None)}"
+                )
             if folder is None:
-                calendars.append({"person": owner, "status": status, "count": 0})
+                entry = {"person": owner, "status": status, "count": 0}
+                hint = _calendar_access_hint(status)
+                if hint:
+                    entry["hint"] = hint
+                calendars.append(entry)
                 continue
             try:
                 items = _prepare_calendar_items(folder)
             except Exception as exc:
                 _log_progress(f"step=prepare_items_failed person={owner}: {exc}")
-                if status == "own" or str(status).startswith("fallback_own"):
+                if status == "own":
                     raise OutlookAccessError(
                         "Не удалось открыть календарь текущего профиля Outlook. "
                         "Нужен классический Outlook с загруженным почтовым профилем. "
                         f"({exc})"
                     ) from exc
-                calendars.append({"person": owner, "status": f"items:{exc}", "count": 0})
+                calendars.append(
+                    {
+                        "person": owner,
+                        "status": f"items:{exc}",
+                        "count": 0,
+                        "hint": _calendar_access_hint("denied"),
+                    }
+                )
                 continue
             chunk, scanned = _collect_calendar_range(
                 items,
@@ -867,11 +1176,36 @@ def read_calendar(input_data: dict) -> dict:
                 max_scan_items=remaining_scan,
                 include_body=include_body,
                 calendar_owner=owner,
-                own_calendar=status == "own" or str(status).startswith("fallback_own"),
+                own_calendar=status == "own",
             )
+            if not chunk and status != "own":
+                _log_progress(f"step=retry_without_recurrences person={owner}")
+                try:
+                    plain_items = _prepare_calendar_items(folder, include_recurrences=False)
+                    retry_chunk, retry_scanned = _collect_calendar_range(
+                        plain_items,
+                        start_at,
+                        end_at,
+                        max_results=remaining_results,
+                        max_scan_items=remaining_scan,
+                        include_body=include_body,
+                        calendar_owner=owner,
+                        own_calendar=False,
+                    )
+                except Exception as exc:
+                    _log_progress(f"step=retry_without_recurrences_failed: {exc}")
+                    retry_chunk, retry_scanned = [], 0
+                if retry_chunk:
+                    chunk, scanned = retry_chunk, retry_scanned
+                elif scanned == 0 and retry_scanned == 0:
+                    status = "unreadable"
             checked_count += scanned
             events.extend(chunk)
-            calendars.append({"person": owner, "status": status, "count": len(chunk)})
+            entry = {"person": owner, "status": status, "count": len(chunk)}
+            hint = _calendar_access_hint(status)
+            if hint:
+                entry["hint"] = hint
+            calendars.append(entry)
             _log_progress(
                 f"step=calendar_ok person={owner} status={status} events={len(chunk)}"
             )
@@ -920,7 +1254,7 @@ def create_event(input_data: dict) -> dict:
         _log_progress("step=dispatch_outlook start")
         outlook = _dispatch_outlook(win32com_client)
         _log_progress("step=dispatch_outlook ok")
-        namespace = outlook.GetNamespace("MAPI")
+        namespace = _mapi_namespace(outlook)
         own_name = _current_calendar_owner(namespace)
         created: list[dict] = []
         for spec in items:
@@ -934,10 +1268,10 @@ def create_event(input_data: dict) -> dict:
                     _log_progress(
                         f"step=organizer_fallback person={organizer} status={organizer_status}"
                     )
-                    folder = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
+                    folder = _own_calendar_folder(namespace)
                     organizer_status = f"fallback_own:{organizer_status}"
             else:
-                folder = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
+                folder = _own_calendar_folder(namespace)
             appt = _new_appointment(outlook, folder)
             appt.Subject = spec["subject"]
             _set_appointment_times(appt, spec["start"], spec["end"])
@@ -1000,12 +1334,27 @@ def create_event(input_data: dict) -> dict:
 
 
 def _dispatch_outlook(win32com_client: Any) -> Any:
-    """Взять уже открытый Outlook, иначе создать COM-сессию."""
+    """Взять уже открытый Outlook, иначе создать COM-сессию и залогинить профиль."""
     _log_progress("step=dispatch_outlook start")
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            outlook = win32com_client.GetActiveObject("Outlook.Application")
+            _ensure_mapi_logon(outlook.GetNamespace("MAPI"))
+            _log_progress(f"step=dispatch_active ok attempt={attempt}")
+            return outlook
+        except Exception as exc:
+            last_exc = exc
+            _log_progress(f"step=dispatch_active failed attempt={attempt}: {exc}")
+            time.sleep(0.35 * attempt)
+    outlook = win32com_client.Dispatch("Outlook.Application")
     try:
-        return win32com_client.GetActiveObject("Outlook.Application")
-    except Exception:
-        return win32com_client.Dispatch("Outlook.Application")
+        _ensure_mapi_logon(outlook.GetNamespace("MAPI"))
+    except Exception as exc:
+        _log_progress(f"step=dispatch_new_logon skipped: {exc}")
+    if last_exc is not None:
+        _log_progress(f"step=dispatch_new after_active_fail: {last_exc}")
+    return outlook
 
 
 def _verify_saved_appointment(outlook: Any, appt: Any) -> str:
@@ -1017,7 +1366,7 @@ def _verify_saved_appointment(outlook: Any, appt: Any) -> str:
             "Встреча в календарь не попала. Нужен классический Outlook и свой календарь для записи."
         )
     try:
-        namespace = outlook.GetNamespace("MAPI")
+        namespace = _mapi_namespace(outlook)
         found = namespace.GetItemFromID(entry_id)
     except Exception as exc:
         raise OutlookAccessError(
@@ -1042,7 +1391,7 @@ def _new_appointment(outlook: Any, folder: Any = None) -> Any:
     calendar = folder
     if calendar is None:
         try:
-            calendar = outlook.GetNamespace("MAPI").GetDefaultFolder(CALENDAR_FOLDER_ID)
+            calendar = _own_calendar_folder(_mapi_namespace(outlook))
         except Exception:
             calendar = None
     if calendar is not None:
@@ -1645,7 +1994,7 @@ def fetch_mail_message(input_data: dict) -> dict:
     """Прочитать письмо Outlook по EntryID."""
     def _read(win32com_client: Any) -> dict:
         outlook = _dispatch_outlook(win32com_client)
-        namespace = outlook.GetNamespace("MAPI")
+        namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
         message = _resolve_mail_item(namespace, entry_id)
         payload = _mail_detail_payload(message, include_body=True)
@@ -1661,7 +2010,7 @@ def mark_mail_read(input_data: dict) -> dict:
 
     def _write(win32com_client: Any) -> dict:
         outlook = _dispatch_outlook(win32com_client)
-        namespace = outlook.GetNamespace("MAPI")
+        namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
         message = _resolve_mail_item(namespace, entry_id)
         try:
@@ -1685,7 +2034,7 @@ def display_mail_message(input_data: dict) -> dict:
 
     def _write(win32com_client: Any) -> dict:
         outlook = _dispatch_outlook(win32com_client)
-        namespace = outlook.GetNamespace("MAPI")
+        namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
         message = _resolve_mail_item(namespace, entry_id)
         if mode == "reply":
@@ -1720,7 +2069,7 @@ def save_mail_attachment(input_data: dict) -> dict:
 
     def _write(win32com_client: Any) -> dict:
         outlook = _dispatch_outlook(win32com_client)
-        namespace = outlook.GetNamespace("MAPI")
+        namespace = _mapi_namespace(outlook)
         entry_id = _safe_str(input_data.get("entry_id") or "").strip()
         message = _resolve_mail_item(namespace, entry_id)
         attachments = getattr(message, "Attachments", None)

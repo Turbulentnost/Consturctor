@@ -30,6 +30,11 @@ from app.services.workflows.artifact_close_playbook import (
     artifact_close_local_playbook,
     is_artifact_close_agent,
 )
+from app.services.workflows.calendar_control_playbook import (
+    calendar_control_local_playbook,
+    calendar_control_schedule_draft,
+    is_calendar_control_agent,
+)
 from app.services.workflows.rk_meeting_playbook import (
     is_rk_meeting_agent,
     rk_local_playbook,
@@ -78,6 +83,10 @@ def _publish_workflow_row(db, row: Workflow) -> Workflow:
         playbook = rk_local_playbook(title=title, demo_text=notes, answered_scope=title)
     elif is_sd_meeting_agent(title, notes):
         playbook = sd_local_playbook(title=title, demo_text=notes, answered_scope=title)
+    elif is_calendar_control_agent(title, notes):
+        playbook = calendar_control_local_playbook(
+            title=title, demo_text=notes, answered_scope=title
+        )
     else:
         playbook = _local_playbook(
             title=title,
@@ -97,7 +106,12 @@ def _publish_workflow_row(db, row: Workflow) -> Workflow:
     row.title = title
     row.phase = "done"
     row.plan_json = plan
-    schedule = rk_schedule_draft() if is_rk_meeting_agent(title, notes) else {"name": "", "goal": "", "triggers": []}
+    if is_rk_meeting_agent(title, notes):
+        schedule = rk_schedule_draft()
+    elif is_calendar_control_agent(title, notes):
+        schedule = calendar_control_schedule_draft()
+    else:
+        schedule = {"name": "", "goal": "", "triggers": []}
     row.local_run = apply_meeting_agent_config(
         {
             "status": "published",

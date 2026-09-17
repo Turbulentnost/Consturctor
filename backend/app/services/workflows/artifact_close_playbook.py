@@ -84,8 +84,9 @@ def artifact_close_playbook_draft() -> dict[str, Any]:
                     "Не ищи задачи исполнителя, протоколы, календарь и сетевые папки."
                 ),
                 "on_error": (
-                    "Повтори тот же action=list; не переключайся на tasks, "
-                    "odata_get, протоколы и Outlook."
+                    "Если таймаут — один повтор action=list без include_files "
+                    "(only_open=true, limit=100), затем action=files по карточкам. "
+                    "Не переключайся на tasks, odata_get, протоколы и Outlook."
                 ),
             },
             {
@@ -109,7 +110,8 @@ def artifact_close_playbook_draft() -> dict[str, Any]:
                     "закрытие не рекомендовать, перейти к следующей."
                 ),
                 "on_error": (
-                    "По этой карточке «недостаточно данных», остальные продолжить."
+                    "Не качай пакетом: по одному file_id. Повтор уже скачанного "
+                    "берёт кэш. Таймаут — один повтор этого файла, остальные продолжить."
                 ),
             },
             {
@@ -188,11 +190,15 @@ def artifact_close_instructions() -> str:
         "1. `users.current`.\n"
         "2. Все открытые поручения: один вызов `onec.erp_assignments` "
         "action=list, only_open=true, include_files=true, limit=100. "
+        "Если инструмент не ответил за отведённое время — один повтор "
+        "без include_files, затем `action=files` по карточкам. "
+        "Не крути один и тот же list трижды. "
         "Без customer, без фильтра по статусам ТЗ, без onec.erp_tasks_*, "
         "без onec.docflow_tasks, без onec.odata_get, без Outlook, "
         "без сетевых папок РК и без вопроса про Excel-реестр.\n"
         "3. По каждой карточке, где есть files: `onec.download_artifact` "
-        "(file_id из списка). Скан карточки и `.epf` пропусти.\n"
+        "по одному file_id (не пакетом и не 5+ сразу). Скан карточки и `.epf` "
+        "пропусти. Повтор того же file_id берёт кэш.\n"
         "4. Прочитай файлы: Word/PDF/картинки — `office.read_file`, "
         "Excel — `excel.read_workbook`. Не вызывай Read/Grep/OCR-скрипты.\n"
         "5. Сверь артефакт с предметом, датами, результатом и подписями. "

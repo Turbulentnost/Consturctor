@@ -45,6 +45,7 @@ def test_apply_config_clears_run_inputs_and_locks_journal_tools() -> None:
     assert steps[1]["tool"] == "onec.erp_assignments"
     assert steps[1]["proven_call"]["arguments"]["include_files"] is True
     assert "не подготовка заседания рк" in playbook.get("instructions", "").casefold()
+    assert "по одному file_id" in playbook.get("instructions", "").casefold()
 
 
 def test_meeting_config_prefers_artifact_over_rk() -> None:

@@ -83,6 +83,8 @@ from app.services.workflow_files import (
     ensure_workflow_files_table,
     get_workflow_file,
     list_user_platform_files,
+    resolved_file_text,
+    workflow_file_preview,
     list_workflow_files,
     register_agent_files,
     register_run_attachments,
@@ -640,7 +642,23 @@ async def read_workflow_file_text(
     try:
         row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
         item = get_workflow_file(db, row=row, file_id=file_id)
-        return {"text": item.extracted_text or "", "summary": item.summary or ""}
+        return {"text": resolved_file_text(item), "summary": item.summary or ""}
+    except WorkflowFileError as exc:
+        _raise_file(exc)
+        raise
+
+
+@router.get("/{workflow_id}/files/{file_id}/preview")
+async def read_workflow_file_preview(
+    workflow_id: str,
+    file_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
+        item = get_workflow_file(db, row=row, file_id=file_id)
+        return workflow_file_preview(item)
     except WorkflowFileError as exc:
         _raise_file(exc)
         raise
